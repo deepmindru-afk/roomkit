@@ -662,6 +662,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A refused call reaches `ON_TOOL_CALL`'s observers only, on every door
+  (RMK-432, RFC §9.3). `ToolCallEvent` gains `refused` (beside `cancelled`),
+  set by every gate and handler that refuses a call, and the `tool_call`
+  framework event carries it. On the external-handler and ACP doors a refusal
+  reached the SYNC hooks: a handler's denial, a call the external door refused
+  itself because its arguments were cut, a rejected ACP permission with or
+  without a handler. `ExternalToolHandler.on_tool_refused(tool_name,
+  tool_input, reason, ...)` (not abstract) now hears the handler's own
+  refusal and reports it by default; **`on_tool_result` no longer hears of a
+  refusal**, so a handler that recorded refusals there overrides
+  `on_tool_refused`. A `process_tool_call` that raises is a failure the
+  channel reports with what failed (`error_detail`, which the external door
+  dropped and ACP read as a refusal). An ACP call reports the same body with
+  and without a handler: a cancellation's `cancelled_tool_error` envelope, a
+  failure's bounded error (a failed call carrying an image reported 614 456
+  characters through a handler, 78 without).
+
 - A skill's `requires` and gates read the same on every door (RMK-429, RFC
   §24.3): a text turn now checks `requires` as a realtime session does, with
   one rule (`roomkit.skills.models.missing_required_tools`), against the tools

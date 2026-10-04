@@ -364,6 +364,7 @@ async def report_failed_call(
         host._tool_event(call, result_text(outcome.result)),
         is_error=True,
         cancelled=outcome.kind is OutcomeKind.CANCELLED,
+        refused=outcome.kind is OutcomeKind.REFUSED,
         error_detail=outcome.detail,
     )
     try:

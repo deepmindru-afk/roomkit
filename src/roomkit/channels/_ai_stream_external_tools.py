@@ -40,6 +40,19 @@ class _ToolEventPublisher(Protocol):
     ) -> None: ...
 
 
+@dataclass(frozen=True)
+class _Decided:
+    """What a still-pending call became, and who reports it: the handler
+    (its refusal, its approval) or the channel (a call it refused itself, a
+    handler that raised, with what failed)."""
+
+    arguments: dict[str, Any]
+    result: str
+    kind: OutcomeKind
+    by_channel: bool = False
+    detail: str | None = None
+
+
 @dataclass
 class _ExternalStreamTools:
     """Turn-scoped routing and lifecycle of the calls the provider serves."""
@@ -81,14 +94,13 @@ class _ExternalStreamTools:
         pending = served is None and self.handler is not None
         self._announce(call, arguments, pending=pending)
         if not pending:
-            await self._report(call, arguments, result, kind is not OutcomeKind.SERVED)
+            await self._report(call, _Decided(arguments, result, kind))
         yield ToolCallStartMarker(tool_name=call.name, tool_id=call.id, arguments=arguments)
         await self._publish_start(call, arguments, round_idx)
         if pending and self.handler is not None:
-            arguments, result, kind = await self._decide(
-                self.handler, call, arguments, result, kind
-            )
-            await self._report(call, arguments, result, kind is not OutcomeKind.SERVED)
+            decided = await self._decide(self.handler, call, _Decided(arguments, result, kind))
+            arguments, result, kind = decided.arguments, decided.result, decided.kind
+            await self._report(call, decided)
         duration_ms = int((time.monotonic() - started_at) * 1000)
         yield _end_marker(call, arguments, result, kind, duration_ms)
         await self._publish_end(call, result, kind, round_idx, duration_ms)
@@ -130,73 +142,79 @@ class _ExternalStreamTools:
             self.loop_ctx.external_calls.add(call.id)
 
     async def _decide(
-        self,
-        handler: ExternalToolHandler,
-        call: StreamToolCall,
-        arguments: dict[str, Any],
-        result: str,
-        kind: OutcomeKind,
-    ) -> tuple[dict[str, Any], str, OutcomeKind]:
+        self, handler: ExternalToolHandler, call: StreamToolCall, pending: _Decided
+    ) -> _Decided:
         """What a still-pending call becomes: its arguments, result and outcome.
 
         A call the response cut before its arguments were complete is refused
         without asking the handler (RFC §6.4); any other is the handler's to
         refuse, rewrite or serve. A handler that raises fails the call, as a
         tool handler that raises does: the model reads the failure's class,
-        the log its message (RFC §9.3).
+        the log and the observers its message (RFC §9.3).
         """
+        arguments = pending.arguments
         if call.partial:
-            error = partial_call_error(call.name, garbled=call.garbled)
-            return arguments, json.dumps(error), OutcomeKind.REFUSED
+            error = json.dumps(partial_call_error(call.name, garbled=call.garbled))
+            return _Decided(arguments, error, OutcomeKind.REFUSED, by_channel=True)
         try:
             decision = await handler.process_tool_call(
                 call.name, arguments, tool_call_id=call.id, room_id=self.room_id
             )
         except Exception as exc:
-            logger.warning(
-                "External tool handler failed deciding %s: %s", call.name, failure_detail(exc)
-            )
-            return arguments, tool_failure(call.name, exc), OutcomeKind.FAILED
+            detail = failure_detail(exc)
+            logger.warning("External tool handler failed deciding %s: %s", call.name, detail)
+            failure = tool_failure(call.name, exc)
+            return _Decided(arguments, failure, OutcomeKind.FAILED, by_channel=True, detail=detail)
         if not decision.approved:
-            return (
-                arguments,
-                json.dumps({"error": decision.reason or f"Tool '{call.name}' was denied"}),
-                OutcomeKind.REFUSED,
-            )
+            reason = json.dumps({"error": decision.reason or f"Tool '{call.name}' was denied"})
+            return _Decided(arguments, reason, OutcomeKind.REFUSED)
         if decision.modified_input is not None:
             arguments = decision.modified_input
         if decision.result is not None:
-            return arguments, decision.result, OutcomeKind.SERVED
-        return arguments, result, kind
+            return _Decided(arguments, decision.result, OutcomeKind.SERVED)
+        return _Decided(arguments, pending.result, pending.kind)
 
-    async def _report(
-        self, call: StreamToolCall, arguments: dict[str, Any], result: str, is_error: bool
-    ) -> None:
-        """Hand the call's outcome to its handler, or report it to ON_TOOL_CALL's
-        observers when the provider ran it with no handler: an outcome the
-        model already read, so no hook may rewrite it (RFC §9.3).
+    async def _report(self, call: StreamToolCall, decided: _Decided) -> None:
+        """Report the call's outcome once, by whoever decided it: the handler
+        its refusal (:meth:`~ExternalToolHandler.on_tool_refused`) or what it
+        let through; the channel, to ON_TOOL_CALL, a call it refused itself, a
+        handler that raised, or a call the provider ran with no handler. An
+        outcome the model already read, so no hook may rewrite it, and a
+        refusal reaches the observers only (RFC §9.3).
 
         The report is claimed where the observers hear it, past the SYNC
         chain: a cut before then leaves it owed, with this outcome, to the
         turn's end. A handler that reports nothing has made the call's report.
         """
+        refused = decided.kind is OutcomeKind.REFUSED
         event = ToolCallEvent(
             channel_id=self.channel_id,
             channel_type=ChannelType.AI,
             tool_call_id=call.id,
             name=call.name,
-            arguments=arguments,
-            result=as_tool_result(result),
+            arguments=decided.arguments,
+            result=as_tool_result(decided.result),
             room_id=self.room_id,
-            is_error=is_error,
+            is_error=decided.kind is not OutcomeKind.SERVED,
+            refused=refused,
+            error_detail=decided.detail,
         )
         self.loop_ctx.known_outcomes[call.id] = event
-        if self.handler is not None:
-            await self.handler.on_tool_result(
+        handler = None if decided.by_channel else self.handler
+        if handler is not None and refused:
+            await handler.on_tool_refused(
                 call.name,
-                arguments,
-                result,
-                is_error=is_error,
+                decided.arguments,
+                decided.result,
+                tool_call_id=call.id,
+                room_id=self.room_id,
+            )
+        elif handler is not None:
+            await handler.on_tool_result(
+                call.name,
+                decided.arguments,
+                decided.result,
+                is_error=event.is_error,
                 tool_call_id=call.id,
                 room_id=self.room_id,
             )

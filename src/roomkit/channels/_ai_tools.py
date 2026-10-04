@@ -328,8 +328,12 @@ class AIToolsMixin(_AIChannelContract):
         *,
         detail: str | None = None,
         cancelled: bool = False,
+        refused: bool = False,
     ) -> None:
         """Fire ON_TOOL_CALL for a call that failed, was refused or was cancelled.
+
+        *refused* marks a call a gate or its handler refused before it ran
+        (``ToolCallEvent.refused``), apart from one that failed.
 
         *detail* is a raised call's full failure, or the error of a
         BEFORE_TOOL_USE hook that failed closed, for the observers only
@@ -362,6 +366,7 @@ class AIToolsMixin(_AIChannelContract):
             room_id=room_id,
             is_error=True,
             cancelled=cancelled,
+            refused=refused,
             error_detail=detail,
         )
         try:
@@ -382,13 +387,14 @@ class AIToolsMixin(_AIChannelContract):
         body: str,
         *,
         detail: str | None = None,
+        refused: bool = False,
     ) -> ToolResult:
         """The model's copy of a call that was refused or failed, its observers told.
 
         Fired on the body before eviction and the repeated-result note shape
         the model's copy of it.
         """
-        await self._fire_tool_refusal(tc, arguments, body, room_id, detail=detail)
+        await self._fire_tool_refusal(tc, arguments, body, room_id, detail=detail, refused=refused)
         return self._bound_tool_result(tc.name, body, tc.id)
 
     async def _execute_tools_parallel(
@@ -457,7 +463,9 @@ class AIToolsMixin(_AIChannelContract):
         # handler, using the effective payload after folds and hooks.
         guard = self._repeated_call_guard(tc.name, tc.arguments)
         body = guard or stopped.body
-        await self._fire_tool_refusal(tc, tc.arguments, body, scope.room_id, detail=stopped.detail)
+        await self._fire_tool_refusal(
+            tc, tc.arguments, body, scope.room_id, detail=stopped.detail, refused=True
+        )
         # Bounded as any outcome the model reads (RFC §21.5): a hook's reason
         # can be as large as a result.
         bounded = self._bound_tool_result(tc.name, body, tc.id)
@@ -694,7 +702,7 @@ class AIToolsMixin(_AIChannelContract):
             # for a small one — and the generic wrapper would replace them
             # with its own sentence, which is how the reason gets lost.
             logger.info("Tool %s refused: %s", tc.name, exc.message)
-            body = await self._failed_call(tc, arguments, room_id, exc.message)
+            body = await self._failed_call(tc, arguments, room_id, exc.message, refused=True)
             return ToolOutcome(
                 OutcomeKind.REFUSED,
                 body,

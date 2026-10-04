@@ -34,6 +34,7 @@ from roomkit.models.streaming import (
 )
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
+from roomkit.tools.result import cancelled_tool_error, failure_detail
 
 if TYPE_CHECKING:
     from roomkit.channels.acp_transport import ACPTransport
@@ -63,7 +64,8 @@ class _ToolEnd:
 
 def _end_outcome(tool: _ToolState, status: str, *, interrupted: bool) -> ToolCallOutcome:
     """The outcome of an ACP call: cancelled when the turn ended under it,
-    refused when RoomKit refused its permission, else what the agent said."""
+    refused when RoomKit refused its permission (a handler that raised
+    deciding it fails the call instead), else what the agent said."""
     if interrupted:
         return "cancelled"
     if status != "failed":
@@ -109,6 +111,17 @@ def _end_marker(tool: _ToolState, end: _ToolEnd) -> ToolCallEndMarker:
         structured_content=structured,
         outcome=end.outcome,
     )
+
+
+def _reported_body(tool: _ToolState, end: _ToolEnd) -> str:
+    """What a call's report carries, with an external handler or without:
+    a cancelled call's cancellation envelope, a failed or refused call's
+    bounded error, a served call's result text (RFC §9.3)."""
+    if end.outcome == "cancelled":
+        return cancelled_tool_error(tool.name, "The turn ended before its result.")
+    if end.status == "failed":
+        return end.error or ""
+    return _result_text(end.result)
 
 
 class ACPEventsMixin:
@@ -457,11 +470,12 @@ class ACPEventsMixin:
         """Publish a closed call's end and report it, once."""
         if room_id is not None:
             await self._publish_tool_end(room_id, tool, end)
-        if self._external_tool_handler is not None:
+        if self._external_tool_handler is not None and tool.failure is None:
             await self._report_tool_end(self._external_tool_handler, room_id, tool, end)
         elif self._tool_report_hook is not None:
-            # No handler to report it: ON_TOOL_CALL still hears of every call,
-            # as of a call an AI provider ran itself (RFC §9.3).
+            # No handler to report it, or one that raised deciding it:
+            # ON_TOOL_CALL still hears of every call, as of a call an AI
+            # provider ran itself (RFC §9.3).
             await self._report_agent_call(room_id, tool, end)
 
     async def _publish_tool_end(self, room_id: str, tool: _ToolState, end: _ToolEnd) -> None:
@@ -485,21 +499,24 @@ class ACPEventsMixin:
     async def _report_agent_call(
         self, room_id: str | None, tool: _ToolState, end: _ToolEnd
     ) -> None:
-        """Report a call the agent ran to ON_TOOL_CALL, through the kit."""
+        """Report a call the agent ran to ON_TOOL_CALL, through the kit: with
+        the body a handler would report (:func:`_reported_body`), refused or
+        cancelled to the observers only (RFC §9.3)."""
         report = self._tool_report_hook
         if report is None:
             return
-        failed = end.status == "failed"
         event = ToolCallEvent(
             channel_id=self.channel_id,
             channel_type=self.channel_type,
             tool_call_id=tool.tool_id,
             name=tool.name,
             arguments=tool.arguments,
-            result=(end.error or "") if failed else _result_text(end.result),
+            result=_reported_body(tool, end),
             room_id=room_id,
-            is_error=failed,
+            is_error=end.status == "failed",
             cancelled=end.outcome == "cancelled",
+            refused=end.outcome == "refused",
+            error_detail=tool.failure,
         )
         try:
             await report(event)
@@ -511,17 +528,27 @@ class ACPEventsMixin:
         handler: ExternalToolHandler, room_id: str | None, tool: _ToolState, end: _ToolEnd
     ) -> None:
         """Hand a call's end to the handler: a call the turn cut has no result,
-        and the handler reports it cancelled (RFC §9.3)."""
+        and the handler reports it cancelled; one it refused, refused
+        (RFC §9.3)."""
         try:
             if end.outcome == "cancelled":
                 await handler.on_tool_cancelled(
                     tool.name, tool.arguments, tool_call_id=tool.tool_id, room_id=room_id
                 )
                 return
+            if end.outcome == "refused":
+                await handler.on_tool_refused(
+                    tool.name,
+                    tool.arguments,
+                    _reported_body(tool, end),
+                    tool_call_id=tool.tool_id,
+                    room_id=room_id,
+                )
+                return
             await handler.on_tool_result(
                 tool.name,
                 tool.arguments,
-                _result_text(end.result),
+                _reported_body(tool, end),
                 is_error=end.status == "failed",
                 tool_call_id=tool.tool_id,
                 room_id=room_id,
@@ -553,6 +580,7 @@ class ACPEventsMixin:
         )
 
         approved = False
+        failure: str | None = None
         if self._external_tool_handler is not None:
             try:
                 decision = await self._external_tool_handler.process_tool_call(
@@ -570,12 +598,16 @@ class ACPEventsMixin:
                         tool_id,
                     )
                     approved = False
-            except Exception:
+            except Exception as exc:
                 logger.exception("ACP external permission handler failed")
+                failure = failure_detail(exc)
         if tool is not None:
             # The last decision stands: a refused call's end reads as refused,
             # not as a tool that failed; one approved later can fail on its own.
-            tool.refused = not approved
+            # A handler that raised refused nothing: the call failed, and the
+            # channel reports it with what failed (RFC §9.3).
+            tool.failure = failure
+            tool.refused = not approved and failure is None
 
         preferred = (
             ("allow_once", "allow_always") if approved else ("reject_once", "reject_always")

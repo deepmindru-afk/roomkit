@@ -245,6 +245,43 @@ class ExternalToolHandler(ABC):
             room_id=room_id,
         )
 
+    async def on_tool_refused(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        reason: str,
+        *,
+        tool_call_id: str = "",
+        job_id: str | None = None,
+        room_id: str | None = None,
+    ) -> None:
+        """Called when this handler refused a call: :meth:`process_tool_call`
+        denied it, or an ACP permission it decided was rejected.
+
+        The call never ran. It is reported to ``ON_TOOL_CALL``'s observers as
+        refused, *reason* being what the model reads, and reaches no SYNC hook,
+        as every channel reports a call it refused (RFC §9.3). Override it to
+        record the refusal, and call ``await super().on_tool_refused(...)`` to
+        keep the report. :meth:`on_tool_result` no longer hears of a refusal.
+
+        Args:
+            tool_name: Name of the tool.
+            tool_input: Tool arguments.
+            reason: What the model reads of the refusal.
+            tool_call_id: Provider-assigned ID for this tool call.
+            job_id: Job identifier.
+            room_id: RoomKit room ID.
+        """
+        await self._fire_on_tool_hook(
+            tool_name,
+            tool_input,
+            reason,
+            is_error=True,
+            refused=True,
+            tool_call_id=tool_call_id,
+            room_id=room_id,
+        )
+
     @property
     def channel_id(self) -> str:
         """The channel this handler serves, or ``""`` before registration.
@@ -306,6 +343,8 @@ class ExternalToolHandler(ABC):
         *,
         is_error: bool = False,
         cancelled: bool = False,
+        refused: bool = False,
+        error_detail: str | None = None,
         tool_call_id: str = "",
         room_id: str | None = None,
     ) -> None:
@@ -316,7 +355,10 @@ class ExternalToolHandler(ABC):
         body is the provider's — a terminal's stderr, an SDK's message — and
         recognising a failure in it is guesswork, so an observer handed the
         body alone reads a failed tool as a completed one. ``cancelled`` marks
-        a call the turn cut before its outcome (:meth:`on_tool_cancelled`).
+        a call the turn cut before its outcome (:meth:`on_tool_cancelled`),
+        ``refused`` one this handler refused (:meth:`on_tool_refused`): either
+        reaches the observers only. ``error_detail`` is what failed, for the
+        observers and the log, never the model (RFC §9.3).
         """
         if self._on_tool_hook is None:
             return
@@ -330,6 +372,8 @@ class ExternalToolHandler(ABC):
             room_id=room_id,
             is_error=is_error,
             cancelled=cancelled,
+            refused=refused,
+            error_detail=error_detail,
         )
         await self._on_tool_hook(event)
 

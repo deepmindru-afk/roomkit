@@ -41,6 +41,7 @@ class _Proxy(ExternalToolHandler):
         self.approves = approves
         self.decided: list[str] = []
         self.results: list[str] = []
+        self.refused: list[str] = []
 
     async def process_tool_call(
         self, tool_name: str, tool_input: dict[str, Any], **kwargs: Any
@@ -54,6 +55,12 @@ class _Proxy(ExternalToolHandler):
         self, tool_name: str, tool_input: dict[str, Any], result: str, **kwargs: Any
     ) -> None:
         self.results.append(tool_name)
+
+    async def on_tool_refused(
+        self, tool_name: str, tool_input: dict[str, Any], reason: str, **kwargs: Any
+    ) -> None:
+        self.refused.append(tool_name)
+        await super().on_tool_refused(tool_name, tool_input, reason, **kwargs)
 
 
 def _calls(*calls: AIToolCall) -> AIResponse:
@@ -255,7 +262,8 @@ async def test_a_call_the_handler_denies_is_a_refusal(streaming: bool) -> None:
     [end] = await room.ends()
     assert end.outcome == "refused"
     assert "not on this host" in str(end.result)
-    assert proxy.results == ["Bash"]
+    # Its own refusal comes back to it as one (RMK-432).
+    assert (proxy.refused, proxy.results) == (["Bash"], [])
 
 
 async def test_a_call_written_unreadable_is_refused_before_the_handler(streaming: bool) -> None:

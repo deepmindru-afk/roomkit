@@ -1023,15 +1023,17 @@ class HelpersMixin:
         Every hook runs and nothing it returns is applied (RFC §9.3): the
         observers see *event* as it stands, a BLOCK included. For a call an
         external handler or a provider ran, and for a result delivered before
-        the hooks ran (a realtime Tool Search call). A call the turn cut never
-        ran: its ASYNC observers alone hear of it, as of a local call cut.
+        the hooks ran (a realtime Tool Search call). A call the turn cut or a
+        gate or handler refused never ran: its ASYNC observers alone hear of
+        it, as of a local call cut or refused.
         *claim* claims the call's one report between the chain and the
         observers, as :meth:`_judge_tool_call` does: a report cut while the
         chain ran is still owed, and one the observers heard is made.
         """
         if not event.room_id:
             return
-        if event.cancelled:
+        if event.cancelled or event.refused:
+            # Neither ran: the observers alone hear of it, on every door.
             await self._observe_failed_tool_call(event, channel_id, claim=claim)
             return
         context: RoomContext | None = None
@@ -1091,6 +1093,8 @@ class HelpersMixin:
             data["is_error"] = True
         if event.cancelled:
             data["cancelled"] = True
+        if event.refused:
+            data["refused"] = True
         await self._emit_framework_event(
             "tool_call", room_id=event.room_id, channel_id=channel_id, data=data
         )
