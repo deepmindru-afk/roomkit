@@ -325,6 +325,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — a channel that streams a response which then fails no longer
+  gets its text again through `deliver()`** (RMK-467, RFC §12.2 step 13s):
+  the text reaches it once, inside the stream, as a text row before the
+  failure. The default `Channel.deliver_stream`, which buffers, delivers what
+  it buffered before the failure propagates. Migration: a host channel whose
+  own `deliver_stream` buffers the text instead of rendering it delivers its
+  buffer when the stream raises, as the default does; one that renders as it
+  reads needs nothing.
+
 - `regenerate_response` fires `ON_ERROR` for every intelligence channel whose
   failure the broadcast reports, as `process_inbound` does, not only the first
   (RMK-402); the first failure stays the one on `InboundResult.error`. It reads
@@ -790,20 +799,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is reported failed, where the conference refused it.
 
 - A response that fails mid-stream is no longer handed again to the channel
-  that streamed it (RMK-467, RFC §12.2 step 13s). When the provider raised
-  after a sentence, the text already streamed went back to that channel as an
-  ordinary event: a `VoiceChannel` spoke it a second time, the CLI printed it
-  again, and a WebSocket client got it after `stream_error`, outside the
-  stream. The row now reaches the streaming channel inside the stream, as a
-  completed response's last row does, then the failure; the other channels
-  still get it, `ON_ERROR` still fires and the text is stored as before. A
-  channel that swallows the failure no longer turns the turn into a cancelled
-  success: `ON_ERROR` fires and the caller gets the error. The default
-  `Channel.deliver_stream` delivers what it buffered before the failure
-  propagates; a host channel that buffers the stream in its own
-  `deliver_stream` should do the same. A failure of the streaming channel
-  itself keeps its fallback: the text goes to every channel, that one
-  included.
+  that streamed it (RMK-467, RFC §12.2 steps 13s and 15s). When the provider
+  raised after a sentence, the text already streamed went back to that
+  channel as an ordinary event: a `VoiceChannel` spoke it a second time, the
+  CLI printed it again, and a WebSocket client got it after `stream_error`,
+  outside the stream. The row now reaches the streaming channel inside the
+  stream, as a completed response's last row does, then the failure; the
+  other channels still get it, `ON_ERROR` still fires and the text is stored
+  as before. A voice speaks all the text the response produced, its last
+  partial sentence included, sends it as the assistant transcript and fires
+  `AFTER_TTS` with it. A channel that swallows the failure no longer turns the
+  turn into a cancelled success, and an error the channel raises on top of it
+  no longer replaces it as the turn's error. A call still open when the
+  response fails is closed even when the channel cancels its read meanwhile.
+  A failure of the streaming channel itself keeps its fallback: the text goes
+  to every channel, that one included. A streamed failure's log line carries
+  its traceback again.
 
 - Audio work of a session whose end has begun reaches nothing and rebuilds
   nothing (RMK-466). A frame still in the stages on an `inbound_dsp_threads`

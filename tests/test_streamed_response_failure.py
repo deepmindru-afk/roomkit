@@ -3,14 +3,16 @@
 RFC §12.2 step 13s (RMK-467): the text the response produced is stored,
 reaches the streaming channel through the stream, as a completed response's
 last row does, then the failure; every other channel gets it as an ordinary
-event and ON_ERROR fires. Only a failure of the streaming channel itself
-sends the text to it again, since it may not have rendered it.
+event and ON_ERROR fires. A voice speaks all of it, its last partial sentence
+included (step 15s). Only a failure of the streaming channel itself sends the
+text to it again, since it may not have rendered it.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -24,8 +26,16 @@ from roomkit.channels.websocket import StreamMessage, WebSocketChannel
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage, InboundResult
-from roomkit.models.enums import ChannelCategory, HookExecution, HookTrigger
-from roomkit.models.event import RoomEvent, TextContent
+from roomkit.models.enums import (
+    ChannelCategory,
+    ChannelType,
+    EventType,
+    HookExecution,
+    HookTrigger,
+)
+from roomkit.models.event import RoomEvent, TextContent, ToolCallContent
+from roomkit.models.hook import HookResult
+from roomkit.models.streaming import ToolCallStartMarker
 from roomkit.providers.ai.base import (
     AIContext,
     AIProvider,
@@ -42,7 +52,10 @@ SAID = "Your table is booked. "
 
 
 class _FailsMidAnswer(AIProvider):
-    """Streams one sentence, then its vendor goes down."""
+    """Streams some text, then its vendor goes down."""
+
+    def __init__(self, said: str = SAID) -> None:
+        self._said = said
 
     @property
     def model_name(self) -> str:
@@ -60,8 +73,34 @@ class _FailsMidAnswer(AIProvider):
         return AIResponse(content="unused")
 
     async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
-        yield StreamTextDelta(text=SAID)
+        yield StreamTextDelta(text=self._said)
         raise RuntimeError("ai down")
+
+
+class _OpensCallsThenFails(Channel):
+    """An intelligence channel whose response announces two calls, then fails."""
+
+    channel_type = ChannelType.AI
+    category = ChannelCategory.INTELLIGENCE
+
+    async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
+        raise NotImplementedError
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        return ChannelOutput(responded=True, response_stream=self._stream())
+
+    async def _stream(self) -> AsyncIterator[Any]:
+        yield "Checking. "
+        yield ToolCallStartMarker(tool_name="a", tool_id="c1", arguments={})
+        yield ToolCallStartMarker(tool_name="b", tool_id="c2", arguments={})
+        raise RuntimeError("ai down")
+
+    async def deliver(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        return ChannelOutput.empty()
 
 
 class _CountingTTS(TTSProvider):
@@ -132,15 +171,52 @@ class _SwallowingTransport(_BufferingChannel):
         return ChannelOutput.empty()
 
 
+class _DeliverBreaks(_BufferingChannel):
+    """The default deliver_stream, over a deliver that fails on the answer."""
+
+    async def deliver(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        if event.source.channel_id == "ai-1":
+            raise ConnectionError("deliver broke")
+        return await super().deliver(event, binding, context)
+
+
+class _CancelsItsPull(_BufferingChannel):
+    """Pulls in a task, and cancels the pull after the second call starts, as a
+    voice cancels its read once every session barged in."""
+
+    async def deliver_stream(
+        self,
+        text_stream: AsyncIterator[Any],
+        event: RoomEvent,
+        binding: ChannelBinding,
+        context: RoomContext,
+    ) -> ChannelOutput:
+        starts = 0
+        while starts < 2:
+            item = await anext(text_stream)
+            if isinstance(item, RoomEvent) and item.type == EventType.TOOL_CALL_START:
+                starts += 1
+        pull = asyncio.ensure_future(anext(text_stream))
+        await asyncio.sleep(0.005)
+        pull.cancel()
+        await asyncio.gather(pull, return_exceptions=True)
+        return ChannelOutput.empty()
+
+
 class _VoiceBench:
     def __init__(self) -> None:
-        backend = MockVoiceBackend()
+        self.backend = MockVoiceBackend()
         self.tts = _CountingTTS()
-        self.kit = RoomKit(voice=backend)
-        self.channel: Channel = VoiceChannel("stream", tts=self.tts, backend=backend)
+        self.kit = RoomKit(voice=self.backend)
+        self.channel: Channel = VoiceChannel("stream", tts=self.tts, backend=self.backend)
 
     async def ready(self, room_id: str) -> None:
         await self.kit.join(room_id, "stream", participant_id="user")
+
+    def transcripts(self) -> list[str]:
+        return [text for _, text, role in self.backend.sent_transcriptions if role == "assistant"]
 
 
 class _WebSocketBench:
@@ -170,12 +246,18 @@ class _WebSocketBench:
 
 
 class _CLIBench:
+    markdown = False
+
     def __init__(self) -> None:
         self.kit = RoomKit()
-        self.channel: Channel = CLIChannel("stream", use_color=False)
+        self.channel: Channel = CLIChannel("stream", use_color=False, markdown=self.markdown)
 
     async def ready(self, room_id: str) -> None:
         return None
+
+
+class _MarkdownCLIBench(_CLIBench):
+    markdown = True
 
 
 class _BufferingBench:
@@ -189,6 +271,9 @@ class _BufferingBench:
 
 Bench = _VoiceBench | _WebSocketBench | _CLIBench | _BufferingBench
 
+BENCHES = [_VoiceBench, _WebSocketBench, _CLIBench, _MarkdownCLIBench, _BufferingBench]
+BENCH_IDS = ["voice", "websocket", "cli", "cli-markdown", "buffering"]
+
 
 @dataclass
 class _Turn:
@@ -196,18 +281,25 @@ class _Turn:
     rows: list[RoomEvent]
     sms: list[str | None]
     errors: list[RoomEvent]
+    after_tts: list[str]
 
 
 def _body(event: RoomEvent) -> str | None:
     return event.content.body if isinstance(event.content, TextContent) else None
 
 
-async def _run(kit: RoomKit, streaming: Channel, ready: Any = None) -> _Turn:
+async def _run(
+    kit: RoomKit,
+    streaming: Channel,
+    ready: Any = None,
+    *,
+    intelligence: Channel | None = None,
+) -> _Turn:
     """One turn the user starts on *streaming*, which also renders the answer."""
     sms = SimpleChannel("sms1")
     kit.register_channel(streaming)
     kit.register_channel(sms)
-    kit.register_channel(AIChannel("ai-1", provider=_FailsMidAnswer()))
+    kit.register_channel(intelligence or AIChannel("ai-1", provider=_FailsMidAnswer()))
     room = await kit.create_room()
     await kit.attach_channel(room.id, "stream")
     await kit.attach_channel(room.id, "sms1")
@@ -215,10 +307,15 @@ async def _run(kit: RoomKit, streaming: Channel, ready: Any = None) -> _Turn:
     if ready is not None:
         await ready(room.id)
     errors: list[RoomEvent] = []
+    after_tts: list[str] = []
 
     @kit.hook(HookTrigger.ON_ERROR, execution=HookExecution.ASYNC)
     async def on_error(event: RoomEvent, _ctx: RoomContext) -> None:
         errors.append(event)
+
+    @kit.hook(HookTrigger.AFTER_TTS, execution=HookExecution.ASYNC)
+    async def on_after_tts(text: str, _ctx: RoomContext) -> None:
+        after_tts.append(text)
 
     result = await kit.process_inbound(
         InboundMessage(
@@ -234,11 +331,13 @@ async def _run(kit: RoomKit, streaming: Channel, ready: Any = None) -> _Turn:
         rows=[e for e in events if e.source.channel_id == "ai-1"],
         sms=[_body(e) for e in sms.delivered if e.source.channel_id == "ai-1"],
         errors=errors,
+        after_tts=after_tts,
     )
 
 
-async def _bench_turn(bench: Bench) -> _Turn:
-    return await _run(bench.kit, bench.channel, bench.ready)
+async def _bench_turn(bench: Bench, said: str = SAID) -> _Turn:
+    ai = AIChannel("ai-1", provider=_FailsMidAnswer(said))
+    return await _run(bench.kit, bench.channel, bench.ready, intelligence=ai)
 
 
 class TestTheChannelThatStreamedIsNotHandedTheTextAgain:
@@ -264,8 +363,11 @@ class TestTheChannelThatStreamedIsNotHandedTheTextAgain:
         ]
         assert bench.plain == [SAID]
 
-    async def test_the_cli_does_not_print_it_again(self, capsys: pytest.CaptureFixture) -> None:
-        await _bench_turn(_CLIBench())
+    @pytest.mark.parametrize("bench_type", [_CLIBench, _MarkdownCLIBench], ids=["plain", "md"])
+    async def test_the_cli_does_not_print_it_again(
+        self, bench_type: type[_CLIBench], capsys: pytest.CaptureFixture
+    ) -> None:
+        await _bench_turn(bench_type())
 
         assert capsys.readouterr().out.count(SAID.strip()) == 1
 
@@ -278,10 +380,24 @@ class TestTheChannelThatStreamedIsNotHandedTheTextAgain:
 
 
 @pytest.mark.parametrize(
-    "bench_type",
-    [_VoiceBench, _WebSocketBench, _CLIBench, _BufferingBench],
-    ids=["voice", "websocket", "cli", "buffering"],
+    "said",
+    ["Your table is booked. ", "Your table is booked.", "Booked. "],
+    ids=["sentence-flushed", "no-trailing-space", "under-min-chunk"],
 )
+async def test_a_voice_speaks_all_the_failed_response_produced(said: str) -> None:
+    """The splitter's last partial sentence is spoken too, then reported as heard."""
+    bench = _VoiceBench()
+    turn = await _bench_turn(bench, said)
+
+    assert bench.tts.streamed == [said.strip()]
+    assert bench.tts.standard == []
+    # The whole streamed text, as a completed response reports it.
+    assert bench.transcripts() == [said]
+    assert turn.after_tts == [said]
+    assert str(turn.result.error) == "ai down"
+
+
+@pytest.mark.parametrize("bench_type", BENCHES, ids=BENCH_IDS)
 async def test_the_others_get_the_text_and_on_error_fires(bench_type: type[Bench]) -> None:
     turn = await _bench_turn(bench_type())
 
@@ -291,6 +407,15 @@ async def test_the_others_get_the_text_and_on_error_fires(bench_type: type[Bench
     (row,) = turn.rows
     assert _body(row) == SAID
     assert "cancelled" not in row.metadata
+
+
+async def test_the_failure_is_logged_with_its_traceback(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.ERROR, logger="roomkit.framework"):
+        await _bench_turn(_BufferingBench())
+
+    (record,) = [r for r in caplog.records if "streaming delivery of ai-1" in r.getMessage()]
+    assert record.exc_info is not None
+    assert isinstance(record.exc_info[1], RuntimeError)
 
 
 async def test_a_streaming_channel_that_fails_itself_gets_the_text_again() -> None:
@@ -314,3 +439,36 @@ async def test_a_channel_that_swallows_the_failure_does_not_make_the_turn_a_succ
     assert len(turn.errors) == 1
     (row,) = turn.rows
     assert "cancelled" not in row.metadata
+
+
+async def test_the_response_failure_stays_the_turns_when_the_channel_fails_on_top(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.ERROR, logger="roomkit.framework"):
+        turn = await _run(RoomKit(), _DeliverBreaks("stream"))
+
+    assert str(turn.result.error) == "ai down"
+    assert turn.sms == [SAID]
+    assert any("deliver broke" in str(r.exc_info[1]) for r in caplog.records if r.exc_info)
+
+
+async def test_a_pull_cancelled_while_the_failed_response_ends_leaves_no_call_pending() -> None:
+    """The open calls are closed outside the read the channel cancels."""
+    kit = RoomKit()
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST)
+    async def slow_ends(event: RoomEvent, _ctx: RoomContext) -> HookResult:
+        if event.type == EventType.TOOL_CALL_END:
+            await asyncio.sleep(0.015)
+        return HookResult.allow()
+
+    turn = await _run(kit, _CancelsItsPull("stream"), intelligence=_OpensCallsThenFails("ai-1"))
+
+    ends = [
+        r.content
+        for r in turn.rows
+        if r.type == EventType.TOOL_CALL_END and isinstance(r.content, ToolCallContent)
+    ]
+    assert sorted(c.tool_id for c in ends) == ["c1", "c2"]
+    assert all(c.status == "failed" for c in ends)
+    assert str(turn.result.error) == "ai down"

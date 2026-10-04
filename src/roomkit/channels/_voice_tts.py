@@ -465,8 +465,8 @@ class VoiceTTSMixin:
             # sees the stream was not read to its end and closes it.
             producer.cancel()
             await asyncio.gather(producer, return_exceptions=True)
-        # A source failure (the AI provider) is the response's failure, not
-        # one session's: it takes the caller's error path whoever was served.
+        # A failure of the source the sessions share (a filter) is the
+        # response's, not one session's: it takes the caller's error path.
         results = await self._stop_failed_sessions(
             room_id, tts_name, target_sessions, results, source_error=fan_out.error
         )
@@ -476,6 +476,9 @@ class VoiceTTSMixin:
 
         full_text = self._streamed_text(text.accumulated, gate)
         await self._close_streamed_response(delivered, full_text, room_id, context, _vs_parent)
+        if text.failure is not None:
+            # The response failed: what it produced was spoken, the failure is the turn's.
+            raise text.failure
         return ChannelOutputModel.empty()
 
     def _sentences(
@@ -516,7 +519,7 @@ class VoiceTTSMixin:
         """
         stopped: list[Any] = []
         for session, result in zip(sessions, results, strict=True):
-            # The AI's own failure reaches every branch: it is the response's.
+            # A failure of the shared source reaches every branch: it is the response's.
             if isinstance(result, Exception) and result is not source_error:
                 logger.error(
                     "Streaming TTS failed for session %s; it stops here",
@@ -1249,18 +1252,27 @@ async def _close_stream(stream: AsyncIterator[AudioChunk] | None) -> None:
 
 
 class _ResponseText:
-    """The text of a streamed response, as its sessions read it."""
+    """The text of a streamed response, as its sessions read it, and how it ended."""
 
     def __init__(self) -> None:
         self.accumulated: list[str] = []
+        self.failure: Exception | None = None
 
     async def read(self, text_stream: AsyncIterator[Any]) -> AsyncIterator[str]:
-        """Each text delta of *text_stream*, kept as it passes."""
-        async for delta in text_stream:
-            if not isinstance(delta, str):
-                continue
-            self.accumulated.append(delta)
-            yield delta
+        """Each text delta of *text_stream*, kept as it passes.
+
+        A response that fails ends here, its failure kept: the splitter then
+        hands on its last partial sentence, so the sessions speak all the
+        text the response produced (RFC §12.2 step 15s).
+        """
+        try:
+            async for delta in text_stream:
+                if not isinstance(delta, str):
+                    continue
+                self.accumulated.append(delta)
+                yield delta
+        except Exception as exc:
+            self.failure = exc
 
 
 def _served_sessions(sessions: list[VoiceSession], results: list[Any]) -> list[VoiceSession]:

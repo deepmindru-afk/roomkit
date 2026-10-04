@@ -214,6 +214,8 @@ class TestDeliverStreamSeveralSessions:
         await kit.close()
 
     async def test_source_error_raises_even_when_a_session_was_served(self) -> None:
+        """What the failed response produced was heard and is the served sessions'
+        transcript, as a completed one's is (RFC §12.2 step 15s), then it raises."""
         backend, tts = _ScriptedBackend(), _RecordingTTS()
         kit, channel, sessions, event, binding, context = await _setup(backend, tts)
         backend.stop_after[sessions[0].id] = 1
@@ -226,7 +228,7 @@ class TestDeliverStreamSeveralSessions:
         with pytest.raises(ValueError, match="llm down"):
             await channel.deliver_stream(broken(), event, binding, context)
 
-        assert [r for _, _, r in backend.sent_transcriptions if r == "assistant"] == []
+        assert _by_role(backend, sessions[1], "assistant") == [f"{SENTENCES[0]} {SENTENCES[1]} "]
         await kit.close()
 
 

@@ -234,11 +234,9 @@ class Channel(ABC):
                     chunks.append(chunk)
         except Exception:
             if chunks:
-                buffered = event.model_copy(update={"content": TextContent(body="".join(chunks))})
-                await self.deliver(buffered, binding, context)
+                await self.deliver(_buffered(event, chunks), binding, context)
             raise
-        updated = event.model_copy(update={"content": TextContent(body="".join(chunks))})
-        return await self.deliver(updated, binding, context)
+        return await self.deliver(_buffered(event, chunks), binding, context)
 
     async def connect_session(  # noqa: B027
         self,
@@ -327,3 +325,8 @@ class Channel(ABC):
         if isinstance(event.content, TextContent):
             return event.content.body
         return ""
+
+
+def _buffered(event: RoomEvent, chunks: list[str]) -> RoomEvent:
+    """*event* carrying the text a buffered stream accumulated."""
+    return event.model_copy(update={"content": TextContent(body="".join(chunks))})

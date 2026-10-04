@@ -220,10 +220,11 @@ class SegmentWriter:
         """The response as the channel rendering it reads it, its last text row included.
 
         Yields what :meth:`read` yields, then the row of the text it ends on.
-        A response that fails ends the same way, through :meth:`end_failed`,
-        then raises: the channel was handed every delta of that text, so the
-        row reaches it here, as a completed response's does, and its delivery
-        excludes it (RFC §12.2 step 13s).
+        A response that fails ends the same way, then raises: the channel was
+        handed every delta of that text, so the row reaches it here, as a
+        completed response's does, and its delivery excludes it (RFC §12.2
+        step 13s). Its open calls are the caller's to close (:meth:`end_failed`),
+        outside a read the channel may cancel.
         """
         try:
             async with aclosing(self.read(reader)) as items:
@@ -231,7 +232,7 @@ class SegmentWriter:
                     yield item
         except Exception as exc:
             self.failure = exc
-            if (row := await self.end_failed(reader)) is not None:
+            if (row := await self.flush_text()) is not None:
                 yield row
             raise
         self.read_to_end = True
@@ -252,6 +253,9 @@ class SegmentWriter:
         except asyncio.CancelledError:
             await self.end_cancelled(reader)
             raise
+        except Exception:
+            await self.end_failed(reader)
+            raise
 
     async def end_cancelled(self, reader: ResponseReader) -> None:
         """Write what a cancelled turn leaves: open calls closed, text kept as cancelled.
@@ -262,13 +266,10 @@ class SegmentWriter:
         await self.close_calls(await reader.abandon())
         await self.flush_text(cancelled=True)
 
-    async def end_failed(self, reader: ResponseReader) -> RoomEvent | None:
-        """Write what a failed turn leaves: open calls closed as ``turn failed``, text kept.
-
-        Returns the text's row, or ``None`` when there was none to write.
-        """
+    async def end_failed(self, reader: ResponseReader) -> None:
+        """Write what a failed turn leaves: open calls closed as ``turn failed``, text kept."""
         await self.close_calls(await reader.abandon("turn failed"))
-        return await self.flush_text()
+        await self.flush_text()
 
     # -- the three rows ----------------------------------------------------
 

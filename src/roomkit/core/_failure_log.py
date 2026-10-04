@@ -51,7 +51,8 @@ def log_failure(
         log.warning("%s failed: %s", what, exc, extra=extra)
         return
     if not isinstance(exc, ProviderError):
-        log.exception("%s failed", what, extra=extra)
+        # The traceback is *exc*'s, whether or not a handler is still active.
+        log.error("%s failed", what, exc_info=exc, extra=extra)
         return
     level = logging.DEBUG if caller_logs else provider_error_level(exc)
     log.log(

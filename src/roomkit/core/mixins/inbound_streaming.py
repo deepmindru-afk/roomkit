@@ -196,16 +196,16 @@ class InboundStreamingMixin(HelpersMixin):
                 await writer.drain(reader)
             except Exception as exc:
                 stream_error = exc
-                log_failure(
-                    logger,
+                await self._report_stream_failure(
                     exc,
                     f"stream consumption (no targets) of {sr.source_channel_id} "
                     f"for room {room_id}",
+                    sr,
+                    context,
+                    correlation_id=correlation_id,
                     # A chained stream's failure is not the caller's.
                     caller_logs=cascade.caller_logs and not sr.chained,
-                    extra={"room_id": room_id, "channel_id": sr.source_channel_id},
                 )
-                await self._fire_stream_error_hook(exc, room_id, context, sr, correlation_id)
 
         # Every segment's delivery set, awaited once now that the stream is
         # done — the run's completion is what the caller's turn waits on.
@@ -256,6 +256,7 @@ class InboundStreamingMixin(HelpersMixin):
         room_id = placeholder.room_id
         # Rows ride it besides text: the ABC's AsyncIterator[str] names only the text.
         segments: Any = writer.stream(reader)
+        channel_error: Exception | None = None
         try:
             await channel.deliver_stream(segments, placeholder, binding, context)
             # A transport that hands back early (every voice session barged
@@ -274,27 +275,69 @@ class InboundStreamingMixin(HelpersMixin):
             await writer.end_cancelled(reader)
             raise
         except Exception as exc:
-            if writer.failure is None:
-                # The channel failed, not the response: what it was handed may
-                # not all have been rendered, so the text it leaves goes out
-                # as an ordinary event, to everyone.
-                writer.stream_lost()
-                await writer.end_failed(reader)
-            failure: Exception | None = exc
-        else:
-            # A channel that swallowed the response's failure does not make
-            # the response a success.
-            failure = writer.failure
+            channel_error = exc
+        failure = await self._end_failed_stream(writer, reader, channel_error)
         if failure is not None:
-            log_failure(
-                logger,
+            if channel_error is not None and channel_error is not failure:
+                log_failure(
+                    logger,
+                    channel_error,
+                    f"streaming channel {binding.channel_id} handling the failed response "
+                    f"of {sr.source_channel_id} in room {room_id}",
+                )
+            await self._report_stream_failure(
                 failure,
                 f"streaming delivery of {sr.source_channel_id} to {binding.channel_id} "
                 f"for room {room_id}",
-                extra={"room_id": room_id, "channel_id": sr.source_channel_id},
+                sr,
+                context,
+                correlation_id=correlation_id,
             )
-            await self._fire_stream_error_hook(failure, room_id, context, sr, correlation_id)
         return failure
+
+    @staticmethod
+    async def _end_failed_stream(
+        writer: SegmentWriter, reader: ResponseReader, channel_error: Exception | None
+    ) -> Exception | None:
+        """Write what a failed stream leaves; the failure that is the turn's, if any.
+
+        The response's own failure is the turn's, even when its channel
+        swallowed it or raised another error on top of it. Its open calls are
+        closed here, outside the read the channel may have cancelled
+        (RFC §12.2 step 13s).
+        """
+        if writer.failure is not None:
+            await writer.end_failed(reader)
+            return writer.failure
+        if channel_error is None:
+            return None
+        # The channel failed, not the response: what it was handed may not
+        # all have been rendered, so the text it leaves goes out as an
+        # ordinary event, to everyone.
+        writer.stream_lost()
+        await writer.end_failed(reader)
+        return channel_error
+
+    async def _report_stream_failure(
+        self,
+        exc: Exception,
+        what: str,
+        sr: StreamingResponse,
+        context: RoomContext,
+        *,
+        correlation_id: str,
+        caller_logs: bool = False,
+    ) -> None:
+        """Log a response stream's failure once, then fire ON_ERROR as its source."""
+        room_id = context.room.id
+        log_failure(
+            logger,
+            exc,
+            what,
+            caller_logs=caller_logs,
+            extra={"room_id": room_id, "channel_id": sr.source_channel_id},
+        )
+        await self._fire_stream_error_hook(exc, room_id, context, sr, correlation_id)
 
     @staticmethod
     async def _stop_unread_stream(
