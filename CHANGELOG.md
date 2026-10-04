@@ -686,6 +686,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A TTS that fails mid-sentence is reported on the local, RTP, FastRTC and
+  Buzz backends too (RMK-448, RFC §12.2). They absorbed every exception
+  raised while they played a `VoiceChannel`'s audio, so a vendor's 401 or
+  429, a dropped connection, or a chunk the channel refused as not PCM
+  (RMK-415) left only a line in the backend's log: `say()` fired
+  `AFTER_TTS` as if the sentence had been spoken, no `tts_error` was
+  emitted, and `deliver_stream()` ended normally. An exception raised by
+  the audio stream now reaches the caller of `send_audio` once the playback
+  is released, as it already did on Twilio, WebTransport and SIP; the
+  backend's own transport errors (a full WebRTC queue, a closed WebSocket,
+  an output device gone) stay logged and absorbed. The four backends read
+  the stream through one wrapper, `roomkit.voice.backends.base.ChunkSource`,
+  and the video backends inherit it. `tts_error` now carries the
+  `session_id` the RFC lists when one session's synthesis failed (`say()`,
+  a single session's playback); a delivery to several sessions names none.
+
 - A realtime call issued under an id whose result already went out gets its
   answer (RMK-441, RFC §12.4). The provider freed the id with the result and
   the channel only once the call's task ended, its report included: a call

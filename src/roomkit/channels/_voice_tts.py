@@ -832,15 +832,7 @@ class VoiceTTSMixin:
             )
             # Surface the misconfiguration as an event too, not only in the logs,
             # so event-driven consumers see it like any other TTS failure.
-            if self._framework is not None:
-                try:
-                    await self._framework._emit_framework_event(
-                        "tts_error",
-                        room_id=room_id,
-                        data={"provider": tts_name, "error": str(exc)},
-                    )
-                except Exception:
-                    logger.exception("Error emitting tts_error")
+            await self._emit_tts_error(room_id, tts_name, exc, session_id=session.id)
         except Exception:
             if telemetry is not None and span_id is not None:
                 telemetry.end_span(span_id, status="error", error_message="TTS failed")
@@ -956,17 +948,31 @@ class VoiceTTSMixin:
 
         except Exception as exc:
             logger.exception("Error delivering voice audio")
-            try:
-                await self._framework._emit_framework_event(
-                    "tts_error",
-                    room_id=room_id,
-                    data={
-                        "provider": self._tts.name if self._tts else "unknown",
-                        "error": str(exc),
-                    },
-                )
-            except Exception:
-                logger.exception("Error emitting tts_error")
+            # Several sessions may have failed: the event names none of them.
+            await self._emit_tts_error(room_id, self._tts.name if self._tts else "unknown", exc)
+
+    async def _emit_tts_error(
+        self,
+        room_id: str | None,
+        provider: str,
+        error: BaseException,
+        *,
+        session_id: str | None = None,
+    ) -> None:
+        """Emit the ``tts_error`` framework event of a failed synthesis.
+
+        ``session_id`` is set when one session's synthesis failed (RFC
+        section 9, framework events). A failure to emit is logged, never raised.
+        """
+        if self._framework is None:
+            return
+        data: dict[str, Any] = {"provider": provider, "error": str(error)}
+        if session_id is not None:
+            data["session_id"] = session_id
+        try:
+            await self._framework._emit_framework_event("tts_error", room_id=room_id, data=data)
+        except Exception:
+            logger.exception("Error emitting tts_error")
 
     # -------------------------------------------------------------------------
     # Public API: say() and play()
@@ -1040,18 +1046,9 @@ class VoiceTTSMixin:
             raise
         except Exception as exc:
             logger.exception("Error in say()")
-            if self._framework and room_id:
-                try:
-                    await self._framework._emit_framework_event(
-                        "tts_error",
-                        room_id=room_id,
-                        data={
-                            "provider": self._tts.name if self._tts else "unknown",
-                            "error": str(exc),
-                        },
-                    )
-                except Exception:
-                    logger.exception("Error emitting tts_error")
+            if room_id:
+                provider = self._tts.name if self._tts else "unknown"
+                await self._emit_tts_error(room_id, provider, exc, session_id=session.id)
         finally:
             if _tok is not None:
                 reset_span(_tok)
