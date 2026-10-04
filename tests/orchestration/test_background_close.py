@@ -91,6 +91,21 @@ def _runs_alive() -> list[str]:
     ]
 
 
+async def _supervised_tool(kit: RoomKit, worker: Agent) -> Callable[[], Awaitable[Any]]:
+    """A sequential team in the background: closed while its worker runs,
+    between the supervisor's framing and its review."""
+    boss = Agent("boss", provider=MockAIProvider(responses=["ok"]))
+    kit.register_channel(boss)
+    strategy = Supervisor(boss, [worker], strategy="sequential", async_delivery=True)
+    await kit.create_room(room_id="r", orchestration=strategy)
+
+    async def call() -> Any:
+        with tool_call_in("r"):
+            return await boss._channel_tool_handler("delegate_workers", {"task": "Write it."})
+
+    return call
+
+
 async def _per_worker(kit: RoomKit, worker: Agent) -> Callable[[], Awaitable[Any]]:
     boss = Agent("boss", provider=MockAIProvider(responses=["ok"]))
     kit.register_channel(boss)
@@ -108,6 +123,7 @@ DOORS = {
     "supervisor-voice": _supervisor_voice,
     "loop-voice": _loop_voice,
     "supervisor-tool": _supervisor_tool,
+    "supervised-tool": _supervised_tool,
     "per-worker": _per_worker,
 }
 
@@ -130,7 +146,8 @@ async def test_close_ends_a_background_run(door: str) -> None:
 
     @kit.hook(HookTrigger.ON_TASK_COMPLETED, execution=HookExecution.ASYNC)
     async def _ended(event: Any, ctx: Any) -> None:
-        ends.append(str(event.metadata["task_status"]))
+        if event.metadata["agent_id"] == "worker":
+            ends.append(str(event.metadata["task_status"]))
 
     await call()
     await asyncio.wait_for(started.wait(), 5)
