@@ -44,7 +44,7 @@ ACPContextContributor = Callable[[RoomContext, RoomEvent], Awaitable[Sequence[st
 
 def acp_event_text(event: RoomEvent) -> str:
     """The text an ACP agent reads for *event*: its prompt, and each line of
-    the room context it is given (RFC Appendix A.9.1).
+    the room context it is given (RFC §6.4, ACP agent channel, item 4).
 
     Rich content is offered as its plain-text rendering: the prompt is a
     string, and a session that received the markup would answer about it.

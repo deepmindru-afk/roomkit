@@ -115,10 +115,13 @@ class OpenAIAIProvider(AIProvider):
         self, config: OpenAIConfig, *, transport: httpx.AsyncBaseTransport | None = None
     ) -> None:
         """*transport* carries every request the SDK makes, inside the SDK's own
-        default client (its connection limits and redirects kept): the seam
-        for an outbound policy that judges the address actually dialled, or a
-        ``MockTransport`` in a test. It is closed with the provider. ``None``
-        leaves the SDK its default client."""
+        default client, which keeps following redirects (each hop through the
+        transport) and applies the per-request timeout: the seam for an
+        outbound policy that judges the address actually dialled, or a
+        ``MockTransport`` in a test. The transport owns its connection pool and
+        limits, and environment proxies are not read (httpx reads none beside
+        a transport). It is closed with the provider. ``None`` leaves the SDK
+        its default client."""
         try:
             import openai as _openai
         except ImportError as exc:
@@ -145,9 +148,10 @@ class OpenAIAIProvider(AIProvider):
     ) -> httpx.AsyncClient | None:
         """The SDK's default HTTP client over *transport*; ``None`` without one.
 
-        The SDK's own class, not a bare ``httpx.AsyncClient``, so its defaults
-        (connection limits, redirects) stay. Its timeout is the one the SDK
-        client is built with, applied per request.
+        The SDK's own class, not a bare ``httpx.AsyncClient``, so redirects
+        are still followed. Its timeout is the one the SDK client is built
+        with, applied per request. The pool and its limits are the
+        transport's; httpx reads no environment proxy beside a transport.
         """
         if transport is None:
             return None

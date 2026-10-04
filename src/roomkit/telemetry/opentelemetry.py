@@ -252,7 +252,12 @@ class OpenTelemetryProvider(TelemetryProvider):
         if self._tracer_provider is None:
             return
         thread = self._flush_thread(self._force_flush)
-        thread.start()
+        try:
+            thread.start()
+        except RuntimeError:
+            # No thread to be had (interpreter shutting down): flush here.
+            self._force_flush()
+            return
         thread.join(self._shutdown_flush_timeout)
         if thread.is_alive():
             logger.warning(

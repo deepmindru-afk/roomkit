@@ -1,6 +1,6 @@
 # API Reference
 
-RoomKit exports **192 symbols** from `roomkit`. Providers and voice types import from subpackages.
+RoomKit exports **255 symbols** from `roomkit`. Providers and voice types import from subpackages.
 
 ## Top-Level Imports (`from roomkit import ...`)
 

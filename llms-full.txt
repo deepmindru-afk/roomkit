@@ -1312,7 +1312,7 @@ Provider notes:
 - **Gemini on Vertex AI** (`roomkit.providers.gemini.vertex`) — subclass of `GeminiAIProvider` serving the same Gemini models through a Google Cloud project with a pinned region (`GeminiVertexConfig` requires `project` and `location`, e.g. `"northamerica-northeast1"`; no API key — the identity is `impersonate_service_account`, else `service_account_json`, else ADC). Use it when data residency matters (Québec Law 25 / PIPEDA). Generation, streaming, thinking, and the model catalog are inherited unchanged.
 - **OpenRouter** (`roomkit.providers.openrouter`) — subclass of `OpenAIAIProvider` pointed at `https://openrouter.ai/api/v1`; `OpenRouterConfig` subclasses `OpenAIConfig` (adds `site_url`/`app_name` attribution headers) and `model` is a required slug like `"anthropic/claude-sonnet-4.5"`. Reasoning is forwarded to any upstream model via OpenRouter's unified `reasoning` object. Model-listing nuance: OpenRouter's `/models` items omit the `object`/`owned_by` fields the OpenAI SDK expects, so `list_models()` reads the raw JSON instead.
 - **LiteLLM proxy** (`roomkit.providers.litellm`) — subclass of `OpenAIAIProvider` pointed at a self-hosted LiteLLM gateway (default `http://localhost:4000`); the extra installs the `openai` SDK, deliberately **not** the `litellm` package (the gateway keeps keys/budgets/routing server-side). `model` is the deployment's public alias and `api_key` a virtual or master key, both required. Reasoning rides LiteLLM's cross-provider normalisation: `reasoning_effort` passes through, `thinking_budget>0` maps to a `thinking` token budget, and the trace comes back in `reasoning_content`; `thinking_budget=0` sends no reasoning params at all (LiteLLM has no disable token every upstream translator accepts — force-off belongs in the proxy's per-model config or `extra_body`). `available_models()` is empty (the model list is the operator's config); `list_models()` reads the proxy's `/model/info` — context window, vision flag, and per-token costs per alias, with a load-balanced group merged into the one entry every deployment can honour (smallest window, vision and price only when unanimous) and LiteLLM's `0`-for-unknown costs mapped to "unpriced" rather than free.
-- **Outbound policy** (`transport=`) — `OpenAIAIProvider(config, transport=...)`, and every provider built on it (`AzureAIProvider`, `OpenRouterAIProvider`, `create_vllm_provider(config, transport=...)`, the inherited xAI, DeepSeek, Qwen, LiteLLM, Cerebras, Meta), sends every request through an `httpx.AsyncBaseTransport` placed inside the SDK's own default client (redirects followed, connection limits kept, each hop through the transport). The seam for a policy that judges the address actually dialled when users name the endpoint, or a `MockTransport` in a test; closed with the provider. See `examples/openai_outbound_policy.py`.
+- **Outbound policy** (`transport=`) — `OpenAIAIProvider(config, transport=...)`, and every provider built on it (`AzureAIProvider`, `OpenRouterAIProvider`, `create_vllm_provider(config, transport=...)`, the inherited xAI, DeepSeek, Qwen, LiteLLM, Cerebras, Meta), sends every request through an `httpx.AsyncBaseTransport` placed inside the SDK's own default client (redirects followed, each hop through the transport; per-request timeout kept). The transport owns its connection pool and limits, and httpx reads no environment proxy beside a transport. The seam for a policy that judges the address actually dialled when users name the endpoint, or a `MockTransport` in a test; closed with the provider. See `examples/openai_outbound_policy.py`.
 - **xAI (Grok)** (`roomkit.providers.xai`) — subclass of `OpenAIAIProvider` pointed at `https://api.x.ai/v1`; defaults to `max_completion_tokens` and stream usage. `XAIRealtimeProvider` (Grok speech-to-speech) is a separate import from `roomkit.providers.xai.realtime`.
 - **PolarGrid** (`roomkit.providers.polargrid`) — Canadian-hosted inference network (edges in Toronto, Vancouver, Montréal) via the official `polargrid-sdk` async client; OpenAI-shaped chat-completions surface. Supports tool calling, thinking (`PolarGridConfig(thinking=True)` sets the `enable_thinking` request flag; reasoning is surfaced as `AIResponse.thinking` / `StreamThinkingDelta`), and vision (`image_url` content parts). Pin `region` in production when residency matters.
 
@@ -2453,7 +2453,7 @@ One connection per channel, opened lazily on the first prompt; one ACP **session
 
 Methods: `session_id(room_id)` returns the process-local session id or `None`; `cancel(room_id)` cancels the active turn (`True` if a cancel was sent); `close_session(room_id)` closes and forgets one Room's session and never raises for a refused close (`session/close` is optional in ACP: it is sent only to an agent whose `initialize` announces `sessionCapabilities.close`, or to a connection whose `initialize` reply carries no `agent_capabilities` at all; an agent that does not announce it keeps its sessions until the connection closes, with a warning per standalone turn); `close()` cancels turns, closes sessions, closes the transport and stops the handler. The `info` property reports `{transport, protocol_version, sdk_version, connected, agent, session_count}`.
 
-`acp_event_text(event)` (exported from `roomkit`) is the text the channel gives the agent for an event, its prompt and each line of room context: a `RichContent` is read as its `plain_text`, where `extract_event_text` keeps the markup body. A host that builds an ACP prompt of its own (an edge relay, say) reads events through it to send what the channel sends.
+`acp_event_text(event)` (exported from `roomkit`) is the text the channel gives the agent for an event, its prompt and each line of room context: a `RichContent` is read as its `plain_text`, where `extract_event_text` keeps the markup body. A host that builds an ACP prompt of its own (a relay on the user's machine, say) reads events through it to send what the channel sends.
 
 ### How agent output enters the room
 
@@ -3454,7 +3454,8 @@ realtime = RealtimeVoiceChannel(
 A host that will not serve a WebRTC peer (no session waits for it, its call
 expired) refuses it with `await transport.reject_connection(webrtc_id,
 message=...)` on a `FastRTCRealtimeTransport`: the message sent as is on the
-peer's data channel, the peer connection closed, the stream cleaned and the
+peer's data channel, the peer connection (or a websocket client's socket)
+closed, the stream cleaned and the
 handler unregistered, each step even when an earlier one fails. A peer the
 transport's own `auth` refuses is closed the same way.
 
@@ -3724,7 +3725,7 @@ Public surface: `mint_access()`, `plug_*/unplug_*()`, `set_bot_grants()`, `may_i
 
 The bot joins lazily, only when the channel has a need (stt/tts/recording/realtime) and someone is coming: a `mint_access()`, an arrival, an occupancy probe. With no need configured the channel is pure transport — admission gate and roster, no bot in the meeting.
 
-Those triggers start the join without waiting on it. A host that must know the bot is in (to listen before it lets a meeting begin) awaits `await channel.ensure_bot(room_id) -> BotSession` (RFC §12.10.4): a live session is returned as is, concurrent calls and the triggers join once, a lost session is joined again, and a new join fires `ON_SESSION_STARTED` before it returns. `RoomNotAttachedError` when the channel is not attached to the room or is detached mid-join.
+Those triggers start the join without waiting on it. A host that must know the bot is in (to listen before it lets a meeting begin) awaits `await channel.ensure_bot(room_id) -> BotSession` (RFC §12.10.4): a live session is returned as is, concurrent calls and the triggers join once, a lost session is joined again, and a new join fires `ON_SESSION_STARTED` before it returns. `RoomNotAttachedError` when the channel is not attached to the room or is detached mid-join; `ConferenceCapabilityError` on a pure-transport channel, whose bot would be a silent observer.
 
 - **Inbound**: each subscribed AUDIO track gets its own `ConferenceLane` (queue + task + VAD state). The VAD segments utterances; one utterance → one STT call → one `RoomEvent` attributed to the track's `participant_id` (track identity replaces diarization). A full lane drops oldest frames.
 - **Outbound**: `deliver()` speaks AI-channel TextContent on the single bot track via TTS (all text events if `speak_text_events=True`); with `realtime`, text is injected into the provider's context instead.
@@ -5475,7 +5476,7 @@ modified = event.model_copy(update={"content": TextContent(body="new")})
 ```
 ---
 
-RoomKit exports **192 symbols** from `roomkit`. Providers and voice types import from subpackages.
+RoomKit exports **255 symbols** from `roomkit`. Providers and voice types import from subpackages.
 
 ## Top-Level Imports (`from roomkit import ...`)
 

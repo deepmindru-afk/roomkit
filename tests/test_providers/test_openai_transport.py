@@ -80,9 +80,8 @@ async def test_every_request_goes_through_the_transport(kind: str) -> None:
 
 
 async def test_the_sdk_defaults_stay_redirects_followed_through_the_transport() -> None:
-    """The transport sits inside the SDK's own default client: its defaults
-    (redirects followed, connection limits) are kept, each hop through the
-    transport, where a policy judges it."""
+    """The transport sits inside the SDK's own default client: redirects are
+    still followed, each hop through the transport, where a policy judges it."""
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:

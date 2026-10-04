@@ -11,29 +11,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `FastRTCRealtimeTransport.reject_connection(webrtc_id, *, message=None)`
   (RMK-408): refuse a peer the host will not serve, told why on its data
-  channel, its peer connection closed, the stream cleaned and its handler
-  unregistered, each step even when an earlier one fails.
+  channel, what carries it closed (its peer connection, or a websocket
+  client's socket), the stream cleaned and its handler unregistered, each step
+  even when an earlier one fails.
 
 - `MCPToolProvider.tool_meta()`, `read_resource(uri)` and
   `call_tool_result(name, arguments)` (RMK-408): what an MCP App's host reads
   from the connection beside the model's tools, each tool's `_meta` from the
   listing made at connection, a resource, and a tool's raw `CallToolResult`.
   `call_tool_result`, like `call_tool`, is not bound by `tool_filter`, which
-  shapes discovery only.
+  shapes discovery only. `connected` says whether the connection is live.
 
 - `transport=` on `OpenAIAIProvider`, `AzureAIProvider`,
   `OpenRouterAIProvider` and `create_vllm_provider` (RMK-408), inherited by
   every provider built on `OpenAIAIProvider`: an `httpx.AsyncBaseTransport`
   every request goes through, inside the SDK's own default client, for an
   outbound policy that judges the address dialled or a `MockTransport`.
+  Redirects are still followed and the per-request timeout applies; the
+  transport owns its pool and limits, and environment proxies are not read.
   Example: `examples/openai_outbound_policy.py`.
 
 - `ConferenceChannel.ensure_bot(room_id)` (RMK-408, RFC §12.10.4): a host's
   own request for the bot's join, awaited, returning the `BotSession`; one join
   for concurrent calls and the lazy triggers, a lost session joined again,
-  `RoomNotAttachedError` for a room the channel is not attached to.
+  `RoomNotAttachedError` for a room the channel is not attached to, and
+  `ConferenceCapabilityError` for a channel with nothing to consume or say.
 
-- `acp_event_text(event)` (RMK-408, RFC A.9.1): the text an `ACPChannel`
+- `acp_event_text(event)` (RMK-408, RFC §6.4): the text an `ACPChannel`
   gives its agent for an event, a `RichContent` read as its `plain_text`, for a
   host that builds an ACP prompt of its own.
 
@@ -273,10 +277,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- A WebRTC peer that `FastRTCRealtimeTransport`'s `auth` refuses is closed
-  (RMK-408): its peer connection closed, the stream cleaned, through
-  `reject_connection`. It was left connected with its audio ignored, holding a
-  peer connection until the client hung up.
+- A peer that `FastRTCRealtimeTransport`'s `auth` refuses is closed
+  (RMK-408): its peer connection, or a websocket client's socket, closed and
+  the stream cleaned, through `reject_connection`. It was left connected with
+  its audio ignored until the client hung up. A websocket client that
+  `FastRTCVoiceBackend`'s `auth` refuses is closed too.
+
+- `MCPToolProvider` keeps a server whose listing it cannot read from leaking
+  (RMK-408, RFC §21.2): the catalogue is built before the connection is kept,
+  so a failure there closes what was opened, a stdio server included.
 
 - `OpenTelemetryProvider` never exports on the event loop (RMK-408): the SDK's
   `force_flush` exports in the calling thread, behind the exporter's retries,
@@ -286,12 +295,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `shutdown_flush_timeout` seconds (new constructor argument, 4.0 by default),
   then logs that spans may be lost.
 
-- `WebhookHTTPProvider.build_payload(event, to, text)` and
-  `build_headers(body)` are public, with a `config` property (RMK-408): the
+- **BREAKING — `WebhookHTTPProvider.build_payload(event, to, text)` and
+  `build_headers(body)` are public, with a `config` property** (RMK-408): the
   extension points a subclass overrides to send another body or sign another
-  way. `send()` calls the public names; a subclass that overrode the former
-  `_build_payload` / `_build_headers` renames them, or its override is no
-  longer called.
+  way, and the ones `send()` calls. A subclass that overrode the former
+  `_build_payload` / `_build_headers` is no longer called, without an error:
+  it sends RoomKit's envelope, signed with `X-RoomKit-Signature`. Migration:
+  rename the overrides to `build_payload` / `build_headers`, and read
+  `self.config` instead of `self._config`.
 
 - **BREAKING — `ToolRoundEvent.tools` (`AFTER_TOOL_ROUND`) names what
   `BEFORE_AI_GENERATION` is shown** (RMK-430, RFC §6.4): what the tool

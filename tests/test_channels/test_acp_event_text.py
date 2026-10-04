@@ -1,4 +1,4 @@
-"""``acp_event_text``: the text an ACP agent reads for an event (RFC A.9.1).
+"""``acp_event_text``: the text an ACP agent reads for an event (RFC §6.4, ACP item 4).
 
 A host building an ACP prompt of its own reads an event as the channel does:
 rich content as its plain-text rendering, where ``extract_event_text`` keeps
