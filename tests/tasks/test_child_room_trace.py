@@ -61,6 +61,8 @@ def _recording_kit() -> MagicMock:
     kit = MagicMock()
     kit.store = _recording_store()
     kit._commit_indexed = kit.store.commit_event
+    # No ON_ERROR hook to fire a failed turn's error to.
+    kit._hook_context = AsyncMock(return_value=None)
     return kit
 
 
