@@ -812,6 +812,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A turn constrained to a response schema that its round cap, deadline,
+  budget or an interruption cuts fails `truncated` on every door that reads
+  its loop (RMK-479, RFC A.9): the rule lived in the envelope of an agent's
+  room turn, so a reasoning backend's turn ended its `llm.generate` span
+  `ok`. The voice model was already told the delegated work could not be
+  completed.
+
 - A response its transport stopped reading once it began (a barge-in) ends
   `cancelled` (RMK-479, RFC §6.4, §12.2 step 13s): a delegated AIChannel
   worker's task read it as a completed answer, where an ACP worker's failed,

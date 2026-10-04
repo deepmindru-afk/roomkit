@@ -40,7 +40,6 @@ from roomkit.providers.ai.base import (
     AIToolResultPart,
     ProviderError,
 )
-from roomkit.providers.utils import _aclose_stream
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
 from roomkit.telemetry.context import get_current_span
@@ -158,23 +157,16 @@ async def _unrun_call_ends(calls: list[Any]) -> AsyncGenerator[StreamDelta, None
         )
 
 
-async def _answered_or_raise(
-    context: AIContext, deltas: AsyncGenerator[StreamDelta, None]
-) -> AsyncIterator[StreamDelta]:
-    """The streaming tool loop, failing a constrained turn that ends without
-    its answer (see :func:`require_schema_answer`)."""
-    try:
-        async for delta in deltas:
-            if isinstance(delta, LoopEndMarker):
-                try:
-                    require_schema_answer(context, delta.reason)
-                except Exception as refused:
-                    # Raised inside the loop, so its turn ends as the error it is.
-                    await deltas.athrow(refused)
-                    raise
-            yield delta
-    finally:
-        await _aclose_stream(deltas)
+def _answered_end(
+    context: AIContext, turn: _StreamTurnState, reason: LoopEndReason
+) -> LoopEndMarker:
+    """The loop's end on *reason*, a constrained turn that ends without its
+    answer failing first, inside the loop: whoever reads the loop (a room's
+    turn, a reasoning backend) sees the same end (see
+    :func:`require_schema_answer`)."""
+    marker = turn.end(reason)
+    require_schema_answer(context, reason)
+    return marker
 
 
 class AIStreamingMixin(AIToolLoopRulesMixin):
@@ -285,13 +277,10 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         # consumer no longer runs in.
         return ChannelOutput(
             responded=True,
-            response_stream=_answered_or_raise(
+            response_stream=self._run_streaming_tool_loop(
                 ai_context,
-                self._run_streaming_tool_loop(
-                    ai_context,
-                    parent_loop_ctx=_current_loop_ctx.get(),
-                    parent_span_id=get_current_span(),
-                ),
+                parent_loop_ctx=_current_loop_ctx.get(),
+                parent_span_id=get_current_span(),
             ),
             response_metadata=ai_context.response_metadata,
         )
@@ -545,7 +534,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             if not interrupts_turn(exc, after_round=turn.saw_tool_call):
                 raise
             turn.error = exc
-            yield turn.end("error")
+            yield _answered_end(context, turn, "error")
             raise
         if round_.state.thinking:
             turn.thinking.append(round_.state.thinking)
@@ -598,7 +587,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                     yield SegmentBreakMarker()
                     continue
                 if outcome is not None:
-                    yield turn.end(outcome)
+                    yield _answered_end(context, turn, outcome)
                     return
 
                 rules.warn_if_needed(turn.tool_rounds_count)
@@ -613,7 +602,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                     return
 
             # An empty-response retry can consume the final generation slot.
-            yield turn.end("max_rounds")
+            yield _answered_end(context, turn, "max_rounds")
 
     def _new_stream_round(
         self,
