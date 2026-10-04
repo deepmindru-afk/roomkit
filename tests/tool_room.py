@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from roomkit.channels._tool_registry import ToolSource
-from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
+from roomkit.tools import tool_turn_context
 
 
 @contextmanager
@@ -20,11 +20,8 @@ def tool_call_in(room_id: str, *, chain_depth: int = 0) -> Iterator[None]:
 
     *chain_depth* is the depth of the response the calling turn produces.
     """
-    token = _current_loop_ctx.set(_ToolLoopContext(room_id=room_id, chain_depth=chain_depth))
-    try:
+    with tool_turn_context(room_id=room_id, chain_depth=chain_depth):
         yield
-    finally:
-        _current_loop_ctx.reset(token)
 
 
 def room_tool_names(channel: Any, room_id: str) -> list[str]:

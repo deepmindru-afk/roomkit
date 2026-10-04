@@ -17,13 +17,15 @@ paths; :func:`current_tool_call`, :func:`current_tool_allowed_names` and
 :func:`current_response_metadata` answer ``None`` there, since the per-call
 record, the resolved toolset and the merged response record are the AI
 channel's. Outside a tool call (a direct call) every accessor returns
-``None`` — hosts keep their own fallback there.
+``None`` — hosts keep their own fallback there. A test that calls a handler
+directly describes the turn it runs under with :func:`tool_turn_context`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextvars
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -33,12 +35,12 @@ from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.room import Room
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable, Iterable, Iterator, Mapping
 
     from roomkit.channels._turn_budget import TurnBudget
     from roomkit.models.steering import SteeringDirective
     from roomkit.models.tool_call import DeclaredTool, ToolCallEvent
-    from roomkit.providers.ai.base import AIMessage
+    from roomkit.providers.ai.base import AIMessage, AITool
 
 
 @dataclass
@@ -525,3 +527,66 @@ def current_response_metadata() -> ResponseMetadata | None:
     """
     ctx = _current_loop_ctx.get()
     return ctx.response_metadata if ctx is not None and ctx.has_turn else None
+
+
+@contextmanager
+def _installed(loop_ctx: _ToolLoopContext, call: ToolCallContext | None) -> Iterator[None]:
+    """Run the enclosed code under a tool call's context, restored on the way out."""
+    call_token = _current_tool_call.set(call)
+    loop_token = _current_loop_ctx.set(loop_ctx)
+    try:
+        yield
+    finally:
+        _current_loop_ctx.reset(loop_token)
+        _current_tool_call.reset(call_token)
+
+
+@contextmanager
+def tool_turn_context(
+    *,
+    room_id: str | None = None,
+    room: Room | None = None,
+    actor_id: str | None = None,
+    tools: Iterable[AITool] | None = None,
+    chain_depth: int = 0,
+    call: ToolCallContext | None = None,
+) -> Iterator[None]:
+    """Run the enclosed code as a tool call of a turn described by the arguments.
+
+    What a test calling a tool handler directly needs: inside the block the
+    accessors of this module answer for the turn described here, as they do
+    for a call the tool loop makes, and on the way out (an exception
+    included) they answer what they answered before. A handler called
+    outside a tool loop otherwise reads ``None`` everywhere.
+
+    Args:
+        room_id: The turn's room id, read by :func:`current_tool_room_id`.
+        room: The turn's :class:`~roomkit.models.room.Room`, read by
+            :func:`current_tool_room`; its id is the turn's room id, so
+            *room_id* may be left out. Both given must name the same room.
+        actor_id: Whose turn it is, read by :func:`current_tool_actor_id`;
+            ``None`` for a turn with no author (a system injection, a webhook).
+        tools: The turn's resolved toolset, read by
+            :func:`current_tool_allowed_names`. ``None`` stands for a turn
+            whose toolset was not resolved (the accessor answers ``None``);
+            an empty list for a resolved, empty one.
+        chain_depth: The chain depth of the response the turn produces
+            (RFC §8.3), which a result delivered later on its behalf inherits.
+        call: The per-call record :func:`current_tool_call` answers; a handler
+            writing its ``structured_content`` writes this object. ``None``
+            leaves the block outside any call record.
+
+    The turn carries a fresh response-metadata record, which
+    :func:`current_response_metadata` answers inside the block.
+
+    Raises:
+        ValueError: *room* and *room_id* name different rooms.
+    """
+    if room is not None and room_id is not None and room.id != room_id:
+        raise ValueError(f"room {room.id!r} and room_id {room_id!r} name different rooms")
+    ctx = _ToolLoopContext.for_loop(None, room_id, room)
+    ctx.actor_id = actor_id
+    ctx.chain_depth = chain_depth
+    ctx.all_context_tools = None if tools is None else list(tools)
+    with _installed(ctx, call):
+        yield

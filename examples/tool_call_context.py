@@ -28,6 +28,9 @@ because the actor is not something to trust on sight:
 4. The same handler, called from a realtime voice session: the realtime
    channel installs the same context around the call, so Alice's voice turn
    is answered like her text turn.
+5. The same handler, called directly as a unit test would: no channel runs,
+   ``tool_turn_context`` describes Alice's turn around the call and takes it
+   away when the block exits.
 
 Run with:
     uv run python examples/tool_call_context.py
@@ -57,6 +60,7 @@ from roomkit.tools import (
     current_tool_allowed_names,
     current_tool_room,
     current_tool_room_id,
+    tool_turn_context,
 )
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 
@@ -191,6 +195,15 @@ async def main() -> None:
     await asyncio.sleep(0.1)
     _session_id, _call_id, submitted = rt_provider.tool_results[0]
     print(f"  {submitted}")
+
+    print("\n=== Alice's turn, described by a test (no channel runs) ===")
+    # What a unit test does: call the handler directly, with the turn a tool
+    # loop would give it. The Room names the room id; the block restores the
+    # previous context (here: none) on the way out.
+    invoices_tool = AITool(name="my_invoices", description="List the invoices of the asker.")
+    with tool_turn_context(room=room, actor_id="alice", tools=[invoices_tool]):
+        print(f"  {await my_invoices('my_invoices', {})}")
+    print(f"  outside the block: actor={current_tool_actor_id()}")
     await kit.close()
 
 

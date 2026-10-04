@@ -14,6 +14,7 @@ from roomkit.tools.context import (
     current_tool_room,
     current_tool_room_id,
     current_turn_footprint,
+    tool_turn_context,
 )
 from roomkit.tools.external import ExternalToolHandler, PolicyExternalToolHandler, ToolDecision
 from roomkit.tools.human_input import HumanInputHandler, HumanInputToolHandler
@@ -40,6 +41,7 @@ __all__ = [
     "current_tool_room_id",
     "current_turn_footprint",
     "extract_tools",
+    "tool_turn_context",
 ]
 
 

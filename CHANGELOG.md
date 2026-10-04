@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `roomkit.tools.tool_turn_context(...)` (RMK-476): a context manager that runs
+  its block as a tool call of the turn its arguments describe (`room_id` or
+  `room`, `actor_id`, `tools`, `chain_depth`, `call`), so a test calling a
+  handler directly reads `current_tool_room_id()`, `current_tool_actor_id()`,
+  `current_tool_allowed_names()`, `current_tool_call()` and
+  `current_response_metadata()` as a tool loop would set them, and the previous
+  context comes back when the block exits. Replaces setting the private
+  `_current_loop_ctx` / `_current_tool_call` contextvars by hand.
+
 - `AudioPipeline.on_session_ending(session)` (RMK-466): a session's end has
   begun and its teardown still awaits. From there the session's inbound
   frames are not processed (nor recorded) and the callbacks still due for it

@@ -22,12 +22,7 @@ from roomkit.core.exceptions import ToolFailedError, ToolRefusedError, UnservedT
 from roomkit.core.task_utils import shielded
 from roomkit.models.tool_call import ToolCallVerdict
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome, read_outcome
-from roomkit.tools.context import (
-    ToolCallContext,
-    _current_loop_ctx,
-    _current_tool_call,
-    _ToolLoopContext,
-)
+from roomkit.tools.context import ToolCallContext, _installed, _ToolLoopContext
 from roomkit.tools.result import (
     GateRefusal,
     cancelled_tool_error,
@@ -430,14 +425,9 @@ def serving_tool_call(
     call_ctx = ToolCallContext(
         room_id=loop_ctx.room_id or "", tool_call_id=call.call_id, channel_id=channel_id
     )
-    call_token = _current_tool_call.set(call_ctx)
-    loop_token = _current_loop_ctx.set(loop_ctx)
-    try:
+    with _installed(loop_ctx, call_ctx):
         yield
         call.structured_content = call_ctx.structured_content
-    finally:
-        _current_loop_ctx.reset(loop_token)
-        _current_tool_call.reset(call_token)
 
 
 def ended_outcome(call: RealtimeToolCall) -> ToolOutcome:
