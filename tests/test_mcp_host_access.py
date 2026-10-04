@@ -101,6 +101,39 @@ async def test_the_raw_result_reaches_a_tool_the_filter_hid_from_the_model(
     assert refused.isError is True  # a refusal is the result's, not an exception
 
 
+async def test_the_meta_handed_out_is_a_copy(server_script: str) -> None:
+    async with _provider(server_script) as mcp:
+        mcp.tool_meta()["show_board"]["ui"]["csp"] = "*"
+
+        assert mcp.tool_meta()["show_board"]["ui"]["csp"] == "self"
+
+
+async def test_connected_says_whether_the_connection_is_live(server_script: str) -> None:
+    provider = _provider(server_script)
+    assert provider.connected is False
+    async with provider as mcp:
+        assert mcp.connected is True
+    assert provider.connected is False
+
+
+async def test_a_catalogue_that_fails_releases_the_connection(server_script: str) -> None:
+    """What was opened is closed, the stdio server included (RFC §21.2), and
+    the provider can connect again."""
+
+    def broken_filter(name: str) -> bool:
+        raise ZeroDivisionError("filter failed")
+
+    provider = MCPToolProvider(
+        transport="stdio", command=sys.executable, args=[server_script], tool_filter=broken_filter
+    )
+    with pytest.raises(ZeroDivisionError):
+        async with provider:
+            pass
+
+    assert provider.connected is False
+    assert provider._stack is None
+
+
 async def test_reading_before_connecting_is_refused() -> None:
     mcp = MCPToolProvider("http://localhost:1/mcp")
 

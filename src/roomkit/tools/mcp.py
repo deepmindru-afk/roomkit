@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 from collections.abc import Callable, Sequence
@@ -38,8 +39,10 @@ def _definition(tool: Any) -> AITool | None:
 
 
 _DEFAULT_CALL_TIMEOUT = 30.0
-"""Seconds a tool call waits: one default shared by :meth:`MCPToolProvider.call_tool`
-and the tool handler, so the two cannot drift apart."""
+"""Seconds a call to the server waits: one default shared by
+:meth:`MCPToolProvider.call_tool`, :meth:`~MCPToolProvider.call_tool_result`,
+:meth:`~MCPToolProvider.read_resource` and the tool handler, so they cannot
+drift apart."""
 
 
 # Upper bound for publishing a structured result on the tool-call context
@@ -222,26 +225,15 @@ class MCPToolProvider:
             session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
             await session.initialize()
             listed = await session.list_tools()
+            # Inside the try: a listing the catalogue cannot read releases what
+            # was opened, the stdio server included (RFC §21.2).
+            self._catalogue(listed.tools)
         except BaseException:
             await stack.aclose()
             raise
 
         self._stack = stack
         self._session = session
-        self._tools = []
-        self._tool_set = set()
-        self._tool_meta = {}
-        for tool in listed.tools:
-            if self._tool_filter and not self._tool_filter(tool.name):
-                continue
-            ai_tool = _definition(tool)
-            if ai_tool is None:
-                continue
-            self._tools.append(ai_tool)
-            self._tool_set.add(tool.name)
-            if isinstance(meta := getattr(tool, "meta", None), dict):
-                self._tool_meta[tool.name] = meta
-
         self._connected = True
         logger.info(
             "Connected to MCP server %s (%s) — discovered %d tools",
@@ -250,6 +242,24 @@ class MCPToolProvider:
             len(self._tools),
         )
         return self
+
+    def _catalogue(self, listed: Sequence[Any]) -> None:
+        """Keep the listed tools the filter admits and a provider accepts:
+        their definitions, their names and the ``_meta`` they were listed with."""
+        tools: list[AITool] = []
+        meta_by_name: dict[str, dict[str, Any]] = {}
+        for tool in listed:
+            if self._tool_filter and not self._tool_filter(tool.name):
+                continue
+            ai_tool = _definition(tool)
+            if ai_tool is None:
+                continue
+            tools.append(ai_tool)
+            if isinstance(meta := getattr(tool, "meta", None), dict):
+                meta_by_name[tool.name] = meta
+        self._tools = tools
+        self._tool_set = {tool.name for tool in tools}
+        self._tool_meta = meta_by_name
 
     async def _open_transport(self, stack: AsyncExitStack) -> tuple[Any, Any]:
         """Open this provider's MCP transport on *stack*; return its two streams."""
@@ -290,6 +300,11 @@ class MCPToolProvider:
         if stack is not None:
             await stack.__aexit__(exc_type, exc_val, exc_tb)
 
+    @property
+    def connected(self) -> bool:
+        """Whether the provider holds a live connection: entered, not yet exited."""
+        return self._connected
+
     def _ensure_connected(self) -> None:
         if not self._connected:
             raise RuntimeError(
@@ -321,7 +336,7 @@ class MCPToolProvider:
         provider accepts), is absent.
         """
         self._ensure_connected()
-        return {name: dict(meta) for name, meta in self._tool_meta.items()}
+        return copy.deepcopy(self._tool_meta)
 
     async def read_resource(self, uri: str, *, timeout: float = _DEFAULT_CALL_TIMEOUT) -> Any:
         """The server's ``ReadResourceResult`` for *uri* (an MCP App's HTML, say).
@@ -345,6 +360,8 @@ class MCPToolProvider:
         A refusal is the result's ``isError``, not an exception: :meth:`call_tool`
         renders it into its error envelope, the tool handler raises it. For a
         host relaying the raw result (an MCP App's frame calling its server).
+        A successful result's ``structuredContent`` is also published to the
+        tool call in progress, when there is one (the model's own calls).
 
         Like :meth:`call_tool`, it calls any tool the server has: ``tool_filter``
         shapes what discovery offers a model, not what the host may call (an
