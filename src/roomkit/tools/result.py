@@ -222,6 +222,19 @@ class GateRefusal:
     detail: str | None = None
 
 
+def gated_tool_refusal(name: str) -> str:
+    """What the model reads of a call to a tool a skill keeps closed, whichever
+    gate refused it: an AI channel's, a reasoning backend's, a realtime
+    session's (RFC §21.1)."""
+    return f"Tool '{name}' is gated by a skill. Activate the skill first using activate_skill."
+
+
+def undeclared_tool_refusal(name: str) -> str:
+    """What the model reads of a call to a name the turn or session does not
+    carry, whichever gate refused it (RFC §21.1)."""
+    return f"Tool '{name}' is not declared."
+
+
 def unserved_tool_error(name: str) -> str:
     """The failure a call reports when no handler and no hook served it."""
     return json.dumps({"error": f"No handler for tool {name}"})

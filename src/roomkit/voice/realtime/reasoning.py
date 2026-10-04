@@ -113,6 +113,9 @@ class ReasoningRequest:
             the gate (its arguments did not read, a stop cut it) to the
             channel's ON_TOOL_CALL observers, as ``(name, arguments, body,
             cancelled=...)``: a backend's call is reported wherever it ends.
+        unavailable: The session's tools the model is not offered, each with
+            the refusal a call to it reads (the tool policy's, a skill's
+            gating), so a backend refuses it in the gate's words (RFC §21.1).
     """
 
     session: VoiceSession
@@ -123,6 +126,7 @@ class ReasoningRequest:
     execute_tool: ToolExecutor | None = None
     execute_tool_call: ToolCallExecutor | None = None
     report_refusal: RefusalReporter | None = None
+    unavailable: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -333,6 +337,9 @@ class AgentReasoningBackend(ReasoningBackend):
             channel_id=agent.channel_id, room_id=room_id or "", channel_type=agent.channel_type
         )
         loop_ctx = _ToolLoopContext(room_id=room_id)
+        # A call to a session tool the model was not offered reads the voice
+        # gate's cause, not "not declared" (RFC §21.1).
+        loop_ctx.unavailable_tools = dict(request.unavailable)
         return agent._driven_turn(binding, loop_ctx, messages, tools), loop_ctx
 
     async def _serve_through_gate(self, name: str, arguments: dict[str, Any]) -> str:

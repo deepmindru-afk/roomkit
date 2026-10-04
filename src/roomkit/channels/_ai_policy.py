@@ -16,6 +16,7 @@ from roomkit.channels._tool_reopen import (
 from roomkit.models.tool_call import DeclaredTool, ToolDeclarationOrigin
 from roomkit.providers.ai.base import AIContext, AIMessage, AITool, AIToolResultPart
 from roomkit.tools.policy import ToolPolicy, matches_any_pattern, policy_refusal
+from roomkit.tools.result import gated_tool_refusal
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -217,12 +218,7 @@ class AIToolPolicyMixin(_AIChannelContract):
             return {"error": policy_refusal(name)}
         if matches_any_pattern(name, self._gated_tool_names):
             logger.warning("Tool %s blocked by skill gating", name)
-            return {
-                "error": (
-                    f"Tool '{name}' is gated by a skill. "
-                    "Activate the skill first using activate_skill."
-                )
-            }
+            return {"error": gated_tool_refusal(name)}
         return None
 
     def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]:

@@ -451,7 +451,7 @@ class TestToolCallGate:
     @pytest.mark.parametrize(
         ("name", "arguments", "error"),
         [
-            ("delete_everything", {}, "Tool 'delete_everything' is not declared"),
+            ("delete_everything", {}, "Tool 'delete_everything' is not declared."),
             ("lookup", {"email": 3}, "Invalid arguments for 'lookup'"),
         ],
     )

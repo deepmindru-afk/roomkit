@@ -22,7 +22,12 @@ from roomkit.channels._tool_registry import ChannelRegistry, ToolSource, tool_di
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.tools.policy import policy_refusal
-from roomkit.tools.result import GateRefusal, pre_execution_denial
+from roomkit.tools.result import (
+    GateRefusal,
+    gated_tool_refusal,
+    pre_execution_denial,
+    undeclared_tool_refusal,
+)
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 
 if TYPE_CHECKING:
@@ -170,10 +175,7 @@ class RealtimeToolGateMixin:
         What Tool Search may name in its results and listings (RFC §21.1); the
         pre-execution gate enforces the same rule on the call itself.
         """
-        if not self._session_admits(session_id, name):
-            return False
-        support = self._skill_support
-        return support is None or not support.is_gated(name, session_id)
+        return self._access_cause(name, session_id) is None
 
     def _session_policies(self, session_id: str) -> list[ToolPolicy]:
         """The tool policies the session answers to, each resolved for its
@@ -301,17 +303,20 @@ class RealtimeToolGateMixin:
         served = self._channel_tool_names() if channel_serves else frozenset()
         if not self._is_declared_realtime_tool(name, session, served):
             logger.warning("Realtime provider requested undeclared tool %s", name)
-            undeclared = json.dumps({"error": f"Tool '{name}' is not declared"})
+            undeclared = json.dumps({"error": undeclared_tool_refusal(name)})
             return arguments, GateRefusal(undeclared), None
+        # Access before the arguments: a refused tool never names its schema
+        # (RFC §21.1).
+        await self._refresh_session_policies(session, room_id)
+        exempt = self._exempt_tool_names() if channel_serves else frozenset()
+        cause = self._access_cause(name, session.id, exempt)
+        if cause is not None:
+            logger.warning("Realtime tool %s refused: %s", name, cause)
+            return arguments, GateRefusal(json.dumps({"error": cause})), None
         params = self._tool_parameters(name, session)
         arguments, invalid = self._validated_realtime_arguments(name, arguments, params)
         if invalid is not None:
             return arguments, GateRefusal(invalid), None
-        await self._refresh_session_policies(session, room_id)
-        exempt = self._exempt_tool_names() if channel_serves else frozenset()
-        refusal = self._access_refusal(name, session.id, exempt)
-        if refusal is not None:
-            return arguments, GateRefusal(refusal), None
         return await self._before_realtime_tool_use(
             name, arguments, params, call_id, room_id, session
         )
@@ -346,24 +351,19 @@ class RealtimeToolGateMixin:
             return arguments, json.dumps({"error": f"Invalid arguments for '{name}': {arg_error}"})
         return arguments, None
 
-    def _access_refusal(self, name: str, session_id: str, exempt: Container[str]) -> str | None:
-        """Why the session may not call *name*: its tool policies, resolved
-        for its participant, then skill gating, as on the classic path."""
+    def _access_cause(
+        self, name: str, session_id: str, exempt: Container[str] | None = None
+    ) -> str | None:
+        """Why the session may not call *name*, in the words every gate uses
+        (RFC §21.1): its tool policies, resolved for its participant, then
+        skill gating, as on the classic path; *exempt* as
+        :meth:`_session_admits` reads it."""
         if not self._session_admits(session_id, name, exempt):
-            logger.warning("Realtime tool %s blocked by policy", name)
-            return json.dumps({"error": policy_refusal(name)})
+            return policy_refusal(name)
         # Hiding a gated tool from the catalogue is not enforcement — the model
         # may still name one it saw before the skill was deactivated.
         if self._skill_support is not None and self._skill_support.is_gated(name, session_id):
-            logger.warning("Realtime tool %s blocked by skill gating", name)
-            return json.dumps(
-                {
-                    "error": (
-                        f"Tool '{name}' is gated by a skill. "
-                        "Activate the skill first using activate_skill."
-                    )
-                }
-            )
+            return gated_tool_refusal(name)
         return None
 
     async def _before_realtime_tool_use(

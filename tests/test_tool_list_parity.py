@@ -363,7 +363,7 @@ class TestAnUndeclaredInfrastructureTool:
 
         result = json.loads(_text_result(channel, await _turn(channel, "r1")))
 
-        assert result == {"error": "Tool 'find_tools' is not declared in this turn."}
+        assert result == {"error": "Tool 'find_tools' is not declared."}
 
     async def test_a_realtime_session_refuses_it(self) -> None:
         provider = MockRealtimeProvider()
@@ -378,7 +378,7 @@ class TestAnUndeclaredInfrastructureTool:
 
         result = json.loads(await _call(channel, provider, session, "find_tools", {"query": "x"}))
 
-        assert result == {"error": "Tool 'find_tools' is not declared"}
+        assert result == {"error": "Tool 'find_tools' is not declared."}
         await kit.close()
 
     async def test_a_realtime_session_refuses_a_script_with_no_executor(
@@ -411,7 +411,7 @@ class TestAnUndeclaredInfrastructureTool:
             )
         )
 
-        assert result == {"error": "Tool 'run_skill_script' is not declared"}
+        assert result == {"error": "Tool 'run_skill_script' is not declared."}
         await kit.close()
 
 

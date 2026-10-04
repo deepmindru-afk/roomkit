@@ -33,7 +33,7 @@ from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.room import Room
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Mapping
 
     from roomkit.channels._turn_budget import TurnBudget
     from roomkit.models.steering import SteeringDirective
@@ -133,6 +133,10 @@ class _ToolLoopContext:
     # per-round injections (the eviction re-read) from bringing one back.
     # Inherited across for_loop like the toolset it amends.
     withdrawn_tools: frozenset[str] = frozenset()
+    # Tools of a driven turn's catalogue its model is not offered, each with
+    # the refusal its call reads, as the gate that drives the turn words it (a
+    # reasoning backend's voice session, RFC §21.1). Inherited like the above.
+    unavailable_tools: Mapping[str, str] = field(default_factory=dict)
     # Names BEFORE_AI_GENERATION added: declared at every round of the turn,
     # never deferred by Tool Search (RFC §6.4). Inherited like the above.
     hook_pinned: frozenset[str] = frozenset()
@@ -306,6 +310,7 @@ class _ToolLoopContext:
             ctx.all_context_tools = parent.all_context_tools
             ctx.admits = parent.admits
             ctx.withdrawn_tools = parent.withdrawn_tools
+            ctx.unavailable_tools = parent.unavailable_tools
             ctx.hook_pinned = parent.hook_pinned
             ctx.tool_search_active = parent.tool_search_active
             # Carry the used-tools re-exposition seeded in _build_context into the

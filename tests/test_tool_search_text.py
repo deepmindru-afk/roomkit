@@ -523,7 +523,7 @@ class TestDeferredCallRecovery:
 
         assert calls == []
         result = _tool_result(provider.calls[1])
-        assert "not available to this agent" in result["error"]
+        assert result["error"] == "Tool 'send_sms' is not permitted by the agent's tool policy."
         assert "hint" not in result  # a find_tools retry would fail the same way
         # The failed probe must not leave the name revealed for later rounds.
         assert "send_sms" not in _tool_names(provider.calls[1])
@@ -556,4 +556,6 @@ class TestDeferredCallRecovery:
 
         assert calls == []
         result = _tool_result(provider.calls[1])
-        assert "not available to this agent" in result["error"]
+        assert result["error"] == (
+            "Tool 'send_sms' is gated by a skill. Activate the skill first using activate_skill."
+        )

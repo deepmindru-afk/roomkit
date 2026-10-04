@@ -850,7 +850,7 @@ class TestToolAuthorizationH1:
 
         handler.assert_not_awaited()
         result = json.loads(rt_provider.tool_results[0][2])
-        assert result == {"error": "Tool 'delete_everything' is not declared"}
+        assert result == {"error": "Tool 'delete_everything' is not declared."}
 
 
 # ---------------------------------------------------------------------------
@@ -1219,13 +1219,14 @@ class TestRealtimeGateParityWithTheAIPath:
         assert ch._skill_support.is_gated("find_tools", session.id) is True
         assert ch._skill_support.is_gated("activate_skill", session.id) is False
 
-    async def test_invalid_arguments_are_named_before_the_gating_verdict(
+    async def test_the_gating_verdict_comes_before_the_arguments(
         self,
         rt_provider: MockRealtimeProvider,
         rt_transport: MockRealtimeTransport,
         tmp_path: Path,
     ) -> None:
-        """Same order as the classic AI path: validate, then guard."""
+        """Same order as the classic AI path: guard, then validate, so a
+        closed tool never names its schema (RFC §21.1)."""
         ch = RealtimeVoiceChannel(
             "rt-order",
             provider=rt_provider,
@@ -1254,7 +1255,9 @@ class TestRealtimeGateParityWithTheAIPath:
         await asyncio.sleep(0.1)
 
         result = json.loads(rt_provider.tool_results[0][2])
-        assert "unknown argument 'bogus'" in result["error"]
+        assert result["error"] == (
+            "Tool 'refund' is gated by a skill. Activate the skill first using activate_skill."
+        )
 
     async def test_the_gate_announces_its_decision_as_a_framework_event(
         self,
@@ -1391,9 +1394,11 @@ class TestRefusedAIToolCallsAreObserved:
         assert len(observed) == 1
         assert observed[0].is_error is True
         assert observed[0].name == "get_weather"
-        # Filtered out of the declaration by the policy, it is refused as a
-        # tool this agent does not have, naming why (RFC §21.1).
-        assert "blocked by the tool policy" in json.loads(observed[0].result)["error"]
+        # Filtered out of the declaration by the policy, it is refused with
+        # the policy's words, as on every door (RFC §21.1).
+        assert json.loads(observed[0].result)["error"] == (
+            "Tool 'get_weather' is not permitted by the agent's tool policy."
+        )
         # A denial must never reach a hook that could serve the call — that
         # would hide the side effect instead of preventing it.
         assert served == []

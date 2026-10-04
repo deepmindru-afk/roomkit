@@ -75,6 +75,7 @@ from roomkit.tools.result import (
     pre_execution_denial,
     read_tool_call_verdict,
     tool_failure,
+    undeclared_tool_refusal,
     unserved_tool_error,
 )
 from roomkit.tools.timeout import ToolTimeouts, answer_within
@@ -287,16 +288,13 @@ class AIToolsMixin(_AIChannelContract):
     def _undeclared_tool_error(self, name: str) -> dict[str, str]:
         """Actionable payload for an undeclared call that could not be recovered."""
         loop_ctx = self._get_loop_ctx()
-        if any(t.name == name for t in loop_ctx.all_context_tools or ()):
-            # In the catalogue but filtered out (tool policy or skill gating):
-            # a find_tools reveal would be dropped by the same filter, so no
-            # retry hint — the refusal is the answer.
-            return {
-                "error": (
-                    f"Tool '{name}' exists but is not available to this agent "
-                    "(blocked by the tool policy or gated behind a skill)."
-                )
-            }
+        refusal = self._unavailable_refusal(name)
+        if refusal is not None:
+            # In the catalogue but kept from the round (tool policy or skill
+            # gating): its cause, as every gate words it (RFC §21.1). A
+            # find_tools reveal would be dropped by the same filter, so no
+            # retry hint: the refusal is the answer.
+            return refusal
         if loop_ctx.tool_search_active:
             return {
                 "error": f"No tool named '{name}' exists.",
@@ -305,7 +303,19 @@ class AIToolsMixin(_AIChannelContract):
                     "to discover the right tool."
                 ),
             }
-        return {"error": f"Tool '{name}' is not declared in this turn."}
+        return {"error": undeclared_tool_refusal(name)}
+
+    def _unavailable_refusal(self, name: str) -> dict[str, str] | None:
+        """Why a tool of the turn's catalogue the round did not declare is
+        refused: as the gate driving the turn words it (a reasoning backend's
+        voice session), else by this channel's policy or skill gating; ``None``
+        when the catalogue does not hold *name* or nothing refuses it."""
+        loop_ctx = self._get_loop_ctx()
+        if (cause := loop_ctx.unavailable_tools.get(name)) is not None:
+            return {"error": cause}
+        if any(t.name == name for t in loop_ctx.all_context_tools or ()):
+            return self._gate_refusal(name)
+        return None
 
     async def _fire_tool_refusal(
         self,
@@ -459,12 +469,13 @@ class AIToolsMixin(_AIChannelContract):
         params, stopped = self._declared_schema_gate(tc, scope.declared_tools)
         call_arguments = tc.arguments
         if stopped is None:
-            call_arguments, stopped = self._model_arguments(tc, params)
-        if stopped is None:
             # Execution guard: policy and skill gating, the listing filter's
-            # rule (RFC §21.1), re-checked on the call itself.
+            # rule (RFC §21.1), re-checked on the call itself before its
+            # arguments are read, so a refused tool never names its schema.
             refusal = self._gate_refusal(tc.name)
             stopped = _refused_with(refusal) if refusal is not None else None
+        if stopped is None:
+            call_arguments, stopped = self._model_arguments(tc, params)
         if stopped is None:
             ran = await self._before_tool_use(tc, call_arguments, params, scope.room_id)
             if not isinstance(ran, GateRefusal):

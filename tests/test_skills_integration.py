@@ -559,7 +559,7 @@ class TestRunScriptHandler:
         messages = provider.calls[1].messages
         tool_msg = [m for m in messages if m.role == "tool"]
         result_json = json.loads(tool_msg[0].content[0].result)
-        assert result_json["error"] == "Tool 'run_skill_script' is not declared in this turn."
+        assert result_json["error"] == "Tool 'run_skill_script' is not declared."
 
 
 class TestUserToolHandlerDelegation:

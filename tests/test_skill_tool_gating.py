@@ -163,8 +163,10 @@ class TestAGlobGatedToolDoesNotRun:
         assert ran == []
         tool_msg = [m for m in provider.calls[1].messages if m.role == "tool"]
         error = json.loads(tool_msg[0].content[0].result)["error"]
-        assert "not available to this agent" in error
-        assert "gated behind a skill" in error
+        # The cause, as every gate words it (RFC §21.1).
+        assert error == (
+            "Tool 'search_web' is gated by a skill. Activate the skill first using activate_skill."
+        )
 
     async def test_a_tool_the_glob_does_not_cover_still_runs(
         self, tmp_path: Path, streaming: bool

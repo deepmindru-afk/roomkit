@@ -19,7 +19,12 @@ from roomkit.channels._served_tools import CollisionLog, declared_once, dict_too
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.tools.policy import policy_refusal
-from roomkit.tools.result import GateRefusal, bounded_result, pre_execution_denial
+from roomkit.tools.result import (
+    GateRefusal,
+    bounded_result,
+    pre_execution_denial,
+    undeclared_tool_refusal,
+)
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 
 if TYPE_CHECKING:
@@ -101,7 +106,12 @@ class ConferenceToolGate:
         declared = {t.get("name"): t for t in config.tools or [] if isinstance(t, dict)}
         if declared and name not in declared:
             logger.warning("Conference provider requested undeclared tool %s", name)
-            return GateRefusal(_error(f"Tool '{name}' is not declared"))
+            return GateRefusal(_error(undeclared_tool_refusal(name)))
+        # Access before the arguments: a refused tool never names its schema
+        # (RFC §21.1).
+        if not policy_admits(config.tool_policy, name, _NO_CHANNEL_TOOLS):
+            logger.warning("Conference tool %s blocked by policy", name)
+            return GateRefusal(_error(policy_refusal(name)))
         params = declared.get(name, {}).get("parameters")
         schema = params if isinstance(params, dict) else None
         if schema is not None:
@@ -110,9 +120,6 @@ class ConferenceToolGate:
             error = fold_error or validate_tool_arguments(schema, call.arguments)
             if error is not None:
                 return GateRefusal(_error(f"Invalid arguments for '{name}': {error}"))
-        if not policy_admits(config.tool_policy, name, _NO_CHANNEL_TOOLS):
-            logger.warning("Conference tool %s blocked by policy", name)
-            return GateRefusal(_error(policy_refusal(name)))
         return await self._before_tool_use(call, schema)
 
     async def _before_tool_use(

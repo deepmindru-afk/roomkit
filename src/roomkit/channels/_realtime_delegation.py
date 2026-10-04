@@ -75,7 +75,8 @@ class RealtimeDelegationHost(Protocol):
 
     Cross-mixin methods (implemented elsewhere in the MRO):
         _track_task, _rt_span_ctx, _update_idle_event,
-        _tool_reachable, _open_tool_call, _close_tool_call, _tool_call_span,
+        _tool_reachable, _access_cause, _open_tool_call, _close_tool_call,
+        _tool_call_span,
         and the executor's host steps.
     """
 
@@ -124,6 +125,7 @@ class RealtimeDelegationMixin:
     _expect_provider_output: Any
     _update_idle_event: Any  # see RealtimeDelegationHost — cross-mixin
     _tool_reachable: Any  # see RealtimeToolsMixin
+    _access_cause: Any  # see RealtimeToolsMixin
     _open_tool_call: Any  # see RealtimeToolsMixin
     _close_tool_call: Any  # see RealtimeToolsMixin
     _tool_calls: Any  # see RealtimeToolsMixin
@@ -336,6 +338,7 @@ class RealtimeDelegationMixin:
             transcript=self._take_transcript(session.id),
             first=first,
             tools=self._backend_catalogue(session.id),
+            unavailable=self._backend_unavailable(session.id),
             execute_tool=lambda name, arguments: self._execute_backend_tool(
                 session, delegation_id, name, arguments
             ),
@@ -352,6 +355,15 @@ class RealtimeDelegationMixin:
             declared = session_id in self._session_tools
         tools = self._session_catalogue(session_id) if declared else []
         return [dict(t) for t in tools if self._tool_reachable(str(t.get("name", "")), session_id)]
+
+    def _backend_unavailable(self, session_id: str) -> dict[str, str]:
+        """The session's tools a backend is not offered, each with the refusal
+        its call reads at the gate: the policy's or a skill's (RFC §21.1)."""
+        with self._state_lock:
+            declared = session_id in self._session_tools
+        names = (str(t.get("name", "")) for t in self._session_catalogue(session_id))
+        causes = {name: self._access_cause(name, session_id) for name in names if declared}
+        return {name: cause for name, cause in causes.items() if name and cause is not None}
 
     async def _fallback(self, session: VoiceSession, delegation_id: str, text: str) -> None:
         """One spoken output, so the model does not wait for an answer that never comes."""

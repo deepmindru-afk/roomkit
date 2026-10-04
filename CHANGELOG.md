@@ -651,6 +651,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A refusal reads the same text for the same cause on every door (RMK-428,
+  RFC §21.1, §12.4): an `AIChannel` turn, a reasoning backend's turn, a
+  `RealtimeVoiceChannel` session and a conference now say `Tool 'X' is not
+  permitted by the agent's tool policy.`, `Tool 'X' is gated by a skill.
+  Activate the skill first using activate_skill.` or `Tool 'X' is not
+  declared.` A text turn said `exists but is not available to this agent
+  (blocked by the tool policy or gated behind a skill)` for both causes, so
+  its model never learnt to activate the skill; a reasoning backend said `is
+  not declared in this turn.`; a realtime session and a conference said `is
+  not declared` without the stop. The gate checks the policy and skill gating
+  before the arguments on every door: a realtime session and a conference
+  validated the arguments first, so a denied `wire_money({})` answered
+  `missing required argument 'iban'` and named its schema. A test asserting
+  the old texts needs the new ones. `ReasoningRequest` gains `unavailable`
+  (last field, default empty): the session's tools the backend's model is not
+  offered, each with its refusal.
+
 - Every text provider reads the end of a response with one rule (RMK-438,
   RFC §6.4). Anthropic's `model_context_window_exceeded` and `refusal` now cut
   a `tool_use` block they stop, as the output cap does: such a call with no
