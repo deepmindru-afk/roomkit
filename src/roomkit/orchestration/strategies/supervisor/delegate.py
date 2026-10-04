@@ -21,7 +21,7 @@ from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType as _ChannelType
 from roomkit.models.enums import EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
-from roomkit.models.response_metadata import recorded_turn_end
+from roomkit.models.response_metadata import ResponseMetadata, recorded_turn_end
 from roomkit.orchestration._background import (
     BackgroundRun,
     background_failure_text,
@@ -327,7 +327,9 @@ def _with_record(pass1: _Pass1) -> ChannelOutput:
     """The pass's output carrying its turn's record (its end, its usage)."""
     if not pass1.record:
         return pass1.output
-    metadata = {**pass1.output.response_metadata, **pass1.record}
+    # ``model_copy`` does not validate: the record is wrapped as the field's
+    # own type, never left a plain dict.
+    metadata = ResponseMetadata({**pass1.output.response_metadata, **pass1.record})
     return pass1.output.model_copy(update={"response_metadata": metadata})
 
 

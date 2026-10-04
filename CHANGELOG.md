@@ -859,6 +859,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raised or returned its error on either path, nor one that answered then
   failed with a transport shared.
 
+- How a supervisor's task-formulation pass ended reaches its caller under
+  `turns` only (RMK-479, RFC §6.4): its `loop_end_reason` and `ai_usage` were
+  copied beside them, flat, where a room turn's never are; a channel's own
+  record keys still reach the caller, those two excepted.
+
 - `regenerate_response` reads its buffered replies as `process_inbound` does
   (RMK-479, RFC §6.4): a regenerated reply that carries its end on its last
   message (a supervisor's pass 1 cut by its round cap) left the caller's

@@ -3,8 +3,9 @@ RFC §6.4).
 
 A supervisor's task-formulation pass is read as a room turn is: whatever
 ended it (its round cap, an error, a stop, an empty answer), the caller finds
-its end under ``turns``. ``regenerate_response`` reads a buffered reply as
-``process_inbound`` does, and a ``turns`` key a hook wrote never reaches it.
+its end under ``turns``, and only there. ``regenerate_response`` reads a
+buffered reply as ``process_inbound`` does, and a ``turns`` key a hook wrote
+never reaches it.
 """
 
 from __future__ import annotations
@@ -100,25 +101,41 @@ async def _kit(provider: MockAIProvider, *, orchestrated: bool, cancels: bool = 
     return kit
 
 
+_TURN_KEYS = ("turns", "loop_end_reason", "ai_usage")
+
+
+def _turn_record(metadata: Any) -> dict[str, Any]:
+    """What the caller reads of how the turn ended: its ``turns``, and any
+    turn-record key left beside them."""
+    return {key: value for key, value in dict(metadata).items() if key in _TURN_KEYS}
+
+
 async def _turns(kit: RoomKit) -> Any:
     result = await kit.process_inbound(
         InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Find it."))
     )
-    return dict(result.response_metadata).get("turns")
+    return _turn_record(result.response_metadata).get("turns")
+
+
+async def _caller_record(kit: RoomKit) -> dict[str, Any]:
+    result = await kit.process_inbound(
+        InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Find it."))
+    )
+    return _turn_record(result.response_metadata)
 
 
 @pytest.mark.parametrize("ending", list(ENDINGS))
 async def test_a_task_formulation_pass_ends_as_a_room_turn_does(ending: str) -> None:
     kind, cancels = ENDINGS[ending]
     room_kit = await _kit(kind(streaming=True), orchestrated=False, cancels=cancels)
-    room_turns = await _turns(room_kit)
+    room_record = await _caller_record(room_kit)
     await room_kit.close()
     pass_kit = await _kit(kind(streaming=True), orchestrated=True, cancels=cancels)
-    pass_turns = await _turns(pass_kit)
+    pass_record = await _caller_record(pass_kit)
     await pass_kit.close()
 
-    assert room_turns is not None
-    assert pass_turns == room_turns
+    assert list(room_record) == ["turns"]
+    assert pass_record == room_record
 
 
 @pytest.mark.parametrize("orchestrated", [True, False], ids=["pass-1-cut", "room-turn-cut"])
@@ -131,8 +148,9 @@ async def test_a_regenerated_reply_ends_as_its_inbound_did(orchestrated: bool) -
     assert dict(again.response_metadata).get("turns") == inbound
 
 
-async def test_a_turns_key_a_hook_wrote_never_reaches_a_regeneration() -> None:
-    kit = await _kit(_Loops(streaming=True), orchestrated=True)
+@pytest.mark.parametrize("orchestrated", [True, False], ids=["pass-1-cut", "room-turn-cut"])
+async def test_a_turns_key_a_hook_wrote_never_reaches_a_regeneration(orchestrated: bool) -> None:
+    kit = await _kit(_Loops(streaming=True), orchestrated=orchestrated)
 
     @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
     async def forge(event: Any, ctx: Any) -> HookResult:
