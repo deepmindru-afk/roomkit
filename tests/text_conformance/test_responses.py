@@ -23,6 +23,7 @@ from tests.text_conformance.driver import (
     SIGNED_REASONING,
     STREAM_USAGE,
     STREAM_WITHOUT_FINISH,
+    THINK_TAGS,
     WRITTEN_UNREADABLE,
     Driver,
 )
@@ -295,6 +296,17 @@ class TestReasoningReceived:
         answer = await generation(driver, script, mode, tool_context(LOOKUP))
 
         assert [p.redacted for p in answer.reasoning] == ["RRR"]
+
+    async def test_a_think_block_the_cap_cut_is_reasoning(self, driver: Driver, mode: str) -> None:
+        """A ``<think>`` block the output cap cut before its close is
+        reasoning, never answer, streamed or not (RMK-484)."""
+        driver.require(THINK_TAGS)
+        script = Script(text="<think>still weighing the options", finish="cut")
+
+        answer = await generation(driver, script, mode, tool_context(LOOKUP))
+
+        assert [p.thinking for p in answer.reasoning] == ["still weighing the options"]
+        assert answer.text == ""
 
 
 def _usage_mode(driver: Driver, mode: str) -> None:

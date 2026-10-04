@@ -50,6 +50,8 @@ MALFORMED_CALL = "malformed_call"
 not parse, or one to a tool the request did not enable."""
 FILTER_STOP = "filter_stop"
 """A content filter or a refusal can stop the response mid-answer."""
+THINK_TAGS = "think_tags"
+"""Reasoning can come inline in the answer's text, as ``<think>`` tags."""
 
 ReasoningConvention = Literal["blocks", "call_signature", "inline", "field", "dropped"]
 """How a wire replays earlier reasoning: as signed blocks, as one signature on

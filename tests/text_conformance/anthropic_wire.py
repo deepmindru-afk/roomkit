@@ -14,6 +14,7 @@ from tests.text_conformance.driver import (
     CALL_INDEX,
     CALLS_IN_ONE_CHUNK,
     MALFORMED_CALL,
+    THINK_TAGS,
     WRITTEN_UNREADABLE,
     Driver,
 )
@@ -160,6 +161,7 @@ class AnthropicWire(Driver):
         CALLS_IN_ONE_CHUNK: "each call is a content block of its own",
         WRITTEN_UNREADABLE: "a closed tool_use block always parses; one that does not was cut",
         MALFORMED_CALL: "Anthropic has no stop reason for a call it could not parse",
+        THINK_TAGS: "reasoning comes in thinking blocks; text is the answer's",
     }
     reasoning = "blocks"
     error_flag = True

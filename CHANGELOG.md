@@ -845,6 +845,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `<think>` block the output cap cut before its close is reasoning, never
+  answer, through `generate()` as on the stream (RMK-484, RFC §6.4): OpenAI's
+  wire and PolarGrid handed it over as the answer's text. `extract_think_tags`
+  now reads a whole response with the stream's `ThinkTagParser`.
+
 - A vendor's official URL written out as `base_url` is the vendor's own
   endpoint (RMK-484, RFC §6.7): `https://api.openai.com/v1` for OpenAI's text
   provider, `https://api.anthropic.com` for Anthropic's, the official URL with

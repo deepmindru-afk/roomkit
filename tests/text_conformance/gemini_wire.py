@@ -24,6 +24,7 @@ from tests.text_conformance.driver import (
     REPEATED_ID,
     SCHEMA_AS_GIVEN,
     SIGNED_REASONING,
+    THINK_TAGS,
     WRITTEN_UNREADABLE,
     Driver,
     ReasoningConvention,
@@ -55,6 +56,7 @@ _CANNOT = {
         "one thought_signature signs the round, on its first function call, not each thought part"
     ),
     REDACTED_REASONING: "Gemini has no redacted reasoning",
+    THINK_TAGS: "reasoning comes in thought parts; text is the answer's",
     CACHE_WRITE_USAGE: "Gemini's usage counts no cache writes",
     SCHEMA_AS_GIVEN: (
         "the provider declares Gemini's OpenAPI subset (parameters), not "

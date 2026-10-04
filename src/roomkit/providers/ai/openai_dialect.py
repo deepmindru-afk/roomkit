@@ -14,7 +14,6 @@ messages a request carries are rendered by ``chat_request``.
 
 from __future__ import annotations
 
-import re
 from typing import Any, Literal
 
 from roomkit.providers.ai.base import (
@@ -28,8 +27,6 @@ from roomkit.providers.ai.tool_calls import (
     minted_call_id,
     tool_arguments,
 )
-
-_THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 
 def field_reasoning(carrier: Any) -> str | None:
@@ -268,17 +265,20 @@ class ToolCallSlots:
 
 
 def extract_think_tags(text: str) -> tuple[str | None, str]:
-    """Extract ``<think>...</think>`` content from *text*.
+    """Split a whole response's *text* into its ``<think>`` reasoning and its
+    answer, as :class:`ThinkTagParser` splits a stream: a block the response
+    stopped before closing (the output cap) is reasoning too, never answer.
 
     Returns:
         ``(thinking, clean_text)`` — *thinking* is ``None`` when no tags
         are present.
     """
-    matches = _THINK_RE.findall(text)
-    if not matches:
+    if ThinkTagParser._OPEN not in text:
         return None, text
-    thinking = "\n".join(m.strip() for m in matches if m.strip())
-    clean = _THINK_RE.sub("", text).strip()
+    parser = ThinkTagParser()
+    segments = parser.feed(text) + parser.flush()
+    thinking = "\n".join(c.strip() for kind, c in segments if kind == "thinking" and c.strip())
+    clean = "".join(c for kind, c in segments if kind == "text").strip()
     return thinking or None, clean
 
 

@@ -33,6 +33,7 @@ from tests.text_conformance.driver import (
     REPEATED_ID,
     SIGNED_REASONING,
     STREAM_WITHOUT_FINISH,
+    THINK_TAGS,
     WRITTEN_UNREADABLE,
     Driver,
 )
@@ -138,6 +139,7 @@ class OllamaWire(ChatDriver):
         STREAM_WITHOUT_FINISH: "a call arrives whole in one chunk; no stream stops inside one",
         SIGNED_REASONING: "Ollama's thinking is a plain text field, with no signature",
         REDACTED_REASONING: "Ollama has no redacted reasoning",
+        THINK_TAGS: "Ollama separates reasoning server-side, into its thinking field",
         CACHE_USAGE: "Ollama reports prompt_eval_count and eval_count only",
         CACHE_WRITE_USAGE: "Ollama reports prompt_eval_count and eval_count only",
         MALFORMED_CALL: "Ollama has no stop reason for a call it could not parse",
