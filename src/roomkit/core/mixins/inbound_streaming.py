@@ -443,8 +443,8 @@ class InboundStreamingMixin(HelpersMixin):
         the room's delivery lane as it is produced (RFC §10.2 — the lane is
         the room's single ordering authority, and its executor fires each
         segment's AFTER_BROADCAST once that segment's delivery set has run,
-        step 16). Broadcasting the run in one batch after the stream is what
-        used to let the cursor run ahead of the deliveries.
+        step 16). Broadcasting the run in one batch after the stream would let
+        the cursor run ahead of the deliveries.
 
         Returns the first response-stream failure encountered (so the inbound
         pipeline can surface it to a headless caller), or ``None`` when every
