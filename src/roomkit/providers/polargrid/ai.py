@@ -595,7 +595,7 @@ class PolarGridAIProvider(AIProvider):
                 getattr(d, "index", None),
                 getattr(d, "id", None),
                 func.get("name"),
-                func.get("arguments") or "",
+                func.get("arguments"),
             )
             if event is not None:
                 composed.append(event)

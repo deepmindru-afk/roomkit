@@ -845,6 +845,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A streamed call whose arguments a server sends as an object, not as text,
+  reads as the text it spells on every chat wire (RMK-484, RFC §6.4): OpenAI's
+  wire and PolarGrid failed the stream (`can only concatenate str`), where
+  Mistral read it. `ToolCallSlots.fold` takes the object itself. A PolarGrid
+  response that is not streamed still cannot carry one: its SDK refuses it
+  when it parses the response.
+
 - A chat completion read through `generate()` hands the loop what the stream
   hands it (RMK-484, RFC §6.4): a call whose server lost its name reaches the
   loop with an empty one, which the loop refuses, where OpenAI's wire raised

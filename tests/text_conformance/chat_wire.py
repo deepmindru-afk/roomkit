@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from tests.text_conformance.driver import Driver
-from tests.text_conformance.script import Item
+from tests.text_conformance.script import Call, Item
 
 # An OpenAI-compatible server ends a response that filled the context window
 # ``length``, the output cap's word: it caps the output at what the window has
@@ -23,6 +23,16 @@ FINISH = {
     "none": None,
 }
 _THINK = re.compile(r"^<think>(.*?)</think>", re.DOTALL)
+
+
+def wire_arguments(call: Call) -> Any:
+    """*call*'s arguments as the server sends them: text, or an object."""
+    return json.loads(call.arguments) if call.as_object else call.arguments
+
+
+def call_pieces(call: Call) -> list[Any]:
+    """*call*'s arguments as a stream sends them: text in pieces, an object whole."""
+    return [wire_arguments(call)] if call.as_object else pieces(call.arguments, call.fragments)
 
 
 def pieces(text: str, count: int) -> list[str]:

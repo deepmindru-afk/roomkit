@@ -23,6 +23,9 @@ class Call:
     index: int | None = None
     fragments: int = 1
     """How many pieces the arguments stream in."""
+    as_object: bool = False
+    """The server sends the arguments as the JSON object they spell, in one
+    piece, not as text (a wire whose arguments are always objects ignores it)."""
 
 
 @dataclass(frozen=True)

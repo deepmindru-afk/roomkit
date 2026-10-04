@@ -17,7 +17,7 @@ from mistralai.client import Mistral
 from roomkit.providers.ai.base import AIProvider
 from roomkit.providers.mistral.ai import MistralAIProvider
 from roomkit.providers.mistral.config import MistralConfig
-from tests.text_conformance.chat_wire import FINISH, ChatDriver, assistant_items
+from tests.text_conformance.chat_wire import FINISH, ChatDriver, assistant_items, wire_arguments
 from tests.text_conformance.driver import (
     CACHE_WRITE_USAGE,
     COMPOSITION,
@@ -76,7 +76,7 @@ def _call(call: Call) -> dict[str, Any]:
     # every call, so arguments never stream in fragments and ``Call.fragments``
     # has no Mistral form. An absent id or index is left out, as the server
     # leaves it out; the SDK then fills them ("null", 0).
-    wire: dict[str, Any] = {"function": {"name": call.name, "arguments": call.arguments}}
+    wire: dict[str, Any] = {"function": {"name": call.name, "arguments": wire_arguments(call)}}
     if call.id is not None:
         wire["id"] = call.id
     if call.index is not None:

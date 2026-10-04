@@ -16,6 +16,7 @@ from tests.text_conformance.driver import (
     COMPOSITION,
     FILTER_STOP,
     MALFORMED_CALL,
+    OBJECT_ARGUMENTS_RESPONSE,
     REASONING_USAGE,
     REDACTED_REASONING,
     REPEATED_ID,
@@ -45,6 +46,24 @@ class TestCalls:
         [call] = answer.calls
         assert (call.name, call.arguments, call.partial) == ("lookup", {"q": "paris"}, False)
         assert call.id
+
+    async def test_arguments_sent_as_an_object_read_as_their_text_does(
+        self, driver: Driver, mode: str
+    ) -> None:
+        """A server that sends a call's arguments as an object, not as text
+        (Mistral's SDK types them ``Dict | str``), hands the loop the same
+        call, streamed or not (RMK-484)."""
+        if mode == "generate":
+            driver.require(OBJECT_ARGUMENTS_RESPONSE)
+        script = Script(
+            calls=(Call("lookup", '{"q": "a"}', id="c1", index=0, as_object=True),),
+            finish="tool",
+        )
+
+        answer = await generation(driver, script, mode, tool_context(LOOKUP))
+
+        [call] = answer.calls
+        assert (call.name, call.arguments, call.partial) == ("lookup", {"q": "a"}, False)
 
     async def test_two_calls_stay_two_each_with_its_own_id(
         self, driver: Driver, mode: str

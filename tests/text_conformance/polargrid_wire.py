@@ -18,12 +18,13 @@ import polargrid
 from roomkit.providers.ai.base import AIProvider
 from roomkit.providers.polargrid.ai import PolarGridAIProvider
 from roomkit.providers.polargrid.config import PolarGridConfig
-from tests.text_conformance.chat_wire import FINISH, ChatDriver, pieces
+from tests.text_conformance.chat_wire import FINISH, ChatDriver, call_pieces, wire_arguments
 from tests.text_conformance.driver import (
     CACHE_USAGE,
     CACHE_WRITE_USAGE,
     CALL_INDEX,
     MALFORMED_CALL,
+    OBJECT_ARGUMENTS_RESPONSE,
     REASONING_USAGE,
     REDACTED_REASONING,
     RESPONSE_CALL_WITHOUT_ID,
@@ -75,7 +76,7 @@ def _chunk(
     )
 
 
-def _fragment(call: Call, first: bool, piece: str) -> dict[str, Any]:
+def _fragment(call: Call, first: bool, piece: Any) -> dict[str, Any]:
     if not first:
         return _present(index=call.index, function={"arguments": piece})
     return _present(
@@ -87,7 +88,7 @@ def _fragment(call: Call, first: bool, piece: str) -> dict[str, Any]:
 
 
 def _call_chunks(script: Script) -> list[dict[str, Any]]:
-    cut = [pieces(call.arguments, call.fragments) for call in script.calls]
+    cut = [call_pieces(call) for call in script.calls]
     chunks: list[dict[str, Any]] = []
     if script.calls_in_one_chunk:
         firsts = [_fragment(c, True, p[0]) for c, p in zip(script.calls, cut, strict=True)]
@@ -120,7 +121,7 @@ def _response(script: Script) -> dict[str, Any]:
         _present(
             id=call.id,
             type="function",
-            function={"name": call.name, "arguments": call.arguments},
+            function={"name": call.name, "arguments": wire_arguments(call)},
         )
         for call in script.calls
     ]
@@ -171,6 +172,10 @@ class PolarGridWire(ChatDriver):
         RESPONSE_CALL_WITHOUT_ID: "polargrid-sdk's ToolCall requires an id on a response",
         CACHE_WRITE_USAGE: "polargrid-sdk's TokenUsage holds prompt, completion and total tokens",
         MALFORMED_CALL: "PolarGrid has no stop reason for a call the server could not parse",
+        OBJECT_ARGUMENTS_RESPONSE: (
+            "polargrid-sdk's ToolCall types arguments as a string and refuses an object "
+            "when it parses the response"
+        ),
     }
     reasoning = "dropped"
     # PolarGrid states no tool name rule, and the provider checks none.

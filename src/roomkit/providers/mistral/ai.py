@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -52,13 +51,6 @@ def _server_call_id(call_id: str | None) -> str | None:
     an id, every id-less call would share it.
     """
     return None if call_id in (None, "", "null") else call_id
-
-
-def _argument_text(arguments: Any) -> str:
-    """A fragment's arguments as text; the SDK types them ``Dict | str``."""
-    if isinstance(arguments, dict):
-        return json.dumps(arguments)
-    return arguments or ""
 
 
 class MistralAIProvider(AIProvider):
@@ -281,7 +273,7 @@ class MistralAIProvider(AIProvider):
                             getattr(tc_delta, "index", None),
                             _server_call_id(tc_delta.id),
                             function.name if function else None,
-                            _argument_text(function.arguments) if function else "",
+                            function.arguments if function else "",
                         )
                         if composed is not None:
                             yield composed

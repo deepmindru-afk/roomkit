@@ -558,7 +558,7 @@ class OpenAIAIProvider(AIProvider):
                             getattr(tc_delta, "index", None),
                             tc_delta.id,
                             function.name if function else None,
-                            (function.arguments or "") if function else "",
+                            function.arguments if function else "",
                         )
                         if composed is not None:
                             yield composed

@@ -38,7 +38,13 @@ from roomkit.providers.qwen.config import QwenConfig
 from roomkit.providers.vllm import VLLMConfig, _VLLMProvider, create_vllm_provider
 from roomkit.providers.xai.ai import XAIAIProvider
 from roomkit.providers.xai.config import XAIConfig
-from tests.text_conformance.chat_wire import FINISH, ChatDriver, assistant_items, pieces
+from tests.text_conformance.chat_wire import (
+    FINISH,
+    ChatDriver,
+    assistant_items,
+    call_pieces,
+    wire_arguments,
+)
 from tests.text_conformance.driver import (
     CACHE_WRITE_USAGE,
     MALFORMED_CALL,
@@ -124,7 +130,7 @@ class _Vendor:
     goes back in on a wire that replays it in a field."""
 
 
-def _fragment(call: Call, first: bool, piece: str) -> dict[str, Any]:
+def _fragment(call: Call, first: bool, piece: Any) -> dict[str, Any]:
     fragment: dict[str, Any] = {"function": {"arguments": piece}}
     if call.index is not None:
         fragment["index"] = call.index
@@ -148,7 +154,7 @@ def _chunk(delta: dict[str, Any] | None = None, finish: str | None = None) -> di
 
 
 def _call_chunks(script: Script) -> list[dict[str, Any]]:
-    cut = [pieces(call.arguments, call.fragments) for call in script.calls]
+    cut = [call_pieces(call) for call in script.calls]
     chunks: list[dict[str, Any]] = []
     if script.calls_in_one_chunk:
         firsts = [_fragment(c, True, p[0]) for c, p in zip(script.calls, cut, strict=True)]
@@ -181,7 +187,7 @@ def _stream(script: Script, vendor: _Vendor) -> bytes:
 def _response_call(call: Call) -> dict[str, Any]:
     rendered: dict[str, Any] = {
         "type": "function",
-        "function": {"name": call.name, "arguments": call.arguments},
+        "function": {"name": call.name, "arguments": wire_arguments(call)},
     }
     if call.id is not None:
         rendered["id"] = call.id

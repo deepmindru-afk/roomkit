@@ -50,6 +50,8 @@ MALFORMED_CALL = "malformed_call"
 not parse, or one to a tool the request did not enable."""
 FILTER_STOP = "filter_stop"
 """A content filter or a refusal can stop the response mid-answer."""
+OBJECT_ARGUMENTS_RESPONSE = "object_arguments_response"
+"""A response that is not streamed can carry a call's arguments as an object."""
 THINK_TAGS = "think_tags"
 """Reasoning can come inline in the answer's text, as ``<think>`` tags."""
 

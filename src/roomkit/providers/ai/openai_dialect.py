@@ -14,6 +14,8 @@ messages a request carries are rendered by ``chat_request``.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from roomkit.providers.ai.base import (
@@ -186,9 +188,19 @@ class ToolCallSlots:
         self._taken: set[str] = set()
 
     def fold(
-        self, index: int | None, call_id: str | None, name: str | None, fragment: str
+        self,
+        index: int | None,
+        call_id: str | None,
+        name: str | None,
+        fragment: str | Mapping[str, Any] | None,
     ) -> StreamToolCallDelta | None:
-        """Fold one fragment in; return the composition event it warrants."""
+        """Fold one fragment in; return the composition event it warrants.
+
+        A fragment a server sends as an object (Mistral's SDK types it
+        ``Dict | str``; some compatible servers do it on OpenAI's wire) reads
+        as the JSON text it stands for.
+        """
+        fragment = _argument_text(fragment)
         key = index if index is not None else 0
         position = self._by_index.get(key)
         if position is not None and self._starts_another_call(position, call_id, name, fragment):
@@ -264,6 +276,13 @@ class ToolCallSlots:
             )
             for n, slot in enumerate(self._slots)
         ]
+
+
+def _argument_text(fragment: str | Mapping[str, Any] | None) -> str:
+    """A streamed call's arguments fragment as text, an object as its JSON."""
+    if isinstance(fragment, Mapping):
+        return json.dumps(dict(fragment))
+    return fragment or ""
 
 
 def message_tool_calls(message: Any, finish_reason: str | None) -> list[AIToolCall]:
