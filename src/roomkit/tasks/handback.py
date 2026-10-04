@@ -24,6 +24,8 @@ logger = logging.getLogger("roomkit.tasks")
 #: The share of one worker's output a hand-back carries.
 MAX_RESULT_CHARS = 4000
 
+_NOT_DELIVERED = ("blocked", "unavailable", "failed")
+
 
 def bounded(output: str) -> str:
     """*output*, cut to the share a hand-back carries."""
@@ -42,17 +44,24 @@ def result_text(header: str, body: str) -> str:
 
 
 async def hand_back(
-    kit: RoomKit, room_id: str, notify: str, text: str, chain_depth: int
+    kit: RoomKit,
+    room_id: str,
+    notify: str,
+    text: str,
+    chain_depth: int,
+    *,
+    session_id: str | None = None,
 ) -> DeliveryOutcome | None:
     """Deliver *text* in *room_id* to *notify*, at *chain_depth*.
 
     *notify* names who is told: an intelligence channel receives an instruction
     addressed to it, through the room's transport; a realtime voice channel, an
-    instruction in its session. Another transport has no model to direct and
-    receives a message through it. A channel not attached to the room is told
-    nothing (``None``), and a hand-back that is not delivered is logged. A
-    framework that closes starts no turn (RFC §23.3): nothing is handed back
-    (``None``).
+    instruction in a session: *session_id*, the session whose call started the
+    work, or its one session in the room. Another transport has no model to
+    direct and receives a message through it. A channel not attached to the
+    room is told nothing (``None``), and a hand-back that is not delivered is
+    logged. A framework that closes starts no turn (RFC §23.3): nothing is
+    handed back (``None``).
     """
     if kit._closed:
         logger.info("Result for %s in room %s not handed back: closing", notify, room_id)
@@ -61,8 +70,9 @@ async def hand_back(
         # delegate()'s default notify, the worker, is never in the parent room.
         logger.info("Result for %s not handed back: not attached to room %s", notify, room_id)
         return None
-    outcome = await kit.deliver(room_id, text, chain_depth=chain_depth, **_target(kit, notify))
-    if outcome.status in ("blocked", "unavailable", "failed"):
+    target = _target(kit, notify, session_id)
+    outcome = await kit.deliver(room_id, text, chain_depth=chain_depth, **target)
+    if outcome.status in _NOT_DELIVERED:
         logger.warning(
             "Result for %s in room %s not delivered: %s (%s)",
             notify,
@@ -73,11 +83,22 @@ async def hand_back(
     return outcome
 
 
-def _target(kit: RoomKit, notify: str) -> dict[str, Any]:
-    """The ``deliver()`` arguments that reach *notify*."""
+def not_handed_back(outcome: DeliveryOutcome | None) -> str | None:
+    """Why a hand-back reached nobody; ``None`` when it was delivered."""
+    if outcome is None:
+        return "not handed back"
+    if outcome.status in _NOT_DELIVERED:
+        return f"not handed back: {outcome.status} ({outcome.reason})"
+    return None
+
+
+def _target(kit: RoomKit, notify: str, session_id: str | None) -> dict[str, Any]:
+    """The ``deliver()`` arguments that reach *notify*, in *session_id* on a
+    realtime voice channel."""
     channel = kit.get_channel(notify)
     if channel is not None and channel.category == ChannelCategory.INTELLIGENCE:
         return {"addressed_to": [notify], "instruction": True}
     if channel is not None and channel.channel_type == ChannelType.REALTIME_VOICE:
-        return {"channel_id": notify, "instruction": True}
+        session = {"session_id": session_id} if session_id is not None else {}
+        return {"channel_id": notify, "instruction": True, **session}
     return {"channel_id": notify}

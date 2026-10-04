@@ -6,9 +6,7 @@ through ``hand_back``: an instruction to the voice channel, the output bounded
 and set apart as a worker's, never published as a participant's message. A
 loop that raises hands back that the work could not be completed, without the
 error's message. The room is released before the outcome is handed back, and
-the loop posts one terminal entry on the status bus. Before, an exception was
-only logged (the model, which told the user results would follow, never
-heard), and a success went to the room as a ``user`` message, unbounded.
+the loop posts one terminal entry on the status bus.
 """
 
 from __future__ import annotations
@@ -177,8 +175,7 @@ async def test_the_voice_door_hands_the_outcome_to_its_session() -> None:
     await until(lambda: bool(told()))
     await kit.close()
 
-    # An instruction to the session, the draft fenced as a worker's output;
-    # before, the room's text reached it as the user's words, unfenced.
+    # An instruction to the session, the draft fenced as a worker's output.
     [(text, role)] = told()
     assert role == "system"
     assert "has completed (approved)" in text

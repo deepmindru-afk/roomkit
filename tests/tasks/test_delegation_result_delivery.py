@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import re
+from typing import Any
 
 import pytest
 
 from roomkit import ChannelCategory, HookResult, HookTrigger, RoomKit
+from roomkit.channels._realtime_context import _current_voice_session
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
@@ -27,11 +29,12 @@ from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor import WorkerStrategy
 from roomkit.orchestration.strategies.supervisor.delegate import (
     _async_run_and_deliver,
-    _hand_back_outcome,
+    _outcome_text,
 )
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks import DelegateHandler, setup_delegation
 from roomkit.tasks.handback import hand_back
+from roomkit.tasks.models import TaskStatus
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.test_framework import SimpleChannel
 from tests.tool_room import tool_call_in
@@ -234,7 +237,7 @@ async def test_a_supervisor_s_background_workers_hand_back_to_it() -> None:
         {"worker": "b", "role": "Critic", "output": "Short."},
     ]
 
-    await _hand_back_outcome(kit, "call", "supervisor", results, 0)
+    await hand_back(kit, "call", "supervisor", _outcome_text(results), 0)
     (told,) = await _told(supervisor, 1)
 
     assert told.startswith("[Instruction from the application")
@@ -314,3 +317,74 @@ async def test_a_closing_framework_hands_nothing_back() -> None:
     assert supervisor._provider.calls == []
     kit._closed = False
     await kit.close()
+
+
+class _RaisesBare(MockAIProvider):
+    """A worker whose provider fails with an exception that has no message."""
+
+    async def generate(self, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+        raise RuntimeError()
+
+
+async def _voice_room(sessions: int = 1) -> tuple[RoomKit, MockRealtimeProvider, list[Any]]:
+    provider = MockRealtimeProvider()
+    voice = RealtimeVoiceChannel("voice", provider=provider, transport=MockRealtimeTransport())
+    kit = RoomKit()
+    kit.register_channel(voice)
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "voice")
+    started = [await voice.start_session("r", f"u{n}", "ws") for n in range(sessions)]
+    return kit, provider, started
+
+
+def _injected(provider: MockRealtimeProvider) -> list[tuple[str, str]]:
+    return [
+        (c.args["session_id"], str(c.args["text"]))
+        for c in provider.calls
+        if c.method == "inject_text"
+    ]
+
+
+@pytest.mark.parametrize(
+    "worker_provider",
+    [MockAIProvider(responses=[""]), _RaisesBare(responses=["x"])],
+    ids=["empty-answer", "bare-exception"],
+)
+async def test_a_failed_task_with_nothing_to_say_is_still_handed_back(
+    worker_provider: MockAIProvider,
+) -> None:
+    """RFC §23.3 step 8: a failed task says it failed, whatever text it left."""
+    kit, provider, (session,) = await _voice_room()
+    kit.register_channel(Agent("worker", provider=worker_provider, tool_search=False))
+
+    task = await kit.delegate("r", "worker", "do it", notify="voice")
+    result = await task.wait(timeout=5)
+    for _ in range(100):
+        if _injected(provider):
+            break
+        await asyncio.sleep(0.01)
+    await kit.close()
+
+    assert result.status != TaskStatus.COMPLETED
+    [(told_session, text)] = _injected(provider)
+    assert told_session == session.id and "failed" in text
+
+
+async def test_a_voice_delegation_is_told_in_the_session_that_delegated() -> None:
+    kit, provider, (caller, other) = await _voice_room(sessions=2)
+    kit.register_channel(Agent("worker", provider=MockAIProvider(responses=["Findings."])))
+
+    with tool_call_in("r"):
+        token = _current_voice_session.set(caller)
+        try:
+            task = await kit.delegate("r", "worker", "look", notify="voice")
+        finally:
+            _current_voice_session.reset(token)
+    await task.wait(timeout=5)
+    for _ in range(100):
+        if _injected(provider):
+            break
+        await asyncio.sleep(0.01)
+    await kit.close()
+
+    assert [s for s, _ in _injected(provider)] == [caller.id]

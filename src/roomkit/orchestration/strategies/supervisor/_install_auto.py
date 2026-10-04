@@ -12,12 +12,13 @@ import asyncio
 import json
 from typing import TYPE_CHECKING, Any
 
-from roomkit.channels._tool_registry import ToolEntry, orchestration_tool, schema_tool
+from roomkit.channels._tool_registry import orchestration_tool, schema_tool
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType as _ChannelType
 from roomkit.models.event import RoomEvent
+from roomkit.orchestration._background import calling_channel_id
 from roomkit.orchestration._call_room import in_call_room
 from roomkit.orchestration._installs import set_up_for_voice_room
 from roomkit.orchestration.strategies.supervisor._common import (
@@ -32,7 +33,6 @@ from roomkit.orchestration.strategies.supervisor.results import _worker_roles_cs
 
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
-    from roomkit.channels.realtime_voice import RealtimeVoiceChannel
     from roomkit.core.framework import RoomKit
 
 
@@ -86,21 +86,18 @@ class _AutoDelegateInstallMixin:
         """Serve ``delegate_workers`` in *room_id*'s realtime sessions.
 
         The tool runs this install's workers in the background and returns
-        immediately; results are delivered via kit.deliver(). It is set up for
-        the room (RFC §19.7): another room's sessions do not declare it, and a
-        second room's install serves its own team.
+        immediately; results are handed back to the session that made the
+        call. It is set up for the room (RFC §19.7): another room's sessions
+        do not declare it, and a second room's install serves its own team.
         """
         tool = schema_tool(_voice_delegate_tool(self._workers, self._strategy))
-
-        def entry_for(voice_channel: RealtimeVoiceChannel) -> ToolEntry:
-            server = _VoiceDelegateServer(
-                kit, voice_channel.channel_id, self._workers, self._strategy, self._share_channels
-            )
-            # A strategy's tool: the channel's default call bound does not
-            # apply to it (RFC §21.6).
-            return orchestration_tool(tool, in_call_room(tool.name, server.serve), waits=True)
-
-        set_up_for_voice_room(kit, room_id, self, entry_for)
+        # One server for every voice channel: one run per room, whichever
+        # channel's session asked for it (RFC §19.7.3).
+        server = _VoiceDelegateServer(kit, self._workers, self._strategy, self._share_channels)
+        # A strategy's tool: the channel's default call bound does not apply
+        # to it (RFC §21.6).
+        entry = orchestration_tool(tool, in_call_room(tool.name, server.serve), waits=True)
+        set_up_for_voice_room(kit, room_id, self, lambda _channel: entry)
 
 
 class _DelegatingTurns:
@@ -202,13 +199,11 @@ class _VoiceDelegateServer:
     def __init__(
         self,
         kit: RoomKit,
-        voice_channel_id: str,
         workers: list[Agent],
         strategy: WorkerStrategy | None,
         share_channels: list[str],
     ) -> None:
         self._kit = kit
-        self._voice_channel_id = voice_channel_id
         self._workers = workers
         self._strategy = strategy
         self._share_channels = share_channels
@@ -230,7 +225,8 @@ class _VoiceDelegateServer:
                 _async_run_and_deliver(
                     kit=self._kit,
                     room_id=rid,
-                    supervisor_id=self._voice_channel_id,
+                    # The voice channel whose session made the call is told.
+                    supervisor_id=calling_channel_id(),
                     strategy=self._strategy,
                     workers=self._workers,
                     task_desc=arguments.get("task", ""),

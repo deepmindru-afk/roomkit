@@ -388,7 +388,7 @@ def post_agent_lifecycle(
       (handoffs, iteration boundaries).
     - ``action``: short verb — ``"task"`` for delegations,
       ``"handoff"`` for handoff hops, ``"iteration"`` for loop rounds,
-      ``"pipeline"`` for whole-pipeline markers.
+      ``"pipeline"`` and ``"loop"`` for a background run's terminal entry.
     - ``detail``: human-readable summary, truncated to 200 chars.
     - ``metadata``: structured context (``room_id``, ``strategy``,
       ``task_id``, etc.).

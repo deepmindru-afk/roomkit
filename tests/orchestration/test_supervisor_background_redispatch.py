@@ -112,4 +112,10 @@ async def test_a_dispatch_answering_results_runs_rather_than_reading_the_last_on
 
     assert runs == ["t1", "t2", "t3", "t4"]
     assert sum("workers completed" in t for t in provider.told) == 3
-    assert [e.status for e in entries] == [StatusLevel.COMPLETED] * 4
+    # The last run's results reach nobody (the chain bound refuses them): its
+    # one terminal entry says so rather than reporting them handed back.
+    statuses = [e.status for e in entries]
+    assert sorted(statuses) == sorted([StatusLevel.COMPLETED] * 3 + [StatusLevel.FAILED])
+    assert [e.detail for e in entries if e.status == StatusLevel.FAILED][0].startswith(
+        "not handed back"
+    )

@@ -829,7 +829,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bounded and fenced as a worker's, and for a loop that raised, that the work
   could not be completed, without the error's message. The room is released
   before the outcome is handed back, and the loop posts one terminal status
-  entry (`orchestration`, `loop`) after its hand-back.
+  entry (`orchestration`, `loop`) after its hand-back, `failed` when its
+  producer's task stopped it. The loop and the supervisor's background
+  workers now run through one sequence (run, release the room, hand back,
+  post the terminal entry), with these changes for both:
+  - the outcome is told in the session that made the call: with two
+    sessions of a voice channel in the room, `deliver()` refused it as
+    ambiguous and nobody heard it;
+  - one run per room, whichever voice channel's session calls the tool: two
+    voice channels in one room each started their own run;
+  - the terminal entry is `failed` (`not handed back: ...`) when the outcome
+    reached no one (refused, unavailable, past `max_chain_depth`), where it
+    read `completed`.
+
+- A background `kit.delegate()` whose notified channel is a realtime voice
+  channel is told in the session whose tool call delegated (RMK-462, RFC
+  §23.3), and a task that did not complete is handed back whatever text it
+  left: one that failed with no output and an empty error (an empty answer,
+  an exception without a message) was never handed back.
 
 - A hidden tool the model calls by its exact name under Tool Search stays
   revealed only once the tool answered the call (RMK-461, RFC §6.4). The

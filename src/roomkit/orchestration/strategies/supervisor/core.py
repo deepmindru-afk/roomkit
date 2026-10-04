@@ -114,8 +114,9 @@ class Supervisor(
                 (voice), runs in background. Requires *strategy*.
 
             async_delivery: If ``True``, worker delegation returns
-                immediately and results are delivered back to the
-                room via ``kit.deliver()`` when they complete. This
+                immediately and results are handed back, when they
+                complete, to the channel whose call dispatched them
+                (in its session, on a voice channel). This
                 keeps the supervisor's tool-loop clock bounded by
                 its own reasoning time rather than aggregated worker
                 wall-clock time. Applies to:

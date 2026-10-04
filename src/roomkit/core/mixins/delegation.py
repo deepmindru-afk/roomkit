@@ -7,6 +7,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.channels._realtime_context import get_current_voice_session
 from roomkit.core._failure_log import log_failure
 from roomkit.core.exceptions import ChannelNotRegisteredError
 
@@ -518,13 +519,16 @@ class DelegationMixin(HelpersMixin):
         """Submit the task to the background task runner."""
         notify_channel = notify or handle.agent_id
         # Read now, inside the tool call that delegated: the result continues
-        # that turn's chain (RFC §23.3), whenever it comes back.
+        # that turn's chain (RFC §23.3), whenever it comes back, and a
+        # realtime voice channel is told in the session that made the call.
         chain_depth = _current_turn_chain_depth()
+        session = get_current_voice_session()
+        session_id = session.id if session is not None else None
 
         async def _on_bg_complete(result: DelegatedTaskResult) -> None:
             span.end(result)
             await self._on_delegation_complete(result)
-            await self._deliver_delegation_result(result, notify_channel, chain_depth)
+            await self._deliver_delegation_result(result, notify_channel, chain_depth, session_id)
             if on_complete:
                 await on_complete(result)
 
@@ -581,15 +585,20 @@ class DelegationMixin(HelpersMixin):
         result: DelegatedTaskResult,
         notify_channel_id: str,
         chain_depth: int,
+        session_id: str | None = None,
     ) -> None:
         """Hand a background delegation's result back to its room, at *chain_depth*.
 
         The depth of the turn that delegated (RFC §23.3): the notified agent's
         answer is one deeper, so a cycle of delegation, result and delegation
-        again ends at ``max_chain_depth``. An inline delegation never comes
-        here: its caller presents the result itself.
+        again ends at ``max_chain_depth``. A task that did not complete is
+        handed back whatever it left, a failure says it failed (§23.3 step 8);
+        only a completed task with nothing to say is not. A realtime voice
+        channel is told in *session_id*, the session that delegated. An
+        inline delegation never comes here: its caller presents the result
+        itself.
         """
-        if not (result.output or result.error):
+        if result.status == TaskStatus.COMPLETED and not result.output:
             return
         try:
             await hand_back(
@@ -598,6 +607,7 @@ class DelegationMixin(HelpersMixin):
                 notify_channel_id,
                 _delegation_result_text(result),
                 chain_depth,
+                session_id=session_id,
             )
         except Exception:
             _tasks_logger.exception("Delivery failed for task %s", result.task_id)
