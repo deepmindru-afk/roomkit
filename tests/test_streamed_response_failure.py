@@ -385,7 +385,6 @@ async def _run(
         ),
         room_id=room.id,
     )
-    await asyncio.sleep(0.05)  # ON_ERROR runs after the room lock is released
     events = await kit.store.list_events(room.id, offset=0, limit=50)
     await kit.close()
     return _Turn(
