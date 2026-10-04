@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `realtime_call_arguments(raw, *, cut)` and `CutArguments`, exported from
+  `roomkit.providers.ai` beside `readable_arguments` (RMK-455, RFC §6.4): the
+  rule a realtime provider whose wire tells a cut reads a call through, for a
+  provider written outside RoomKit as for the shipped ones. A cut call runs
+  only when its argument text arrived and reads; otherwise it reaches the
+  channel as `CutArguments`, refused before the gate as `Tool call cut off`.
+
 - `ToolFailedError(message)` (RMK-459, RFC §9.3), beside `ToolRefusedError`:
   a handler's failure in its own words. The tool ran and could not do it;
   the model reads the message verbatim, the call is failed

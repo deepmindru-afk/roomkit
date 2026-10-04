@@ -20,7 +20,7 @@ import pytest
 
 from roomkit import HookExecution, HookTrigger, RoomKit
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
-from roomkit.providers.ai.tool_calls import CutArguments, realtime_call_arguments
+from roomkit.providers.ai import CutArguments, realtime_call_arguments
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.test_providers.test_openai_realtime_tool_results import _PROVIDERS, _attach
