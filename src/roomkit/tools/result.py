@@ -222,10 +222,13 @@ class GateRefusal:
     detail: str | None = None
 
 
-def gated_tool_refusal(name: str) -> str:
+def gated_tool_refusal(name: str, *, can_activate: bool = True) -> str:
     """What the model reads of a call to a tool a skill keeps closed, whichever
-    gate refused it: an AI channel's, a reasoning backend's, a realtime
-    session's (RFC §21.1)."""
+    gate refused it: an AI channel's, a realtime session's, a reasoning
+    backend's (RFC §21.1). A model that cannot activate the skill itself (a
+    reasoning backend) is not told to."""
+    if not can_activate:
+        return f"Tool '{name}' is gated by a skill the conversation has not activated."
     return f"Tool '{name}' is gated by a skill. Activate the skill first using activate_skill."
 
 
@@ -233,6 +236,20 @@ def undeclared_tool_refusal(name: str) -> str:
     """What the model reads of a call to a name the turn or session does not
     carry, whichever gate refused it (RFC §21.1)."""
     return f"Tool '{name}' is not declared."
+
+
+def unknown_tool_error(name: str, *, searching: bool) -> dict[str, str]:
+    """What the model reads of a name no tool carries, on every door: under
+    Tool Search (*searching*), that none exists and how to find the right one;
+    otherwise that it is not declared (RFC §21.1)."""
+    if not searching:
+        return {"error": undeclared_tool_refusal(name)}
+    return {
+        "error": f"No tool named '{name}' exists.",
+        "hint": (
+            "Check the spelling, or call find_tools(query=<the task>) to discover the right tool."
+        ),
+    }
 
 
 def unserved_tool_error(name: str) -> str:

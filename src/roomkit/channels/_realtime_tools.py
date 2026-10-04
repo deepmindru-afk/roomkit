@@ -469,7 +469,7 @@ class RealtimeToolsMixin:
         call.name, call.arguments, transport_error = support.unwrap_call(
             call.arguments, session.id
         )
-        return None if transport_error is None else json.dumps({"error": transport_error})
+        return None if transport_error is None else json.dumps(transport_error)
 
     # -- ToolCallHost: the steps the executor serves a call with -------------
 

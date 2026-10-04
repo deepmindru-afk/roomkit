@@ -33,6 +33,7 @@ from roomkit.channels._tool_search_constants import (
     TOOL_SEARCH_INFRA_TOOL_NAMES,
     TOOL_SEARCH_PREAMBLE,
 )
+from roomkit.tools.result import unknown_tool_error
 from roomkit.tools.validation import validate_tool_arguments
 
 logger = logging.getLogger("roomkit.channels.realtime_voice")
@@ -127,23 +128,27 @@ class RealtimeToolSearchSupport:
 
     def unwrap_call(
         self, arguments: dict[str, Any], session_id: str
-    ) -> tuple[str, dict[str, Any], str | None]:
-        """Decode transport only; the channel owns validation and execution."""
+    ) -> tuple[str, dict[str, Any], dict[str, str] | None]:
+        """Decode transport only; the channel owns validation and execution.
+        The third value is what the model reads when the transport cannot
+        carry the call, else ``None``."""
         error = validate_tool_arguments(CALL_TOOL_SCHEMA["parameters"], arguments)
         if error:
-            return TOOL_CALL_TOOL, arguments, f"Invalid call_tool arguments: {error}"
+            return TOOL_CALL_TOOL, arguments, {"error": f"Invalid call_tool arguments: {error}"}
         name = arguments["name"]
         try:
             decoded = json.loads(arguments["arguments_json"], parse_constant=_reject_json_constant)
         except (ValueError, RecursionError):
-            return name, {}, "Invalid arguments_json: expected a JSON object encoded as a string"
+            invalid = "Invalid arguments_json: expected a JSON object encoded as a string"
+            return name, {}, {"error": invalid}
         if not isinstance(decoded, dict):
-            return name, {}, "Invalid arguments_json: expected a JSON object"
+            return name, {}, {"error": "Invalid arguments_json: expected a JSON object"}
         # Only what the session can call is callable. An absent catalogue
         # must not activate the native channel's dynamic/hook-only fallback.
         callable_ = self._callable(session_id)
         if self.is_search_tool(name) or not any(t.get("name") == name for t in callable_):
-            return name, decoded, f"Tool '{name}' is unavailable in this session"
+            # A name no tool carries, worded as every door words it (RFC §21.1).
+            return name, decoded, unknown_tool_error(name, searching=True)
         return name, decoded, None
 
     def _callable(self, session_id: str) -> list[dict[str, Any]]:
@@ -329,7 +334,7 @@ class RealtimeToolSearchSupport:
                     return json.dumps(
                         {"tool": tool, "_note": "Execute this tool using call_tool."}
                     )
-            return json.dumps({"error": f"Tool '{name}' is unavailable in this session"})
+            return json.dumps(unknown_tool_error(name, searching=True))
         category = str(arguments.get("category", "")).strip()
         return render_list_payload(
             self._searchable(session_id, self._callable(session_id)),

@@ -706,7 +706,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `missing required argument 'iban'` and named its schema. A test asserting
   the old texts needs the new ones. `ReasoningRequest` gains `unavailable`
   (last field, default empty): the session's tools the backend's model is not
-  offered, each with its refusal.
+  offered, each with its refusal. Per review: a name no tool carries reads
+  the same under Tool Search on a realtime session (`No tool named 'X'
+  exists.` with the hint to search) as on a text turn, its fixed-declaration
+  `call_tool` and `list_tools` included (they said `unavailable in this
+  session`); a reasoning backend, which cannot activate a skill, reads that
+  the conversation has not activated it rather than being told to call
+  `activate_skill`; a tool both denied and gated reads the policy's text.
 
 - Every text provider reads the end of a response with one rule (RMK-438,
   RFC §6.4). Anthropic's `model_context_window_exceeded` and `refusal` now cut

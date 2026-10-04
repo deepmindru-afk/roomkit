@@ -292,7 +292,8 @@ class RealtimeVoiceChannel(
                 sentence of its own that ends the utterance, never one a
                 sentence mentions. Defaults to True.
                 Recovered calls pass the same pre-execution gate as any other
-                — declared catalogue, argument schema, ``BEFORE_TOOL_USE`` —
+                — declared catalogue, tool policy, skill gating, argument
+                schema, ``BEFORE_TOOL_USE`` —
                 and their outcome returns as injected context rather than a
                 tool result, because the model has no pending call to answer.
                 Set to False to let a spoken call stay speech.

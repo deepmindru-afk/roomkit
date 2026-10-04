@@ -76,7 +76,7 @@ from roomkit.tools.result import (
     pre_execution_denial,
     read_tool_call_verdict,
     tool_failure,
-    undeclared_tool_refusal,
+    unknown_tool_error,
     unserved_tool_error,
 )
 from roomkit.tools.timeout import ToolTimeouts, answer_within
@@ -279,7 +279,6 @@ class AIToolsMixin(_AIChannelContract):
             # from the turn: the gate below refuses it, in its own words.
             return params, None
         if recovered is None:
-            logger.warning("Provider requested undeclared tool %s", name)
             return None, self._undeclared_tool_error(name)
         # The model skipped find_tools but named a real catalogue tool: the
         # reveal happened at call time instead of ahead of it, and every
@@ -295,17 +294,10 @@ class AIToolsMixin(_AIChannelContract):
             # In the catalogue but kept from the round (tool policy or skill
             # gating): its cause, as every gate words it (RFC §21.1). A
             # find_tools reveal would be dropped by the same filter, so no
-            # retry hint: the refusal is the answer.
+            # retry hint: the refusal is the answer. Its gate logs the cause.
             return refusal
-        if loop_ctx.tool_search_active:
-            return {
-                "error": f"No tool named '{name}' exists.",
-                "hint": (
-                    "Check the spelling, or call find_tools(query=<the task>) "
-                    "to discover the right tool."
-                ),
-            }
-        return {"error": undeclared_tool_refusal(name)}
+        logger.warning("Provider requested undeclared tool %s", name)
+        return unknown_tool_error(name, searching=loop_ctx.tool_search_active)
 
     def _unavailable_refusal(self, name: str) -> dict[str, str] | None:
         """Why a tool of the turn's catalogue the round did not declare is
@@ -508,8 +500,8 @@ class AIToolsMixin(_AIChannelContract):
             return None, _refused_with(
                 {"error": f"Tool '{tc.name}' is not available in this turn."}
             )
-        # Execution guard: argument validation against the declared schema
-        # (fail-closed) — reject malformed calls before any other gate.
+        # The declared check (fail-closed): the schema the call's arguments
+        # are validated against, once the policy and skill gating admit it.
         params, undeclared = self._declared_schema(tc.name, declared_tools)
         return params, (_refused_with(undeclared) if undeclared is not None else None)
 

@@ -33,7 +33,7 @@ from tests.conference.test_conference_realtime import ROOM, realtime_kit, until
 from tests.conftest import make_event
 from tests.tool_loop_modes import respond
 
-POLICY = ToolPolicy(deny=["secret", "wire_money"])
+POLICY = ToolPolicy(deny=["secret", "wire_money", "gated_secret"])
 WIRE_PARAMS = {
     "type": "object",
     "properties": {"iban": {"type": "string"}},
@@ -43,6 +43,7 @@ SCHEMAS = {
     "lookup": {"type": "object", "properties": {}},
     "secret": {"type": "object", "properties": {}},
     "gated_cal": {"type": "object", "properties": {}},
+    "gated_secret": {"type": "object", "properties": {}},
     "wire_money": WIRE_PARAMS,
 }
 CAUSES = {
@@ -51,6 +52,14 @@ CAUSES = {
         "Tool 'gated_cal' is gated by a skill. Activate the skill first using activate_skill."
     ),
     "nope": "Tool 'nope' is not declared.",
+    # Denied and gated: the policy speaks first, since activating the skill
+    # would not let the call through.
+    "gated_secret": "Tool 'gated_secret' is not permitted by the agent's tool policy.",
+}
+# A reasoning backend cannot activate a skill: it is not told to.
+BACKEND_CAUSES = {
+    **CAUSES,
+    "gated_cal": "Tool 'gated_cal' is gated by a skill the conversation has not activated.",
 }
 
 
@@ -62,7 +71,8 @@ def _skills(tmp_path: Path) -> SkillRegistry:
     folder = tmp_path / "cal"
     folder.mkdir()
     (folder / "SKILL.md").write_text(
-        "---\nname: cal\ndescription: cal skill\nallowed_tools: gated_cal\n---\nBody.",
+        "---\nname: cal\ndescription: cal skill\n"
+        "allowed_tools: gated_cal, gated_secret\n---\nBody.",
         encoding="utf-8",
     )
     registry = SkillRegistry()
@@ -92,7 +102,9 @@ def _results(provider: MockAIProvider) -> dict[str, str]:
     }
 
 
-async def _text_door(tmp_path: Path, *names: str, arguments: Any = None) -> dict[str, str]:
+async def _text_door(
+    tmp_path: Path, *names: str, arguments: Any = None, policy: ToolPolicy = POLICY
+) -> dict[str, str]:
     provider = MockAIProvider(
         ai_responses=[_calling(*names, arguments=arguments), AIResponse(content="done")]
     )
@@ -101,7 +113,7 @@ async def _text_door(tmp_path: Path, *names: str, arguments: Any = None) -> dict
         provider=provider,
         tools=[AITool(name=n, description=n, parameters=p) for n, p in SCHEMAS.items()],
         tool_handler=_ok,
-        tool_policy=POLICY,
+        tool_policy=policy,
         skills=_skills(tmp_path),
         tool_search=False,
     )
@@ -182,7 +194,7 @@ async def test_a_reasoning_backend_refuses_with_the_session_s_cause(tmp_path: Pa
 
     # Offered only what the session may call, and refused in its words.
     assert "secret" not in {t.name for t in model.calls[0].tools}
-    assert _results(model) == CAUSES
+    assert _results(model) == BACKEND_CAUSES
     await kit.close()
 
 
@@ -206,7 +218,10 @@ async def test_a_conference_refuses_with_each_cause() -> None:
 @pytest.mark.parametrize("door", ["text", "realtime", "conference"])
 async def test_a_denied_tool_is_refused_before_its_arguments(door: str, tmp_path: Path) -> None:
     """wire_money({}) misses its required iban: the refusal is the policy's,
-    never "missing required argument 'iban'", which names its schema."""
+    never "missing required argument 'iban'", which names its schema. On the
+    text door a denied tool is never declared to the round, so the declared
+    check refuses it first: its order there is equivalent, kept for the RFC's
+    one order."""
     denied = "Tool 'wire_money' is not permitted by the agent's tool policy."
     if door == "text":
         assert (await _text_door(tmp_path, "wire_money"))["wire_money"] == denied
@@ -226,3 +241,40 @@ async def test_a_denied_tool_is_refused_before_its_arguments(door: str, tmp_path
     await until(lambda: bool(provider.tool_results))
     assert json.loads(provider.tool_results[-1][2])["error"] == denied
     await kit.close()
+
+
+async def test_an_unknown_name_under_an_allow_list_is_not_declared(tmp_path: Path) -> None:
+    """The policy's words are for a tool the catalogue holds: a name nothing
+    carries reads as undeclared whatever the policy allows."""
+    read = await _text_door(tmp_path, "nope", policy=ToolPolicy(allow=["lookup"]))
+
+    assert read == {"nope": CAUSES["nope"]}
+
+
+async def test_a_realtime_unknown_name_under_tool_search_gets_the_hint(tmp_path: Path) -> None:
+    provider = MockRealtimeProvider()
+    channel = RealtimeVoiceChannel(
+        "rt",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        tools=[{"name": f"tool_{n}", "description": f"tool {n}"} for n in range(30)],
+        tool_handler=_ok,
+        tool_search=True,
+    )
+    kit = RoomKit()
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "rt")
+    session = await channel.start_session("r1", "u", "ws")
+    before = len(provider.tool_results)
+    await provider.simulate_tool_call(session, "c1", "nope", {})
+    for _ in range(100):
+        await asyncio.gather(*list(channel._scheduled_tasks), return_exceptions=True)
+        if len(provider.tool_results) > before:
+            break
+        await asyncio.sleep(0.01)
+    await kit.close()
+
+    read = json.loads(provider.tool_results[-1][2])
+    assert read["error"] == "No tool named 'nope' exists."
+    assert "find_tools" in read["hint"]

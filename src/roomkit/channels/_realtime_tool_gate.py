@@ -3,9 +3,9 @@
 What a session declares (its catalogue, what orchestration adds for its room,
 the channel's own tools, each name once), what its tool policy admits for its
 participant's role, and the gate a call passes before anything serves it, in
-RFC §12.4's order: the declared tool, its schema (a flattened hub call folded
-back first), the policy, skill gating, BEFORE_TOOL_USE, whose arguments are
-validated again.
+RFC §12.4's order: the declared tool, the policy, skill gating, its schema (a
+flattened hub call folded back first), BEFORE_TOOL_USE, whose arguments are
+validated again. A refused tool never has its arguments read.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from roomkit.tools.result import (
     GateRefusal,
     gated_tool_refusal,
     pre_execution_denial,
-    undeclared_tool_refusal,
+    unknown_tool_error,
 )
 from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
 
@@ -298,10 +298,10 @@ class RealtimeToolGateMixin:
         reasoning backend's calls and a recovered spoken call reach the
         handler only, so on them no name is the channel's (RFC §21.1).
 
-        Checks the tool is declared, folds a flattened hub-tool call back into
-        ``params`` and validates the arguments against the declared schema,
-        applies the tool policy and skill gating, and runs BEFORE_TOOL_USE so
-        a block prevents the side effect rather than only hiding the result.
+        Checks the tool is declared, applies the tool policy and skill gating,
+        folds a flattened hub-tool call back into ``params`` and validates the
+        arguments against the declared schema, and runs BEFORE_TOOL_USE so a
+        block prevents the side effect rather than only hiding the result.
         Hooks may replace the arguments through ``metadata["arguments"]``; the
         replacement is validated before it can reach the handler.
 
@@ -313,7 +313,10 @@ class RealtimeToolGateMixin:
         served = self._channel_tool_names() if channel_serves else frozenset()
         if not self._is_declared_realtime_tool(name, session, served):
             logger.warning("Realtime provider requested undeclared tool %s", name)
-            undeclared = json.dumps({"error": undeclared_tool_refusal(name)})
+            # The search hint only for a model that can call find_tools here.
+            search = self._tool_search_support
+            searching = channel_serves and search is not None and search.active(session.id)
+            undeclared = json.dumps(unknown_tool_error(name, searching=searching))
             return arguments, GateRefusal(undeclared), None
         # Access before the arguments: a refused tool never names its schema
         # (RFC §21.1).
@@ -362,18 +365,24 @@ class RealtimeToolGateMixin:
         return arguments, None
 
     def _access_cause(
-        self, name: str, session_id: str, exempt: Container[str] | None = None
+        self,
+        name: str,
+        session_id: str,
+        exempt: Container[str] | None = None,
+        *,
+        can_activate: bool = True,
     ) -> str | None:
         """Why the session may not call *name*, in the words every gate uses
         (RFC §21.1): its tool policies, resolved for its participant, then
         skill gating, as on the classic path; *exempt* as
-        :meth:`_session_admits` reads it."""
+        :meth:`_session_admits` reads it. *can_activate* is false for a model
+        that cannot activate a skill itself (a reasoning backend)."""
         if not self._session_admits(session_id, name, exempt):
             return policy_refusal(name)
         # Hiding a gated tool from the catalogue is not enforcement — the model
         # may still name one it saw before the skill was deactivated.
         if self._skill_support is not None and self._skill_support.is_gated(name, session_id):
-            return gated_tool_refusal(name)
+            return gated_tool_refusal(name, can_activate=can_activate)
         return None
 
     async def _before_realtime_tool_use(

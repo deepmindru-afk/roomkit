@@ -358,11 +358,16 @@ class RealtimeDelegationMixin:
 
     def _backend_unavailable(self, session_id: str) -> dict[str, str]:
         """The session's tools a backend is not offered, each with the refusal
-        its call reads at the gate: the policy's or a skill's (RFC §21.1)."""
+        its call reads: the policy's, or a skill's worded for a model that
+        cannot activate one (RFC §21.1)."""
         with self._state_lock:
             declared = session_id in self._session_tools
         names = (str(t.get("name", "")) for t in self._session_catalogue(session_id))
-        causes = {name: self._access_cause(name, session_id) for name in names if declared}
+        causes = {
+            name: self._access_cause(name, session_id, can_activate=False)
+            for name in names
+            if declared
+        }
         return {name: cause for name, cause in causes.items() if name and cause is not None}
 
     async def _fallback(self, session: VoiceSession, delegation_id: str, text: str) -> None:
@@ -405,8 +410,8 @@ class RealtimeDelegationMixin:
     ) -> ToolCallResult:
         """Run a backend's tool call as the framework runs any realtime tool call.
 
-        Same gate (declared catalogue, argument schema, tool policy, skill
-        gating, ``BEFORE_TOOL_USE``), the same serving, ON_TOOL_CALL and
+        Same gate (declared catalogue, tool policy, skill gating, argument
+        schema, ``BEFORE_TOOL_USE``), the same serving, ON_TOOL_CALL and
         bound; the one difference is where the outcome goes — back to the
         backend model, with whether it failed, not to the provider (RFC §12.4.1).
         """

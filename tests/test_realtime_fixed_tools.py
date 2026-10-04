@@ -133,10 +133,10 @@ async def test_large_catalogue_uses_fixed_declarations_and_complete_schemas() ->
             {"name": "calendar", "arguments_json": '{"action":"list","extra":1}'},
             "unknown argument",
         ),
-        ({"name": "excluded", "arguments_json": "{}"}, "unavailable in this session"),
-        ({"name": "invented", "arguments_json": "{}"}, "unavailable in this session"),
-        ({"name": "call_tool", "arguments_json": "{}"}, "unavailable in this session"),
-        ({"name": "find_tools", "arguments_json": "{}"}, "unavailable in this session"),
+        ({"name": "excluded", "arguments_json": "{}"}, "No tool named"),
+        ({"name": "invented", "arguments_json": "{}"}, "No tool named"),
+        ({"name": "call_tool", "arguments_json": "{}"}, "No tool named"),
+        ({"name": "find_tools", "arguments_json": "{}"}, "No tool named"),
         # The transport's own arguments cut: unreadable, refused before the
         # unwrap (RMK-375).
         ('{"name": "calendar", "arguments_json"', "Tool call arguments unreadable"),
@@ -203,9 +203,11 @@ async def test_empty_session_catalogue_cannot_recover_channel_defaults() -> None
             "other-room", "other", object(), metadata={"tools": []}
         )
         args = {"name": "calendar", "arguments_json": '{"action":"list"}'}
-        assert "unavailable" in (await call(channel, provider, other, "call_tool", args))["error"]
         assert (
-            "unavailable"
+            "No tool named" in (await call(channel, provider, other, "call_tool", args))["error"]
+        )
+        assert (
+            "No tool named"
             in (await call(channel, provider, other, "list_tools", {"name": "calendar"}))["error"]
         )
         handler.assert_not_awaited()

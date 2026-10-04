@@ -103,9 +103,9 @@ class ReasoningRequest:
         tools: The channel's declared tool catalogue, as tool dicts. The
             backend offers these to its model.
         execute_tool: Runs one tool call through the channel's pre-execution
-            gate (declared catalogue, argument schema, skill gating,
-            ``BEFORE_TOOL_USE``, ``ON_TOOL_CALL``) and returns the result
-            text. A backend MUST route its tool calls through it.
+            gate (declared catalogue, tool policy, skill gating, argument
+            schema, ``BEFORE_TOOL_USE``, ``ON_TOOL_CALL``) and returns the
+            result text. A backend MUST route its tool calls through it.
         execute_tool_call: The same call, returning a :class:`ToolCallResult`
             that also says whether it failed, so the backend's model reads a
             refused or failed call as one. A backend SHOULD prefer it.
