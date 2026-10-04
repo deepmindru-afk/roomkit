@@ -45,6 +45,8 @@ class _ToolState:
     finished: bool = False
     refused: bool = False
     """RoomKit refused the agent's permission request for the call."""
+    refusal: str | None = None
+    """What the refusal said, as the external tool handler gave it."""
     failure: str | None = None
     """What failed when the external tool handler raised deciding the
     permission: the call is reported failed, by the channel, with it."""

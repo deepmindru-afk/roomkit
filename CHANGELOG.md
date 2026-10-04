@@ -812,6 +812,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- RoomKit's decision on an ACP call's permission stands however the agent
+  ends the call (RMK-480, RFC §9.3): a call whose permission the external
+  tool handler refused, then left open as the turn ended, was reported
+  `cancelled` (now refused, with the handler's reason, as on the AI door);
+  one whose handler raised read `cancelled` too (now failed, with what
+  failed); and a refusal for a call the agent never announced was reported
+  nowhere.
+
 - A provider-served call's result is bounded as every outcome the model
   reads (RMK-480, RFC §21.5): in a round mixing it with a call the channel
   served, the next round read it whole (40 000 characters) and its

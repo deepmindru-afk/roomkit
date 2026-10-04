@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -63,14 +64,26 @@ class _ToolEnd:
 
 
 def _end_outcome(tool: _ToolState, status: str, *, interrupted: bool) -> ToolCallOutcome:
-    """The outcome of an ACP call: cancelled when the turn ended under it,
-    refused when RoomKit refused its permission (a handler that raised
-    deciding it fails the call instead), else what the agent said."""
+    """The outcome of an ACP call: RoomKit's decision on its permission when
+    the call did not run (refused, or failed when a handler raised deciding
+    it), whether the agent closed it failed or the turn ended under it; else
+    cancelled when the turn ended under it, or what the agent said."""
+    if interrupted or status == "failed":
+        if tool.refused:
+            return "refused"
+        if tool.failure is not None:
+            return "failed"
     if interrupted:
         return "cancelled"
-    if status != "failed":
-        return "served"
-    return "refused" if tool.refused else "failed"
+    return "failed" if status == "failed" else "served"
+
+
+def _decided_error(tool: _ToolState) -> str | None:
+    """The error of a call RoomKit refused, as the gate's refusal reads
+    (RFC §9.3); ``None`` for any other call."""
+    if not tool.refused:
+        return None
+    return json.dumps({"error": tool.refusal or f"Tool '{tool.name}' was denied"})
 
 
 def _tool_end(
@@ -431,7 +444,13 @@ class ACPEventsMixin:
         left something open from one that ended clean. Idempotent: a tool
         already finished is skipped by :meth:`_emit_tool_end`.
         """
-        open_tools = [tool for tool in turn.tools.values() if tool.started and not tool.finished]
+        # A call RoomKit decided (refused, or its handler raised) is closed even
+        # if the agent never announced it: its decision is still reported.
+        open_tools = [
+            tool
+            for tool in turn.tools.values()
+            if not tool.finished and (tool.started or tool.refused or tool.failure is not None)
+        ]
         if not open_tools:
             return False
         # Said out loud: an agent that stops mid-tool leaves no other trace,
@@ -444,12 +463,13 @@ class ACPEventsMixin:
             ", ".join(tool.name for tool in open_tools),
         )
         for tool in open_tools:
+            await self._emit_tool_start(turn if stream else None, room_id, tool)
             await self._emit_tool_end(
                 turn if stream else None,
                 room_id,
                 tool,
                 "failed",
-                error=_TURN_ENDED_ERROR,
+                error=_decided_error(tool) or _TURN_ENDED_ERROR,
                 interrupted=True,
             )
         return True
@@ -597,6 +617,7 @@ class ACPEventsMixin:
         approved = False
         failure: str | None = None
         channel_refused = False
+        refusal: str | None = None
         if self._external_tool_handler is not None:
             try:
                 decision = await self._external_tool_handler.process_tool_call(
@@ -607,6 +628,7 @@ class ACPEventsMixin:
                     room_id=room_id,
                 )
                 approved = decision.approved
+                refusal = decision.reason
                 if decision.modified_input is not None or decision.result is not None:
                     logger.warning(
                         "ACP cannot apply ExternalToolHandler input/result overrides; "
@@ -625,6 +647,7 @@ class ACPEventsMixin:
             # channel reports it with what failed (RFC §9.3).
             tool.failure = failure
             tool.refused = not approved and failure is None
+            tool.refusal = refusal if tool.refused else None
             tool.channel_refused = channel_refused
 
         preferred = (
