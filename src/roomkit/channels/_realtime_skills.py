@@ -34,7 +34,12 @@ from roomkit.channels._skill_handlers import (
     tools_hint,
 )
 from roomkit.core.exceptions import ToolRefusedError
-from roomkit.skills.models import missing_required_tools, missing_tools_error
+from roomkit.skills.models import (
+    RequiresMatch,
+    missing_required_tools,
+    missing_tools_error,
+    serves_exactly,
+)
 from roomkit.skills.registry import SkillRegistry
 from roomkit.tools.policy import matches_any_pattern
 
@@ -54,13 +59,22 @@ receive the full body in the activation result and must preserve that context.
 
 
 class RequiredToolsCheck:
-    """Whether an activating skill's required tools are in the session's
-    catalogue, read when asked: after the activation's hooks ran, before
-    anyone is told (RFC §9.3)."""
+    """Whether an activating skill's required tools are among those the
+    session declares and its policy admits, read when asked: after the
+    activation's hooks ran, before anyone is told (RFC §9.3). A tool only a
+    *closed* gate holds does not count (RFC §24.3)."""
 
-    def __init__(self, skill: Skill | None, catalogue: Callable[[], list[dict[str, Any]]]) -> None:
+    def __init__(
+        self,
+        skill: Skill | None,
+        catalogue: Callable[[], list[dict[str, Any]]],
+        closed: Iterable[str] = (),
+        match: RequiresMatch = serves_exactly,
+    ) -> None:
         self._skill = skill
         self._catalogue = catalogue
+        self._closed = list(closed)
+        self._match = match
         self.missing: list[str] | None = None
         """The required tools the catalogue lacked, once checked."""
 
@@ -68,7 +82,11 @@ class RequiredToolsCheck:
         """Check the catalogue now: whether every required tool is in it."""
         skill = self._skill
         self.missing = (
-            missing_required_tools(skill.metadata, _names(self._catalogue())) if skill else []
+            missing_required_tools(
+                skill.metadata, _names(self._catalogue()), self._closed, match=self._match
+            )
+            if skill
+            else []
         )
         return not self.missing
 
@@ -311,6 +329,35 @@ class RealtimeSkillSupport:
         tools among *reachable* its name matches, hinted, and those tools."""
         return tools_hint(result, skill_name, self._skills, reachable, call_tool=call_tool)
 
+    @property
+    def requires_match(self) -> RequiresMatch:
+        """How the registry reads a skill's ``requires`` names (RFC §24.3)."""
+        return self._skills.requires_match
+
+    def is_closed_for_good(self, name: str) -> bool:
+        """Whether only skills marked unavailable gate *name*: no activation
+        can open it (RFC §24.2)."""
+        return matches_any_pattern(name, self._skills.unopenable_tool_names())
+
+    def _serving_tools(
+        self, skill: Skill, catalogue: dict[str, dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """The schemas of the tools that serve *skill*'s ``requires``, as the
+        registry's ``requires_match`` reads them, each once (RFC §24.3)."""
+        match = self._skills.requires_match
+        serving: dict[str, dict[str, Any]] = {}
+        for required in skill.metadata.required_tool_names:
+            for name, tool in catalogue.items():
+                if match(required, (name,)):
+                    serving.setdefault(name, tool)
+        return list(serving.values())
+
+    def closed_for(self, skill: Skill, session_id: str) -> set[str]:
+        """The closed gates an activation of *skill* meets: those no skill of
+        the session's, *skill* included, can open (RFC §24.2)."""
+        opened = self._activated_skills.get(session_id, set()) | {skill.name}
+        return self._skills.closed_tool_names(opened)
+
     async def prepare_activation(
         self, arguments: dict[str, Any], session_id: str, tools: list[dict[str, Any]]
     ) -> tuple[str, Skill | None]:
@@ -325,7 +372,12 @@ class RealtimeSkillSupport:
                 }
             ), None
         catalogue = {name: tool for tool in tools if (name := dict_tool_name(tool))}
-        missing = missing_required_tools(skill.metadata, _names(tools))
+        missing = missing_required_tools(
+            skill.metadata,
+            _names(tools),
+            self.closed_for(skill, session_id),
+            match=self._skills.requires_match,
+        )
         if missing:
             # A refusal, as the activation itself refuses it (RMK-395).
             raise ToolRefusedError(missing_tools_error(missing))
@@ -338,9 +390,7 @@ class RealtimeSkillSupport:
                 "Follow these complete skill instructions for this session. "
                 "Use the required tool schemas below; tool names and actions are distinct."
             )
-            payload["required_tools"] = [
-                catalogue[name] for name in skill.metadata.required_tool_names
-            ]
+            payload["required_tools"] = self._serving_tools(skill, catalogue)
             if skill_name in self._activated_skills.get(session_id, set()):
                 payload["already_active"] = True
             return json.dumps(payload), skill

@@ -113,11 +113,16 @@ class AIToolPolicyMixin(_AIChannelContract):
         """
         if not self._skills:
             return set()
+        return self._skills.gated_tool_names(self._activated_skill_names())
+
+    def _activated_skill_names(self) -> set[str]:
+        """The skills this conversation activated: this turn's, and the room's
+        unless the turn is standalone (RFC §10.1.1)."""
         loop_ctx = self._get_loop_ctx()
         room = (
             set() if loop_ctx.standalone else self._skill_activation.active_names(loop_ctx.room_id)
         )
-        return self._skills.gated_tool_names(loop_ctx.activated_skills | room)
+        return loop_ctx.activated_skills | room
 
     def _record_declared_tools(
         self, loop_ctx: _ToolLoopContext, tools: list[AITool] | None
@@ -212,7 +217,10 @@ class AIToolPolicyMixin(_AIChannelContract):
             return {"error": policy_refusal(name)}
         if matches_any_pattern(name, self._gated_tool_names):
             logger.warning("Tool %s blocked by skill gating", name)
-            return {"error": gated_tool_refusal(name)}
+            closed = self._skills is not None and matches_any_pattern(
+                name, self._skills.unopenable_tool_names()
+            )
+            return {"error": gated_tool_refusal(name, closed=closed)}
         return None
 
     def _reachable_tools(self, tools: Iterable[AITool]) -> list[AITool]:

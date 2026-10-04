@@ -976,10 +976,13 @@ class AIToolsMixin(_AIChannelContract):
         tool policy is applied, skill gating aside (RFC §24.3); none to check
         outside a turn, which resolved no toolset."""
         base = self._get_loop_ctx().all_context_tools
-        if base is None:
+        if base is None or self._skills is None:
             return []
         admitted = (tool.name for tool in base if self._policy_allows(tool.name))
-        return missing_required_tools(skill.metadata, admitted)
+        # Its own gates are the skill's to open; a closed one nothing opens.
+        closed = self._skills.closed_tool_names(self._activated_skill_names() | {skill.name})
+        match = self._skills.requires_match
+        return missing_required_tools(skill.metadata, admitted, closed, match=match)
 
     def _defer_activation(self, loop_ctx: _ToolLoopContext, skill_name: str) -> None:
         """Hold an activation until its call is served, or record it now.

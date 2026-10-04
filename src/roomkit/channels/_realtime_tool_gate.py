@@ -128,12 +128,13 @@ class RealtimeToolGateMixin:
         return any(isinstance(tool, dict) and tool.get("name") == name for tool in tools)
 
     def _admitted_catalogue(self, session_id: str) -> list[dict[str, Any]]:
-        """The session's catalogue its tool policies admit, skill gating aside:
-        what a skill's ``requires`` is checked against, and the schemas an
+        """Every tool the session declares (its catalogue, the channel's own)
+        that its tool policies admit, skill gating aside: what a skill's
+        ``requires`` is checked against, as on a text turn, and the schemas an
         activation may hand over (RFC §24.3)."""
         return [
             tool
-            for tool in self._session_catalogue(session_id)
+            for tool in self._session_declared_tools(session_id)
             if (name := dict_tool_name(tool)) and self._session_admits(session_id, name)
         ]
 
@@ -381,8 +382,10 @@ class RealtimeToolGateMixin:
             return policy_refusal(name)
         # Hiding a gated tool from the catalogue is not enforcement — the model
         # may still name one it saw before the skill was deactivated.
-        if self._skill_support is not None and self._skill_support.is_gated(name, session_id):
-            return gated_tool_refusal(name, can_activate=can_activate)
+        support = self._skill_support
+        if support is not None and support.is_gated(name, session_id):
+            closed = support.is_closed_for_good(name)
+            return gated_tool_refusal(name, can_activate=can_activate, closed=closed)
         return None
 
     async def _before_realtime_tool_use(

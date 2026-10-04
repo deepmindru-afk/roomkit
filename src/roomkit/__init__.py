@@ -208,7 +208,7 @@ from roomkit.providers.image import (
     MockImageProvider,
 )
 from roomkit.sandbox import SandboxExecutor, SandboxResult
-from roomkit.skills import ScriptExecutor, Skill, SkillMetadata, SkillRegistry
+from roomkit.skills import RequiresMatch, ScriptExecutor, Skill, SkillMetadata, SkillRegistry
 from roomkit.store import ConversationStore, InMemoryStore, SQLiteSchemaError, SQLiteStore
 from roomkit.telemetry.redaction import content_logging_enabled, set_content_logging
 from roomkit.tools.base import Tool
@@ -346,6 +346,7 @@ __all__ = [
     "HTTPChannel",
     "MessengerChannel",
     "RCSChannel",
+    "RequiresMatch",
     "ResponseMetadata",
     "RealtimeAudioVideoChannel",
     "RealtimeVoiceChannel",

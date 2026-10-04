@@ -222,11 +222,14 @@ class GateRefusal:
     detail: str | None = None
 
 
-def gated_tool_refusal(name: str, *, can_activate: bool = True) -> str:
+def gated_tool_refusal(name: str, *, can_activate: bool = True, closed: bool = False) -> str:
     """What the model reads of a call to a tool a skill keeps closed, whichever
     gate refused it: an AI channel's, a realtime session's, a reasoning
     backend's (RFC §21.1). A model that cannot activate the skill itself (a
-    reasoning backend) is not told to."""
+    reasoning backend) is not told to, nor is any model told so when only a
+    skill marked unavailable gates the tool (*closed*), which nothing opens."""
+    if closed:
+        return f"Tool '{name}' is gated by a skill that is not available here."
     if not can_activate:
         return f"Tool '{name}' is gated by a skill the conversation has not activated."
     return f"Tool '{name}' is gated by a skill. Activate the skill first using activate_skill."

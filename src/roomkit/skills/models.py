@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -80,14 +80,34 @@ class SkillMetadata:
         return matches_any_pattern(tool_name, self.gated_tool_names)
 
 
-def missing_required_tools(metadata: SkillMetadata, admitted: Iterable[str]) -> list[str]:
-    """The tools *metadata* requires that the conversation does not offer
-    (RFC §24.3): its ``requires`` names absent from *admitted*, the tools the
-    conversation declares once its tool policy is applied, skill gating aside,
-    since activating the skill opens what it gates. Every door checks an
-    activation with this one rule."""
-    offered = set(admitted)
-    return [name for name in metadata.required_tool_names if name not in offered]
+RequiresMatch = Callable[[str, Collection[str]], bool]
+"""Whether a skill's ``requires`` name is served by the tool names offered: a
+host's own reading of its names (a hub whose actions share its name as a
+prefix, say). The default reads an exact tool name."""
+
+
+def serves_exactly(required: str, offered: Collection[str]) -> bool:
+    """The default :data:`RequiresMatch`: *required* is an offered tool's name."""
+    return required in offered
+
+
+def missing_required_tools(
+    metadata: SkillMetadata,
+    admitted: Iterable[str],
+    closed: Iterable[str] = (),
+    *,
+    match: RequiresMatch = serves_exactly,
+) -> list[str]:
+    """The ``requires`` names of *metadata* the conversation does not serve
+    (RFC §24.3), as *match* reads a name against the tools offered: those of
+    *admitted* (the tools the conversation declares once its tool policy is
+    applied, skill gating aside, since activating a skill opens what it
+    gates) that match no *closed* pattern, which nothing can open
+    (:meth:`SkillRegistry.closed_tool_names`). Every door checks an activation
+    with this one rule."""
+    shut = list(closed)
+    offered = {name for name in admitted if not matches_any_pattern(name, shut)}
+    return [name for name in metadata.required_tool_names if not match(name, offered)]
 
 
 def missing_tools_error(missing: list[str]) -> str:

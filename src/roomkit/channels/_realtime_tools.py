@@ -45,7 +45,7 @@ from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import (
     ToolCallEvent,
 )
-from roomkit.skills.models import missing_tools_error
+from roomkit.skills.models import missing_tools_error, serves_exactly
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.context import reset_span, set_current_span
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome
@@ -696,7 +696,12 @@ class RealtimeToolsMixin:
         landing after that does not withdraw the activation; the skill's calls
         to a tool it removed are then refused as undeclared.
         """
-        check = RequiredToolsCheck(skill, lambda: self._admitted_catalogue(call.session.id))
+        support = self._skill_support
+        closed = support.closed_for(skill, call.session.id) if support and skill else ()
+        match = support.requires_match if support else serves_exactly
+        check = RequiredToolsCheck(
+            skill, lambda: self._admitted_catalogue(call.session.id), closed, match
+        )
         served = ToolOutcome(OutcomeKind.SERVED, result)
         outcome = await judge_tool_call(self, call, served, carrying, admit=check.held)
         if check.missing is None:  # no framework judged the call

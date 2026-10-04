@@ -12,7 +12,7 @@ from roomkit.skills.errors import (
     SkillParseError,
     SkillValidationError,
 )
-from roomkit.skills.models import Skill, SkillMetadata
+from roomkit.skills.models import RequiresMatch, Skill, SkillMetadata, serves_exactly
 from roomkit.skills.parser import (
     find_skill_md,
     parse_skill,
@@ -30,7 +30,12 @@ class SkillRegistry:
     cached for subsequent access.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, requires_match: RequiresMatch = serves_exactly) -> None:
+        """*requires_match* says whether a skill's ``requires`` name is served
+        by the tools a conversation offers (RFC §24.3): an exact tool name by
+        default, a host's own reading otherwise (a hub served by any tool
+        named ``<hub>_*``, say). Every door checks ``requires`` through it."""
+        self.requires_match: RequiresMatch = requires_match
         self._metadata: dict[str, SkillMetadata] = {}
         self._skills: dict[str, Skill] = {}
         self._paths: dict[str, Path] = {}
@@ -183,7 +188,7 @@ class SkillRegistry:
         the source marks unavailable is not copied at all.
         """
         wanted = set(self._metadata) | set(self._unavailable) if names is None else set(names)
-        copied = SkillRegistry()
+        copied = SkillRegistry(requires_match=self.requires_match)
         for name, metadata in self._metadata.items():
             if name not in wanted:
                 continue
@@ -244,16 +249,39 @@ class SkillRegistry:
 
     def gated_tool_names(self, activated: Container[str] = ()) -> set[str]:
         """The tool patterns skills keep closed (RFC §24.2): those of every
-        registered skill not in *activated*, and those of every skill marked
-        unavailable, which nothing can activate. Every door reads skill
-        gating through this one rule."""
-        gated: set[str] = set()
-        for metadata in self._metadata.values():
-            if metadata.name not in activated:
-                gated.update(metadata.gated_tool_names)
-        for gates in self._closed_gates.values():
-            gated.update(gates)
-        return gated
+        registered skill not in *activated*, and the closed ones
+        (:meth:`closed_tool_names`). Both doors read skill gating through
+        this one rule."""
+        gated = {
+            pattern
+            for metadata in self._metadata.values()
+            if metadata.name not in activated
+            for pattern in metadata.gated_tool_names
+        }
+        return gated | self.closed_tool_names(activated)
+
+    def closed_tool_names(self, activated: Container[str] = ()) -> set[str]:
+        """The tool patterns only skills marked unavailable gate, which
+        nothing can open (RFC §24.2). A pattern a skill in *activated* gates is
+        that skill's to open: an unavailable skill gating the same pattern does
+        not hold it closed."""
+        opened = {
+            pattern
+            for metadata in self._metadata.values()
+            if metadata.name in activated
+            for pattern in metadata.gated_tool_names
+        }
+        return {
+            pattern
+            for gates in self._closed_gates.values()
+            for pattern in gates
+            if pattern not in opened
+        }
+
+    def unopenable_tool_names(self) -> set[str]:
+        """The closed patterns no available skill gates as well: no
+        activation can open them (RFC §24.2)."""
+        return self.closed_tool_names(self._metadata)
 
     def mark_unlisted(self, name: str) -> None:
         """Keep *name* activatable but out of the prompt manifest.

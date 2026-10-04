@@ -681,7 +681,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A skill's `requires` and gates read the same on every door (RMK-429, RFC
   §24.3): a text turn now checks `requires` as a realtime session does, with
-  one rule (`roomkit.skills.models.missing_required_tools`), against the tools
+  one rule (`missing_required_tools`, exported from `roomkit.skills`), against the tools
   the conversation declares once its tool policy is applied; a text activation
   of a skill whose required tool is absent was served. A realtime session
   counted a tool its policy denies as available, and on a fixed-declaration
@@ -689,7 +689,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schema; it now refuses the activation (`Required tools not available`).
   `SkillRegistry.mark_unavailable` no longer opens the tools the skill gated:
   they stay closed, read through the new `SkillRegistry.gated_tool_names()`,
-  which every door uses.
+  which every door uses. Per review: a `requires` name is an exact tool name
+  unless the host says how its names are served, `SkillRegistry(
+  requires_match=...)` (`RequiresMatch`, default `serves_exactly`; copies keep
+  it), so a host whose skills name a hub (`requires: boards` for its
+  `boards_*` tools) passes its own reading, and a fixed-provider activation
+  hands over the tools that serve it; **a host with such names must pass it
+  before upgrading, or its text activations are refused** as its realtime ones
+  already were. A pattern an activated skill gates is no longer held closed
+  by an unavailable skill gating it too (`closed_tool_names`); a required tool
+  only a closed gate holds is missing; a call to it reads `gated by a skill
+  that is not available here`; a realtime session counts the channel's own
+  tools as requirements, as a text turn does; no hook sees a denied tool's
+  schema.
 
 - A refusal reads the same text for the same cause on every door (RMK-428,
   RFC §21.1, §12.4): an `AIChannel` turn, a reasoning backend's turn, a
