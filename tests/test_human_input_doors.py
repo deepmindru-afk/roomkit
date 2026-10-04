@@ -12,6 +12,7 @@ close or unplug settles the requests still open.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -241,3 +242,18 @@ async def test_a_person_s_tool_the_host_declares_needs_no_tool_handler() -> None
     )
     kit, _, _, _ = await realtime_kit(provider=provider, config=config)
     await kit.close()
+
+
+def test_a_human_input_handler_given_as_tool_handler_is_warned_about(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="roomkit.channels.realtime_voice"):
+        RealtimeVoiceChannel(
+            "rt",
+            provider=MockRealtimeProvider(),
+            transport=MockRealtimeTransport(),
+            tools=[ASK_DICT],
+            tool_handler=_human(),
+        )
+
+    assert "pass it as human_input_handler=" in caplog.text

@@ -399,7 +399,7 @@ class RealtimeVoiceChannel(
                 provider.name,
             )
 
-        self._init_human_input(human_input_handler)
+        self._init_human_input(human_input_handler, tool_handler)
         self._init_host_tools(tools, tool_handler)
         self._mute_on_tool_call = mute_on_tool_call
         self._tool_result_max_length = tool_result_max_length
@@ -552,13 +552,24 @@ class RealtimeVoiceChannel(
                 transport.on_audio_played(self._on_transport_audio_played)
             )
 
-    def _init_human_input(self, human_input_handler: HumanInputToolHandler | None) -> None:
+    def _init_human_input(
+        self, human_input_handler: HumanInputToolHandler | None, tool_handler: ToolHandler | None
+    ) -> None:
         """The person's tools, which the channel serves itself (RFC §9.3)."""
         self._human_input = (
             ChannelHumanInput(human_input_handler, self.channel_type)
             if human_input_handler is not None
             else None
         )
+        if isinstance(tool_handler, HumanInputToolHandler):
+            # Served as any host handler: under the channel's call bound, its
+            # requests never announced nor settled with the channel.
+            logger.warning(
+                "Channel %s serves a HumanInputToolHandler as its tool_handler: pass it as "
+                "human_input_handler= so its own timeout, ON_USER_INPUT_REQUIRED and the "
+                "channel's close apply to it",
+                self.channel_id,
+            )
 
     def _init_host_tools(
         self, tools: list[dict[str, Any] | Any] | None, tool_handler: ToolHandler | None
