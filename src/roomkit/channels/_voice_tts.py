@@ -413,8 +413,6 @@ class VoiceTTSMixin:
         from roomkit.models.channel import ChannelOutput as ChannelOutputModel
         from roomkit.voice.tts.sentence_splitter import split_sentences
 
-        from .voice import TTSPlaybackState
-
         if not self._tts or not self._backend:
             return ChannelOutputModel.empty()
 
@@ -507,6 +505,24 @@ class VoiceTTSMixin:
         delivered = _served_sessions(target_sessions, results)
 
         full_text = self._streamed_text(accumulated, gate)
+        await self._close_streamed_response(delivered, full_text, room_id, context, _vs_parent)
+        return ChannelOutputModel.empty()
+
+    async def _close_streamed_response(
+        self,
+        delivered: list[VoiceSession],
+        full_text: str,
+        room_id: str,
+        context: RoomContext,
+        parent_span: str | None,
+    ) -> None:
+        """Close a streamed response on the sessions that heard it (RFC §12.2 step 13s).
+
+        Each gets the whole text as its playback and final transcript, and
+        AFTER_TTS reports what was sent.
+        """
+        from .voice import TTSPlaybackState
+
         # Replace the relayed prefix with the whole streamed text
         for session in delivered:
             with self._state_lock:
@@ -530,7 +546,7 @@ class VoiceTTSMixin:
         if self._framework and full_text:
             from roomkit.telemetry.context import reset_span, set_current_span
 
-            _tok = set_current_span(_vs_parent) if _vs_parent else None
+            _tok = set_current_span(parent_span) if parent_span else None
             try:
                 await self._framework.hook_engine.run_async_hooks(
                     room_id,
@@ -542,8 +558,6 @@ class VoiceTTSMixin:
             finally:
                 if _tok is not None:
                     reset_span(_tok)
-
-        return ChannelOutputModel.empty()
 
     def _sentence_gate(self, room_id: str, context: RoomContext) -> SentenceHookGate | None:
         """BEFORE_TTS on each sentence of a streamed response (RFC §12.2 step 12s.b).
