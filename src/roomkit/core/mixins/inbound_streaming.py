@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
@@ -248,40 +247,21 @@ class InboundStreamingMixin(HelpersMixin):
         *,
         correlation_id: str,
     ) -> Exception | None:
-        """Hand the response to the channel that streams it; the failure it ended on, if any."""
+        """Hand the response to the channel that streams it; the failure it ended on, if any.
+
+        Text deltas drive the channel's live rendering; the rows the writer
+        commits reach it inline, interleaved between the chunks, the text the
+        response ends on included, failed or not (RFC §12.2 step 13s).
+        """
         room_id = placeholder.room_id
-        # Whether the transport read the response to its end. A transport that
-        # hands back early (every voice session barged in, RFC §12.2 step 13s;
-        # or one that never reads it at all) skips the final flush below, so
-        # the response is closed and stored cancelled once deliver_stream()
-        # returns.
-        exhausted = False
-
-        # Generator that yields text deltas and persisted events.
-        # Text deltas drive the streaming bubble; RoomEvents are delivered
-        # as regular events interleaved between stream chunks.
-        async def segment_stream() -> Any:
-            """Yield str for text deltas, RoomEvent for persisted segments.
-
-            Thinking markers pass straight through to the channel — they
-            carry transient display info only and are not persisted as
-            RoomEvents (the realtime bus still publishes a buffered
-            ``THINKING_END`` for out-of-band observers).
-            """
-            nonlocal exhausted
-            async with aclosing(writer.read(reader)) as items:
-                async for item in items:
-                    yield item
-
-            exhausted = True
-            row = await writer.flush_text()
-            if row is not None:
-                yield row
-
-        segments = segment_stream()
+        # Rows ride it besides text: the ABC's AsyncIterator[str] names only the text.
+        segments: Any = writer.stream(reader)
         try:
             await channel.deliver_stream(segments, placeholder, binding, context)
-            if not exhausted:
+            # A transport that hands back early (every voice session barged
+            # in, RFC §12.2 step 13s; or one that never reads it at all) left
+            # the response unread: it is closed and stored cancelled.
+            if not writer.read_to_end and writer.failure is None:
                 await self._stop_unread_stream(segments, sr, reader, writer, room_id)
         except asyncio.CancelledError:
             # A turn interrupted on purpose (the console's Esc). What was
@@ -294,21 +274,27 @@ class InboundStreamingMixin(HelpersMixin):
             await writer.end_cancelled(reader)
             raise
         except Exception as exc:
+            if writer.failure is None:
+                # The channel failed, not the response: what it was handed may
+                # not all have been rendered, so the text it leaves goes out
+                # as an ordinary event, to everyone.
+                writer.stream_lost()
+                await writer.end_failed(reader)
+            failure: Exception | None = exc
+        else:
+            # A channel that swallowed the response's failure does not make
+            # the response a success.
+            failure = writer.failure
+        if failure is not None:
             log_failure(
                 logger,
-                exc,
+                failure,
                 f"streaming delivery of {sr.source_channel_id} to {binding.channel_id} "
                 f"for room {room_id}",
                 extra={"room_id": room_id, "channel_id": sr.source_channel_id},
             )
-            # Persist any text accumulated before the error. The stream is
-            # gone, so this text never reached its channels — it goes out
-            # as an ordinary event, to everyone.
-            writer.stream_lost()
-            await writer.end_failed(reader)
-            await self._fire_stream_error_hook(exc, room_id, context, sr, correlation_id)
-            return exc
-        return None
+            await self._fire_stream_error_hook(failure, room_id, context, sr, correlation_id)
+        return failure
 
     @staticmethod
     async def _stop_unread_stream(

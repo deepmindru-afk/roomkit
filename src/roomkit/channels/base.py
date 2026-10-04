@@ -222,12 +222,21 @@ class Channel(ABC):
     ) -> ChannelOutput:
         """Deliver a streaming text response to this channel.
 
-        Default: accumulate text, deliver as complete event.
+        Default: accumulate text, deliver as complete event. A response that
+        fails is not delivered again to the channel that streamed it (RFC
+        §12.2 step 13s), so what was accumulated is delivered before the
+        failure propagates.
         """
         chunks: list[str] = []
-        async for chunk in text_stream:
-            if isinstance(chunk, str):
-                chunks.append(chunk)
+        try:
+            async for chunk in text_stream:
+                if isinstance(chunk, str):
+                    chunks.append(chunk)
+        except Exception:
+            if chunks:
+                buffered = event.model_copy(update={"content": TextContent(body="".join(chunks))})
+                await self.deliver(buffered, binding, context)
+            raise
         updated = event.model_copy(update={"content": TextContent(body="".join(chunks))})
         return await self.deliver(updated, binding, context)
 

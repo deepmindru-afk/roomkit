@@ -747,6 +747,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A response that fails mid-stream is no longer handed again to the channel
+  that streamed it (RMK-467, RFC §12.2 step 13s). When the provider raised
+  after a sentence, the text already streamed went back to that channel as an
+  ordinary event: a `VoiceChannel` spoke it a second time, the CLI printed it
+  again, and a WebSocket client got it after `stream_error`, outside the
+  stream. The row now reaches the streaming channel inside the stream, as a
+  completed response's last row does, then the failure; the other channels
+  still get it, `ON_ERROR` still fires and the text is stored as before. A
+  channel that swallows the failure no longer turns the turn into a cancelled
+  success: `ON_ERROR` fires and the caller gets the error. The default
+  `Channel.deliver_stream` delivers what it buffered before the failure
+  propagates; a host channel that buffers the stream in its own
+  `deliver_stream` should do the same. A failure of the streaming channel
+  itself keeps its fallback: the text goes to every channel, that one
+  included.
+
 - Audio work of a session whose end has begun reaches nothing and rebuilds
   nothing (RMK-466). A frame still in the stages on an `inbound_dsp_threads`
   worker when its session ended, and the callbacks it sent back to the loop,

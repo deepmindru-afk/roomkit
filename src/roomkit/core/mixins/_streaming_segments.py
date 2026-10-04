@@ -128,6 +128,9 @@ class SegmentWriter:
         self._writing: set[asyncio.Task[RoomEvent | None]] = set()
         self._started: set[str] = set()
         self.persisted: list[RoomEvent] = []
+        # How :meth:`stream` ended: read to its end, or on the response's failure.
+        self.read_to_end = False
+        self.failure: Exception | None = None
 
     # -- what the stream hands in ------------------------------------------
 
@@ -184,8 +187,8 @@ class SegmentWriter:
                 rows[rows.index(last)] = updated
 
     def stream_lost(self) -> None:
-        """The stream failed: text accumulated past the failure never reached
-        the streaming channel, so it goes out like any other event."""
+        """The streaming channel failed: what it was handed may not all have
+        been rendered, so the text still to write goes out like any other event."""
         self._streamed_to.clear()
 
     async def read(
@@ -211,6 +214,30 @@ class SegmentWriter:
                 for row in await self.take(delta):
                     yield row
 
+    async def stream(
+        self, reader: ResponseReader
+    ) -> AsyncGenerator[str | ThinkingDeltaMarker | RoomEvent, None]:
+        """The response as the channel rendering it reads it, its last text row included.
+
+        Yields what :meth:`read` yields, then the row of the text it ends on.
+        A response that fails ends the same way, through :meth:`end_failed`,
+        then raises: the channel was handed every delta of that text, so the
+        row reaches it here, as a completed response's does, and its delivery
+        excludes it (RFC §12.2 step 13s).
+        """
+        try:
+            async with aclosing(self.read(reader)) as items:
+                async for item in items:
+                    yield item
+        except Exception as exc:
+            self.failure = exc
+            if (row := await self.end_failed(reader)) is not None:
+                yield row
+            raise
+        self.read_to_end = True
+        if (row := await self.flush_text()) is not None:
+            yield row
+
     async def drain(self, reader: ResponseReader) -> None:
         """Read the response to its end, writing its rows, those of a cut-short turn included.
 
@@ -219,15 +246,11 @@ class SegmentWriter:
         leaves (:meth:`end_cancelled`, :meth:`end_failed`), then propagates.
         """
         try:
-            async with aclosing(self.read(reader)) as items:
+            async with aclosing(self.stream(reader)) as items:
                 async for _ in items:
                     pass
-            await self.flush_text()
         except asyncio.CancelledError:
             await self.end_cancelled(reader)
-            raise
-        except Exception:
-            await self.end_failed(reader)
             raise
 
     async def end_cancelled(self, reader: ResponseReader) -> None:
@@ -239,10 +262,13 @@ class SegmentWriter:
         await self.close_calls(await reader.abandon())
         await self.flush_text(cancelled=True)
 
-    async def end_failed(self, reader: ResponseReader) -> None:
-        """Write what a failed turn leaves: open calls closed as ``turn failed``, text kept."""
+    async def end_failed(self, reader: ResponseReader) -> RoomEvent | None:
+        """Write what a failed turn leaves: open calls closed as ``turn failed``, text kept.
+
+        Returns the text's row, or ``None`` when there was none to write.
+        """
         await self.close_calls(await reader.abandon("turn failed"))
-        await self.flush_text()
+        return await self.flush_text()
 
     # -- the three rows ----------------------------------------------------
 
