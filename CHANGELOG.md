@@ -277,6 +277,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — a realtime Tool Search call is judged by `ON_TOOL_CALL`
+  before the model reads it** (RMK-447, RFC §6.4, §9.3). `find_tools` and
+  `list_tools` on a realtime session were reported to the hooks after their
+  result went out, so nothing a SYNC hook returned counted. They are now
+  judged as any call, as `activate_skill` is: a BLOCK is what the model
+  reads and reveals nothing, a replacement is what it reads, and the hooks'
+  latency now precedes the result. A reconfiguration that fails after a
+  served search is logged, no longer reported as a failed call. Migration: a
+  SYNC `ON_TOOL_CALL` hook that blocks or rewrites every call by default now
+  reaches Tool Search too; let `find_tools` and `list_tools` through to keep
+  the old behaviour.
+
 - **BREAKING — a refused call reaches `ON_TOOL_CALL`'s observers only, on
   every door, and an external handler hears its own refusal through
   `on_tool_refused`** (RMK-432, RFC §9.3). `ToolCallEvent` gains `refused`
@@ -685,6 +697,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to `RealtimeVoiceChannel(..., skills=...)`.
 
 ### Fixed
+
+- A `find_tools` call an `ON_TOOL_CALL` hook blocked, or one that failed, no
+  longer reveals its matches (RMK-447, RFC §6.4). A text turn revealed them
+  from the handler, before the hooks judged the call: the next round declared
+  them and the room kept them for the next turns. A realtime session swapped
+  its reveal window and reconfigured whatever a hook returned. The reveal now
+  waits for the served call on both, as a skill activation's does. A search
+  that finds nothing reveals nothing: it no longer empties the reveal window,
+  which on a realtime session diverged from what the session declared.
 
 - Every realtime call reaches the channel, and every refusal at its entry
   takes the path of any call (RMK-442, RFC §12.4). A call that named no tool

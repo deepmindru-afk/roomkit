@@ -334,10 +334,10 @@ async def test_recovered_transcription_during_hangup_has_no_side_effect() -> Non
 
 
 @pytest.mark.parametrize("decision", ["modify", "block"])
-async def test_a_find_tools_call_is_reported_as_the_model_read_it(decision: str) -> None:
-    """RMK-292 review: a Tool Search call's result reaches the model before
-    ON_TOOL_CALL runs, so the firing is a report: the observers see what the
-    model read, whatever a SYNC hook returned, a BLOCK included (RFC §9.3)."""
+async def test_a_find_tools_call_is_judged_before_the_model_reads_it(decision: str) -> None:
+    """RMK-447: ON_TOOL_CALL judges a Tool Search call before its result goes
+    out, as any call: the model reads a BLOCK's reason or a hook's
+    replacement, and the observers see what it read (RFC §6.4, §9.3)."""
     async with channel_context() as ctx:
         kit, channel, provider, session, handler = ctx
         observed: list[Any] = []
@@ -352,8 +352,11 @@ async def test_a_find_tools_call_is_reported_as_the_model_read_it(decision: str)
         async def audit(event: Any, context: Any) -> None:
             observed.append(event)
 
-        found = await call(channel, provider, session, "find_tools", {"query": "calendar"})
+        read = await call(channel, provider, session, "find_tools", {"query": "calendar"})
         await asyncio.sleep(0.05)
 
-        assert found["matches"][0]["name"] == "calendar"
-        assert [(json.loads(e.result), e.is_error) for e in observed] == [(found, False)]
+        expected = {"error": "no"} if decision == "block" else {"n": 1}
+        assert read == expected
+        assert [(json.loads(e.result), e.is_error) for e in observed] == [
+            (expected, decision == "block")
+        ]

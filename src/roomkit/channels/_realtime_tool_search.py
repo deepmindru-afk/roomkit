@@ -272,23 +272,22 @@ class RealtimeToolSearchSupport:
 
     async def handle_tool_call(
         self, name: str, arguments: dict[str, Any], session_id: str
-    ) -> tuple[str, list[dict[str, Any]] | None]:
-        """Handle find_tools / list_tools.
+    ) -> tuple[str, list[str]]:
+        """Answer find_tools / list_tools, revealing nothing.
 
-        Returns ``(json_result, updated_tool_list_or_None)``. When the
-        second element is non-None, the caller MUST push it via
-        ``provider.reconfigure(tools=...)`` so the realtime model sees
-        the newly-exposed matches.
+        Returns ``(json_result, matched_names)``: the caller reveals the
+        names (:meth:`expose`) once the call is served and its result went
+        out, so a call ON_TOOL_CALL blocks reveals nothing (RFC §6.4).
         """
         if name == TOOL_FIND_TOOLS:
             return self._handle_find_tools(arguments, session_id)
         if name == TOOL_LIST_TOOLS:
-            return self._handle_list_tools(arguments, session_id), None
-        return json.dumps({"error": f"Unknown search tool: {name}"}), None
+            return self._handle_list_tools(arguments, session_id), []
+        return json.dumps({"error": f"Unknown search tool: {name}"}), []
 
     def _handle_find_tools(
         self, arguments: dict[str, Any], session_id: str
-    ) -> tuple[str, list[dict[str, Any]] | None]:
+    ) -> tuple[str, list[str]]:
         query = str(arguments.get("query", "")).strip()
         if not query:
             return (
@@ -298,7 +297,7 @@ class RealtimeToolSearchSupport:
                         "hint": "Pass a short natural-language description.",
                     }
                 ),
-                None,
+                [],
             )
 
         max_results = normalize_max_results(arguments.get("max_results"), self._threshold)
@@ -310,21 +309,12 @@ class RealtimeToolSearchSupport:
             ),
         )
         matches = search_catalogue(catalogue, query, max_results, exclude_names=exclude)
-
-        # Swap the exposure window — keep only the new matches plus
-        # pinned. Prevents unbounded growth of the visible surface
-        # across multiple find_tools calls.
-        self._exposed[session_id] = {tool.get("name", "") for tool in matches}
-
         result_str = render_find_payload(
             matches,
             related=related_family_tools(catalogue, matches, exclude_names=exclude),
             call_tool=self.uses_call_tool,
         )
-        if not matches or self.uses_call_tool:
-            return result_str, None
-        # Caller pushes this updated tool list via provider.reconfigure
-        return result_str, self.visible_tools(session_id, base_tools=catalogue)
+        return result_str, [name for tool in matches if (name := tool.get("name"))]
 
     def _handle_list_tools(self, arguments: dict[str, Any], session_id: str) -> str:
         if self.uses_call_tool and "name" in arguments:

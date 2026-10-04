@@ -310,34 +310,18 @@ async def report_interrupted_calls(
     host: ToolCallHost, calls: list[RealtimeToolCall], why: str
 ) -> None:
     """Report each call an ending interrupted, once: as cancelled before its
-    result went out, and with what the model read when the ending cut its
-    report short (RFC §9.3, §12.4)."""
+    result went out, and with the failure the model read when the ending cut
+    its report short (RFC §9.3, §12.4)."""
     await asyncio.gather(*(_report_interrupted(host, call, why) for call in calls))
 
 
 async def _report_interrupted(host: ToolCallHost, call: RealtimeToolCall, why: str) -> None:
     """Report one call an ending interrupted: cancelled before its result went
-    out; with the outcome it owes after, when the ending cut its report."""
+    out; with the failure it owes after, when the ending cut its report."""
     if not call.delivered:
         await report_cancelled_call(host, call, why)
-    elif call.owed is not None and call.owed.failed:
-        await report_failed_call(host, call, call.owed)
     elif call.owed is not None:
-        await _report_read_call(host, call, result_text(call.owed.result))
-
-
-async def _report_read_call(host: ToolCallHost, call: RealtimeToolCall, read: str) -> None:
-    """Tell ON_TOOL_CALL's observers alone what the model read of *call*,
-    unless its report was already made (RFC §9.3)."""
-    framework = host._tool_framework(call)
-    if framework is None:
-        return
-    try:
-        await framework._observe_failed_tool_call(
-            host._tool_event(call, read), host.channel_id, claim=call.claim_report
-        )
-    except Exception:
-        logger.warning("ON_TOOL_CALL observation failed for tool %s", call.name, exc_info=True)
+        await report_failed_call(host, call, call.owed)
 
 
 async def report_failed_call(

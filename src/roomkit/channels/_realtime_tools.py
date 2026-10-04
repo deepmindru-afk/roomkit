@@ -51,7 +51,6 @@ from roomkit.tools.result import (
     GateRefusal,
     bounded_result,
     declined_answer,
-    failure_detail,
     result_text,
 )
 from roomkit.tools.timeout import ToolTimeouts, answer_within
@@ -507,7 +506,7 @@ class RealtimeToolsMixin:
         """Tool Search and skill activation, which reconfigure the session
         around their delivery; ``None`` for any other call."""
         if self._tool_search_support and self._tool_search_support.is_search_tool(call.name):
-            return await self._serve_tool_search(call, door)
+            return await self._serve_tool_search(call, door, carrying)
         if not (self._skill_support and self._skill_support.is_skill_tool(call.name)):
             return None
         if call.name == TOOL_ACTIVATE_SKILL:
@@ -729,12 +728,12 @@ class RealtimeToolsMixin:
         if skill is not None:
             await self._open_skill_gates(call.session, skill)
         elif hinted:
-            await self._reveal_hinted(call.session, hinted)
+            await self._reveal_names(call.session, hinted)
         return outcome
 
-    async def _reveal_hinted(self, session: VoiceSession, names: list[str]) -> None:
-        """Reveal the tools an activation's hint named, as ``find_tools``
-        reveals its matches. Its observers judged the activation before it
+    async def _reveal_names(self, session: VoiceSession, names: list[str]) -> None:
+        """Reveal the tools a served ``find_tools`` call matched, or an
+        activation's hint named. Their observers judged the call before it
         went out, so a failed reconfiguration is logged by
         :meth:`_reveal_tools`, never reported to them."""
         search = self._tool_search_support
@@ -782,15 +781,20 @@ class RealtimeToolsMixin:
         await submit_tool_outcome(self._provider, session, call_id, result, failed=failed)
         return session.state != VoiceSessionState.ENDED
 
-    async def _serve_tool_search(self, call: RealtimeToolCall, door: ToolCallDoor) -> ToolOutcome:
-        """Serve a Tool Search call, serialized with activation and handoff.
+    async def _serve_tool_search(
+        self, call: RealtimeToolCall, door: ToolCallDoor, carrying: RoomContext | None
+    ) -> ToolOutcome:
+        """Serve a Tool Search call as ``activate_skill`` is served:
+        ON_TOOL_CALL decides, then delivery, then the reveal (RFC §6.4).
 
-        The result goes out, bounded, then the session is reconfigured to
-        declare what it revealed: the call id belongs to the current
-        connection, and a provider update can replace it. The observers hear
-        of the call after, outside the configuration lock (they may request a
-        handoff), as a report: the model already read the result, so nothing
-        a hook returns replaces it (RFC §9.3).
+        The answer is computed under the session's configuration lock, so an
+        activation or a handoff in progress settles first. The SYNC hooks then
+        run on it outside the lock (a hook may request a handoff), so a hook
+        that blocks ``find_tools`` blocks the reveal too: the model reads the
+        refusal and the session declares nothing new. Under the lock again the
+        result goes out before the session is reconfigured to declare its
+        matches: the call id belongs to the current connection, and a provider
+        update can replace it.
         """
         session = call.session
         lock = self._session_config_locks.get(session.id)
@@ -799,37 +803,31 @@ class RealtimeToolsMixin:
         async with lock:
             if session.state == VoiceSessionState.ENDED:
                 return ended_outcome(call)
-            result, updated = await self._tool_search_support.handle_tool_call(
+            result, names = await self._tool_search_support.handle_tool_call(
                 call.name, call.arguments, session.id
             )
-            outcome = ToolOutcome(OutcomeKind.SERVED, self._bound_call_result(call, result))
-            # Reported after it goes out: an ending that cuts in between still
-            # owes the observers what the model read.
-            call.owed = outcome
+        served = ToolOutcome(OutcomeKind.SERVED, result)
+        judged = await judge_tool_call(self, call, served, carrying)
+        outcome = replace(judged, result=self._bound_call_result(call, result_text(judged.result)))
+        async with lock:
+            if session.state == VoiceSessionState.ENDED:
+                return ended_outcome(call)
             delivered = await deliver_once(call, door, outcome)
-            if (
-                delivered
-                and updated is not None
-                and self._provider.supports_mid_session_reconfigure
-            ):
-                failure = await self._reveal_tools(session)
-                if failure is not None:
-                    # The model read the result; the session never learned the
-                    # tools it revealed. Reported as failed, with what it read.
-                    return replace(outcome, kind=OutcomeKind.FAILED, detail=failure)
+            if delivered and outcome.kind is OutcomeKind.SERVED and names:
+                await self._reveal_names(session, names)
         logger.info(
-            "Tool-search %s(%s) handled for session %s (%d tools now visible)",
+            "Tool-search %s(%s) handled for session %s (%d matches)",
             call.name,
             call.call_id,
             session.id,
-            len(updated) if updated is not None else 0,
+            len(names),
         )
-        await self._report_search_call(call, str(outcome.result))
         return outcome
 
-    async def _reveal_tools(self, session: VoiceSession) -> str | None:
-        """Declare to the session the tools Tool Search revealed; what failed,
-        if the reconfiguration did."""
+    async def _reveal_tools(self, session: VoiceSession) -> None:
+        """Declare to the session the tools Tool Search revealed, logging a
+        reconfiguration that failed: the model already read the call's result
+        and its observers heard of it."""
         with self._state_lock:
             base_tools = self._session_tools.get(session.id, self._tools or [])
         try:
@@ -840,23 +838,5 @@ class RealtimeToolsMixin:
                     session, session.metadata.get("system_prompt", self._system_prompt)
                 ),
             )
-        except Exception as exc:
-            logger.exception("Revealing tools to session %s failed", session.id)
-            return failure_detail(exc)
-        return None
-
-    async def _report_search_call(self, call: RealtimeToolCall, result: str) -> None:
-        """Report a delivered Tool Search call to every ON_TOOL_CALL hook, its
-        report claimed where the observers hear it: an ending that cuts the
-        chain leaves it owed, with what the model read (RFC §9.3)."""
-        framework = self._tool_framework(call)
-        if framework is None:
-            return
-        try:
-            await framework._report_tool_call(
-                self._tool_event(call, result), self.channel_id, claim=call.claim_report
-            )
         except Exception:
-            logger.debug(
-                "ON_TOOL_CALL report failed for tool-search tool %s", call.name, exc_info=True
-            )
+            logger.exception("Revealing tools to session %s failed", session.id)

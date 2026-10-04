@@ -318,20 +318,19 @@ class TestFindToolsHandler:
         support = RealtimeToolSearchSupport(catalogue)
         support.init_session("s1")
 
-        result_str, updated = await support.handle_tool_call(
+        result_str, names = await support.handle_tool_call(
             TOOL_FIND_TOOLS, {"query": "send a message"}, "s1"
         )
         result = json.loads(result_str)
         match_names = [m["name"] for m in result["matches"]]
         assert "send_sms" in match_names
         assert "send_email" in match_names
-        # Caller MUST receive an updated tool list to push via reconfigure.
-        assert updated is not None
-        names_in_updated = [t["name"] for t in updated]
-        assert "send_sms" in names_in_updated
+        # The caller reveals the matches once the call is served (RMK-447).
+        assert names == match_names
+        assert support._exposed["s1"] == set()
 
     async def test_find_tools_swaps_exposure_window(self) -> None:
-        """A second find_tools must replace, not extend, the exposure window."""
+        """A second find_tools reveal replaces, not extends, the exposure window."""
         catalogue = [
             _tool("send_sms", "send an SMS"),
             _tool("send_email", "send an email"),
@@ -340,13 +339,15 @@ class TestFindToolsHandler:
         support = RealtimeToolSearchSupport(catalogue)
         support.init_session("s1")
 
-        await support.handle_tool_call(TOOL_FIND_TOOLS, {"query": "send"}, "s1")
+        _, names = await support.handle_tool_call(TOOL_FIND_TOOLS, {"query": "send"}, "s1")
+        assert support.expose("s1", names)
         first_exposed = set(support._exposed["s1"])
         assert "send_sms" in first_exposed
         assert "send_email" in first_exposed
 
         # Different query should drop send_* and reveal create_invoice.
-        await support.handle_tool_call(TOOL_FIND_TOOLS, {"query": "invoice"}, "s1")
+        _, names = await support.handle_tool_call(TOOL_FIND_TOOLS, {"query": "invoice"}, "s1")
+        assert support.expose("s1", names)
         second_exposed = set(support._exposed["s1"])
         assert "create_invoice" in second_exposed
         assert "send_sms" not in second_exposed
@@ -354,21 +355,21 @@ class TestFindToolsHandler:
     async def test_find_tools_no_query_returns_error(self) -> None:
         support = RealtimeToolSearchSupport([_tool("foo")])
         support.init_session("s1")
-        result_str, updated = await support.handle_tool_call(TOOL_FIND_TOOLS, {"query": ""}, "s1")
+        result_str, names = await support.handle_tool_call(TOOL_FIND_TOOLS, {"query": ""}, "s1")
         result = json.loads(result_str)
         assert "error" in result
-        assert updated is None
+        assert names == []
 
     async def test_find_tools_no_match_returns_empty_no_reconfigure(self) -> None:
         support = RealtimeToolSearchSupport([_tool("send_sms", "send an SMS")])
         support.init_session("s1")
-        result_str, updated = await support.handle_tool_call(
+        result_str, names = await support.handle_tool_call(
             TOOL_FIND_TOOLS, {"query": "completely-unrelated-zzzz"}, "s1"
         )
         result = json.loads(result_str)
         assert result["matches"] == []
-        # No matches → no reconfigure (None signals "do not push").
-        assert updated is None
+        # No matches → nothing to reveal, no reconfigure.
+        assert names == []
 
     async def test_find_tools_skips_infra_and_pinned(self) -> None:
         """Infra tools and pinned tools never appear in find_tools matches."""
@@ -391,12 +392,12 @@ class TestListToolsHandler:
         catalogue = [_tool("a"), _tool("b"), _tool("c")]
         support = RealtimeToolSearchSupport(catalogue)
         support.init_session("s1")
-        result_str, updated = await support.handle_tool_call(TOOL_LIST_TOOLS, {}, "s1")
+        result_str, names = await support.handle_tool_call(TOOL_LIST_TOOLS, {}, "s1")
         result = json.loads(result_str)
         assert {t["name"] for t in result["tools"]} == {"a", "b", "c"}
         assert result["count"] == 3
         # list_tools is informational only — never reconfigures.
-        assert updated is None
+        assert names == []
 
     async def test_list_tools_filters_by_category(self) -> None:
         catalogue = [

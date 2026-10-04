@@ -1022,8 +1022,7 @@ class HelpersMixin:
 
         Every hook runs and nothing it returns is applied (RFC §9.3): the
         observers see *event* as it stands, a BLOCK included. For a call an
-        external handler or a provider ran, and for a result delivered before
-        the hooks ran (a realtime Tool Search call). A call the turn cut or a
+        external handler or a provider ran. A call the turn cut or a
         gate or handler refused never ran: its ASYNC observers alone hear of
         it, as of a local call cut or refused.
         *claim* claims the call's one report between the chain and the

@@ -138,17 +138,23 @@ async def _search_channel(provider_reconfigure: Any) -> tuple[RoomKit, Any, Any,
 
 
 async def test_a_failed_reconfiguration_sends_no_second_result() -> None:
+    """The observers judged the served search before its result went out
+    (RMK-447): a reconfiguration that fails after is logged, not reported."""
+    failed = asyncio.Event()
+
     async def fails(*args: Any, **kwargs: Any) -> None:
+        failed.set()
         raise RuntimeError("socket closed during reconfigure")
 
     kit, provider, session, observed = await _search_channel(fails)
 
     await provider.simulate_tool_call(session, "c-find", "find_tools", {"query": "weather"})
-    await until(lambda: bool(observed))
+    await asyncio.wait_for(failed.wait(), 5)
+    await asyncio.sleep(0.02)
 
     assert len(provider.tool_results) == 1
     assert "matches" in json.loads(provider.tool_results[0][2])
-    assert [(e.tool_call_id, e.is_error) for e in observed] == [("c-find", True)]
+    assert [(e.tool_call_id, e.is_error) for e in observed] == [("c-find", False)]
     await kit.close()
 
 
@@ -166,7 +172,8 @@ async def test_a_cancellation_after_the_result_went_out_is_not_reported() -> Non
     await until(lambda: bool(steps))
     await provider.simulate_tool_call_cancellation(session, ["c-find"])
     gate.set()
-    await until(lambda: bool(observed))
+    await until(lambda: len(steps) == 2)
+    await asyncio.sleep(0.02)
 
     assert steps == ["started", "finished"]
     assert [(e.tool_call_id, e.cancelled) for e in observed] == [("c-find", False)]

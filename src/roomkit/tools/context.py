@@ -160,8 +160,9 @@ class _ToolLoopContext:
     # by tool_call_id: committed once the call is served, dropped when
     # ON_TOOL_CALL blocks it or it fails, so a refused activation opens no gate.
     pending_activations: dict[str, str] = field(default_factory=dict)
-    # The tools an ``activate_skill`` hint named, by tool_call_id: revealed
-    # once the call is served, as an activation is committed.
+    # The tools a ``find_tools`` call matched or an ``activate_skill`` hint
+    # named, by tool_call_id: revealed once the call is served, as an
+    # activation is committed.
     pending_reveals: dict[str, list[str]] = field(default_factory=dict)
     # Whether Tool Search is active for this turn (catalogue over threshold).
     # Decided once in ``_build_context`` and read by ``_apply_tool_filters`` on

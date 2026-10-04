@@ -604,7 +604,7 @@ class AIToolsMixin(_AIChannelContract):
             # requested from what actually executed.
             scope.executed_arguments[tc.id] = dict(arguments)
         outcome = await self._judged_call(tc, arguments, scope)
-        self._settle_activation(tc.id, served=not outcome.failed)
+        self._settle_served_call(tc.id, served=not outcome.failed)
         references = [] if outcome.failed else self._reference_shown(self._get_loop_ctx())
         if kept_in_tool_memory(outcome.kind):
             self._remember_call(scope.room_id, tc.name, call_arguments, outcome.answer)
@@ -961,7 +961,7 @@ class AIToolsMixin(_AIChannelContract):
             # Refused as every door refuses it (RFC §24.3): nothing opens.
             raise ToolRefusedError(missing_tools_error(missing))
         # Recorded once the call's outcome is known: an ON_TOOL_CALL hook that
-        # blocks the call, or a failure, must open no gate (_settle_activation).
+        # blocks the call, or a failure, must open no gate (_settle_served_call).
         already_active = self._skill_activation.is_active(loop_ctx.room_id, skill_name)
         self._defer_activation(loop_ctx, skill_name)
         if skill is None or not already_active:
@@ -998,8 +998,9 @@ class AIToolsMixin(_AIChannelContract):
             self._record_activation(loop_ctx, skill_name)
 
     def _defer_reveal(self, loop_ctx: _ToolLoopContext, names: list[str]) -> None:
-        """Hold the reveal an activation's hint asked for until its call is
-        served, as an activation is held, or reveal now outside a loop."""
+        """Hold the reveal a ``find_tools`` call or an activation's hint asked
+        for until its call is served, as an activation is held, or reveal now
+        outside a loop."""
         call = _current_tool_call.get()
         if call is not None and call.tool_call_id:
             if names:
@@ -1018,9 +1019,9 @@ class AIToolsMixin(_AIChannelContract):
         loop_ctx.revealed_tools = revealed
         self._tool_usage.record_revealed(loop_ctx.room_id, revealed)
 
-    def _settle_activation(self, tool_call_id: str, *, served: bool) -> None:
-        """Record the activation, or the hint's reveal, a served call asked
-        for; drop a refused one."""
+    def _settle_served_call(self, tool_call_id: str, *, served: bool) -> None:
+        """Record the activation, or the reveal (a ``find_tools`` call's, an
+        activation hint's), a served call asked for; drop a refused one."""
         loop_ctx = self._get_loop_ctx()
         skill_name = loop_ctx.pending_activations.pop(tool_call_id, None)
         if skill_name is not None and served:
@@ -1065,11 +1066,15 @@ class AIToolsMixin(_AIChannelContract):
         ]
 
     async def _handle_find_tools(self, arguments: dict[str, Any]) -> str:
-        """Reveal catalogue tools matching a query for the rest of the loop.
+        """Reveal catalogue tools matching a query for the rest of the loop,
+        once the call is served (RFC §6.4).
 
-        Mutates ``loop_ctx.revealed_tools`` (swap window); the next round's
-        tool re-filter exposes the matches. No ``provider.reconfigure`` — the
-        text loop re-sends its tool list every round.
+        The matches swap the reveal window when the call's outcome is known
+        (``_settle_served_call``): a call an ON_TOOL_CALL hook blocks, or one
+        that fails, reveals nothing, and a search that finds nothing keeps the
+        window as it was. The next round's tool re-filter exposes the matches.
+        No ``provider.reconfigure``: the text loop re-sends its tool list every
+        round.
         """
         loop_ctx = self._get_loop_ctx()
         query = str(arguments.get("query", "")).strip()
@@ -1088,11 +1093,10 @@ class AIToolsMixin(_AIChannelContract):
         # (RFC §6.4, §21.1).
         exclude = self._never_deferred(loop_ctx)
         matches = search_catalogue(catalogue, query, max_results, exclude_names=exclude)
-        loop_ctx.revealed_tools = {m["name"] for m in matches if m.get("name")}
-        # Reveals persist across turns via ToolUsageMemory (the tool's own
-        # description promises "the rest of the session") — a tool found in
-        # turn N is often only called in turn N+1, after the user confirms.
-        self._tool_usage.record_revealed(loop_ctx.room_id, loop_ctx.revealed_tools)
+        # Revealed once the call is served, then for the rest of the session
+        # (ToolUsageMemory, through _reveal): a tool found in turn N is often
+        # only called in turn N+1, after the user confirms.
+        self._defer_reveal(loop_ctx, [m["name"] for m in matches if m.get("name")])
         # Compact result (name + short description). The matched tools' full
         # schemas reach the model via the next round's re-filtered tool list
         # (loop_ctx.revealed_tools), so inlining them here would only risk

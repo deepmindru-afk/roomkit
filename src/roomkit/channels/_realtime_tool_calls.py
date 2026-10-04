@@ -57,8 +57,8 @@ class RealtimeToolCall:
     delivered: bool = False
     reported: bool = False
     owed: ToolOutcome | None = None
-    """The outcome the model reads, kept from its delivery when the call's
-    report comes after it: a report an ending cuts still owes it (RFC §9.3)."""
+    """The failure the model reads, kept from its delivery, which the call's
+    report follows: a report an ending cuts still owes it (RFC §9.3)."""
 
     @classmethod
     def from_provider(

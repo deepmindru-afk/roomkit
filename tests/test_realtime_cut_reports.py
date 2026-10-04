@@ -1,10 +1,12 @@
 """A realtime call cut while it was reported, or issued once its session
 ended, is reported once (RMK-431, RFC §9.3, §12.4).
 
-A call whose result went out before its report (a Tool Search call, a
-refused or failed call) owes the observers that outcome when an ending cuts
-in between. A call issued once its session ended, by the provider or a
-reasoning backend, runs no gate and is reported once, cancelled.
+A call whose result went out before its report (a refused or failed call)
+owes the observers that outcome when an ending cuts in between; a Tool Search
+call, judged before its result goes out (RMK-447), is cancelled by an ending
+that cuts its judgement, and nothing is sent. A call issued once its session
+ended, by the provider or a reasoning backend, runs no gate and is reported
+once, cancelled.
 """
 
 from __future__ import annotations
@@ -68,7 +70,7 @@ def _observe(kit: RoomKit) -> list[ToolCallEvent]:
     return seen
 
 
-async def test_a_search_call_whose_report_the_ending_cut_keeps_what_the_model_read() -> None:
+async def test_a_search_call_whose_judgement_the_ending_cut_is_cancelled() -> None:
     async def handler(name: str, arguments: dict[str, Any]) -> str:
         return "ok"
 
@@ -97,10 +99,10 @@ async def test_a_search_call_whose_report_the_ending_cut_keeps_what_the_model_re
     await _until(lambda: bool(seen))
     await asyncio.sleep(0.05)
 
-    [sent] = provider.tool_results
     [report] = seen
-    assert (report.name, report.is_error, report.cancelled) == ("find_tools", False, False)
-    assert report.result == sent[2]
+    assert (report.name, report.is_error, report.cancelled) == ("find_tools", True, True)
+    assert provider.tool_results == []
+    assert not channel._tool_search_support._exposed.get(session.id)
     await kit.close()
 
 
