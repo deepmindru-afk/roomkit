@@ -28,7 +28,11 @@ from roomkit.tools.result import (
     pre_execution_denial,
     unknown_tool_error,
 )
-from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
+from roomkit.tools.validation import (
+    fold_hoisted_arguments,
+    rewritten_arguments_error,
+    validate_tool_arguments,
+)
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -457,13 +461,8 @@ def _rewritten_arguments(
     """The arguments BEFORE_TOOL_USE left, returned or edited in place, checked
     against the schema again."""
     effective = rewritten if rewritten is not None else arguments
-    # No fold here, deliberately: a hook's rewritten arguments are user code,
-    # and repairing them would hide the hook's bug. The model's own call was
-    # already folded above.
-    arg_error = validate_tool_arguments(params, effective) if params is not None else None
-    if arg_error is not None:
-        logger.warning("Realtime tool %s post-hook arguments rejected: %s", name, arg_error)
-        return effective, json.dumps(
-            {"error": f"Invalid rewritten arguments for '{name}': {arg_error}"}
-        )
+    invalid = rewritten_arguments_error(name, params, effective)
+    if invalid is not None:
+        logger.warning("Realtime tool %s: %s", name, invalid)
+        return effective, json.dumps({"error": invalid})
     return effective, None

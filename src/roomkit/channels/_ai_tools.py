@@ -82,7 +82,11 @@ from roomkit.tools.result import (
     unserved_tool_error,
 )
 from roomkit.tools.timeout import ToolTimeouts, answer_within
-from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
+from roomkit.tools.validation import (
+    fold_hoisted_arguments,
+    rewritten_arguments_error,
+    validate_tool_arguments,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -574,7 +578,6 @@ class AIToolsMixin(_AIChannelContract):
         # The handler and ON_TOOL_CALL read ``arguments``, so they report
         # what actually ran; the usage record keeps the model's own.
         arguments = call_arguments
-        arguments_rewritten = False
         if self._before_tool_call_hook is not None:
             pre_event = ToolCallEvent(
                 channel_id=self.channel_id,
@@ -592,25 +595,13 @@ class AIToolsMixin(_AIChannelContract):
                 return _refused_with({"error": denial}, decision.detail, arguments=arguments)
             if decision.arguments is not None:
                 arguments = decision.arguments
-                arguments_rewritten = True
 
-        # Validate the payload after every hook, even when it did not
-        # explicitly return a replacement. ToolCallEvent is frozen but its
-        # nested dict is mutable, so an in-place edit must not bypass this
-        # fail-closed boundary either. No fold here, deliberately: these
-        # arguments come from user code, and repairing a hook's output
-        # would hide the hook's bug instead of naming it. The model's own
-        # call was already folded above, so a hook that rewrites nothing
-        # arrives here in the repaired shape.
-        if params is not None:
-            arg_error = validate_tool_arguments(params, arguments)
-            if arg_error is not None:
-                qualifier = "rewritten " if arguments_rewritten else ""
-                logger.warning("Tool %s %sarguments rejected: %s", tc.name, qualifier, arg_error)
-                return _refused_with(
-                    {"error": (f"Invalid {qualifier}arguments for '{tc.name}': {arg_error}")},
-                    arguments=arguments,
-                )
+        # Validated again after the hooks, an edit in place included: the
+        # event is frozen but its arguments dict is not.
+        invalid = rewritten_arguments_error(tc.name, params, arguments)
+        if invalid is not None:
+            logger.warning("Tool %s: %s", tc.name, invalid)
+            return _refused_with({"error": invalid}, arguments=arguments)
         return arguments
 
     async def _serve_gated_call(

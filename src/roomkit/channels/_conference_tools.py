@@ -26,7 +26,11 @@ from roomkit.tools.result import (
     pre_execution_denial,
     undeclared_tool_refusal,
 )
-from roomkit.tools.validation import fold_hoisted_arguments, validate_tool_arguments
+from roomkit.tools.validation import (
+    fold_hoisted_arguments,
+    rewritten_arguments_error,
+    validate_tool_arguments,
+)
 
 if TYPE_CHECKING:
     from roomkit.channels._realtime_tool_calls import RealtimeToolCall
@@ -152,9 +156,10 @@ class ConferenceToolGate:
             return GateRefusal(_error(denial), decision.detail)
         if decision.arguments is not None:
             call.arguments = decision.arguments
-        error = validate_tool_arguments(schema, call.arguments) if schema is not None else None
-        if error is not None:
-            return GateRefusal(_error(f"Invalid rewritten arguments for '{name}': {error}"))
+        invalid = rewritten_arguments_error(name, schema, call.arguments)
+        if invalid is not None:
+            logger.warning("Conference tool %s: %s", name, invalid)
+            return GateRefusal(_error(invalid))
         return None
 
 

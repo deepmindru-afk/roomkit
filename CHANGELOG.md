@@ -829,6 +829,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Arguments a `BEFORE_TOOL_USE` hook edited in place so they no longer fit
+  the schema read `Invalid rewritten arguments` on an AIChannel too (RMK-482,
+  RFC §21.1), as on a realtime session and a conference: the AI channel said
+  `Invalid arguments`, as if the model had sent them. The check and its words
+  live in one helper, `rewritten_arguments_error`, which the three gates use.
+
 - An `AIChannel`'s human-input tools are served by the channel itself
   (RMK-481, RFC §9.3), after its own tools and before the host's handler:
   replacing `channel.tool_handler` dropped them, since the handler given as

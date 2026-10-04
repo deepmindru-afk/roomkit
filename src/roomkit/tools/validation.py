@@ -168,3 +168,23 @@ def fold_hoisted_arguments(
     folded = {key: value for key, value in arguments.items() if key not in hoisted}
     folded[_PARAMS_PROPERTY] = {key: arguments[key] for key in hoisted}
     return folded, None
+
+
+def rewritten_arguments_error(
+    name: str, schema: dict[str, Any] | None, arguments: dict[str, Any]
+) -> str | None:
+    """Why the arguments BEFORE_TOOL_USE left for a call to *name* fail its
+    *schema*, as the model reads it; ``None`` when they fit or nothing is
+    declared.
+
+    Run after the hooks whether they returned arguments or not: the event's
+    arguments are a mutable dict a hook may edit in place. The model's own
+    call was validated, and folded, before the hooks ran, so a failure here
+    is always a hook's, and the words say the arguments were rewritten. No
+    fold here, deliberately: a hook's arguments are user code, and repairing
+    them would hide its bug instead of naming it.
+    """
+    if schema is None:
+        return None
+    error = validate_tool_arguments(schema, arguments)
+    return None if error is None else f"Invalid rewritten arguments for '{name}': {error}"
