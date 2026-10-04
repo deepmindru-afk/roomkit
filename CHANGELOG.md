@@ -796,6 +796,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `kit.close()` ends the strategies' background runs (RMK-478, RFC §19.7.3,
+  §19.7.4): a supervisor's `delegate_workers` with `async_delivery` and a
+  Loop's `delegate_loop` ran as bare tasks that outlived the kit, their
+  workers still generating after `close()` returned, with no terminal entry.
+  The kit holds each run and `close()` cancels it before the delegated tasks:
+  its worker's delegation ends cancelled, its room is freed, and its terminal
+  entry is posted `failed` (`cancelled`), with nothing handed back.
+
 - A strategy's worker delegation is one sequence on every door (RMK-478,
   RFC §19.7.3, §19.7.4): the supervisor's workers (sequential, parallel,
   supervised, `delegate_to_<id>` waiting) and the Loop's producer and

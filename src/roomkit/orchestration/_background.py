@@ -4,18 +4,22 @@ back to whoever made the call (RFC §19.7.3, §19.7.4, §23.3 step 8).
 One sequence for a supervisor's background workers and an asynchronous Loop:
 run the work, free the room, hand the outcome back to the channel whose call
 started it (in the session that made the call, on a realtime voice channel),
-then post the run's one terminal entry on the status bus.
+then post the run's one terminal entry on the status bus. The kit holds every
+run until it ends: ``close()`` cancels it, and a run cancelled frees its room
+and posts its terminal entry, failed, with nothing handed back.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._realtime_context import get_current_voice_session
 from roomkit.core._fallback import FALLBACK_FAILED
+from roomkit.core.task_utils import log_task_exception
 from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.tasks.handback import hand_back, not_handed_back
 from roomkit.tools.context import _current_turn_chain_depth, current_tool_call
@@ -64,6 +68,16 @@ class BackgroundRun[T]:
     release: Callable[[bool], None]
 
 
+def start_background_run(kit: RoomKit, run: Coroutine[Any, Any, None]) -> None:
+    """Start a strategy's background *run* as a task *kit* holds until it
+    ends, so ``close()`` cancels it (RFC §19.7.3, §19.7.4)."""
+    task = asyncio.create_task(run)
+    runs = kit._background_runs
+    runs.add(task)
+    task.add_done_callback(runs.discard)
+    task.add_done_callback(log_task_exception)
+
+
 async def run_in_background[T](kit: RoomKit, run: BackgroundRun[T]) -> None:
     """Run *run*, free its room, hand its outcome back, post its terminal entry.
 
@@ -85,6 +99,9 @@ async def run_in_background[T](kit: RoomKit, run: BackgroundRun[T]) -> None:
             chain_depth,
             session_id=session.id if session is not None else None,
         )
+    except asyncio.CancelledError:
+        _post_unless_failed(run, outcome, "cancelled")
+        raise
     except Exception as exc:
         logger.error("Handing back a background run in room %s failed", run.room_id, exc_info=exc)
         _post_unless_failed(run, outcome, str(exc))
@@ -99,10 +116,13 @@ async def run_in_background[T](kit: RoomKit, run: BackgroundRun[T]) -> None:
 async def _work[T](run: BackgroundRun[T]) -> T | None:
     """The run's result, or ``None`` when it raised, which is logged and
     posted with its message (for the logs and the status bus, never a model);
-    the room is freed either way."""
+    the room is freed either way, a cancellation included."""
     outcome: T | None = None
     try:
         outcome = await run.work()
+    except asyncio.CancelledError:
+        run.post(StatusLevel.FAILED, "cancelled")
+        raise
     except Exception as exc:
         logger.exception("Background run in room %s failed", run.room_id)
         run.post(StatusLevel.FAILED, str(exc))

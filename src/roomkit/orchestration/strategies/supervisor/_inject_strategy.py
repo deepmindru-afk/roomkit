@@ -15,7 +15,7 @@ import weakref
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import orchestration_tool
-from roomkit.core.task_utils import log_task_exception
+from roomkit.orchestration._background import start_background_run
 from roomkit.orchestration._call_room import in_call_room
 from roomkit.orchestration.strategies.supervisor._common import (
     _STRATEGY_TOOL_NAME,
@@ -218,11 +218,12 @@ class _StrategyToolServer:
             self._running.discard(_rid)
             self._dedup_cache.pop(_rid, None)
 
-        # Create the task + populate dedup atomically with the _running flag.
-        # If create_task raises (shutdown race) we must release _running so
+        # Start the run + populate dedup atomically with the _running flag.
+        # If the start raises (shutdown race) we must release _running so
         # the room isn't permanently marked busy.
         try:
-            task = asyncio.create_task(
+            start_background_run(
+                self._kit,
                 _async_run_and_deliver(
                     kit=self._kit,
                     room_id=rid,
@@ -232,9 +233,8 @@ class _StrategyToolServer:
                     task_desc=task_desc,
                     share_channels=self._share_channels,
                     on_done=_clear,
-                )
+                ),
             )
-            task.add_done_callback(log_task_exception)
         except BaseException:
             self._running.discard(rid)
             raise

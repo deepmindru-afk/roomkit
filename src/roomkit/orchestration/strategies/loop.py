@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import orchestration_tool, schema_tool
 from roomkit.core.exceptions import RoomKitError, TaskCutShortError
-from roomkit.core.task_utils import log_task_exception
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType
@@ -26,6 +25,7 @@ from roomkit.orchestration._background import (
     background_failure_text,
     calling_channel_id,
     run_in_background,
+    start_background_run,
 )
 from roomkit.orchestration._call_room import in_call_room
 from roomkit.orchestration._installs import set_up_for_voice_room
@@ -291,10 +291,11 @@ class _VoiceLoopServer:
         if rid in running:
             return json.dumps({"status": "already_running", "message": "Loop is already running."})
         running.add(rid)
-        # If create_task raises (shutdown race), release the room so it
+        # If the start raises (shutdown race), release the room so it
         # isn't stuck in already_running.
         try:
-            task = asyncio.create_task(
+            start_background_run(
+                self._kit,
                 _async_loop_and_deliver(
                     kit=self._kit,
                     room_id=rid,
@@ -305,12 +306,11 @@ class _VoiceLoopServer:
                     task_desc=arguments.get("task", ""),
                     max_iterations=self._max_iterations,
                     on_done=lambda: running.discard(rid),
-                )
+                ),
             )
         except BaseException:
             running.discard(rid)
             raise
-        task.add_done_callback(log_task_exception)
         return json.dumps(
             {
                 "status": "started",

@@ -67,6 +67,7 @@ from roomkit.core.mixins import (
     SourceOpsMixin,
     VoiceOpsMixin,
 )
+from roomkit.core.task_utils import cancel_and_wait
 from roomkit.core.transcoder import DefaultContentTranscoder
 from roomkit.identity.base import IdentityResolver
 from roomkit.models.channel import RateLimit
@@ -348,6 +349,9 @@ class RoomKit(
         self._pending_traces: dict[str, list[object]] = {}
         # Track fire-and-forget trace hook tasks to prevent GC
         self._pending_hook_tasks: set[asyncio.Task[Any]] = set()
+        # The strategies' background runs (orchestration._background): held
+        # so close() ends them (RFC §19.7.3, §19.7.4).
+        self._background_runs: set[asyncio.Task[None]] = set()
         self._resource_leases: set[asyncio.Event] = set()
         self._resource_leases_sealed = False
         # Telemetry
@@ -476,6 +480,15 @@ class RoomKit(
             self._event_router._framework_emitter = self._emit_framework_event
         return self._event_router
 
+    async def _cancel_background_runs(self) -> None:
+        """Cancel the strategies' background runs and wait for their ends:
+        each frees its room and posts its terminal entry, cancelled."""
+        runs = set(self._background_runs)
+        while runs:
+            await cancel_and_wait(*runs, log_errors_to=logger)
+            # A run's end may start another: it is cancelled in turn.
+            runs = {run for run in self._background_runs if not run.done()}
+
     async def close(self) -> None:
         """Close every channel, then release what they share.
 
@@ -515,7 +528,9 @@ class RoomKit(
         # Stop delivery backend worker loop
         if self._delivery_backend is not None:
             await self._delivery_backend.close()
-        # Cancel in-flight background tasks first
+        # Cancel in-flight background work first: the strategies' runs, which
+        # end their workers' delegations as they end, then delegated tasks.
+        await self._cancel_background_runs()
         await self._task_runner.close()
         # Cancel pending trace hook tasks
         for task in self._pending_hook_tasks:

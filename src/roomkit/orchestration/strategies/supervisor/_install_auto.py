@@ -8,17 +8,15 @@ injects a background ``delegate_workers`` tool on a ``RealtimeVoiceChannel``
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import orchestration_tool, schema_tool
-from roomkit.core.task_utils import log_task_exception
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType as _ChannelType
 from roomkit.models.event import RoomEvent
-from roomkit.orchestration._background import calling_channel_id
+from roomkit.orchestration._background import calling_channel_id, start_background_run
 from roomkit.orchestration._call_room import in_call_room
 from roomkit.orchestration._installs import set_up_for_voice_room
 from roomkit.orchestration.strategies.supervisor._common import (
@@ -218,10 +216,11 @@ class _VoiceDelegateServer:
             )
         running.add(rid)
         # Launch in the same step as the flag, so a second call of this
-        # room's cannot slip between them. If create_task raises (shutdown
+        # room's cannot slip between them. If the start raises (shutdown
         # race), release the room so it isn't stuck in already_running.
         try:
-            task = asyncio.create_task(
+            start_background_run(
+                self._kit,
                 _async_run_and_deliver(
                     kit=self._kit,
                     room_id=rid,
@@ -232,9 +231,8 @@ class _VoiceDelegateServer:
                     task_desc=arguments.get("task", ""),
                     share_channels=self._share_channels,
                     on_done=lambda **_: running.discard(rid),
-                )
+                ),
             )
-            task.add_done_callback(log_task_exception)
         except BaseException:
             running.discard(rid)
             raise
