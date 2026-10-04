@@ -44,8 +44,6 @@ from roomkit.channels._realtime_tool_calls import RealtimeToolCall, ToolCallBook
 from roomkit.channels._realtime_tool_executor import (
     ABANDONED_BY_PROVIDER,
     ToolCallDoor,
-    refuse_duplicate_call,
-    refuse_unidentified_call,
     report_cancelled_call,
     report_interrupted_calls,
     run_tool_call,
@@ -537,11 +535,10 @@ class ConferenceRealtime:
         if room is None:
             self._report_stale_call(call)
             return
-        if not call_id:
-            room.spawn(refuse_unidentified_call(self, call))
-            return
         if not self._tool_calls.open(call):
-            room.spawn(refuse_duplicate_call(self, call))
+            # No result can name it: refused on the path of any call, nothing
+            # sent (RFC §12.4).
+            room.spawn(self._answer_tool(call))
             return
         call.task = room.spawn(self._answer_tool(call))
         call.task.add_done_callback(lambda _: self._tool_calls.close(call))

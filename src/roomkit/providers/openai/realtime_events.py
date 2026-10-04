@@ -252,7 +252,7 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
 
     async def _on_function_call_done(self, session: VoiceSession, event: dict[str, Any]) -> None:
         call_id = event.get("call_id", "")
-        name = event.get("name", "")
+        name = event.get("name") or ""
         # A mapping, or the model's text when it does not read as one: the
         # channel refuses that call (RFC §12.4).
         arguments = readable_arguments(event.get("arguments"))

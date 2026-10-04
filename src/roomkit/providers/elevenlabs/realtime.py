@@ -226,7 +226,7 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
         base_url = self._config.base_url.replace("wss://", "https://").replace("ws://", "http://")
         client = ElevenLabs(api_key=self._config.api_key.get_secret_value(), base_url=base_url)
 
-        conversation = AsyncConversation(
+        conversation = sdk_patch.conversation(AsyncConversation)(
             client,
             self._config.agent_id,
             requires_auth=self._config.requires_auth,
@@ -560,9 +560,9 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
     async def _route_unregistered(
         self, session: VoiceSession, name: str, parameters: dict[str, Any]
     ) -> str:
-        """A call to a name RoomKit did not declare, bridged as a declared one:
-        the channel refuses and reports it."""
-        return await self._make_tool_handler(session, name)(parameters)
+        """A call to a name RoomKit did not declare, or to none, bridged as a
+        declared one: the channel refuses and reports it."""
+        return await self._make_tool_handler(session, name or "")(parameters)
 
     def _make_tool_handler(self, session: VoiceSession, name: str) -> Any:
         """Build the SDK handler that hands a call to RoomKit and waits.
@@ -574,10 +574,9 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
         """
 
         async def handler(parameters: dict[str, Any]) -> str:
-            arguments = dict(parameters)
-            # The SDK folds the call id into the arguments; the tool itself
-            # never declared it, so it must not travel to the handler.
-            call_id = str(arguments.pop("tool_call_id", "") or "")
+            # The service's id, and the model's arguments whole: a
+            # ``tool_call_id`` the model wrote is one of them (sdk_patch).
+            call_id, arguments = sdk_patch.split_call(parameters)
 
             pending_calls = self._pending_tools.setdefault(session.id, {})
             if not call_id or call_id in pending_calls:

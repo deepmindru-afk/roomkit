@@ -27,8 +27,6 @@ from roomkit.channels._realtime_tool_executor import (
     deliver_once,
     ended_outcome,
     judge_tool_call,
-    refuse_duplicate_call,
-    refuse_unidentified_call,
     report_cancelled_call,
     run_tool_call,
     serve_tool_call,
@@ -256,19 +254,16 @@ class RealtimeToolsMixin:
         call = RealtimeToolCall.from_provider(
             session, call_id, name, arguments, mutes=self._mute_on_tool_call
         )
-        if not call_id:
-            call.room_id = self._session_room(session) or session.room_id or None
-            self._track_task(
-                loop,
-                refuse_unidentified_call(self, call),
-                name=f"rt_tool_unidentified:{session.id}:{name}",
-            )
-            return
         if not self._open_tool_call(call):
+            # No result can name it (no id, or an id in flight): it takes the
+            # path of any call, the session's end and the transcription
+            # barrier included, is refused there and sends nothing (RFC §12.4).
+            # Off the books, so the session's end does not cancel it.
+            kind = "duplicate" if call_id else "unidentified"
             self._track_task(
                 loop,
-                refuse_duplicate_call(self, call),
-                name=f"rt_tool_duplicate:{session.id}:{call_id}",
+                self._handle_tool_call(call),
+                name=f"rt_tool_{kind}:{session.id}:{call_id or call.name}",
             )
             return
         call.task = self._track_task(

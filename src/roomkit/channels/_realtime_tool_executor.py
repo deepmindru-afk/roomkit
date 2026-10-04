@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import replace
@@ -150,13 +149,26 @@ async def run_tool_call(
 
 
 async def _decide(host: ToolCallHost, call: RealtimeToolCall, door: ToolCallDoor) -> ToolOutcome:
-    """The gate, then the serving: *call*'s outcome before its delivery."""
-    if call.unreadable is not None:
-        # Nothing runs on arguments that do not read (RFC §6.4, §12.4).
-        return ToolOutcome(OutcomeKind.REFUSED, call.unreadable)
+    """The gate, then the serving: *call*'s outcome before its delivery.
+
+    In this order: a call whose issuer is gone is cancelled; one no result can
+    name is refused; one that cannot be read is refused; then the gate.
+    """
     if host._call_ended(call):
         # Whoever issued it is gone: no gate runs for it.
         return ended_outcome(call)
+    if call.unanswerable is not None:
+        logger.warning(
+            "Tool call %s(%s) refused on channel %s, nothing sent: %s",
+            call.name,
+            call.call_id or "no id",
+            host.channel_id,
+            call.unanswerable,
+        )
+        return ToolOutcome(OutcomeKind.REFUSED, call.unanswerable)
+    if call.unreadable is not None:
+        # Nothing runs on arguments that do not read (RFC §6.4, §12.4).
+        return ToolOutcome(OutcomeKind.REFUSED, call.unreadable)
     denial, carrying = await host._authorize_call(call, door)
     if denial is not None:
         return ToolOutcome(OutcomeKind.REFUSED, denial.body, detail=denial.detail)
@@ -261,36 +273,12 @@ async def deliver_once(call: RealtimeToolCall, door: ToolCallDoor, outcome: Tool
     The call counts as delivered from here on: a cancellation that lands while
     the result goes out, or a step that fails after it, adds no second outcome.
     """
-    if call.delivered:
+    if call.delivered or call.unanswerable is not None:
+        # Nothing names a call without an id, and an id in flight is its first
+        # call's: no result goes out for either (RFC §12.4).
         return False
     call.delivered = True
     return await door.deliver(call, outcome)
-
-
-async def refuse_duplicate_call(host: ToolCallHost, call: RealtimeToolCall) -> None:
-    """Report a call whose id names a call still in flight, sending nothing:
-    the id's one result is the first call's, which runs on (RFC §12.4)."""
-    logger.warning(
-        "Tool call %s(%s) arrived while a call with its id is in flight on channel %s; "
-        "refused, the first one runs on",
-        call.name,
-        call.call_id,
-        host.channel_id,
-    )
-    body = json.dumps({"error": f"Tool call '{call.call_id}' is already running"})
-    await report_failed_call(host, call, ToolOutcome(OutcomeKind.REFUSED, body))
-
-
-async def refuse_unidentified_call(host: ToolCallHost, call: RealtimeToolCall) -> None:
-    """Report a call that came without an id, sending nothing: no result can
-    name it, nor can a cancellation (RFC §12.4)."""
-    logger.warning(
-        "Tool call %s arrived without an id on channel %s; refused, nothing sent",
-        call.name,
-        host.channel_id,
-    )
-    body = json.dumps({"error": f"Tool call '{call.name}' came without an id"})
-    await report_failed_call(host, call, ToolOutcome(OutcomeKind.REFUSED, body))
 
 
 async def submit_tool_outcome(

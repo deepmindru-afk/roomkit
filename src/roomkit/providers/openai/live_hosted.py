@@ -113,10 +113,11 @@ class OpenAILiveHostedDelegationMixin(RealtimeVoiceProvider):
     ) -> None:
         if item.get("type") != "function_call":
             return
-        name = item.get("name")
+        name = str(item.get("name") or "")
         if not name:
+            # Handed on all the same: the channel refuses it and answers under
+            # its id (RFC §12.4).
             logger.warning("[%s] function call item without a name: %s", _LOG_TAG, item)
-            return
         call_id = str(item.get("call_id") or "")
         # A call the output cap cut is handed on too, as OpenAI Realtime's: its
         # arguments read as a mapping when whole, else as the text the

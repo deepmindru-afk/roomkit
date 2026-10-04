@@ -26,6 +26,19 @@ hands such calls on itself. Undo with it, in ``providers/elevenlabs/realtime.py`
 the ``sdk_patch.client_tools`` call (back to ``ClientTools(loop=…)``) and
 ``_route_unregistered`` with its ``functools.partial`` import.
 
+A second patch keeps a call's id the service's (RMK-442). The SDK hands a
+``client_tool_call`` to its tools as ``{"tool_call_id": <the service's>,
+**parameters}``: a parameter the model wrote under ``tool_call_id`` replaces
+the id, and the SDK answers on the wire under the model's text; a message with
+no ``tool_call_id`` raises ``KeyError``, which ends the conversation.
+:func:`conversation` builds the SDK's ``AsyncConversation`` with its message
+handling rewriting such a call first: the model's parameters go under one
+reserved key, which :func:`split_call` reads back, and a missing id becomes
+``None``, a call the channel refuses as one without an id. Remove it, with
+:func:`conversation` and :func:`split_call` (back to ``AsyncConversation`` and
+the ``tool_call_id`` pop in ``_make_tool_handler``), when
+``test_the_sdk_still_lets_a_parameter_replace_the_call_id`` fails.
+
 ``pyproject.toml`` caps ``elevenlabs`` below the next minor, and the
 ``providers`` extra installs it so the canaries run in CI: move the cap once
 they pass on the new minor.
@@ -51,3 +64,44 @@ def client_tools(sdk_class: Any, *, loop: asyncio.AbstractEventLoop, route: Rout
             return await super().handle(tool_name, parameters)
 
     return _RoutingClientTools(loop=loop)
+
+
+CALL_ID = "tool_call_id"
+"""Where the SDK puts the service's call id among a call's parameters."""
+
+_ARGUMENTS = "roomkit.arguments"
+"""Where the model's own parameters travel, out of the SDK's reach."""
+
+
+def conversation(sdk_class: Any) -> Any:
+    """The SDK's *sdk_class* (``AsyncConversation``) with a ``client_tool_call``
+    rewritten before the SDK reads it: its id stays the service's."""
+
+    class _ServiceIdConversation(sdk_class):
+        async def _handle_message_core_async(self, message: Any, message_handler: Any) -> Any:
+            return await super()._handle_message_core_async(
+                _service_id_first(message), message_handler
+            )
+
+    return _ServiceIdConversation
+
+
+def _service_id_first(message: Any) -> Any:
+    """*message* with a client tool call's parameters under one reserved key,
+    so none replaces the service's id, and a missing id ``None``."""
+    if not isinstance(message, dict) or message.get("type") != "client_tool_call":
+        return message
+    call = dict(message.get("client_tool_call") or {})
+    call["parameters"] = {_ARGUMENTS: dict(call.get("parameters") or {})}
+    call.setdefault(CALL_ID, None)
+    return {**message, "client_tool_call": call}
+
+
+def split_call(parameters: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """A call's id, the service's, and the model's arguments, from the
+    parameters the SDK hands a tool; a ``tool_call_id`` the model wrote is
+    one of the arguments (RFC §12.4)."""
+    call_id = str(parameters.get(CALL_ID) or "")
+    if _ARGUMENTS in parameters:
+        return call_id, dict(parameters[_ARGUMENTS])
+    return call_id, {key: value for key, value in parameters.items() if key != CALL_ID}

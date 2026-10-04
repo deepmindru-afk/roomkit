@@ -608,11 +608,12 @@ class DeepgramAgentProvider(RealtimeVoiceProvider):
             call_id = str(function.get("id") or "")
             fname = str(function.get("name") or "")
             if not fname:
+                # Handed on all the same: the channel refuses it and answers
+                # under its id, so Deepgram does not wait on it (RFC §12.4).
                 logger.warning(
                     "Deepgram sent a function call without a name (session %s)",
                     state.session.id,
                 )
-                continue
             # Deepgram sends arguments as a JSON *string*: a mapping when it
             # reads as one, else the text, which the channel refuses (RFC §12.4).
             arguments = readable_arguments(function.get("arguments"))

@@ -16,7 +16,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from roomkit.providers.ai.tool_calls import tool_arguments, unreadable_call_error
+from roomkit.providers.ai.tool_calls import (
+    nameless_call_error,
+    tool_arguments,
+    unreadable_call_error,
+)
 
 if TYPE_CHECKING:
     from roomkit.tools._outcome import ToolOutcome
@@ -38,7 +42,12 @@ class RealtimeToolCall:
     """The room the session served when the call ran."""
     unreadable: str | None = None
     """What the model reads when the call cannot be read (its arguments, or a
-    ``call_tool`` transport's, are not an object): refused before the gate."""
+    ``call_tool`` transport's, are not an object, or it named no tool):
+    refused before the gate."""
+    unanswerable: str | None = None
+    """Why no result can be sent for the call (it came without an id, or under
+    an id whose call's result has not gone out): refused on the normal path,
+    reported, and nothing sent (RFC §12.4)."""
     mutes: bool = False
     """The call holds the session's input muted while it runs."""
     structured_content: dict[str, Any] | None = None
@@ -56,13 +65,21 @@ class RealtimeToolCall:
         cls,
         session: VoiceSession,
         call_id: str,
-        name: str,
+        name: str | None,
         arguments: dict[str, Any] | str,
         **fields: Any,
     ) -> RealtimeToolCall:
-        """The call a provider handed ``on_tool_call``: arguments that came as
-        the model's text did not read as an object, and the call is
-        unreadable, kept under ``raw`` for its reports (RFC §6.4, §12.4)."""
+        """The call a provider handed ``on_tool_call``: one that named no tool,
+        or whose arguments came as the model's text that does not read as an
+        object, is unreadable, its arguments kept under ``raw`` for its
+        reports (RFC §6.4, §12.4)."""
+        if not name:
+            logger.warning(
+                "Provider sent tool call %s naming no tool: it does not run", call_id or "(no id)"
+            )
+            readable = arguments if isinstance(arguments, dict) else tool_arguments(arguments)
+            refusal = json.dumps(nameless_call_error())
+            return cls(session, call_id, "", readable, unreadable=refusal, **fields)
         if isinstance(arguments, dict):
             return cls(session, call_id, name, arguments, **fields)
         logger.warning(
@@ -94,11 +111,20 @@ class ToolCallBook:
         self._calls: dict[str, dict[str, list[RealtimeToolCall]]] = {}
 
     def open(self, call: RealtimeToolCall) -> bool:
-        """Record *call*: False when a call under its id has not had its result
-        sent yet, which then keeps the id (RFC §12.4)."""
+        """Record *call*: False, the call marked unanswerable, when it came
+        without an id or under one whose call's result has not gone out yet,
+        which then keeps the id (RFC §12.4)."""
+        if not call.call_id:
+            call.unanswerable = json.dumps(
+                {"error": f"Tool call '{call.name}' came without an id"}
+            )
+            return False
         calls = self._calls.setdefault(call.session.id, {})
         held = calls.get(call.call_id, [])
         if any(not earlier.delivered for earlier in held):
+            call.unanswerable = json.dumps(
+                {"error": f"Tool call '{call.call_id}' is already running"}
+            )
             return False
         calls[call.call_id] = [*held, call]
         return True

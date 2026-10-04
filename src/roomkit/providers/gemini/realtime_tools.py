@@ -270,7 +270,7 @@ class GeminiLiveToolsMixin(RealtimeVoiceProvider):
                 self._tool_call_callbacks,
                 session,
                 fc.id or "",
-                fc.name,
+                fc.name or "",
                 args_dict,
                 label="tool_call",
             )

@@ -238,6 +238,14 @@ def unreadable_call_error(name: str) -> dict[str, Any]:
     }
 
 
+def nameless_call_error() -> dict[str, Any]:
+    """What the model reads for a call that named no tool: nothing ran."""
+    return {
+        "error": "Tool call named no tool",
+        "hint": "This call named no tool, so it did not run. Call a tool by its name.",
+    }
+
+
 def minted_call_id(name: str) -> str:
     """An id for a call its server gave none, unique across turns."""
     return f"call_{name}_{uuid4().hex[:12]}"
