@@ -46,7 +46,6 @@ from roomkit.providers.ai.base import (
     AIProvider,
     AIResponse,
     AITool,
-    AIToolCall,
     ModelInfo,
     ProviderError,
     StreamDone,
@@ -61,18 +60,13 @@ from roomkit.providers.ai.openai_dialect import (
     ToolCallSlots,
     extract_think_tags,
     json_schema_format,
+    message_tool_calls,
 )
 from roomkit.providers.ai.reasoning import thinking_switch
 from roomkit.providers.ai.response_schema import (
     check_schema_answer,
     checked_stream,
     schema_for_generate,
-)
-from roomkit.providers.ai.tool_calls import (
-    CallIds,
-    call_garbled,
-    call_partial,
-    tool_arguments,
 )
 from roomkit.providers.ai.tool_declaration import chat_tool_declarations
 from roomkit.providers.polargrid import sdk_patch
@@ -431,10 +425,13 @@ class PolarGridAIProvider(AIProvider):
 
         self._record_ttfb(t0)
 
+        # What the request cost, read before anything else: a response with
+        # no choice still billed its input.
+        usage = self._extract_usage(response)
         choices = getattr(response, "choices", None) or []
         if not choices:
             self._check_schema_answer(context, "", None)
-            return AIResponse(content="")
+            return AIResponse(content="", usage=usage)
         choice = choices[0]
         message = getattr(choice, "message", None)
         raw_content = getattr(message, "content", "") or ""
@@ -442,9 +439,8 @@ class PolarGridAIProvider(AIProvider):
         # so the answer text is clean and the reasoning rides on .thinking.
         thinking, content = extract_think_tags(raw_content)
         finish_reason = getattr(choice, "finish_reason", None)
-        usage = self._extract_usage(response)
         model = getattr(response, "model", self._config.model)
-        tool_calls = self._extract_tool_calls(message, finish_reason)
+        tool_calls = message_tool_calls(message, finish_reason)
         if not tool_calls:
             self._check_schema_answer(context, content, finish_reason)
 
@@ -578,30 +574,6 @@ class PolarGridAIProvider(AIProvider):
             await _aclose_stream(stream)
 
     # -- Helpers ------------------------------------------------------------
-
-    def _extract_tool_calls(self, message: Any, finish_reason: str | None) -> list[AIToolCall]:
-        """Read non-streaming ``message.tool_calls`` into AIToolCalls (RFC §6.4)."""
-        raw_calls = [
-            tc
-            for tc in getattr(message, "tool_calls", None) or []
-            if getattr(tc, "function", None) is not None
-        ]
-        ids = CallIds()
-        final = len(raw_calls) - 1
-        result: list[AIToolCall] = []
-        for n, tc in enumerate(raw_calls):
-            name = str(getattr(tc.function, "name", "") or "")
-            raw = getattr(tc.function, "arguments", "")
-            result.append(
-                AIToolCall(
-                    id=ids(getattr(tc, "id", None), name),
-                    name=name,
-                    arguments=tool_arguments(raw),
-                    partial=call_partial(raw, finish_reason, last=n == final),
-                    garbled=call_garbled(raw, finish_reason, last=n == final),
-                )
-            )
-        return result
 
     @staticmethod
     def _accumulate_tool_deltas(

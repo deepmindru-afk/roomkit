@@ -25,7 +25,6 @@ from roomkit.providers.ai.base import (
     AIProvider,
     AIResponse,
     AITool,
-    AIToolCall,
     ModelInfo,
     ProviderError,
     StreamDone,
@@ -42,6 +41,7 @@ from roomkit.providers.ai.openai_dialect import (
     field_reasoning,
     json_schema_format,
     merge_thinking,
+    message_tool_calls,
     overflow_fact,
 )
 from roomkit.providers.ai.reasoning import turn_setting
@@ -49,12 +49,6 @@ from roomkit.providers.ai.response_schema import (
     check_schema_answer,
     checked_stream,
     schema_for_generate,
-)
-from roomkit.providers.ai.tool_calls import (
-    CallIds,
-    call_garbled,
-    call_partial,
-    tool_arguments,
 )
 from roomkit.providers.ai.tool_declaration import ToolNameRule, chat_tool_declarations
 from roomkit.providers.openai.config import OpenAIConfig
@@ -463,32 +457,15 @@ class OpenAIAIProvider(AIProvider):
             attributes={"provider": self._provider_name, "model": self._config.model},
         )
 
+        # What the request cost, read before anything else: a response with
+        # no choice still billed its input.
+        usage = self._usage_from(response.usage) if response.usage else {}
         if not response.choices:
             self._check_schema_answer(context, None, "")
-            return AIResponse(content="")
+            return AIResponse(content="", usage=usage)
 
         choice = response.choices[0]
-        usage: dict[str, int] = {}
-        if response.usage:
-            usage = self._usage_from(response.usage)
-
-        # Extract tool calls from response
-        tool_calls: list[AIToolCall] = []
-        if choice.message.tool_calls:
-            ids = CallIds()
-            finish_reason = choice.finish_reason
-            final = len(choice.message.tool_calls) - 1
-            for n, tc in enumerate(choice.message.tool_calls):
-                raw = tc.function.arguments
-                tool_calls.append(
-                    AIToolCall(
-                        id=ids(tc.id, tc.function.name),
-                        name=tc.function.name,
-                        arguments=tool_arguments(raw),
-                        partial=call_partial(raw, finish_reason, last=n == final),
-                        garbled=call_garbled(raw, finish_reason, last=n == final),
-                    )
-                )
+        tool_calls = message_tool_calls(choice.message, choice.finish_reason)
 
         # Extract <think>...</think> tags from response text.
         raw_text = choice.message.content or ""

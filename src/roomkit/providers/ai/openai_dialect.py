@@ -17,10 +17,12 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from roomkit.providers.ai.base import (
+    AIToolCall,
     StreamToolCall,
     StreamToolCallDelta,
 )
 from roomkit.providers.ai.tool_calls import (
+    CallIds,
     arguments_cut,
     call_garbled,
     call_partial,
@@ -262,6 +264,34 @@ class ToolCallSlots:
             )
             for n, slot in enumerate(self._slots)
         ]
+
+
+def message_tool_calls(message: Any, finish_reason: str | None) -> list[AIToolCall]:
+    """The calls of a chat completion's message, as the loop reads them
+    (RFC §6.4): each with an id of its own, its arguments read as text or as
+    an object, cut or not; a call with no name keeps an empty one, for the
+    loop to refuse, never an error raised while reading the response."""
+    raw_calls = [
+        call
+        for call in getattr(message, "tool_calls", None) or []
+        if getattr(call, "function", None) is not None
+    ]
+    ids = CallIds()
+    final = len(raw_calls) - 1
+    calls: list[AIToolCall] = []
+    for n, call in enumerate(raw_calls):
+        name = str(getattr(call.function, "name", "") or "")
+        raw = getattr(call.function, "arguments", "")
+        calls.append(
+            AIToolCall(
+                id=ids(getattr(call, "id", None), name),
+                name=name,
+                arguments=tool_arguments(raw),
+                partial=call_partial(raw, finish_reason, last=n == final),
+                garbled=call_garbled(raw, finish_reason, last=n == final),
+            )
+        )
+    return calls
 
 
 def extract_think_tags(text: str) -> tuple[str | None, str]:

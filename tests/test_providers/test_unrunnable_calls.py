@@ -31,7 +31,7 @@ from roomkit.providers.ai.base import (
     StreamToolCallDelta,
 )
 from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.ai.openai_dialect import ToolCallSlots
+from roomkit.providers.ai.openai_dialect import ToolCallSlots, message_tool_calls
 from roomkit.providers.ai.tool_calls import (
     call_cut,
     call_garbled,
@@ -46,8 +46,6 @@ from roomkit.providers.gemini.config import GeminiConfig
 from roomkit.providers.ollama.config import OllamaConfig
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.openai.config import OpenAIConfig
-from roomkit.providers.polargrid.ai import PolarGridAIProvider
-from roomkit.providers.polargrid.config import PolarGridConfig
 from tests.tool_loop_modes import run_tool_loop
 
 _CTX = AIContext(messages=[AIMessage(role="user", content="hi")])
@@ -161,7 +159,6 @@ class TestOnlyTheLastCallIsCut:
     def test_polargrid_reads_the_last_call_among_those_with_a_function(self) -> None:
         """A call entry with no function is no call: the cut one before it is
         still the response's last (RMK-438)."""
-        provider = PolarGridAIProvider(PolarGridConfig(api_key="k", model="m"))
         message = SimpleNamespace(
             tool_calls=[
                 SimpleNamespace(id="c1", function=SimpleNamespace(name="lookup", arguments="")),
@@ -169,7 +166,8 @@ class TestOnlyTheLastCallIsCut:
             ]
         )
 
-        [call] = provider._extract_tool_calls(message, "length")
+        # PolarGrid reads a response's calls through the chat wire's shared reader.
+        [call] = message_tool_calls(message, "length")
 
         assert (call.partial, call.garbled) == (True, False)
 

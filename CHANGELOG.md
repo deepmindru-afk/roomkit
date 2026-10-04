@@ -845,6 +845,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A chat completion read through `generate()` hands the loop what the stream
+  hands it (RMK-484, RFC §6.4): a call whose server lost its name reaches the
+  loop with an empty one, which the loop refuses, where OpenAI's wire raised
+  a raw `ValidationError`; a response with no choice reports its usage, which
+  OpenAI's wire and PolarGrid dropped. One reader,
+  `openai_dialect.message_tool_calls`, reads a response's calls for both.
+
 - A provider that holds no tool unseen receives each tool result as its text
   (RMK-484, RFC §6.4): the references a Tool Search result carries, which only
   a deferring provider reads, stayed on it, and Anthropic behind a `base_url`

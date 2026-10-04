@@ -23,7 +23,7 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
 )
 from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.ai.openai_dialect import ToolCallSlots
+from roomkit.providers.ai.openai_dialect import ToolCallSlots, message_tool_calls
 from roomkit.providers.ai.tool_calls import CallIds, arguments_cut, call_cut, tool_arguments
 from roomkit.providers.anthropic.ai import AnthropicAIProvider
 from roomkit.providers.anthropic.config import AnthropicConfig
@@ -33,7 +33,6 @@ from roomkit.providers.mistral.ai import MistralAIProvider
 from roomkit.providers.mistral.config import MistralConfig
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.openai.config import OpenAIConfig
-from roomkit.providers.polargrid.ai import PolarGridAIProvider
 from tests.tool_loop_modes import run_tool_loop
 
 _CTX = AIContext(
@@ -342,7 +341,8 @@ def test_polargrid_reads_every_buffered_call_the_same_way() -> None:
         ]
     )
 
-    calls = PolarGridAIProvider._extract_tool_calls(SimpleNamespace(), message, "length")
+    # PolarGrid reads a response's calls through the chat wire's shared reader.
+    calls = message_tool_calls(message, "length")
 
     assert [c.arguments for c in calls] == [{"q": 1}, {}, {"raw": '{"q": '}]
     assert [c.partial for c in calls] == [False, False, True]
