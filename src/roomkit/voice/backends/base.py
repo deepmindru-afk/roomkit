@@ -38,14 +38,14 @@ SpeakerChangeCallback = Callable[["VoiceSession", Any], Any]
 logger = logging.getLogger("roomkit.voice.backend")
 
 
-class ChunkSource(AsyncIterator[AudioChunk]):
+class _ChunkSource(AsyncIterator[AudioChunk]):
     """The chunks a backend plays, remembering the exception their stream raised."""
 
     def __init__(self, chunks: AsyncIterator[AudioChunk]) -> None:
         self._chunks = chunks
         self.failure: Exception | None = None
 
-    def __aiter__(self) -> ChunkSource:
+    def __aiter__(self) -> _ChunkSource:
         return self
 
     async def __anext__(self) -> AudioChunk:
@@ -76,11 +76,11 @@ class PlaybackErrors:
         self._log = log
         self._message = message
         self._args = args
-        self._source: ChunkSource | None = None
+        self._source: _ChunkSource | None = None
 
-    def watch(self, chunks: AsyncIterator[AudioChunk]) -> ChunkSource:
+    def watch(self, chunks: AsyncIterator[AudioChunk]) -> _ChunkSource:
         """The stream to read, so its failure is told apart from the backend's."""
-        self._source = ChunkSource(chunks)
+        self._source = _ChunkSource(chunks)
         return self._source
 
     def __enter__(self) -> PlaybackErrors:

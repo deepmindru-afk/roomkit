@@ -570,21 +570,29 @@ class VoiceTTSMixin:
                 )
 
         # BEFORE_TTS ran on each sentence (12s.b); AFTER_TTS reports what was sent
-        if self._framework and full_text:
-            from roomkit.telemetry.context import reset_span, set_current_span
+        if full_text:
+            await self._run_after_tts(room_id, full_text, context, parent_span)
 
-            _tok = set_current_span(parent_span) if parent_span else None
-            try:
-                await self._framework.hook_engine.run_async_hooks(
-                    room_id,
-                    HookTrigger.AFTER_TTS,
-                    full_text,
-                    context,
-                    skip_event_filter=True,
-                )
-            finally:
-                if _tok is not None:
-                    reset_span(_tok)
+    async def _run_after_tts(
+        self, room_id: str, text: str, context: RoomContext, parent_span: str | None
+    ) -> None:
+        """Run AFTER_TTS on *text*, under the voice session's span when there is one."""
+        if self._framework is None:
+            return
+        from roomkit.telemetry.context import reset_span, set_current_span
+
+        _tok = set_current_span(parent_span) if parent_span else None
+        try:
+            await self._framework.hook_engine.run_async_hooks(
+                room_id,
+                HookTrigger.AFTER_TTS,
+                text,
+                context,
+                skip_event_filter=True,
+            )
+        finally:
+            if _tok is not None:
+                reset_span(_tok)
 
     def _sentence_gate(self, room_id: str, context: RoomContext) -> SentenceHookGate | None:
         """BEFORE_TTS on each sentence of a streamed response (RFC §12.2 step 12s.b).
@@ -782,6 +790,18 @@ class VoiceTTSMixin:
         speaker_id: str | None = None,
         response: bool = False,
     ) -> None:
+        """Speak *text* on *session*: what ``say()`` and a delivery call."""
+        await self._play_tts(session, text, voice=voice, speaker_id=speaker_id, response=response)
+
+    async def _play_tts(
+        self,
+        session: VoiceSession,
+        text: str,
+        *,
+        voice: str | None = None,
+        speaker_id: str | None = None,
+        response: bool = False,
+    ) -> None:
         """Synthesize *text* and send audio to *session*.
 
         Handles transcription, playback state tracking, streaming synthesis
@@ -945,8 +965,6 @@ class VoiceTTSMixin:
 
             # Capture parent span BEFORE _send_tts — session may be unbound
             # during playback, removing it from _voice_session_spans.
-            from roomkit.telemetry.context import reset_span, set_current_span
-
             _parent = getattr(self, "_voice_session_spans", {}).get(
                 target_sessions[0].id if target_sessions else ""
             )
@@ -965,19 +983,7 @@ class VoiceTTSMixin:
                 return_exceptions=True,
             )
             _served_sessions(target_sessions, results)
-
-            _tok = set_current_span(_parent) if _parent else None
-            try:
-                await self._framework.hook_engine.run_async_hooks(
-                    room_id,
-                    HookTrigger.AFTER_TTS,
-                    final_text,
-                    context,
-                    skip_event_filter=True,
-                )
-            finally:
-                if _tok is not None:
-                    reset_span(_tok)
+            await self._run_after_tts(room_id, final_text, context, _parent)
 
         except Exception:
             # Each session's failed synthesis was reported as it failed (_send_tts).
