@@ -205,7 +205,7 @@ class AIToolsMixin(_AIChannelContract):
                 return tool.parameters
         return None
 
-    def _recover_deferred_tool(self, name: str) -> AITool | None:
+    def _recover_deferred_tool(self, name: str, call_id: str) -> AITool | None:
         """A find_tools reveal applied at call time, for an exact-name call.
 
         Small models routinely skip the two-step discovery protocol and call a
@@ -215,7 +215,9 @@ class AIToolsMixin(_AIChannelContract):
         proceed — provided it survives the same visibility filter a reveal is
         subject to (tool policy, glob-aware skill gating). The execution guard
         applies that rule again to the call, but a name the filter refuses
-        must not even be revealed.
+        must not even be revealed. The reveal stands once the tool answered
+        the call *call_id*, as the room's tool memory keeps any tool used
+        (``_settle_recovery``): a call refused before it ran reveals nothing.
 
         Returns the catalogue tool (its schema keeps argument validation
         fail-closed) or ``None`` when the name is not recoverable.
@@ -235,12 +237,11 @@ class AIToolsMixin(_AIChannelContract):
         if not self._apply_tool_filters([tool]):
             loop_ctx.revealed_tools.discard(name)
             return None
-        # Parity with _handle_find_tools: the reveal persists across turns.
-        self._tool_usage.record_revealed(loop_ctx.room_id, {name})
+        loop_ctx.pending_recoveries[call_id] = name
         return tool
 
     def _declared_schema(
-        self, name: str, declared_tools: list[AITool] | None
+        self, name: str, call_id: str, declared_tools: list[AITool] | None
     ) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
         """The schema a call to *name* is validated against, or why it is undeclared.
 
@@ -274,7 +275,7 @@ class AIToolsMixin(_AIChannelContract):
         resolved = bool(declared_names) or loop_ctx.all_context_tools is not None
         if not resolved or name in declared_names or always_shown:
             return params, None
-        recovered = self._recover_deferred_tool(name)
+        recovered = self._recover_deferred_tool(name, call_id)
         if recovered is None and channel_managed and name in offered:
             # A sandbox command or human-input tool the policy or a skill keeps
             # from the turn: the gate below refuses it, in its own words.
@@ -451,6 +452,7 @@ class AIToolsMixin(_AIChannelContract):
         self, tc: Any, scope: _CallRound, stopped: GateRefusal
     ) -> AIToolResultPart:
         """The part of a call a gate stopped, its observers told."""
+        self._settle_recovery(tc.id, kept=False)
         # Refusals never reach the handler's guard. Count their raw
         # attempts here; successful calls are counted only by the
         # handler, using the effective payload after folds and hooks.
@@ -503,7 +505,7 @@ class AIToolsMixin(_AIChannelContract):
             )
         # The declared check (fail-closed): the schema the call's arguments
         # are validated against, once the policy and skill gating admit it.
-        params, undeclared = self._declared_schema(tc.name, declared_tools)
+        params, undeclared = self._declared_schema(tc.name, tc.id, declared_tools)
         return params, (_refused_with(undeclared) if undeclared is not None else None)
 
     def _model_arguments(
@@ -606,8 +608,10 @@ class AIToolsMixin(_AIChannelContract):
             scope.executed_arguments[tc.id] = dict(arguments)
         outcome = await self._judged_call(tc, arguments, scope)
         self._settle_served_call(tc.id, served=not outcome.failed)
+        kept = kept_in_tool_memory(outcome.kind)
+        self._settle_recovery(tc.id, kept=kept)
         references = [] if outcome.failed else self._reference_shown(self._get_loop_ctx())
-        if kept_in_tool_memory(outcome.kind):
+        if kept:
             self._remember_call(scope.room_id, tc.name, call_arguments, outcome.answer)
         return self._model_part(tc, outcome, references=references)
 
@@ -1036,6 +1040,15 @@ class AIToolsMixin(_AIChannelContract):
         names = loop_ctx.pending_reveals.pop(tool_call_id, None)
         if names is not None and served:
             self._reveal(loop_ctx, names)
+
+    def _settle_recovery(self, tool_call_id: str, *, kept: bool) -> None:
+        """Keep the tool a call recovered in the turn's reveal window when the
+        room's tool memory keeps the call, which re-reveals it on later turns
+        as any tool used, or take it out of the window (RFC §6.4)."""
+        loop_ctx = self._get_loop_ctx()
+        name = loop_ctx.pending_recoveries.pop(tool_call_id, None)
+        if name is not None and not kept:
+            loop_ctx.revealed_tools.discard(name)
 
     def _record_activation(self, loop_ctx: _ToolLoopContext, skill_name: str) -> None:
         # For this turn, so gated tools become visible on the next round...

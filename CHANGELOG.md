@@ -728,6 +728,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A hidden tool the model calls by its exact name under Tool Search stays
+  revealed only once the tool answered the call (RMK-461, RFC §6.4). The
+  recovery recorded the reveal for the room before any gate ran: a call a
+  `BEFORE_TOOL_USE` hook blocked, or one the handler refused, left the tool
+  declared on the turn's next rounds and on later turns. Such a call now
+  reveals nothing; a call the tool answered (served, failed, its result
+  withheld by an `ON_TOOL_CALL` hook) keeps it revealed, as the tool memory
+  keeps any tool used.
+
 - A realtime call the provider abandons frees its id at once (RMK-460, RFC
   §12.4), as RMK-441 made a delivered call free it. The provider freed the id
   when it reported the abandonment, the channel only once the interrupted
