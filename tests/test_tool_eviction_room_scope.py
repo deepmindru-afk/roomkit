@@ -17,57 +17,38 @@ from contextlib import contextmanager
 from roomkit.channels._tool_eviction import ToolEviction
 from roomkit.channels._tool_usage import ToolUsageMemory
 from roomkit.core.exceptions import ChannelRefusalError
-from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
+from roomkit.tools import tool_turn_context
 
 _BIG = "line\n" * 20_000  # far past the default 5000-token threshold
-
-
-def _in_room(room_id: str):
-    return _current_loop_ctx.set(_ToolLoopContext(room_id=room_id))
 
 
 class TestRoomScope:
     def test_read_is_scoped_to_the_evicting_room(self) -> None:
         ev = ToolEviction()
 
-        token = _in_room("room-a")
-        try:
+        with _room("room-a"):
             ev.maybe_evict(_BIG, "tc1")
-        finally:
-            _current_loop_ctx.reset(token)
 
-        token = _in_room("room-b")
-        try:
+        with _room("room-b"):
             out = _answer(ev, {"result_id": "evicted_tc1"})
-        finally:
-            _current_loop_ctx.reset(token)
 
         assert "error" in out
         # The other room's ids must not leak through the error hint either.
         assert out["available"] == []
 
-        token = _in_room("room-a")
-        try:
+        with _room("room-a"):
             out = json.loads(ev.handle_read({"result_id": "evicted_tc1"}))
-        finally:
-            _current_loop_ctx.reset(token)
         assert "content" in out
 
     def test_has_evicted_is_per_room(self) -> None:
         ev = ToolEviction()
 
-        token = _in_room("room-a")
-        try:
+        with _room("room-a"):
             ev.maybe_evict(_BIG, "tc1")
             assert ev.has_evicted
-        finally:
-            _current_loop_ctx.reset(token)
 
-        token = _in_room("room-b")
-        try:
+        with _room("room-b"):
             assert not ev.has_evicted
-        finally:
-            _current_loop_ctx.reset(token)
 
     def test_fallback_scope_outside_tool_loop(self) -> None:
         ev = ToolEviction()
@@ -90,11 +71,8 @@ _SMALL = "line\n" * 200
 
 @contextmanager
 def _room(room_id: str) -> Iterator[None]:
-    token = _in_room(room_id)
-    try:
+    with tool_turn_context(room_id=room_id):
         yield
-    finally:
-        _current_loop_ctx.reset(token)
 
 
 def _evict(ev: ToolEviction, room: str, text: str = _SMALL, call_id: str = "c") -> str:

@@ -47,9 +47,11 @@ from roomkit import (
     ChannelCategory,
     InboundMessage,
     RealtimeVoiceChannel,
+    Room,
     RoomKit,
     TextContent,
     ToolCallContent,
+    ToolHandler,
     WebSocketChannel,
 )
 from roomkit.models.enums import IdentificationStatus
@@ -87,6 +89,17 @@ def _tool_turn() -> list[AIResponse]:
             usage={"prompt_tokens": 20, "completion_tokens": 10},
         ),
     ]
+
+
+async def _alice_in_a_test(handler: ToolHandler, room: Room) -> None:
+    """Call *handler* directly, as a unit test would, during Alice's turn."""
+    print("\n=== Alice's turn, described by a test (no channel runs) ===")
+    # The turn a tool loop would give the handler: the Room names the room id,
+    # and the block restores the previous context (here: none) on the way out.
+    invoices_tool = AITool(name="my_invoices", description="List the invoices of the asker.")
+    with tool_turn_context(room=room, actor_id="alice", tools=[invoices_tool]):
+        print(f"  {await handler('my_invoices', {})}")
+    print(f"  outside the block: actor={current_tool_actor_id()}")
 
 
 async def main() -> None:
@@ -196,14 +209,7 @@ async def main() -> None:
     _session_id, _call_id, submitted = rt_provider.tool_results[0]
     print(f"  {submitted}")
 
-    print("\n=== Alice's turn, described by a test (no channel runs) ===")
-    # What a unit test does: call the handler directly, with the turn a tool
-    # loop would give it. The Room names the room id; the block restores the
-    # previous context (here: none) on the way out.
-    invoices_tool = AITool(name="my_invoices", description="List the invoices of the asker.")
-    with tool_turn_context(room=room, actor_id="alice", tools=[invoices_tool]):
-        print(f"  {await my_invoices('my_invoices', {})}")
-    print(f"  outside the block: actor={current_tool_actor_id()}")
+    await _alice_in_a_test(my_invoices, room)
     await kit.close()
 
 

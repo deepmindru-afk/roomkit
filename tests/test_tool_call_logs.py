@@ -13,7 +13,7 @@ from roomkit.channels.ai import AIChannel
 from roomkit.providers.ai.base import AIContext, AIMessage, AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.telemetry.redaction import set_content_logging
-from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
+from roomkit.tools import tool_turn_context
 from tests.tool_loop_modes import run_tool_loop
 
 _LOGGER = "roomkit.channels.ai"
@@ -41,11 +41,8 @@ def _channel() -> AIChannel:
 
 @contextmanager
 def _in_a_turn():
-    token = _current_loop_ctx.set(_ToolLoopContext())
-    try:
+    with tool_turn_context():
         yield
-    finally:
-        _current_loop_ctx.reset(token)
 
 
 async def _run_turn(caplog, level: str, *, streaming: bool) -> list[str]:

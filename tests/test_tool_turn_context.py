@@ -100,6 +100,26 @@ class TestTheTurnItDescribes:
             pass
         assert _readers() == _OUTSIDE
 
+    def test_a_call_record_of_another_room_is_refused(self) -> None:
+        with (
+            pytest.raises(ValueError, match="is not the turn's room"),
+            tool_turn_context(room_id="r1", call=ToolCallContext(room_id="other")),
+        ):
+            pass
+        with (
+            pytest.raises(ValueError, match="is not the turn's room"),
+            tool_turn_context(call=ToolCallContext(room_id="r1")),
+        ):
+            pass
+        assert _readers() == _OUTSIDE
+
+    def test_a_call_record_of_the_turns_room_is_installed(self) -> None:
+        room = Room(id="billing")
+        call = ToolCallContext(room_id="billing", tool_call_id="tc1")
+
+        with tool_turn_context(room=room, call=call):
+            assert current_tool_call() is call
+
     def test_no_toolset_is_not_an_empty_one(self) -> None:
         with tool_turn_context(room_id="r1"):
             assert current_tool_allowed_names() is None
@@ -157,7 +177,7 @@ class TestWhatTheHandlerWritesBack:
 
 class TestRestoring:
     def test_a_nested_turn_gives_the_outer_one_back(self) -> None:
-        outer_call = ToolCallContext(tool_call_id="outer")
+        outer_call = ToolCallContext(room_id="outer", tool_call_id="outer")
         with tool_turn_context(room_id="outer", actor_id="alice", call=outer_call):
             with tool_turn_context(room_id="inner", actor_id="bob"):
                 assert (current_tool_room_id(), current_tool_actor_id()) == ("inner", "bob")

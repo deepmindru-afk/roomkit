@@ -12,12 +12,12 @@ from inside a tool loop sees the loop's context without any signature
 change. The realtime voice channel installs the same context around each
 tool call it serves, with the session's room and participant as the turn's
 room and actor, so a handler shared between an ``AIChannel`` and a
-``RealtimeVoiceChannel`` reads the room id, the Room and the actor on both
-paths; :func:`current_tool_call`, :func:`current_tool_allowed_names` and
-:func:`current_response_metadata` answer ``None`` there, since the per-call
-record, the resolved toolset and the merged response record are the AI
-channel's. Outside a tool call (a direct call) every accessor returns
-``None`` — hosts keep their own fallback there. A test that calls a handler
+``RealtimeVoiceChannel`` reads the room id, the Room, the actor and the
+call's record on both paths, and :func:`current_tool_allowed_names` answers
+the tools the session declares (``None`` when it declares no catalogue);
+:func:`current_response_metadata` alone answers ``None`` there, since no turn
+merges that record. Outside a tool call (a direct call) every accessor
+returns ``None`` — hosts keep their own fallback there. A test that calls a handler
 directly describes the turn it runs under with :func:`tool_turn_context`.
 """
 
@@ -541,6 +541,17 @@ def _installed(loop_ctx: _ToolLoopContext, call: ToolCallContext | None) -> Iter
         _current_tool_call.reset(call_token)
 
 
+def _check_one_room(room_id: str | None, room: Room | None, call: ToolCallContext | None) -> None:
+    """Refuse a described turn whose arguments name more than one room."""
+    if room is not None and room_id is not None and room.id != room_id:
+        raise ValueError(f"room {room.id!r} and room_id {room_id!r} name different rooms")
+    turn_room = room.id if room is not None else room_id
+    if call is not None and call.room_id != (turn_room or ""):
+        raise ValueError(
+            f"the call's room_id {call.room_id!r} is not the turn's room {turn_room!r}"
+        )
+
+
 @contextmanager
 def tool_turn_context(
     *,
@@ -572,18 +583,22 @@ def tool_turn_context(
             an empty list for a resolved, empty one.
         chain_depth: The chain depth of the response the turn produces
             (RFC §8.3), which a result delivered later on its behalf inherits.
+            0, the default, is what outside a turn reads (RFC §21.4); an AI
+            channel's turn answering a human's message runs at 1.
         call: The per-call record :func:`current_tool_call` answers; a handler
-            writing its ``structured_content`` writes this object. ``None``
-            leaves the block outside any call record.
+            writing its ``structured_content`` writes this object. Its
+            ``room_id`` is the turn's, as the tool loop builds it (``""`` for
+            a turn without a room). ``None`` leaves the block outside any
+            call record.
 
     The turn carries a fresh response-metadata record, which
     :func:`current_response_metadata` answers inside the block.
 
     Raises:
-        ValueError: *room* and *room_id* name different rooms.
+        ValueError: The arguments name more than one room: *room* and
+            *room_id*, or the turn's room and *call*'s ``room_id``.
     """
-    if room is not None and room_id is not None and room.id != room_id:
-        raise ValueError(f"room {room.id!r} and room_id {room_id!r} name different rooms")
+    _check_one_room(room_id, room, call)
     ctx = _ToolLoopContext.for_loop(None, room_id, room)
     ctx.actor_id = actor_id
     ctx.chain_depth = chain_depth

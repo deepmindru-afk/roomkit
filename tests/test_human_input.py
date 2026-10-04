@@ -14,6 +14,7 @@ from roomkit.core.exceptions import ToolFailedError, ToolRefusedError, UnservedT
 from roomkit.models.enums import ChannelType
 from roomkit.models.pending_input import PendingInput, PendingInputEvent, PendingInputStatus
 from roomkit.providers.ai.base import AIContext, AITool
+from roomkit.tools import ToolCallContext, tool_turn_context
 from roomkit.tools.compose import compose_tool_handlers
 from roomkit.tools.human_input import HumanInputHandler, HumanInputToolHandler
 from tests.tool_loop_modes import respond
@@ -736,12 +737,9 @@ async def test_compose_unknown_tool_falls_through_all() -> None:
 
 
 async def test_tool_call_context_read_from_contextvar() -> None:
-    from roomkit.tools.context import ToolCallContext, _current_tool_call
-
     hit = HumanInputToolHandler(tool_names={"ask"}, timeout=5)
 
     ctx = ToolCallContext(room_id="room-1", tool_call_id="tc-42", channel_id="ai-1")
-    token = _current_tool_call.set(ctx)
 
     async def _resolve_later() -> None:
         await asyncio.sleep(0.01)
@@ -754,12 +752,10 @@ async def test_tool_call_context_read_from_contextvar() -> None:
         assert p.channel_id == "ai-1"
         hit.handler.resolve(pid, "answered")
 
-    try:
+    with tool_turn_context(room_id="room-1", call=ctx):
         asyncio.create_task(_resolve_later())
         result = await hit("ask", {"question": "color?"})
         assert result == "answered"
-    finally:
-        _current_tool_call.reset(token)
 
 
 # ── Validation ───────────────────────────────────────────────────────

@@ -486,14 +486,6 @@ class TestCurrentToolAllowedNames:
     def test_none_outside_tool_loop(self) -> None:
         assert current_tool_allowed_names() is None
 
-    def test_empty_set_for_a_resolved_turn_without_tools(self) -> None:
-        ctx = _ToolLoopContext(room_id="room-empty", all_context_tools=[])
-        token = _current_loop_ctx.set(ctx)
-        try:
-            assert current_tool_allowed_names() == set()
-        finally:
-            _current_loop_ctx.reset(token)
-
     async def test_unoffered_tool_is_not_forwarded_non_streaming(self) -> None:
         handler = AsyncMock(return_value="must not run")
         provider = MockAIProvider(ai_responses=_tool_round_responses(), streaming=False)

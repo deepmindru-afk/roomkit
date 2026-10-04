@@ -17,7 +17,7 @@ import pytest
 from roomkit.models.event import ToolCallContent
 from roomkit.models.streaming import ToolCallEndMarker
 from roomkit.providers.ai.base import AIToolResultPart
-from roomkit.tools.context import ToolCallContext, _current_tool_call
+from roomkit.tools import ToolCallContext, tool_turn_context
 from roomkit.tools.mcp import MCPToolProvider
 
 
@@ -50,11 +50,8 @@ def _provider(result: _CallToolResult) -> MCPToolProvider:
 
 async def _call_with_ctx(provider: MCPToolProvider) -> tuple[str, ToolCallContext]:
     ctx = ToolCallContext(room_id="r1", tool_call_id="call_1", channel_id="ai")
-    token = _current_tool_call.set(ctx)
-    try:
+    with tool_turn_context(room_id="r1", call=ctx):
         text = await provider.call_tool("get-menu", {})
-    finally:
-        _current_tool_call.reset(token)
     return text, ctx
 
 
