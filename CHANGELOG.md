@@ -812,6 +812,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A provider-served call's result is bounded as every outcome the model
+  reads (RMK-480, RFC §21.5): in a round mixing it with a call the channel
+  served, the next round read it whole (40 000 characters) and its
+  TOOL_CALL_END row kept it whole. ON_TOOL_CALL's observers still hear it
+  whole.
+
 - The `tool_call` framework event of a call ON_TOOL_CALL withheld says it
   failed, on every door (RMK-480, RFC §9.3): a SYNC hook's BLOCK, or a
   fail-closed hook that raised or whose context would not build, left it

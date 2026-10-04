@@ -76,6 +76,8 @@ class _AIChannelContract:
         duration_ms: int | None = None,
     ) -> None: ...
 
+    def _bound_provider_result(self, name: str, result: str, tool_call_id: str) -> str: ...
+
     async def _execute_tools_parallel(
         self,
         tool_calls: list[Any],

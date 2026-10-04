@@ -65,6 +65,8 @@ class _ExternalStreamTools:
     publish: _ToolEventPublisher
     # Whether the turn has a tool of the channel's own under a name.
     serves_locally: Callable[[str], bool]
+    # The copy of an outcome the model reads, bounded: ``(name, result, call_id)``.
+    bound: Callable[[str, str, str], str]
     handler: ExternalToolHandler | None = None
     # ON_TOOL_CALL as a report, for a call the provider already ran (RFC §9.3).
     report: ToolCallObserver | None = None
@@ -105,6 +107,9 @@ class _ExternalStreamTools:
             arguments, result, kind = decided.arguments, decided.result, decided.kind
             await self._report(call, decided)
         duration_ms = int((time.monotonic() - started_at) * 1000)
+        # The model reads it bounded, as any outcome, and so does its END row;
+        # the report above heard it whole (RFC §21.5).
+        result = self.bound(call.name, result, call.id)
         yield _end_marker(call, arguments, result, kind, duration_ms)
         await self._publish_end(call, result, kind, round_idx, duration_ms)
 

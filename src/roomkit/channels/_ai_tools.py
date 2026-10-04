@@ -76,6 +76,7 @@ from roomkit.tools.result import (
     failure_detail,
     pre_execution_denial,
     read_tool_call_verdict,
+    result_text,
     tool_failure,
     unknown_tool_error,
     unserved_tool_error,
@@ -1294,6 +1295,12 @@ class AIToolsMixin(_AIChannelContract):
         if served and kept_whole(name):
             return result
         return self._maybe_truncate_result(result, tool_call_id)
+
+    def _bound_provider_result(self, name: str, result: str, tool_call_id: str) -> str:
+        """The copy of a provider-served call's outcome the model reads and
+        its END row keeps, bounded as every outcome is (RFC §21.5)."""
+        bounded = self._bound_tool_result(name, result, tool_call_id)
+        return bounded if isinstance(bounded, str) else result_text(bounded)
 
     # -- Extracted tool handlers (delegate to focused modules) -----------------
 

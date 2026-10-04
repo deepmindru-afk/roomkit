@@ -566,6 +566,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 loop_ctx=loop_ctx,
                 publish=self._publish_tool_event,
                 serves_locally=partial(self._serves_locally, loop_ctx),
+                bound=self._bound_provider_result,
                 handler=self._external_tool_handler,
                 report=self._tool_report_hook,
                 observe=self._tool_observer_hook,
