@@ -938,10 +938,14 @@ class TestOpenAIRealtimeProvider:
         await provider._handle_server_event(
             session,
             {
-                "type": "response.function_call_arguments.done",
-                "call_id": "call-1",
-                "name": "get_weather",
-                "arguments": '{"city": "NYC"}',
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "get_weather",
+                    "arguments": '{"city": "NYC"}',
+                    "status": "completed",
+                },
             },
         )
         assert tool_calls == [("call-1", "get_weather", {"city": "NYC"})]
@@ -956,10 +960,14 @@ class TestOpenAIRealtimeProvider:
         await provider._handle_server_event(
             session,
             {
-                "type": "response.function_call_arguments.done",
-                "call_id": "call-2",
-                "name": "broken_tool",
-                "arguments": "not-json",
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "call_id": "call-2",
+                    "name": "broken_tool",
+                    "arguments": "not-json",
+                    "status": "completed",
+                },
             },
         )
         # The model's text, which the channel refuses (RFC §12.4).
@@ -1239,10 +1247,14 @@ class TestOpenAIRealtimeProvider:
         await provider._handle_server_event(
             session,
             {
-                "type": "response.function_call_arguments.done",
-                "call_id": "c1",
-                "name": "fn",
-                "arguments": "{}",
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "call_id": "c1",
+                    "name": "fn",
+                    "arguments": "{}",
+                    "status": "completed",
+                },
             },
         )
 

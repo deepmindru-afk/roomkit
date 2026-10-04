@@ -15,7 +15,7 @@ import json
 import logging
 from typing import Any
 
-from roomkit.providers.ai.tool_calls import readable_arguments
+from roomkit.providers.ai.tool_calls import realtime_call_arguments
 from roomkit.providers.openai.live_config import (
     _LOG_TAG,
     HostedReasoning,
@@ -119,10 +119,11 @@ class OpenAILiveHostedDelegationMixin(RealtimeVoiceProvider):
             # its id (RFC §12.4).
             logger.warning("[%s] function call item without a name: %s", _LOG_TAG, item)
         call_id = str(item.get("call_id") or "")
-        # A call the output cap cut is handed on too, as OpenAI Realtime's: its
-        # arguments read as a mapping when whole, else as the text the
-        # channel refuses and reports (RFC §6.4, §12.4).
-        arguments = readable_arguments(item.get("arguments"))
+        # A call the output cap cut is handed on too, as OpenAI Realtime's: it
+        # runs when its argument text reads, else the channel refuses it as
+        # cut off and reports it (RFC §6.4, §12.4).
+        cut = item.get("status") == "incomplete"
+        arguments = realtime_call_arguments(item.get("arguments"), cut=cut)
 
         if call_id and call_id not in state.open_calls:
             # Only a call the channel may answer holds the response open: one

@@ -235,8 +235,8 @@ async def _openai_loses_its_connection() -> tuple[Told, list[str]]:
     provider._sessions[session.id] = session
     told = _told(provider)
     for call_id in ("c1", "c2"):
-        call = {"call_id": call_id, "name": "lookup", "arguments": "{}"}
-        await provider._on_function_call_done(session, call)
+        item = {"type": "function_call", "call_id": call_id, "name": "lookup", "arguments": "{}"}
+        await provider._on_output_item_done(session, {"item": item})
     await provider.submit_tool_result(session, "c2", "{}")
 
     await provider._discard_connection(session, ws, error_message="connection lost")

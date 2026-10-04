@@ -86,10 +86,14 @@ async def test_openai_realtime_hands_on_explicit_nulls_as_strings(vendor: str) -
     await provider._handle_server_event(
         session,
         {
-            "type": "response.function_call_arguments.done",
-            "call_id": None,
-            "name": None,
-            "arguments": "{}",
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "call_id": None,
+                "name": None,
+                "arguments": "{}",
+                "status": "completed",
+            },
         },
     )
 

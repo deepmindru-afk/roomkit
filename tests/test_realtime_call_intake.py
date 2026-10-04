@@ -190,9 +190,8 @@ async def test_openai_realtime_books_only_a_call_it_can_answer() -> None:
     provider.on_tool_call(lambda _s, call_id, *_: heard.append(call_id))
 
     for call_id in ("c1", "c1", ""):
-        await provider._on_function_call_done(
-            session, {"call_id": call_id, "name": "get_weather", "arguments": "{}"}
-        )
+        item = {"type": "function_call", "call_id": call_id, "name": "get_weather"}
+        await provider._on_output_item_done(session, {"item": {**item, "arguments": "{}"}})
 
     assert heard == ["c1", "c1", ""]
     assert provider._open_calls[session.id] == {"c1"}

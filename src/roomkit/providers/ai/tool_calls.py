@@ -122,6 +122,24 @@ def readable_arguments(raw: Any) -> dict[str, Any] | str:
     return raw if isinstance(raw, str) else json.dumps(raw, default=str)
 
 
+class CutArguments(str):
+    """The argument text of a realtime call its response cut before they
+    were whole: the model's text, which the channel refuses as cut off
+    (RFC §6.4, §12.4), where text that merely does not read is refused as
+    unreadable."""
+
+
+def realtime_call_arguments(raw: Any, *, cut: bool) -> dict[str, Any] | str:
+    """A realtime call's arguments as its provider hands them to
+    ``on_tool_call``, the response *cut* over the call or not: a mapping when
+    the call may run, else the model's text, a :class:`CutArguments` when the
+    cut stopped it (:func:`partial_when`, the rule every provider applies)."""
+    if not partial_when(raw, cut=cut):
+        return readable_arguments(raw)
+    text = readable_arguments(raw) if unreadable_arguments(raw) else ""
+    return CutArguments(text) if cut else str(text)
+
+
 def unreadable_arguments(raw: Any) -> bool:
     """Whether a call's arguments do not read as an object, which makes the
     call ``partial``: it never runs, whatever the provider and whatever stop

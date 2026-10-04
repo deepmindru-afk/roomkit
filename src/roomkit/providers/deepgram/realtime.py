@@ -27,7 +27,7 @@ from typing import Any
 from pydantic import SecretStr
 
 from roomkit.core.task_utils import cancel_and_wait
-from roomkit.providers.ai.tool_calls import readable_arguments
+from roomkit.providers.ai.tool_calls import realtime_call_arguments
 from roomkit.providers.deepgram.config import DeepgramAgentConfig
 from roomkit.providers.deepgram.settings import build_settings, patch_speak, patch_think
 from roomkit.providers.deepgram.voices import VOICES as _VOICES
@@ -616,7 +616,8 @@ class DeepgramAgentProvider(RealtimeVoiceProvider):
                 )
             # Deepgram sends arguments as a JSON *string*: a mapping when it
             # reads as one, else the text, which the channel refuses (RFC §12.4).
-            arguments = readable_arguments(function.get("arguments"))
+            # A FunctionCallRequest carries no sign of a cut: none is read.
+            arguments = realtime_call_arguments(function.get("arguments"), cut=False)
             # A call without an id, or under an id still in flight, goes to the
             # channel all the same, which refuses and reports it, sending
             # nothing (RFC §12.4); only a call it may answer is kept here.

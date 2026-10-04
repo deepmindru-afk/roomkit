@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from roomkit.providers.ai.tool_calls import (
+    CutArguments,
+    cut_call_error,
     nameless_call_error,
     tool_arguments,
     unreadable_call_error,
@@ -72,7 +74,8 @@ class RealtimeToolCall:
         """The call a provider handed ``on_tool_call``: one that named no tool,
         or whose arguments came as the model's text that does not read as an
         object, is unreadable, its arguments kept under ``raw`` for its
-        reports (RFC §6.4, §12.4)."""
+        reports; one its response cut (:class:`CutArguments`) reads as cut off
+        (RFC §6.4, §12.4)."""
         if not name:
             logger.warning(
                 "Provider sent tool call %s naming no tool: it does not run", call_id or "(no id)"
@@ -82,12 +85,14 @@ class RealtimeToolCall:
             return cls(session, call_id, "", readable, unreadable=refusal, **fields)
         if isinstance(arguments, dict):
             return cls(session, call_id, name, arguments, **fields)
+        cut = isinstance(arguments, CutArguments)
         logger.warning(
-            "Provider sent unreadable arguments for tool call %s (%s): it does not run",
+            "Provider sent %s arguments for tool call %s (%s): it does not run",
+            "cut" if cut else "unreadable",
             name,
             call_id,
         )
-        refusal = json.dumps(unreadable_call_error(name))
+        refusal = json.dumps(cut_call_error(name) if cut else unreadable_call_error(name))
         return cls(session, call_id, name, tool_arguments(arguments), unreadable=refusal, **fields)
 
     def claim_report(self) -> bool:

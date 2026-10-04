@@ -18,7 +18,7 @@ import logging
 from abc import abstractmethod
 from typing import Any
 
-from roomkit.providers.ai.tool_calls import readable_arguments
+from roomkit.providers.ai.tool_calls import realtime_call_arguments
 from roomkit.providers.openai.response_calls import PendingResponse
 from roomkit.voice._g711 import _G711Codec
 from roomkit.voice.base import VoiceSession
@@ -33,7 +33,7 @@ _EVT_AUDIO_DELTA = "response.output_audio.delta"
 _EVT_TRANSCRIPT_DELTA = "response.output_audio_transcript.delta"
 _EVT_INPUT_TRANSCRIPT_DONE = "conversation.item.input_audio_transcription.completed"
 _EVT_TRANSCRIPT_DONE = "response.output_audio_transcript.done"
-_EVT_FUNCTION_CALL_DONE = "response.function_call_arguments.done"
+_EVT_OUTPUT_ITEM_DONE = "response.output_item.done"
 _EVT_RESPONSE_CREATED = "response.created"
 _EVT_RESPONSE_DONE = "response.done"
 _EVT_SESSION_CREATED = "session.created"
@@ -132,7 +132,7 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
         _EVT_TRANSCRIPT_DELTA: "_on_transcript_delta",
         _EVT_INPUT_TRANSCRIPT_DONE: "_on_input_transcript_done",
         _EVT_TRANSCRIPT_DONE: "_on_transcript_done",
-        _EVT_FUNCTION_CALL_DONE: "_on_function_call_done",
+        _EVT_OUTPUT_ITEM_DONE: "_on_output_item_done",
         _EVT_RESPONSE_CREATED: "_on_response_created",
         _EVT_RESPONSE_DONE: "_on_response_done",
         _EVT_SESSION_CREATED: "_on_session_created",
@@ -250,12 +250,19 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
                 label="transcription",
             )
 
-    async def _on_function_call_done(self, session: VoiceSession, event: dict[str, Any]) -> None:
-        call_id = event.get("call_id") or ""
-        name = event.get("name") or ""
-        # A mapping, or the model's text when it does not read as one: the
-        # channel refuses that call (RFC §12.4).
-        arguments = readable_arguments(event.get("arguments"))
+    async def _on_output_item_done(self, session: VoiceSession, event: dict[str, Any]) -> None:
+        """A function call is handed on once its item is done, the first event
+        that says whether the response cut it: ``function_call_arguments.done``
+        comes before the item's status (RFC §6.4)."""
+        item = event.get("item") or {}
+        if item.get("type") != "function_call":
+            return
+        call_id = item.get("call_id") or ""
+        name = item.get("name") or ""
+        # A mapping, or the model's text when it does not read as one or the
+        # output cap cut it: the channel refuses that call (RFC §12.4).
+        cut = item.get("status") == "incomplete"
+        arguments = realtime_call_arguments(item.get("arguments"), cut=cut)
         open_calls = self._open_calls.setdefault(session.id, set())
         if call_id and call_id not in open_calls:
             # Only a call the channel may answer holds the response open: one

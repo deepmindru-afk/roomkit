@@ -51,10 +51,14 @@ async def _openai_realtime_reads(raw: str) -> list[Any]:
     await provider._handle_server_event(
         session,
         {
-            "type": "response.function_call_arguments.done",
-            "call_id": "c1",
-            "name": "now",
-            "arguments": raw,
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "call_id": "c1",
+                "name": "now",
+                "arguments": raw,
+                "status": "completed",
+            },
         },
     )
     return seen

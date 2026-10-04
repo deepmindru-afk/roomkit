@@ -64,10 +64,14 @@ async def _call(provider: OpenAIRealtimeBase, session: VoiceSession, call_id: st
     await provider._handle_server_event(
         session,
         {
-            "type": "response.function_call_arguments.done",
-            "call_id": call_id,
-            "name": "lookup",
-            "arguments": "{}",
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": "lookup",
+                "arguments": "{}",
+                "status": "completed",
+            },
         },
     )
 

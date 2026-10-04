@@ -421,10 +421,14 @@ class TestServerEvents:
         await provider._handle_server_event(
             session,
             {
-                "type": "response.function_call_arguments.done",
-                "call_id": "call-42",
-                "name": "get_weather",
-                "arguments": '{"city": "Paris"}',
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "call_id": "call-42",
+                    "name": "get_weather",
+                    "arguments": '{"city": "Paris"}',
+                    "status": "completed",
+                },
             },
         )
         cb.assert_awaited_once_with(session, "call-42", "get_weather", {"city": "Paris"})
