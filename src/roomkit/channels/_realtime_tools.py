@@ -713,6 +713,9 @@ class RealtimeToolsMixin:
             return ToolOutcome(OutcomeKind.REFUSED, refusal.message)
         catalogue = self._session_base_tools(session.id)
         result, hinted = self._unknown_skill_hint(call, result, skill, tools)
+        if skill is None and not hinted:
+            # Nothing to reveal: the call named no skill, refused (RFC §9.3).
+            return ToolOutcome(OutcomeKind.REFUSED, result)
         outcome, skill = await self._judge_activation(call, carrying, result, skill)
         # Provider updates (discovery, handoff, activation) are serialised on
         # this lock.

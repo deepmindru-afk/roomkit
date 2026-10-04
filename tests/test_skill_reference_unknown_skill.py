@@ -1,6 +1,7 @@
 """``read_skill_reference`` and ``run_skill_script`` on a skill the registry
 does not offer are refused, on the AI channel as on a realtime session
-(RMK-480, RFC §9.3).
+(RMK-480, RFC §9.3), and so is ``activate_skill`` when its answer carries no
+hint (no tool matches the name): nothing is revealed, the call named no skill.
 
 The model reads the same error; ON_TOOL_CALL's observers hear a refusal, not
 a served call whose body happens to be an error.
@@ -24,10 +25,11 @@ from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransp
 from tests.test_toolset_edges import _call, _calling, _session, _skills, _text_turn
 
 _CALLS = {
+    "activate_skill": {"name": "ghost"},
     "read_skill_reference": {"skill_name": "ghost", "filename": "x.md"},
     "run_skill_script": {"skill_name": "ghost", "script_name": "x.sh"},
 }
-_ERROR = '{"error": "Skill \'ghost\' not found"}'
+_ERROR = "Skill 'ghost' not found"
 EVERY_SKILL_TOOL = pytest.mark.parametrize("tool", list(_CALLS))
 
 
@@ -63,7 +65,8 @@ async def test_the_ai_channel_refuses_it(tmp_path: Path, tool: str) -> None:
     await _text_turn(channel)
     await kit.close()
 
-    assert [(e.refused, e.result) for e in reports] == [(True, _ERROR)]
+    assert [e.refused for e in reports] == [True]
+    assert _ERROR in str(reports[0].result)
 
 
 @EVERY_SKILL_TOOL
@@ -82,5 +85,6 @@ async def test_a_realtime_session_refuses_it(tmp_path: Path, tool: str) -> None:
     read = await _call(channel, provider, session, tool, _CALLS[tool])
     await kit.close()
 
-    assert read == _ERROR
-    assert [(e.refused, e.result) for e in reports] == [(True, _ERROR)]
+    assert _ERROR in read
+    assert [e.refused for e in reports] == [True]
+    assert _ERROR in str(reports[0].result)

@@ -982,6 +982,9 @@ class AIToolsMixin(_AIChannelContract):
                 self._skills,
                 (t.name for t in reachable if t.name not in own),
             )
+            if not matching:
+                # Nothing to reveal: the call named no skill, refused (RFC §9.3).
+                raise ToolRefusedError(result_str)
             self._defer_reveal(loop_ctx, matching)
             return result_str
         if skill is not None and (missing := self._missing_required_tools(skill)):
