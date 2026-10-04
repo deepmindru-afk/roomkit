@@ -845,8 +845,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `read_skill_reference` and `run_skill_script` on a skill the registry does
   not offer are refused, on the AI channel, a realtime session and a backend
   (RMK-480, RFC §9.3): they were reported served with an `{"error": ...}`
-  body. The model reads the same error. `activate_skill` on a name that is no skill stays an answer, its
-  hint revealing the tools it names (RFC §6.4).
+  body. The model reads the same error. `activate_skill` on a name that is
+  no skill is refused too when its answer carries no hint (no tool matches
+  the name, or the skill is unavailable); with a hint it stays an answer,
+  the hint revealing the tools it names (RFC §6.4).
 
 - A call's report carries the arguments it ran with, or that the gate had
   when it stopped it, on every door (RMK-480, RFC §9.3): an AIChannel
