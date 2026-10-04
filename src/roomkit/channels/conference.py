@@ -64,6 +64,7 @@ from roomkit.channels._conference_voice import ConferenceVoice
 from roomkit.channels._served_tools import (
     dict_tool_name,
     refuse_given_twice,
+    refuse_served_names,
     refuse_unnamable,
 )
 from roomkit.channels.base import Channel, FrameworkAwareChannel
@@ -431,7 +432,10 @@ class ConferenceChannel(
                 "mix it hears would be noise. Pass e2ee=False, or drop realtime= to "
                 "keep the conference encrypted."
             )
-        if realtime.tools and realtime.tool_handler is None:
+        names = [dict_tool_name(t) for t in realtime.tools or []]
+        human = realtime.human_input_handler
+        asked = human.tool_names if human is not None else set()
+        if any(name not in asked for name in names) and realtime.tool_handler is None:
             raise ValueError(
                 "realtime.tools were configured with no tool_handler: the provider's "
                 "turn waits on a result nothing will ever submit. Pass "
@@ -440,9 +444,10 @@ class ConferenceChannel(
         # A name is served by one tool (RFC §21.1): declared once and served by
         # another, the model would call one schema on the other's server. And
         # no vendor's name is refused here as at an AITool's definition (§6.7).
-        names = [dict_tool_name(t) for t in realtime.tools or []]
         refuse_unnamable(names, self.channel_id)
         refuse_given_twice(names, self.channel_id)
+        person = {tool.name for tool in human.tools} if human is not None else set()
+        refuse_served_names(names, person, self.channel_id)
 
     @property
     def _realtime_config(self) -> ConferenceRealtimeConfig | None:
@@ -1286,6 +1291,7 @@ class ConferenceChannel(
                 component="realtime",
                 operation="disconnect",
             )
+        await self._realtime.close_human_input()
         # Every session the channel still has in a conference, not only the one
         # in `bot`: a detach whose `leave()` the backend refused left its bot
         # sitting in the meeting and said so, and closing is the last moment

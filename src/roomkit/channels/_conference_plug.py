@@ -400,6 +400,7 @@ class ConferencePlugMixin:
             sessions = self._realtime.deactivate()
             await self._voice.interrupt_all()
             await self._realtime.disconnect_sessions(config.provider, sessions)
+            await self._realtime.close_human_input()
             pipeline: AudioPipeline | None = None
             if self._stt is None:
                 # The lanes existed for the mix (and recording feeds off the

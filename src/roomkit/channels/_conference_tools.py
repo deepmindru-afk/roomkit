@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._ai_policy import policy_admits
 from roomkit.channels._served_tools import CollisionLog, declared_once, dict_tool_name
+from roomkit.channels._tool_registry import tool_dict
 from roomkit.models.enums import ChannelType
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.tools.policy import policy_refusal
@@ -44,14 +45,25 @@ MAX_RESULT_CHARS = 16384
 _NO_CHANNEL_TOOLS: frozenset[str] = frozenset()
 
 
+def catalogue(config: ConferenceRealtimeConfig) -> list[dict[str, Any]] | None:
+    """The tools a conference's calls are checked against: its ``tools``, then
+    the person's (RFC §9.3); ``None`` when it gives neither."""
+    human = config.human_input_handler
+    person = [tool_dict(tool) for tool in human.tools] if human is not None else []
+    if config.tools is None and not person:
+        return None
+    return [*(config.tools or []), *person]
+
+
 def declared_tools(
     config: ConferenceRealtimeConfig, collisions: CollisionLog
 ) -> list[dict[str, Any]] | None:
     """The tools a conference declares to its provider: what its policy admits,
     each name once, the later definition kept as its gate reads it (RFC §21.1)."""
-    if config.tools is None or not config.provider.supports_tools:
+    tools = catalogue(config)
+    if tools is None or not config.provider.supports_tools:
         return None
-    tools = declared_once(config.tools, dict_tool_name, _NO_CHANNEL_TOOLS, collisions)
+    tools = declared_once(tools, dict_tool_name, _NO_CHANNEL_TOOLS, collisions)
     # A provider's native tool has no name for a policy to name: kept.
     return [
         t
@@ -103,7 +115,7 @@ class ConferenceToolGate:
         """The pre-execution gate (RFC 12.4): why *call* may not run; the
         arguments to run with are left on *call*."""
         name = call.name
-        declared = {t.get("name"): t for t in config.tools or [] if isinstance(t, dict)}
+        declared = {t.get("name"): t for t in catalogue(config) or [] if isinstance(t, dict)}
         if declared and name not in declared:
             logger.warning("Conference provider requested undeclared tool %s", name)
             return GateRefusal(_error(undeclared_tool_refusal(name)))

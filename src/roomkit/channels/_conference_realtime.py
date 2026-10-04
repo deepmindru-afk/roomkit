@@ -30,6 +30,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._conference_mixer import ConferenceMixer
@@ -56,8 +57,10 @@ from roomkit.channels._served_tools import CollisionLog, dict_tool_name, warn_to
 from roomkit.channels._tool_registry import schema_tool
 from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.core.task_utils import log_task_exception
+from roomkit.models.enums import ChannelType
 from roomkit.models.event import TextContent
 from roomkit.models.tool_call import ToolCallEvent
+from roomkit.tools._human_input_channel import ChannelHumanInput
 from roomkit.tools._outcome import ToolOutcome
 from roomkit.tools.result import GateRefusal, declined_answer, result_text
 from roomkit.tools.timeout import answer_within
@@ -72,6 +75,7 @@ if TYPE_CHECKING:
     from roomkit.conference.models import BotSession, ConferenceRealtimeConfig
     from roomkit.core.framework import RoomKit
     from roomkit.models.context import RoomContext
+    from roomkit.tools.context import _ToolLoopContext
     from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
 logger = logging.getLogger("roomkit.channels.conference")
@@ -158,6 +162,8 @@ class ConferenceRealtime:
         self._operations = operations
         self._ensure_bot = ensure_bot
         self._config: ConferenceRealtimeConfig | None = None
+        # The person's tools of the configuration in force (RFC §9.3).
+        self._human_input: ChannelHumanInput | None = None
         self._framework: RoomKit | None = None
         self._rooms: dict[str, _RoomRealtime] = {}
         self._tools = ConferenceToolGate(channel_id)
@@ -183,6 +189,22 @@ class ConferenceRealtime:
     def set_framework(self, framework: RoomKit) -> None:
         self._framework = framework
         self._tools.set_framework(framework)
+        self._register_human_input()
+
+    def _register_human_input(self) -> None:
+        """Announce the person's requests through the kit's
+        ``ON_USER_INPUT_REQUIRED`` hooks, once both are known."""
+        human, framework = self._human_input, self._framework
+        if human is not None and framework is not None:
+            hook = framework._build_on_user_input_required_hook(self._channel_id)
+            human.register(self._channel_id, hook)
+
+    async def close_human_input(self) -> None:
+        """Settle the person's requests the unplug or the close left open:
+        the configuration that asked them is gone."""
+        human, self._human_input = self._human_input, None
+        if human is not None:
+            await human.close(self._channel_id)
 
     def session_for(self, room_id: str) -> VoiceSession | None:
         """The provider session serving a room, if one is connected."""
@@ -207,6 +229,11 @@ class ConferenceRealtime:
         warn_unused_role_overrides(config, self._channel_id)
         warn_tools_uncallable(config.tools, "tool(s)", config.provider, self._channel_id)
         self._config = config
+        human = config.human_input_handler
+        self._human_input = (
+            ChannelHumanInput(human, ChannelType.CONFERENCE) if human is not None else None
+        )
+        self._register_human_input()
         self.mixer.configure(input_sample_rate=config.input_sample_rate)
         self._voice.set_on_interrupted(self.interrupt)
 
@@ -618,14 +645,42 @@ class ConferenceRealtime:
         return None  # a conference serves no tool of its own (RFC §21.1)
 
     async def _answer_call(self, call: RealtimeToolCall, carrying: RoomContext | None) -> str:
-        """The configured handler's answer, inside the call's tool call context,
-        at the depth of the answer that issued it (RFC §21.4, §8.3)."""
+        """The answer of the person's tools, else of the configured handler,
+        inside the call's tool call context, at the depth of the answer that
+        issued it (RFC §21.4, §8.3)."""
         config = self._config
-        if config is None or config.tool_handler is None:
+        server = self._server(config, call) if config is not None else None
+        if config is None or server is None:
             # Nothing serves it: unserved, which the hooks may still serve,
             # as on every channel (RFC §9.3, §21.4).
             raise UnservedToolCallError(call.name)
-        room_id = str(call.room_id)
+        serve, asks = server
+        loop_ctx = await self._call_context(config, str(call.room_id))
+        with serving_tool_call(call, self._channel_id, loop_ctx):
+            bound = config.tool_bound(call.name, waits=asks)
+            answered = await answer_within(bound, call.name, serve())
+        # A person's answer is what they said: only the host's may be the
+        # "not mine" envelope (RFC §21.4).
+        return result_text(answered if asks else declined_answer(answered, call.name))
+
+    def _server(
+        self, config: ConferenceRealtimeConfig, call: RealtimeToolCall
+    ) -> tuple[Callable[[], Awaitable[Any]], bool] | None:
+        """What serves *call*, and whether it asks a person: the person's
+        tools before the configured handler; ``None`` when nothing does."""
+        human = self._human_input
+        if human is not None and human.serves(call.name):
+            return partial(human.serve, call.name, call.arguments), True
+        handler = config.tool_handler
+        if handler is None:
+            return None
+        return partial(handler, str(call.room_id), call.name, call.arguments), False
+
+    async def _call_context(
+        self, config: ConferenceRealtimeConfig, room_id: str
+    ) -> _ToolLoopContext:
+        """The tool call context a call of *room_id* is served in: the room,
+        the depth of its answer, and the session's declared toolset."""
         room = self._rooms.get(room_id)
         loop_ctx = await tool_loop_context(
             self._framework,
@@ -642,10 +697,7 @@ class ConferenceRealtime:
                 for tool in declared
                 if dict_tool_name(tool)  # a provider's native tool has no name
             ]
-        with serving_tool_call(call, self._channel_id, loop_ctx):
-            answer = config.tool_handler(room_id, call.name, call.arguments)
-            answered = await answer_within(config.tool_bound(call.name), call.name, answer)
-        return result_text(declined_answer(answered, call.name))
+        return loop_ctx
 
     def _bound_call_result(self, call: RealtimeToolCall, text: str, *, served: bool = True) -> str:
         return bound_result(text, call.name)

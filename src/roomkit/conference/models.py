@@ -18,6 +18,7 @@ from roomkit.tools.timeout import ToolTimeouts
 from roomkit.voice.interruption import InterruptionStrategy
 
 if TYPE_CHECKING:
+    from roomkit.tools.human_input import HumanInputToolHandler
     from roomkit.tools.policy import ToolPolicy
     from roomkit.voice.pipeline.recorder.base import RecordingEncryption
     from roomkit.voice.realtime.provider import RealtimeVoiceProvider
@@ -529,9 +530,19 @@ class ConferenceRealtimeConfig:
     tool_timeouts: dict[str, float | None] = field(default_factory=dict)
     """A bound per tool name, above the default (``None``: as long as it needs)."""
 
+    human_input_handler: HumanInputToolHandler | None = None
+    """The tools that ask a person, as on an ``AIChannel``: declared beside
+    ``tools`` and served before ``tool_handler``, under the handler's own
+    ``timeout`` rather than ``tool_timeout_seconds``. Each request fires
+    ``ON_USER_INPUT_REQUIRED``, whose BLOCK rejects it, and the requests still
+    open are settled when a detach, the unplug or the channel's close ends
+    their call (RFC §9.3, §21.6)."""
+
     def __post_init__(self) -> None:
         self.tool_bound("")  # a bound that is not positive fails here, not on a call
 
-    def tool_bound(self, name: str) -> float | None:
-        """The bound of one call to the tool *name*, in seconds (RFC §21.6)."""
-        return ToolTimeouts(self.tool_timeout_seconds, self.tool_timeouts).for_call(name)
+    def tool_bound(self, name: str, *, waits: bool = False) -> float | None:
+        """The bound of one call to the tool *name*, in seconds (RFC §21.6);
+        a tool that *waits* on a person keeps its own unless *name* has one."""
+        timeouts = ToolTimeouts(self.tool_timeout_seconds, self.tool_timeouts)
+        return timeouts.for_call(name, waits=waits)

@@ -1,12 +1,12 @@
 """The tools that ask a person keep their rules on every door (RMK-481, RFC
 §9.3, §21.6).
 
-``human_input_handler=`` on an AIChannel and a RealtimeVoiceChannel: the
-channel declares the tools and serves them before the host's handler, which
-replacing that handler leaves alone; ON_USER_INPUT_REQUIRED's BLOCK rejects
-the request, the handler's own timeout bounds the call rather than the
-channel's default bound, the request names the door's channel type, and the
-channel's close settles the requests still open.
+``human_input_handler=`` on an AIChannel, a RealtimeVoiceChannel and a
+conference's realtime configuration: the channel declares the tools and serves
+them before the host's handler, ON_USER_INPUT_REQUIRED's BLOCK rejects the
+request, the handler's own timeout bounds the call rather than the channel's
+default bound, the request names the door's channel type, and the channel's
+close or unplug settles the requests still open.
 """
 
 from __future__ import annotations
@@ -17,15 +17,16 @@ from typing import Any
 
 import pytest
 
-from roomkit import HookExecution, HookResult, HookTrigger, RoomKit
+from roomkit import ConferenceRealtimeConfig, HookExecution, HookResult, HookTrigger, RoomKit
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.enums import ChannelType
 from roomkit.providers.ai.base import AITool, AIToolCall
 from roomkit.tools.human_input import HumanInputToolHandler
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from tests.conference.test_conference_realtime import ROOM, realtime_kit
 from tests.tool_doors import DOORS, Hooks, run_door
 
-EVERY_DOOR = pytest.mark.parametrize("door", [d for d in DOORS if d != "conference"])
+EVERY_DOOR = pytest.mark.parametrize("door", DOORS)
 
 ASK = AITool(
     name="ask",
@@ -38,6 +39,7 @@ CALL = AIToolCall(id="c1", name="ask", arguments={"q": "Which room?"})
 DOOR_TYPE = {
     "text-stream": ChannelType.AI,
     "text-nostream": ChannelType.AI,
+    "conference": ChannelType.CONFERENCE,
 }
 
 
@@ -164,13 +166,78 @@ async def test_closing_a_realtime_channel_settles_its_requests() -> None:
     await kit.close()
 
 
-async def test_a_host_tool_under_a_person_s_tool_name_is_refused() -> None:
+@pytest.mark.parametrize("ends", ["unplug", "close"])
+async def test_unplugging_or_closing_a_conference_settles_its_requests(ends: str) -> None:
+    human = _human()
+    provider = MockRealtimeProvider()
+    config = ConferenceRealtimeConfig(provider=provider, human_input_handler=human)
+    kit, channel, _, _ = await realtime_kit(provider=provider, config=config)
+    session = await channel._realtime.ensure_session(ROOM)
+    assert session is not None
+    await provider.simulate_tool_call(session, "c1", "ask", {"q": "Which room?"})
+    pending = await _until_asked(human)
+
+    await (channel.unplug_realtime() if ends == "unplug" else channel.close())
+
+    assert human.handler.pending == {}
+    assert not human.handler.resolve(pending, "too late")
+    await kit.close()
+
+
+async def test_a_conference_plugged_again_announces_its_requests_again() -> None:
+    human = _human()
+    provider = MockRealtimeProvider()
+    config = ConferenceRealtimeConfig(provider=provider, human_input_handler=human)
+    kit, channel, _, _ = await realtime_kit(provider=provider, config=config)
+    requests: list[Any] = []
+    _on_request(lambda event: HookResult.block("no"), requests)(kit)
+    await channel.unplug_realtime()
+    await channel.plug_realtime(config)
+    session = await channel._realtime.ensure_session(ROOM)
+    assert session is not None
+
+    await provider.simulate_tool_call(session, "c1", "ask", {"q": "Which room?"})
+    for _ in range(300):
+        if provider.tool_results:
+            break
+        await asyncio.sleep(0.01)
+
+    assert len(requests) == 1
+    assert "Denied by ON_USER_INPUT_REQUIRED hook" in provider.tool_results[0][2]
+    await kit.close()
+
+
+@pytest.mark.parametrize("given", ["constructor", "conference"])
+async def test_a_host_tool_under_a_person_s_tool_name_is_refused(given: str) -> None:
     with pytest.raises(ValueError, match="serves itself"):
-        RealtimeVoiceChannel(
-            "rt",
-            provider=MockRealtimeProvider(),
-            transport=MockRealtimeTransport(),
-            tools=[ASK_DICT],
-            tool_handler=_host,
-            human_input_handler=_human(),
-        )
+        if given == "constructor":
+            RealtimeVoiceChannel(
+                "rt",
+                provider=MockRealtimeProvider(),
+                transport=MockRealtimeTransport(),
+                tools=[ASK_DICT],
+                tool_handler=_host,
+                human_input_handler=_human(),
+            )
+        else:
+            provider = MockRealtimeProvider()
+            config = ConferenceRealtimeConfig(
+                provider=provider,
+                tools=[ASK_DICT],
+                tool_handler=_host,
+                human_input_handler=_human(),
+            )
+            await realtime_kit(provider=provider, config=config)
+
+
+async def test_a_person_s_tool_the_host_declares_needs_no_tool_handler() -> None:
+    """A name the handler serves but does not define is declared by the
+    conference's tools; served by the person, it needs no tool_handler."""
+    provider = MockRealtimeProvider()
+    config = ConferenceRealtimeConfig(
+        provider=provider,
+        tools=[ASK_DICT],
+        human_input_handler=HumanInputToolHandler({"ask"}, timeout=3.0),
+    )
+    kit, _, _, _ = await realtime_kit(provider=provider, config=config)
+    await kit.close()
