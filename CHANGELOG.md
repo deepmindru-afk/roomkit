@@ -812,6 +812,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ON_ERROR fires once for a delegated turn that failed, whichever path its
+  delegation took (RMK-479, RFC §23.3 step 6): a worker's turn on the trace
+  path (no transport shared into its child room) failed silently, where the
+  same turn with a transport shared fired it.
+
 - `regenerate_response` reads its buffered replies as `process_inbound` does
   (RMK-479, RFC §6.4): a regenerated reply that carries its end on its last
   message (a supervisor's pass 1 cut by its round cap) left the caller's
