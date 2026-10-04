@@ -877,8 +877,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `tool_call` framework event of a call ON_TOOL_CALL withheld says it
   failed, on every door (RMK-480, RFC §9.3): a SYNC hook's BLOCK, or a
   fail-closed hook that raised or whose context would not build, left it
-  without `is_error`, and when the context failed it was the call's only
-  report.
+  without `is_error`. When the hooks' context will not build, that framework
+  event is the call's one report on every door, a call nothing served
+  included: the AI channel reported such a call nowhere, and a realtime
+  session's observers heard it once the context built on a second attempt.
 
 - A supervisor's sequential team in the background is supervised, as in its
   turn (RMK-478, RFC §19.7.3): `delegate_workers` with `async_delivery`, on

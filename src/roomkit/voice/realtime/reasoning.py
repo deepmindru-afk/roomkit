@@ -128,13 +128,13 @@ class ReasoningRequest:
             channel's ON_TOOL_CALL observers, as ``(name, arguments, body,
             cancelled=..., refused=..., detail=...)``, its outcome kept: a
             backend's call is reported wherever it ends.
+        unavailable: The session's tools the model is not offered, each with
+            the refusal a call to it reads (the tool policy's, a skill's
+            gating), so a backend refuses it in the gate's words (RFC §21.1).
         report_call: Reports a call the backend's own provider served,
             outside the gate, to the channel's ON_TOOL_CALL hooks, as
             ``(name, arguments, result, is_error=..., detail=...,
             tool_call_id=...)``: served or failed, reported once.
-        unavailable: The session's tools the model is not offered, each with
-            the refusal a call to it reads (the tool policy's, a skill's
-            gating), so a backend refuses it in the gate's words (RFC §21.1).
     """
 
     session: VoiceSession

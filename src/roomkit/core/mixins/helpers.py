@@ -1115,10 +1115,11 @@ class HelpersMixin:
     ) -> None:
         """Report a call whose ON_TOOL_CALL hooks could not run, as *event* stands.
 
-        The observers need the context that failed; the ``tool_call``
-        framework event reports a served call once, as on every channel
-        (RFC §9.3). A call nothing served is the channel's to report, as the
-        failure it is.
+        The observers need the context that failed: the ``tool_call``
+        framework event is then the call's one report, on every channel,
+        saying what the model reads (a fail-closed hook's failure included,
+        which the judge hands it) (RFC §9.3). A call with no result yet is the
+        channel's to report, as the failure it is.
         """
         if event.result is not None and (claim is None or claim()):
             await self._emit_tool_call_event(event, channel_id)

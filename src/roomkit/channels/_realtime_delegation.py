@@ -488,6 +488,21 @@ class RealtimeDelegationMixin:
             report_cancelled_call(cast("ToolCallHost", self), call, "The delegation ended")
         )
 
+    def _backend_call(
+        self,
+        session: VoiceSession,
+        delegation_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        tool_call_id: str | None = None,
+    ) -> RealtimeToolCall:
+        """A call a backend reports outside the gate, under an id of its
+        delegation, in the session's room."""
+        call_id = f"{delegation_id}:{tool_call_id or uuid4().hex[:8]}"
+        call = RealtimeToolCall(session, call_id, name, arguments)
+        call.room_id = self._session_rooms.get(session.id) or session.room_id
+        return call
+
     async def _report_backend_refusal(
         self,
         session: VoiceSession,
@@ -503,8 +518,7 @@ class RealtimeDelegationMixin:
         """Report a call the backend's own loop ended before the gate (its
         arguments did not read, a stop cut it), as the gate reports one, with
         its outcome: cancelled, refused, or failed, and what failed."""
-        call = RealtimeToolCall(session, f"{delegation_id}:{uuid4().hex[:8]}", name, arguments)
-        call.room_id = self._session_rooms.get(session.id) or session.room_id
+        call = self._backend_call(session, delegation_id, name, arguments)
         if cancelled:
             kind = OutcomeKind.CANCELLED
         else:
@@ -526,9 +540,7 @@ class RealtimeDelegationMixin:
     ) -> None:
         """Report a call the backend's own provider served, outside the gate,
         as an AIChannel reports one: served or failed, once (RFC §9.3)."""
-        call_id = f"{delegation_id}:{tool_call_id or uuid4().hex[:8]}"
-        call = RealtimeToolCall(session, call_id, name, arguments)
-        call.room_id = self._session_rooms.get(session.id) or session.room_id
+        call = self._backend_call(session, delegation_id, name, arguments, tool_call_id)
         await report_served_elsewhere(
             cast("ToolCallHost", self), call, result, is_error=is_error, detail=detail
         )
