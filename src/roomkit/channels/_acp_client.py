@@ -43,6 +43,8 @@ class _ToolState:
     started_at: float = field(default_factory=time.monotonic)
     started: bool = False
     finished: bool = False
+    decided: bool = False
+    """RoomKit decided the agent's permission request for the call."""
     refused: bool = False
     """RoomKit refused the agent's permission request for the call."""
     refusal: str | None = None

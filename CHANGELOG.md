@@ -866,7 +866,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failed, its body the AI door's `Tool '<name>' failed (<class>)`); and a
   refusal for a call the agent never announced was reported nowhere. A
   permission the handler approved with an input or a result ACP cannot apply
-  is refused with the channel's reason, no longer the approval's.
+  is refused with the channel's reason, no longer the approval's, and an
+  approved call the agent never announced nor closed before its turn ended
+  is reported once, cancelled.
 
 - A provider-served call's result is bounded as every outcome the model
   reads (RMK-480, RFC §21.5): in a round mixing it with a call the channel

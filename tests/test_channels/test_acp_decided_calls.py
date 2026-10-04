@@ -144,3 +144,19 @@ async def test_an_approval_acp_cannot_apply_is_refused_with_the_channel_s_reason
     assert "fine by me" not in str(reports[0].result)
     assert "ACP cannot apply" in str(reports[0].result)
     assert rows == ["refused"]
+
+
+class _Approving(PolicyExternalToolHandler):
+    async def process_tool_call(self, tool_name: str, tool_input: Any, **kw: Any) -> ToolDecision:
+        return ToolDecision(approved=True)
+
+
+async def test_an_approved_call_the_agent_never_announced_is_reported_cancelled(
+    tmp_path: Path,
+) -> None:
+    """Approved, then the turn ended before the agent announced or closed it:
+    reported once, cancelled, as a call the turn cut before its result."""
+    reports, rows = await _run(tmp_path, _Approving(), starts=False, closes=False)
+
+    assert [(e.cancelled, e.refused) for e in reports] == [(True, False)]
+    assert rows == ["cancelled"]

@@ -109,6 +109,7 @@ def _record_decision(tool: _ToolState, decision: _PermissionDecision) -> None:
     end reads as refused, not as a tool that failed; one approved later can
     fail on its own. A handler that raised refused nothing: the call failed,
     and the channel reports it with what failed (RFC §9.3)."""
+    tool.decided = True
     tool.failure = decision.failure
     tool.failure_error = decision.failure_error
     tool.refused = not decision.approved and decision.failure is None
@@ -490,12 +491,13 @@ class ACPEventsMixin:
         left something open from one that ended clean. Idempotent: a tool
         already finished is skipped by :meth:`_emit_tool_end`.
         """
-        # A call RoomKit decided (refused, or its handler raised) is closed even
-        # if the agent never announced it: its decision is still reported.
+        # A call RoomKit decided is closed even if the agent never announced
+        # it: its refusal or failure is reported, an approval cut by the
+        # turn's end is reported cancelled.
         open_tools = [
             tool
             for tool in turn.tools.values()
-            if not tool.finished and (tool.started or tool.refused or tool.failure is not None)
+            if not tool.finished and (tool.started or tool.decided)
         ]
         if not open_tools:
             return False
