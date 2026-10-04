@@ -603,9 +603,8 @@ class VoiceChannel(
             if binding.access in (Access.READ_ONLY, Access.NONE) or binding.muted:
                 return
 
-        # A session unbound since is not counted: the pipeline drops its frames,
-        # and a count would outlive the session.
-        if binding_info is not None and self._over_frame_rate(session.id):
+        # Every session is counted, bound or not: the limit guards the pipeline.
+        if self._over_frame_rate(session.id):
             return
 
         self._pipeline_submit_inbound(session, frame)
@@ -619,12 +618,30 @@ class VoiceChannel(
             return False
         with self._state_lock:
             now = time.monotonic()
+            self._forget_expired_frame_windows(now)
             window_start, count = self._frame_counts.get(session_id, (now, 0))
             if now - window_start >= 1.0:
                 window_start, count = now, 0
             count += 1
             self._frame_counts[session_id] = (window_start, count)
             return count > self._max_fps
+
+    # When the expired frame windows were last forgotten (never, by default).
+    _frame_windows_swept_at = 0.0
+
+    def _forget_expired_frame_windows(self, now: float) -> None:
+        """Drop, once a second, the frame windows that expired; the caller holds the lock.
+
+        An expired window counts for nothing (the session's next frame opens a
+        new one), so forgetting it changes no decision. It keeps a session that
+        stopped sending, unbound or gone, from holding an entry for good.
+        """
+        if now - self._frame_windows_swept_at < 1.0:
+            return
+        self._frame_windows_swept_at = now
+        expired = [sid for sid, (start, _) in self._frame_counts.items() if now - start >= 1.0]
+        for sid in expired:
+            del self._frame_counts[sid]
 
     def _on_pipeline_speech_end(self, session: VoiceSession, audio: bytes) -> None:
         """Handle speech end from pipeline — fire hooks and transcribe."""

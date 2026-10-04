@@ -818,9 +818,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   processed and leaves no stage state, and its AEC reference and activity
   are ignored. For a direct `AudioPipeline` user, frames for a session after
   `on_session_ended` are dropped until `on_session_active` activates it
-  again. The `VoiceChannel` doors outside the pipeline (the
-  `max_audio_frames_per_second` limiter, the input and output level hooks,
-  an out-of-band DTMF) no longer write an entry for a session unbound since.
+  again. The `VoiceChannel` doors outside the pipeline (the input and output
+  level hooks, an out-of-band DTMF) no longer write an entry for a session
+  unbound since, and the `max_audio_frames_per_second` limiter, which still
+  counts every session, forgets the windows that expired.
 
 - `VoiceChannel.unbind_session` forgets the speech state of a session
   unbound mid-utterance (RMK-466): its speech onset, its energy barge-in

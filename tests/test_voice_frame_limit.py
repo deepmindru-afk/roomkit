@@ -182,3 +182,44 @@ def test_cleanup_on_unbind() -> None:
     # Unbind
     channel.unbind_session(session)
     assert session.id not in channel._frame_counts
+
+
+def test_an_unbound_session_is_limited_too() -> None:
+    """The limit guards the pipeline: a session not bound (yet, or any more) counts."""
+    channel = VoiceChannel(
+        "voice",
+        backend=MockVoiceBackend(),
+        pipeline=AudioPipelineConfig(vad=MockVADProvider(events=[])),
+        max_audio_frames_per_second=5,
+    )
+    session = _make_session()
+    passed: list[str] = []
+    channel._pipeline_submit_inbound = lambda s, f: passed.append(s.id)  # type: ignore[method-assign]
+
+    for _ in range(10):
+        channel._pipeline_on_audio_received(session, _make_frame())
+
+    assert passed == [session.id] * 5
+
+
+def test_expired_windows_are_forgotten() -> None:
+    """A session that stopped sending leaves no window behind (RMK-466).
+
+    An expired window counts for nothing, so dropping it changes no decision.
+    """
+    channel = VoiceChannel(
+        "voice",
+        backend=MockVoiceBackend(),
+        pipeline=AudioPipelineConfig(vad=MockVADProvider(events=[])),
+        max_audio_frames_per_second=5,
+    )
+    gone, live = _make_session("gone"), _make_session("live")
+    channel._pipeline_on_audio_received(gone, _make_frame())
+    window_start, count = channel._frame_counts["gone"]
+    channel._frame_counts["gone"] = (window_start - 1.1, count)  # a second ago
+    channel._frame_windows_swept_at = 0.0  # the last sweep is old too
+
+    channel._pipeline_on_audio_received(live, _make_frame())
+
+    assert "gone" not in channel._frame_counts
+    assert "live" in channel._frame_counts

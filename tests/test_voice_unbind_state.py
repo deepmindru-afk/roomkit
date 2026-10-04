@@ -5,9 +5,10 @@ Two ways back in, both closed:
 - the VAD handlers keep state between a SPEECH_START and its SPEECH_END, and a
   caller who hangs up while speaking never sends the SPEECH_END that would
   have cleared it;
-- the doors that do not go through the pipeline (the frame-rate limiter, the
-  output level hooks, an out-of-band DTMF) still see audio and events for the
-  session after ``unbind_session``, until the backend disconnects.
+- the doors that do not go through the pipeline (the output level hooks, an
+  out-of-band DTMF) still see audio and events for the session after
+  ``unbind_session``, until the backend disconnects. (The frame-rate limiter
+  keeps counting every session; it forgets expired windows instead.)
 """
 
 from __future__ import annotations
@@ -75,17 +76,15 @@ async def test_unbind_mid_utterance_forgets_the_speech_state() -> None:
 
 
 async def test_audio_and_events_after_unbind_rebuild_nothing() -> None:
-    kit, channel, backend, session = await _bound(max_audio_frames_per_second=50)
+    kit, channel, backend, session = await _bound()
     channel.unbind_session(session)
 
-    # The backend is still connected: it delivers a frame, reports playback,
-    # and a TTS chunk still in flight reaches the output level hook.
-    await backend.simulate_audio_received(session, AudioFrame(data=_FRAME))
+    # The backend is still connected: it reports playback, a TTS chunk still
+    # in flight reaches the output level hook, and an out-of-band tone lands.
     channel._on_audio_played_for_level(session, AudioFrame(data=_FRAME))
     channel._fire_output_level(session, _FRAME)
     channel._on_pipeline_dtmf(session, DTMFEvent(digit="5", duration_ms=80.0))
 
-    assert session.id not in channel._frame_counts
     assert session.id not in channel._last_output_level_at
     assert channel._tts_context is not None
     assert not channel._tts_context.take_dtmf(session.id)
