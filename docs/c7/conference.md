@@ -28,6 +28,8 @@ ConferenceChannel(
 
 Refused at construction (and identically at plug time): `e2ee=True` with stt/recording/realtime (bot receives ciphertext); `ConferenceRecordingMode.EGRESS` (only `FRAMEWORK` is implemented); `tts` + `realtime` together (one bot track, one voice); `realtime.tools` without `tool_handler`; a `pipeline` without a VAD when stt/realtime is set.
 
+`mint_access(room_id, participant_id, *, grants=None, attributes=None, organization_id=None)` reads the room with `organization_id` first (RFC §17.2): another organization's room raises `RoomNotFoundError` and nothing is minted; left unset, no room is read for the scope.
+
 Public surface: `mint_access()`, `plug_*/unplug_*()`, `set_bot_grants()`, `may_interrupt(participant_id)`, `active_lanes` (dict `track_id -> ConferenceLane`; `drain()`, `dropped_frames`), `info()`, `close()`.
 
 ## How the Bridge Works

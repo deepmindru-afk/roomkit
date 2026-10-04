@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._conference_metadata import require_mintable_attributes
 from roomkit.channels._conference_operations import ConferenceResource
+from roomkit.channels.base import _check_room_scope
 from roomkit.conference.models import ConferenceAccess, ConferenceGrants
 from roomkit.core.exceptions import (
     ParticipantNotAdmittedError,
@@ -107,11 +108,18 @@ class ConferenceAccessMixin:
         *,
         grants: ConferenceGrants | None = None,
         attributes: Mapping[str, str] | None = None,
+        organization_id: str | None = None,
     ) -> ConferenceAccess:
         """Mint credentials for a participant to join the conference.
 
         The integrator delivers the result to its client application; the
         framework does not serve it.
+
+        ``organization_id`` is the organization the caller acts for (RFC
+        §17.2): the room is read with it before anything is tracked or
+        admitted, so another organization's room raises ``RoomNotFoundError``
+        and nothing is minted for it. Left unset, no room is read for the
+        scope.
 
         What is minted here is admission to a live media session, so the
         preconditions are checked rather than assumed. A credential is only
@@ -181,6 +189,7 @@ class ConferenceAccessMixin:
         # answer does not depend on the room or the roster.
         if attributes:
             require_mintable_attributes(attributes)
+        await _check_room_scope(self._framework, room_id, organization_id)
         async with self._activity.track(room_id):
             await self._check_admissible(room_id, participant_id)
             self._require_attached(room_id)

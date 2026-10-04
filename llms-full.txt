@@ -3485,7 +3485,8 @@ await kit.leave(session)
 `join()` and `RealtimeVoiceChannel.start_session()` take `organization_id=`:
 the room is read with that scope before the session exists (RFC §17.2), so
 another organization's room raises `RoomNotFoundError` and no session joins
-it or reaches its recordings. Left unset, nothing changes.
+it or reaches its recordings. Left unset, `join()` reads the room unscoped and
+`start_session()` does not read it.
 
 ## Tool Calling
 
@@ -3733,6 +3734,8 @@ ConferenceChannel(
 ```
 
 Refused at construction (and identically at plug time): `e2ee=True` with stt/recording/realtime (bot receives ciphertext); `ConferenceRecordingMode.EGRESS` (only `FRAMEWORK` is implemented); `tts` + `realtime` together (one bot track, one voice); `realtime.tools` without `tool_handler`; a `pipeline` without a VAD when stt/realtime is set.
+
+`mint_access(room_id, participant_id, *, grants=None, attributes=None, organization_id=None)` reads the room with `organization_id` first (RFC §17.2): another organization's room raises `RoomNotFoundError` and nothing is minted; left unset, no room is read for the scope.
 
 Public surface: `mint_access()`, `plug_*/unplug_*()`, `set_bot_grants()`, `may_interrupt(participant_id)`, `active_lanes` (dict `track_id -> ConferenceLane`; `drain()`, `dropped_frames`), `info()`, `close()`.
 
@@ -5793,7 +5796,7 @@ kit = RoomKit(
 
 | Method | Description |
 |--------|-------------|
-| `join(room_id, channel_id, participant_id?, ..., *, organization_id=None)` | Join voice/video session; the room read with its scope (another organization's is not found, no session joins it) |
+| `join(room_id, channel_id, *, session=None, participant_id=None, ..., organization_id=None)` | Join voice/video session; the room read with its scope (another organization's is not found, no session joins it) |
 | `leave(session)` | Leave voice/video session |
 | `transcribe(audio)` | Speech-to-text |
 | `synthesize(text, voice?)` | Text-to-speech |

@@ -114,7 +114,8 @@ await kit.leave(session)
 `join()` and `RealtimeVoiceChannel.start_session()` take `organization_id=`:
 the room is read with that scope before the session exists (RFC §17.2), so
 another organization's room raises `RoomNotFoundError` and no session joins
-it or reaches its recordings. Left unset, nothing changes.
+it or reaches its recordings. Left unset, `join()` reads the room unscoped and
+`start_session()` does not read it.
 
 ## Tool Calling
 

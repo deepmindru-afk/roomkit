@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
@@ -68,6 +69,27 @@ class FrameworkAwareChannel(ABC):
     @abstractmethod
     def set_framework(self, framework: RoomKit) -> None:
         """Receive the framework this channel was registered with."""
+
+
+async def _check_room_scope(
+    framework: RoomKit | None, room_id: str, organization_id: str | None
+) -> None:
+    """Refuse a room the caller's organization does not see (RFC §17.2).
+
+    The read a channel's own door into a room's media makes before it admits
+    anyone: a realtime session start, a conference mint. Unscoped, nothing is
+    read. A channel no framework registered has no room to read, so a scoped
+    call on it is refused as not found.
+
+    Raises:
+        RoomNotFoundError: *organization_id* is set and the room is missing,
+            another organization's, or unreadable without a framework.
+    """
+    if organization_id is None:
+        return
+    if framework is None:
+        raise RoomNotFoundError(f"Room {room_id} not found")
+    await framework.get_room(room_id, organization_id=organization_id)
 
 
 class Channel(ABC):
