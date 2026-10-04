@@ -1235,8 +1235,7 @@ class VoiceChannel(
         self._voice_session_spans[session.id] = span_id
         # Notify pipeline of session activation
         self._pipeline_session_active(session)
-        # The parent span for speech segment spans, set after the activation:
-        # it clears what a previous session left under this id, spans included.
+        # Segment spans' parent, after the activation that clears stale spans
         if self._pipeline is not None:
             self._pipeline.set_parent_span(session.id, span_id)
         # Register session with audio bridge

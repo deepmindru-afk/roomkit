@@ -195,10 +195,7 @@ class AudioPipeline:
         self._in_speech_sessions: set[str] = set()
         # Streams handed to the stages — the keys reset() must release.
         self._stage_streams: set[str] = set()
-        # Streams whose session's end has begun, oldest first, mapped to whether
-        # on_session_ended has released them yet. Work still arriving for one
-        # (a frame in flight on a DSP worker, a callback queued for the loop, a
-        # last TTS chunk) is abandoned or leaves nothing behind.
+        # Ended streams, oldest first -> released yet (see _mark_ended).
         self._ended_streams: dict[str, bool] = {}
         self._speaker_change_callbacks: list[SpeakerChangeCallback] = []
         self._dtmf_callbacks: list[DTMFCallback] = []
@@ -1140,7 +1137,13 @@ class AudioPipeline:
         self._mark_ended(session.id, released=False)
 
     def _mark_ended(self, stream: str, *, released: bool) -> None:
-        """Remember how far a stream's end has gone, forgetting the oldest beyond the bound."""
+        """Remember how far a stream's end has gone, forgetting the oldest beyond the bound.
+
+        The mark maps the stream to whether ``on_session_ended`` has released it
+        yet. Work still arriving for a marked stream (a frame in flight on a DSP
+        worker, a callback queued for the loop, a last TTS chunk) is abandoned,
+        or leaves nothing behind once the stream is released.
+        """
         self._ended_streams.pop(stream, None)
         self._ended_streams[stream] = released
         while len(self._ended_streams) > _ENDED_STREAMS_KEPT:
