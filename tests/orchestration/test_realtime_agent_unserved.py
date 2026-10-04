@@ -47,12 +47,12 @@ CAUSES: dict[str, tuple[Callable[[], dict[str, Any]], str, str]] = {
         "a human-input handler",
         "human_input_handler=...",
     ),
-    "planning": (lambda: {"enable_planning": True}, "planning", "serves no agent's own"),
-    "sandbox": (lambda: {"sandbox": MagicMock()}, "a sandbox", "serves no agent's own"),
+    "planning": (lambda: {"enable_planning": True}, "planning", "never serves an agent's"),
+    "sandbox": (lambda: {"sandbox": MagicMock()}, "a sandbox", "never serves an agent's"),
     "external": (
         lambda: {"external_tool_handler": MagicMock()},
         "an external tool handler",
-        "serves no agent's own",
+        "never serves an agent's",
     ),
 }
 EVERY_CAUSE = pytest.mark.parametrize("cause", list(CAUSES))
@@ -100,15 +100,15 @@ def test_a_reasoning_backend_s_agent_is_refused_for_the_same_cause(cause: str) -
         AgentReasoningBackend(Agent("reasoner", provider=MockAIProvider(), **own()))
 
 
-def test_a_reasoning_backend_refuses_an_empty_skill_registry_a_pipeline_installs() -> None:
-    """The backend's agent runs its own loop, which would serve a registry
-    filled later outside the voice channel's gate; a pipeline agent's never
-    runs in a session."""
+def test_an_empty_skill_registry_is_refused_on_both_doors() -> None:
+    """A skill added after the check would open its gated tools with nothing
+    to gate them: in the backend's own loop, as in a pipeline's session."""
     with pytest.raises(ValueError, match="skills"):
         AgentReasoningBackend(Agent("reasoner", provider=MockAIProvider(), skills=SkillRegistry()))
     agent = Agent("teller", provider=MockAIProvider(), skills=SkillRegistry())
 
-    _install(_voice_kit(agent), [agent])
+    with pytest.raises(ValueError, match="carries skills"):
+        _install(_voice_kit(agent), [agent])
 
 
 def test_each_cause_of_each_agent_is_named() -> None:

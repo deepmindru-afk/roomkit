@@ -335,7 +335,7 @@ def refuse_agents_with_unserved(agents: list[Agent], channel_id: str) -> None:
     causes = [
         _unserved_cause(agent.channel_id, feature, channel_id)
         for agent in agents
-        for feature in unserved_on_realtime(agent, runs_its_loop=False)
+        for feature in unserved_on_realtime(agent)
     ]
     if causes:
         raise ValueError(" ".join(causes))
@@ -344,9 +344,10 @@ def refuse_agents_with_unserved(agents: list[Agent], channel_id: str) -> None:
 def _unserved_cause(agent_id: str, feature: UnservedFeature, channel_id: str) -> str:
     """Why *agent_id* is refused for *feature*, and what serves it instead."""
     where = (
-        f"pass it to RealtimeVoiceChannel({channel_id!r}, {feature.instead}...)"
+        f"RealtimeVoiceChannel({channel_id!r}, {feature.instead}...) serves "
+        f"{feature.short} in its sessions"
         if feature.instead is not None
-        else "a realtime session serves no agent's own"
+        else f"a realtime session never serves an agent's {feature.short}"
     )
     return (
         f"Agent {agent_id!r} carries {feature.what}, which a realtime pipeline on channel "

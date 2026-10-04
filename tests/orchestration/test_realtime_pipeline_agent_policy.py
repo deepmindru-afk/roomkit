@@ -310,7 +310,9 @@ def test_an_agent_with_skills_is_refused_at_the_install(tmp_path: Path) -> None:
     assert len(kit._hook_engine._global_hooks) == hooks
 
 
-def test_an_agent_with_an_empty_skill_registry_is_installed() -> None:
+def test_an_agent_with_an_empty_skill_registry_is_refused() -> None:
+    """A skill added to the registry after the install would open its gated
+    tools in the session with nothing to gate them (RMK-482)."""
     agent = _agent("teller", None, SkillRegistry())
     kit = RoomKit()
     kit.register_channel(
@@ -320,6 +322,7 @@ def test_an_agent_with_an_empty_skill_registry_is_installed() -> None:
     )
     kit.register_channel(agent)
 
-    ConversationPipeline(stages=[PipelineStage(phase="a", agent_id="teller")]).install(
-        kit, [agent], voice_channel_id="rtv"
-    )
+    with pytest.raises(ValueError, match="carries skills"):
+        ConversationPipeline(stages=[PipelineStage(phase="a", agent_id="teller")]).install(
+            kit, [agent], voice_channel_id="rtv"
+        )
