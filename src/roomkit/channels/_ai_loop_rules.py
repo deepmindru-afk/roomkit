@@ -26,10 +26,10 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.ai.tool_calls import (
-    MALFORMED_CALL_NUDGE,
     is_malformed_call,
     is_natural_stop,
     is_truncation,
+    malformed_call_nudge,
 )
 from roomkit.realtime.base import EphemeralEventType
 from roomkit.tools._outcome import OutcomeKind, ToolOutcome
@@ -208,7 +208,7 @@ def _empty_round_nudge(
     again.
     """
     if is_malformed_call(finish_reason):
-        return MALFORMED_CALL_NUDGE
+        return malformed_call_nudge(finish_reason)
     if final_text.strip() or not had_tool_round:
         return None
     if is_truncation(finish_reason):

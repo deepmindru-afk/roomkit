@@ -696,7 +696,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arguments read, as Anthropic's closed block does, and only the last call
   can be cut. `call_partial`, `call_cut` and `call_garbled` take `last=`
   (default `True`), and `call_partial` is exported from `roomkit.providers.ai`
-  for a custom provider.
+  for a custom provider. Per review: a call to a tool the request did not
+  enable is told so (`UNEXPECTED_CALL_NUDGE`, chosen by
+  `malformed_call_nudge(finish_reason)`), not that it "could not be parsed";
+  a response ending on either Gemini reason carries no schema document and
+  says so by its finish reason (RFC §6.7). The internal
+  `check_schema_answer` takes `finish_reason=` instead of `truncated=`, and
+  `checked_stream` no longer takes `truncated=`.
 
 - The caller reads how each agent's turn ended, even one that wrote no
   message (RMK-437, RFC §6.4, §6.7): `InboundResult.response_metadata` now

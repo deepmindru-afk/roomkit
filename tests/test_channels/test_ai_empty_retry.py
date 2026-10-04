@@ -21,7 +21,7 @@ from roomkit.providers.ai.base import (
     ProviderError,
 )
 from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.ai.tool_calls import MALFORMED_CALL_NUDGE
+from roomkit.providers.ai.tool_calls import MALFORMED_CALL_NUDGE, malformed_call_nudge
 from tests.tool_loop_modes import run_tool_loop
 
 
@@ -111,8 +111,8 @@ def _malformed(finish_reason: str = "MALFORMED_FUNCTION_CALL") -> AIResponse:
     return AIResponse(content="", tool_calls=[], finish_reason=finish_reason)
 
 
-def _told_malformed(context: AIContext) -> int:
-    return sum(1 for m in context.messages if m.content == MALFORMED_CALL_NUDGE)
+def _told_malformed(context: AIContext, nudge: str = MALFORMED_CALL_NUDGE) -> int:
+    return sum(1 for m in context.messages if m.content == nudge)
 
 
 @pytest.mark.parametrize("finish_reason", ["MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL"])
@@ -134,7 +134,7 @@ async def test_a_malformed_call_is_told_and_retried_on_the_first_round(
     context = _ctx()
     run = await run_tool_loop(ch, context)
     assert run.text == "Done"
-    assert _told_malformed(context) == 1
+    assert _told_malformed(context, malformed_call_nudge(finish_reason)) == 1
     assert handler.await_count == 1
 
 

@@ -38,7 +38,9 @@ class MockAIProvider(AIProvider):
     With ``response_schema=True`` it honours :attr:`AIContext.response_schema`
     the way a real provider must (RFC §6.7), streaming included: the scripted
     answer has to be a JSON document satisfying it, and an :class:`AIResponse` scripted with
-    ``finish_reason="refusal"`` or ``"length"`` raises the matching
+    ``finish_reason="refusal"``, or an ending that ran out of room (``"length"``,
+    ``"model_length"``, any :func:`~roomkit.providers.ai.tool_calls.is_truncation`
+    reads), raises the matching
     :class:`~roomkit.providers.ai.response_schema.ResponseSchemaError`.
     """
 

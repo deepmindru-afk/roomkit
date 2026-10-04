@@ -16,6 +16,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from roomkit.channels.ai import AIChannel
 from roomkit.providers.ai.base import (
     AIContext,
@@ -33,6 +35,7 @@ from roomkit.providers.ai.openai_dialect import ToolCallSlots
 from roomkit.providers.ai.tool_calls import (
     call_cut,
     call_garbled,
+    call_partial,
     partial_call_error,
     unreadable_arguments,
 )
@@ -43,6 +46,8 @@ from roomkit.providers.gemini.config import GeminiConfig
 from roomkit.providers.ollama.config import OllamaConfig
 from roomkit.providers.openai.ai import OpenAIAIProvider
 from roomkit.providers.openai.config import OpenAIConfig
+from roomkit.providers.polargrid.ai import PolarGridAIProvider
+from roomkit.providers.polargrid.config import PolarGridConfig
 from tests.tool_loop_modes import run_tool_loop
 
 _CTX = AIContext(messages=[AIMessage(role="user", content="hi")])
@@ -59,6 +64,22 @@ class TestTheRule:
     def test_a_stream_without_a_stop_reason_cut_its_call(self) -> None:
         assert call_cut(_FRAGMENT, None) and call_cut(_FRAGMENT, "length")
         assert not call_garbled(_FRAGMENT, None)
+
+    @pytest.mark.parametrize(
+        "finish",
+        ["model_context_window_exceeded", "model_length", "content_filter", "refusal", "error"],
+    )
+    def test_every_ending_that_stops_a_call_cuts_it(self, finish: str) -> None:
+        """Mistral's generation ``error`` among them (RMK-438)."""
+        assert call_partial("", finish) and call_cut(_FRAGMENT, finish)
+        assert not call_garbled(_FRAGMENT, finish)
+
+    def test_a_call_another_followed_is_not_cut(self) -> None:
+        """Closed by the call after it: whole, it runs; unreadable, the model
+        wrote it so (RMK-438)."""
+        assert not call_partial("", "length", last=False)
+        assert call_garbled(_FRAGMENT, "length", last=False)
+        assert not call_cut(_FRAGMENT, "length", last=False)
 
     def test_unreadable_arguments_on_an_ordinary_stop_were_written_so(self) -> None:
         assert call_garbled("[1, 2]", "tool_calls") and call_garbled(_FRAGMENT, "stop")
@@ -122,6 +143,35 @@ def _fold(*fragments: tuple[int, str | None, str | None, str]) -> tuple[list, li
     slots = ToolCallSlots()
     deltas = [slots.fold(*fragment) for fragment in fragments]
     return [d for d in deltas if d is not None], slots.calls("tool_calls")
+
+
+class TestOnlyTheLastCallIsCut:
+    def test_an_unreadable_call_another_followed_was_written_so(self) -> None:
+        """Under a cut response, the first call was closed by the second: its
+        unreadable arguments are the model's, not the cut's (RMK-438)."""
+        slots = ToolCallSlots()
+        slots.fold(0, "c1", "lookup", '{"q": "pa')
+        slots.fold(1, "c2", "now", "{}")
+
+        first, last = slots.calls("length")
+
+        assert (first.partial, first.garbled) == (True, True)
+        assert (last.partial, last.garbled) == (False, False)
+
+    def test_polargrid_reads_the_last_call_among_those_with_a_function(self) -> None:
+        """A call entry with no function is no call: the cut one before it is
+        still the response's last (RMK-438)."""
+        provider = PolarGridAIProvider(PolarGridConfig(api_key="k", model="m"))
+        message = SimpleNamespace(
+            tool_calls=[
+                SimpleNamespace(id="c1", function=SimpleNamespace(name="lookup", arguments="")),
+                SimpleNamespace(id="c2", function=None),
+            ]
+        )
+
+        [call] = provider._extract_tool_calls(message, "length")
+
+        assert (call.partial, call.garbled) == (True, False)
 
 
 class TestSplitting:

@@ -39,7 +39,10 @@ _CALL_CUTTING_FINISH_REASONS = _TRUNCATION_FINISH_REASONS | {
 # the call over, so none reached the loop: Gemini's MALFORMED_FUNCTION_CALL (it
 # could not parse the call) and UNEXPECTED_TOOL_CALL (a call to a tool the
 # request did not enable).
-_MALFORMED_CALL_FINISH_REASONS = frozenset({"malformed_function_call", "unexpected_tool_call"})
+_UNEXPECTED_CALL_FINISH_REASON = "unexpected_tool_call"
+_MALFORMED_CALL_FINISH_REASONS = frozenset(
+    {"malformed_function_call", _UNEXPECTED_CALL_FINISH_REASON}
+)
 
 # A response the model ended itself, under each provider's word for it
 # (OpenAI-compatible ``stop``, Anthropic ``end_turn`` and ``stop_sequence``,
@@ -55,6 +58,23 @@ MALFORMED_CALL_NUDGE = (
 )
 """What a model is told when its provider could not parse its tool call, on
 the text loops and on a speech-to-speech session alike (RFC §6.4, §12.4)."""
+
+UNEXPECTED_CALL_NUDGE = (
+    "The tool you called is not available in this request, so it did not run. "
+    "Use one of the declared tools, or answer in plain text."
+)
+"""What a model is told when it called a tool its request did not enable
+(Gemini's UNEXPECTED_TOOL_CALL): asking it to call the same tool again would
+end the same way (RFC §6.4)."""
+
+
+def malformed_call_nudge(finish_reason: str | None) -> str:
+    """What a model is told for a call its provider would not hand over, by
+    the ending's cause: one it could not parse, or one to a tool the request
+    did not enable."""
+    if finish_reason is not None and finish_reason.lower() == _UNEXPECTED_CALL_FINISH_REASON:
+        return UNEXPECTED_CALL_NUDGE
+    return MALFORMED_CALL_NUDGE
 
 
 def is_malformed_call(finish_reason: str | None) -> bool:
