@@ -659,3 +659,57 @@ class TestFastRTCLazyLoader:
 
         fn = get_mount_fastrtc_voice()
         assert fn is mount_fastrtc_voice
+
+
+class TestFastRTCTTSStreamFailure:
+    """A failure of the TTS stream reaches the caller on both transports; the
+    transport's own failure stays logged here (RMK-448)."""
+
+    @staticmethod
+    async def _failing():
+        yield AudioChunk(data=struct.pack("<2h", 100, 200))
+        raise RuntimeError("tts down")
+
+    @staticmethod
+    async def _fine():
+        yield AudioChunk(data=struct.pack("<2h", 100, 200))
+
+    async def test_webrtc_hands_a_failing_stream_back(self) -> None:
+        backend = FastRTCVoiceBackend(output_sample_rate=24000)
+        session = await backend.connect("room-1", "user-1", "voice-1")
+        backend._register_webrtc("rtc-1", session.id)
+
+        with pytest.raises(RuntimeError, match="tts down"):
+            await backend.send_audio(session, self._failing())
+
+    async def test_webrtc_absorbs_its_own_failure(self, caplog) -> None:
+        backend = FastRTCVoiceBackend(output_sample_rate=24000)
+        session = await backend.connect("room-1", "user-1", "voice-1")
+        backend._register_webrtc("rtc-1", session.id)
+        backend._enqueue_frame = MagicMock(side_effect=RuntimeError("queue gone"))
+
+        await backend.send_audio(session, self._fine())
+
+        assert "queue gone" in caplog.text
+
+    async def test_websocket_hands_a_failing_stream_back(self) -> None:
+        backend = FastRTCVoiceBackend()
+        session = await backend.connect("room-1", "user-1", "voice-1")
+        ws = AsyncMock()
+        ws.client_state = None
+        backend._register_websocket("ws-1", session.id, ws)
+
+        with pytest.raises(RuntimeError, match="tts down"):
+            await backend.send_audio(session, self._failing())
+
+    async def test_websocket_absorbs_its_own_failure(self, caplog) -> None:
+        backend = FastRTCVoiceBackend()
+        session = await backend.connect("room-1", "user-1", "voice-1")
+        ws = AsyncMock()
+        ws.client_state = None
+        ws.send_json.side_effect = OSError("socket closed")  # RuntimeError is a close, ignored
+        backend._register_websocket("ws-1", session.id, ws)
+
+        await backend.send_audio(session, self._fine())
+
+        assert "socket closed" in caplog.text

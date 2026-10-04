@@ -33,7 +33,12 @@ from typing import Any
 
 from roomkit.core.task_utils import await_interruptible
 from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends.base import AudioReceivedCallback, SessionReadyCallback, VoiceBackend
+from roomkit.voice.backends.base import (
+    AudioReceivedCallback,
+    ChunkSource,
+    SessionReadyCallback,
+    VoiceBackend,
+)
 from roomkit.voice.base import (
     AudioChunk,
     BargeInCallback,
@@ -312,14 +317,18 @@ class RTPVoiceBackend(VoiceBackend):
             return
 
         self._playing_sessions.add(session.id)
+        source: ChunkSource | None = None
         try:
             if isinstance(audio, bytes):
                 await asyncio.get_running_loop().run_in_executor(
                     None, self._send_pcm_bytes, session, rtp_session, audio
                 )
             else:
-                await self._send_pcm_stream(session, rtp_session, audio)
+                source = ChunkSource(audio)
+                await self._send_pcm_stream(session, rtp_session, source)
         except Exception:
+            if source is not None:
+                source.raise_failure()  # the TTS's failure is the caller's
             logger.exception("Error sending audio for session %s", session.id)
         finally:
             self._playing_sessions.discard(session.id)

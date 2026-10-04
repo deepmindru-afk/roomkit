@@ -8,7 +8,7 @@ import pytest
 
 from roomkit.video.base import VideoChunk, VideoSession, VideoSessionState
 from roomkit.video.video_frame import VideoFrame
-from roomkit.voice.base import VoiceSession, VoiceSessionState
+from roomkit.voice.base import AudioChunk, VoiceSession, VoiceSessionState
 
 
 def _mock_aiortp() -> MagicMock:
@@ -308,3 +308,17 @@ class TestRTPVideoBackendSendsWholeFrames:
         await backend.send_video(video_session, frames())
 
         video_rtp.send_frame.assert_called_once_with([b"\x41\x9a", b"\x41\x9b"], 2970, False)
+
+
+class TestRTPVideoBackendTTSStreamFailure:
+    """The video backend inherits the audio rule: the TTS's failure is the caller's (RMK-448)."""
+
+    async def test_a_failing_stream_reaches_the_caller(self, backend):
+        session = await backend.connect("room-1", "user-1", "voice-1")
+
+        async def chunks():
+            yield AudioChunk(data=b"\x00\x01" * 160, sample_rate=8000)
+            raise RuntimeError("tts down")
+
+        with pytest.raises(RuntimeError, match="tts down"):
+            await backend.send_audio(session, chunks())

@@ -44,6 +44,7 @@ from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.base import (
     AudioPlayedCallback,
     AudioReceivedCallback,
+    ChunkSource,
     SessionReadyCallback,
     SpeakerChangeCallback,
     TransportDisconnectCallback,
@@ -591,12 +592,16 @@ class LocalAudioBackend(VoiceBackend):
 
         # VoiceChannel path
         self._playing_sessions.add(session.id)
+        source: ChunkSource | None = None
         try:
             if isinstance(audio, bytes):
                 await self._play_pcm(audio)
             else:
-                await self._play_stream(session, audio)
+                source = ChunkSource(audio)
+                await self._play_stream(session, source)
         except Exception:
+            if source is not None:
+                source.raise_failure()  # the TTS's failure is the caller's
             logger.exception("Error playing audio for session %s", session.id)
         finally:
             self._playing_sessions.discard(session.id)

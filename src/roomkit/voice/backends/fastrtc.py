@@ -52,6 +52,7 @@ from roomkit.voice.auth import AuthCallback, auth_context
 from roomkit.voice.backends._mulaw import pcm16_to_mulaw as _pcm16_to_mulaw
 from roomkit.voice.backends.base import (
     AudioReceivedCallback,
+    ChunkSource,
     SessionReadyCallback,
     TransportDisconnectCallback,
     VoiceBackend,
@@ -294,14 +295,18 @@ class FastRTCVoiceBackend(VoiceBackend):
                 logger.warning("No emit queue for WebRTC session %s", session.id)
                 return
             sample_rate = session.metadata.get("output_sample_rate", self._output_sample_rate)
+            source: ChunkSource | None = None
             try:
                 if isinstance(audio, bytes):
                     self._enqueue_frame(queue, self._pcm_to_numpy(audio, sample_rate))
                 else:
-                    async for chunk in audio:
+                    source = ChunkSource(audio)
+                    async for chunk in source:
                         if chunk.data:
                             self._enqueue_frame(queue, self._pcm_to_numpy(chunk.data, sample_rate))
             except Exception:
+                if source is not None:
+                    source.raise_failure()  # the TTS's failure is the caller's
                 logger.exception("Error sending audio to WebRTC session %s", session.id)
             return
 
@@ -310,14 +315,18 @@ class FastRTCVoiceBackend(VoiceBackend):
         if not websocket:
             logger.warning("No WebSocket for session %s", session.id)
             return
+        ws_source: ChunkSource | None = None
         try:
             if isinstance(audio, bytes):
                 await self._send_ws_audio(websocket, audio)
             else:
-                async for chunk in audio:
+                ws_source = ChunkSource(audio)
+                async for chunk in ws_source:
                     if chunk.data:
                         await self._send_ws_audio(websocket, chunk.data)
         except Exception:
+            if ws_source is not None:
+                ws_source.raise_failure()  # the TTS's failure is the caller's
             logger.exception("Error sending audio to session %s", session.id)
 
     @staticmethod

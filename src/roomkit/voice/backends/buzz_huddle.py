@@ -40,6 +40,7 @@ from roomkit.core.task_utils import cancel_and_wait
 from roomkit.voice.backends._resample import build_streaming_resampler
 from roomkit.voice.backends.base import (
     AudioReceivedCallback,
+    ChunkSource,
     TransportDisconnectCallback,
     VoiceBackend,
 )
@@ -225,13 +226,17 @@ class BuzzHuddleBackend(VoiceBackend):
         resample = self._outbound_resample.get(session.id)
         if pacer is None or resample is None:
             return
+        source: ChunkSource | None = None
         try:
             if isinstance(audio, bytes):
                 pacer.push(resample(audio))
             else:
-                async for chunk in audio:
+                source = ChunkSource(audio)
+                async for chunk in source:
                     pacer.push(resample(chunk.data))
         except Exception:
+            if source is not None:
+                source.raise_failure()  # the TTS's failure is the caller's
             logger.exception("Error sending audio to session %s", session.id)
 
     def interrupt(self, session: VoiceSession) -> None:

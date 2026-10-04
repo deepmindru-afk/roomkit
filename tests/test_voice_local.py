@@ -911,3 +911,35 @@ class TestSharedCaptureSource:
         assert backend._channels == 1
         assert backend._block_duration_ms == 20
         assert backend._source is None
+
+
+class TestLocalAudioTTSStreamFailure:
+    """A failure of the TTS stream reaches the caller; the device's own stays here (RMK-448)."""
+
+    async def test_a_failing_stream_reaches_the_caller(self) -> None:
+        backend, sd = _make_backend()
+        mock_stream = MagicMock()
+        sd.RawOutputStream = lambda **kwargs: mock_stream
+        session = await backend.connect("room-1", "user-1", "voice-1")
+
+        async def audio_gen():
+            yield AudioChunk(data=b"\x00\x01\x00\x02")
+            raise RuntimeError("tts down")
+
+        with pytest.raises(RuntimeError, match="tts down"):
+            await backend.send_audio(session, audio_gen())
+
+        mock_stream.close.assert_called_once()  # the playback was released first
+        assert backend.is_playing(session) is False
+
+    async def test_a_device_failure_is_still_absorbed(self, caplog) -> None:
+        backend, sd = _make_backend()
+        sd.RawOutputStream = MagicMock(side_effect=OSError("no output device"))
+        session = await backend.connect("room-1", "user-1", "voice-1")
+
+        async def audio_gen():
+            yield AudioChunk(data=b"\x00\x01\x00\x02")
+
+        await backend.send_audio(session, audio_gen())
+
+        assert "no output device" in caplog.text

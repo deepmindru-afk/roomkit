@@ -38,6 +38,38 @@ SpeakerChangeCallback = Callable[["VoiceSession", Any], Any]
 logger = logging.getLogger("roomkit.voice.backend")
 
 
+class ChunkSource(AsyncIterator[AudioChunk]):
+    """The chunks a backend plays, remembering the exception their stream raised.
+
+    A backend logs and absorbs its own transport errors, but a failure of the
+    stream it reads (the TTS provider's, or a chunk the VoiceChannel refused)
+    belongs to the caller of ``send_audio`` (RFC section 12.2). A backend reads
+    the chunks through this wrapper and calls :meth:`raise_failure` first in
+    the ``except`` that absorbs its own errors.
+    """
+
+    def __init__(self, chunks: AsyncIterator[AudioChunk]) -> None:
+        self._chunks = chunks
+        self.failure: Exception | None = None
+
+    def __aiter__(self) -> ChunkSource:
+        return self
+
+    async def __anext__(self) -> AudioChunk:
+        try:
+            return await anext(self._chunks)
+        except StopAsyncIteration:
+            raise
+        except Exception as exc:
+            self.failure = exc
+            raise
+
+    def raise_failure(self) -> None:
+        """Raise the exception the stream raised, if it raised one."""
+        if self.failure is not None:
+            raise self.failure
+
+
 class VoiceBackend(ABC):
     """Abstract base class for voice transport backends.
 

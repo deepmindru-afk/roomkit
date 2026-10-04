@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -550,3 +551,32 @@ class TestBuzzHuddleWatcher:
             BuzzRelaySource,
             huddle_announcement_parser,
         )
+
+
+class TestTTSStreamFailure:
+    """A failure of the TTS stream reaches the caller; the transport's own stays here (RMK-448)."""
+
+    async def test_a_failing_stream_reaches_the_caller(self) -> None:
+        backend = make_backend()
+        session, _client = await accept_fake(backend)
+
+        async def chunks():
+            yield AudioChunk(data=b"\x01\x00" * 240, sample_rate=24000)
+            raise RuntimeError("tts down")
+
+        with pytest.raises(RuntimeError, match="tts down"):
+            await backend.send_audio(session, chunks())
+        await backend.disconnect(session)
+
+    async def test_a_transport_failure_is_still_absorbed(self, caplog) -> None:
+        backend = make_backend()
+        session, _client = await accept_fake(backend)
+        backend._pacers[session.id].push = MagicMock(side_effect=OSError("pacer gone"))
+
+        async def chunks():
+            yield AudioChunk(data=b"\x01\x00" * 240, sample_rate=24000)
+
+        await backend.send_audio(session, chunks())
+
+        assert "pacer gone" in caplog.text
+        await backend.disconnect(session)

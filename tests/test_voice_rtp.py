@@ -314,3 +314,46 @@ class TestRTPVoiceBackend:
     async def test_is_playing(self, backend: RTPVoiceBackend, mock_rtp_session: MagicMock) -> None:
         session = await backend.connect("room-1", "user-1", "voice-1")
         assert backend.is_playing(session) is False
+
+
+class TestRTPTTSStreamFailure:
+    """A failure of the TTS stream reaches the caller; the transport's own stays here (RMK-448)."""
+
+    @pytest.fixture
+    def mock_rtp_session(self) -> MagicMock:
+        return _make_mock_rtp_session()
+
+    @pytest.fixture
+    async def backend(self, mock_rtp_session: MagicMock) -> RTPVoiceBackend:
+        with patch("roomkit.voice.backends.rtp._import_aiortp") as mock_import:
+            mock_mod = MagicMock()
+            mock_mod.RTPSession.create = AsyncMock(return_value=mock_rtp_session)
+            mock_import.return_value = mock_mod
+            backend = RTPVoiceBackend(
+                local_addr=("127.0.0.1", 10000),
+                remote_addr=("192.168.1.1", 20000),
+                payload_type=0,
+                clock_rate=8000,
+            )
+        return backend
+
+    async def test_a_failing_stream_reaches_the_caller(self, backend: RTPVoiceBackend) -> None:
+        session = await backend.connect("room-1", "user-1", "voice-1")
+
+        async def chunks() -> Any:
+            yield AudioChunk(data=b"\x00\x01" * 160, sample_rate=8000)
+            raise RuntimeError("tts down")
+
+        with pytest.raises(RuntimeError, match="tts down"):
+            await backend.send_audio(session, chunks())
+        assert backend.is_playing(session) is False
+
+    async def test_a_transport_failure_is_still_absorbed(
+        self, backend: RTPVoiceBackend, mock_rtp_session: MagicMock, caplog: Any
+    ) -> None:
+        session = await backend.connect("room-1", "user-1", "voice-1")
+        mock_rtp_session.send_audio_pcm_auto.side_effect = OSError("socket gone")
+
+        await backend.send_audio(session, _chunks_from_bytes(b"\x00\x01" * 160))
+
+        assert "socket gone" in caplog.text
