@@ -63,6 +63,7 @@ def _make_kit(
     kit._commit_indexed = AsyncMock(side_effect=lambda _rid, ev: ev)
     kit._commit_blocked_events = AsyncMock()
     kit._persist_side_effects = AsyncMock()
+    kit._report_intelligence_errors = AsyncMock()
 
     channel = SimpleNamespace(_registry=ChannelRegistry(agent_id, list), role="Researcher")
     kit.channels = {agent_id: channel}
@@ -139,6 +140,7 @@ def _make_cc_kit(events: list[RoomEvent]):
     kit._commit_indexed = AsyncMock(side_effect=lambda _rid, ev: ev)
     kit._commit_blocked_events = AsyncMock()
     kit._persist_side_effects = AsyncMock()
+    kit._report_intelligence_errors = AsyncMock()
     channel = SimpleNamespace(_registry=ChannelRegistry("agent:w1", list), role="Researcher")
     kit.channels = {"agent:w1": channel}
 

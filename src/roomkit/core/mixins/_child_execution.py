@@ -181,8 +181,9 @@ async def _persist_child_stream(
 async def _report_turn_failure(
     kit: RoomKit, room_id: str, source: EventSource, exc: Exception, category: str
 ) -> None:
-    """Fire ON_ERROR, once, for a delegated turn that failed on the trace
-    path, as a room's reader fires it for a turn of its own (RFC §23.3 step 6)."""
+    """Fire ON_ERROR, once, for a delegated turn whose stream failed on the
+    trace path, as a room's reader fires it for a turn of its own (RFC §23.3
+    step 6)."""
     context = await kit._hook_context(room_id, HookTrigger.ON_ERROR)
     if context is None:
         return
@@ -194,13 +195,6 @@ async def _report_turn_failure(
         error_type=type(exc).__name__,
         error_category=category,
     )
-
-
-def _responder(kit: RoomKit, channel_id: str) -> EventSource:
-    """The source of *channel_id*'s responses."""
-    channel = kit.channels.get(channel_id)
-    channel_type = channel.channel_type if channel is not None else ChannelType.AI
-    return EventSource(channel_id=channel_id, channel_type=channel_type)
 
 
 async def _drain_turn(writer: SegmentWriter, sr: Any) -> str:
@@ -301,6 +295,11 @@ async def _broadcast_and_collect(
     await kit._persist_side_effects(
         child_room_id, result.tasks, result.observations, msg_event, context
     )
+    # A responder that failed answering (raised, or returned its error) fires
+    # ON_ERROR once, by the reporter a room's turn uses, whichever path the
+    # answer then takes (RFC §23.3 step 6); a stream that fails later fires
+    # it where it is read.
+    await kit._report_intelligence_errors(msg_event, context, result)
     if _shares_a_transport(bindings):
         return await _deliver_answer(kit, child_room_id, result)
     return await _collect_answer(kit, child_room_id, result, msg_event.chain_depth + 1)
@@ -452,14 +451,11 @@ async def _collect_answer(
     failure: Exception | None = None
     # Non-streaming: response_events already include the tool-call events —
     # persist them all (not just the final text) so the trace survives.
-    for channel_id, output in result.outputs.items():
+    for output in result.outputs.values():
         if not output.responded or output.response_stream is not None:
             continue
         final_text = await _persist_response_events(kit, child_room_id, output.response_events)
         if output.error is not None:
-            await _report_turn_failure(
-                kit, child_room_id, _responder(kit, channel_id), output.error, "generation"
-            )
             # A turn the provider interrupted after a round kept its trace and
             # has no answer.
             reason = _turn_end(output.response_metadata, output.response_events)

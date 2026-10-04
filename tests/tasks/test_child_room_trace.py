@@ -115,6 +115,7 @@ class TestPersistChildStream:
         kit._commit_indexed = kit.store.commit_event
         kit._commit_blocked_events = AsyncMock()
         kit._persist_side_effects = AsyncMock()
+        kit._report_intelligence_errors = AsyncMock()
         header = "data:image/png;base64,"
         shot = AIImagePart(url=header + "A" * (300 * 1024 - len(header)), mime_type="image/png")
 
@@ -380,6 +381,7 @@ class TestRunAgentNonStreaming:
         kit._commit_indexed = kit.store.commit_event
         kit._commit_blocked_events = AsyncMock()
         kit._persist_side_effects = AsyncMock()
+        kit._report_intelligence_errors = AsyncMock()
         kit.get_room = AsyncMock(
             return_value=Room(id="parent::task-1", metadata={"parent_room_id": "parent"})
         )
@@ -422,6 +424,7 @@ class TestRunAgentNonStreaming:
         kit._commit_indexed = kit.store.commit_event
         kit._commit_blocked_events = AsyncMock()
         kit._persist_side_effects = AsyncMock()
+        kit._report_intelligence_errors = AsyncMock()
         kit.get_room = AsyncMock(
             return_value=Room(id="parent::task-1", metadata={"parent_room_id": "parent"})
         )

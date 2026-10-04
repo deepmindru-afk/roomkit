@@ -66,6 +66,7 @@ def _make_mock_kit(
     kit._commit_indexed = AsyncMock(side_effect=lambda room_id, event: event)
     kit._commit_blocked_events = AsyncMock()
     kit._persist_side_effects = AsyncMock()
+    kit._report_intelligence_errors = AsyncMock()
     kit.store.update_room = AsyncMock()
 
     router = MagicMock()

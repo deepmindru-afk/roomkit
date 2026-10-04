@@ -853,9 +853,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reason) keeps it. A response never read still names no end.
 
 - ON_ERROR fires once for a delegated turn that failed, whichever path its
-  delegation took (RMK-479, RFC §23.3 step 6): a worker's turn on the trace
-  path (no transport shared into its child room) failed silently, where the
-  same turn with a transport shared fired it.
+  delegation took (RMK-479, RFC §23.3 step 6), through the reporter a room
+  turn uses: a worker's stream that failed on the trace path (no transport
+  shared into its child room) fired nothing, and neither did a worker that
+  raised or returned its error on either path, nor one that answered then
+  failed with a transport shared.
 
 - `regenerate_response` reads its buffered replies as `process_inbound` does
   (RMK-479, RFC §6.4): a regenerated reply that carries its end on its last
