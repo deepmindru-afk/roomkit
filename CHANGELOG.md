@@ -842,10 +842,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cancelled, or completed without a task left the caller's `turns` without
   its entry (only a pass its round cap cut carried one).
 
-- `read_skill_reference` on a skill the registry does not offer is refused,
-  on the AI channel as on a realtime session (RMK-480, RFC §9.3): it was
-  reported served with an `{"error": ...}` body. The model reads the same
-  error. `activate_skill` on a name that is no skill stays an answer, its
+- `read_skill_reference` and `run_skill_script` on a skill the registry does
+  not offer are refused, on the AI channel, a realtime session and a backend
+  (RMK-480, RFC §9.3): they were reported served with an `{"error": ...}`
+  body. The model reads the same error. `activate_skill` on a name that is no skill stays an answer, its
   hint revealing the tools it names (RFC §6.4).
 
 - A call's report carries the arguments it ran with, or that the gate had

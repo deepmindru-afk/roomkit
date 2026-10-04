@@ -1,5 +1,6 @@
-"""``read_skill_reference`` on a skill the registry does not offer is
-refused, on the AI channel as on a realtime session (RMK-480, RFC §9.3).
+"""``read_skill_reference`` and ``run_skill_script`` on a skill the registry
+does not offer are refused, on the AI channel as on a realtime session
+(RMK-480, RFC §9.3).
 
 The model reads the same error; ON_TOOL_CALL's observers hear a refusal, not
 a served call whose body happens to be an error.
@@ -10,16 +11,29 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from roomkit import HookExecution, HookTrigger, RoomKit
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.skills.executor import ScriptExecutor
+from roomkit.skills.models import ScriptResult
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.test_toolset_edges import _call, _calling, _session, _skills, _text_turn
 
-_GHOST = {"skill_name": "ghost", "filename": "x.md"}
+_CALLS = {
+    "read_skill_reference": {"skill_name": "ghost", "filename": "x.md"},
+    "run_skill_script": {"skill_name": "ghost", "script_name": "x.sh"},
+}
 _ERROR = '{"error": "Skill \'ghost\' not found"}'
+EVERY_SKILL_TOOL = pytest.mark.parametrize("tool", list(_CALLS))
+
+
+class _Executor(ScriptExecutor):
+    async def execute(self, skill: Any, script_name: str, arguments: Any = None) -> ScriptResult:
+        raise AssertionError("no script runs")
 
 
 def _audit(kit: RoomKit) -> list[Any]:
@@ -32,14 +46,14 @@ def _audit(kit: RoomKit) -> list[Any]:
     return reports
 
 
-async def test_the_ai_channel_refuses_it(tmp_path: Path) -> None:
+@EVERY_SKILL_TOOL
+async def test_the_ai_channel_refuses_it(tmp_path: Path, tool: str) -> None:
     provider = MockAIProvider(
-        ai_responses=[
-            _calling("read_skill_reference", **_GHOST),
-            AIResponse(content="done"),
-        ]
+        ai_responses=[_calling(tool, **_CALLS[tool]), AIResponse(content="done")]
     )
-    channel = AIChannel("ai1", provider=provider, skills=_skills(tmp_path, "guide"))
+    channel = AIChannel(
+        "ai1", provider=provider, skills=_skills(tmp_path, "guide"), script_executor=_Executor()
+    )
     kit = RoomKit()
     kit.register_channel(channel)
     reports = _audit(kit)
@@ -52,18 +66,20 @@ async def test_the_ai_channel_refuses_it(tmp_path: Path) -> None:
     assert [(e.refused, e.result) for e in reports] == [(True, _ERROR)]
 
 
-async def test_a_realtime_session_refuses_it(tmp_path: Path) -> None:
+@EVERY_SKILL_TOOL
+async def test_a_realtime_session_refuses_it(tmp_path: Path, tool: str) -> None:
     provider = MockRealtimeProvider()
     channel = RealtimeVoiceChannel(
         "rt",
         provider=provider,
         transport=MockRealtimeTransport(),
         skills=_skills(tmp_path, "guide"),
+        script_executor=_Executor(),
     )
     kit, session = await _session(channel)
     reports = _audit(kit)
 
-    read = await _call(channel, provider, session, "read_skill_reference", _GHOST)
+    read = await _call(channel, provider, session, tool, _CALLS[tool])
     await kit.close()
 
     assert read == _ERROR

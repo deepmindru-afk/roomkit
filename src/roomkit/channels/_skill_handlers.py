@@ -163,7 +163,8 @@ async def handle_run_script(
 
     skill = skills.get_skill(skill_name)
     if skill is None:
-        return json.dumps({"error": missing_skill_error(skills, skill_name)})
+        # Refused, as a reference read from a skill the registry does not offer is.
+        raise ToolRefusedError(json.dumps({"error": missing_skill_error(skills, skill_name)}))
 
     # Which file runs is the framework's call; how it runs is the executor's.
     # Resolving here means a name that escapes the skill never reaches an
