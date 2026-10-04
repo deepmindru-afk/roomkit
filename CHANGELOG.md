@@ -796,6 +796,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Gemini Live frees the calls a reconnect orphans before the new socket's
+  handshake when `reconfigure()` asked for the reconnect, as its receive
+  loop already did (RMK-460, RFC §12.4): a handler finishing during the
+  handshake failed to send into a connection that was not there, its
+  observers having read the call as served.
+
 - A hidden tool a served recovery revealed stays revealed when a
   `find_tools` of the same round swaps the reveal window, whichever call
   settles first (RMK-461, RFC §6.4): it was dropped when the recovery

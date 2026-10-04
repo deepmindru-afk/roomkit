@@ -257,6 +257,9 @@ class GeminiLiveConnectionMixin(RealtimeVoiceProvider):
         if old_ctxmgr:
             with contextlib.suppress(Exception):
                 await old_ctxmgr.__aexit__(None, None, None)
+        # The calls the old socket issued die with it: said now, before the
+        # handshake, as the receive loop says it (a no-op when it already did).
+        await self._release_calls_lost_with_the_connection(state)
 
         # Clear stale transcription buffers
         self._clear_transcription_buffers(session.id)
@@ -321,9 +324,5 @@ class GeminiLiveConnectionMixin(RealtimeVoiceProvider):
 
         # Re-enable error callbacks for the next reconnection cycle
         state.error_suppressed = False
-
-        # A no-op when the receive loop released them before its back-off;
-        # the release itself for a reconnect requested anywhere else.
-        await self._release_calls_lost_with_the_connection(state)
 
         logger.info("Gemini Live session %s reconnected", session.id)
