@@ -100,11 +100,9 @@ ENTRY_POINTS = pytest.mark.parametrize(
     [_Room.say, _Room.deliver, _Room.deliver_stream],
     ids=["say", "deliver", "deliver_stream"],
 )
-# The refusal is raised inside the TTS stream the backend reads. The mock
-# backend hands it back, as twilio_ws, webtransport and SIP do: say() and
-# deliver() then log it, deliver_stream() raises it to the inbound stream
-# (ON_ERROR). The local, RTP, FastRTC and Buzz backends log it themselves.
-RAISED = {_Room.deliver_stream}
+# The refusal is raised inside the TTS stream the backend reads, and every
+# backend hands it back (RMK-448): say() and deliver() log it as a failed
+# synthesis, deliver_stream() as the session's early stop (RFC §12.2 12s.d).
 PIPELINE = pytest.mark.parametrize("pipeline", [False, True], ids=["no-pipeline", "pipeline"])
 
 
@@ -122,12 +120,9 @@ async def test_an_encoded_tts_chunk_is_refused_before_a_byte_plays(
     room = await _room(backend, _TTS(fmt), pipeline=pipeline)
     refusal = f"VoiceChannel expects decoded PCM, got format '{fmt}'"
 
-    if speak in RAISED:
-        with pytest.raises(ValueError, match=refusal):
-            await speak(room)
-    else:
-        await speak(room)
-        assert refusal in caplog.text
+    await speak(room)
+
+    assert refusal in caplog.text
 
     assert _played(backend) == b""
     await room.kit.close()

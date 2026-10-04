@@ -502,11 +502,35 @@ class VoiceTTSMixin:
         # one session's: it takes the caller's error path whoever was served.
         if fan_out.error is not None:
             raise fan_out.error
+        results = await self._stop_failed_sessions(room_id, tts_name, target_sessions, results)
         delivered = _served_sessions(target_sessions, results)
 
         full_text = self._streamed_text(accumulated, gate)
         await self._close_streamed_response(delivered, full_text, room_id, context, _vs_parent)
         return ChannelOutputModel.empty()
+
+    async def _stop_failed_sessions(
+        self, room_id: str, provider: str, sessions: list[VoiceSession], results: list[Any]
+    ) -> list[Any]:
+        """Count a session whose synthesis failed as stopped early (RFC §12.2 step 12s.d).
+
+        A TTS failing on one session is that session's early stop, as a
+        barge-in is, not the response's failure: it is reported as
+        ``tts_error``, and once every session has stopped the response is
+        stored as it stood, cancelled (step 13s), never replayed.
+        """
+        stopped: list[Any] = []
+        for session, result in zip(sessions, results, strict=True):
+            if isinstance(result, Exception):
+                logger.error(
+                    "Streaming TTS failed for session %s; it stops here",
+                    session.id,
+                    exc_info=result,
+                )
+                await self._report_tts_failure(room_id, provider, result, session.id)
+                result = False
+            stopped.append(result)
+        return stopped
 
     async def _close_streamed_response(
         self,
@@ -519,9 +543,12 @@ class VoiceTTSMixin:
         """Close a streamed response on the sessions that heard it (RFC §12.2 step 13s).
 
         Each gets the whole text as its playback and final transcript, and
-        AFTER_TTS reports what was sent.
+        AFTER_TTS reports what was sent; with no such session, nothing was.
         """
         from .voice import TTSPlaybackState
+
+        if not delivered:
+            return
 
         # Replace the relayed prefix with the whole streamed text
         for session in delivered:
@@ -838,19 +865,11 @@ class VoiceTTSMixin:
             if self._pipeline is not None or getattr(self, "_outbound_audio_taps", []):
                 audio_stream = self._wrap_outbound(session, audio_stream)
             await self._session_output_backend(session).send_audio(session, audio_stream)
-        except NotImplementedError as exc:
-            logger.error(
-                "TTS provider %s does not support streaming synthesis; "
-                "voice channels require synthesize_stream(). No audio sent.",
-                tts_name,
-            )
-            # Surface the misconfiguration as an event too, not only in the logs,
-            # so event-driven consumers see it like any other TTS failure.
-            await self._emit_tts_error(room_id, tts_name, exc, session_id=session.id)
-        except Exception:
+        except Exception as exc:
             if telemetry is not None and span_id is not None:
                 telemetry.end_span(span_id, status="error", error_message="TTS failed")
                 span_id = None  # prevent double-end
+            await self._report_tts_failure(room_id, tts_name, exc, session.id)
             raise
         finally:
             self._end_tts_turn(playback)
@@ -960,29 +979,41 @@ class VoiceTTSMixin:
                 if _tok is not None:
                     reset_span(_tok)
 
-        except Exception as exc:
+        except Exception:
+            # Each session's failed synthesis was reported as it failed (_send_tts).
             logger.exception("Error delivering voice audio")
-            # Several sessions may have failed: the event names none of them.
-            await self._emit_tts_error(room_id, self._tts.name if self._tts else "unknown", exc)
+
+    async def _report_tts_failure(
+        self, room_id: str | None, provider: str, error: BaseException, session_id: str
+    ) -> None:
+        """Report one session's failed synthesis, once, as the ``tts_error`` event.
+
+        The caller re-raises: ``say()`` and a delivery log the failure and fire
+        no ``AFTER_TTS``. A provider without streaming synthesis is named in
+        the log too, as the misconfiguration it is.
+        """
+        if isinstance(error, NotImplementedError):
+            logger.error(
+                "TTS provider %s does not support streaming synthesis; "
+                "voice channels require synthesize_stream(). No audio sent.",
+                provider,
+            )
+        await self._emit_tts_error(room_id, provider, error, session_id=session_id)
 
     async def _emit_tts_error(
-        self,
-        room_id: str | None,
-        provider: str,
-        error: BaseException,
-        *,
-        session_id: str | None = None,
+        self, room_id: str | None, provider: str, error: BaseException, *, session_id: str
     ) -> None:
-        """Emit the ``tts_error`` framework event of a failed synthesis.
+        """Emit the ``tts_error`` framework event of one session's failed synthesis.
 
-        ``session_id`` is set when one session's synthesis failed (RFC
-        section 9, framework events). A failure to emit is logged, never raised.
+        RFC section 8.2. A failure to emit is logged, never raised.
         """
-        if self._framework is None:
+        if self._framework is None or room_id is None:
             return
-        data: dict[str, Any] = {"provider": provider, "error": str(error)}
-        if session_id is not None:
-            data["session_id"] = session_id
+        data: dict[str, Any] = {
+            "provider": provider,
+            "error": str(error),
+            "session_id": session_id,
+        }
         try:
             await self._framework._emit_framework_event("tts_error", room_id=room_id, data=data)
         except Exception:
@@ -1058,11 +1089,9 @@ class VoiceTTSMixin:
 
         except (VoiceNotConfiguredError, VoiceBackendNotConfiguredError):
             raise
-        except Exception as exc:
+        except Exception:
+            # A failed synthesis was reported as it failed (_send_tts).
             logger.exception("Error in say()")
-            if room_id:
-                provider = self._tts.name if self._tts else "unknown"
-                await self._emit_tts_error(room_id, provider, exc, session_id=session.id)
         finally:
             if _tok is not None:
                 reset_span(_tok)

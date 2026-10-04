@@ -147,12 +147,18 @@ class TestSay:
 
 
 class TestDeliverStream:
-    async def test_a_failing_tts_reaches_the_inbound_stream(self) -> None:
+    async def test_a_failing_tts_stops_its_session_as_a_barge_in_would(self) -> None:
+        """Not the response's failure (RFC §12.2 step 12s.d): reported, never raised."""
         call = _Call()
         await call.open(_TTS(fails=True))
 
-        with pytest.raises(RuntimeError, match="401 from the TTS vendor"):
-            await call.deliver_stream()
+        await call.deliver_stream()
+        await _settle()
+
+        assert [(e["error"], e["session_id"]) for e in call.tts_errors] == [
+            ("401 from the TTS vendor", call.session.id)
+        ]
+        assert call.after_tts == []
         await call.kit.close()
 
 

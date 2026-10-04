@@ -747,14 +747,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (RMK-415) left only a line in the backend's log: `say()` fired
   `AFTER_TTS` as if the sentence had been spoken, no `tts_error` was
   emitted, and `deliver_stream()` ended normally. An exception raised by
-  the audio stream now reaches the caller of `send_audio` once the playback
-  is released, as it already did on Twilio, WebTransport and SIP; the
-  backend's own transport errors (a full WebRTC queue, a closed WebSocket,
-  an output device gone) stay logged and absorbed. The four backends read
-  the stream through one wrapper, `roomkit.voice.backends.base.ChunkSource`,
-  and the video backends inherit it. `tts_error` now carries the
-  `session_id` the RFC lists when one session's synthesis failed (`say()`,
-  a single session's playback); a delivery to several sessions names none.
+  the audio stream now reaches the caller of `send_audio` once the backend
+  has stopped playing, as it already did on Twilio, WebTransport and SIP;
+  the backend's own transport errors (a full WebRTC queue, a closed
+  WebSocket, an output device gone) stay logged and absorbed. The four
+  backends read the stream inside one context manager,
+  `roomkit.voice.PlaybackErrors`, and the video backends inherit it.
+  - Every session whose synthesis fails is reported once, as `tts_error`
+    with its `session_id`, on `say()`, `deliver()` and streamed responses
+    alike, a session failing beside served ones included; `AFTER_TTS` fires
+    only for what a session heard. A TTS without `synthesize_stream()` is one
+    such failure: `say()` and `deliver()` no longer fire `AFTER_TTS` for it.
+  - On a streamed response, a session whose TTS fails stops early, as a
+    barge-in does (RFC §12.2 step 12s.d). Once every session has stopped,
+    the response is stored as it stood with `metadata.cancelled` and the
+    rest is not generated (step 13s); `ON_ERROR` does not fire. The failure
+    used to reach the inbound stream as the AI's (on Twilio, SIP and
+    WebTransport already): `ON_ERROR` fired and the text was replayed to the
+    `VoiceChannel`, so the user heard the start of the answer twice. A
+    failure of the AI itself still takes the error path.
 
 - A realtime call issued under an id whose result already went out gets its
   answer (RMK-441, RFC §12.4). The provider freed the id with the result and

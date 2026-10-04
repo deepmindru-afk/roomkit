@@ -15,7 +15,7 @@ from typing import Any
 from roomkit import AIChannel, RoomKit, VoiceChannel
 from roomkit.channels.voice import TTSPlaybackState
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import EventType, HookTrigger
+from roomkit.models.enums import EventType, HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.hook import HookResult
 from roomkit.providers.ai.base import (
@@ -207,9 +207,12 @@ async def _setup(
     sessions: int = 1,
     interruption: InterruptionConfig | None = None,
     ai: _HeldAI | None = None,
+    tts: TTSProvider | None = None,
 ) -> tuple[RoomKit, VoiceChannel, _StoppableBackend, _HeldAI, str, list[VoiceSession]]:
     backend, ai = _StoppableBackend(), ai or _HeldAI()
-    voice = VoiceChannel("voice-1", tts=_SentenceTTS(), backend=backend, interruption=interruption)
+    voice = VoiceChannel(
+        "voice-1", tts=tts or _SentenceTTS(), backend=backend, interruption=interruption
+    )
     kit = RoomKit(voice=backend)
     kit.register_channel(voice)
     kit.register_channel(AIChannel("ai-1", provider=ai, tools=[BOOK], tool_handler=ai.serve))
@@ -452,3 +455,53 @@ class TestBargeInDuringStreamedResponse:
             getattr(c, "tool_id", None) for c in ends
         }
         assert all(getattr(c, "status", None) == "failed" for c in ends)
+
+
+class _FailingSentenceTTS(_SentenceTTS):
+    """Speaks the first sentence, then its vendor fails (a 429, a dropped socket)."""
+
+    def __init__(self) -> None:
+        self.replayed: list[str] = []
+
+    async def synthesize_stream(
+        self, text: str, *, voice: str | None = None
+    ) -> AsyncIterator[AudioChunk]:
+        self.replayed.append(text)  # the standard path: a replay of the response
+        yield AudioChunk(data=b"\x00\x00", sample_rate=16000)
+
+    async def synthesize_stream_input(
+        self, text_stream: AsyncIterator[str], *, voice: str | None = None
+    ) -> AsyncIterator[AudioChunk]:
+        async for _ in text_stream:
+            yield AudioChunk(data=b"\x00\x00", sample_rate=16000)
+            raise RuntimeError("429 from the TTS vendor")
+
+
+class TestTTSFailureDuringStreamedResponse:
+    """A TTS failing mid-response stops its session as a barge-in would (RMK-448)."""
+
+    async def test_the_response_is_stored_cancelled_and_never_replayed(self) -> None:
+        tts = _FailingSentenceTTS()
+        kit, _, _, ai, room_id, (session,) = await _setup(tts=tts)
+        errors: list[Any] = []
+        tts_errors: list[dict[str, Any]] = []
+
+        @kit.hook(HookTrigger.ON_ERROR, execution=HookExecution.ASYNC)
+        async def on_error(event: Any, ctx: Any) -> None:
+            errors.append(event)
+
+        @kit.on("tts_error")
+        async def on_tts_error(event: Any) -> None:
+            tts_errors.append(event.data)
+
+        await asyncio.wait_for(_turn(kit, room_id), 2)
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        (row,) = _ai_rows(await _events(kit, room_id))
+        assert row.metadata.get("cancelled") is True
+        assert ai.tool_reached is False  # generation stopped with the session
+        assert tts.replayed == []
+        assert errors == []
+        assert [e["session_id"] for e in tts_errors] == [session.id]
+        await kit.close()

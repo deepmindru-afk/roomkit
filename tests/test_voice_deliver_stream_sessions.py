@@ -170,13 +170,14 @@ class TestDeliverStreamSeveralSessions:
         assert _by_role(backend, sessions[1], "assistant") == [" ".join(SENTENCES)]
         await kit.close()
 
-    async def test_every_session_failing_raises(self) -> None:
+    async def test_every_session_failing_stops_the_response(self) -> None:
+        """Each failed session stopped early (RFC §12.2 step 12s.d, RMK-448): the
+        stream returns unread, so the response is stored cancelled, not replayed."""
         backend, tts = _ScriptedBackend(), _RecordingTTS()
         kit, channel, sessions, event, binding, context = await _setup(backend, tts)
         backend.fail.update(s.id for s in sessions)
 
-        with pytest.raises(RuntimeError, match="transport down"):
-            await channel.deliver_stream(_text(), event, binding, context)
+        await channel.deliver_stream(_text(), event, binding, context)
 
         assert [r for _, _, r in backend.sent_transcriptions if r == "assistant"] == []
         await kit.close()
