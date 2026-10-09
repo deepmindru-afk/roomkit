@@ -45,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   room's people and transports see it and no agent does, in delivery or in
   context), pass it (`HookResult.allow_unverified()`; a plain `allow()` does
   not, so a hook that only watches never lets one through) or block it.
+  Holding only narrows what a message reached: the transports of its scope
+  (its own, or its source binding's), never a channel it did not reach. An
+  edit or a deletion from an unverified sender is refused
+  (`verification_required`) unless a hook passes it: held, it would still
+  rewrite a message the agents read.
   `VerificationPolicy(hold_unverified=False)` only labels. A reply that is the
   code of the sender's open code request in the room is consumed: it completes
   or counts an attempt, and its text is never stored nor broadcast. Without a

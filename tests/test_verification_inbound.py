@@ -189,3 +189,54 @@ async def test_a_policy_that_does_not_hold_only_labels() -> None:
     assert result.event.visibility == "all"
     assert ai.calls
     await kit.close()
+
+
+async def test_holding_never_widens_what_a_message_reached() -> None:
+    """The SMS binding writes to the advisor's console only: held, it stays so."""
+    from roomkit.channels import WebSocketChannel
+
+    kit, ai = _kit()
+    kit.register_channel(WebSocketChannel("advisor"))
+    kit.register_channel(WebSocketChannel("other"))
+    first = await _text(kit, "hello")
+    room_id = first.event.room_id
+    await kit.attach_channel(room_id, "advisor")
+    await kit.attach_channel(room_id, "other")
+    binding = await kit.store.get_binding(room_id, "sms")
+    assert binding is not None
+    await kit.store.update_binding(binding.model_copy(update={"visibility": "advisor"}))
+
+    result = await _text(kit, "Did my transfer go through?")
+
+    stored = await kit.store.get_event(result.event.id)
+    assert stored is not None and stored.visibility == "advisor"
+    await kit.close()
+
+
+async def test_an_unverified_edit_cannot_rewrite_a_message() -> None:
+    from roomkit.models.event import EditContent
+
+    kit, ai = _kit()
+    first = await _text(kit, "hello")
+    room_id = first.event.room_id
+    request, secret = await kit.request_verification("id-alice", room_id=room_id, channel_id="sms")
+    await kit.complete_verification(request.id, secret)
+    original = await _text(kit, "Please transfer 100 dollars")
+    await kit.revoke_verification("id-alice")
+
+    edit = await kit.process_inbound(
+        InboundMessage(
+            channel_id="sms",
+            sender_id=ALICE,
+            event_type="edit",
+            content=EditContent(
+                target_event_id=original.event.id,
+                new_content=TextContent(body="Please transfer 10000 dollars"),
+            ),
+        )
+    )
+
+    assert edit.blocked and edit.reason == "verification_required"
+    kept = await kit.store.get_event(original.event.id)
+    assert kept is not None and kept.content.body == "Please transfer 100 dollars"  # type: ignore[union-attr]
+    await kit.close()

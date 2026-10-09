@@ -19,8 +19,10 @@ from uuid import uuid4
 
 from roomkit.core.exceptions import VerificationRefusedError
 from roomkit.core.mixins.helpers import HelpersMixin
+from roomkit.core.visibility import effective_visibility, visibility_allows
 from roomkit.models.delivery import InboundResult
 from roomkit.models.enums import (
+    ChannelCategory,
     EventType,
     HookTrigger,
     IdentificationStatus,
@@ -310,7 +312,11 @@ class VerificationMixin(HelpersMixin):
         passed = decided.metadata.get(VERIFICATION_DECISION_KEY) == "pass"
         if passed or not self._verification_policy.hold_unverified:
             return event
-        return _held(event)
+        if event.type in (EventType.EDIT, EventType.DELETE):
+            # An edit or a deletion changes a message the agents may already
+            # read; held, it would still rewrite it. Refused instead.
+            return InboundResult(blocked=True, reason="verification_required")
+        return _held(event, context, identity_id, organization_id)
 
     async def _consume_code(self, event: RoomEvent, room_id: str, state: Verification) -> bool:
         """Whether *event* is a reply to the sender's open code request here, attempted."""
@@ -592,11 +598,37 @@ def _sender_identity(
     return None
 
 
-def _held(event: RoomEvent) -> RoomEvent:
-    """*event* held from the room's agents; its people and transports still see it."""
+def _held(
+    event: RoomEvent, context: RoomContext, identity_id: str, organization_id: str | None
+) -> RoomEvent:
+    """*event* held from the room's agents; the transports it reached still see it.
+
+    Holding only narrows: the scope the event had (its own, or its source
+    binding's) keeps its transports and loses its intelligence channels, never
+    gaining a channel it did not reach. The marker records the visibility the
+    event itself carried, which its release restores, and whose it is.
+    """
+    source_binding = context.get_binding(event.source.channel_id)
+    held = _transport_part(effective_visibility(event, source_binding), context)
+    marker = {
+        "visibility": event.visibility,
+        "identity_id": identity_id,
+        "organization_id": organization_id,
+    }
     return event.model_copy(
-        update={
-            "visibility": Visibility.TRANSPORT,
-            "metadata": {**event.metadata, HELD_KEY: {"visibility": event.visibility}},
-        }
+        update={"visibility": held, "metadata": {**event.metadata, HELD_KEY: marker}}
     )
+
+
+def _transport_part(visibility: str, context: RoomContext) -> str:
+    """The part of *visibility* that reaches transport channels, and no more."""
+    if visibility in (Visibility.ALL, Visibility.TRANSPORT):
+        return Visibility.TRANSPORT
+    if visibility in (Visibility.INTELLIGENCE, Visibility.NONE, Visibility.INTERNAL):
+        return Visibility.NONE if visibility != Visibility.INTERNAL else Visibility.INTERNAL
+    reached = [
+        binding.channel_id
+        for binding in context.bindings
+        if binding.category == ChannelCategory.TRANSPORT and visibility_allows(visibility, binding)
+    ]
+    return ",".join(reached) if reached else Visibility.NONE
