@@ -22,11 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wrong secret (`VerificationRefusedError.reason`; the last allowed mismatch
   fails it, and a request that fails while the identity is verified ends
   that verification too: whoever could not prove it is not let on as the
-  person; an unanswered request changes nothing). A new request cancels the open one; `kit.revoke_verification()`
+  person; an unanswered request changes nothing).
+  `kit.record_failed_attempt(request_id)` counts your own check's failure
+  (a wrong PIN on your page) against the same bound, so a PIN cannot be
+  guessed through your page. A new request cancels the open one; `kit.revoke_verification()`
   ends a verification and cancels the open request, verified or still pending,
   so a link sent before a revocation never verifies; `kit.verification_of()` reads the
   state (`UNVERIFIED`, `PENDING`, `VERIFIED`, `EXPIRED`, `REVOKED`), per identity
-  and organization. Lifetimes and attempts come from
+  and organization. A request takes its room's organization (a caller acting
+  for another gets `RoomNotFoundError`), and a message is labelled by the
+  verification of its room's organization: one proven to an organization
+  never verifies the person in another's conversation. Lifetimes and attempts come from
   `RoomKit(verification_policy=VerificationPolicy(...))`. Framework events
   `verification_requested`, `verification_completed`, `verification_ended`. The
   memory, SQLite (schema v5, migrated in place) and Postgres stores keep it;
@@ -60,7 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   context, even if the host wrote after it. Nothing is copied, nothing becomes
   an instruction, nothing outside the request's window (from `window_start`)
   is released, nothing twice, and at most `release_max_messages` within
-  `release_max_age`; `release_on_verify=False` keeps them held.
+  `release_max_age`; `release_on_verify=False` keeps them held. Only what the
+  pipeline held is released: the held marker is the runtime's, so the
+  pipeline strips one a sender's metadata carries (a stranger cannot slip a
+  message into another's release).
 
 - A discussion's dispatch policy (RMK-666, RFC §19.7.5 rule 18):
   `Discussion(dispatch=...)` decides which agents take a person's message

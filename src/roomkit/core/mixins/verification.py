@@ -86,8 +86,9 @@ class VerificationMixin(HelpersMixin):
     _verification_timers: dict[str, asyncio.Task[None]]
     _hook_engine: HookEngine
 
-    # Cross-mixin method — attribute annotation avoids MRO shadowing
+    # Cross-mixin methods — attribute annotation avoids MRO shadowing
     _rerun_agents_on: Any  # see RegenerateMixin
+    get_room: Any  # see RoomLifecycleMixin
 
     async def request_verification(
         self,
@@ -109,7 +110,14 @@ class VerificationMixin(HelpersMixin):
         ends. *window_start* is when the message that called for it was
         received (now by default): the held messages released on completion
         are those from then on (RFC §11.7.6).
+
+        The request is scoped to the room's organization, the one whose
+        messages it verifies. *organization_id* is the organization the
+        caller acts for (RFC §17.2): a room of another raises
+        :class:`RoomNotFoundError`.
         """
+        room = await self.get_room(room_id, organization_id=organization_id)
+        organization_id = room.organization_id
         policy = self._verification_policy
         now = datetime.now(UTC)
         code = method == METHOD_CODE
@@ -162,13 +170,14 @@ class VerificationMixin(HelpersMixin):
     ) -> Verification:
         """Complete a request once your own check passed; return the verification.
 
-        Raises :class:`VerificationRefusedError` when the request is unknown in
-        *organization_id*, no longer open, expired, or the secret does not
-        match (a mismatch counts as an attempt; the last one fails it).
+        Raises :class:`VerificationRefusedError` when the request is unknown
+        (or another organization's than *organization_id*, when given), no
+        longer open, expired, or the secret does not match (a mismatch counts
+        as an attempt; the last one fails it).
         *method* records how the person proved it, the request's by default.
         """
         request = await self._store.get_verification_request(request_id)
-        if request is None or (request.organization_id or None) != (organization_id or None):
+        if request is None or not _in_scope(request, organization_id):
             raise VerificationRefusedError("not_found")
         key = _lock_key(request.identity_id, request.organization_id)
         async with self._lock_manager.locked(key):
@@ -184,15 +193,35 @@ class VerificationMixin(HelpersMixin):
             if self._verification_policy.release_on_verify:
                 await self._release_held(request)
             return verification
-        if outcome in ("expired", "failed"):
-            if outcome == "failed":
-                # It may have ended a verification in force: no timer outlives it.
-                self._disarm_expiry(request.identity_id, request.organization_id)
-            await self._emit_verification_event("verification_ended", request, reason=outcome)
-            await self._verification_hook(
-                HookTrigger.ON_VERIFICATION_ENDED, request, {"reason": outcome}
-            )
+        await self._after_unfulfilled(outcome, request)
         raise VerificationRefusedError(outcome)
+
+    async def record_failed_attempt(
+        self, request_id: str, *, organization_id: str | None = None
+    ) -> VerificationRequest:
+        """Count a failed check of your own method against a request; return it.
+
+        Your page's wrong PIN or refused login is an attempt like a wrong
+        secret: the request's bound applies to it, so a PIN cannot be guessed
+        through your page. The request comes back OPEN with one attempt more,
+        or FAILED when that was the last one (which ends it as a wrong secret
+        does, a verification in force included). Raises
+        :class:`VerificationRefusedError` when the request is unknown (or
+        another organization's than *organization_id*, when given), no longer
+        open, or expired.
+        """
+        request = await self._store.get_verification_request(request_id)
+        if request is None or not _in_scope(request, organization_id):
+            raise VerificationRefusedError("not_found")
+        key = _lock_key(request.identity_id, request.organization_id)
+        async with self._lock_manager.locked(key):
+            outcome, request, current = await self._open_request(request_id)
+            if outcome is None:
+                outcome, request = await self._count_failure(request, current)
+        await self._after_unfulfilled(outcome, request)
+        if outcome in ("not_open", "expired"):
+            raise VerificationRefusedError(outcome)
+        return request
 
     async def revoke_verification(
         self,
@@ -504,28 +533,13 @@ class VerificationMixin(HelpersMixin):
         self, request_id: str, secret: str, method: str | None
     ) -> tuple[str, VerificationRequest, Verification]:
         """One attempt at a request, under the identity's lock: (outcome, request, state)."""
-        request = await self._store.get_verification_request(request_id)
-        if request is None:
-            raise VerificationRefusedError("not_found")
-        current = await self._stored_verification(request.identity_id, request.organization_id)
-        if request.status != VerificationRequestStatus.OPEN:
-            return "not_open", request, current
-        now = datetime.now(UTC)
-        if request.expires_at <= now:
-            request = request.model_copy(update={"status": VerificationRequestStatus.EXPIRED})
-            await self._store.update_verification_request(request)
-            await self._settle_pending(current, request)
-            return "expired", request, current
+        outcome, request, current = await self._open_request(request_id)
+        if outcome is not None:
+            return outcome, request, current
         if not hmac.compare_digest(request.secret_hash, await _secret_hash(request.id, secret)):
-            attempts = request.attempts + 1
-            failed = attempts >= request.max_attempts
-            status = VerificationRequestStatus.FAILED if failed else VerificationRequestStatus.OPEN
-            request = request.model_copy(update={"attempts": attempts, "status": status})
-            await self._store.update_verification_request(request)
-            if failed:
-                await self._settle_pending(current, request)
-                return "failed", request, current
-            return "mismatch", request, current
+            outcome, request = await self._count_failure(request, current)
+            return outcome, request, current
+        now = datetime.now(UTC)
         request = request.model_copy(update={"status": VerificationRequestStatus.COMPLETED})
         await self._store.update_verification_request(request)
         verification = Verification(
@@ -540,6 +554,53 @@ class VerificationMixin(HelpersMixin):
         )
         await self._store.put_verification(verification)
         return "completed", request, verification
+
+    async def _open_request(
+        self, request_id: str
+    ) -> tuple[str | None, VerificationRequest, Verification]:
+        """A request read under its identity's lock, with the identity's state.
+
+        The outcome is None when the request is open and in time; otherwise
+        "not_open", or "expired" once its expiry is recorded and settled.
+        """
+        request = await self._store.get_verification_request(request_id)
+        if request is None:
+            raise VerificationRefusedError("not_found")
+        current = await self._stored_verification(request.identity_id, request.organization_id)
+        if request.status != VerificationRequestStatus.OPEN:
+            return "not_open", request, current
+        if request.expires_at <= datetime.now(UTC):
+            request = request.model_copy(update={"status": VerificationRequestStatus.EXPIRED})
+            await self._store.update_verification_request(request)
+            await self._settle_pending(current, request)
+            return "expired", request, current
+        return None, request, current
+
+    async def _count_failure(
+        self, request: VerificationRequest, current: Verification
+    ) -> tuple[str, VerificationRequest]:
+        """One failed attempt: "mismatch", or "failed" when it used the last one."""
+        attempts = request.attempts + 1
+        failed = attempts >= request.max_attempts
+        status = VerificationRequestStatus.FAILED if failed else VerificationRequestStatus.OPEN
+        request = request.model_copy(update={"attempts": attempts, "status": status})
+        await self._store.update_verification_request(request)
+        if not failed:
+            return "mismatch", request
+        await self._settle_pending(current, request)
+        return "failed", request
+
+    async def _after_unfulfilled(self, outcome: str, request: VerificationRequest) -> None:
+        """Announce a request that ended without completing (expired, failed)."""
+        if outcome not in ("expired", "failed"):
+            return
+        if outcome == "failed":
+            # It may have ended a verification in force: no timer outlives it.
+            self._disarm_expiry(request.identity_id, request.organization_id)
+        await self._emit_verification_event("verification_ended", request, reason=outcome)
+        await self._verification_hook(
+            HookTrigger.ON_VERIFICATION_ENDED, request, {"reason": outcome}
+        )
 
     async def _settle_pending(self, current: Verification, request: VerificationRequest) -> None:
         """Settle the identity once its request ended unfulfilled.
@@ -625,6 +686,12 @@ def _in_force(verification: Verification, now: datetime) -> bool:
     )
 
 
+def _in_scope(request: VerificationRequest, organization_id: str | None) -> bool:
+    """Whether a caller acting for *organization_id* sees *request* (RFC §17.2):
+    unscoped, any; scoped, its own organization's only."""
+    return organization_id is None or request.organization_id == organization_id
+
+
 def _lock_key(identity_id: str, organization_id: str | None) -> str:
     """One identity's transitions are serialised under this key (any lock manager)."""
     return f"verification:{organization_id or ''}:{identity_id}"
@@ -649,10 +716,12 @@ def _sender_identity(
 
     The resolver's answer, or the room's IDENTIFIED participant when the
     sender was already identified and resolution was skipped (RFC §11.6).
+    The scope is always the room's organization: a verification proven in
+    another organization never labels this conversation (RFC §11.7.7).
     """
     organization_id = context.room.organization_id
     if resolved_identity is not None:
-        return resolved_identity.id, resolved_identity.organization_id or organization_id
+        return resolved_identity.id, organization_id
     participant_id = event.source.participant_id
     for participant in context.participants:
         if (
@@ -701,10 +770,18 @@ def _transport_part(visibility: str, context: RoomContext) -> str:
 
 
 def _held_for(event: RoomEvent, request: VerificationRequest) -> bool:
-    """Whether *event* is held and belongs to *request*'s identity."""
+    """Whether *event* is held and belongs to *request*'s identity.
+
+    Its marker alone is not enough: the pipeline strips one a sender supplies
+    and labels what it holds, so a held event carries both, the label saying
+    its sender was not verified.
+    """
     marker = event.metadata.get(HELD_KEY)
+    label = event.source.verification
     return (
         isinstance(marker, dict)
+        and label is not None
+        and label != VerificationStatus.VERIFIED
         and marker.get("identity_id") == request.identity_id
         and (marker.get("organization_id") or None) == (request.organization_id or None)
     )

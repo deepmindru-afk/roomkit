@@ -240,3 +240,39 @@ async def test_an_unverified_edit_cannot_rewrite_a_message() -> None:
     kept = await kit.store.get_event(original.event.id)
     assert kept is not None and kept.content.body == "Please transfer 100 dollars"  # type: ignore[union-attr]
     await kit.close()
+
+
+async def test_a_verification_in_one_organization_does_not_label_another() -> None:
+    """Alice proved who she is to organization A; writing to organization B's
+    room, she is not verified there."""
+    ai = MockAIProvider(responses=["ok"] * 10)
+    kit = RoomKit(
+        identity_resolver=MockIdentityResolver(
+            mapping={ALICE: Identity(id="id-alice", organization_id="org-a")}
+        ),
+        verification_policy=VerificationPolicy(),
+    )
+    kit.register_channel(SMSChannel("sms", provider=MockSMSProvider()))
+    kit.register_channel(AIChannel("ai", provider=ai))
+    message = InboundMessage(channel_id="sms", sender_id=ALICE, content=TextContent(body="hi"))
+    await kit.process_inbound(message, room_id="room-a", organization_id="org-a")
+    request, secret = await kit.request_verification(
+        "id-alice", room_id="room-a", channel_id="sms", organization_id="org-a"
+    )
+    await kit.complete_verification(request.id, secret, organization_id="org-a")
+    await kit.create_room(room_id="room-b", organization_id="org-b")
+    await kit.attach_channel("room-b", "ai")
+
+    result = await kit.process_inbound(
+        InboundMessage(
+            channel_id="sms", sender_id=ALICE, content=TextContent(body="What's my balance?")
+        ),
+        room_id="room-b",
+        organization_id="org-b",
+    )
+    await _settle()
+
+    assert result.event.source.verification == VerificationStatus.UNVERIFIED
+    assert result.event.visibility == "transport"
+    assert ai.calls == []
+    await kit.close()

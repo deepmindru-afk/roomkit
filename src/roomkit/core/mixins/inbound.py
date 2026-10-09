@@ -18,6 +18,7 @@ from roomkit.core.inbound_router import (
 from roomkit.core.mixins.channel_ops import is_channel_detached
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.core.mixins.inbound_identity import _IdentityBlockedError
+from roomkit.core.mixins.verification import HELD_KEY
 from roomkit.models.delivery import (
     STANDALONE,
     DeliveryHandle,
@@ -897,17 +898,22 @@ def _apply_message_fields(event: RoomEvent, message: InboundMessage) -> RoomEven
     # rule: a channel that resolved one itself keeps it.
     if message.response_visibility is not None and event.response_visibility is None:
         event = event.model_copy(update={"response_visibility": message.response_visibility})
-    return _without_runtime_record(event)
+    return _without_runtime_keys(event)
 
 
-def _without_runtime_record(event: RoomEvent) -> RoomEvent:
-    """*event* without a provenance its sender supplied: which text is the
-    runtime's is the runtime's to say (RFC §6.4). Last of the fields applied,
-    so that no merge of the caller's metadata (an instruction's) brings the
-    key back."""
-    if RUNTIME_RECORD not in event.metadata:
+_RUNTIME_KEYS = (RUNTIME_RECORD, HELD_KEY)
+"""Metadata keys only the runtime writes: which text is the runtime's (RFC
+§6.4), and which message it holds for verification (§11.7.3), whose release
+would otherwise hand a sender's message to the agents as another's."""
+
+
+def _without_runtime_keys(event: RoomEvent) -> RoomEvent:
+    """*event* without a runtime key its sender supplied. Last of the fields
+    applied, so that no merge of the caller's metadata (an instruction's)
+    brings one back."""
+    if not any(key in event.metadata for key in _RUNTIME_KEYS):
         return event
-    metadata = {k: v for k, v in event.metadata.items() if k != RUNTIME_RECORD}
+    metadata = {k: v for k, v in event.metadata.items() if k not in _RUNTIME_KEYS}
     return event.model_copy(update={"metadata": metadata})
 
 
