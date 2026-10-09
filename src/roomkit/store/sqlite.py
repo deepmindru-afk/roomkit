@@ -34,17 +34,18 @@ from pathlib import Path
 from typing import Any
 
 from roomkit.models.channel import ChannelBinding
-from roomkit.models.enums import EventStatus
+from roomkit.models.enums import EventStatus, VerificationStatus
 from roomkit.models.event import RoomEvent, ThreadSummary
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter, includes_blocked
 from roomkit.models.task import Observation, Task
+from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import ConversationStore
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS rooms(
@@ -108,6 +109,20 @@ CREATE TABLE IF NOT EXISTS identity_addresses(
     identity_id TEXT NOT NULL,
     organization_id TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(channel_type, address, organization_id)
+);
+CREATE TABLE IF NOT EXISTS verifications(
+    identity_id TEXT NOT NULL,
+    organization_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    data TEXT NOT NULL,
+    PRIMARY KEY(identity_id, organization_id)
+);
+CREATE TABLE IF NOT EXISTS verification_requests(
+    id TEXT PRIMARY KEY,
+    identity_id TEXT NOT NULL,
+    organization_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    data TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tasks(
     id TEXT PRIMARY KEY,
@@ -303,6 +318,18 @@ def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
         if "responds_to" not in columns:
             conn.execute("ALTER TABLE events ADD COLUMN responds_to TEXT")
         conn.execute(_RESPONDS_TO_INDEX)
+        conn.execute("PRAGMA user_version=4")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
+def _migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
+    """Identity verification (RFC §11.7): two new tables, nothing to backfill."""
+    try:
+        conn.executescript(f"BEGIN IMMEDIATE;\n{_SCHEMA}")
         conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
         conn.execute("COMMIT")
     except BaseException:
@@ -324,11 +351,16 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         _migrate_v1_to_v2(conn)
         _migrate_v2_to_v3(conn)
         _migrate_v3_to_v4(conn)
+        _migrate_v4_to_v5(conn)
     elif version == 2:
         _migrate_v2_to_v3(conn)
         _migrate_v3_to_v4(conn)
+        _migrate_v4_to_v5(conn)
     elif version == 3:
         _migrate_v3_to_v4(conn)
+        _migrate_v4_to_v5(conn)
+    elif version == 4:
+        _migrate_v4_to_v5(conn)
     elif version == _SCHEMA_VERSION:
         # Additive repair for a partially initialized file. The version is
         # never rewritten, and all statements are idempotent.
@@ -1478,6 +1510,104 @@ class SQLiteStore(ConversationStore):
         except BaseException:
             conn.execute("ROLLBACK")
             raise
+
+    # -- Verification operations (RFC §11.7) -------------------------------
+
+    async def get_verification(
+        self, identity_id: str, organization_id: str | None = None
+    ) -> Verification | None:
+        return await self._run(self._x_get_verification, identity_id, organization_id or "")
+
+    def _x_get_verification(self, identity_id: str, organization_id: str) -> Verification | None:
+        row = (
+            self._db()
+            .execute(
+                "SELECT data FROM verifications WHERE identity_id = ? AND organization_id = ?",
+                (identity_id, organization_id),
+            )
+            .fetchone()
+        )
+        return Verification.model_validate_json(row[0]) if row is not None else None
+
+    async def put_verification(self, verification: Verification) -> Verification:
+        return await self._run(self._x_put_verification, verification)
+
+    def _x_put_verification(self, verification: Verification) -> Verification:
+        conn = self._db()
+        with _write_transaction(conn):
+            conn.execute(
+                "INSERT OR REPLACE INTO verifications(identity_id, organization_id, status, data)"
+                " VALUES(?, ?, ?, ?)",
+                (
+                    verification.identity_id,
+                    verification.organization_id or "",
+                    str(verification.status),
+                    verification.model_dump_json(),
+                ),
+            )
+        return verification
+
+    async def list_verifications_in_force(self) -> list[Verification]:
+        return await self._run(self._x_list_verifications_in_force)
+
+    def _x_list_verifications_in_force(self) -> list[Verification]:
+        rows = (
+            self._db()
+            .execute(
+                "SELECT data FROM verifications WHERE status = ?",
+                (str(VerificationStatus.VERIFIED),),
+            )
+            .fetchall()
+        )
+        verifications = [Verification.model_validate_json(row[0]) for row in rows]
+        return [v for v in verifications if v.expires_at is not None]
+
+    async def create_verification_request(
+        self, request: VerificationRequest
+    ) -> VerificationRequest:
+        return await self._run(self._x_save_verification_request, request, True)
+
+    async def update_verification_request(
+        self, request: VerificationRequest
+    ) -> VerificationRequest:
+        return await self._run(self._x_save_verification_request, request, False)
+
+    def _x_save_verification_request(
+        self, request: VerificationRequest, create: bool
+    ) -> VerificationRequest:
+        conn = self._db()
+        row = (
+            request.id,
+            request.identity_id,
+            request.organization_id or "",
+            str(request.status),
+            request.model_dump_json(),
+        )
+        with _write_transaction(conn):
+            if create:
+                conn.execute(
+                    "INSERT INTO verification_requests(id, identity_id, organization_id,"
+                    " status, data) VALUES(?, ?, ?, ?, ?)",
+                    row,
+                )
+            else:
+                conn.execute(
+                    "INSERT OR REPLACE INTO verification_requests(id, identity_id,"
+                    " organization_id, status, data) VALUES(?, ?, ?, ?, ?)",
+                    row,
+                )
+        return request
+
+    async def get_verification_request(self, request_id: str) -> VerificationRequest | None:
+        return await self._run(self._x_get_verification_request, request_id)
+
+    def _x_get_verification_request(self, request_id: str) -> VerificationRequest | None:
+        row = (
+            self._db()
+            .execute("SELECT data FROM verification_requests WHERE id = ?", (request_id,))
+            .fetchone()
+        )
+        return VerificationRequest.model_validate_json(row[0]) if row is not None else None
 
     # -- Task operations ---------------------------------------------------
 

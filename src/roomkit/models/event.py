@@ -15,6 +15,7 @@ from roomkit.models.enums import (
     EventStatus,
     EventType,
     ToolCallOutcome,
+    VerificationStatus,
     Visibility,
 )
 
@@ -231,6 +232,9 @@ class EventSource(BaseModel):
     provider: str | None = None
     raw_payload: dict[str, Any] = Field(default_factory=dict)
     provider_message_id: str | None = None
+    verification: VerificationStatus | None = None
+    """The sender's verification when the event was received (RFC §11.7.3);
+    None where none applies (an unidentified sender, an agent, the framework)."""
 
 
 class RoomEvent(BaseModel):

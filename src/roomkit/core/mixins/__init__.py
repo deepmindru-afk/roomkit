@@ -23,6 +23,7 @@ from roomkit.core.mixins.room_lifecycle import RoomLifecycleMixin
 from roomkit.core.mixins.room_recording import RoomRecordingMixin
 from roomkit.core.mixins.source_ops import SourceOpsMixin
 from roomkit.core.mixins.strategies import StrategyMixin
+from roomkit.core.mixins.verification import VerificationMixin
 from roomkit.core.mixins.voice_ops import VoiceOpsMixin
 
 __all__ = [
@@ -49,5 +50,6 @@ __all__ = [
     "RoomLifecycleMixin",
     "SourceOpsMixin",
     "StrategyMixin",
+    "VerificationMixin",
     "VoiceOpsMixin",
 ]

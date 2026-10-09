@@ -70,6 +70,7 @@ from roomkit.core.mixins import (
     RoomRecordingMixin,
     SourceOpsMixin,
     StrategyMixin,
+    VerificationMixin,
     VoiceOpsMixin,
 )
 from roomkit.core.task_utils import cancel_and_wait, held_runs
@@ -88,6 +89,7 @@ from roomkit.models.enums import (
 from roomkit.models.event import EventSource, RoomEvent
 from roomkit.models.store_filter import EventFilter, PersistencePolicy
 from roomkit.models.task import Observation, Task
+from roomkit.models.verification import VerificationPolicy
 from roomkit.orchestration.status_bus import StatusBus, StatusEntry
 from roomkit.realtime.base import (
     RealtimeBackend,
@@ -159,6 +161,7 @@ class RoomKit(
     RealtimeOpsMixin,
     SourceOpsMixin,
     EventOpsMixin,
+    VerificationMixin,
     HooksApiMixin,
     HelpersMixin,
 ):
@@ -189,6 +192,7 @@ class RoomKit(
         persistence_policy: PersistencePolicy | None = None,
         delivery_gap_timeout: float = 30.0,
         delivery_claim_lock_manager: RoomLockManager | None = None,
+        verification_policy: VerificationPolicy | None = None,
     ) -> None:
         """Initialise the RoomKit orchestrator.
 
@@ -217,6 +221,9 @@ class RoomKit(
                 supply a distributed implementation (e.g. Redis pub/sub).
             max_chain_depth: Maximum reentry chain depth to prevent infinite loops.
             identity_timeout: Timeout in seconds for identity resolution calls.
+            verification_policy: How long an identity verification and its
+                requests last, and how many attempts a request accepts
+                (RFC §11.7); the defaults when omitted.
             process_timeout: Timeout in seconds for the locked processing phase.
             stt: Optional speech-to-text provider for transcription.
             tts: Optional text-to-speech provider for synthesis.
@@ -275,6 +282,7 @@ class RoomKit(
         self._room_close_epoch = 0
         self._default_agent_response_policy = agent_response_policy
         self._identity_timeout = identity_timeout
+        self._verification_policy = verification_policy or VerificationPolicy()
         self._process_timeout = process_timeout
         self._channels: dict[str, Channel] = {}
         # Explicit detaches (revocations, RFC §7.5-7) are recorded in room

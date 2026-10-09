@@ -16,13 +16,14 @@ from datetime import UTC, datetime
 from typing import Any
 
 from roomkit.models.channel import ChannelBinding
-from roomkit.models.enums import EventStatus
+from roomkit.models.enums import EventStatus, VerificationStatus
 from roomkit.models.event import RoomEvent, ThreadSummary
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter, includes_blocked
 from roomkit.models.task import Observation, Task
+from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import ConversationStore
 from roomkit.store.postgres_mappers import (
@@ -145,6 +146,11 @@ class PostgresSchemaError(RuntimeError):
     ``PostgresStore.init()`` never mutates a v1 schema on its own — it
     raises this instead, so a routine connect can never destroy data.
     """
+
+
+def _jsonb(value: Any) -> Any:
+    """A JSONB column's value as Python: the codec decodes it, a raw string is parsed."""
+    return json.loads(value) if isinstance(value, str) else value
 
 
 class PostgresStore(ConversationStore):
@@ -1579,6 +1585,76 @@ class PostgresStore(ConversationStore):
                 identity_id,
                 organization_id or "",
             )
+
+    # ── Verification operations (RFC §11.7) ──────────────────────
+
+    async def get_verification(
+        self, identity_id: str, organization_id: str | None = None
+    ) -> Verification | None:
+        async with self._acquire() as conn:
+            data = await conn.fetchval(
+                "SELECT data FROM verifications WHERE identity_id = $1 AND organization_id = $2",
+                identity_id,
+                organization_id or "",
+            )
+        return Verification.model_validate(_jsonb(data)) if data is not None else None
+
+    async def put_verification(self, verification: Verification) -> Verification:
+        async with self._acquire() as conn:
+            await conn.execute(
+                "INSERT INTO verifications (identity_id, organization_id, status, data)"
+                " VALUES ($1, $2, $3, $4)"
+                " ON CONFLICT (identity_id, organization_id)"
+                " DO UPDATE SET status = $3, data = $4",
+                verification.identity_id,
+                verification.organization_id or "",
+                str(verification.status),
+                verification.model_dump(mode="json"),
+            )
+        return verification
+
+    async def list_verifications_in_force(self) -> list[Verification]:
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT data FROM verifications WHERE status = $1",
+                str(VerificationStatus.VERIFIED),
+            )
+        verifications = [Verification.model_validate(_jsonb(row["data"])) for row in rows]
+        return [v for v in verifications if v.expires_at is not None]
+
+    async def create_verification_request(
+        self, request: VerificationRequest
+    ) -> VerificationRequest:
+        async with self._acquire() as conn:
+            await conn.execute(
+                "INSERT INTO verification_requests"
+                " (id, identity_id, organization_id, status, data) VALUES ($1, $2, $3, $4, $5)",
+                request.id,
+                request.identity_id,
+                request.organization_id or "",
+                str(request.status),
+                request.model_dump(mode="json"),
+            )
+        return request
+
+    async def get_verification_request(self, request_id: str) -> VerificationRequest | None:
+        async with self._acquire() as conn:
+            data = await conn.fetchval(
+                "SELECT data FROM verification_requests WHERE id = $1", request_id
+            )
+        return VerificationRequest.model_validate(_jsonb(data)) if data is not None else None
+
+    async def update_verification_request(
+        self, request: VerificationRequest
+    ) -> VerificationRequest:
+        async with self._acquire() as conn:
+            await conn.execute(
+                "UPDATE verification_requests SET status = $2, data = $3 WHERE id = $1",
+                request.id,
+                str(request.status),
+                request.model_dump(mode="json"),
+            )
+        return request
 
     # ── Task operations ──────────────────────────────────────────
 

@@ -1,0 +1,291 @@
+"""Identity verification: requests, completion, revocation and state (RFC §11.7).
+
+Run on the in-memory, SQLite and (with POSTGRES_DSN) Postgres stores: the
+framework keeps the state and the lifecycle, the method stays the caller's.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from uuid import uuid4
+
+import pytest
+
+from roomkit import (
+    FrameworkEvent,
+    RoomKit,
+    VerificationPolicy,
+    VerificationRefusedError,
+    VerificationRequestStatus,
+    VerificationStatus,
+)
+from roomkit.models.verification import Verification
+from roomkit.store.base import ConversationStore
+from roomkit.store.memory import InMemoryStore
+from roomkit.store.sqlite import SQLiteStore
+
+
+@pytest.fixture(params=["memory", "sqlite", "postgres"])
+async def store(request: pytest.FixtureRequest) -> AsyncIterator[ConversationStore]:
+    backend: ConversationStore
+    if request.param == "memory":
+        backend = InMemoryStore()
+    elif request.param == "sqlite":
+        backend = SQLiteStore(":memory:")
+    else:
+        dsn = os.environ.get("POSTGRES_DSN")
+        if not dsn:
+            pytest.skip("POSTGRES_DSN not set")
+        from roomkit.store.postgres import PostgresStore
+
+        backend = PostgresStore(dsn=dsn)
+        await backend.init(min_size=1, max_size=2)
+    try:
+        yield backend
+    finally:
+        await backend.close()
+
+
+def _kit(store: ConversationStore, **policy: float) -> tuple[RoomKit, list[FrameworkEvent]]:
+    kit = RoomKit(store=store, verification_policy=VerificationPolicy(**policy))
+    events: list[FrameworkEvent] = []
+    for event_type in ("verification_requested", "verification_completed", "verification_ended"):
+
+        @kit.on(event_type)
+        async def record(event: FrameworkEvent) -> None:
+            events.append(event)
+
+    return kit, events
+
+
+def _identity() -> str:
+    return f"id-{uuid4().hex[:12]}"
+
+
+async def test_a_completed_request_verifies_the_identity(store: ConversationStore) -> None:
+    kit, events = _kit(store)
+    alice = _identity()
+
+    request, secret = await kit.request_verification(alice, room_id="r1", channel_id="sms")
+    pending = await kit.verification_of(alice)
+    verification = await kit.complete_verification(request.id, secret)
+
+    assert pending.status == VerificationStatus.PENDING
+    assert verification.status == VerificationStatus.VERIFIED
+    assert verification.verified_via == "sms" and verification.method == "link"
+    assert verification.expires_at is not None
+    assert 899 < (verification.expires_at - datetime.now(UTC)).total_seconds() <= 900
+    assert (await kit.verification_of(alice)).status == VerificationStatus.VERIFIED
+    assert [e.type for e in events] == ["verification_requested", "verification_completed"]
+    await kit.close()
+
+
+async def test_the_secret_is_returned_once_and_never_stored(store: ConversationStore) -> None:
+    kit, _ = _kit(store)
+
+    request, secret = await kit.request_verification(_identity(), room_id="r1", channel_id="sms")
+    stored = await store.get_verification_request(request.id)
+
+    assert len(secret) >= 32  # a link secret carries at least 128 bits
+    assert stored is not None
+    assert secret not in stored.model_dump_json()
+    assert stored.secret_hash != secret
+    await kit.close()
+
+
+async def test_a_wrong_secret_counts_and_the_last_attempt_fails_the_request(
+    store: ConversationStore,
+) -> None:
+    kit, events = _kit(store, max_attempts=2)
+    alice = _identity()
+    request, secret = await kit.request_verification(alice, room_id="r1", channel_id="sms")
+
+    with pytest.raises(VerificationRefusedError) as first:
+        await kit.complete_verification(request.id, "wrong")
+    with pytest.raises(VerificationRefusedError) as second:
+        await kit.complete_verification(request.id, "wrong again")
+    with pytest.raises(VerificationRefusedError) as after:
+        await kit.complete_verification(request.id, secret)
+
+    assert (first.value.reason, second.value.reason, after.value.reason) == (
+        "mismatch",
+        "failed",
+        "not_open",
+    )
+    stored = await store.get_verification_request(request.id)
+    assert stored is not None and stored.status == VerificationRequestStatus.FAILED
+    assert (await kit.verification_of(alice)).status == VerificationStatus.UNVERIFIED
+    assert events[-1].type == "verification_ended" and events[-1].data["reason"] == "failed"
+    await kit.close()
+
+
+async def test_an_expired_request_cannot_be_completed(store: ConversationStore) -> None:
+    kit, events = _kit(store, request_ttl=0.05)
+    alice = _identity()
+    request, secret = await kit.request_verification(alice, room_id="r1", channel_id="sms")
+    await asyncio.sleep(0.1)
+
+    with pytest.raises(VerificationRefusedError) as refused:
+        await kit.complete_verification(request.id, secret)
+
+    assert refused.value.reason == "expired"
+    assert (await kit.verification_of(alice)).status == VerificationStatus.UNVERIFIED
+    assert events[-1].data["reason"] == "expired"
+    await kit.close()
+
+
+async def test_a_new_request_cancels_the_open_one(store: ConversationStore) -> None:
+    kit, events = _kit(store)
+    alice = _identity()
+    first, first_secret = await kit.request_verification(alice, room_id="r1", channel_id="sms")
+    second, second_secret = await kit.request_verification(alice, room_id="r1", channel_id="sms")
+
+    with pytest.raises(VerificationRefusedError) as refused:
+        await kit.complete_verification(first.id, first_secret)
+    verification = await kit.complete_verification(second.id, second_secret)
+
+    assert refused.value.reason == "not_open"
+    assert verification.status == VerificationStatus.VERIFIED
+    cancelled = [e for e in events if e.data.get("reason") == "cancelled"]
+    assert [e.data["request_id"] for e in cancelled] == [first.id]
+    await kit.close()
+
+
+async def test_revoking_ends_the_verification_and_its_open_request(
+    store: ConversationStore,
+) -> None:
+    kit, events = _kit(store)
+    alice = _identity()
+    request, secret = await kit.request_verification(alice, room_id="r1", channel_id="sms")
+    await kit.complete_verification(request.id, secret)
+    later, later_secret = await kit.request_verification(alice, room_id="r1", channel_id="sms")
+
+    revoked = await kit.revoke_verification(alice, reason="advisor")
+    with pytest.raises(VerificationRefusedError) as refused:
+        await kit.complete_verification(later.id, later_secret)
+
+    assert revoked is not None and revoked.status == VerificationStatus.REVOKED
+    assert revoked.ended_reason == "advisor"
+    assert refused.value.reason == "not_open"
+    assert (await kit.verification_of(alice)).status == VerificationStatus.REVOKED
+    assert await kit.revoke_verification(alice) is None  # nothing left in force
+    assert any(e.data.get("reason") == "advisor" for e in events)
+    await kit.close()
+
+
+async def test_a_verification_reads_expired_once_its_time_passed(
+    store: ConversationStore,
+) -> None:
+    kit, _ = _kit(store, ttl=0.05)
+    alice = _identity()
+    request, secret = await kit.request_verification(alice, room_id="r1", channel_id="sms")
+    await kit.complete_verification(request.id, secret)
+    await asyncio.sleep(0.1)
+
+    state = await kit.verification_of(alice)
+
+    assert state.status == VerificationStatus.EXPIRED and state.ended_reason == "expired"
+    await kit.close()
+
+
+async def test_asking_a_verified_identity_again_keeps_it_verified_meanwhile(
+    store: ConversationStore,
+) -> None:
+    kit, _ = _kit(store)
+    alice = _identity()
+    request, secret = await kit.request_verification(alice, room_id="r1", channel_id="sms")
+    await kit.complete_verification(request.id, secret)
+
+    await kit.request_verification(alice, room_id="r1", channel_id="whatsapp")
+
+    assert (await kit.verification_of(alice)).status == VerificationStatus.VERIFIED
+    await kit.close()
+
+
+async def test_a_code_request_sends_digits_and_lives_shorter(store: ConversationStore) -> None:
+    kit, _ = _kit(store)
+
+    request, code = await kit.request_verification(
+        _identity(), room_id="r1", channel_id="sms", method="code"
+    )
+
+    assert code.isdigit() and len(code) == 6
+    assert (request.expires_at - request.created_at).total_seconds() == 300
+    assert (await kit.complete_verification(request.id, code)).method == "code"
+    await kit.close()
+
+
+async def test_organizations_are_kept_apart(store: ConversationStore) -> None:
+    kit, _ = _kit(store)
+    alice = _identity()
+    request, secret = await kit.request_verification(
+        alice, room_id="r1", channel_id="sms", organization_id="org-a"
+    )
+
+    with pytest.raises(VerificationRefusedError) as refused:
+        await kit.complete_verification(request.id, secret, organization_id="org-b")
+    await kit.complete_verification(request.id, secret, organization_id="org-a")
+
+    assert refused.value.reason == "not_found"
+    assert (await kit.verification_of(alice, organization_id="org-a")).status == (
+        VerificationStatus.VERIFIED
+    )
+    assert (await kit.verification_of(alice)).status == VerificationStatus.UNVERIFIED
+    await kit.close()
+
+
+async def test_the_store_lists_the_verifications_in_force(store: ConversationStore) -> None:
+    kit, _ = _kit(store)
+    alice, bob = _identity(), _identity()
+    for identity in (alice, bob):
+        request, secret = await kit.request_verification(identity, room_id="r1", channel_id="sms")
+        await kit.complete_verification(request.id, secret)
+    await kit.revoke_verification(bob)
+
+    in_force = {v.identity_id for v in await store.list_verifications_in_force()}
+
+    assert alice in in_force and bob not in in_force
+    await kit.close()
+
+
+async def test_a_store_without_verification_refuses_by_name() -> None:
+    store = InMemoryStore()
+
+    with pytest.raises(NotImplementedError, match="does not store identity verifications"):
+        await ConversationStore.put_verification(store, Verification(identity_id="x"))
+
+
+async def test_a_v4_sqlite_file_gains_the_verification_tables(tmp_path) -> None:
+    import sqlite3
+
+    from roomkit.models.identity import Identity
+    from roomkit.store.sqlite import _SCHEMA_VERSION
+
+    path = tmp_path / "v4.db"
+    store = SQLiteStore(path)
+    await store.create_identity(Identity(id="id-alice"))
+    await store.close()
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "DROP TABLE verifications; DROP TABLE verification_requests; PRAGMA user_version=4;"
+    )
+    conn.close()
+
+    store = SQLiteStore(path)
+    kit, _ = _kit(store)
+    request, secret = await kit.request_verification("id-alice", room_id="r1", channel_id="sms")
+    verified = await kit.complete_verification(request.id, secret)
+    kept = await store.get_identity("id-alice")
+    await kit.close()
+
+    conn = sqlite3.connect(path)
+    try:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        conn.close()
+    assert version == _SCHEMA_VERSION == 5
+    assert verified.status == VerificationStatus.VERIFIED
+    assert kept is not None

@@ -67,6 +67,7 @@ def _row_to_event(row: Any) -> RoomEvent:
             raw_payload=source_extra.get("raw_payload", {}),
             external_id=source_extra.get("external_id"),
             provider_message_id=source_extra.get("provider_message_id"),
+            verification=source_extra.get("verification"),
         ),
         status=row["status"],
         visibility=row["visibility"],
@@ -188,6 +189,8 @@ def _source_extra(source: EventSource) -> dict[str, Any]:
         extra["external_id"] = source.external_id
     if source.provider_message_id:
         extra["provider_message_id"] = source.provider_message_id
+    if source.verification is not None:
+        extra["verification"] = str(source.verification)
     return extra
 
 

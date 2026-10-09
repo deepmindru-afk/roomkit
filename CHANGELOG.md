@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Identity verification, state and requests (RMK-660, RFC §11.7, first part):
+  identification says whose an address is, verification that the person writing
+  has proven it. `kit.request_verification(identity_id, room_id=, channel_id=,
+  method="link"|"code")` opens a request and returns its secret once (256 bits
+  for a link, 6 digits for a code), stored only as a salted hash; the integrator
+  checks the person its own way (a page and a PIN, a login) and calls
+  `kit.complete_verification(request_id, secret)`, which refuses a request that
+  is unknown in the caller's organization, no longer open, expired, or given a
+  wrong secret (`VerificationRefusedError.reason`; the last allowed mismatch
+  fails it). A new request cancels the open one; `kit.revoke_verification()`
+  ends a verification and its open request; `kit.verification_of()` reads the
+  state (`UNVERIFIED`, `PENDING`, `VERIFIED`, `EXPIRED`, `REVOKED`), per identity
+  and organization. Lifetimes and attempts come from
+  `RoomKit(verification_policy=VerificationPolicy(...))`. Framework events
+  `verification_requested`, `verification_completed`, `verification_ended`. The
+  memory, SQLite (schema v5, migrated in place) and Postgres stores keep it;
+  `ConversationStore` gains the operations without making them abstract, so a
+  store of your own keeps working and refuses them by name.
+  `EventSource.verification` is added for the label the inbound pipeline will
+  stamp; the hooks, the hold and the release of held messages follow.
+
 - A discussion's dispatch policy (RMK-666, RFC §19.7.5 rule 18):
   `Discussion(dispatch=...)` decides which agents take a person's message
   that names none, in order, or that none does, in place of giving it to the

@@ -7,12 +7,14 @@ from datetime import UTC, datetime
 from typing import Any
 
 from roomkit.models.channel import ChannelBinding
+from roomkit.models.enums import VerificationStatus
 from roomkit.models.event import RoomEvent, ThreadSummary
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter, includes_blocked, received_events
 from roomkit.models.task import Observation, Task
+from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import ConversationStore
 
@@ -38,6 +40,9 @@ class InMemoryStore(ConversationStore):
         # (channel_type, address, organization_id) — the empty string is
         # the unscoped tenant, so every key has the same shape (RFC §17.2).
         self._address_index: dict[tuple[str, str, str], str] = {}
+        # (identity_id, organization_id), the same empty-string convention.
+        self._verifications: dict[tuple[str, str], Verification] = {}
+        self._verification_requests: dict[str, VerificationRequest] = {}
         self._tasks: dict[str, Task] = {}
         self._room_tasks: dict[str, list[str]] = {}
         self._observations: dict[str, Observation] = {}
@@ -668,6 +673,42 @@ class InMemoryStore(ConversationStore):
         # same either way — and so an unscoped registration cannot be found by
         # a scoped lookup, which is the isolation this key exists for.
         self._address_index[(channel_type, address, organization_id or "")] = identity_id
+
+    # Verification operations (RFC §11.7)
+
+    async def get_verification(
+        self, identity_id: str, organization_id: str | None = None
+    ) -> Verification | None:
+        verification = self._verifications.get((identity_id, organization_id or ""))
+        return verification.model_copy(deep=True) if verification is not None else None
+
+    async def put_verification(self, verification: Verification) -> Verification:
+        key = (verification.identity_id, verification.organization_id or "")
+        self._verifications[key] = verification.model_copy(deep=True)
+        return verification
+
+    async def list_verifications_in_force(self) -> list[Verification]:
+        return [
+            v.model_copy(deep=True)
+            for v in self._verifications.values()
+            if v.status == VerificationStatus.VERIFIED and v.expires_at is not None
+        ]
+
+    async def create_verification_request(
+        self, request: VerificationRequest
+    ) -> VerificationRequest:
+        self._verification_requests[request.id] = request.model_copy(deep=True)
+        return request
+
+    async def get_verification_request(self, request_id: str) -> VerificationRequest | None:
+        request = self._verification_requests.get(request_id)
+        return request.model_copy(deep=True) if request is not None else None
+
+    async def update_verification_request(
+        self, request: VerificationRequest
+    ) -> VerificationRequest:
+        self._verification_requests[request.id] = request.model_copy(deep=True)
+        return request
 
     # Task operations
 

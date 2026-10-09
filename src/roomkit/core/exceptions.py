@@ -57,6 +57,21 @@ class NoRecipientError(ProviderDeliveryError):
         self.recipient_key = recipient_key
 
 
+class VerificationRefusedError(RoomKitError):
+    """A verification request could not be completed (RFC §11.7.2).
+
+    ``reason`` names why: ``not_found`` (no such request in the caller's
+    organization), ``not_open`` (completed, failed, expired or cancelled
+    already), ``expired`` (its time ran out now), ``mismatch`` (a wrong secret,
+    counted as an attempt) or ``failed`` (the wrong secret that used up its
+    attempts).
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"verification refused: {reason}")
+        self.reason = reason
+
+
 class RoomNotFoundError(RoomKitError):
     """Room does not exist."""
 

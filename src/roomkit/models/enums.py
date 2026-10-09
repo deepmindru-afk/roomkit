@@ -164,6 +164,28 @@ class IdentificationStatus(StrEnum):
 
 
 @unique
+class VerificationStatus(StrEnum):
+    """Whether an identified sender has proven who they are (RFC §11.7)."""
+
+    UNVERIFIED = "unverified"
+    PENDING = "pending"
+    VERIFIED = "verified"
+    EXPIRED = "expired"
+    REVOKED = "revoked"
+
+
+@unique
+class VerificationRequestStatus(StrEnum):
+    """Where a verification request stands (RFC §11.7.2)."""
+
+    OPEN = "open"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+
+@unique
 class ParticipantRole(StrEnum):
     OWNER = "owner"
     AGENT = "agent"

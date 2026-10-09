@@ -333,6 +333,24 @@ BEGIN
     END IF;
 END $$;
 
+-- Identity verification (RFC §11.7). Additive: new tables only. The record
+-- itself is a JSONB document; the columns are what lookups filter on.
+CREATE TABLE IF NOT EXISTS verifications (
+    identity_id     TEXT NOT NULL,
+    organization_id TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL,
+    data            JSONB NOT NULL,
+    PRIMARY KEY (identity_id, organization_id)
+);
+
+CREATE TABLE IF NOT EXISTS verification_requests (
+    id              TEXT PRIMARY KEY,
+    identity_id     TEXT NOT NULL,
+    organization_id TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL,
+    data            JSONB NOT NULL
+);
+
 -- tasks
 CREATE TABLE IF NOT EXISTS tasks (
     id          TEXT PRIMARY KEY,

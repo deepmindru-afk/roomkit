@@ -237,7 +237,8 @@ async def test_a_v3_sqlite_file_gains_the_column_and_keeps_its_events(tmp_path) 
 
     conn = sqlite3.connect(path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION == 4
+        # Up to the current version, through v4 (the column) and every later step.
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION
         columns = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
     finally:
         conn.close()

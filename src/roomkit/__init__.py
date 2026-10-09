@@ -118,6 +118,7 @@ from roomkit.core.exceptions import (
     ToolTimeoutError,
     TurnCutShortError,
     UnservedToolCallError,
+    VerificationRefusedError,
     VoiceSessionEndedError,
 )
 from roomkit.core.framework import (
@@ -169,6 +170,8 @@ from roomkit.models.enums import (
     HookTrigger,
     RoomStatus,
     ToolCallOutcome,
+    VerificationRequestStatus,
+    VerificationStatus,
     Visibility,
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
@@ -197,6 +200,7 @@ from roomkit.models.tool_call import (
     ToolRoundEvent,
     response_transcript,
 )
+from roomkit.models.verification import Verification, VerificationPolicy, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.orchestration import (
     HANDOFF_TOOL,
@@ -357,6 +361,12 @@ __all__ = [
     "ParticipantNotAdmittedError",
     "ProviderDeliveryError",
     "NoRecipientError",
+    "VerificationRefusedError",
+    "Verification",
+    "VerificationPolicy",
+    "VerificationRequest",
+    "VerificationRequestStatus",
+    "VerificationStatus",
     "IdentityNotFoundError",
     "SourceAlreadyAttachedError",
     "SourceNotFoundError",

@@ -17,6 +17,7 @@ from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
 from roomkit.models.task import Observation, Task
+from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
 
 # Page size of the fallback scan over rooms (find_room_id_by_participant).
@@ -740,6 +741,43 @@ class ConversationStore(ABC):
         """
         ...
 
+    # Verification operations (RFC §11.7, Level 2). Not abstract: a store
+    # written before them keeps working, and refuses them by name.
+
+    async def get_verification(
+        self, identity_id: str, organization_id: str | None = None
+    ) -> Verification | None:
+        """The identity's verification, within an organization; None if it has none."""
+        raise _verification_unsupported(self)
+
+    async def put_verification(self, verification: Verification) -> Verification:
+        """Create or replace the verification of ``verification.identity_id``."""
+        raise _verification_unsupported(self)
+
+    async def list_verifications_in_force(self) -> list[Verification]:
+        """Every VERIFIED verification with an expiry, across organizations.
+
+        Read when the framework starts, to re-arm the timers that end them when
+        they expire (§11.7.5).
+        """
+        raise _verification_unsupported(self)
+
+    async def create_verification_request(
+        self, request: VerificationRequest
+    ) -> VerificationRequest:
+        """Store a new verification request."""
+        raise _verification_unsupported(self)
+
+    async def get_verification_request(self, request_id: str) -> VerificationRequest | None:
+        """A verification request by id; None if there is none."""
+        raise _verification_unsupported(self)
+
+    async def update_verification_request(
+        self, request: VerificationRequest
+    ) -> VerificationRequest:
+        """Replace a stored verification request."""
+        raise _verification_unsupported(self)
+
     # Task operations
 
     @abstractmethod
@@ -809,3 +847,10 @@ class ConversationStore(ABC):
         idempotent and MUST NOT close resources they do not own.
         """
         return None
+
+
+def _verification_unsupported(store: ConversationStore) -> NotImplementedError:
+    """The refusal of a store that does not keep verifications (RFC §11.7, Level 2)."""
+    return NotImplementedError(
+        f"{type(store).__name__} does not store identity verifications (RFC §11.7)"
+    )
