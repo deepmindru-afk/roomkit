@@ -46,6 +46,13 @@ METHOD_LINK = "link"
 METHOD_CODE = "code"
 """A short code the person replies with in the conversation (RFC §11.7.4)."""
 
+ENDED_VERIFICATION = "verification"
+"""What an end names (``ended``): the identity's verification in force ended,
+by expiry, revocation, or a request that failed while it held."""
+ENDED_REQUEST = "request"
+"""What an end names (``ended``): a request ended (expired, failed, cancelled),
+the identity's verification left as it was or never reached."""
+
 _LINK_SECRET_BYTES = 32  # 256 bits; RFC §11.7.7 asks for at least 128
 HELD_KEY = "roomkit:verification_held"
 """Event metadata marking a message held for verification (RFC §11.7.3); its
@@ -193,7 +200,7 @@ class VerificationMixin(HelpersMixin):
             if self._verification_policy.release_on_verify:
                 await self._release_held(request)
             return verification
-        await self._after_unfulfilled(outcome, request)
+        await self._after_unfulfilled(outcome, request, verification)
         raise VerificationRefusedError(outcome)
 
     async def record_failed_attempt(
@@ -218,7 +225,7 @@ class VerificationMixin(HelpersMixin):
             outcome, request, current = await self._open_request(request_id)
             if outcome is None:
                 outcome, request = await self._count_failure(request, current)
-        await self._after_unfulfilled(outcome, request)
+        await self._after_unfulfilled(outcome, request, current)
         if outcome in ("not_open", "expired"):
             raise VerificationRefusedError(outcome)
         return request
@@ -266,11 +273,13 @@ class VerificationMixin(HelpersMixin):
         if ended is not None:
             await self._emit_framework_event(
                 "verification_ended",
-                data={"identity_id": identity_id, "reason": reason},
+                data={"identity_id": identity_id, "reason": reason, "ended": ENDED_VERIFICATION},
             )
             if completing is not None:
                 await self._verification_hook(
-                    HookTrigger.ON_VERIFICATION_ENDED, completing, {"reason": reason}
+                    HookTrigger.ON_VERIFICATION_ENDED,
+                    completing,
+                    {"reason": reason, "ended": ENDED_VERIFICATION},
                 )
         return ended
 
@@ -309,6 +318,27 @@ class VerificationMixin(HelpersMixin):
                 update={"status": VerificationStatus.EXPIRED, "ended_reason": "expired"}
             )
         return current
+
+    async def sender_verification(
+        self, event: RoomEvent, context: RoomContext
+    ) -> Verification | None:
+        """The verification of *event*'s sender, in its room's organization.
+
+        None when the pipeline did not label the event (its sender is not
+        identified, or the kit has no verification policy). What an
+        ON_VERIFICATION_REQUIRED hook reads before opening a request: whose
+        verification it is (``identity_id``) and whether a request is open
+        already (``request_id``). The sender's participant may not be in
+        *context* yet on their first message; this reads it all the same.
+        """
+        if event.source.verification is None:
+            return None
+        identity_id = _participant_identity(event, context) or event.source.participant_id
+        if identity_id is None:
+            return None
+        return await self.verification_of(
+            identity_id, organization_id=context.room.organization_id
+        )
 
     # -- inbound pipeline (RFC §10.1 step 5b) -----------------------------------
 
@@ -496,19 +526,25 @@ class VerificationMixin(HelpersMixin):
             await self._store.put_verification(ended)
         await self._emit_framework_event(
             "verification_ended",
-            data={"identity_id": ended.identity_id, "reason": "expired"},
+            data={
+                "identity_id": ended.identity_id,
+                "reason": "expired",
+                "ended": ENDED_VERIFICATION,
+            },
         )
         if completing is not None:
             await self._verification_hook(
-                HookTrigger.ON_VERIFICATION_ENDED, completing, {"reason": "expired"}
+                HookTrigger.ON_VERIFICATION_ENDED,
+                completing,
+                {"reason": "expired", "ended": ENDED_VERIFICATION},
             )
         return ended
 
     async def _completing_request(self, current: Verification) -> VerificationRequest | None:
         """The request that completed the verification in force, if any."""
-        if current.status != VerificationStatus.VERIFIED or current.request_id is None:
+        if current.status != VerificationStatus.VERIFIED or current.completed_request_id is None:
             return None
-        return await self._store.get_verification_request(current.request_id)
+        return await self._store.get_verification_request(current.completed_request_id)
 
     async def _verification_hook(
         self, trigger: HookTrigger, request: VerificationRequest, data: dict[str, Any]
@@ -550,7 +586,7 @@ class VerificationMixin(HelpersMixin):
             verified_via=request.channel_id,
             verified_at=now,
             expires_at=now + timedelta(seconds=self._verification_policy.ttl),
-            request_id=request.id,
+            completed_request_id=request.id,
         )
         await self._store.put_verification(verification)
         return "completed", request, verification
@@ -590,16 +626,28 @@ class VerificationMixin(HelpersMixin):
         await self._settle_pending(current, request)
         return "failed", request
 
-    async def _after_unfulfilled(self, outcome: str, request: VerificationRequest) -> None:
-        """Announce a request that ended without completing (expired, failed)."""
+    async def _after_unfulfilled(
+        self, outcome: str, request: VerificationRequest, before: Verification
+    ) -> None:
+        """Announce a request that ended without completing (expired, failed).
+
+        *before* is the identity's state when the attempt began: a failed
+        request that was its open one ended the verification in force too
+        (fail closed), and the end says so.
+        """
         if outcome not in ("expired", "failed"):
             return
+        ended = ENDED_REQUEST
         if outcome == "failed":
             # It may have ended a verification in force: no timer outlives it.
             self._disarm_expiry(request.identity_id, request.organization_id)
-        await self._emit_verification_event("verification_ended", request, reason=outcome)
+            if before.request_id == request.id and _in_force(before, datetime.now(UTC)):
+                ended = ENDED_VERIFICATION
+        await self._emit_verification_event(
+            "verification_ended", request, reason=outcome, ended=ended
+        )
         await self._verification_hook(
-            HookTrigger.ON_VERIFICATION_ENDED, request, {"reason": outcome}
+            HookTrigger.ON_VERIFICATION_ENDED, request, {"reason": outcome, "ended": ended}
         )
 
     async def _settle_pending(self, current: Verification, request: VerificationRequest) -> None:
@@ -640,7 +688,12 @@ class VerificationMixin(HelpersMixin):
         return Verification(identity_id=identity_id, organization_id=organization_id)
 
     async def _emit_verification_event(
-        self, event_type: str, request: VerificationRequest, *, reason: str | None = None
+        self,
+        event_type: str,
+        request: VerificationRequest,
+        *,
+        reason: str | None = None,
+        ended: str = ENDED_REQUEST,
     ) -> None:
         data: dict[str, Any] = {
             "identity_id": request.identity_id,
@@ -649,7 +702,7 @@ class VerificationMixin(HelpersMixin):
             "expires_at": request.expires_at.isoformat(),
         }
         if reason is not None:
-            data["reason"] = reason
+            data.update(reason=reason, ended=ended)
         await self._emit_framework_event(
             event_type, room_id=request.room_id, channel_id=request.channel_id, data=data
         )
@@ -722,14 +775,23 @@ def _sender_identity(
     organization_id = context.room.organization_id
     if resolved_identity is not None:
         return resolved_identity.id, organization_id
-    participant_id = event.source.participant_id
+    identity_id = _participant_identity(event, context)
+    return (identity_id, organization_id) if identity_id is not None else None
+
+
+def _participant_identity(event: RoomEvent, context: RoomContext) -> str | None:
+    """The identity of *event*'s sender as the room's IDENTIFIED participant, if one.
+
+    A sender just resolved is not one yet: the pipeline stamps the identity's
+    id as the event's ``participant_id`` and records the participant later.
+    """
     for participant in context.participants:
         if (
-            participant.id == participant_id
+            participant.id == event.source.participant_id
             and participant.identification == IdentificationStatus.IDENTIFIED
             and participant.identity_id
         ):
-            return participant.identity_id, organization_id
+            return participant.identity_id
     return None
 
 

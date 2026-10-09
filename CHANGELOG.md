@@ -39,7 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ConversationStore` gains the operations without making them abstract, so a
   store of your own keeps working and refuses them by name.
   `ON_VERIFICATION_COMPLETED` and `ON_VERIFICATION_ENDED` (ASYNC) fire in the
-  request's room. A verification ends **when it expires**, by a timer armed at
+  request's room; an end says what ended (`ended`: `"verification"` when the
+  one in force ended, `"request"` when only a request did, such as a link left
+  unanswered while the person stayed verified). A verification ends **when it expires**, by a timer armed at
   completion, not on the person's next message; `kit.check_verifications()`
   ends what expired while nothing ran and re-arms the rest, and
   `async with RoomKit(...)` calls it as the kit starts (a store without
@@ -55,7 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (its own, or its source binding's), never a channel it did not reach. An
   edit or a deletion from an unverified sender is refused
   (`verification_required`) unless a hook passes it: held, it would still
-  rewrite a message the agents read.
+  rewrite a message the agents read. `kit.sender_verification(event, context)`
+  gives a hook the sender's verification in the room's organization (whose it
+  is, whether a request is open), on the first message too, when the sender is
+  not a participant yet.
   `VerificationPolicy(hold_unverified=False)` only labels. A reply that is the
   code of the sender's open code request in the room is consumed: it completes
   or counts an attempt, and its text is never stored nor broadcast. Without a

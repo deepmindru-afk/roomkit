@@ -276,3 +276,46 @@ async def test_a_verification_in_one_organization_does_not_label_another() -> No
     assert result.event.visibility == "transport"
     assert ai.calls == []
     await kit.close()
+
+
+async def test_a_hook_reads_whose_verification_to_ask_for() -> None:
+    """The first message's sender is not a participant yet: the hook still
+    learns whom to verify, and that a request is open on the next message."""
+    kit, _ = _kit()
+    opened: list[str] = []
+
+    @kit.hook(HookTrigger.ON_VERIFICATION_REQUIRED)
+    async def ask(event: Any, ctx: Any) -> HookResult:
+        state = await kit.sender_verification(event, ctx)
+        assert state is not None
+        if state.request_id is None:
+            request, _ = await kit.request_verification(
+                state.identity_id,
+                room_id=ctx.room.id,
+                channel_id=event.source.channel_id,
+                window_start=event.created_at,
+            )
+            opened.append(request.identity_id)
+        return HookResult.allow()
+
+    await _text(kit, "Did my transfer go through?")
+    await _text(kit, "Hello?")
+
+    assert opened == ["id-alice"]
+    assert (await kit.verification_of("id-alice")).status == VerificationStatus.PENDING
+    await kit.close()
+
+
+async def test_an_unlabelled_event_has_no_sender_verification() -> None:
+    kit, _ = _kit(policy=None)
+    seen: list[Any] = []
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, channel_ids={"sms"})
+    async def read(event: Any, ctx: Any) -> HookResult:
+        seen.append(await kit.sender_verification(event, ctx))
+        return HookResult.allow()
+
+    await _text(kit, "hello")
+
+    assert seen == [None]
+    await kit.close()

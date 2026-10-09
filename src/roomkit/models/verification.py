@@ -29,7 +29,10 @@ class Verification(BaseModel):
     ended_reason: str | None = None
     """Why it ended: "expired", "revoked", "failed"."""
     request_id: str | None = None
-    """The request open for the identity, or the one that completed it."""
+    """The request open for the identity, if any."""
+    completed_request_id: str | None = None
+    """The request that completed the verification: its end is announced in
+    that request's room, on its channel."""
 
 
 class VerificationRequest(BaseModel):

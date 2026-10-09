@@ -76,6 +76,7 @@ async def test_a_verification_ends_when_it_expires_not_on_the_next_message() -> 
 
     ended = [d for t, d in fired if t == HookTrigger.ON_VERIFICATION_ENDED]
     assert ended[0]["reason"] == "expired" and ended[0]["channel_id"] == "sms"
+    assert ended[0]["ended"] == "verification"
     stored = await kit.store.get_verification("id-alice")
     assert stored is not None and stored.status == VerificationStatus.EXPIRED
     await kit.close()
@@ -102,6 +103,40 @@ async def test_a_request_that_fails_fires_the_end() -> None:
 
     await _eventually(lambda: fired)
     assert fired[0][0] == HookTrigger.ON_VERIFICATION_ENDED and fired[0][1]["reason"] == "failed"
+    assert fired[0][1]["ended"] == "request"  # nothing was verified to end
+    await kit.close()
+
+
+async def test_a_request_that_fails_while_verified_ends_the_verification() -> None:
+    kit, fired = await _kit(max_attempts=1)
+    await _verified(kit)
+    again, _ = await kit.request_verification("id-alice", room_id="r1", channel_id="sms")
+
+    with pytest.raises(VerificationRefusedError):
+        await kit.complete_verification(again.id, "wrong")
+
+    await _eventually(lambda: any(t == HookTrigger.ON_VERIFICATION_ENDED for t, _ in fired))
+    ended = [d for t, d in fired if t == HookTrigger.ON_VERIFICATION_ENDED]
+    assert ended[0]["reason"] == "failed" and ended[0]["ended"] == "verification"
+    await kit.close()
+
+
+async def test_a_verification_that_outlived_an_unanswered_request_still_ends() -> None:
+    """Asked again, the person did not answer: the request's end is not the
+    verification's, which is still announced when its own time runs out."""
+    kit, fired = await _kit(ttl=1.0, request_ttl=0.3)
+    await _verified(kit)
+    again, secret = await kit.request_verification("id-alice", room_id="r1", channel_id="sms")
+    await asyncio.sleep(0.4)
+    with pytest.raises(VerificationRefusedError):
+        await kit.complete_verification(again.id, secret)  # too late: the request ends
+
+    await _eventually(
+        lambda: len([t for t, _ in fired if t == HookTrigger.ON_VERIFICATION_ENDED]) == 2,
+        timeout=3.0,
+    )
+    ended = [(d["reason"], d["ended"]) for t, d in fired if t == HookTrigger.ON_VERIFICATION_ENDED]
+    assert ended == [("expired", "request"), ("expired", "verification")]
     await kit.close()
 
 
