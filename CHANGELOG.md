@@ -20,7 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `kit.complete_verification(request_id, secret)`, which refuses a request that
   is unknown in the caller's organization, no longer open, expired, or given a
   wrong secret (`VerificationRefusedError.reason`; the last allowed mismatch
-  fails it). A new request cancels the open one; `kit.revoke_verification()`
+  fails it, and a request that fails while the identity is verified ends
+  that verification too: whoever could not prove it is not let on as the
+  person; an unanswered request changes nothing). A new request cancels the open one; `kit.revoke_verification()`
   ends a verification and cancels the open request, verified or still pending,
   so a link sent before a revocation never verifies; `kit.verification_of()` reads the
   state (`UNVERIFIED`, `PENDING`, `VERIFIED`, `EXPIRED`, `REVOKED`), per identity

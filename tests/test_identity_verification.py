@@ -191,6 +191,42 @@ async def test_revoking_a_pending_identity_kills_its_link(store: ConversationSto
     await kit.close()
 
 
+async def test_a_failed_request_ends_the_verification_in_force(
+    store: ConversationStore,
+) -> None:
+    """A verified person asked again (a suspicion) and wrong secrets: fail closed."""
+    kit, _ = _kit(store, max_attempts=2)
+    alice = _identity()
+    first, secret = await kit.request_verification(alice, room_id="r1", channel_id="sms")
+    await kit.complete_verification(first.id, secret)
+    again, _ = await kit.request_verification(alice, room_id="r1", channel_id="sms", method="code")
+
+    for _ in range(2):
+        with pytest.raises(VerificationRefusedError):
+            await kit.complete_verification(again.id, "000000")
+
+    state = await kit.verification_of(alice)
+    assert state.status == VerificationStatus.UNVERIFIED and state.ended_reason == "failed"
+    await kit.close()
+
+
+async def test_an_unanswered_request_leaves_the_verification_in_force(
+    store: ConversationStore,
+) -> None:
+    kit, _ = _kit(store, request_ttl=0.5)  # scrypt takes ~55 ms a hash
+    alice = _identity()
+    first, secret = await kit.request_verification(alice, room_id="r1", channel_id="sms")
+    await kit.complete_verification(first.id, secret)
+    again, again_secret = await kit.request_verification(alice, room_id="r1", channel_id="sms")
+    await asyncio.sleep(0.6)
+
+    with pytest.raises(VerificationRefusedError):
+        await kit.complete_verification(again.id, again_secret)
+
+    assert (await kit.verification_of(alice)).status == VerificationStatus.VERIFIED
+    await kit.close()
+
+
 async def test_a_secret_is_stored_through_a_slow_hash(store: ConversationStore) -> None:
     """A 6-digit code read from a leaked store must not fall to a fast hash."""
     import hashlib

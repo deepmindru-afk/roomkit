@@ -82,11 +82,11 @@ async def test_a_verification_ends_when_it_expires_not_on_the_next_message() -> 
 
 
 async def test_a_revocation_fires_the_end_once_and_stops_the_timer() -> None:
-    kit, fired = await _kit(ttl=0.2)
+    kit, fired = await _kit(ttl=0.5)  # revoked well before it expires
     await _verified(kit)
 
     await kit.revoke_verification("id-alice", reason="advisor")
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(0.7)
 
     ended = [d["reason"] for t, d in fired if t == HookTrigger.ON_VERIFICATION_ENDED]
     assert ended == ["advisor"]
@@ -121,10 +121,10 @@ async def test_a_starting_kit_rearms_the_timers_of_verifications_in_force() -> N
 
 async def test_what_expired_while_nothing_ran_is_ended_at_start() -> None:
     store = InMemoryStore()
-    first, _ = await _kit(store, ttl=0.05)
+    first, _ = await _kit(store, ttl=0.5)  # closed well before it expires
     await _verified(first)
     await first.close()
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0.7)
 
     second, fired = await _kit(store)
     ended = await second.check_verifications()
@@ -136,12 +136,12 @@ async def test_what_expired_while_nothing_ran_is_ended_at_start() -> None:
 
 
 async def test_a_closed_kit_ends_nothing_afterwards() -> None:
-    kit, fired = await _kit(ttl=0.1)
+    kit, fired = await _kit(ttl=0.5)  # closed well before it expires
     await _verified(kit)
     await _eventually(lambda: fired)  # the completion
 
     await kit.close()
-    await asyncio.sleep(0.2)
+    await asyncio.sleep(0.7)
 
     assert [t for t, _ in fired] == [HookTrigger.ON_VERIFICATION_COMPLETED]
 

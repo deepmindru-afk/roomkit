@@ -178,6 +178,9 @@ class VerificationMixin(HelpersMixin):
             )
             return verification
         if outcome in ("expired", "failed"):
+            if outcome == "failed":
+                # It may have ended a verification in force: no timer outlives it.
+                self._disarm_expiry(request.identity_id, request.organization_id)
             await self._emit_verification_event("verification_ended", request, reason=outcome)
             await self._verification_hook(
                 HookTrigger.ON_VERIFICATION_ENDED, request, {"reason": outcome}
@@ -467,16 +470,22 @@ class VerificationMixin(HelpersMixin):
         return "completed", request, verification
 
     async def _settle_pending(self, current: Verification, request: VerificationRequest) -> None:
-        """A request that ended unfulfilled leaves the identity as it was before it."""
+        """Settle the identity once its request ended unfulfilled.
+
+        An expired request proves nothing either way: the identity is left as
+        it was before it. A failed one is someone who could not prove it, so a
+        verification in force ends with it (fail closed): asking a verified
+        person again, on a suspicion, and getting wrong secrets must not leave
+        the old verification standing.
+        """
         if current.request_id != request.id:
             return
-        if current.status == VerificationStatus.PENDING:
-            status = VerificationStatus.UNVERIFIED
-        else:
-            status = current.status
-        await self._store.put_verification(
-            current.model_copy(update={"status": status, "request_id": None})
-        )
+        update: dict[str, Any] = {"request_id": None}
+        if request.status == VerificationRequestStatus.FAILED:
+            update.update(status=VerificationStatus.UNVERIFIED, ended_reason="failed")
+        elif current.status == VerificationStatus.PENDING:
+            update["status"] = VerificationStatus.UNVERIFIED
+        await self._store.put_verification(current.model_copy(update=update))
 
     async def _cancel_open_request(self, current: Verification) -> VerificationRequest | None:
         """Cancel the identity's open request, if it has one; return it to announce."""
