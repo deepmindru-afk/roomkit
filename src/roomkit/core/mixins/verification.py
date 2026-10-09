@@ -18,7 +18,12 @@ from uuid import uuid4
 
 from roomkit.core.exceptions import VerificationRefusedError
 from roomkit.core.mixins.helpers import HelpersMixin
-from roomkit.models.enums import VerificationRequestStatus, VerificationStatus
+from roomkit.models.enums import (
+    EventType,
+    HookTrigger,
+    VerificationRequestStatus,
+    VerificationStatus,
+)
 from roomkit.models.verification import Verification, VerificationPolicy, VerificationRequest
 
 if TYPE_CHECKING:
@@ -52,6 +57,7 @@ class VerificationHost(Protocol):
     _store: ConversationStore
     _lock_manager: RoomLockManager
     _verification_policy: VerificationPolicy
+    _verification_timers: dict[str, asyncio.Task[None]]
 
 
 class VerificationMixin(HelpersMixin):
@@ -63,6 +69,7 @@ class VerificationMixin(HelpersMixin):
     _store: ConversationStore
     _lock_manager: RoomLockManager
     _verification_policy: VerificationPolicy
+    _verification_timers: dict[str, asyncio.Task[None]]
 
     async def request_verification(
         self,
@@ -149,10 +156,19 @@ class VerificationMixin(HelpersMixin):
         async with self._lock_manager.locked(key):
             outcome, request, verification = await self._attempt(request_id, secret, method)
         if outcome == "completed":
+            self._arm_expiry(verification)
             await self._emit_verification_event("verification_completed", request)
+            await self._verification_hook(
+                HookTrigger.ON_VERIFICATION_COMPLETED,
+                request,
+                {"method": verification.method, "expires_at": _iso(verification.expires_at)},
+            )
             return verification
         if outcome in ("expired", "failed"):
             await self._emit_verification_event("verification_ended", request, reason=outcome)
+            await self._verification_hook(
+                HookTrigger.ON_VERIFICATION_ENDED, request, {"reason": outcome}
+            )
         raise VerificationRefusedError(outcome)
 
     async def revoke_verification(
@@ -169,8 +185,10 @@ class VerificationMixin(HelpersMixin):
         (RFC §11.7.7).
         """
         now = datetime.now(UTC)
+        self._disarm_expiry(identity_id, organization_id)
         async with self._lock_manager.locked(_lock_key(identity_id, organization_id)):
             current = await self._stored_verification(identity_id, organization_id)
+            completing = await self._completing_request(current)
             cancelled = await self._cancel_open_request(current)
             ended: Verification | None = None
             if _in_force(current, now):
@@ -198,6 +216,29 @@ class VerificationMixin(HelpersMixin):
                 "verification_ended",
                 data={"identity_id": identity_id, "reason": reason},
             )
+            if completing is not None:
+                await self._verification_hook(
+                    HookTrigger.ON_VERIFICATION_ENDED, completing, {"reason": reason}
+                )
+        return ended
+
+    async def check_verifications(self) -> list[Verification]:
+        """End the verifications whose time passed; arm the timers of the others.
+
+        A verification ends when its time runs out (RFC §11.7.5), by a timer
+        this process arms when it completes. Call this when the process
+        starts (``async with RoomKit(...)`` does): it ends what expired while
+        nothing was running and re-arms the rest. Returns the ones it ended.
+        """
+        ended: list[Verification] = []
+        now = datetime.now(UTC)
+        for verification in await self._store.list_verifications_in_force():
+            if _in_force(verification, now):
+                self._arm_expiry(verification)
+                continue
+            expired = await self._expire(verification)
+            if expired is not None:
+                ended.append(expired)
         return ended
 
     async def verification_of(
@@ -218,6 +259,98 @@ class VerificationMixin(HelpersMixin):
         return current
 
     # -- internal ------------------------------------------------------------
+
+    async def _resume_verifications(self) -> None:
+        """Resume the verifications in force as the kit starts.
+
+        A store that does not keep verifications (RFC §11.7 is Level 2) has
+        none to resume: the kit starts all the same.
+        """
+        try:
+            await self.check_verifications()
+        except NotImplementedError:
+            return
+
+    def _arm_expiry(self, verification: Verification) -> None:
+        """Arm (or re-arm) the timer that ends *verification* when it expires."""
+        if verification.expires_at is None:
+            return
+        key = _lock_key(verification.identity_id, verification.organization_id)
+        self._disarm_expiry(verification.identity_id, verification.organization_id)
+        task = asyncio.get_running_loop().create_task(self._expire_when_due(verification))
+        self._verification_timers[key] = task
+        task.add_done_callback(lambda done: _forget_timer(self._verification_timers, key, done))
+
+    def _disarm_expiry(self, identity_id: str, organization_id: str | None) -> None:
+        task = self._verification_timers.pop(_lock_key(identity_id, organization_id), None)
+        if task is not None:
+            task.cancel()
+
+    def _cancel_verification_timers(self) -> None:
+        """Stop every expiry timer (the kit is closing)."""
+        for task in self._verification_timers.values():
+            task.cancel()
+        self._verification_timers.clear()
+
+    async def _expire_when_due(self, verification: Verification) -> None:
+        if verification.expires_at is None:
+            return
+        delay = (verification.expires_at - datetime.now(UTC)).total_seconds()
+        await asyncio.sleep(max(0.0, delay))
+        await self._expire(verification)
+
+    async def _expire(self, verification: Verification) -> Verification | None:
+        """End *verification* if it is still the one in force and its time passed."""
+        key = _lock_key(verification.identity_id, verification.organization_id)
+        async with self._lock_manager.locked(key):
+            current = await self._stored_verification(
+                verification.identity_id, verification.organization_id
+            )
+            still_it = (
+                current.status == VerificationStatus.VERIFIED
+                and current.expires_at == verification.expires_at
+            )
+            if not still_it or _in_force(current, datetime.now(UTC)):
+                return None
+            completing = await self._completing_request(current)
+            ended = current.model_copy(
+                update={"status": VerificationStatus.EXPIRED, "ended_reason": "expired"}
+            )
+            await self._store.put_verification(ended)
+        await self._emit_framework_event(
+            "verification_ended",
+            data={"identity_id": ended.identity_id, "reason": "expired"},
+        )
+        if completing is not None:
+            await self._verification_hook(
+                HookTrigger.ON_VERIFICATION_ENDED, completing, {"reason": "expired"}
+            )
+        return ended
+
+    async def _completing_request(self, current: Verification) -> VerificationRequest | None:
+        """The request that completed the verification in force, if any."""
+        if current.status != VerificationStatus.VERIFIED or current.request_id is None:
+            return None
+        return await self._store.get_verification_request(current.request_id)
+
+    async def _verification_hook(
+        self, trigger: HookTrigger, request: VerificationRequest, data: dict[str, Any]
+    ) -> None:
+        """Fire a verification hook in the room the request was opened in (ASYNC)."""
+        await self._fire_lifecycle_hook(
+            request.room_id,
+            trigger,
+            EventType.SYSTEM,
+            code=str(trigger),
+            message=f"Verification of {request.identity_id}",
+            data={
+                "identity_id": request.identity_id,
+                "organization_id": request.organization_id,
+                "request_id": request.id,
+                "channel_id": request.channel_id,
+                **data,
+            },
+        )
 
     async def _attempt(
         self, request_id: str, secret: str, method: str | None
@@ -341,3 +474,15 @@ def _in_force(verification: Verification, now: datetime) -> bool:
 def _lock_key(identity_id: str, organization_id: str | None) -> str:
     """One identity's transitions are serialised under this key (any lock manager)."""
     return f"verification:{organization_id or ''}:{identity_id}"
+
+
+def _iso(moment: datetime | None) -> str | None:
+    return moment.isoformat() if moment is not None else None
+
+
+def _forget_timer(
+    timers: dict[str, asyncio.Task[None]], key: str, done: asyncio.Task[None]
+) -> None:
+    """Drop a finished timer, unless a newer one took its key."""
+    if timers.get(key) is done:
+        del timers[key]

@@ -30,8 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memory, SQLite (schema v5, migrated in place) and Postgres stores keep it;
   `ConversationStore` gains the operations without making them abstract, so a
   store of your own keeps working and refuses them by name.
-  `EventSource.verification` is added for the label the inbound pipeline will
-  stamp; the hooks, the hold and the release of held messages follow.
+  `ON_VERIFICATION_COMPLETED` and `ON_VERIFICATION_ENDED` (ASYNC) fire in the
+  request's room. A verification ends **when it expires**, by a timer armed at
+  completion, not on the person's next message; `kit.check_verifications()`
+  ends what expired while nothing ran and re-arms the rest, and
+  `async with RoomKit(...)` calls it as the kit starts (a store without
+  verification is skipped); `kit.close()` stops the timers.
+  `EventSource.verification` and `ON_VERIFICATION_REQUIRED` are added for the
+  label and the hold the inbound pipeline will apply, with the release of
+  held messages, in a later change.
 
 - A discussion's dispatch policy (RMK-666, RFC §19.7.5 rule 18):
   `Discussion(dispatch=...)` decides which agents take a person's message

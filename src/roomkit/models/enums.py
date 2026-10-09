@@ -250,6 +250,10 @@ class HookTrigger(StrEnum):
     ON_PARTICIPANT_JOINED = "on_participant_joined"
     ON_PARTICIPANT_LEFT = "on_participant_left"
     ON_PARTICIPANT_UPDATED = "on_participant_updated"
+    # Identity verification (RFC §11.7)
+    ON_VERIFICATION_REQUIRED = "on_verification_required"
+    ON_VERIFICATION_COMPLETED = "on_verification_completed"
+    ON_VERIFICATION_ENDED = "on_verification_ended"
     # Side effects
     ON_TASK_CREATED = "on_task_created"
     # Delivery status (outbound message tracking)

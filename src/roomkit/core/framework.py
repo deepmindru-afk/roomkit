@@ -283,6 +283,7 @@ class RoomKit(
         self._default_agent_response_policy = agent_response_policy
         self._identity_timeout = identity_timeout
         self._verification_policy = verification_policy or VerificationPolicy()
+        self._verification_timers: dict[str, asyncio.Task[None]] = {}
         self._process_timeout = process_timeout
         self._channels: dict[str, Channel] = {}
         # Explicit detaches (revocations, RFC §7.5-7) are recorded in room
@@ -599,6 +600,8 @@ class RoomKit(
         if self._closed:
             return
         self._closed = True
+        # No verification ends after this: the timers die with the kit.
+        self._cancel_verification_timers()
         # Stop room-level media recorders before channels close (RFC §12.11)
         await self._close_room_recorders()
         # Clear stale greeting gates
@@ -752,6 +755,7 @@ class RoomKit(
 
     async def __aenter__(self) -> RoomKit:
         await self._ensure_status_bus_subscribed()
+        await self._resume_verifications()
         if self._delivery_backend is not None:
             await self._delivery_backend.start(self)
         return self
