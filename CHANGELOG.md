@@ -74,7 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `release_max_age`; `release_on_verify=False` keeps them held. Only what the
   pipeline held is released: the held marker is the runtime's, so the
   pipeline strips one a sender's metadata carries (a stranger cannot slip a
-  message into another's release).
+  message into another's release). Example: `examples/identity_verification.py`.
 
 - A discussion's dispatch policy (RMK-666, RFC §19.7.5 rule 18):
   `Discussion(dispatch=...)` decides which agents take a person's message
