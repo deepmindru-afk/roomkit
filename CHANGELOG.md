@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Identity verification, state and requests (RMK-660, RFC §11.7, first part):
+- Identity verification (RMK-660, RFC §11.7; guide: Identity Verification):
   identification says whose an address is, verification that the person writing
   has proven it. `kit.request_verification(identity_id, room_id=, channel_id=,
   method="link"|"code")` opens a request and returns its secret once (256 bits
