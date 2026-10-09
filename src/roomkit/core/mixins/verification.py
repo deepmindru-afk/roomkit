@@ -8,6 +8,7 @@ salted hash.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import secrets
@@ -30,6 +31,12 @@ METHOD_CODE = "code"
 """A short code the person replies with in the conversation (RFC §11.7.4)."""
 
 _LINK_SECRET_BYTES = 32  # 256 bits; RFC §11.7.7 asks for at least 128
+# scrypt, not a fast hash: a 6-digit code read from a leaked store would
+# otherwise be found in under a second. At n=2**15 one hash costs ~55 ms, so
+# the million codes take hours, against a code's minutes of life.
+_SCRYPT_N = 2**15
+_SCRYPT_R = 8
+_SCRYPT_P = 1
 
 
 @runtime_checkable
@@ -91,7 +98,7 @@ class VerificationMixin(HelpersMixin):
             room_id=room_id,
             channel_id=channel_id,
             method=method,
-            secret_hash=_secret_hash(request_id, secret),
+            secret_hash=await _secret_hash(request_id, secret),
             window_start=window_start or now,
             created_at=now,
             expires_at=now + timedelta(seconds=ttl),
@@ -157,31 +164,40 @@ class VerificationMixin(HelpersMixin):
     ) -> Verification | None:
         """End an identity's verification before its time; None if none was in force.
 
-        Its open request, if any, is cancelled with it: a link sent before the
-        revocation cannot verify the person after it (RFC §11.7.7).
+        Its open request is cancelled in every case, verified or still pending:
+        a link sent before the revocation can never verify the person after it
+        (RFC §11.7.7).
         """
         now = datetime.now(UTC)
         async with self._lock_manager.locked(_lock_key(identity_id, organization_id)):
             current = await self._stored_verification(identity_id, organization_id)
-            if not _in_force(current, now):
-                return None
             cancelled = await self._cancel_open_request(current)
-            ended = current.model_copy(
-                update={
-                    "status": VerificationStatus.REVOKED,
-                    "ended_reason": reason,
-                    "request_id": None,
-                }
-            )
-            await self._store.put_verification(ended)
+            ended: Verification | None = None
+            if _in_force(current, now):
+                ended = current.model_copy(
+                    update={
+                        "status": VerificationStatus.REVOKED,
+                        "ended_reason": reason,
+                        "request_id": None,
+                    }
+                )
+                await self._store.put_verification(ended)
+            elif cancelled is not None:
+                # Pending, now with nothing open: back to unverified.
+                await self._store.put_verification(
+                    current.model_copy(
+                        update={"status": VerificationStatus.UNVERIFIED, "request_id": None}
+                    )
+                )
         if cancelled is not None:
             await self._emit_verification_event(
                 "verification_ended", cancelled, reason="cancelled"
             )
-        await self._emit_framework_event(
-            "verification_ended",
-            data={"identity_id": identity_id, "reason": reason},
-        )
+        if ended is not None:
+            await self._emit_framework_event(
+                "verification_ended",
+                data={"identity_id": identity_id, "reason": reason},
+            )
         return ended
 
     async def verification_of(
@@ -219,7 +235,7 @@ class VerificationMixin(HelpersMixin):
             await self._store.update_verification_request(request)
             await self._settle_pending(current, request)
             return "expired", request, current
-        if not hmac.compare_digest(request.secret_hash, _secret_hash(request.id, secret)):
+        if not hmac.compare_digest(request.secret_hash, await _secret_hash(request.id, secret)):
             attempts = request.attempts + 1
             failed = attempts >= request.max_attempts
             status = VerificationRequestStatus.FAILED if failed else VerificationRequestStatus.OPEN
@@ -296,9 +312,22 @@ def _code(length: int) -> str:
     return f"{secrets.randbelow(10**length):0{length}d}"
 
 
-def _secret_hash(request_id: str, secret: str) -> str:
-    """The stored form of a secret, salted with its request's id."""
-    return hashlib.sha256(f"{request_id}:{secret}".encode()).hexdigest()
+async def _secret_hash(request_id: str, secret: str) -> str:
+    """The stored form of a secret: scrypt, salted with its request's id.
+
+    Computed off the event loop: tens of milliseconds of CPU on purpose.
+    """
+    digest = await asyncio.to_thread(
+        hashlib.scrypt,
+        secret.encode(),
+        salt=request_id.encode(),
+        n=_SCRYPT_N,
+        r=_SCRYPT_R,
+        p=_SCRYPT_P,
+        maxmem=64 * 1024 * 1024,
+        dklen=32,
+    )
+    return f"scrypt${digest.hex()}"
 
 
 def _in_force(verification: Verification, now: datetime) -> bool:

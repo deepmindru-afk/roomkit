@@ -13,13 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identification says whose an address is, verification that the person writing
   has proven it. `kit.request_verification(identity_id, room_id=, channel_id=,
   method="link"|"code")` opens a request and returns its secret once (256 bits
-  for a link, 6 digits for a code), stored only as a salted hash; the integrator
+  for a link, 6 digits for a code), stored only as its scrypt hash (a 6-digit
+  code read from a leaked store takes hours to find, against its five minutes
+  of life); the integrator
   checks the person its own way (a page and a PIN, a login) and calls
   `kit.complete_verification(request_id, secret)`, which refuses a request that
   is unknown in the caller's organization, no longer open, expired, or given a
   wrong secret (`VerificationRefusedError.reason`; the last allowed mismatch
   fails it). A new request cancels the open one; `kit.revoke_verification()`
-  ends a verification and its open request; `kit.verification_of()` reads the
+  ends a verification and cancels the open request, verified or still pending,
+  so a link sent before a revocation never verifies; `kit.verification_of()` reads the
   state (`UNVERIFIED`, `PENDING`, `VERIFIED`, `EXPIRED`, `REVOKED`), per identity
   and organization. Lifetimes and attempts come from
   `RoomKit(verification_policy=VerificationPolicy(...))`. Framework events

@@ -176,6 +176,35 @@ async def test_revoking_ends_the_verification_and_its_open_request(
     await kit.close()
 
 
+async def test_revoking_a_pending_identity_kills_its_link(store: ConversationStore) -> None:
+    """Revoked before verifying (a suspected fraud): the link already sent dies."""
+    kit, _ = _kit(store)
+    bob = _identity()
+    request, secret = await kit.request_verification(bob, room_id="r1", channel_id="sms")
+
+    assert await kit.revoke_verification(bob, reason="fraud suspected") is None
+    with pytest.raises(VerificationRefusedError) as refused:
+        await kit.complete_verification(request.id, secret)
+
+    assert refused.value.reason == "not_open"
+    assert (await kit.verification_of(bob)).status == VerificationStatus.UNVERIFIED
+    await kit.close()
+
+
+async def test_a_secret_is_stored_through_a_slow_hash(store: ConversationStore) -> None:
+    """A 6-digit code read from a leaked store must not fall to a fast hash."""
+    import hashlib
+
+    kit, _ = _kit(store)
+    request, code = await kit.request_verification(
+        _identity(), room_id="r1", channel_id="sms", method="code"
+    )
+
+    assert request.secret_hash.startswith("scrypt$")
+    assert hashlib.sha256(f"{request.id}:{code}".encode()).hexdigest() not in request.secret_hash
+    await kit.close()
+
+
 async def test_a_verification_reads_expired_once_its_time_passed(
     store: ConversationStore,
 ) -> None:
