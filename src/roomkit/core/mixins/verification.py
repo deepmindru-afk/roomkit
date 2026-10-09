@@ -86,6 +86,9 @@ class VerificationMixin(HelpersMixin):
     _verification_timers: dict[str, asyncio.Task[None]]
     _hook_engine: HookEngine
 
+    # Cross-mixin method — attribute annotation avoids MRO shadowing
+    _rerun_agents_on: Any  # see RegenerateMixin
+
     async def request_verification(
         self,
         identity_id: str,
@@ -178,6 +181,8 @@ class VerificationMixin(HelpersMixin):
                 request,
                 {"method": verification.method, "expires_at": _iso(verification.expires_at)},
             )
+            if self._verification_policy.release_on_verify:
+                await self._release_held(request)
             return verification
         if outcome in ("expired", "failed"):
             if outcome == "failed":
@@ -339,6 +344,67 @@ class VerificationMixin(HelpersMixin):
                 request.id, text, organization_id=request.organization_id
             )
         return True
+
+    # -- releasing held messages (RFC §11.7.6) ----------------------------------
+
+    async def _release_held(self, request: VerificationRequest) -> list[RoomEvent]:
+        """Release what the request's sender wrote while it was open; the released.
+
+        Each comes back with the visibility it had before it was held, through
+        the store (ON_EVENT_UPDATED fires), and the room's agents then run on
+        the last one as on any inbound message of its author: the earlier ones
+        are its context. Nothing is copied, and nothing becomes an instruction.
+        """
+        held = await self._held_window(request)
+        if not held:
+            return []
+        released: list[RoomEvent] = []
+        async with self._lock_manager.locked(request.room_id):
+            for event in held:
+                current = await self._store.get_event(event.id)
+                marker = current.metadata.get(HELD_KEY) if current is not None else None
+                if current is None or not isinstance(marker, dict):
+                    continue  # released already, or changed under us
+                metadata = {k: v for k, v in current.metadata.items() if k != HELD_KEY}
+                restored = current.model_copy(
+                    update={
+                        "visibility": marker.get("visibility") or Visibility.ALL,
+                        "metadata": metadata,
+                    }
+                )
+                released.append(await self._store.update_event(restored))
+        if not released:
+            return []
+        context = await self._build_context(request.room_id)
+        for event in released:
+            await self._hook_engine.run_async_hooks(
+                request.room_id, HookTrigger.ON_EVENT_UPDATED, event, context
+            )
+        await self._rerun_agents_on(request.room_id, released[-1].id)
+        return released
+
+    async def _held_window(self, request: VerificationRequest) -> list[RoomEvent]:
+        """The held messages a completed request releases, oldest first.
+
+        Its sender's own (the identity the marker names), in its room, received
+        from the request's window start on, within the policy's bounds of age
+        and number; never one released before (its marker is gone).
+        """
+        policy = self._verification_policy
+        oldest = max(
+            request.window_start,
+            datetime.now(UTC) - timedelta(seconds=policy.release_max_age),
+        )
+        recent = await self._store.list_events(
+            request.room_id, limit=max(200, policy.release_max_messages * 5), newest_first=True
+        )
+        held = [
+            event for event in recent if _held_for(event, request) and event.created_at >= oldest
+        ]
+        # A newest-first page is still rendered in ascending order (RFC §14.1):
+        # the latest ones are taken by index, then given back oldest first.
+        latest = sorted(held, key=lambda event: event.index, reverse=True)
+        return sorted(latest[: policy.release_max_messages], key=lambda event: event.index)
 
     # -- internal ------------------------------------------------------------
 
@@ -632,3 +698,13 @@ def _transport_part(visibility: str, context: RoomContext) -> str:
         if binding.category == ChannelCategory.TRANSPORT and visibility_allows(visibility, binding)
     ]
     return ",".join(reached) if reached else Visibility.NONE
+
+
+def _held_for(event: RoomEvent, request: VerificationRequest) -> bool:
+    """Whether *event* is held and belongs to *request*'s identity."""
+    marker = event.metadata.get(HELD_KEY)
+    return (
+        isinstance(marker, dict)
+        and marker.get("identity_id") == request.identity_id
+        and (marker.get("organization_id") or None) == (request.organization_id or None)
+    )

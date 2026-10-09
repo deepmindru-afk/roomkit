@@ -53,7 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `VerificationPolicy(hold_unverified=False)` only labels. A reply that is the
   code of the sender's open code request in the room is consumed: it completes
   or counts an attempt, and its text is never stored nor broadcast. Without a
-  policy the pipeline is unchanged. The release of held messages follows.
+  policy the pipeline is unchanged. When a request completes, what its sender
+  wrote while it was open is released (RFC §11.7.6): each held message gets
+  back the visibility it had (`ON_EVENT_UPDATED`), and the room's agents run
+  on the last one as on any message of its author, the earlier ones as its
+  context, even if the host wrote after it. Nothing is copied, nothing becomes
+  an instruction, nothing outside the request's window (from `window_start`)
+  is released, nothing twice, and at most `release_max_messages` within
+  `release_max_age`; `release_on_verify=False` keeps them held.
 
 - A discussion's dispatch policy (RMK-666, RFC §19.7.5 rule 18):
   `Discussion(dispatch=...)` decides which agents take a person's message

@@ -229,6 +229,48 @@ class RegenerateMixin(HelpersMixin):
             await cascade.abandon("caller_cancelled")
             raise
 
+    async def _rerun_agents_on(self, room_id: str, event_id: str) -> InboundResult | None:
+        """Run the room's agents on one stored transport event, as on a new one.
+
+        :meth:`regenerate_response` picks the newest transport message itself;
+        a caller that knows which message the agents must answer (a held
+        message just released, RFC §11.7.6) names it here, and messages that
+        came after it (a confirmation the host sent) do not take its place.
+        ``None`` when it cannot run: no such event in the room, or its source
+        binding is gone or cannot write. Otherwise the same path, refusals and
+        result as a regenerate.
+        """
+        cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
+        try:
+            async with AsyncExitStack() as stack:
+                try:
+                    async with asyncio.timeout(self._process_timeout):
+                        await stack.enter_async_context(self._lock_manager.locked(room_id))
+                        context = await self._build_context(room_id, reads_history=True)
+                        trigger = await self._store.get_event(event_id)
+                except TimeoutError:
+                    return await self._refuse_on_timeout(room_id, operation="regenerate")
+                if context.room.status in _REFUSING_STATUSES:
+                    return await self._refuse_closed_room(
+                        room_id, status=context.room.status, operation="regenerate", event=trigger
+                    )
+                source = (
+                    context.get_binding(trigger.source.channel_id) if trigger is not None else None
+                )
+                if (
+                    trigger is None
+                    or trigger.room_id != room_id
+                    or source is None
+                    or source.category != ChannelCategory.TRANSPORT
+                    or not source.can_write
+                ):
+                    return None
+                plan = self._enqueue_regeneration(room_id, trigger, source, context, cascade)
+            return await self._finish_regeneration(room_id, trigger, plan, cascade)
+        except BaseException:
+            await cascade.abandon("caller_cancelled")
+            raise
+
     async def _plan_regeneration(
         self, room_id: str, trigger_id: str | None, cascade: DeliveryCascade
     ) -> tuple[RoomEvent, DeliveryPlan] | InboundResult | None:

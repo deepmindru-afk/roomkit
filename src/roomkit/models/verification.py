@@ -68,6 +68,13 @@ class VerificationPolicy(BaseModel):
     """Wrong secrets a request accepts before it fails."""
     code_length: int = Field(default=6, ge=6, le=12)
     """Digits of a code sent for the person to reply with."""
+    release_on_verify: bool = True
+    """Whether the messages held during a request are released to the room's
+    agents when it completes (RFC §11.7.6)."""
+    release_max_messages: int = Field(default=20, ge=1)
+    """At most this many held messages are released, the latest ones."""
+    release_max_age: float = Field(default=3600.0, gt=0)
+    """Held messages older than this many seconds are not released."""
     hold_unverified: bool = True
     """Whether an unverified sender's message is held from the room's agents
     unless an ON_VERIFICATION_REQUIRED hook passes it (RFC §11.7.3); False
