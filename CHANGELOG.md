@@ -36,9 +36,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ends what expired while nothing ran and re-arms the rest, and
   `async with RoomKit(...)` calls it as the kit starts (a store without
   verification is skipped); `kit.close()` stops the timers.
-  `EventSource.verification` and `ON_VERIFICATION_REQUIRED` are added for the
-  label and the hold the inbound pipeline will apply, with the release of
-  held messages, in a later change.
+  Passing a `verification_policy` also turns on the inbound side (RFC §10.1
+  step 5b): an identified sender's message carries `source.verification`, and
+  while the identity is not verified it fires `ON_VERIFICATION_REQUIRED`
+  (SYNC), whose hooks hold it (the default: visibility `"transport"`, so the
+  room's people and transports see it and no agent does, in delivery or in
+  context), pass it (`HookResult.allow_unverified()`; a plain `allow()` does
+  not, so a hook that only watches never lets one through) or block it.
+  `VerificationPolicy(hold_unverified=False)` only labels. A reply that is the
+  code of the sender's open code request in the room is consumed: it completes
+  or counts an attempt, and its text is never stored nor broadcast. Without a
+  policy the pipeline is unchanged. The release of held messages follows.
 
 - A discussion's dispatch policy (RMK-666, RFC §19.7.5 rule 18):
   `Discussion(dispatch=...)` decides which agents take a person's message

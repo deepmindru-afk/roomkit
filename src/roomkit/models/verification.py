@@ -68,3 +68,7 @@ class VerificationPolicy(BaseModel):
     """Wrong secrets a request accepts before it fails."""
     code_length: int = Field(default=6, ge=6, le=12)
     """Digits of a code sent for the person to reply with."""
+    hold_unverified: bool = True
+    """Whether an unverified sender's message is held from the room's agents
+    unless an ON_VERIFICATION_REQUIRED hook passes it (RFC §11.7.3); False
+    only labels it."""

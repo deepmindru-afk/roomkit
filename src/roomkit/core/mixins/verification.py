@@ -9,6 +9,7 @@ salted hash.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import secrets
@@ -18,16 +19,24 @@ from uuid import uuid4
 
 from roomkit.core.exceptions import VerificationRefusedError
 from roomkit.core.mixins.helpers import HelpersMixin
+from roomkit.models.delivery import InboundResult
 from roomkit.models.enums import (
     EventType,
     HookTrigger,
+    IdentificationStatus,
     VerificationRequestStatus,
     VerificationStatus,
+    Visibility,
 )
+from roomkit.models.event import RoomEvent, TextContent
+from roomkit.models.hook import VERIFICATION_DECISION_KEY
 from roomkit.models.verification import Verification, VerificationPolicy, VerificationRequest
 
 if TYPE_CHECKING:
+    from roomkit.core.hooks import HookEngine
     from roomkit.core.locks import RoomLockManager
+    from roomkit.models.context import RoomContext
+    from roomkit.models.identity import Identity
     from roomkit.store.base import ConversationStore
 
 METHOD_LINK = "link"
@@ -36,6 +45,9 @@ METHOD_CODE = "code"
 """A short code the person replies with in the conversation (RFC §11.7.4)."""
 
 _LINK_SECRET_BYTES = 32  # 256 bits; RFC §11.7.7 asks for at least 128
+HELD_KEY = "roomkit:verification_held"
+"""Event metadata marking a message held for verification (RFC §11.7.3); its
+value records the visibility the message had, which its release restores."""
 # scrypt, not a fast hash: a 6-digit code read from a leaked store would
 # otherwise be found in under a second. At n=2**15 one hash costs ~55 ms, so
 # the million codes take hours, against a code's minutes of life.
@@ -70,6 +82,7 @@ class VerificationMixin(HelpersMixin):
     _lock_manager: RoomLockManager
     _verification_policy: VerificationPolicy
     _verification_timers: dict[str, asyncio.Task[None]]
+    _hook_engine: HookEngine
 
     async def request_verification(
         self,
@@ -257,6 +270,66 @@ class VerificationMixin(HelpersMixin):
                 update={"status": VerificationStatus.EXPIRED, "ended_reason": "expired"}
             )
         return current
+
+    # -- inbound pipeline (RFC §10.1 step 5b) -----------------------------------
+
+    async def _apply_verification(
+        self,
+        event: RoomEvent,
+        room_id: str,
+        context: RoomContext,
+        resolved_identity: Identity | None,
+    ) -> RoomEvent | InboundResult:
+        """Label an identified sender's message, consume a code, or hold it.
+
+        Returns the event to go on with, or the result of a message that stops
+        here before anything of it is stored (a code reply, a block).
+        """
+        identity = _sender_identity(event, context, resolved_identity)
+        if identity is None:
+            return event
+        identity_id, organization_id = identity
+        state = await self.verification_of(identity_id, organization_id=organization_id)
+        if await self._consume_code(event, room_id, state):
+            # Its text is never stored nor broadcast, and no agent reads it.
+            return InboundResult(blocked=True, reason="verification_code")
+        event = event.model_copy(
+            update={"source": event.source.model_copy(update={"verification": state.status})}
+        )
+        if state.status == VerificationStatus.VERIFIED:
+            return event
+        decided = await self._hook_engine.run_sync_hooks(
+            room_id, HookTrigger.ON_VERIFICATION_REQUIRED, event, context
+        )
+        if not decided.allowed:
+            return InboundResult(blocked=True, reason=decided.reason or "verification_required")
+        event = decided.event if isinstance(decided.event, RoomEvent) else event
+        passed = decided.metadata.get(VERIFICATION_DECISION_KEY) == "pass"
+        if passed or not self._verification_policy.hold_unverified:
+            return event
+        return _held(event)
+
+    async def _consume_code(self, event: RoomEvent, room_id: str, state: Verification) -> bool:
+        """Whether *event* is a reply to the sender's open code request here, attempted."""
+        if state.request_id is None or not isinstance(event.content, TextContent):
+            return False
+        text = event.content.body.strip()
+        if not text.isdigit() or len(text) != self._verification_policy.code_length:
+            return False
+        request = await self._store.get_verification_request(state.request_id)
+        if (
+            request is None
+            or request.method != METHOD_CODE
+            or request.status != VerificationRequestStatus.OPEN
+            or request.room_id != room_id
+        ):
+            return False
+        # A wrong code counts as an attempt and is consumed all the same.
+        with contextlib.suppress(VerificationRefusedError):
+            await self.complete_verification(
+                request.id, text, organization_id=request.organization_id
+            )
+        return True
 
     # -- internal ------------------------------------------------------------
 
@@ -486,3 +559,35 @@ def _forget_timer(
     """Drop a finished timer, unless a newer one took its key."""
     if timers.get(key) is done:
         del timers[key]
+
+
+def _sender_identity(
+    event: RoomEvent, context: RoomContext, resolved_identity: Identity | None
+) -> tuple[str, str | None] | None:
+    """(identity_id, organization_id) of an identified sender; None otherwise.
+
+    The resolver's answer, or the room's IDENTIFIED participant when the
+    sender was already identified and resolution was skipped (RFC §11.6).
+    """
+    organization_id = context.room.organization_id
+    if resolved_identity is not None:
+        return resolved_identity.id, resolved_identity.organization_id or organization_id
+    participant_id = event.source.participant_id
+    for participant in context.participants:
+        if (
+            participant.id == participant_id
+            and participant.identification == IdentificationStatus.IDENTIFIED
+            and participant.identity_id
+        ):
+            return participant.identity_id, organization_id
+    return None
+
+
+def _held(event: RoomEvent) -> RoomEvent:
+    """*event* held from the room's agents; its people and transports still see it."""
+    return event.model_copy(
+        update={
+            "visibility": Visibility.TRANSPORT,
+            "metadata": {**event.metadata, HELD_KEY: {"visibility": event.visibility}},
+        }
+    )

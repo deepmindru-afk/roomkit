@@ -17,6 +17,10 @@ class InjectedEvent(BaseModel):
     target_channel_ids: list[str] | None = None
 
 
+VERIFICATION_DECISION_KEY = "roomkit:verification"
+"""The hook metadata key :meth:`HookResult.allow_unverified` sets (RFC §11.7.3)."""
+
+
 class HookResult(BaseModel):
     """Result returned by a sync hook."""
 
@@ -51,6 +55,17 @@ class HookResult(BaseModel):
     def allow(cls, injected: list[InjectedEvent] | None = None) -> HookResult:
         """Allow the event to proceed."""
         return cls(action="allow", injected_events=injected or [])
+
+    @classmethod
+    def allow_unverified(cls) -> HookResult:
+        """On ON_VERIFICATION_REQUIRED: let an unverified sender's message through.
+
+        It goes on labelled with the sender's verification; without this, the
+        message is held from the room's agents (RFC §11.7.3). A plain
+        :meth:`allow` does not pass it: a hook that only watches never lets a
+        message through by accident.
+        """
+        return cls(action="allow", metadata={VERIFICATION_DECISION_KEY: "pass"})
 
     @classmethod
     def block(

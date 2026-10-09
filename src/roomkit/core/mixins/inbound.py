@@ -112,9 +112,11 @@ class InboundMixin(HelpersMixin):
     _inbound_rate_limiter: Any  # TokenBucketRateLimiter | None
     _inbound_rate_limit: Any  # RateLimit | None
     _telemetry: TelemetryProvider
+    _verification_inbound: bool
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _resolve_identity: Any  # see InboundHost
+    _apply_verification: Any  # see VerificationMixin
     _process_locked: Any  # see InboundHost
     _consume_streams_when_cascade_completes: Any  # see LaneExecutionMixin
     _finish_cascade: Any  # see LaneExecutionMixin
@@ -357,6 +359,13 @@ class InboundMixin(HelpersMixin):
             )
         except _IdentityBlockedError as exc:
             return InboundResult(blocked=True, reason=exc.reason)
+
+        # Identity verification (RFC §10.1 step 5b, §11.7): label, hold, codes.
+        if self._verification_inbound:
+            verified = await self._apply_verification(event, room_id, context, resolved_identity)
+            if isinstance(verified, InboundResult):
+                return verified
+            event = verified
 
         return event, context, resolved_identity, pending_id_result
 

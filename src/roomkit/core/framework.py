@@ -223,7 +223,11 @@ class RoomKit(
             identity_timeout: Timeout in seconds for identity resolution calls.
             verification_policy: How long an identity verification and its
                 requests last, and how many attempts a request accepts
-                (RFC §11.7); the defaults when omitted.
+                (RFC §11.7). Passing one also turns on the inbound side: an
+                identified sender's messages are labelled with their
+                verification and, while it is not verified, held from the
+                room's agents. Omitted, the API works with the defaults and
+                the pipeline is unchanged.
             process_timeout: Timeout in seconds for the locked processing phase.
             stt: Optional speech-to-text provider for transcription.
             tts: Optional text-to-speech provider for synthesis.
@@ -283,6 +287,9 @@ class RoomKit(
         self._default_agent_response_policy = agent_response_policy
         self._identity_timeout = identity_timeout
         self._verification_policy = verification_policy or VerificationPolicy()
+        # Labelling and holding inbound messages is opted into by passing a
+        # policy: a kit that never asked keeps its pipeline as it was.
+        self._verification_inbound = verification_policy is not None
         self._verification_timers: dict[str, asyncio.Task[None]] = {}
         self._process_timeout = process_timeout
         self._channels: dict[str, Channel] = {}
