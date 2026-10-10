@@ -49,8 +49,10 @@ from roomkit.channels._acp_context import (
 from roomkit.channels._acp_events import ACPEventsMixin
 from roomkit.channels._acp_sessions import ACPSessionsMixin
 from roomkit.channels._acp_turn import ACPTurnMixin
+from roomkit.channels._discussion_turn import discussion_notes
 from roomkit.channels._instruction import instruction_fingerprint, is_standalone, mark_instruction
 from roomkit.channels._mark_copies import compile_mark_patterns
+from roomkit.channels._turn_notes import turn_notes
 from roomkit.channels.acp_transport import ACPTransport, StdioACPTransport
 from roomkit.channels.base import Channel
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
@@ -145,9 +147,9 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
 
             Turn-scoped context only. An ACP session keeps what it was already
             told, so a block that never changes is paid for again every turn;
-            what is stable belongs to the agent's own configuration
-            (``AGENTS.md``, MCP servers) — ACP has no instruction channel and
-            this is not one, it is conversation.
+            what is stable belongs to ``instructions``, sent once per
+            session, or to the agent's own configuration (``AGENTS.md``, MCP
+            servers): this is conversation.
 
             Nothing here is bounded. RoomKit does not truncate the blocks — it
             knows neither their unit nor the agent's tokenizer, and the model
@@ -165,6 +167,18 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
             With ``room_history=0`` on a room with no hook and no other
             history reader, it holds the triggering event alone. A contributor
             that needs the room's history reads it from the store.
+        name: The agent's name, as an Agent's (RFC §19.1): a discussion's
+            notes, a dispatch policy and a console present it by its name,
+            ``role`` and ``description``.
+        role: The agent's role.
+        description: What the agent does.
+        instructions: The integrator's standing direction for the agent (a
+            persona, how the room works), since its own system prompt is not
+            RoomKit's to set: sent in the first prompt of each session the
+            channel opens for a room, a session opened again included, as the
+            application's block ahead of the catch-up, and not again while
+            the session keeps it (RFC §6.4). What changes from turn to turn
+            belongs to ``context_contributor``.
     """
 
     channel_type = ChannelType.AI
@@ -186,8 +200,17 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         external_tool_handler: ExternalToolHandler | None = None,
         room_history: int = _DEFAULT_ROOM_HISTORY,
         context_contributor: ACPContextContributor | None = None,
+        name: str | None = None,
+        role: str | None = None,
+        description: str | None = None,
+        instructions: str | None = None,
     ) -> None:
         super().__init__(channel_id)
+        # Its identity, as an Agent's (RFC §19.1, §6.4).
+        self.name = name
+        self.role = role
+        self.description = description
+        self._instructions = instructions if instructions and instructions.strip() else None
         if command is not None and transport is not None:
             raise ValueError(
                 "command spawns the agent here and transport reaches one that is "
@@ -246,6 +269,8 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         self._prompted_index: dict[str, int] = {}
         # Rooms whose session was sent a labelled request (RFC §6.4).
         self._labelled_rooms: set[str] = set()
+        # Rooms whose session was sent the instructions (RFC §6.4).
+        self._instructed_rooms: set[str] = set()
         self._turns: dict[str, _TurnState] = {}
         self._agent_info: dict[str, Any] | None = None
         self._agent_closes_sessions = True
@@ -390,7 +415,10 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         blocks = await contributed_blocks(
             self._context_contributor, context, event, channel_id=self.channel_id
         )
-        if not text.strip() and not blocks:
+        # A discussion's turn (RFC §19.7.5): who is in the room, which message
+        # the turn answers and how the room works.
+        notes = turn_notes(discussion_notes(event))
+        if not text.strip() and not blocks and notes is None:
             return ChannelOutput.empty()
         instruction = text if event.type == EventType.INSTRUCTION else None
         if instruction is not None and instruction.strip():
@@ -427,6 +455,7 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
                 text,
                 max(seen_index, event.index),
                 metadata,
+                notes=notes,
                 standalone=standalone,
             ),
             response_metadata=metadata,
@@ -546,3 +575,4 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         self._session_options.clear()
         self._prompted_index.clear()
         self._labelled_rooms.clear()
+        self._instructed_rooms.clear()

@@ -248,7 +248,9 @@ class DiscussionMixin(HelpersMixin):
         for agent in discussion.agents.values():
             if getattr(agent, "_thinker", None) is not None:
                 return f"{agent.channel_id} thinks while it listens"
-            if agent._registry.turn_runner(room_id) is not None:
+            # An external agent runs its own loop: no strategy runs its turns.
+            registry = getattr(agent, "_registry", None)
+            if registry is not None and registry.turn_runner(room_id) is not None:
                 return f"another strategy runs {agent.channel_id}'s turns"
         if self._hook_engine.has_router_hook(room_id):
             return "a router is installed"

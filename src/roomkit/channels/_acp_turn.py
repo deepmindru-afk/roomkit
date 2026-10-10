@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit.channels._acp_client import _SDK, _TurnDone, _TurnState
 from roomkit.channels._acp_context import (
     compose_prompt,
+    instructions_block,
     labelled_request,
     room_context_block,
     window_labels,
@@ -31,6 +32,7 @@ from roomkit.channels._acp_usage import (
     _usage_report,
     _usage_tokens,
 )
+from roomkit.channels._turn_notes import without_header_copies
 from roomkit.channels.acp_transport import ACPSessionInvalidatedError
 from roomkit.models.context import RoomContext
 from roomkit.models.event import RoomEvent
@@ -61,6 +63,8 @@ class ACPTurnMixin:
     _turns: dict[str, _TurnState]
     _prompted_index: dict[str, int]
     _labelled_rooms: set[str]
+    _instructed_rooms: set[str]
+    _instructions: str | None
     _room_history: int
     _after_response_hook: AfterResponseCallback | None
     _closed: bool
@@ -95,6 +99,7 @@ class ACPTurnMixin:
         seen_index: int,
         metadata: ResponseMetadata,
         *,
+        notes: str | None = None,
         standalone: bool = False,
     ) -> AsyncIterator[StreamDelta]:
         async with self._room_turn_lock(room_id):
@@ -118,6 +123,7 @@ class ACPTurnMixin:
                         text,
                         seen_index,
                         metadata,
+                        notes=notes,
                         standalone=standalone,
                     )
                     try:
@@ -184,13 +190,18 @@ class ACPTurnMixin:
         trigger: RoomEvent,
         text: str,
         *,
+        notes: str | None,
         standalone: bool,
-    ) -> tuple[str, bool]:
-        """The prompt for *trigger*, and whether its request opens with its
-        sender's label: the host's blocks, the room context it missed, then
-        the request (RFC §6.4, §19.3.2), one ranking naming each source one
-        way in both. A standalone turn reads nothing of the room: no
-        catch-up, and its session was born empty."""
+    ) -> tuple[str, bool, bool]:
+        """The prompt for *trigger*, whether its request opens with its
+        sender's label, and whether it carries the channel's instructions:
+        the instructions on a session's first prompt, the host's blocks, the
+        room context it missed, the request (RFC §6.4, §19.3.2), one ranking
+        naming each source one way in both, then a discussion's *notes*. A
+        standalone turn reads nothing of the room: no catch-up, and its
+        session was born empty. A copy of the notes' header anywhere but the
+        notes is replaced, so no one passes their words off as the
+        runtime's (RFC §6.4)."""
         labels = window_labels(context, trigger, self.channel_id)
         catch_up = (
             ""
@@ -207,7 +218,18 @@ class ACPTurnMixin:
         request, labelled = labelled_request(
             labels, trigger, text, session_labelled=room_id in self._labelled_rooms
         )
-        return compose_prompt(blocks, catch_up, request), labelled
+        instructions = self._instructions
+        instructed = instructions is not None and (
+            standalone or room_id not in self._instructed_rooms
+        )
+        head = [instructions_block(instructions)] if instructions and instructed else []
+        prompt = compose_prompt(
+            [*head, *map(without_header_copies, blocks)],
+            without_header_copies(catch_up),
+            without_header_copies(request),
+            notes,
+        )
+        return prompt, labelled, instructed
 
     async def _turn_stream(
         self,
@@ -222,6 +244,7 @@ class ACPTurnMixin:
         seen_index: int,
         metadata: ResponseMetadata,
         *,
+        notes: str | None = None,
         standalone: bool,
     ) -> AsyncGenerator[StreamDelta]:
         """One prompt in *session_id*, streamed until the agent ends it."""
@@ -242,8 +265,8 @@ class ACPTurnMixin:
         if self._agent_info is not None:
             turn.usage_metadata["adapter_info"] = deepcopy(self._agent_info)
         self._turns[session_id] = turn
-        prompt_text, turn.labelled = self._prompt_text(
-            room_id, blocks, context, trigger, text, standalone=standalone
+        prompt_text, turn.labelled, turn.instructed = self._prompt_text(
+            room_id, blocks, context, trigger, text, notes=notes, standalone=standalone
         )
         prompt = [self._sdk().acp.text_block(prompt_text)]
         # The cursor commits only after the agent accepts the prompt. A
@@ -393,6 +416,8 @@ class ACPTurnMixin:
                 )
                 if turn.labelled:
                     self._labelled_rooms.add(room_id)
+                if turn.instructed:
+                    self._instructed_rooms.add(room_id)
             # The turn's own accounting, and the only place it is offered:
             # the usage notifications describe the context window, not what
             # answering cost.

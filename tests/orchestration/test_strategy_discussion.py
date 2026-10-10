@@ -522,5 +522,5 @@ def test_a_discussion_is_checked_when_built() -> None:
         Discussion([a], everyone=["b"])
     with pytest.raises(ValueError, match="max_depth"):
         Discussion([a], max_depth=1)
-    with pytest.raises(TypeError, match="not an AI channel"):
+    with pytest.raises(TypeError, match="neither an AI channel nor an ACP agent channel"):
         Discussion([SimpleChannel("x")])  # type: ignore[list-item]

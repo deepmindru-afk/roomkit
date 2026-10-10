@@ -40,6 +40,7 @@ class ACPSessionsMixin:
     _session_options: dict[str, list[Any]]
     _prompted_index: dict[str, int]
     _labelled_rooms: set[str]
+    _instructed_rooms: set[str]
     _agent_closes_sessions: bool
 
     # Implemented elsewhere on the channel. Declared as annotations, never as
@@ -86,6 +87,7 @@ class ACPSessionsMixin:
         session_id = self._sessions.pop(room_id, None)
         self._prompted_index.pop(room_id, None)
         self._labelled_rooms.discard(room_id)
+        self._instructed_rooms.discard(room_id)
         if session_id is None:
             return False
         self._session_rooms.pop(session_id, None)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING
 
+from roomkit.channels.acp import ACPChannel
 from roomkit.channels.ai import AIChannel
 from roomkit.orchestration.base import Orchestration
 
@@ -121,10 +122,10 @@ def _check(
     if not agents:
         raise ValueError("A discussion needs at least one agent")
     for agent in agents:
-        if not isinstance(agent, AIChannel):
+        if not isinstance(agent, AIChannel | ACPChannel):
             raise TypeError(
-                f"{getattr(agent, 'channel_id', agent)!r} is not an AI channel: a discussion "
-                "holds AI channels only (an external agent runs its own loop)"
+                f"{getattr(agent, 'channel_id', agent)!r} is neither an AI channel nor an "
+                "ACP agent channel: a discussion holds those only"
             )
     ids = [a.channel_id for a in agents]
     if len(set(ids)) != len(ids):

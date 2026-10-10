@@ -20,6 +20,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Any
 
+from roomkit.channels.acp import ACPChannel
 from roomkit.core.hooks import HookRegistration
 from roomkit.core.task_utils import hold_task
 from roomkit.models.enums import EventStatus, EventType, HookExecution, HookTrigger
@@ -304,8 +305,13 @@ class DiscussionRoom:
         """Cut *agent*'s running turn, as a ``Cancel`` does; a turn given but
         not started yet has no loop a Cancel reaches and is abandoned."""
         channel = self.agents.get(agent)
-        cancel = Cancel(reason="listen_only")
-        reached = channel.steer(cancel, room_id=self.room_id) if channel is not None else 0
+        if isinstance(channel, ACPChannel):
+            # An external agent's turn: its prompt cancelled (RFC §6.4).
+            reached = await channel.cancel(self.room_id)
+        elif channel is not None:
+            reached = channel.steer(Cancel(reason="listen_only"), room_id=self.room_id)
+        else:
+            reached = 0
         if not reached and self.driver is not None:
             await self.driver.cut(agent, "listen_only")
 

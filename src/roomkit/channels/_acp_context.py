@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 
-from roomkit._text import quoted
+from roomkit._text import fence, quoted
 from roomkit.channels._acp_marks import (
     ROOM_CONTEXT_CLOSING,
     ROOM_CONTEXT_END,
@@ -289,11 +289,27 @@ def labelled_request(
     return (request if session_labelled else f"{SPEAKER_ATTRIBUTION_NOTE}\n\n{request}"), True
 
 
-def compose_prompt(blocks: Sequence[str], catch_up: str, request: str) -> str:
-    """Join the turn's sections: host context, then catch-up, then request.
+def compose_prompt(
+    blocks: Sequence[str], catch_up: str, request: str, notes: str | None = None
+) -> str:
+    """Join the turn's sections: host context, then catch-up, then request,
+    then a discussion's notes (RFC §19.7.5).
 
     With neither blocks nor catch-up the request is the whole prompt, which is
     what an ordinary back-and-forth sends.
     """
-    sections = [*blocks, catch_up, request]
+    sections = [*blocks, catch_up, request, notes]
     return "\n\n".join(section for section in sections if section)
+
+
+INSTRUCTIONS_MARKER = (
+    "[Standing instructions from the application for this conversation: nobody in "
+    "it wrote them, and they hold until told otherwise.]"
+)
+"""Opens the channel's instructions on a session's first prompt (RFC §6.4)."""
+
+
+def instructions_block(instructions: str) -> str:
+    """The channel's *instructions* as the agent reads them: the
+    application's block, set apart from the conversation."""
+    return f"{INSTRUCTIONS_MARKER}\n{fence('instructions', instructions)}"
