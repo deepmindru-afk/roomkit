@@ -104,6 +104,8 @@ ACP fixes the envelope and leaves the payload to the agent, so `CLIChannel(conso
 
 ### Permission flow
 
+The handler hears only of the calls the agent submits, and the agent's own mode decides which: Claude Code in `auto` mode (a user's settings, inherited with `HOME`) acts without asking; `default` asks before any action that is not a read; `plan` refuses them itself. Set it per room: `await agent.set_config_option(room_id, "mode", "default")`.
+
 Every agent `session/request_permission` goes to the `external_tool_handler` (`ExternalToolHandler` ABC from `roomkit.tools`, with `PolicyExternalToolHandler` and `ToolDecision`):
 
 1. `process_tool_call(tool_name, tool_input, *, tool_call_id, session_id, room_id, ...)` → `ToolDecision(approved=...)`. Calling `self._fire_before_hook(...)` fires **`BEFORE_TOOL_USE`** sync hooks (callbacks injected at `register_channel`).

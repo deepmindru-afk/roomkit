@@ -36,7 +36,6 @@ import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
@@ -56,7 +55,7 @@ from roomkit import (
 from roomkit.console import DiscussionConsole
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.tools import ExternalToolHandler, ToolDecision
+from roomkit.tools import PolicyExternalToolHandler, ToolPolicy
 
 setup_logging("discussion_acp")
 logging.getLogger("roomkit").setLevel(logging.WARNING)
@@ -82,17 +81,8 @@ T-5536 14:15 Seattle US: wrong delivery date shown
 """
 
 
-class ReadOnly(ExternalToolHandler):
-    """Claude Code may read its workspace, nothing else."""
-
-    async def process_tool_call(
-        self, tool_name: str, tool_input: dict[str, Any], **_ids: Any
-    ) -> ToolDecision:
-        allowed = tool_name.strip().lower().startswith(("read", "glob", "grep", "ls", "list"))
-        return ToolDecision(approved=allowed, reason=None if allowed else "read-only workspace")
-
-    async def on_tool_result(self, *_args: Any, **_kwargs: Any) -> None:
-        return None
+READ_ONLY = ToolPolicy(allow=["Read*", "Glob*", "Grep*", "LS*", "read*", "glob*", "grep*"])
+"""What Claude Code may do when it asks RoomKit: read its workspace, nothing else."""
 
 
 def workspace() -> Path:
@@ -114,7 +104,8 @@ async def build() -> RoomKit:
         command=["npx", "--no-install", CLAUDE_AGENT_ACP],
         cwd=workspace(),
         inherit_env=["HOME", "PATH", "USER", "XDG_CONFIG_HOME"],
-        external_tool_handler=ReadOnly(),
+        # RoomKit's gate: the policy, then BEFORE_TOOL_USE, each call reported.
+        external_tool_handler=PolicyExternalToolHandler(policy=READ_ONLY),
         name="Developer",
         description="reads the checkout service's source and its support tickets",
         instructions=(
@@ -130,6 +121,10 @@ async def build() -> RoomKit:
     )
     await kit.create_room(room_id=ROOM, orchestration=Discussion([sre, dev]))
     await kit.attach_channel(ROOM, "oncall")
+    # Claude Code's own mode decides what it asks before acting: under a
+    # user's "auto" mode it acts without asking, and RoomKit's gate never
+    # hears of it. "default" asks before any action that is not a read.
+    await dev.set_config_option(ROOM, "mode", "default")
     return kit
 
 
@@ -162,10 +157,17 @@ async def follow(
                 return
 
 
+async def turn_ended(kit: RoomKit, start: float, seen: set[str]) -> None:
+    """Until no agent speaks: a coding agent writes between its tool rounds."""
+    while (queue := kit.speak_queue(ROOM)) is not None and queue.speaking is not None:
+        await follow(kit, start, seen, lambda _e: True)
+
+
 async def scripted(kit: RoomKit) -> None:
     start, seen = time.monotonic(), set()
     await say(kit, "@dev why do Canadian checkouts fail? Look at the code.")
     await follow(kit, start, seen, lambda e: e.source.channel_id == "dev")
+    await turn_ended(kit, start, seen)
     task = await kit.start_task(
         ROOM,
         "dev",
