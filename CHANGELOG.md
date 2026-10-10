@@ -135,6 +135,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   double of the provider's session answers `send_request(request,
   result_type)`: one that wires `call_tool` is no longer called.
 
+- After a barge-in, `VuiTTSProvider` decodes the next replies against the
+  audio the cache keeps, not against frames nobody heard (RMK-669). The `vui`
+  extra requires `vui-tts>=1.2.3,<1.3`, whose `Row.truncate` takes the
+  unheard frames out of the codec as well as the cache
+  (fluxions-ai/vui#47). With 1.2.2 the codec kept counting them, and its
+  10 s decoder restarts ran off the grid Vui was trained on until the
+  conversation restarted from the voice prompt. Measured through the
+  provider's cut on an RTX 4070, against the same frames decoded in
+  independent 10 s chunks: an 18 s reply cut after 1.5 s left the codec 207
+  frames ahead of the cache and the next reply at 15 dB; with 1.2.3, 0 frames
+  and 118 dB. One case remains: `vui-tts` keeps 40 s of codec tail, so a cut
+  that drops more than 30 s of unheard audio (a long reply, `max_secs` being
+  60 s, cut early) leaves the next reply without its decoder context until
+  the next 10 s boundary (17 dB on a 42 s reply cut after 1.5 s), in step
+  again after it (122 dB).
+
 ## [0.96.1] — 2026-10-09
 
 ### Fixed

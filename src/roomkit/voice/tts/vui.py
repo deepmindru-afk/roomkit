@@ -10,9 +10,10 @@ Constraints of the model and of ``vui-tts``: English only, Python 3.12, a CUDA
 GPU for real-time streaming, and one active conversation per provider (a
 single KV cache). Install with ``pip install roomkit[vui]``.
 
-It needs ``vui-tts`` 1.2: ``Row.truncate`` cuts the cache back to what the
-user heard after a barge-in, and ``Row.prefill`` takes a preset's speaker token
-and conditioning bias, as Vui's own server applies them.
+It needs ``vui-tts`` 1.2.3: ``Row.truncate`` cuts the cache, and the codec's
+frames with it, back to what the user heard after a barge-in, and
+``Row.prefill`` takes a preset's speaker token and conditioning bias, as Vui's
+own server applies them.
 """
 
 from __future__ import annotations
