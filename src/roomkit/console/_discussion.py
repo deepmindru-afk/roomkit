@@ -2,27 +2,33 @@
 
 The person at the terminal is one of the room's people: what they type goes
 into the room through the transport channel they name, and the screen shows
-the room as it happens (every message, every tool call), the agents with
-their identity and live state, and the speak queue. It follows the room
-through hooks it removes when it closes, so it can be opened on a running
-room and closed without disturbing it.
+the room as it happens (every message, every tool call, the answer an agent
+is writing), the agents with their identity, live state and running tasks,
+and the speak queue. It follows the room through hooks it removes when it
+closes, so it can be opened on a running room and closed without disturbing
+it.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from roomkit.channels._speaker import turn_labels
+from roomkit.channels.acp import ACPChannel
 from roomkit.console._discussion_screen import DiscussionScreen
-from roomkit.console._discussion_view import AgentCard, DiscussionView
+from roomkit.console._discussion_view import AgentCard, DiscussionView, short_task
 from roomkit.core.hooks import HookRegistration
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, EventType, HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
+from roomkit.tasks.background import BACKGROUND_TOOL
+from roomkit.tasks.status import room_task_lines
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -40,8 +46,15 @@ EVERYONE = "all"
 HELP = """You are @{you}: write to the room, name agents with @ to ask them ({agents}).
   @{first} what do you think?   asks @{first} (no name: the agents that asked you, else everyone)
   /listen @{first}              @{first} only listens: it answers only when you name it
-  /talk @{first}                @{first} talks again (@all names every agent)
+  /talk @{first}                @{first} talks again (@all names every agent){tasks}
   /help · /quit{extra}"""
+
+TASKS_HELP = """
+  /task @{first} <what to do>      long work as a task, while the room goes on
+  /tasks · /cancel <task>        the room's tasks, and stopping one"""
+
+_TASK_WINDOW = 500
+"""How many of the StatusBus's latest entries ``/tasks`` reads."""
 
 
 class DiscussionConsole:
@@ -68,6 +81,10 @@ class DiscussionConsole:
         title: What the header says about the room.
         welcome: The first lines of the room pane. Defaults to the help.
         commands: The host's own slash commands, by name without the ``/``.
+        tasks: Whether ``/task``, ``/tasks`` and ``/cancel`` start, list and
+            stop the room's tasks (RFC §23.4). Defaults to on when an agent
+            of the room has background work set up
+            (:meth:`~roomkit.RoomKit.setup_background`).
         log_file: Where the kit's logs go while the screen is up. Without
             one, records of level WARNING and above are held and handed to
             the logging set up before, once the screen closes.
@@ -85,6 +102,7 @@ class DiscussionConsole:
         title: str | None = None,
         welcome: str | None = None,
         commands: Mapping[str, Command] | None = None,
+        tasks: bool | None = None,
         log_file: str | Path | None = None,
         log_level: int = logging.INFO,
     ) -> None:
@@ -96,6 +114,7 @@ class DiscussionConsole:
         self._title = title or f"room {room_id}"
         self._welcome = welcome
         self._commands = dict(commands or {})
+        self._tasks = tasks
         self._log_file = Path(log_file) if log_file is not None else None
         self._log_level = log_level
         self._hook_prefix = f"discussion_console_{uuid4().hex[:8]}"
@@ -112,6 +131,9 @@ class DiscussionConsole:
     async def run(self) -> None:
         """Show the room until the person quits (Ctrl-C, Ctrl-D or ``/quit``)."""
         cards = self._cards or await self._room_cards()
+        if self._tasks is None:
+            setups = self._kit._background_setups
+            self._tasks = any(card.handle in setups for card in cards)
         view = DiscussionView(
             cards,
             you=self._sender_id,
@@ -123,15 +145,19 @@ class DiscussionConsole:
         for line in (self._welcome or self._help()).splitlines():
             view.lines.append(("class:dim", line))
         view.lines.append(("", ""))
-        hooks = self._hooks()
-        for hook in hooks:
-            self._kit.hook_engine.add_room_hook(self._room_id, hook)
         restore_logs = _capture_logs(self._log_file, self._log_level)
+        hooks = self._hooks()
+        live = None
         try:
+            for hook in hooks:
+                self._kit.hook_engine.add_room_hook(self._room_id, hook)
+            live = self._follow_streams()
             await self._screen.run()
         finally:
             for hook in hooks:
                 self._kit.hook_engine.remove_room_hook(self._room_id, hook.name)
+            if live is not None:
+                live()
             restore_logs()
 
     async def say(self, text: str) -> None:
@@ -176,8 +202,64 @@ class DiscussionConsole:
             await self._set_listening(name, rest)
         elif name in self._commands:
             await self._commands[name](rest)
+        elif self._tasks and name in ("task", "tasks", "cancel"):
+            await self._task_command(name, rest)
         else:
             self.view.note(f"unknown command /{name}: /help lists them")
+
+    # -- The room's tasks --
+
+    async def _task_command(self, name: str, rest: str) -> None:
+        if name == "task":
+            await self._start_task(rest)
+        elif name == "tasks":
+            await self._list_tasks()
+        else:
+            await self._cancel_task(rest)
+
+    async def _start_task(self, rest: str) -> None:
+        first, _, task = rest.strip().partition(" ")
+        agents = self._named_agents(first)
+        if len(agents) != 1 or not task.strip():
+            self.view.note(f"usage: /task @{self.view.cards[0].handle} <what to do>")
+            return
+        started = await self._kit.start_task(self._room_id, agents[0], task.strip())
+        self.view.task_for(started.id, agents[0])
+
+    async def _list_tasks(self) -> None:
+        lines = await room_task_lines(self._kit.status_bus, self._room_id, _TASK_WINDOW)
+        if not lines:
+            self.view.note("no task in this room")
+        now = datetime.now(UTC)
+        for line in lines:
+            since, ended = line.get("since"), line.get("ended")
+            took = _seconds(since, ended or now)
+            elapsed = f"{took:4.0f} s" if took is not None else "     "
+            agent = self.view.working.get(line["task_id"], line["agent"])
+            self.view.note(
+                f"{short_task(line['task_id'])}  @{agent:<12} {line.get('status', '?'):<10}"
+                f" {elapsed}  {str(line.get('task', ''))[:60]}"
+            )
+
+    async def _cancel_task(self, rest: str) -> None:
+        wanted = rest.strip().removeprefix("task-")
+        lines = await room_task_lines(self._kit.status_bus, self._room_id, _TASK_WINDOW)
+        found = [
+            t["task_id"]
+            for t in lines
+            if wanted and t["task_id"].removeprefix("task-").startswith(wanted)
+        ]
+        if len(found) != 1:
+            self.view.note(
+                f"no task {rest.strip()!r}: /tasks lists them"
+                if not found
+                else f"{rest.strip()!r} names several tasks: give more of its id"
+            )
+            return
+        cancelled = await self._kit.cancel_task(found[0])
+        self.view.note(
+            f"task {short_task(found[0])} " + ("cancelled" if cancelled else "had ended")
+        )
 
     async def _set_listening(self, name: str, rest: str) -> None:
         agents = self._named_agents(rest)
@@ -206,6 +288,7 @@ class DiscussionConsole:
             you=self._sender_id,
             agents=" ".join(f"@{h}" for h in handles),
             first=handles[0],
+            tasks=TASKS_HELP.format(first=handles[0]) if self._tasks else "",
             extra=extra,
         )
 
@@ -232,6 +315,18 @@ class DiscussionConsole:
                 fn=self._on_speak_queue,  # ty: ignore[invalid-argument-type]
                 name=f"{self._hook_prefix}_queue",
             ),
+            HookRegistration(
+                trigger=HookTrigger.ON_TASK_DELEGATED,
+                execution=HookExecution.ASYNC,
+                fn=self._on_task_started,
+                name=f"{self._hook_prefix}_task_started",
+            ),
+            HookRegistration(
+                trigger=HookTrigger.ON_TASK_COMPLETED,
+                execution=HookExecution.ASYNC,
+                fn=self._on_task_ended,
+                name=f"{self._hook_prefix}_task_ended",
+            ),
         ]
 
     async def _on_message(self, event: RoomEvent, context: RoomContext) -> None:
@@ -240,7 +335,11 @@ class DiscussionConsole:
         text = event.content.body if isinstance(event.content, TextContent) else ""
         text = text or f"[{event.content.type}]"
         if any(card.handle == source for card in view.cards):
-            view.agent(source, event.addressed_to, text)
+            # A task's result posted as the agent's message names its worker.
+            meta = event.metadata or {}
+            worker = meta.get("agent_id") if meta.get("task_id") else None
+            by = worker if isinstance(worker, str) and worker != source else None
+            view.agent(source, event.addressed_to, text, by=by)
         else:
             view.person(
                 self._author(event, context), event.addressed_to, text, mine=self._mine(event)
@@ -248,6 +347,69 @@ class DiscussionConsole:
 
     async def _on_tool_call(self, event: ToolCallEvent, context: RoomContext) -> None:
         self.view.tool(event.channel_id, event.name, event.arguments, event.result)
+        if event.name == BACKGROUND_TOOL:
+            self._tool_started_task(event)
+
+    def _tool_started_task(self, event: ToolCallEvent) -> None:
+        """The task a ``work_in_background`` call started is the agent's it
+        names (the caller by default), whatever channel does the work."""
+        try:
+            answer = json.loads(str(event.result))
+        except (TypeError, ValueError):
+            return
+        task_id = answer.get("task_id") if isinstance(answer, dict) else None
+        if isinstance(task_id, str):
+            agent = str(event.arguments.get("agent") or event.channel_id).removeprefix("@")
+            self.view.task_for(task_id, agent)
+
+    async def _on_task_started(self, event: RoomEvent, context: RoomContext) -> None:
+        meta = event.metadata or {}
+        task_id = str(meta.get("task_id") or "")
+        if task_id:
+            self.view.task_started(
+                task_id, str(meta.get("agent_id") or "?"), str(meta.get("task_input") or "")
+            )
+
+    async def _on_task_ended(self, event: RoomEvent, context: RoomContext) -> None:
+        meta = event.metadata or {}
+        task_id = str(meta.get("task_id") or "")
+        if not task_id:
+            return
+        status = meta.get("task_status")
+        duration = meta.get("duration_ms")
+        seconds = duration / 1000 if isinstance(duration, int | float) else None
+        self.view.task_ended(task_id, str(getattr(status, "value", status) or "ended"), seconds)
+
+    # -- What an agent is writing --
+
+    def _follow_streams(self) -> Callable[[], None] | None:
+        """Follow the answers agents stream, through a connection of the
+        person's channel when it takes one (a WebSocket channel); the
+        function that stops it."""
+        channel = self._kit.channels.get(self._channel_id)
+        register = getattr(channel, "register_connection", None)
+        unregister = getattr(channel, "unregister_connection", None)
+        if register is None or unregister is None:
+            return None
+        connection = f"{self._hook_prefix}_live"
+
+        async def ignore(_connection: str, _event: RoomEvent) -> None:
+            return None
+
+        register(connection, ignore, room_id=self._room_id, stream_send_fn=self._on_stream)
+        return lambda: unregister(connection)
+
+    async def _on_stream(self, _connection: str, message: Any) -> None:
+        kind = getattr(message, "type", None)
+        stream = str(getattr(message, "stream_id", ""))
+        if kind == "stream_start":
+            source = message.source.channel_id
+            if any(card.handle == source for card in self.view.cards):
+                self.view.live_start(source, stream)
+        elif kind == "stream_chunk":
+            self.view.live_text(message.delta, stream)
+        elif kind in ("stream_end", "stream_error"):
+            self.view.live_end(stream)
 
     async def _on_speak_queue(self, event: SpeakQueueEvent, context: RoomContext) -> None:
         self.view.queue_changed(event)
@@ -290,11 +452,19 @@ class DiscussionConsole:
 
 def _model(channel: Any) -> str | None:
     """The model an agent runs on, when its provider says (a provider may raise)."""
+    if isinstance(channel, ACPChannel):
+        return "external agent (ACP)"
     try:
         model = getattr(getattr(channel, "provider", None), "model_name", None)
     except Exception:
         return None
     return model if isinstance(model, str) else None
+
+
+def _seconds(since: Any, until: Any) -> float | None:
+    if isinstance(since, datetime) and isinstance(until, datetime):
+        return (until - since).total_seconds()
+    return None
 
 
 class _HeldRecords(logging.Handler):
@@ -312,17 +482,18 @@ def _capture_logs(log_file: Path | None, level: int) -> Callable[[], None]:
     """Route the root logger away from the terminal; the function that restores it."""
     root = logging.getLogger()
     saved, saved_level = list(root.handlers), root.level
-    for handler in saved:
-        root.removeHandler(handler)
     held: _HeldRecords | None = None
     taking: logging.Handler
     if log_file is not None:
+        # Opened first: a path that cannot be written leaves the logging as it was.
         taking = logging.FileHandler(log_file)
         taking.setLevel(level)
         taking.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
         root.setLevel(min(saved_level, level) if saved_level else level)
     else:
         taking = held = _HeldRecords()
+    for handler in saved:
+        root.removeHandler(handler)
     root.addHandler(taking)
 
     def restore() -> None:

@@ -79,11 +79,11 @@ STYLE = Style.from_dict(
 class _RoomLexer(Lexer):
     """Styles each line of the room by the style it was added with."""
 
-    def __init__(self, view: DiscussionView) -> None:
-        self._view = view
+    def __init__(self, shown: Callable[[], list[tuple[str, str]]]) -> None:
+        self._shown = shown
 
     def lex_document(self, document: Document) -> Callable[[int], StyleAndTextTuples]:
-        lines = self._view.lines
+        lines = self._shown()
 
         def line(number: int) -> StyleAndTextTuples:
             style = lines[number][0] if number < len(lines) else ""
@@ -106,14 +106,15 @@ class DiscussionScreen:
         self._on_submit = on_submit
         self._title = title
         self._follow = True
-        self._shown = 0
+        self._version = -1
+        self._lines: list[tuple[str, str]] = []
         self._submitted: set[asyncio.Task[None]] = set()
         self._room = TextArea(
             read_only=True,
             scrollbar=True,
             wrap_lines=True,
             focusable=False,
-            lexer=_RoomLexer(view),
+            lexer=_RoomLexer(lambda: self._lines),
             get_line_prefix=self._wrap_prefix,
         )
         self._input = TextArea(
@@ -131,7 +132,7 @@ class DiscussionScreen:
 
     def refresh(self) -> None:
         """Show what the view gained since the last refresh."""
-        if len(self._view.lines) != self._shown:
+        if self._view.version != self._version:
             self._show_room()
         self.app.invalidate()
 
@@ -166,8 +167,8 @@ class DiscussionScreen:
     # -- The room pane --
 
     def _show_room(self) -> None:
-        lines = self._view.lines
-        self._shown = len(lines)
+        self._version = self._view.version
+        lines = self._lines = self._view.shown_lines()
         text = "\n".join(line for _style, line in lines)
         buffer = self._room.buffer
         cursor = len(text) if self._follow else min(buffer.cursor_position, len(text))
@@ -175,7 +176,7 @@ class DiscussionScreen:
 
     def _wrap_prefix(self, number: int, wrap_count: int) -> StyleAndTextTuples:
         """A wrapped line keeps the indent of the line it continues."""
-        lines = self._view.lines
+        lines = self._lines
         if wrap_count == 0 or number >= len(lines):
             return []
         line = lines[number][1]
