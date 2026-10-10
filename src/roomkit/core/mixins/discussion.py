@@ -215,6 +215,9 @@ class DiscussionMixin(HelpersMixin):
         leave it here, writing nothing back."""
         if self._discussions.get(room_id) is not discussion:
             return
+        # The task results this process was to post: the queue is gone, they
+        # are posted all the same (rule 19).
+        discussion.post_held()
         self._leave_discussion(room_id, discussion)
         if discussion.driver is not None:
             await discussion.driver.stop()

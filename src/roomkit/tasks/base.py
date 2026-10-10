@@ -26,6 +26,11 @@ class TaskRunner(ABC):
     ``cancelled`` result (:func:`~roomkit.tasks.models.cancelled_task_fields`).
     The framework closes the task's span, fires ``ON_TASK_COMPLETED`` and
     hands the result back from that call.
+
+    The worker is given ``task.description``, what it reads (the brief,
+    else the task, with the room's conversation when the delegation hands
+    it over), not ``task.task``, the label the task is named by (RFC §23.3
+    step 4).
     """
 
     @abstractmethod

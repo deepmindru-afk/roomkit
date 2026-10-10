@@ -165,3 +165,70 @@ async def test_a_result_still_lands_once_the_discussion_is_over() -> None:
     assert said[-1].content.body.startswith("Result of the task")
     assert said[-1].type == EventType.MESSAGE
     await kit.close()
+
+
+async def test_a_result_back_once_over_waits_for_the_last_turn() -> None:
+    kit = RoomKit()
+    comms = MockAIProvider(ai_responses=_starts_task("On it."))
+    sre = _Paced([AIResponse(content="sre here")], [0.8])
+    helper = _Paced([AIResponse(content="Findings.")], [0.4])
+    await _room(kit, comms, sre, helper, hand_back="post", max_turns=2)
+
+    await _say(kit, "@comms please go through all the support tickets")
+    await _until_said(kit, 1)
+    await _say(kit, "@sre quick one")
+    said = await _until_said(kit, 3)
+
+    assert [who for who, _ in _lines(said)] == ["comms", "sre", "comms"]
+    assert said[2].content.body.startswith("Result of the task")
+    await kit.close()
+
+
+async def test_results_held_when_another_process_uninstalls_are_posted() -> None:
+    kit = RoomKit()
+    comms = MockAIProvider(ai_responses=_starts_task("On it."))
+    sre = _Paced([AIResponse(content="sre here")], [5.0])
+    # The result comes back while sre speaks, and waits behind its turn.
+    helper = _Paced([AIResponse(content="Findings.")], [0.3])
+    await _room(kit, comms, sre, helper, hand_back="post")
+
+    await _say(kit, "@comms please go through all the support tickets")
+    await _until_said(kit, 1)
+    await _say(kit, "@sre quick one")
+    discussion = kit._discussions["r1"]
+    async with asyncio.timeout(5):
+        while not discussion.instructions:  # the result, queued behind sre's turn
+            await asyncio.sleep(0.01)
+    await kit._forget_discussion("r1", discussion)
+    said = await _until_said(kit, 2)
+
+    posted = [e for e in said if e.content.body.startswith("Result of the task")]
+    assert len(posted) == 1
+    await asyncio.sleep(0.2)
+    assert len([e for e in await _timeline(kit) if e.id == posted[0].id]) == 1
+    await kit.close()
+
+
+async def test_a_result_being_posted_when_the_discussion_stops_is_still_posted() -> None:
+    kit = RoomKit()
+    comms = MockAIProvider(ai_responses=_starts_task("On it."))
+    helper = MockAIProvider(ai_responses=[AIResponse(content="Findings.")])
+    await _room(kit, comms, _provider("sre here"), helper, hand_back="post")
+    send_event = kit.send_event
+
+    async def slow(*args: Any, **kwargs: Any) -> Any:
+        if (kwargs.get("metadata") or {}).get("task_id"):
+            await asyncio.sleep(0.3)
+        return await send_event(*args, **kwargs)
+
+    kit.send_event = slow  # type: ignore[method-assign]
+    await _say(kit, "@comms please go through all the support tickets")
+    discussion = kit._discussions["r1"]
+    async with asyncio.timeout(5):
+        while discussion.driver is None or discussion.driver.posting is None:
+            await asyncio.sleep(0.005)
+    await kit._uninstall_discussion("r1")
+    said = await _until_said(kit, 2)
+
+    assert said[-1].content.body.startswith("Result of the task")
+    await kit.close()

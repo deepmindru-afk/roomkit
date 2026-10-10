@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit._text import quoted
 from roomkit.channels._discussion_turn import issue_mark, retire_mark
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT, chain_depth_exceeded, unanswered
+from roomkit.core.task_utils import hold_task
 from roomkit.models.enums import ChannelType, EventStatus, RoomStatus
 from roomkit.models.event import TextContent
 from roomkit.tasks.posting import send_posted
@@ -79,6 +80,11 @@ class TurnDriver:
     def speaking(self) -> str | None:
         """The agent whose turn this process runs, if any."""
         return self._turn.entry.agent if self._turn is not None else None
+
+    @property
+    def posting(self) -> RoomEvent | None:
+        """The task's result the turn running posts, if it is a post turn."""
+        return self._turn.posted if self._turn is not None else None
 
     def start(self) -> None:
         # A context of its own: the room lock is reentrant per context, and the
@@ -367,15 +373,17 @@ class TurnDriver:
         the agent's message, with no generation, off the room lock."""
         room = self._room
         turn.started = True
+        # Held by the kit, apart from the driver: a stop while it commits does
+        # not lose the result (a closing kit cuts it); a failure is logged there.
+        posting = (
+            hold_task(room.kit, send_posted(room.kit, turn.posted), context=contextvars.Context())
+            if turn.posted is not None
+            else None
+        )
         try:
-            if turn.posted is not None:
-                await send_posted(room.kit, turn.posted)
-        except Exception:
-            logger.exception(
-                "The result %s was to post in room %s was not posted",
-                turn.entry.agent,
-                room.room_id,
-            )
+            if posting is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(posting)
         finally:
             self._turn = None
             await self._ended(turn)
@@ -428,6 +436,9 @@ class TurnDriver:
         await _abandon(turn, "discussion_stopped")
         retire_mark(turn.mark)
         self._turn = None
+        if turn.posted is not None:
+            # A result its turn never posted: posted all the same (rule 19).
+            self._room.post_later(turn.posted)
         await self._ended(turn)
 
     # -- Stopping, waiting, ending --

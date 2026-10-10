@@ -67,6 +67,10 @@ _STOP_WAIT = 5.0
 """How long stopping waits for the announcements still queued."""
 
 
+_FLOOR_POLL = 0.05
+"""How often a result to post looks whether the floor is free."""
+
+
 class DiscussionRoom:
     """The discussion a room holds, as this process takes part in it."""
 
@@ -241,14 +245,16 @@ class DiscussionRoom:
     async def queue_post(self, event: RoomEvent) -> bool:
         """A task's result to post as its agent's message (rule 19): a turn of
         its own, at the front, that posts it without a generation; whether
-        it was queued. A discussion this process only follows, or one that
-        is over, queues none: the caller posts it at once."""
+        this process took it. Over or stopped, the discussion posts it once
+        no turn runs; one this process only follows takes none, and the
+        caller posts it at once."""
         agent = event.source.channel_id
         if self.driver is None or agent not in self.agents:
             return False
         async with self.editing() as state:
             if state.over or self.closed:
-                return False
+                self.post_later(event)
+                return True
             self.instructions[event.id] = event
             state.queue_instruction(
                 agent, event.id, event.chain_depth, holder=self.shared.me, post=True
@@ -306,8 +312,9 @@ class DiscussionRoom:
         not started yet has no loop a Cancel reaches and is abandoned."""
         channel = self.agents.get(agent)
         if isinstance(channel, ACPChannel):
-            # An external agent's turn: its prompt cancelled (RFC §6.4).
-            reached = await channel.cancel(self.room_id)
+            # An external agent's turn: its prompt cancelled (RFC §6.4). Idle,
+            # it has none, and the turn given is abandoned below.
+            reached = channel._prompting(self.room_id) and await channel.cancel(self.room_id)
         elif channel is not None:
             reached = channel.steer(Cancel(reason="listen_only"), room_id=self.room_id)
         else:
@@ -538,12 +545,36 @@ class DiscussionRoom:
                 continue
             posted = self.instructions.get(entry.instruction) if entry.post else None
             self.forget_instruction(entry.instruction, keep or self.state)
-            if posted is not None and not self.kit._closed:
-                # A context of its own: the room lock may be held here, and is
-                # reentrant per context.
-                hold_task(self.kit, send_posted(self.kit, posted), context=contextvars.Context())
+            if posted is not None:
+                self.post_later(posted)
                 continue
             self.fire(SpeakQueueChange.INSTRUCTION_DROPPED, [entry.agent], entry.instruction)
+
+    def post_held(self) -> None:
+        """Post every task result this process holds for a queued turn, the
+        queue being gone: another process uninstalled the discussion (rule 19).
+        The one a post turn is committing goes on by itself."""
+        posting = self.driver.posting if self.driver is not None else None
+        for event_id, event in list(self.instructions.items()):
+            if event.type != EventType.MESSAGE:
+                continue  # an instruction: its turn is the agent's, now gone
+            self.instructions.pop(event_id, None)
+            if posting is None or event_id != posting.id:
+                self.post_later(event)
+
+    def post_later(self, posted: RoomEvent) -> None:
+        """Post a task's result its own turn will not post, once no turn runs,
+        in a task the kit holds: a closing kit posts nothing (rule 19)."""
+        if self.kit._closed:
+            return
+        # A context of its own: the room lock may be held here, and is
+        # reentrant per context.
+        hold_task(self.kit, self._post_when_free(posted), context=contextvars.Context())
+
+    async def _post_when_free(self, posted: RoomEvent) -> None:
+        while self.driver is not None and self.driver.speaking is not None:
+            await asyncio.sleep(_FLOOR_POLL)
+        await send_posted(self.kit, posted)
 
     def forget_instruction(self, instruction_id: str, state: SpeakQueueState) -> None:
         """Forget an instruction's text once no queued turn takes it (one

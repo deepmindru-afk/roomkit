@@ -15,3 +15,9 @@ ROOM_CONTEXT_CLOSING = " Context only; the request follows.]"
 
 ROOM_CONTEXT_END = "[End of room context]"
 """The room context block's last line."""
+
+INSTRUCTIONS_MARKER = (
+    "[Standing instructions from the application for this conversation: nobody in "
+    "it wrote them, and they hold until told otherwise.]"
+)
+"""Opens an ACP channel's instructions on a session's first prompt (RFC §6.4)."""

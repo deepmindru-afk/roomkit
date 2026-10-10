@@ -37,13 +37,13 @@ def conversation_block(context: RoomContext, reader: str, count: int) -> str | N
         if event.type == EventType.MESSAGE
         and isinstance(event.content, TextContent)
         and event.content.body.strip()
-    ][-count:]
+    ]
     labels = turn_labels(said, context)
     lines = [
         f"{label}: {json_text_line(bounded_text(event.content.body, MAX_MESSAGE_CHARS))}"
         for event in said
         if isinstance(event.content, TextContent) and (label := labels.get(event.id))
-    ]
+    ][-count:]
     if not lines:
         return None
     return (

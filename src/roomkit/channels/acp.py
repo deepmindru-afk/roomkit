@@ -461,6 +461,11 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
             response_metadata=metadata,
         )
 
+    def _prompting(self, room_id: str) -> bool:
+        """Whether a turn of *room_id* is running here, its prompt sent or
+        being rebuilt: what a cancellation reaches."""
+        return any(turn.room_id == room_id for turn in self._turns.values())
+
     def session_id(self, room_id: str) -> str | None:
         """Return the process-local ACP session identifier for a Room."""
         return self._sessions.get(room_id)

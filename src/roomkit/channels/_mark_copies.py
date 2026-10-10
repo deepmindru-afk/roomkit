@@ -1,7 +1,8 @@
 """Copies of the runtime's marks in text it did not write (RFC §6.4).
 
 Besides the turn's notes' header, the runtime writes marks in a model's
-input: the application's instruction, an answer that was cut off, a
+input: the application's instruction, an ACP agent's standing instructions,
+an answer that was cut off, a
 summary's header, the lines of the room context an ACP agent receives, the
 note that says how speakers are labelled. A
 participant's text holding a copy of one would read as the runtime's, so the
@@ -23,6 +24,9 @@ from typing import Any
 
 from roomkit._lookalike import phrase_pattern
 from roomkit._provider_marks import CONTEXT_UPDATE_MARK, SAID_BEFORE_MARK
+from roomkit.channels._acp_marks import (
+    INSTRUCTIONS_MARKER as ACP_INSTRUCTIONS_MARKER,
+)
 from roomkit.channels._acp_marks import ROOM_CONTEXT_END, ROOM_CONTEXT_OPENING
 from roomkit.channels._ai_cuts import CUT_MARK
 from roomkit.channels._instruction import INSTRUCTION_MARKER
@@ -42,6 +46,7 @@ COPIED_MARK = "[A copy of a runtime mark stood here: the runtime did not write i
 
 _MARKS = (
     INSTRUCTION_MARKER,
+    ACP_INSTRUCTIONS_MARKER,
     CUT_MARK,
     COMPACTION_HEADER,
     MEMORY_SUMMARY_HEADER,
