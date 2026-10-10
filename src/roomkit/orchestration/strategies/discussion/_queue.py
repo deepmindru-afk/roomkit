@@ -61,6 +61,9 @@ class Entry(BaseModel):
     """The lease was handed to that process for this turn once."""
     regenerate: bool = False
     """The turn regenerates the answer to the event it was asked by."""
+    post: bool = False
+    """The turn posts its instruction slot's event, a task's result, as the
+    agent's message, without a generation (rule 19)."""
     depth_recorded: bool = False
 
     @property
@@ -187,16 +190,24 @@ class SpeakQueueState(BaseModel):
             self.ask(agent, ask, front=True, seq=pending.seq)
 
     def queue_instruction(
-        self, agent: str, instruction_id: str, depth: int, *, holder: str | None = None
+        self,
+        agent: str,
+        instruction_id: str,
+        depth: int,
+        *,
+        holder: str | None = None,
+        post: bool = False,
     ) -> None:
         """An instruction addressed to *agent*: a turn of its own, at the front,
-        taking the instruction as its input, whose text *holder* keeps."""
+        taking the instruction as its input, whose text *holder* keeps; with
+        *post*, a task's result the turn posts as the agent's message."""
         entry = Entry(
             agent=agent,
             front=True,
             seq=self._next_seq(),
             instruction=instruction_id,
             holder=holder,
+            post=post,
         )
         entry.add(Ask(event_id=instruction_id, depth=depth, asker=""))
         self.entries.append(entry)

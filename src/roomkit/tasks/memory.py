@@ -156,7 +156,7 @@ class InMemoryTaskRunner(TaskRunner):
             from roomkit.core.mixins.delegation import run_agent_in_child_room
 
             agent_response = await run_agent_in_child_room(
-                kit, task.child_room_id, task.task, turns=turns
+                kit, task.child_room_id, task.description, turns=turns
             )
         except Exception as exc:
             log_failure(logger, exc, f"Task {task.id}")

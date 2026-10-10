@@ -21,10 +21,12 @@ from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.hooks import HookRegistration
+from roomkit.core.task_utils import hold_task
 from roomkit.models.enums import EventStatus, EventType, HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.hook import HookResult
 from roomkit.models.steering import Cancel
+from roomkit.tasks.posting import send_posted
 
 from ._config import DiscussionConfig
 from ._driver import TurnDriver
@@ -234,6 +236,25 @@ class DiscussionRoom:
         if agents:
             self.fire(SpeakQueueChange.QUEUED, agents, event.id)
             self.wake()
+
+    async def queue_post(self, event: RoomEvent) -> bool:
+        """A task's result to post as its agent's message (rule 19): a turn of
+        its own, at the front, that posts it without a generation; whether
+        it was queued. A discussion this process only follows, or one that
+        is over, queues none: the caller posts it at once."""
+        agent = event.source.channel_id
+        if self.driver is None or agent not in self.agents:
+            return False
+        async with self.editing() as state:
+            if state.over or self.closed:
+                return False
+            self.instructions[event.id] = event
+            state.queue_instruction(
+                agent, event.id, event.chain_depth, holder=self.shared.me, post=True
+            )
+        self.fire(SpeakQueueChange.QUEUED, [agent], event.id)
+        self.wake()
+        return True
 
     async def queue_regeneration(self, trigger: RoomEvent, agents: Sequence[str]) -> list[str]:
         """A regenerated answer to *trigger*: a turn of its own, at the front,
@@ -503,11 +524,19 @@ class DiscussionRoom:
     def drop_instructions(
         self, dropped: Sequence[Entry], *, keep: SpeakQueueState | None = None
     ) -> None:
-        """Forget the text of instruction turns no longer queued, and report them."""
+        """Forget the text of instruction turns no longer queued, and report
+        them. A task's result they were to post is posted at once: the task
+        outlives the discussion (rule 19)."""
         for entry in dropped:
             if entry.instruction is None:
                 continue
+            posted = self.instructions.get(entry.instruction) if entry.post else None
             self.forget_instruction(entry.instruction, keep or self.state)
+            if posted is not None and not self.kit._closed:
+                # A context of its own: the room lock may be held here, and is
+                # reentrant per context.
+                hold_task(self.kit, send_posted(self.kit, posted), context=contextvars.Context())
+                continue
             self.fire(SpeakQueueChange.INSTRUCTION_DROPPED, [entry.agent], entry.instruction)
 
     def forget_instruction(self, instruction_id: str, state: SpeakQueueState) -> None:

@@ -43,6 +43,7 @@ from roomkit.models.enums import (
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.response_metadata import TurnEntries
 from roomkit.tasks._child_status import record_task_end
+from roomkit.tasks.brief import conversation_block, worker_description
 from roomkit.tasks.handback import CALLER_HANDS_BACK, bounded, hand_back, result_text
 from roomkit.tasks.models import (
     DelegatedTask,
@@ -51,6 +52,7 @@ from roomkit.tasks.models import (
     finished_task_fields,
     task_work,
 )
+from roomkit.tasks.posting import HAND_BACKS, post_result, posted_text
 from roomkit.tasks.status import post_task_ended, post_task_pending, room_task_lines
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.tools.context import _current_turn_chain_depth
@@ -239,6 +241,18 @@ def task_name(task: str) -> str:
     return bounded_text(one_line(task), _TASK_NAME_CHARS)
 
 
+def _hand_back_metadata(result: DelegatedTaskResult, task: str) -> dict[str, Any]:
+    """The task a hand-back carries, relayed or posted, so a hook tells a task's
+    result from any other event and names the task without reading its text
+    (RFC §23.3 step 8)."""
+    return {
+        "task_id": result.task_id,
+        "agent_id": result.agent_id,
+        "task_status": str(result.status),
+        "task": task_name(task),
+    }
+
+
 def _delegation_result_text(result: DelegatedTaskResult, task: str = "") -> str:
     """What the notified agent receives of a finished background delegation: its
     outcome, what was asked (*task*, so a result back after the conversation moved
@@ -303,6 +317,9 @@ class DelegationMixin(HelpersMixin):
         max_result_retries: int = 3,
         result_tool: ResultTool | None = None,
         post_status: bool = True,
+        brief: str | None = None,
+        conversation: int = 0,
+        hand_back: str = "relay",
     ) -> DelegatedTask:
         """Delegate a task to an agent in a child room.
 
@@ -313,7 +330,9 @@ class DelegationMixin(HelpersMixin):
         Args:
             room_id: Parent room ID.
             agent_id: Channel ID of the agent to run the task.
-            task: Description of what the agent should do.
+            task: What was asked: the agent reads it unless *brief* is given,
+                and a hand-back, the StatusBus and a turn's notes name the
+                task by it (RFC §23.3 step 4).
             wait: If ``True``, run the agent inline and return a
                 pre-completed :class:`DelegatedTask`.  If ``False``
                 (default), submit as a background task.
@@ -336,6 +355,18 @@ class DelegationMixin(HelpersMixin):
                 ``pending`` once announced, then ``completed`` or ``failed``.
                 ``False`` for a caller that posts its tasks there itself (an
                 orchestration strategy's worker run), so none shows twice.
+            brief: What the agent is told instead of *task*, when it says
+                more (how to work, what to report); it never reaches the
+                parent room.
+            conversation: How many of the parent room's last messages the
+                agent is handed, those the notified channel may read, quoted
+                as data (0: none). Its child room starts empty.
+            hand_back: How a background task's result reaches the room:
+                ``"relay"``, the notified channel is told it (step 8), or
+                ``"post"``, it is posted as it is, as a message of the notified
+                agent, without a turn of its model. ``"post"`` needs *notify*
+                (or *agent_id*) to name an intelligence channel attached to
+                the room, and a background task.
 
         Returns:
             A :class:`DelegatedTask` handle. When *wait* is ``True``,
@@ -345,6 +376,8 @@ class DelegationMixin(HelpersMixin):
         Raises:
             RoomNotFoundError: If the parent room doesn't exist.
             ChannelNotRegisteredError: If the agent channel isn't registered.
+            ValueError: An unknown *hand_back*, a ``"post"`` the notified
+                channel cannot take, or a negative *conversation*.
         """
         from uuid import uuid4
 
@@ -356,6 +389,11 @@ class DelegationMixin(HelpersMixin):
         parent_room = await self.get_room(room_id)
         if agent_id not in self._channels:
             raise ChannelNotRegisteredError(f"Agent channel '{agent_id}' not registered")
+        notify_channel = notify or agent_id
+        await self._check_hand_back(room_id, hand_back, notify_channel, wait=wait)
+        description = worker_description(
+            task, brief, await self._room_conversation(room_id, notify_channel, conversation)
+        )
 
         child_room_id = f"{room_id}::task-{uuid4().hex[:12]}"
         task_id = f"task-{uuid4().hex[:12]}"
@@ -365,6 +403,9 @@ class DelegationMixin(HelpersMixin):
             parent_room_id=room_id,
             agent_id=agent_id,
             task=task,
+            brief=brief,
+            description=description,
+            hand_back=hand_back,
         )
         handle._post_status = post_status
         telemetry = getattr(self, "_telemetry", None) or NoopTelemetryProvider()
@@ -418,6 +459,41 @@ class DelegationMixin(HelpersMixin):
                 )
                 await shielded(self._end_unstarted(handle, ended, on_complete, span, announced))
             raise
+
+    async def _check_hand_back(
+        self, room_id: str, hand_back: str, notify_channel: str, *, wait: bool
+    ) -> None:
+        """Refuse a *hand_back* the delegation cannot keep (RFC §23.3 step 8)."""
+        if hand_back not in HAND_BACKS:
+            raise ValueError(f"hand_back must be one of {HAND_BACKS}, not {hand_back!r}")
+        if hand_back != "post":
+            return
+        if wait:
+            raise ValueError("hand_back='post' is for a background task: an inline one returns")
+        channel = self._channels.get(notify_channel)
+        binding = await self._store.get_binding(room_id, notify_channel)
+        if (
+            channel is None
+            or channel.category != ChannelCategory.INTELLIGENCE
+            or binding is None
+            or binding.category != ChannelCategory.INTELLIGENCE
+        ):
+            raise ValueError(
+                f"hand_back='post' posts as {notify_channel!r}, which must be an "
+                f"intelligence channel attached to room {room_id!r}"
+            )
+
+    async def _room_conversation(self, room_id: str, reader: str, count: int) -> str | None:
+        """The parent room's last *count* messages *reader* may read, set
+        apart as data for the worker (RFC §23.3 step 4)."""
+        if count < 0:
+            raise ValueError("conversation must be 0 or more")
+        if count == 0:
+            return None
+        context = await self._build_context(
+            room_id, recent_limit=max(4 * count, 50), reads_history=True
+        )
+        return conversation_block(context, reader, count)
 
     async def _end_unstarted(
         self,
@@ -643,7 +719,7 @@ class DelegationMixin(HelpersMixin):
             run_agent_in_child_room(
                 self,  # ty: ignore[invalid-argument-type]
                 handle.child_room_id,
-                handle.task,
+                handle.description,
                 require_structured_result=require_structured_result,
                 max_result_retries=max_result_retries,
                 result_tool=result_tool,
@@ -698,9 +774,12 @@ class DelegationMixin(HelpersMixin):
             if notify_channel != CALLER_HANDS_BACK and not self._cancelled_by_notified(
                 result, notify_channel
             ):
-                await self._hand_back_held(
-                    result, notify_channel, chain_depth, session_id, handle.task
-                )
+                if handle.hand_back == "post":
+                    await self._post_held(result, notify_channel, chain_depth, handle.task)
+                else:
+                    await self._hand_back_held(
+                        result, notify_channel, chain_depth, session_id, handle.task
+                    )
             if on_complete:
                 await on_complete(result)
 
@@ -803,6 +882,31 @@ class DelegationMixin(HelpersMixin):
                 "Result of task %s not handed back: the framework closed", result.task_id
             )
 
+    async def _post_held(
+        self, result: DelegatedTaskResult, agent_id: str, chain_depth: int, task: str
+    ) -> None:
+        """Post a background delegation's result as *agent_id*'s message
+        (``hand_back="post"``, RFC §23.3 step 8), in a task the kit holds, so
+        its ``close()`` cuts it as it cuts a relayed hand-back."""
+        text = posted_text(result, task)
+        if text is None:
+            return
+        post = post_result(
+            self,  # ty: ignore[invalid-argument-type]
+            result.parent_room_id,
+            agent_id,
+            text,
+            chain_depth=chain_depth,
+            metadata=_hand_back_metadata(result, task),
+        )
+        try:
+            if await await_interruptible(hold_task(self, post)):
+                _tasks_logger.info(
+                    "Result of task %s not posted: the framework closed", result.task_id
+                )
+        except Exception:
+            _tasks_logger.exception("Posting failed for task %s", result.task_id)
+
     async def _deliver_delegation_result(
         self,
         result: DelegatedTaskResult,
@@ -832,12 +936,7 @@ class DelegationMixin(HelpersMixin):
                 _delegation_result_text(result, task),
                 chain_depth,
                 session_id=session_id,
-                metadata={
-                    "task_id": result.task_id,
-                    "agent_id": result.agent_id,
-                    "task_status": str(result.status),
-                    "task": task_name(task),
-                },
+                metadata=_hand_back_metadata(result, task),
             )
         except Exception:
             _tasks_logger.exception("Delivery failed for task %s", result.task_id)

@@ -53,12 +53,25 @@ class DelegatedTask:
         parent_room_id: str,
         agent_id: str,
         task: str,
+        brief: str | None = None,
+        description: str | None = None,
+        hand_back: str = "relay",
     ) -> None:
         self.id = id
         self.child_room_id = child_room_id
         self.parent_room_id = parent_room_id
         self.agent_id = agent_id
         self.task = task
+        """What was asked: the label a hand-back, the StatusBus and a turn's
+        notes name the task by (RFC §23.3 step 4)."""
+        self.brief = brief
+        """What the worker is told, when it says more than the task."""
+        self.description = description or brief or task
+        """What the worker reads: the brief, else the task, with the room's
+        conversation when the delegation hands it over."""
+        self.hand_back = hand_back
+        """How the result reaches the room: ``relay`` (the notified agent says
+        it in a turn of its own) or ``post`` (posted as it is, as its message)."""
         self.status: TaskStatus = TaskStatus.PENDING
         self.result: DelegatedTaskResult | None = None
         self._done: asyncio.Event | None = None

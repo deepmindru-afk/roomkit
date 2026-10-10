@@ -106,6 +106,12 @@ class DiscussionMixin(HelpersMixin):
         """
         await self._discussion(room_id, organization_id).talk_again(list(channel_ids))
 
+    async def _queue_discussion_post(self, room_id: str, event: RoomEvent) -> bool:
+        """Queue a task's result to post, *event*, in the discussion *room_id*
+        holds (RFC §19.7.5 rule 19); whether it was queued."""
+        discussion = self._discussions.get(room_id)
+        return discussion is not None and await discussion.queue_post(event)
+
     def _holds_discussion(self, room_id: str | None) -> bool:
         """Whether *room_id* (any room, for None) holds a discussion."""
         return bool(self._discussions) if room_id is None else room_id in self._discussions

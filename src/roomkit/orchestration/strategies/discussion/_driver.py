@@ -24,6 +24,7 @@ from roomkit.channels._discussion_turn import issue_mark, retire_mark
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT, chain_depth_exceeded, unanswered
 from roomkit.models.enums import ChannelType, EventStatus, RoomStatus
 from roomkit.models.event import TextContent
+from roomkit.tasks.posting import send_posted
 
 from ._dispatching import Dispatcher
 from ._notes import AgentLine, TurnKind, turn_notes
@@ -53,10 +54,13 @@ _RETRY_MAX = 30.0
 @dataclass
 class _Turn:
     entry: Entry
-    cascade: DeliveryCascade
+    cascade: DeliveryCascade | None
+    """The turn's run in the room's lane; None for a posted result's turn."""
     mark: dict[str, Any]
     started: bool = False
     cut: bool = False
+    posted: RoomEvent | None = None
+    """A task's result the turn posts as the agent's message (rule 19)."""
 
 
 class TurnDriver:
@@ -241,6 +245,8 @@ class TurnDriver:
         answered = await self._answered(entry)
         if answered is None:
             return self._not_given(state, entry)
+        if entry.post:
+            return self._handed(state, _Turn(entry, None, {}, posted=answered), answered.id)
         mark = issue_mark([self._notes(entry, answered, context)])
         try:
             cascade = await room.kit._plan_discussion_turn(
@@ -253,13 +259,18 @@ class TurnDriver:
             retire_mark(mark)
             return self._not_given(state, entry)
         # Handed to the lane: from here the turn is the driver's to finish.
-        turn = self._turn = _Turn(entry, cascade, mark)
-        state.take(entry)
+        return self._handed(state, _Turn(entry, cascade, mark), answered.id)
+
+    def _handed(self, state: SpeakQueueState, turn: _Turn, answered_id: str) -> _Turn:
+        """*turn* given: taken from the queue, the driver's to finish."""
+        room = self._room
+        self._turn = turn
+        state.take(turn.entry)
         room.turn_rows = []
         if self._max_turns_given(state):
             # Over once the last turn is given; that turn ends as it would.
             self._end(state)
-        room.fire(SpeakQueueChange.TURN_GIVEN, [entry.agent], answered.id)
+        room.fire(SpeakQueueChange.TURN_GIVEN, [turn.entry.agent], answered_id)
         return turn
 
     def _not_given(self, state: SpeakQueueState, entry: Entry) -> None:
@@ -331,6 +342,9 @@ class TurnDriver:
     # -- Running it --
 
     async def _run(self, turn: _Turn) -> None:
+        if turn.cascade is None:
+            await self._post(turn)
+            return
         room = self._room
         turn.started = True
         watch = asyncio.get_running_loop().create_task(self._watch(turn))
@@ -345,6 +359,24 @@ class TurnDriver:
             watch.cancel()
             await asyncio.wait([watch])
             retire_mark(turn.mark)
+            self._turn = None
+            await self._ended(turn)
+
+    async def _post(self, turn: _Turn) -> None:
+        """A posted result's turn (rule 19): the task's result committed as
+        the agent's message, with no generation, off the room lock."""
+        room = self._room
+        turn.started = True
+        try:
+            if turn.posted is not None:
+                await send_posted(room.kit, turn.posted)
+        except Exception:
+            logger.exception(
+                "The result %s was to post in room %s was not posted",
+                turn.entry.agent,
+                room.room_id,
+            )
+        finally:
             self._turn = None
             await self._ended(turn)
 
@@ -375,9 +407,12 @@ class TurnDriver:
                 state.ended(agent)
                 if turn.entry.instruction is not None:
                     room.forget_instruction(turn.entry.instruction, state)
-                rows = {e.id: e for e in (*room.turn_rows, *turn.cascade.response_events)}
+                responses = turn.cascade.response_events if turn.cascade is not None else ()
+                rows = {e.id: e for e in (*room.turn_rows, *responses)}
                 room.turn_rows = []
-                if not state.over:
+                # A posted result's names ask no one: its worker wrote it
+                # outside the room (rule 19).
+                if not state.over and turn.posted is None:
                     context = await room.kit._build_context(room.room_id)
                     for event in rows.values():
                         queued.extend(room.queue_turn_names(state, agent, event, context))
@@ -454,6 +489,8 @@ class TurnDriver:
 
 
 async def _abandon(turn: _Turn, reason: str) -> None:
+    if turn.cascade is None:
+        return
     try:
         await turn.cascade.abandon(reason)
     except Exception:
