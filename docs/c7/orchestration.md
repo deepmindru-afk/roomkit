@@ -86,7 +86,7 @@ one at a time; each turn reads the room as it is when it starts.
 from roomkit import Discussion
 
 room = await kit.create_room(orchestration=Discussion(
-    agents=[investigator, dev, sre],   # AI channels, Agents among them
+    agents=[investigator, dev, sre],   # AI channels (Agents among them) and ACPChannel agents
     everyone=["investigator", "dev", "sre"],  # a message naming nobody asks these, in order
     people=["oncall"],                 # names agents address people by
 ))
@@ -138,6 +138,38 @@ room = await kit.create_room(orchestration=Discussion(
   over once it expires. Example: `examples/discussion_two_workers.py`.
   Text only in this version.
 
+**Talking and working.** A turn talks; long work runs as a task, off the
+floor (rule 19). An agent given the background tool starts it, says it is
+on it and ends its turn; a question asked meanwhile is answered in its turn:
+
+```python
+kit.setup_background(comms)                       # comms does its own tasks
+kit.setup_background(dev, worker="dev-code", hand_back="post")
+task = await kit.start_task(room_id, "dev", "Go through every support ticket.")
+await kit.cancel_task(task.id)
+```
+
+- `setup_background(agent, worker=None, hand_back="relay")` gives an AI
+  channel the `work_in_background` tool; the task runs on its worker (itself,
+  another agent, an external agent) in a child room, handed the room's last
+  12 messages (`delegate(brief=..., conversation=12)`).
+- `start_task(room_id, agent_id, task, hand_back=None)` starts the same task
+  from the host, for any agent of the room, an `ACPChannel` included.
+- `hand_back="relay"`: the agent is told the result and says it in a turn of
+  its own, at the front of the queue. `"post"`: the result is posted as the
+  agent's message, as it is, with no generation; it waits at the front of the
+  queue for the turn under way to end, and its names ask no one.
+- Tasks run in parallel; each turn's notes list the room's tasks; a worker's
+  call of the tool is refused; a result that comes back once the discussion
+  is over or gone is posted at once (relayed: refused once over).
+  Example: `examples/discussion_background.py`.
+
+**External agents.** An `ACPChannel` (Claude Code, Codex) is an agent like
+any other: its `name`, `role` and `description` present it, `instructions`
+go once per session, each turn's prompt ends with the turn's notes, and
+`listen_only` on it while it speaks cancels its prompt. Its tools are its
+own. Example: `examples/discussion_acp.py`.
+
 A **dispatch policy** decides who takes a person's message that names no
 agent, in place of giving it to the agents that asked that person, else to
 every agent of `everyone` (rule 18). In a room of specialists, most of those
@@ -181,7 +213,11 @@ A full-screen terminal for such a room (`pip install roomkit[console]`): the
 room on the left, the agents with their identity and live state on the right,
 the speak queue below, your input at the bottom. What you type goes into the
 room through the transport channel you name; `/listen @a`, `/talk @a`,
-`/help`, `/quit`, plus the host's own slash commands.
+`/help`, `/quit`, plus the host's own slash commands. With a WebSocket
+channel, the answer an agent is writing shows as it streams. When an agent
+has background work set up (or `tasks=True`), `/task @a ...`, `/tasks` and
+`/cancel <task>` start, list and stop the room's tasks, each agent's card
+shows its running tasks, and a posted result names the worker that wrote it.
 
 ```python
 from roomkit.console import DiscussionConsole
@@ -594,6 +630,12 @@ result = await kit.delegate(
     context={"product": "X"},
 )
 ```
+
+`task` is the label the result is named by; `brief=` is what the worker is
+told instead, when it says more; `conversation=N` hands the worker the room's
+last N messages the notified channel may read, quoted as data;
+`hand_back="post"` publishes the result as the notified agent's message,
+with no turn of its model, instead of relaying it (`"relay"`, the default).
 
 ## Memory Providers
 

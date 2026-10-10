@@ -182,6 +182,8 @@ CONSOLE=1 uv run python examples/<example>.py
 | `strategy_on_the_fly.py` | Strategies | A live room changes strategy: plain chat, then a Discussion that reads the history, then a Swarm (offline) |
 | `discussion_two_workers.py` | Discussion across processes | Two workers on one store: a worker that did not install the discussion follows it, one queue, one lease, a crash taken over (offline) |
 | `discussion_dispatch.py` | Discussion dispatch | Who takes a message that names nobody: every agent (32 turns, 26 silent) against a classifier's pick (8 turns, 2 silent); mock, Jev, OpenAI or Haiku |
+| `discussion_background.py` | Discussion tasks | Long work as a task, off the floor: a quick question waits 2.6 s behind the job without, is answered at once with; the result relayed or posted (offline) |
+| `discussion_acp.py` | Discussion with Claude Code | Claude Code over ACP as @dev in a discussion: answers in its turn, then a task in a session of its own while @sre answers; `--console` to lead it |
 | `discussion_group_chat.py` | Discussion | Agents and a person in one conversation: `@name` addressing, one agent at a time, waiting for a person (offline) |
 | `orchestration_pipeline.py` | Pipeline | Multi-agent pipeline: triage -> handler -> resolver |
 | `orchestration_pipeline_cli.py` | Pipeline CLI | Interactive pipeline triage |

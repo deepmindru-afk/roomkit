@@ -24,8 +24,17 @@ agent = ACPChannel(
     mcp_servers=None,                  # ACP MCP-server descriptors (SDK types)
     authentication_method=None,        # optional ACP auth method id
     external_tool_handler=None,        # permission policy; None = reject all
+    name=None, role=None, description=None,  # its identity, as an Agent's
+    instructions=None,                 # standing direction, sent once per session
 )
 ```
+
+`instructions` open the first prompt of each session the channel opens for a
+room (again after a session is opened again), as the application's block;
+they are not an `INSTRUCTION`, which directs one turn. In a `Discussion` an
+ACPChannel takes turns like an AI channel: the turn's notes close its prompt
+under the runtime's header (copies elsewhere replaced), and `listen_only`
+while it speaks cancels its prompt.
 
 `command` is an argument vector executed directly, **no shell**; a bare string, empty/non-string args, or non-absolute `cwd`/`additional_directories` raise `ValueError`. Exactly one of `command` / `transport` is required (neither or both → `ValueError`), and `env`/`inherit_env` next to a `transport` raise rather than being ignored — they configure the spawn. Class attrs: `channel_type = ChannelType.AI`, `category = ChannelCategory.INTELLIGENCE`, `direction = BIDIRECTIONAL`; capabilities TEXT + RICH. `handle_inbound()` raises `NotImplementedError` — the channel reacts to Room events via `on_event()`.
 

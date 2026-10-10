@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Long work runs as a task, off a discussion's floor (RMK-668, RFC §23.3,
+  §23.4, §19.7.5 rule 19). `kit.setup_background(agent, worker=None,
+  hand_back="relay")` gives an AI channel the `work_in_background` tool: it
+  starts the work as a task on its worker (itself, another agent, an external
+  agent over ACP), handed the room's last 12 messages, says it is on it and
+  ends its turn. `kit.start_task(room_id, agent_id, task, hand_back=None)`
+  starts the same task from the host, for any agent of the room. In a
+  discussion a question asked while a task runs is answered in its turn, and
+  the result comes back at the front of the queue. `delegate()` gains `brief`
+  (what the worker is told; `task` stays the label the result is named by),
+  `conversation` (the room's last messages the notified channel may read,
+  quoted as data) and `hand_back`: `"relay"`, the default, or `"post"`, the
+  result published as the notified agent's message with no turn of its model,
+  waiting at the front of a discussion's queue and asking no one. Live, a
+  quick question asked during a long job was answered in 3 to 6 s instead of
+  31 to 49 s. A custom `TaskRunner` gives the worker `task.description` (the
+  brief with the conversation), no longer `task.task`, the label. Examples:
+  `examples/discussion_background.py` (offline), `examples/discussion_acp.py`.
+- An external agent over ACP takes a discussion's turns like an AI channel
+  (RMK-670, RFC §6.4, §19.7.5): `Discussion(agents=[...])` accepts an
+  `ACPChannel`. `ACPChannel` takes `name`, `role` and `description`, its
+  identity as an Agent's, and `instructions`, the standing direction its
+  system prompt would give, sent once per session. A discussion's turn closes
+  its prompt with the turn's notes under the runtime's header (a copy of the
+  header elsewhere in the prompt is replaced), and `listen_only` while it
+  speaks cancels its prompt. Live, Claude Code answered as @dev, passed its
+  turn when it had nothing to add, and was cut within 6 s of a hold.
+- `DiscussionConsole` (RMK-671): with a WebSocket channel, the answer an agent
+  is writing shows as it streams, where the screen used to show nothing until
+  the message was complete. When an agent of the room has background work set
+  up (or `tasks=True`), `/task @agent ...`, `/tasks` and `/cancel <task>`
+  start, list and stop the room's tasks, each agent's card shows its running
+  tasks, and a posted result names the worker that wrote it. An ACPChannel's
+  card reads "external agent (ACP)".
+
 - Identity verification (RMK-660, RFC §11.7; guide: Identity Verification):
   identification says whose an address is, verification that the person writing
   has proven it. `kit.request_verification(identity_id, room_id=, channel_id=,
@@ -166,6 +201,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `DiscussionConsole` no longer shows ">>> @sre is asking @@ops" when the
+  person's label carries its `@` (RMK-671).
 - WhatsApp Personal answers a group in the group and names a hidden-number
   sender by their phone (RMK-653): a group message's room was found by its
   sender and answered them privately; the parser now names the group

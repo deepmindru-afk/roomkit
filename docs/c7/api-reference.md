@@ -351,6 +351,8 @@ kit = RoomKit(
 | Method | Description |
 |--------|-------------|
 | `delegate(room_id, agent_id, task, ...)` | Delegate to background agent |
+| `setup_background(agent, worker?, hand_back?)` | Give an agent the `work_in_background` tool: its long work runs as a task (RFC §23.4) |
+| `await start_task(room_id, agent_id, task, hand_back?)` | Start an agent's background task from the host, for any agent of the room |
 | `send_greeting(room_id, channel_id?, greeting?, ...)` | Send greeting |
 | `send_event(room_id, channel_id, content, ...)` | Send event directly |
 | `commit_event(room_id, event, organization_id?)` | Commit a record no member receives, outside the pipeline: its index counted delivered, no hook, no broadcast (RFC §10.5) |
