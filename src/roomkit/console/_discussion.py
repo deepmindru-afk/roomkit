@@ -351,16 +351,15 @@ class DiscussionConsole:
             self._tool_started_task(event)
 
     def _tool_started_task(self, event: ToolCallEvent) -> None:
-        """The task a ``work_in_background`` call started is the agent's it
-        names (the caller by default), whatever channel does the work."""
+        """The task a ``work_in_background`` call started is the calling
+        agent's, whatever channel does the work."""
         try:
             answer = json.loads(str(event.result))
         except (TypeError, ValueError):
             return
         task_id = answer.get("task_id") if isinstance(answer, dict) else None
         if isinstance(task_id, str):
-            agent = str(event.arguments.get("agent") or event.channel_id).removeprefix("@")
-            self.view.task_for(task_id, agent)
+            self.view.task_for(task_id, event.channel_id)
 
     async def _on_task_started(self, event: RoomEvent, context: RoomContext) -> None:
         meta = event.metadata or {}

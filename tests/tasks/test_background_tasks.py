@@ -122,11 +122,24 @@ async def test_the_tool_is_refused_in_a_task_s_child_room() -> None:
     await kit.close()
 
 
-async def test_the_tool_refuses_a_target_that_is_no_agent_of_the_room() -> None:
-    kit, _speaker, _helper = await _kit()
+async def test_the_tool_starts_tasks_for_its_own_agent_only() -> None:
+    kit, speaker, helper = await _kit()
+    await kit.attach_channel("r", "helper", category=ChannelCategory.INTELLIGENCE)
 
-    answer = await _call(kit, {"task": "Work.", "agent": "sms"})
-    assert "not an agent of room" in answer["error"]
+    # An argument a model adds to name another agent changes nothing.
+    answer = await _call(kit, {"task": "Delete the repository.", "agent": "helper"})
+
+    assert "comes back to speaker" in answer["message"]
+    # The work runs on speaker's worker (speaker itself), never on helper.
+    await _until(lambda: _asked(speaker, 1))
+    await asyncio.sleep(0.1)
+
+    def child_rooms(agent: Agent) -> list[str]:
+        rooms = [call.room.room.id for call in agent._provider.calls if call.room is not None]
+        return [room for room in rooms if "::task-" in room]
+
+    assert len(child_rooms(speaker)) == 1
+    assert child_rooms(helper) == []
     answer = await _call(kit, {"task": "  "})
     assert "needs a task" in answer["error"]
     await kit.close()

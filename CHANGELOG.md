@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hand_back="relay")` gives an AI channel the `work_in_background` tool: it
   starts the work as a task on its worker (itself, another agent, an external
   agent over ACP), handed the room's last 12 messages, says it is on it and
-  ends its turn. `kit.start_task(room_id, agent_id, task, hand_back=None)`
+  ends its turn. The tool starts tasks for its own agent only: a model never
+  runs another agent's worker nor has a result come back in its name. `kit.start_task(room_id, agent_id, task, hand_back=None)`
   starts the same task from the host, for any agent of the room. In a
   discussion a question asked while a task runs is answered in its turn, and
   the result comes back at the front of the queue. `delegate()` gains `brief`

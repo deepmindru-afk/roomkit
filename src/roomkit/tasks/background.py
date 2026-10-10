@@ -21,7 +21,7 @@ from roomkit._text import identifier
 from roomkit.models.enums import ChannelCategory
 from roomkit.providers.ai.base import AITool
 from roomkit.tasks.posting import HAND_BACKS
-from roomkit.tools.context import current_tool_call, current_tool_room
+from roomkit.tools.context import current_tool_room
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -48,13 +48,6 @@ BACKGROUND_TOOL_DEF = AITool(
             "task": {
                 "type": "string",
                 "description": "What to do and what to report, precisely.",
-            },
-            "agent": {
-                "type": "string",
-                "description": (
-                    "The agent of this conversation the work is for, by its id: "
-                    "yourself by default."
-                ),
             },
         },
         "required": ["task"],
@@ -136,24 +129,27 @@ _NESTED = (
 
 def background_tool_server(kit: RoomKit, agent_id: str) -> Any:
     """What serves *agent_id*'s ``work_in_background`` calls, in the room of
-    the call: ``(room_id, name, arguments)`` to the tool's answer."""
+    the call: ``(room_id, name, arguments)`` to the tool's answer.
+
+    The task is always *agent_id*'s own: a model never names another agent's
+    worker, which may hold more than it does (a workspace, its tools), nor
+    has a result handed back or posted in another agent's name. It asks that
+    agent by name instead; the host's ``start_task`` reaches any agent."""
 
     async def serve(room_id: str, _name: str, arguments: dict[str, Any]) -> str:
         room = current_tool_room()
         if room is not None and (room.metadata or {}).get("task_id"):
             return json.dumps({"error": _NESTED})
-        call = current_tool_call()
-        caller = call.channel_id if call is not None and call.channel_id else agent_id
-        target = str(arguments.get("agent") or caller).strip().removeprefix("@")
         task = str(arguments.get("task") or "").strip()
         try:
-            started = await kit.start_task(room_id, target, task)
+            started = await kit.start_task(room_id, agent_id, task)
         except ValueError as exc:
             return json.dumps({"error": str(exc)})
+        agent = identifier(agent_id, "agent")
         back = (
-            f"its result is posted as {identifier(target, 'agent')}'s message"
+            f"its result is posted as {agent}'s message"
             if started.hand_back == "post"
-            else f"its result comes back to {identifier(target, 'agent')} as a turn of its own"
+            else f"its result comes back to {agent} as a turn of its own"
         )
         return json.dumps(
             {
