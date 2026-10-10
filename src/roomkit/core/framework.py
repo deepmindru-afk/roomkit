@@ -47,6 +47,7 @@ from roomkit.core.inbound_router import DefaultInboundRoomRouter, InboundRoomRou
 from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.locks import InMemoryLockManager, RoomLockManager
 from roomkit.core.mixins import (
+    BackgroundMixin,
     ChannelOpsMixin,
     DelegationMixin,
     DeliverMixin,
@@ -98,6 +99,7 @@ from roomkit.realtime.memory import InMemoryRealtime
 from roomkit.sources.base import SourceProvider
 from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
+from roomkit.tasks.background import BackgroundSetup
 from roomkit.tasks.base import TaskRunner
 
 logger = logging.getLogger("roomkit.framework")
@@ -157,6 +159,7 @@ class RoomKit(
     RoomRecordingMixin,
     GreetingMixin,
     DelegationMixin,
+    BackgroundMixin,
     DeliverMixin,
     RealtimeOpsMixin,
     SourceOpsMixin,
@@ -400,6 +403,9 @@ class RoomKit(
         # The tasks a ``cancel_task`` call is cancelling, by the channel that
         # made it: that channel is not handed the cancellation back (RFC §23.4).
         self._task_cancelled_by: dict[str, str] = {}
+        # Each agent's background setup: its worker and how its results come
+        # back (RFC §23.4).
+        self._background_setups: dict[str, BackgroundSetup] = {}
         self._resource_leases: set[asyncio.Event] = set()
         self._resource_leases_sealed = False
         # Telemetry

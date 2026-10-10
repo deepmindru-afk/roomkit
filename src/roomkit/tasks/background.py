@@ -1,0 +1,169 @@
+"""Long work started as a task: a turn talks, the work runs apart (RFC §23.4).
+
+An agent given ``work_in_background`` starts long work (going through many
+records, files or traces, an analysis of several tool calls) as a task, says
+in a sentence that it is under way, and ends its turn; in a discussion the
+floor moves on while the work runs (RFC §19.7.5 rule 19). The task is a
+delegation (RFC §23.3): it runs on the agent's worker, the agent itself by
+default or any intelligence channel the host names, handed the room's last
+messages, and its result comes back to the agent, relayed or posted as the
+host set it up. The host starts the same task with ``kit.start_task``, and a
+person through whatever the host gives them.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from roomkit._text import identifier
+from roomkit.models.enums import ChannelCategory
+from roomkit.providers.ai.base import AITool
+from roomkit.tasks.posting import HAND_BACKS
+from roomkit.tools.context import current_tool_call, current_tool_room
+
+if TYPE_CHECKING:
+    from roomkit.core.framework import RoomKit
+    from roomkit.tasks.models import DelegatedTask
+
+BACKGROUND_TOOL = "work_in_background"
+
+BACKGROUND_CONVERSATION = 12
+"""How many of the room's last messages a background task is handed."""
+
+BACKGROUND_TOOL_DEF = AITool(
+    name=BACKGROUND_TOOL,
+    description=(
+        "Start long work as a background task, so the conversation goes on: going "
+        "through many records, logs, traces or files, or an analysis that takes several "
+        "tool calls. It runs away from the conversation, handed its last messages, and "
+        "its result comes back when it is done. After calling it, say in one short "
+        "sentence that the work is under way, and end your turn. A quick look you answer "
+        "now, without it."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "task": {
+                "type": "string",
+                "description": "What to do and what to report, precisely.",
+            },
+            "agent": {
+                "type": "string",
+                "description": (
+                    "The agent of this conversation the work is for, by its id: "
+                    "yourself by default."
+                ),
+            },
+        },
+        "required": ["task"],
+    },
+)
+
+
+@dataclass(frozen=True)
+class BackgroundSetup:
+    """How an agent's background tasks run: on *worker* (the agent itself
+    when None), their result relayed or posted (*hand_back*)."""
+
+    worker: str | None = None
+    hand_back: str = "relay"
+
+    def __post_init__(self) -> None:
+        if self.hand_back not in HAND_BACKS:
+            raise ValueError(f"hand_back must be one of {HAND_BACKS}, not {self.hand_back!r}")
+
+
+def worker_brief(task: str, agent_id: str, hand_back: str) -> str:
+    """What a background task's worker is told: the task, then how to work
+    and where its findings go."""
+    agent = identifier(agent_id, "agent")
+    where = (
+        f"posted to the conversation as it is, as @{agent}'s message, so write it for "
+        "the people there"
+        if hand_back == "post"
+        else f"handed back to @{agent}, who shares it in the conversation"
+    )
+    return (
+        f"{task}\n\n"
+        f"You are doing this task in the background for @{agent}, away from the "
+        "conversation: nobody there sees this work, and you address no one from here. "
+        "Do the work now with your tools, then end with what you found, in a few short "
+        f"lines: it is {where}."
+    )
+
+
+async def start_background_task(
+    kit: RoomKit,
+    room_id: str,
+    agent_id: str,
+    task: str,
+    *,
+    setup: BackgroundSetup,
+    hand_back: str | None = None,
+) -> DelegatedTask:
+    """Start *task* for *agent_id*, an agent of *room_id*, on its worker, as
+    *setup* says (*hand_back* overriding its own).
+
+    Raises:
+        ValueError: *agent_id* is no intelligence channel attached to the
+            room, *task* is blank, or *hand_back* is unknown.
+    """
+    if not task.strip():
+        raise ValueError("A background task needs a task")
+    channel = kit.get_channel(agent_id)
+    binding = await kit.store.get_binding(room_id, agent_id)
+    if channel is None or channel.category != ChannelCategory.INTELLIGENCE or binding is None:
+        raise ValueError(f"{agent_id!r} is not an agent of room {room_id!r}")
+    mode = hand_back or setup.hand_back
+    return await kit.delegate(
+        room_id,
+        setup.worker or agent_id,
+        task,
+        brief=worker_brief(task, agent_id, mode),
+        notify=agent_id,
+        conversation=BACKGROUND_CONVERSATION,
+        hand_back=mode,
+    )
+
+
+_NESTED = (
+    "You are already working on a task in the background: do the work now with your "
+    "tools and end with what you found. A task starts no task of its own."
+)
+
+
+def background_tool_server(kit: RoomKit, agent_id: str) -> Any:
+    """What serves *agent_id*'s ``work_in_background`` calls, in the room of
+    the call: ``(room_id, name, arguments)`` to the tool's answer."""
+
+    async def serve(room_id: str, _name: str, arguments: dict[str, Any]) -> str:
+        room = current_tool_room()
+        if room is not None and (room.metadata or {}).get("task_id"):
+            return json.dumps({"error": _NESTED})
+        call = current_tool_call()
+        caller = call.channel_id if call is not None and call.channel_id else agent_id
+        target = str(arguments.get("agent") or caller).strip().removeprefix("@")
+        task = str(arguments.get("task") or "").strip()
+        try:
+            started = await kit.start_task(room_id, target, task)
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        back = (
+            f"its result is posted as {identifier(target, 'agent')}'s message"
+            if started.hand_back == "post"
+            else f"its result comes back to {identifier(target, 'agent')} as a turn of its own"
+        )
+        return json.dumps(
+            {
+                "task_id": started.id,
+                "status": "started",
+                "message": (
+                    f"The work runs in the background and {back} when it is done. Say in "
+                    "one short sentence that it is under way, then end your turn."
+                ),
+            }
+        )
+
+    return serve

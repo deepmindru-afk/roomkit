@@ -1,5 +1,6 @@
 """Background task delegation via child rooms."""
 
+from roomkit.tasks.background import BACKGROUND_TOOL, BackgroundSetup
 from roomkit.tasks.base import OnCompleteCallback, TaskRunner
 from roomkit.tasks.cache import CompletedTaskCache
 from roomkit.tasks.delegate import (
@@ -20,6 +21,8 @@ from roomkit.tasks.status import (
 )
 
 __all__ = [
+    "BACKGROUND_TOOL",
+    "BackgroundSetup",
     "CANCEL_TASK_TOOL",
     "CancelTaskTool",
     "CompletedTaskCache",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from roomkit.core.mixins.background import BackgroundMixin
 from roomkit.core.mixins.channel_ops import ChannelOpsMixin
 from roomkit.core.mixins.delegation import DelegationMixin
 from roomkit.core.mixins.deliver import DeliverMixin
@@ -27,6 +28,7 @@ from roomkit.core.mixins.verification import VerificationMixin
 from roomkit.core.mixins.voice_ops import VoiceOpsMixin
 
 __all__ = [
+    "BackgroundMixin",
     "ChannelOpsMixin",
     "DelegationMixin",
     "DeliverMixin",
