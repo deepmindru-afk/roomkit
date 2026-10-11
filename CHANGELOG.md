@@ -228,6 +228,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An `ACPChannel` opens a room's session once, whoever asks for it first
+  (RMK-673). Two `set_config_option` calls during a standalone turn, or one
+  racing the first prompt after it, each opened a session for the room, and
+  the first one stayed open in the agent, unreachable. Openings now wait on a
+  per-room lock of their own, never on the turn lock a host call inside a
+  turn could not wait for, and `close_session` waits for an opening in flight.
+- `ACPChannel.cancel(room_id)` reaches a turn while its session is being
+  opened (RMK-673): the agent starting, `session/new`, the session's setup.
+  It returned `False` there, or sent `session/cancel` to a session not yet
+  prompted, and the turn then prompted anyway. The turn now ends without
+  prompting, marked `interrupted`, and a standalone session it had opened is
+  closed. A discussion's hold cuts such a turn too.
 - `DiscussionConsole` no longer shows ">>> @sre is asking @@ops" when the
   person's label carries its `@` (RMK-671).
 - WhatsApp Personal answers a group in the group and names a hidden-number
