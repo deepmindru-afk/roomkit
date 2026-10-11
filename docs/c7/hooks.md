@@ -199,6 +199,9 @@ are not fired by any built-in code.
 | `ON_IDENTITY_AMBIGUOUS` | SYNC | `(event, ctx) -> IdentityHookResult` | Multiple identity matches found |
 | `ON_IDENTITY_UNKNOWN` | SYNC | `(event, ctx) -> IdentityHookResult` | No identity match found |
 | `ON_PARTICIPANT_IDENTIFIED` | ASYNC | `(event, ctx) -> None` | Participant was successfully identified |
+| `ON_VERIFICATION_REQUIRED` | SYNC | `(event, ctx) -> HookResult` | An identified sender who is not verified wrote, under a `verification_policy` (RFC §11.7). `allow()` holds the message from the agents, `allow_unverified()` passes it, `block()` refuses it. |
+| `ON_VERIFICATION_COMPLETED` | ASYNC | `(event, ctx) -> None` | A verification request was completed. A SYSTEM event whose data carries `identity_id`, `organization_id`, `request_id`, `channel_id`, `method`, `expires_at`. |
+| `ON_VERIFICATION_ENDED` | ASYNC | `(event, ctx) -> None` | A verification or an open request ended: expired, revoked, cancelled or failed. Same data plus `reason` and `ended` (`"verification"` or `"request"`). |
 
 ### Membership
 
@@ -276,6 +279,7 @@ member management API.
 | Trigger | Execution | Signature | Description |
 |---------|-----------|-----------|-------------|
 | `ON_REALTIME_TEXT_INJECTED` | ASYNC | `(event, ctx) -> None` | Text was injected into realtime session |
+| `ON_REALTIME_DELEGATION` | ASYNC | `(RealtimeDelegationEvent, ctx) -> None` | A full-duplex model handed reasoning or tool use to a backend, hosted or integrator-side |
 
 ### AI Generation
 
@@ -341,6 +345,13 @@ bot never triggers them.
 | `ON_CONFERENCE_TRACK_UNMUTED` | ASYNC | `(event, ctx) -> None` | Publisher unmuted a track. |
 | `ON_ACTIVE_SPEAKER_CHANGED` | ASYNC | `(event, ctx) -> None` | SFU reported a dominant-speaker change. `data`: `participant_id`. |
 | `ON_CONNECTION_QUALITY_CHANGED` | ASYNC | `(event, ctx) -> None` | SFU reported a participant's connection quality. `data`: `participant_id`, `quality`. |
+
+### Speaking Turns
+
+| Trigger | Execution | Signature | Description |
+|---------|-----------|-----------|-------------|
+| `ON_SPEAK_DECISION` | ASYNC | `(SpeakDecisionEvent, ctx) -> None` | An AI channel's speak policy decided whether the agent speaks, offers or stays silent on an event: the decision with its reason and judgments, `duration_ms`, `asked_again` when it decided again once the agent thought. |
+| `ON_THOUGHT` | ASYNC | `(ThoughtEvent, ctx) -> None` | An AI channel's thinker came back with a new thought in a room, or speaking emptied what the agent wanted to say: the thought, the one it replaces, `duration_ms` of the thinker call. |
 
 ### Discussion
 

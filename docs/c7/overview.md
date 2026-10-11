@@ -1,6 +1,6 @@
 # Overview
 
-> Minimum version: 0.96.1 | Python 3.12+
+> Minimum version: 0.97.0 | Python 3.12+
 
 RoomKit is a pure async Python library for building multi-channel conversation systems. It provides a **room-based abstraction** where conversations happen in rooms, participants communicate through channels, and hooks let you intercept and modify the flow.
 
@@ -8,7 +8,7 @@ RoomKit is a pure async Python library for building multi-channel conversation s
 
 - **Room** — A container for a conversation. Holds participants, channel bindings, and an ordered event timeline.
 - **Channel** — A communication endpoint (SMS, Email, WhatsApp, Telegram, Discord, Buzz/Nostr, Voice, Video, Conference/SFU, AI, ACP coding agents, WebSocket, CLI, etc. — 23 `ChannelType` values). Registered once, attached to many rooms.
-- **Hook** — A function that intercepts events at specific points in the pipeline (76 triggers). Can block, modify, or observe messages.
+- **Hook** — A function that intercepts events at specific points in the pipeline (85 triggers). Can block, modify, or observe messages.
 - **Event Router** — Broadcasts events to all channels attached to a room, with content transcoding per channel capabilities.
 - **Identity Pipeline** — Maps external sender IDs to known participants with challenge/response flows.
 - **Realtime Events** — Ephemeral events (typing, presence, reactions) that are not stored in history.

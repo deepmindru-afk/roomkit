@@ -98,9 +98,9 @@ RoomKit exports **255 symbols** from `roomkit`. Providers and voice types import
 | `ChannelCategory` | TRANSPORT or INTELLIGENCE |
 | `ChannelType` | 23 values: SMS, MMS, RCS, EMAIL, WHATSAPP, WHATSAPP_PERSONAL, WEBSOCKET, AI, VOICE, REALTIME_VOICE, REALTIME_AUDIO_VIDEO, PUSH, MESSENGER, TELEGRAM, TEAMS, DISCORD, BUZZ, WEBHOOK, VIDEO, AUDIO_VIDEO, CONFERENCE, CLI, SYSTEM |
 | `EventStatus` | PENDING, DELIVERED, READ, FAILED, BLOCKED |
-| `EventType` | 27 values (MESSAGE, SYSTEM, EDIT, DELETE, TOOL_CALL_START, DTMF, etc.) |
+| `EventType` | 28 values (MESSAGE, SYSTEM, EDIT, DELETE, TOOL_CALL_START, DTMF, etc.) |
 | `HookExecution` | SYNC or ASYNC |
-| `HookTrigger` | 76 hook triggers — full list in hooks.md |
+| `HookTrigger` | 85 hook triggers — full list in hooks.md |
 | `RoomStatus` | ACTIVE, PAUSED, CLOSED, ARCHIVED |
 | `Visibility` | Scope keywords for an event's `visibility` field: ALL, NONE, TRANSPORT, INTELLIGENCE, INTERNAL |
 

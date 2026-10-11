@@ -155,7 +155,7 @@ Requires **Python 3.12+**.
 
 ![Multi-agent orchestration](docs/diagrams/orchestration.svg)
 
-RoomKit has four built-in orchestration strategies, all configured through `RoomKit(orchestration=...)`. The framework handles agent registration, routing, handoff tools, and conversation state — you just define agents and pick a strategy.
+RoomKit has five built-in orchestration strategies, all configured through `RoomKit(orchestration=...)`. The framework handles agent registration, routing, handoff tools, and conversation state — you just define agents and pick a strategy.
 
 ### Agents
 
@@ -241,9 +241,21 @@ kit = RoomKit(
 )
 ```
 
+### Discussion — agents and people in one group chat
+
+Several agents and people hold one conversation; any agent addresses another by `@channel_id`, and one agent speaks at a time. An agent with nothing to add stays silent:
+
+```python
+from roomkit import Agent, Discussion, RoomKit
+
+kit = RoomKit(
+    orchestration=Discussion(agents=[investigator, dev, sre]),
+)
+```
+
 ### Voice orchestration
 
-All orchestration strategies work seamlessly on live voice calls. The voice/realtime channel is a transport — swapping the active agent doesn't touch the audio session:
+Pipeline, Swarm, Loop and Supervisor work seamlessly on live voice calls (a Discussion is text only). The voice/realtime channel is a transport — swapping the active agent doesn't touch the audio session:
 
 ![Voice orchestration flow](docs/diagrams/voice-orchestration.svg)
 
@@ -293,7 +305,7 @@ async def check(event: RoomEvent, ctx: RoomContext) -> HookResult:
     return HookResult.allow()
 ```
 
-**80 hook triggers** across the full lifecycle: event pipeline (`BEFORE_BROADCAST`, `AFTER_BROADCAST`), room lifecycle, channel lifecycle, identity resolution and membership (join/leave), voice events (speech start/end, transcription, barge-in, VAD, DTMF, speaker change), TTS events, tool execution, speaking turns (`ON_SPEAK_DECISION`, `ON_THOUGHT`), video, conference (participants, tracks, active speaker, connection quality), orchestration (phase transitions, handoffs), and side effects (delivery status, errors, protocol traces).
+**85 hook triggers** across the full lifecycle: event pipeline (`BEFORE_BROADCAST`, `AFTER_BROADCAST`), room lifecycle, channel lifecycle, identity resolution and membership (join/leave), voice events (speech start/end, transcription, barge-in, VAD, DTMF, speaker change), TTS events, tool execution, speaking turns (`ON_SPEAK_DECISION`, `ON_THOUGHT`), video, conference (participants, tracks, active speaker, connection quality), orchestration (phase transitions, handoffs), and side effects (delivery status, errors, protocol traces).
 
 Hooks support filtering by channel type, channel ID, and direction.
 

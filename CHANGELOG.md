@@ -7,238 +7,271 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.97.0] — 2026-10-11
+
+This release lets several agents and people hold one conversation in a room:
+a `Discussion` gives the turns one at a time, a dispatch policy picks who
+answers a message that names no one, long work runs as a task off the floor,
+and an external agent over ACP takes its turns like any other. Identity
+verification tells the agents when the person writing has proven who they
+are, and holds what they write until then. 3 of the changes below are
+breaking; each states its migration.
+
 ### Added
 
-- An `ACPChannel` sets each session up for its room (RMK-673, RFC §6.4, ACP
-  agent channel, *Session setup*). `mcp_servers` also takes a function of the
-  room id (`MCPServersForRoom`), sync or async, called each time a session
-  opens for that room: a stdio server can be told its room in its `env`.
-  `session_config={"mode": "default"}` is set on every session the channel
-  opens before it is prompted: the room's first, one rebuilt after a recovery
-  or opened after the agent restarted, a standalone turn's and a task's child
-  room's. A value the agent refuses fails the opening: the session is
-  released and never prompted, and the turn raises a `RuntimeError` naming
-  the option. Example: `examples/acp_room_mcp.py`.
-- Long work runs as a task, off a discussion's floor (RMK-668, RFC §23.3,
-  §23.4, §19.7.5 rule 19). `kit.setup_background(agent, worker=None,
-  hand_back="relay")` gives an AI channel the `work_in_background` tool: it
-  starts the work as a task on its worker (itself, another agent, an external
-  agent over ACP), handed the room's last 12 messages, says it is on it and
-  ends its turn. The tool starts tasks for its own agent only: a model never
-  runs another agent's worker nor has a result come back in its name. `kit.start_task(room_id, agent_id, task, hand_back=None)`
-  starts the same task from the host, for any agent of the room. In a
-  discussion a question asked while a task runs is answered in its turn, and
-  the result comes back at the front of the queue. `delegate()` gains `brief`
-  (what the worker is told; `task` stays the label the result is named by),
-  `conversation` (the room's last messages the notified channel may read,
-  quoted as data) and `hand_back`: `"relay"`, the default, or `"post"`, the
-  result published as the notified agent's message with no turn of its model,
-  waiting at the front of a discussion's queue and asking no one. Live, a
-  quick question asked during a long job was answered in 3 to 6 s instead of
-  31 to 49 s. A custom `TaskRunner` gives the worker `task.description` (the
-  brief with the conversation), no longer `task.task`, the label. Examples:
-  `examples/discussion_background.py` (offline), `examples/discussion_acp.py`.
+- `Discussion` orchestration strategy (RMK-665, RFC §19.7.5): several
+  agents and people hold one conversation in a room, any agent addressing
+  any other by `@channel_id`, one agent speaking at a time. The strategy
+  queues the agents each message asks for (a person's names first, else the
+  agents that asked that person, else `everyone`; `addressed_only=True` asks
+  only the named) and gives each turn as a rerun of the event it answers,
+  reading the room as it is when the turn starts, bounded by its own
+  `max_depth`. An agent with nothing to add answers its `silent_token`
+  (`"(silent)"`), stored `BLOCKED` as `discussion_silent` and never
+  streamed. `max_turns` and `done` end it. Each agent's memory provider is
+  handed every message the agent may see as it commits, as in a room with
+  no discussion, so a memory that learns as messages arrive (a retrieval
+  index, a summary) learns the whole conversation. `kit.speak_queue()`,
+  `kit.listen_only()`, `kit.talk_again()` and the new `ON_SPEAK_QUEUE` hook
+  (`SpeakQueue`, `SpeakQueueChange`, `SpeakQueueEvent`) let a console follow
+  who speaks, who is next and whether the room waits for a person. The room
+  is the discussion's: while it holds it, `attach_channel` refuses another
+  intelligence channel or a voice or realtime channel, a
+  `ConversationRouter` hook is refused there (and as a global hook while
+  any room holds a discussion), and `Loop`, `Pipeline`, `Supervisor` and
+  `Swarm` refuse to install there. Text only. Example:
+  `examples/discussion_group_chat.py`.
+- A discussion is served by several processes sharing one store and one
+  lock manager (`PostgresStore` with `PostgresAdvisoryLockManager`)
+  (RMK-665, RFC §19.7.5 rule 16).
+  - Its configuration and speak queue are stored with the room. Every
+    process serving the room follows them, even one whose host did not
+    install the discussion: it asks no agent at broadcast, reads names and
+    queues turns, under the room lock.
+  - One process that installed the discussion gives the turns under a 15 s
+    lease it renews; another that installed it takes over once the lease
+    expires.
+  - An instruction's turn moves the lease to the process holding its text.
+  - Example: `examples/discussion_two_workers.py`.
+- A discussion's dispatch policy (RMK-666, RFC §19.7.5 rule 18):
+  `Discussion(dispatch=...)`: a person's message that names no agent goes to
+  the agents the policy picks, in its order, or to none (a thanks, small
+  talk), in place of the agents that asked that person, else every agent of
+  `everyone`. The policy is told which agents wait for the person's answer,
+  so it tells an answer from a new request or a thanks. Not with
+  `addressed_only`. `ClassifierDispatchPolicy` asks a classifier one yes/no
+  question per agent in one call (Jev: about 150 ms); `MockDispatchPolicy`
+  scripts decisions. The lease holder decides off the room lock, before its
+  next turn, keeping the message's place in the queue; a failure or
+  `dispatch_timeout` (5 s) leaves the message to the rule without a policy.
+  The new `ON_DISPATCH_DECISION` hook reports each decision
+  (`DispatchDecisionEvent`). On eight unaddressed messages to four agents,
+  live on Jev: 8 turns and 2 silent ones, against 32 and 26 without a
+  policy, for the same answers. Example: `examples/discussion_dispatch.py`.
+- `OpenAIClassifier` (RMK-667, RFC §6.8): a classifier on OpenAI's Decisions
+  API (`POST /v1/decisions`, public beta, `gpt-6-luna`), which answers
+  yes/no, choice and score questions with probabilities, ~150–450 ms for the
+  whole call. It serves `ClassifierSpeakPolicy` and
+  `ClassifierDispatchPolicy` as `JevClassifier` does. A structured state
+  goes as its JSON; a question the API declines fails the call with
+  `ClassifierError`. No new dependency: the `openai` extra, through the SDK
+  client's generic `post`. `CLASSIFIER=openai` in
+  `examples/classifier_judgments.py`, `examples/speaking_judgments.py` and
+  `examples/discussion_dispatch.py`.
 - An external agent over ACP takes a discussion's turns like an AI channel
   (RMK-670, RFC §6.4, §19.7.5): `Discussion(agents=[...])` accepts an
   `ACPChannel`. `ACPChannel` takes `name`, `role` and `description`, its
   identity as an Agent's, and `instructions`, the standing direction its
   system prompt would give, sent once per session. A discussion's turn closes
   its prompt with the turn's notes under the runtime's header (a copy of the
-  header elsewhere in the prompt is replaced), and `listen_only` while it
-  speaks cancels its prompt. Live, Claude Code answered as @dev, passed its
-  turn when it had nothing to add, and was cut within 6 s of a hold.
-- `DiscussionConsole` (RMK-671): with a WebSocket channel, the answer an agent
-  is writing shows as it streams, where the screen used to show nothing until
-  the message was complete. When an agent of the room has background work set
-  up (or `tasks=True`), `/task @agent ...`, `/tasks` and `/cancel <task>`
-  start, list and stop the room's tasks, each agent's card shows its running
-  tasks, and a posted result names the worker that wrote it. An ACPChannel's
-  card reads "external agent (ACP)".
-
-- Identity verification (RMK-660, RFC §11.7; guide: Identity Verification):
-  identification says whose an address is, verification that the person writing
-  has proven it. `kit.request_verification(identity_id, room_id=, channel_id=,
-  method="link"|"code")` opens a request and returns its secret once (256 bits
-  for a link, 6 digits for a code), stored only as its scrypt hash (a 6-digit
-  code read from a leaked store takes hours to find, against its five minutes
-  of life); the integrator
-  checks the person its own way (a page and a PIN, a login) and calls
-  `kit.complete_verification(request_id, secret)`, which refuses a request that
-  is unknown in the caller's organization, no longer open, expired, or given a
-  wrong secret (`VerificationRefusedError.reason`; the last allowed mismatch
-  fails it, and a request that fails while the identity is verified ends
-  that verification too: whoever could not prove it is not let on as the
-  person; an unanswered request changes nothing).
-  `kit.record_failed_attempt(request_id)` counts your own check's failure
-  (a wrong PIN on your page) against the same bound, so a PIN cannot be
-  guessed through your page. A new request cancels the open one; `kit.revoke_verification()`
-  ends a verification and cancels the open request, verified or still pending,
-  so a link sent before a revocation never verifies; `kit.verification_of()` reads the
-  state (`UNVERIFIED`, `PENDING`, `VERIFIED`, `EXPIRED`, `REVOKED`), per identity
-  and organization. A request takes its room's organization (a caller acting
-  for another gets `RoomNotFoundError`), and a message is labelled by the
-  verification of its room's organization: one proven to an organization
-  never verifies the person in another's conversation. Lifetimes and attempts come from
-  `RoomKit(verification_policy=VerificationPolicy(...))`. Framework events
-  `verification_requested`, `verification_completed`, `verification_ended`. The
-  memory, SQLite (schema v5, migrated in place) and Postgres stores keep it;
-  `ConversationStore` gains the operations without making them abstract, so a
-  store of your own keeps working and refuses them by name.
-  `ON_VERIFICATION_COMPLETED` and `ON_VERIFICATION_ENDED` (ASYNC) fire in the
-  request's room; an end says what ended (`ended`: `"verification"` when the
-  one in force ended, `"request"` when only a request did, such as a link left
-  unanswered while the person stayed verified). A verification ends **when it expires**, by a timer armed at
-  completion, not on the person's next message; `kit.check_verifications()`
-  ends what expired while nothing ran and re-arms the rest, and
-  `async with RoomKit(...)` calls it as the kit starts (a store without
-  verification is skipped); `kit.close()` stops the timers.
-  Passing a `verification_policy` also turns on the inbound side (RFC §10.1
-  step 5b): an identified sender's message carries `source.verification`, and
-  while the identity is not verified it fires `ON_VERIFICATION_REQUIRED`
-  (SYNC), whose hooks hold it (the default: visibility `"transport"`, so the
-  room's people and transports see it and no agent does, in delivery or in
-  context), pass it (`HookResult.allow_unverified()`; a plain `allow()` does
-  not, so a hook that only watches never lets one through) or block it.
-  Holding only narrows what a message reached: the transports of its scope
-  (its own, or its source binding's), never a channel it did not reach. An
-  edit or a deletion from an unverified sender is refused
-  (`verification_required`) unless a hook passes it: held, it would still
-  rewrite a message the agents read. `kit.sender_verification(event, context)`
-  gives a hook the sender's verification in the room's organization (whose it
-  is, whether a request is open), on the first message too, when the sender is
-  not a participant yet.
-  `VerificationPolicy(hold_unverified=False)` only labels. A reply that is the
-  code of the sender's open code request in the room is consumed: it completes
-  or counts an attempt, and its text is never stored nor broadcast. Without a
-  policy the pipeline is unchanged. When a request completes, what its sender
-  wrote while it was open is released (RFC §11.7.6): each held message gets
-  back the visibility it had (`ON_EVENT_UPDATED`), and the room's agents run
-  on the last one as on any message of its author, the earlier ones as its
-  context, even if the host wrote after it. Nothing is copied, nothing becomes
-  an instruction, nothing outside the request's window (from `window_start`)
-  is released, nothing twice, and at most `release_max_messages` within
-  `release_max_age`; `release_on_verify=False` keeps them held. Only what the
-  pipeline held is released: the held marker is the runtime's, so the
-  pipeline strips one a sender's metadata carries (a stranger cannot slip a
-  message into another's release). Example: `examples/identity_verification.py`.
-
-- A discussion's dispatch policy (RMK-666, RFC §19.7.5 rule 18):
-  `Discussion(dispatch=...)` decides which agents take a person's message
-  that names none, in order, or that none does, in place of giving it to the
-  agents that asked that person, else to every agent of `everyone`. The
-  policy is told which agents wait for the person's answer, so a new request
-  or a thanks after an agent's question no longer goes to that agent.
-  `ClassifierDispatchPolicy` asks a classifier one yes/no question per agent
-  in one call (Jev: about 150 ms); `MockDispatchPolicy` scripts decisions.
-  The lease holder decides off the room lock, before its next turn, keeping
-  the message's place in the queue; a failure or `dispatch_timeout` (5 s)
-  leaves the message to the rule without a policy. The new
-  `ON_DISPATCH_DECISION` hook reports each decision (`DispatchDecisionEvent`).
-  On eight unaddressed messages to four agents, live on Jev: 8 turns and 2
-  silent ones, against 32 and 26 without a policy, for the same answers.
-  Example: `examples/discussion_dispatch.py`.
-- `OpenAIClassifier` (RMK-667, RFC §6.8): a classifier on OpenAI's Decisions
-  API (`POST /v1/decisions`, public beta, `gpt-6-luna`), which answers
-  yes/no, choice and score questions with probabilities, ~150–450 ms for the
-  whole call. It serves `ClassifierSpeakPolicy` and `ClassifierDispatchPolicy`
-  as `JevClassifier` does. A structured state goes as its JSON; a question the
-  API declines fails the call with `ClassifierError`. No new dependency: the
-  `openai` extra, through the SDK client's generic `post`. `CLASSIFIER=openai` in
-  `examples/classifier_judgments.py`, `examples/speaking_judgments.py` and
-  `examples/discussion_dispatch.py`.
-- `Discussion` orchestration strategy (RMK-665, RFC §19.7.5): several agents and
-  people hold one conversation in a room, any agent addressing any other by
-  `@channel_id`, one agent speaking at a time. The strategy queues the agents
-  each message asks for (a person's names first, else the agents that asked
-  that person, else `everyone`; `addressed_only=True` asks only the named)
-  and gives each turn as a rerun of the event it answers, reading the room as
-  it is when the turn starts, bounded by its own `max_depth`. An agent with
-  nothing to add answers `"(silent)"`, stored `BLOCKED` as
-  `discussion_silent` and never streamed. `max_turns` and `done` end it.
-  `kit.speak_queue()`, `kit.listen_only()`, `kit.talk_again()` and the new
-  `ON_SPEAK_QUEUE` hook (`SpeakQueue`, `SpeakQueueChange`,
-  `SpeakQueueEvent`) let a console follow who speaks, who is next and
-  whether the room waits for a person. The queue is stored with the room.
-  Text only. Example: `examples/discussion_group_chat.py`.
-- In a discussion, each agent's memory provider is handed every message the
-  agent may see, as it commits, as in a room with no discussion (RMK-665,
-  RFC §19.7.5 rule 3). Before, a memory that learns as messages arrive (a
-  retrieval index, a summary) only learned the messages that asked for the
-  agent, so it lost the rest of the conversation once it left the history
-  window.
+  header anywhere else in an `ACPChannel` prompt is replaced), and
+  `listen_only` while it speaks cancels its prompt, or its session's
+  opening. Live, Claude Code answered as @dev, passed its turn when it had
+  nothing to add, and was cut within 6 s of a hold.
+- Long work runs as a task, off a discussion's floor (RMK-668, RFC §23.3,
+  §23.4, §19.7.5 rule 19). `kit.setup_background(agent, *, worker=None,
+  hand_back="relay")` gives an AI channel the `work_in_background` tool: it
+  starts the work as a task on its worker (itself, another agent, an
+  external agent over ACP), handed the room's last 12 messages, says it is
+  on it and ends its turn. The tool starts tasks for its own agent only: a
+  model never runs another agent's worker nor has a result come back in its
+  name. `kit.start_task(room_id, agent_id, task, *, hand_back=None)` starts
+  the same task from the host, for any agent of the room. In a discussion a
+  question asked while a task runs is answered in its turn, and the result
+  comes back at the front of the queue. `delegate()` gains `brief` (what the
+  worker is told; `task` stays the label the result is named by),
+  `conversation` (the room's last messages the notified channel may read,
+  quoted as data) and `hand_back`: `"relay"`, the default, or `"post"`, the
+  result published as the notified agent's message with no turn of its
+  model, waiting at the front of a discussion's queue and asking no one
+  (`ValueError` with `wait=True`, or when the notified channel is not an
+  intelligence channel of the room). Live, a quick question asked during a
+  long job was answered in 3 to 6 s instead of 31 to 49 s. A custom
+  `TaskRunner` should give the worker `task.description` (the brief, else
+  the task, with the conversation); `task.task` is the label. One that reads
+  `task.task` runs a plain `delegate()` as before, but drops a brief and the
+  conversation, which `work_in_background` and `start_task` rely on.
+  Examples: `examples/discussion_background.py` (offline),
+  `examples/discussion_acp.py`.
+- `DiscussionConsole` (RMK-665, RMK-671; `roomkit.console`, `console`
+  extra): a full-screen terminal on a room a discussion holds. The room on
+  the left (messages, tool calls, who asks you, and, through a WebSocket
+  channel, the answer an agent is writing as it streams), the agents on the
+  right with their identity, model, live state (speaking, next, listening,
+  asking) and running tasks, the speak queue below, your input at the
+  bottom. `/listen` and `/talk`, the host's own slash commands, and, when
+  an agent of the room has background work set up (or `tasks=True`),
+  `/task @agent ...`, `/tasks` and `/cancel <task>`. A posted result names
+  the worker that wrote it; an `ACPChannel`'s card reads "external agent
+  (ACP)". The kit's logs go to a file while the screen is up. It follows
+  the room through hooks it removes when it closes. Example:
+  `examples/discussion_console.py`.
 - `kit.install_strategy(room_id, strategy)` and
   `kit.uninstall_strategy(room_id)` (RMK-665, RFC §19.7):
   - A room holds one strategy at a time, and can change it while it lives.
     `create_room(orchestration=...)` installs through the same path.
-  - An install on a live room registers and attaches the strategy's agents
-    and keeps the timeline. Before, a Swarm installed this way never
-    attached the agent it handed off to, so the handoff silently went
-    nowhere.
+  - An install on a live room registers and attaches the strategy's agents,
+    as `create_room(orchestration=...)` does, and keeps the timeline. A
+    strategy's own `install(kit, room_id)`, called directly, attaches none:
+    a `Swarm` installed that way hands off to agents that are not in the
+    room.
   - An uninstall runs the strategy's new `Orchestration.uninstall()` step,
     then takes back what its install added: room hooks, tools and turn
     runners on the agents, agents it attached, room metadata it wrote. This
     holds for a host's own strategy too.
-  - A second strategy is refused. `kit.claim_room_strategy(room_id, strategy)`
-    is the claim a strategy installed directly makes, and `kit.room_strategy()`
-    names the installed one.
+  - A room a strategy was installed in through `install_strategy` or
+    `create_room` refuses a second one until `uninstall_strategy`.
+    `kit.room_strategy()` names the installed one, and
+    `kit.claim_room_strategy(room_id, strategy)` is the check a strategy
+    installed by calling its `install` directly makes (the built-in ones
+    do); it records nothing.
+  - A room created again with an id whose room was deleted takes back the
+    strategy recorded for the old room first: its hooks no longer serve the
+    new room beside the new strategy's.
   - Example: `examples/strategy_on_the_fly.py`.
-- A discussion is served by several processes (RMK-665, RFC §19.7.5 rule 16).
-  - Its configuration and speak queue are stored with the room. Every
-    process serving the room follows them, even one whose host did not
-    install the discussion: it asks no agent at broadcast, reads names and
-    queues turns, under the room lock.
-  - One process that installed the discussion gives the turns under a 15 s
-    lease it renews, and another takes over once it expires.
-  - An instruction's turn moves the lease to the process holding its text.
-  - Example: `examples/discussion_two_workers.py`.
-- `DiscussionConsole` (RMK-665, `roomkit.console`, `console` extra): a full-screen
-  terminal on a room a discussion holds. The room on the left (messages,
-  tool calls, who asks you), the agents on the right with their identity,
-  model and live state (speaking, next, listening, asking), the speak queue
-  below, your input at the bottom; `/listen` and `/talk`, the host's own
-  slash commands, and the kit's logs sent to a file while the screen is up.
-  It follows the room through hooks it removes when it closes. Example:
-  `examples/discussion_console.py`.
-- While a discussion holds a room (RMK-665), `attach_channel` refuses another
-  intelligence channel or a voice or realtime channel, the hook engine
-  refuses a `ConversationRouter` hook, and `Loop`, `Pipeline`, `Supervisor`
-  and `Swarm` refuse to install there.
-
+- An `ACPChannel` sets each session up for its room (RMK-673, RFC §6.4, ACP
+  agent channel, *Session setup*). `mcp_servers` also takes a function of
+  the room id (`MCPServersForRoom`), sync or async, called each time a
+  session opens for that room: a stdio server can be told its room in its
+  `env`. `ACPChannel(session_config={"mode": "default"})` is set on every
+  session the channel opens before it is prompted: the room's first, one
+  rebuilt after a recovery or opened after the agent restarted, a standalone
+  turn's and a task's child room's. A value the agent refuses fails the
+  opening: the session is released and never prompted, and the turn fails
+  with a `RuntimeError` naming the option. Example:
+  `examples/acp_room_mcp.py`.
+- Identity verification (RMK-660, RFC §11.7; guide: Identity Verification):
+  identification says whose an address is, verification that the person
+  writing has proven it. RoomKit keeps the state and its lifecycle; the
+  integrator keeps the method (a page and a PIN, a login). Example:
+  `examples/identity_verification.py`.
+  - Requests: `kit.request_verification(identity_id, room_id=, channel_id=,
+    method="link"|"code")` returns the request and its secret, once (256
+    bits for a link, 6 digits for a code). The secret is stored only as its
+    scrypt hash: a 6-digit code read from a leaked store takes hours to
+    find, against its five minutes of life. A request takes its room's
+    organization (a caller acting for another gets `RoomNotFoundError`), and
+    a new request cancels the open one.
+  - Completion: once its own check passed, the integrator calls
+    `kit.complete_verification(request_id, secret)`. It refuses a request
+    unknown in the caller's organization, no longer open, expired, or given
+    a wrong secret (`VerificationRefusedError.reason`).
+    `kit.record_failed_attempt(request_id)` counts the integrator's own
+    failed check (a wrong PIN on its page) against the same bound, so a PIN
+    cannot be guessed through the page. The last allowed failure fails the
+    request. A request that fails while the identity is verified ends that
+    verification too: whoever could not prove it is not let on as the
+    person.
+  - State and end: `kit.verification_of()` reads `UNVERIFIED`, `PENDING`,
+    `VERIFIED`, `EXPIRED` or `REVOKED`, per identity and organization. A
+    message is labelled by its room's organization's verification, so one
+    proven to an organization never verifies the person in another's
+    conversation. `kit.revoke_verification()` ends a verification and
+    cancels the open request, so a link sent before it never verifies. A
+    verification ends **when it expires**, by a timer armed at completion,
+    and so does a request left unanswered. `kit.check_verifications()` ends
+    what expired while nothing ran and re-arms the rest; `async with
+    RoomKit(...)` calls it as the kit starts (a store that cannot answer is
+    logged and the kit starts all the same), and `kit.close()` stops the
+    timers. Lifetimes and attempts come from
+    `RoomKit(verification_policy=VerificationPolicy(...))`. Framework
+    events: `verification_requested`, `verification_completed`,
+    `verification_ended`. `ON_VERIFICATION_COMPLETED` and
+    `ON_VERIFICATION_ENDED` (ASYNC) fire in the request's room; an end names
+    what ended (`ended`: `"verification"` when the one in force ended,
+    `"request"` when only a request did, such as a link left unanswered).
+  - Inbound (RFC §10.1 step 5b), on only when a `verification_policy` is
+    passed; without one the pipeline is unchanged. An identified sender's
+    message carries `source.verification`. While the identity is not
+    verified, the message fires `ON_VERIFICATION_REQUIRED` (SYNC), and its
+    hooks hold it (the default: visibility `"transport"`, so the room's
+    people see it and no agent does, in delivery or in context), pass it
+    (`HookResult.allow_unverified()`; a plain `allow()` does not, so a hook
+    that only watches never lets one through) or block it. Holding only
+    narrows what a message reached: the transports of its scope, never a
+    channel it did not reach. An edit or a deletion from an unverified
+    sender is refused (`verification_required`) unless a hook passes it.
+    `kit.sender_verification(event, context)` tells a hook whose
+    verification it is and whether a request is open, on the first message
+    too. `VerificationPolicy(hold_unverified=False)` only labels. A reply
+    that is the code of the sender's open code request in the room is
+    consumed: it completes or counts an attempt, and is never stored nor
+    broadcast.
+  - Release (RFC §11.7.6): when a request completes, what its sender wrote
+    while it was open gets back its visibility (`ON_EVENT_UPDATED`). The
+    room's agents answer the last such message as its author's own turn, the
+    earlier ones as its context, even if the host wrote after it. Nothing is
+    copied, nothing becomes an instruction. Only what the pipeline held is
+    released: from `window_start`, at most `release_max_messages` within
+    `release_max_age`, never twice; `release_on_verify=False` keeps them
+    held. The pipeline strips a held marker a sender's metadata carries, so
+    no one slips a message into another's release.
+  - Stores: memory, SQLite (schema v5, migrated on open for every SQLite
+    file; 0.96.1 cannot open a v5 file) and Postgres keep it.
+    `ConversationStore` gains the operations without making them abstract,
+    so a store of your own keeps working and refuses them by name.
 - `MCPToolProvider(..., discover=False)`, also on `from_url` and
   `from_command`, connects without listing the server's tools (RMK-662, RFC
   §21.2): a host that only reads a resource (an MCP App's HTML) skips the
-  catalogue. `get_tools()` and `tool_meta()` are then empty and no call is
-  checked against an output schema. Example: `examples/mcp_read_resource.py`.
+  catalogue. `get_tools()` and `tool_meta()` are then empty, no call is
+  checked against an output schema, and `as_tool_handler()` serves no tool
+  (every call raises `UnservedToolCallError`);
+  `as_tool_handler(gate_discovery=False)` forwards every call to the
+  server. Example: `examples/mcp_read_resource.py`.
 
 ### Changed
 
-- **BREAKING — a value set with `ACPChannel.set_config_option` belongs to
-  the room** (RMK-673, RFC §6.4, ACP agent channel, *Session setup*): the
-  room's next session, after a recovery or an agent restart, is set to it
-  too, and so is a standalone turn's, until `close_session(room_id)` forgets
-  it. Before, a restarted agent reopened the room in its own defaults, Claude
-  Code under a user's `auto` mode, which acts without asking the
-  `external_tool_handler`. A value the reopened session refuses (a model the
-  agent no longer offers) now fails the room's turns with a `RuntimeError`
-  naming it, where it used to be silently lost, and a standalone turn that
-  cannot take it fails where it used to log a warning. Migration: to change
-  a value the agent refuses, set another one with `set_config_option` (a
-  call that opens the room's session sets its value in place of the room's
-  earlier one), or call `close_session(room_id)` to forget the room's values.
+- **BREAKING — a room holds one orchestration strategy** (RMK-665, RFC
+  §19.7). `create_room(orchestration=...)` and a kit's default
+  `orchestration` record the strategy they install, and `Loop`, `Pipeline`,
+  `Supervisor` and `Swarm` check that record as they install: installing
+  one of them by calling its `install(kit, room_id)` in a room created with
+  another strategy raises `ValueError`, where both used to set up their
+  hooks and tools side by side. Migration: call
+  `kit.uninstall_strategy(room_id)` first, then
+  `kit.install_strategy(room_id, strategy)`.
+- **BREAKING — WhatsApp Personal's `reaction` event names its sender as a
+  message does** (RMK-653): the `sender_id` an `on_event` callback receives
+  is `+15551234567` where it was `15551234567`, and a sender behind a
+  hidden-number id is their phone (`SenderAlt`) or the whole `<id>@lid`
+  where it was the id's digits. Migration: compare it with a message's
+  `sender_id` as it is; a callback that added the `+` itself drops that
+  step.
 
 ### Fixed
 
 - `LlamaCppAIProvider` starts `llama-server` with the host's own loader path
-  when the host is frozen with PyInstaller. The bootloader points
-  `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` at the bundle and keeps the
-  original as `<VAR>_ORIG`; the server inherited the bundle's path and could
-  load the bundle's libstdc++, OpenSSL or libcurl instead of its own. The
-  original value is restored (or the variable dropped when there was none),
-  and the build's own library directories still come first.
+  when the host is a PyInstaller bundle. The bootloader points
+  `LD_LIBRARY_PATH` (`DYLD_LIBRARY_PATH` on macOS) at the bundle and keeps
+  the original as `<VAR>_ORIG`; the server inherited the bundle's path and
+  could load the bundle's libstdc++, OpenSSL or libcurl instead of its own.
+  The original value is restored, or only the bundle's entries removed when
+  there was none, and the build's own library directories still come first.
+  A host frozen by another tool keeps its environment as it is.
 - A `RealtimeVoiceChannel` whose pipeline diarizes fires `ON_SPEAKER_CHANGE`,
   as a `VoiceChannel` does (RFC §12.3.9). The pipeline detected the changes
   but the realtime channel never subscribed to them, so diarization in
-  speech-to-speech mode — one of its listed uses (Section 12.4) — reached no
+  speech-to-speech mode — one of its listed uses (RFC §12.4) — reached no
   hook. The hook carries `source="pipeline"`; a result attributing the audio
   to nobody is still no change.
 - A `RealtimeVoiceChannel` whose pipeline runs at its own rate hands the
@@ -253,39 +286,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (RMK-673). Two `set_config_option` calls during a standalone turn, or one
   racing the first prompt after it, each opened a session for the room, and
   the first one stayed open in the agent, unreachable. Openings now wait on a
-  per-room lock of their own, never on the turn lock a host call inside a
-  turn could not wait for, and `close_session` waits for an opening in flight.
+  per-room lock of their own, a host call inside a turn included, and
+  `close_session` waits for an opening in flight.
 - `ACPChannel.cancel(room_id)` reaches a turn while its session is being
   opened (RMK-673): the agent starting, `session/new`, the session's setup.
   It returned `False` there, or sent `session/cancel` to a session not yet
-  prompted, and the turn then prompted anyway. The turn now ends without
+  prompted, and the turn prompted anyway. The turn now ends without
   prompting, marked `interrupted`, and a standalone session it had opened is
-  closed. A discussion's hold cuts such a turn too.
-- `DiscussionConsole` no longer shows ">>> @sre is asking @@ops" when the
-  person's label carries its `@` (RMK-671).
+  closed. `active_turns` counts such a turn as soon as it holds the room,
+  where it counted it only once the prompt went out, so a caller retiring
+  the channel no longer closes it under an opening turn.
 - WhatsApp Personal answers a group in the group and names a hidden-number
   sender by their phone (RMK-653): a group message's room was found by its
   sender and answered them privately; the parser now names the group
-  (`metadata["group_jid"]`) and `WhatsAppPersonalChannel` routes and answers by
-  it, a private chat by the number (`TransportChannel` takes
+  (`metadata["group_jid"]`) and `WhatsAppPersonalChannel` routes and answers
+  by it, a private chat by the number (`TransportChannel` takes
   `reply_metadata_key` with `replies_to_sender`, the chat first). A sender
   WhatsApp hides behind an `@lid` id was kept as bare digits even when
   `SenderAlt` carried their phone, and E.164 made a wrong number of them
   (`+33123456789012345` with country code 33), answered at a wrong JID; the
   sender is now that phone, or the whole `<id>@lid`, never digits a
-  normalizer reads (`roomkit.sources.neonize.sender_address`, also used for a
-  reaction's sender). neonize 0.5.2 addresses direct messages by LID, so these
-  ids get commoner. `send_typing` and `mark_read` handed the source a JID object
-  where it parses a string and failed on every call; a location went to a
-  `send_location` neonize never had, and now goes out as a location message.
-
+  normalizer reads (`roomkit.sources.neonize.sender_address`; a reaction's
+  sender too, see Changed). neonize 0.5.2 addresses direct messages by LID,
+  so these ids get commoner. A conversation met before under the old
+  address opens a new room: a group's messages reach the group's room, not
+  their sender's, and a hidden-number sender's reach the room of their phone
+  or `<id>@lid`, not the one their digits opened. A custom `message_parser`
+  sets `metadata["group_jid"]` to route a group the same way. `send_typing`
+  and `mark_read` handed the source a JID object where it parses a string
+  and failed on every call; a location went to a `send_location` neonize
+  never had, and now goes out as a location message.
 - `MCPToolProvider` reads every page of a server's `tools/list` (RMK-662, RFC
   §21.2): it read the first page and ignored `nextCursor`, so a server that
   pages its listing lost every tool after it. A server that pages on without
   bringing anything new (an empty page that still carries a cursor, a cursor
-  handed out twice) or past 1000 pages ends the reading, with a warning
-  naming it, rather than holding the connection open.
-
+  handed out twice) or past 1000 pages ends the reading: a warning names the
+  server and the provider keeps the tools read, where entering it would
+  never have returned.
 - An MCP tool call never lists the server's tools again (RMK-662, RFC §21.2).
   `MCPToolProvider` called through the SDK's `ClientSession.call_tool`, which
   sends a whole `tools/list` before every call of a tool its listing does not
@@ -295,10 +332,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   itself and checks a result against the output schema the tool was listed
   with at connection, with the SDK's messages (`RuntimeError`); a tool the
   listing did not name is called as it is. The schemas cover every listed
-  tool, `tool_filter` aside, so an app-only tool is still checked. A test
-  double of the provider's session answers `send_request(request,
-  result_type)`: one that wires `call_tool` is no longer called.
-
+  tool, `tool_filter` aside, so an app-only tool is still checked, and a
+  tool listed past the first page is now checked as well. An output schema's
+  `$ref` resolves within the schema only, never fetched, as MCP SDK 1.30
+  does: with an older SDK a `$ref` to a remote document was fetched, and
+  that tool's calls now fail with `RuntimeError`. A test double of the
+  provider's session answers `send_request(request, result_type)`: one that
+  wires `call_tool` is no longer called.
 - After a barge-in, `VuiTTSProvider` decodes the next replies against the
   audio the cache keeps, not against frames nobody heard (RMK-669). The `vui`
   extra requires `vui-tts>=1.2.3,<1.3`, whose `Row.truncate` takes the
@@ -314,6 +354,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   60 s, cut early) leaves the next reply without its decoder context until
   the next 10 s boundary (17 dB on a 42 s reply cut after 1.5 s), in step
   again after it (122 dB).
+
+### Security
+
+- **BREAKING — a value set with `ACPChannel.set_config_option` belongs to
+  the room** (RMK-673, RFC §6.4, ACP agent channel, *Session setup*). A
+  host that set `mode` to `default`, so that Claude Code asks the
+  `external_tool_handler` before acting, lost it when the agent restarted:
+  the room's next session opened in the agent's defaults, and a user's
+  `auto` mode acts without asking. The room's next session, after a
+  recovery or an agent restart, is now set to the value too, and so is a
+  standalone turn's, until `close_session(room_id)` forgets it. A value the
+  reopened session refuses (a model the agent no longer offers) now fails
+  the room's turns with a `RuntimeError` naming it, where it used to be
+  lost silently, and a standalone turn that cannot take it fails where it
+  used to log a warning. A `set_config_option` that opens the room's
+  session and is refused raises a `RuntimeError` (the agent's error as its
+  cause) and leaves the room without a session, where it raised the agent's
+  own error and kept the session open. Migration: to change a value the
+  agent refuses, set another one with `set_config_option` (a call that
+  opens the room's session sets its value in place of the room's earlier
+  one), or call `close_session(room_id)` to forget the room's values; catch
+  `RuntimeError` around `set_config_option` as well as the agent's error.
 
 ## [0.96.1] — 2026-10-09
 
@@ -13960,7 +14022,9 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.96.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.97.0...HEAD
+[0.97.0]: https://github.com/roomkit-live/roomkit/compare/v0.96.1...v0.97.0
+[0.96.1]: https://github.com/roomkit-live/roomkit/compare/v0.96.0...v0.96.1
 [0.96.0]: https://github.com/roomkit-live/roomkit/compare/v0.95.0...v0.96.0
 [0.95.0]: https://github.com/roomkit-live/roomkit/compare/v0.94.0...v0.95.0
 [0.94.0]: https://github.com/roomkit-live/roomkit/compare/v0.93.0...v0.94.0
