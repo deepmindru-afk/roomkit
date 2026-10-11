@@ -193,3 +193,24 @@ async def test_a_kit_whose_store_keeps_no_verification_still_starts() -> None:
 
     async with kit:
         assert await kit.store.get_room("nope") is None
+
+
+class _StoreNotReady(InMemoryStore):
+    """A store that cannot answer yet (a PostgresStore before ``init()``)."""
+
+    async def list_verifications_in_force(self) -> list[Verification]:
+        raise RuntimeError("PostgresStore.init() must be called before use")
+
+
+async def test_a_kit_whose_store_cannot_answer_still_starts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Resuming verifications never stops a kit from starting: a verification
+    whose time passed already reads EXPIRED, only its end is announced late."""
+    kit = RoomKit(store=_StoreNotReady())
+
+    with caplog.at_level("WARNING", logger="roomkit.framework"):
+        async with kit:
+            pass
+
+    assert "Verifications were not resumed" in caplog.text

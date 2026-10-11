@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import hashlib
 import hmac
+import logging
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -40,6 +41,8 @@ if TYPE_CHECKING:
     from roomkit.models.context import RoomContext
     from roomkit.models.identity import Identity
     from roomkit.store.base import ConversationStore
+
+logger = logging.getLogger("roomkit.framework")
 
 METHOD_LINK = "link"
 """A secret carried in a link to the integrator's page (high entropy)."""
@@ -471,12 +474,17 @@ class VerificationMixin(HelpersMixin):
         """Resume the verifications in force as the kit starts.
 
         A store that does not keep verifications (RFC §11.7 is Level 2) has
-        none to resume: the kit starts all the same.
+        none to resume: the kit starts all the same. So does one that cannot
+        answer yet (a ``PostgresStore`` before ``init()``, a database down):
+        a verification whose time passed reads EXPIRED all the same, only its
+        end is announced late, at the next ``check_verifications()``.
         """
         try:
             await self.check_verifications()
         except NotImplementedError:
             return
+        except Exception as exc:
+            logger.warning("Verifications were not resumed: the store did not answer (%s)", exc)
 
     def _arm_expiry(self, verification: Verification) -> None:
         """Arm (or re-arm) the timer that ends *verification* when it expires."""
