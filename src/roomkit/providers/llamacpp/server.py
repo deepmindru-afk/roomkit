@@ -190,9 +190,30 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+# A host frozen with PyInstaller repoints these at its bundle for its own
+# process and keeps the caller's value as ``<VAR>_ORIG``. The server is no
+# part of the bundle: given the bundle's path, it loads the bundle's
+# libstdc++, OpenSSL or libcurl instead of the ones it was built against.
+_BUNDLE_LOADER_VARS = ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH")
+
+
+def _host_environment() -> dict[str, str]:
+    """The host's environment, with a frozen host's loader path set back."""
+    env = dict(os.environ)
+    if not getattr(sys, "frozen", False):
+        return env
+    for var in _BUNDLE_LOADER_VARS:
+        original = env.pop(f"{var}_ORIG", None)
+        if original is not None:
+            env[var] = original
+        else:
+            env.pop(var, None)
+    return env
+
+
 def _environment(binary: LlamaBinary) -> dict[str, str]:
     """The environment with the build's shared libraries on the loader path."""
-    env = dict(os.environ)
+    env = _host_environment()
     if not binary.library_dirs:
         return env
     dirs = os.pathsep.join(str(d) for d in binary.library_dirs)

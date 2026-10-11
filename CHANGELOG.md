@@ -228,6 +228,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `LlamaCppAIProvider` starts `llama-server` with the host's own loader path
+  when the host is frozen with PyInstaller. The bootloader points
+  `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` at the bundle and keeps the
+  original as `<VAR>_ORIG`; the server inherited the bundle's path and could
+  load the bundle's libstdc++, OpenSSL or libcurl instead of its own. The
+  original value is restored (or the variable dropped when there was none),
+  and the build's own library directories still come first.
 - A `RealtimeVoiceChannel` whose pipeline diarizes fires `ON_SPEAKER_CHANGE`,
   as a `VoiceChannel` does (RFC §12.3.9). The pipeline detected the changes
   but the realtime channel never subscribed to them, so diarization in

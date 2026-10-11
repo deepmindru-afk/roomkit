@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import socket
 import stat
 import sys
@@ -474,3 +475,61 @@ class TestLlamaCppResponseSchema:
 
         assert exc.value.reason == "unsupported"  # the turn also carries tools
         assert not starts.exists()
+
+
+class TestServerEnvironment:
+    """llama-server's environment in a host frozen with PyInstaller.
+
+    The bootloader points the loader path at the bundle for its own process
+    and keeps the caller's value as ``<VAR>_ORIG``: a child given the
+    bundle's path loads the bundle's libstdc++, OpenSSL or libcurl instead of
+    the ones it was built against.
+    """
+
+    _VAR = "DYLD_LIBRARY_PATH" if sys.platform == "darwin" else "LD_LIBRARY_PATH"
+
+    def _env(self, library_dirs: tuple[Path, ...] = ()) -> dict[str, str]:
+        from roomkit.providers.llamacpp.server import _environment
+
+        return _environment(binary_mod.LlamaBinary(Path("/x/llama-server"), library_dirs))
+
+    @pytest.fixture
+    def frozen(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        if sys.platform == "win32":
+            pytest.skip("PyInstaller repoints no loader variable on Windows")
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setenv(self._VAR, "/bundle/_internal")
+
+    def test_a_frozen_host_hands_the_server_its_original_library_path(
+        self, frozen: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(f"{self._VAR}_ORIG", "/usr/local/lib")
+
+        env = self._env()
+
+        assert env[self._VAR] == "/usr/local/lib"
+        assert f"{self._VAR}_ORIG" not in env
+
+    def test_a_frozen_host_without_an_original_hands_the_server_none(
+        self, frozen: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(f"{self._VAR}_ORIG", raising=False)
+
+        assert self._VAR not in self._env()
+
+    def test_the_build_s_own_libraries_still_come_first(
+        self, frozen: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(f"{self._VAR}_ORIG", "/usr/local/lib")
+
+        env = self._env((Path("/cache/llama"),))
+
+        assert env[self._VAR].split(os.pathsep) == ["/cache/llama", "/usr/local/lib"]
+
+    def test_an_unfrozen_host_passes_its_environment_through(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        monkeypatch.setenv(self._VAR, "/opt/mine")
+
+        assert self._env()[self._VAR] == "/opt/mine"
