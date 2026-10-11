@@ -228,6 +228,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `RealtimeVoiceChannel` whose pipeline diarizes fires `ON_SPEAKER_CHANGE`,
+  as a `VoiceChannel` does (RFC §12.3.9). The pipeline detected the changes
+  but the realtime channel never subscribed to them, so diarization in
+  speech-to-speech mode — one of its listed uses (Section 12.4) — reached no
+  hook. The hook carries `source="pipeline"`; a result attributing the audio
+  to nobody is still no change.
 - A `RealtimeVoiceChannel` whose pipeline runs at its own rate hands the
   provider audio at the provider's rate. Processed frames were resampled from
   the transport's rate, so a pipeline contract with a 16 kHz internal format

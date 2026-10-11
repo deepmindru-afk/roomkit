@@ -9,11 +9,13 @@ import time
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.models.enums import HookTrigger
+from roomkit.voice.events import SpeakerChangeEvent
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
     from roomkit.voice.backends.base import VoiceBackend
     from roomkit.voice.base import VoiceSession
+    from roomkit.voice.pipeline.diarization.base import DiarizationResult
     from roomkit.voice.realtime.provider import RealtimeVoiceProvider
 
 logger = logging.getLogger("roomkit.channels.realtime_voice")
@@ -232,6 +234,61 @@ class RealtimeSpeechMixin:
             )
         except Exception:
             logger.exception("Error firing ON_BARGE_IN hook")
+
+    def _on_pipeline_speaker_change(
+        self, session: VoiceSession, result: DiarizationResult
+    ) -> None:
+        """A speaker change from the pipeline's diarization stage (RFC §12.3.9).
+
+        The pipeline decides what a change is — an unattributed result is
+        none — and calls back on the loop; the hook runs as its own task, as
+        the speech hooks do.
+        """
+        if not self._framework:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._track_task(
+            loop,
+            self._fire_speaker_change_hook(session, result),
+            name=f"rt_speaker_change:{session.id}",
+        )
+
+    async def _fire_speaker_change_hook(
+        self, session: VoiceSession, result: DiarizationResult
+    ) -> None:
+        """Run the room's ON_SPEAKER_CHANGE hooks for *result*."""
+        if not self._framework:
+            return
+        with self._state_lock:
+            room_id = self._session_rooms.get(session.id)
+        if not room_id:
+            return
+        event = SpeakerChangeEvent(
+            session=session,
+            speaker_id=result.speaker_id,
+            confidence=result.confidence,
+            is_new_speaker=result.is_new_speaker,
+        )
+        from roomkit.telemetry.context import reset_span
+
+        _, _tok = self._rt_span_ctx(session.id)
+        try:
+            context = await self._framework._build_context(room_id)
+            await self._framework.hook_engine.run_async_hooks(
+                room_id,
+                HookTrigger.ON_SPEAKER_CHANGE,
+                event,
+                context,
+                skip_event_filter=True,
+            )
+        except Exception:
+            logger.exception("Error firing ON_SPEAKER_CHANGE hook for session %s", session.id)
+        finally:
+            if _tok is not None:
+                reset_span(_tok)
 
     async def _handle_speech_event(self, session: VoiceSession, event_type: str) -> None:
         """Fire speech hooks and publish ephemeral indicator."""

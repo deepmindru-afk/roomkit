@@ -1484,6 +1484,7 @@ class RealtimeVoiceChannel(
                 pl = self._create_pipeline(self._pipeline_config, self._transport)
                 pl.on_vad_event(self._on_pipeline_vad_event)
                 pl.on_processed_frame(self._on_pipeline_processed_frame)
+                pl.on_speaker_change(self._on_pipeline_speaker_change)
                 if self._pipeline_config.recorder is not None:
                     self._wire_recording_hooks(pl)
 
