@@ -9,7 +9,10 @@ connection closes where it does not.
 Both name their room to ``session/new`` and say which of the two they are: a
 relay that files sessions by room would otherwise take the turn's for the
 room's, and close it. They are serialized on the room's turn lock, and told
-apart here by :meth:`ACPSessionsMixin._is_room_session`.
+apart here by :meth:`ACPSessionsMixin._is_room_session`. A room's session is
+opened by one caller at a time, under the room's opening lock: a first prompt,
+a rebuild and a host call that may not wait for the turn lock all find the
+session the first of them opened.
 
 Both are set up the same way before they are prompted (RFC §6.4, ACP agent
 channel, *Session setup*): the room's MCP servers in ``session/new``, then the
@@ -24,6 +27,7 @@ import contextlib
 import inspect
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -56,6 +60,30 @@ def _session_setup(session_config: Mapping[str, str | bool] | None) -> dict[str,
     return setup
 
 
+@contextlib.asynccontextmanager
+async def _holding(locks: dict[str, asyncio.Lock], room_id: str) -> AsyncGenerator[None, None]:
+    """Hold *room_id*'s lock in *locks*, tolerating its retirement.
+
+    ``close_session`` drops the entry while still holding the lock, so the
+    map does not keep one lock per room the channel ever served. A coroutine
+    that was queued on the retired lock therefore wakes owning an object
+    nobody else can reach: it releases and retries on the current one.
+    Without that re-check a fresh caller would take a brand-new lock and run
+    the critical section alongside the waiter — which is how a room ends up
+    with two sessions.
+    """
+    while True:
+        lock = locks.setdefault(room_id, asyncio.Lock())
+        await lock.acquire()
+        if locks.get(room_id) is lock:
+            break
+        lock.release()
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def _reported_options(response: Any) -> list[Any]:
     """The config options an ACP response reports, as a list (empty when none)."""
     options = _model_dump(getattr(response, "config_options", None))
@@ -72,6 +100,7 @@ class ACPSessionsMixin:
     _session_setup: dict[str, str | bool]
     _room_config: dict[str, dict[str, str | bool]]
     _room_locks: dict[str, asyncio.Lock]
+    _opening_locks: dict[str, asyncio.Lock]
     _sessions: dict[str, str]
     _turn_sessions: dict[str, str]
     _session_rooms: dict[str, str]
@@ -150,9 +179,38 @@ class ACPSessionsMixin:
         overlay: Mapping[str, str | bool] | None = None,
     ) -> str:
         """The room's session, opened and set up if it has none (*overlay* as set up)."""
+        session_id, _opened = await self._room_session(room_id, connection, overlay)
+        return session_id
+
+    async def _room_session(
+        self,
+        room_id: str,
+        connection: Any,
+        overlay: Mapping[str, str | bool] | None = None,
+    ) -> tuple[str, bool]:
+        """The room's session, and whether this call opened it (set up with *overlay*).
+
+        Openings are serialized on the room's opening lock, never on its turn
+        lock, which a host call running inside a turn could not wait for.
+        Whoever waited finds the session the first caller opened.
+        """
         session_id = self._sessions.get(room_id)
         if session_id is not None:
-            return session_id
+            return session_id, False
+        async with self._room_opening_lock(room_id):
+            session_id = self._sessions.get(room_id)
+            if session_id is not None:
+                return session_id, False
+            session_id = await self._open_room_session(room_id, connection, overlay)
+        # Announced once the lock is released: a subscriber may call back in.
+        options = self._session_options[session_id]
+        await self._publish_config_options(session_id, options, _config_values(options))
+        return session_id, True
+
+    async def _open_room_session(
+        self, room_id: str, connection: Any, overlay: Mapping[str, str | bool] | None
+    ) -> str:
+        """Open the room's session, set it up, and record it as the room's."""
         response = await self._new_session(room_id, connection, "room")
         session_id = response.session_id
         try:
@@ -165,33 +223,7 @@ class ACPSessionsMixin:
         self._sessions[room_id] = session_id
         self._session_rooms[session_id] = room_id
         self._session_options[session_id] = options
-        await self._publish_config_options(
-            session_id,
-            self._session_options[session_id],
-            _config_values(self._session_options[session_id]),
-        )
         return session_id
-
-    async def _open_for_host(
-        self, room_id: str, connection: Any, overlay: Mapping[str, str | bool]
-    ) -> tuple[str, bool]:
-        """The room's session for a host call, set up with *overlay* if this call opens it.
-
-        Returns the session and whether this call opened it: a first prompt
-        that got the lock first opened it without *overlay*.
-        """
-        if room_id in self._turn_sessions:
-            # A standalone turn is in flight and holds the room's lock, so this
-            # caller may be running inside it (a tool handler): waiting would
-            # deadlock. That turn never opens the room's session, so nothing
-            # races this one. The setting is the room's, not the turn's.
-            opened = room_id not in self._sessions
-            return await self._session_for(room_id, connection, overlay), opened
-        # Session creation is serialized on the room's turn lock so a
-        # concurrent first prompt cannot open a second session.
-        async with self._room_turn_lock(room_id):
-            opened = room_id not in self._sessions
-            return await self._session_for(room_id, connection, overlay), opened
 
     async def _discard_room_session(self, room_id: str, connection: Any) -> bool:
         """Forget a room session while its caller holds the turn lock.
@@ -217,28 +249,16 @@ class ACPSessionsMixin:
             return []
         return self._session_options.get(session_id, [])
 
-    @contextlib.asynccontextmanager
-    async def _room_turn_lock(self, room_id: str) -> AsyncGenerator[None, None]:
-        """Hold the room's turn lock, tolerating its retirement.
+    def _room_turn_lock(self, room_id: str) -> AbstractAsyncContextManager[None]:
+        """Hold the room's turn lock: one turn of the room at a time."""
+        return _holding(self._room_locks, room_id)
 
-        ``close_session`` drops the entry while still holding the lock, so
-        the map does not keep one lock per room the channel ever served. A
-        coroutine that was queued on the retired lock therefore wakes owning
-        an object nobody else can reach: it releases and retries on the
-        current one. Without that re-check a fresh caller would take a
-        brand-new lock and run the critical section alongside the waiter —
-        which is how a room ends up with two sessions.
+    def _room_opening_lock(self, room_id: str) -> AbstractAsyncContextManager[None]:
+        """Hold the room's opening lock: one opening of the room's session at a time.
+
+        Taken inside the turn lock when both are held, never the other way.
         """
-        while True:
-            lock = self._room_locks.setdefault(room_id, asyncio.Lock())
-            await lock.acquire()
-            if self._room_locks.get(room_id) is lock:
-                break
-            lock.release()
-        try:
-            yield
-        finally:
-            lock.release()
+        return _holding(self._opening_locks, room_id)
 
     def _is_room_session(self, session_id: str) -> bool:
         """Whether *session_id* is a room's session — not a turn's, not a closed one.

@@ -445,3 +445,91 @@ class TestARefusedValueFailsClosed:
 
         assert connection.prompt_calls == []
         await channel.close()
+
+
+class TestOneOpeningAtATime:
+    """A room's session is opened once, whoever asks for it first (RFC §6.4, item 2)."""
+
+    @staticmethod
+    def _gated(connection: _FakeACPConnection) -> asyncio.Event:
+        """Hold every room-scope ``session/new`` until the returned event is set."""
+        gate = asyncio.Event()
+        opener = connection.new_session
+
+        async def held(**kwargs: Any) -> Any:
+            if kwargs.get("roomkit.live/sessionScope") == "room":
+                await gate.wait()
+            return await opener(**kwargs)
+
+        connection.new_session = held  # type: ignore[method-assign]
+        return gate
+
+    @staticmethod
+    def _room_opens(connection: _FakeACPConnection) -> int:
+        return sum(
+            call.get("roomkit.live/sessionScope") == "room"
+            for call in connection.new_session_calls
+        )
+
+    async def test_two_host_calls_during_a_standalone_turn_open_one_session(
+        self, tmp_path: Any
+    ) -> None:
+        channel, connection, _, agent = _setup(tmp_path)
+        gate = self._gated(connection)
+        prompting, finish = asyncio.Event(), asyncio.Event()
+        prompt = connection.prompt
+
+        async def holds(session_id: str, *args: Any, **kwargs: Any) -> Any:
+            prompting.set()
+            await finish.wait()
+            return await prompt(session_id, *args, **kwargs)
+
+        with patch.object(connection, "prompt", holds):
+            turn = asyncio.create_task(_turn(channel, _request(standalone=True)))
+            await prompting.wait()  # the standalone turn holds the room's turn lock
+            model = asyncio.create_task(channel.set_config_option(ROOM, "model", "sonnet"))
+            mode = asyncio.create_task(channel.set_config_option(ROOM, "mode", "default"))
+            await asyncio.sleep(0.01)
+            gate.set()
+            await asyncio.gather(model, mode)
+            finish.set()
+            await turn
+
+        assert self._room_opens(connection) == 1
+        room_session = channel.session_id(ROOM)
+        assert agent.sessions[room_session] == {"model": "sonnet", "mode": "default"}
+        assert set(channel._session_rooms) == {room_session}  # no orphan session
+        await channel.close()
+
+    async def test_a_host_call_and_a_first_prompt_open_one_session(self, tmp_path: Any) -> None:
+        channel, connection, _, agent = _setup(tmp_path)
+        gate = self._gated(connection)
+
+        setting = asyncio.create_task(channel.set_config_option(ROOM, "model", "sonnet"))
+        turn = asyncio.create_task(_turn(channel, _request()))
+        await asyncio.sleep(0.01)
+        gate.set()
+        await asyncio.gather(setting, turn)
+
+        assert self._room_opens(connection) == 1
+        assert _prompted_sessions(connection) == ["session-1"]
+        assert agent.sessions["session-1"]["model"] == "sonnet"
+        await channel.close()
+
+    async def test_close_session_waits_for_an_opening_then_closes_it(self, tmp_path: Any) -> None:
+        channel, connection, _, _ = _setup(tmp_path)
+        gate = self._gated(connection)
+
+        setting = asyncio.create_task(channel.set_config_option(ROOM, "model", "sonnet"))
+        await asyncio.sleep(0.01)
+        closing = asyncio.create_task(channel.close_session(ROOM))
+        await asyncio.sleep(0.01)
+        assert not closing.done()  # it waits for the opening rather than miss it
+        gate.set()
+        await setting
+
+        assert await closing is True
+        assert connection.closed_sessions == ["session-1"]
+        assert channel.session_id(ROOM) is None
+        assert channel._room_locks == channel._opening_locks == {}
+        await channel.close()

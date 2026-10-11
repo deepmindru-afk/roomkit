@@ -270,6 +270,8 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         self._message_queue: Any = None
         self._connect_lock = asyncio.Lock()
         self._room_locks: dict[str, asyncio.Lock] = {}
+        # Room -> the lock its session is opened under, one opening at a time.
+        self._opening_locks: dict[str, asyncio.Lock] = {}
         self._sessions: dict[str, str] = {}
         # Room -> the session a standalone turn is running in (RFC §10.1.1
         # step 7): opened for that turn, never prompted after it, never the room's.
@@ -353,13 +355,10 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         so a value the agent has come to refuse is replaced, not replayed.
         """
         connection = await self._ensure_connection()
-        # An existing session is set without the room's turn lock: an in-flight
-        # turn holds it for its whole duration, and waiting for that would
-        # deadlock a caller running inside the turn (a tool handler).
-        session_id = self._sessions.get(room_id)
-        opened = False
-        if session_id is None:
-            session_id, opened = await self._open_for_host(room_id, connection, {config_id: value})
+        # Never on the room's turn lock: an in-flight turn holds it for its
+        # whole duration, and waiting for that would deadlock a caller running
+        # inside the turn (a tool handler). An opening has its own lock.
+        session_id, opened = await self._room_session(room_id, connection, {config_id: value})
         if opened:
             # Opening the session set the value, in place of the room's.
             options = self._session_options.get(session_id, [])
@@ -520,12 +519,13 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         The config values the host set on the room are forgotten too: its
         next session opens on ``session_config`` alone.
         """
-        async with self._room_turn_lock(room_id):
+        async with self._room_turn_lock(room_id), self._room_opening_lock(room_id):
             self._room_config.pop(room_id, None)
             try:
                 return await self._discard_room_session(room_id, self._connection)
             finally:
                 self._room_locks.pop(room_id, None)
+                self._opening_locks.pop(room_id, None)
 
     async def close(self) -> None:
         """Cancel turns, close sessions where the agent can, and close the transport.
