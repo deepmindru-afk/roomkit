@@ -68,6 +68,24 @@ await kit.attach_channel("room-1", "sms-out",
 )
 ```
 
+## Connect vs Read Timeout
+
+Every httpx-backed provider config in `roomkit.providers` carries `timeout` (the read/write/pool budget, sized for the slowest response) and `connect_timeout` (default 5 s, the TCP connect alone, TLS handshake included). Each adapter hands its client or SDK `httpx.Timeout(timeout, connect=connect_timeout)` rather than a bare float, so a host that no longer accepts connections is given up on in seconds rather than after the read budget: with one float for both, the kernel exhausts its SYN retries first, about two minutes per attempt, whatever the value.
+
+```python
+from roomkit.providers.polargrid import PolarGridConfig
+
+config = PolarGridConfig(
+    api_key="pg_...",
+    timeout=240.0,  # read/write/pool: sized for the slowest generation
+    connect_timeout=5.0,  # TCP connect alone (the default)
+)
+```
+
+Applies to the AI providers (OpenAI and its derivatives, Azure, Anthropic, Ollama, vLLM, PolarGrid), the image providers, and the SMS, RCS, email, Telegram, Messenger and webhook transports. `AnamConfig.timeout` has no counterpart: it bounds the SDK's connect call itself, not an HTTP client. Raise `connect_timeout` on a link or a TLS-terminating proxy slow enough to need more.
+
+Outside `roomkit.providers`, the same pair sits on `GrokTTSConfig`, `OpenAIVisionConfig`, `GeminiVisionConfig`, `GeminiTTSConfig` and `GeminiSTTConfig`, and is a keyword on `WebSocketAvatarProvider` and `SSESource`. Two read differently: `SSESource.timeout` bounds write and pool only (its read side is left unbounded so the stream survives idle periods between events; `connect_timeout` is what gives up on a dead host), and the Gemini providers (TTS, STT, vision) hand the SDK their own httpx client through `HttpOptions.httpx_async_client` rather than a per-request timeout, because google-genai flattens a per-request `httpx.Timeout` to its largest value (that client also keeps every SDK call on httpx when aiohttp is installed). The STT provider's Files API calls go through the SDK's classic path, which takes one value in milliseconds, so they carry the flat `timeout` and no connect split.
+
 ## Chain Depth Limit
 
 Prevents infinite AI-to-AI loops. Default max depth is 5.

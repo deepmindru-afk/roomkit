@@ -337,7 +337,8 @@ others with `voice.add_backend(sip_backend)`. The added backend's audio goes
 through the same pipeline, bridge and STT; everything sent to one of its
 sessions (bridged audio, TTS, transcriptions, the hang-up of `kit.leave()`)
 goes out on it. A session finds its transport through `kit.join(..., backend=)`
-or by the added backend reporting it holds the session.
+or by the added backend reporting it holds the session. The channel needs a primary
+backend (else `RuntimeError`); closing it closes the added backends.
 
 ## DTMF
 

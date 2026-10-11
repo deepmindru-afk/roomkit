@@ -420,7 +420,7 @@ kit.register_channel(ai)
 
 # Room wires them together
 await kit.create_room(room_id="chat")
-await kit.attach_channel("chat", "ws-user")  # TRANSPORT (default)
+await kit.attach_channel("chat", "ws-user")  # the channel's own category (TRANSPORT)
 await kit.attach_channel("chat", "ai", category=ChannelCategory.INTELLIGENCE)
 
 # User sends message → AI responds → response delivered to WebSocket
@@ -1123,7 +1123,7 @@ member management API.
 | `ON_SPEECH_END` | ASYNC | `(VoiceSession, ctx) -> None` | VAD detected speech end. Same per-lane conference behavior. |
 | `ON_TRANSCRIPTION` | SYNC | `(event, ctx) -> HookResult` | STT produced a final transcript. Can block/modify; **fails closed** — a hook that raises/times out blocks publication. Payload: `TranscriptionEvent` (VoiceChannel), `RealtimeTranscriptionEvent` (RealtimeVoiceChannel), `ConferenceTranscription` (ConferenceChannel). Modify by returning the same type (voice/realtime also accept a plain `str`) with the new text. |
 | `ON_PARTIAL_TRANSCRIPTION` | ASYNC | `(PartialTranscriptionEvent, ctx) -> None` | Streaming interim STT result. Hot path — skipped entirely when no hooks are registered. |
-| `BEFORE_TTS` | SYNC | `(text: str, ctx) -> HookResult` | Before text is synthesized. Payload is the text `str`; modify with a `str`. Can block; **fails closed**. |
+| `BEFORE_TTS` | SYNC | `(text: str, ctx) -> HookResult` | Before text is synthesized. Payload is the text `str`; modify with a `str`. Can block; **fails closed**. On a streamed response it runs once per sentence: a block drops that sentence. |
 | `AFTER_TTS` | ASYNC | `(text: str, ctx) -> None` | After TTS audio was sent. Payload is the final synthesized text. |
 
 ### Voice Pipeline
@@ -1149,7 +1149,7 @@ member management API.
 
 | Trigger | Execution | Signature | Description |
 |---------|-----------|-----------|-------------|
-| `BEFORE_TOOL_USE` | SYNC | `(ToolCallEvent, ctx) -> HookResult` | Before a tool executes (AIChannel, realtime channels, conference, external/ACP tools). Block denies the call. **Fails closed**: a hook that raises, times out or returns something unusable denies the call; the model then reads `Tool 'x' denied by pre-execution hook.`, never the hook's error, which reaches ON_TOOL_CALL's observers on `error_detail` (an external tool handler decides and reports the call itself). A room context that cannot be built refuses the call too. |
+| `BEFORE_TOOL_USE` | SYNC | `(ToolCallEvent, ctx) -> HookResult` | Before a tool executes (AIChannel, realtime channels, conference, external/ACP tools). Block denies the call, and the model reads the block's reason. **Fails closed**: a hook that raises, times out or returns something unusable denies the call; the model then reads `Tool 'x' denied by pre-execution hook.`, never the hook's error, which reaches ON_TOOL_CALL's observers on `error_detail` (an external tool handler decides and reports the call itself). A room context that cannot be built refuses the call too. |
 | `ON_TOOL_CALL` | SYNC | `(ToolCallEvent, ctx) -> HookResult` | A tool call executed (AIChannel, RealtimeVoiceChannel, skills, external/ACP tools). In the AI channel's tool loop, Block returns an error result to the model and marks the call failed, its structured copy dropped; `HookResult(metadata={"result": ...})` or `HookResult.modify(event)` supplies or overrides the tool result (`event.result is None` means the hook must provide it; a served result replaced with `None` reads as JSON `null`, on every channel) and keeps the copy; SYNC hooks chain, each seeing the result the previous one left, and ASYNC observers see the final one as the model reads it (a replacement serialized), a blocked call included (`is_error=True`), while a report on a call whose outcome the model already read (an external tool's, one the provider ran itself) reaches them as it was read, whatever a SYNC hook returned; `event.structured_content` is the copy the tool-call event carries for UI surfaces (MCP `structuredContent`), which `metadata={"structured_content": ...}` replaces and `None` clears. RFC §9 lists this ASYNC; code invokes it through the sync pipeline. |
 | `AFTER_TOOL_ROUND` | SYNC | `(ToolRoundEvent, ctx) -> HookResult` | Between two rounds of an AIChannel's tool loop, after each round the channel ran calls in. The event carries the round whole (`calls`, the channel's `results`, the provider's `answered`) and the names of the turn's toolset (`tools`). Act on it in place: `event.withdraw(*names)` takes tools out of the rest of the turn with every guarantee of a BEFORE_AI_GENERATION withdrawal, `event.add_message(text)` is what the next round reads after the results. A BLOCK stops the hooks after it and changes nothing of the round; a MODIFY's event is not read. Not fired by realtime sessions, a reasoning backend's agent or an ACP agent's own loop. |
 | `ON_USER_INPUT_REQUIRED` | SYNC | `(PendingInputEvent, ctx) -> HookResult` | A `HumanInputHandler`-backed tool paused awaiting human input. Sync so the notification (e.g. WebSocket push) lands before `wait()` starts blocking; block auto-rejects the pending request. |
@@ -1316,7 +1316,7 @@ Provider notes:
   and omits temperature for current Claude reasoning ids. Explicit flags take
   precedence, and a custom `base_url` keeps conservative legacy behavior.
 
-- **Gemini on Vertex AI** (`roomkit.providers.gemini.vertex`) — subclass of `GeminiAIProvider` serving the same Gemini models through a Google Cloud project with a pinned region (`GeminiVertexConfig` requires `project` and `location`, e.g. `"northamerica-northeast1"`; no API key — the identity is `impersonate_service_account`, else `service_account_json`, else ADC). Use it when data residency matters (Québec Law 25 / PIPEDA). Generation, streaming, thinking, and the model catalog are inherited unchanged.
+- **Gemini on Vertex AI** (`roomkit.providers.gemini.vertex`) — subclass of `GeminiAIProvider` serving the same Gemini models through a Google Cloud project with a pinned region (`GeminiVertexConfig` requires `project` and `location`, e.g. `"northamerica-northeast1"`; no API key — the identity is `impersonate_service_account`, else `service_account_json`, else ADC). Use it when data residency matters (Québec Law 25 / PIPEDA). Generation, streaming, thinking, and the model catalog are inherited; the one addition is billing labels: `GeminiVertexConfig.labels` (`{"tenant": "acme"}`) rides every request as `GenerateContentConfig.labels`, so Cloud Billing splits one project's spend per tenant or partner: metadata only, 24 to 48 h behind in the report, never a source of truth; Google's label rules (64 labels, 63 characters, lowercase letters, digits, `_`, `-`, a key starts with a letter) are enforced when the config is built, and the field is Vertex-only because the Developer API refuses it.
 - **OpenRouter** (`roomkit.providers.openrouter`) — subclass of `OpenAIAIProvider` pointed at `https://openrouter.ai/api/v1`; `OpenRouterConfig` subclasses `OpenAIConfig` (adds `site_url`/`app_name` attribution headers) and `model` is a required slug like `"anthropic/claude-sonnet-4.5"`. Reasoning is forwarded to any upstream model via OpenRouter's unified `reasoning` object. Model-listing nuance: OpenRouter's `/models` items omit the `object`/`owned_by` fields the OpenAI SDK expects, so `list_models()` reads the raw JSON instead.
 - **LiteLLM proxy** (`roomkit.providers.litellm`) — subclass of `OpenAIAIProvider` pointed at a self-hosted LiteLLM gateway (default `http://localhost:4000`); the extra installs the `openai` SDK, deliberately **not** the `litellm` package (the gateway keeps keys/budgets/routing server-side). `model` is the deployment's public alias and `api_key` a virtual or master key, both required. Reasoning rides LiteLLM's cross-provider normalisation: `reasoning_effort` passes through, `thinking_budget>0` maps to a `thinking` token budget, and the trace comes back in `reasoning_content`; `thinking_budget=0` sends no reasoning params at all (LiteLLM has no disable token every upstream translator accepts — force-off belongs in the proxy's per-model config or `extra_body`). `available_models()` is empty (the model list is the operator's config); `list_models()` reads the proxy's `/model/info` — context window, vision flag, and per-token costs per alias, with a load-balanced group merged into the one entry every deployment can honour (smallest window, vision and price only when unanimous) and LiteLLM's `0`-for-unknown costs mapped to "unpriced" rather than free.
 - **Outbound policy** (`transport=`) — `OpenAIAIProvider(config, transport=...)`, and every provider built on it (`AzureAIProvider`, `OpenRouterAIProvider`, `create_vllm_provider(config, transport=...)`, the inherited xAI, DeepSeek, Qwen, LiteLLM, Cerebras, Meta), sends every request through an `httpx.AsyncBaseTransport` placed inside the SDK's own default client (redirects followed, each hop through the transport; per-request timeout kept). The transport owns its connection pool and limits, and httpx reads no environment proxy beside a transport. The seam for a policy that judges the address actually dialled when users name the endpoint, or a `MockTransport` in a test; closed with the provider. See `examples/openai_outbound_policy.py`.
@@ -1909,6 +1909,13 @@ know, so a text-only consumer filtering on `isinstance(chunk, str)` is
 unaffected. Every turn ends on one, whatever its provider streams: a
 provider read through its `generate()` runs the same loop.
 
+Every provider hands the loop a call the same way (RFC §6.4): arguments as
+a mapping, never an error (none or `null` is `{}`, anything unparseable is
+kept under `raw`); an id no other call of the response carries, minted when
+the server gave none or repeated one; and `partial=True` on a call the
+response cut before its arguments were complete, which the loop answers
+without running it. The shared rules are `roomkit.providers.ai.tool_calls`.
+
 Two bounds keep a degenerate model from running away with a turn:
 `max_tool_rounds` (50 by default) caps how many rounds run, and a **32-call
 ceiling per round** caps how wide one round may be. The per-round cap is applied before
@@ -2029,7 +2036,7 @@ OpenAI-family providers (OpenAI, Azure, OpenRouter, LiteLLM, xAI) and PolarGrid 
 
 ## Multi-Speaker Rooms
 
-AIChannel builds the model's history from the room's events, and every event that is not the AI's own becomes a `user` turn. In a room where several people speak — a Teams channel, a WhatsApp group, a shared inbox — that flattening erases who said what, and the model guesses the addressee wrong (a reply opening with the wrong colleague's name). So when the history window holds **two or more distinct speakers** (a person by name, or a channel whose sender has no name; the runtime's system events aside), each user turn reaches the model as `"Name: text"` or `"@channel: text"` and a one-line note joins the notes the turn's input carries (not the system prompt, which stays the same from turn to turn while the speakers in the window change):
+AIChannel builds the model's history from the room's events, and every event that is not the AI's own becomes a `user` turn. In a room where several people speak — a Teams channel, a WhatsApp group, a shared inbox — that flattening erases who said what, and the model guesses the addressee wrong (a reply opening with the wrong colleague's name). So when the history window holds **two or more distinct speakers** (a person by name, or a channel whose sender has no name; the runtime's system events aside), each line of a user turn reaches the model as `Name: "line"` or `@channel: "line"`, what was typed following as a JSON string, and a one-line note joins the notes the turn's input carries (not the system prompt, which stays the same from turn to turn while the speakers in the window change):
 
 ```text
 [Speaker labels from the runtime: several people take part in this conversation.
@@ -2046,7 +2053,7 @@ The speaker of an event is resolved in this order:
 
 1. `event.metadata["sender_name"]` — stamped at ingress. The Teams webhook parser and the WhatsApp Personal (neonize) source write it, a voice channel's diarization names each voice of a shared microphone with it; a host does the same by passing `InboundMessage(..., metadata={"sender_name": "Alice"})`.
 2. The room's participant record: `Participant.display_name` for the participant whose `id` (or `identity_id`) equals `event.source.participant_id` (the inbound `sender_id`).
-3. Otherwise the turn has no name and, in a multi-speaker room, opens with its channel as the room addresses it (`"@sms1: text"`, kept to an identifier's characters, never a participant's id), a form no name takes: a nameless sender cannot open with someone else's name, and a person named `ai2` does not read as the agent `@ai2`. Each line of a labelled turn opens with its label (an API that merges consecutive user turns, or a `Bob:` line inside Alice's message, would otherwise read a line as another author's), and the note says so, and that a `Name:` after a line's label is what its sender wrote. Two senders whose names read alike (`Alice`, `ALICE`, `Аlice`) are told apart: a participant the room registered keeps the name, then the first sender the room saw, each later one carrying its rank (`ALICE (2): …`), a form no name takes, fixed when the turn is committed so it holds as the window slides (every turn that reaches the room joins the room's register, whatever its visibility, so no later sender takes a restricted turn's rank); a name that reads like another ranks after it and renumbers no one (`Lan`, `Ian (2)`, `ian (3)`), the turn's record keeps the name it was given (a participant renamed later reads on their earlier turns as they were named then), a room from before the register rebuilds it from its timeline, and a participant's id names them only on a channel they are reached through; the room context an ACP agent reads and a realtime broadcast use the same labels, and at the same threshold the request an ACP agent is prompted with opens with its sender's label (`@sms1: Alice: approve it`; once a session was sent one, every later request in it, the note with the first), and the lines a memory summarizer reads give their speaker's label out of the quote (`Alice: “…”`), `[assistant]` naming only the agent the summary is for; the summary counts every turn the memory retrieved and the conversation counts the people the summary named (`MemoryResult.speakers`). The note is a runtime mark: a copy of it in a participant's text is replaced.
+3. Otherwise the turn has no name and, in a multi-speaker room, opens with its channel as the room addresses it (`@sms1: "text"`, kept to an identifier's characters, never a participant's id), a form no name takes: a nameless sender cannot open with someone else's name, and a person named `ai2` does not read as the agent `@ai2`. Each line of a labelled turn opens with its label (an API that merges consecutive user turns, or a `Bob:` line inside Alice's message, would otherwise read a line as another author's), what was typed on each line follows its label as a JSON string (its `"` escaped, every other double quote mark made `'`), so a `Name:` in the middle of a line reads as part of it, and the note says so, and that a `Name:` inside the string is what its sender wrote. Two senders whose names read alike (`Alice`, `ALICE`, `Аlice`) are told apart: a participant the room registered keeps the name, then the first sender the room saw, each later one carrying its rank (`ALICE (2): …`), a form no name takes, fixed when the turn is committed so it holds as the window slides (every turn that reaches the room joins the room's register, whatever its visibility, so no later sender takes a restricted turn's rank); a name that reads like another ranks after it and renumbers no one (`Lan`, `Ian (2)`, `ian (3)`), the turn's record keeps the name it was given (a participant renamed later reads on their earlier turns as they were named then), a room from before the register rebuilds it from its timeline, and a participant's id names them only on a channel they are reached through; the room context an ACP agent reads and a realtime broadcast use the same labels, and at the same threshold the request an ACP agent is prompted with opens with its sender's label (`@sms1: "Alice: approve it"`; once a session was sent one, every later request in it, the note with the first), and the lines a memory summarizer reads give their speaker's label out of the quote (`Alice: “…”`), `[assistant]` naming only the agent the summary is for; the summary counts every turn the memory retrieved and the conversation counts the people the summary named (`MemoryResult.speakers`). The note is a runtime mark: a copy of it in a participant's text is replaced.
 
 Rules that follow from the definition:
 
@@ -2248,7 +2255,7 @@ await kit.subscribe_room("room-1", my_callback)
 # Callback receives:
 # TOOL_CALL_DELTA: {tool_calls: [{id, name, arguments_chars}], round, channel_id}
 # TOOL_CALL_START: {tool_calls: [{id, name, arguments}], round, channel_id}
-# TOOL_CALL_END: {tool_calls: [{id, name, result}], round, channel_id, duration_ms}
+# TOOL_CALL_END: {tool_calls: [{id, name, result, status}], round, channel_id, duration_ms}
 ```
 
 `TOOL_CALL_DELTA` is streaming-only. It reports the running argument size while
@@ -2308,6 +2315,7 @@ OllamaConfig(
     model="qwen3:8b",                # any pulled model
     max_tokens=None,                 # → options.num_predict
     timeout=120.0,                   # long: cold-start + reasoning is slow
+    connect_timeout=5.0,             # TCP connect alone (default), see Connect vs Read Timeout
     think=None,                      # None = model default, True/False = explicit
     keep_alive="5m",                 # how long the model stays loaded
     num_ctx=8192,                    # context window override
@@ -2426,7 +2434,8 @@ agent = ACPChannel(
     cwd="/srv/workspaces/my-project",  # required, absolute — on the AGENT's host
     additional_directories=None,       # extra absolute dirs for the session
     env=None,                          # added to the SDK's restricted env
-    mcp_servers=None,                  # ACP MCP-server descriptors (SDK types)
+    mcp_servers=None,                  # ACP MCP-server descriptors, or room_id -> them
+    session_config=None,               # {"mode": "default"}: set on every session opened
     authentication_method=None,        # optional ACP auth method id
     external_tool_handler=None,        # permission policy; None = reject all
     name=None, role=None, description=None,  # its identity, as an Agent's
@@ -2474,6 +2483,28 @@ RoomKit limits only this one stream to two attempts.
 
 Runnable without a remote agent: `examples/acp_session_recovery.py`.
 
+### Session setup
+
+What a session is opened with is set per room (RFC ACP agent channel, *Session setup*). `mcp_servers` is a list given to every room's sessions, or a function of the room id (sync or async), called each time a session opens for that room: a stdio server can be told its room in its `env`. `session_config` maps ACP config ids to values (`mode`, `model`, an agent's own options) and is set on every session the channel opens, before its first prompt: the room's first, one rebuilt after a recovery, one opened after the agent restarted, a standalone turn's, a task's child room's. A value the session already announces is not set again. A value the host sets with `set_config_option(room_id, id, value)` belongs to the room: its next session is set to it too, over `session_config`, until `close_session(room_id)` forgets it. A value the agent refuses fails the opening closed: the session is released, never prompted, and the turn fails (or `set_config_option` raises) with a `RuntimeError` naming the option.
+
+```python
+from acp.schema import EnvVariable, McpServerStdio
+
+agent = ACPChannel(
+    "claude-code",
+    command=["npx", "--no-install", "@agentclientprotocol/claude-agent-acp@0.61.0"],
+    cwd="/srv/workspace",
+    mcp_servers=lambda room_id: [
+        McpServerStdio(name="notes", command="notes-server", args=[],
+                       env=[EnvVariable(name="NOTES_ROOM", value=room_id)]),
+    ],
+    session_config={"mode": "default"},  # every MCP call and write is asked of RoomKit
+    external_tool_handler=PolicyExternalToolHandler(policy=ToolPolicy(allow=["mcp__notes__*"])),
+)
+```
+
+Example: `examples/acp_room_mcp.py`.
+
 ### Process and session model
 
 One connection per channel, opened lazily on the first prompt; one ACP **session** per Room, created on demand; its `session/new` `_meta` carries `roomkit.live/roomId` and `roomkit.live/sessionScope: "room"`. A standalone `INSTRUCTION` (RFC §10.1.1 step 7) runs in a session of its own, opened for that turn with `roomkit.live/sessionScope: "turn"` and closed after it; the room's session is neither prompted nor told, and catches up on the reply at its next turn. A relay that keeps one remote session per room must file a `"turn"` session apart and close only that one; one that answers the turn with an open session fails the turn with `RuntimeError`. Prompts are serialized per Room (per-room lock); different Rooms progress concurrently through the same connection. When the transport reports the connection dead (for stdio: the subprocess exited), the next prompt reconnects and clears all session mappings — a reconnect never resumes sessions. The client declares no fs/terminal capabilities: `fs/*`, `terminal/*`, and `session/request_input` (elicitation) requests get `method_not_found` — `ON_USER_INPUT_REQUIRED` never fires from ACP.
@@ -2509,7 +2540,7 @@ ACP fixes the envelope and leaves the payload to the agent, so `CLIChannel(conso
 
 ### Permission flow
 
-The handler hears only of the calls the agent submits, and the agent's own mode decides which: Claude Code in `auto` mode (a user's settings, inherited with `HOME`) acts without asking; `default` asks before any action that is not a read; `plan` refuses them itself. Set it per room: `await agent.set_config_option(room_id, "mode", "default")`.
+The handler hears only of the calls the agent submits, and the agent's own mode decides which: Claude Code in `auto` mode (a user's settings, inherited with `HOME`) acts without asking; `default` asks before any action that is not a read; `plan` refuses them itself. Set it on every session with `session_config={"mode": "default"}`, or for one room with `await agent.set_config_option(room_id, "mode", "default")`, which the room keeps across a recovery or an agent restart.
 
 Every agent `session/request_permission` goes to the `external_tool_handler` (`ExternalToolHandler` ABC from `roomkit.tools`, with `PolicyExternalToolHandler` and `ToolDecision`):
 
@@ -2558,7 +2589,8 @@ class TerminalPermissionHandler(ExternalToolHandler):
         return ToolDecision(approved=answer.strip().casefold() in {"y", "yes"})
 
     async def on_tool_result(self, tool_name, tool_input, result, **kwargs) -> None:
-        await self._fire_on_tool_hook(tool_name, tool_input, result)  # ON_TOOL_CALL hooks
+        # ON_TOOL_CALL hooks; the keywords (is_error, tool_call_id, ...) are its own
+        await self._fire_on_tool_hook(tool_name, tool_input, result, **kwargs)
 
 kit = RoomKit()
 cli = CLIChannel("you", show_thinking=True, markdown=True,
@@ -3065,7 +3097,8 @@ others with `voice.add_backend(sip_backend)`. The added backend's audio goes
 through the same pipeline, bridge and STT; everything sent to one of its
 sessions (bridged audio, TTS, transcriptions, the hang-up of `kit.leave()`)
 goes out on it. A session finds its transport through `kit.join(..., backend=)`
-or by the added backend reporting it holds the session.
+or by the added backend reporting it holds the session. The channel needs a primary
+backend (else `RuntimeError`); closing it closes the added backends.
 
 ## DTMF
 
@@ -5014,6 +5047,42 @@ await kit.resolve_participant(
 )
 ```
 
+### Identity Verification
+
+Identification says whose an address is; verification says the person writing
+has proven it (RFC §11.7). With `verification_policy=VerificationPolicy()`,
+every message of an identified sender carries `event.source.verification`, and
+an unverified one fires `ON_VERIFICATION_REQUIRED` (SYNC): `HookResult.allow()`
+holds it from the agents (the room's transports still see it),
+`HookResult.allow_unverified()` passes it, `block()` refuses it. The method
+(a page behind a link, a code replied in the conversation) is the integrator's.
+
+```python
+kit = RoomKit(identity_resolver=resolver, verification_policy=VerificationPolicy())
+
+@kit.hook(HookTrigger.ON_VERIFICATION_REQUIRED)
+async def ask_to_verify(event, ctx) -> HookResult:
+    state = await kit.sender_verification(event, ctx)  # identity_id, request_id
+    if state is not None and state.request_id is None:
+        request, secret = await kit.request_verification(
+            state.identity_id, room_id=event.room_id,
+            channel_id=event.source.channel_id, window_start=event.created_at,
+        )
+        ...  # send the link after the hook returns (the room is locked)
+    return HookResult.allow()
+
+# The integrator's page, after its own check:
+await kit.complete_verification(request_id, secret)  # or record_failed_attempt(request_id)
+await kit.revoke_verification(identity_id, reason="advisor")
+```
+
+On completion the held messages of the request's window are released to the
+agents as the author's own turns. `ON_VERIFICATION_COMPLETED` and
+`ON_VERIFICATION_ENDED` (ASYNC; `ended` is `"verification"` or `"request"`)
+fire when it happens; a timer ends a verification at its expiry, and
+`async with RoomKit(...)` re-arms timers from the store. A code reply
+(`method="code"`) is consumed, never stored.
+
 ## Realtime Ephemeral Events
 
 Ephemeral events (typing, presence, reactions) are not stored in conversation history. They're delivered in real-time to subscribers.
@@ -5172,6 +5241,24 @@ await kit.attach_channel("room-1", "sms-out",
     retry_policy=RetryPolicy(max_retries=3, base_delay_seconds=1.0),
 )
 ```
+
+## Connect vs Read Timeout
+
+Every httpx-backed provider config in `roomkit.providers` carries `timeout` (the read/write/pool budget, sized for the slowest response) and `connect_timeout` (default 5 s, the TCP connect alone, TLS handshake included). Each adapter hands its client or SDK `httpx.Timeout(timeout, connect=connect_timeout)` rather than a bare float, so a host that no longer accepts connections is given up on in seconds rather than after the read budget: with one float for both, the kernel exhausts its SYN retries first, about two minutes per attempt, whatever the value.
+
+```python
+from roomkit.providers.polargrid import PolarGridConfig
+
+config = PolarGridConfig(
+    api_key="pg_...",
+    timeout=240.0,  # read/write/pool: sized for the slowest generation
+    connect_timeout=5.0,  # TCP connect alone (the default)
+)
+```
+
+Applies to the AI providers (OpenAI and its derivatives, Azure, Anthropic, Ollama, vLLM, PolarGrid), the image providers, and the SMS, RCS, email, Telegram, Messenger and webhook transports. `AnamConfig.timeout` has no counterpart: it bounds the SDK's connect call itself, not an HTTP client. Raise `connect_timeout` on a link or a TLS-terminating proxy slow enough to need more.
+
+Outside `roomkit.providers`, the same pair sits on `GrokTTSConfig`, `OpenAIVisionConfig`, `GeminiVisionConfig`, `GeminiTTSConfig` and `GeminiSTTConfig`, and is a keyword on `WebSocketAvatarProvider` and `SSESource`. Two read differently: `SSESource.timeout` bounds write and pool only (its read side is left unbounded so the stream survives idle periods between events; `connect_timeout` is what gives up on a dead host), and the Gemini providers (TTS, STT, vision) hand the SDK their own httpx client through `HttpOptions.httpx_async_client` rather than a per-request timeout, because google-genai flattens a per-request `httpx.Timeout` to its largest value (that client also keeps every SDK call on httpx when aiohttp is installed). The STT provider's Files API calls go through the SDK's classic path, which takes one value in milliseconds, so they carry the flat `timeout` and no connect split.
 
 ## Chain Depth Limit
 

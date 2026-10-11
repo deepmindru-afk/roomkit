@@ -49,6 +49,7 @@ OllamaConfig(
     model="qwen3:8b",                # any pulled model
     max_tokens=None,                 # → options.num_predict
     timeout=120.0,                   # long: cold-start + reasoning is slow
+    connect_timeout=5.0,             # TCP connect alone (default), see Connect vs Read Timeout
     think=None,                      # None = model default, True/False = explicit
     keep_alive="5m",                 # how long the model stays loaded
     num_ctx=8192,                    # context window override

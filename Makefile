@@ -71,6 +71,11 @@ docs:
 docs-serve:
 	uv run --extra docs mkdocs serve -f $(DOCS_DIR)/mkdocs.yml
 
+# llms.txt and llms-full.txt are written here (llms-full.txt from docs/c7); the
+# docs site serves copies of them. Never edit the copies in roomkit-docs.
+llms-sync: llms-full
+	cp llms.txt llms-full.txt $(DOCS_DIR)/docs/
+
 # --- Website deployment ---
 
 deploy:

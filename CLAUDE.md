@@ -36,6 +36,8 @@ The docs at `../roomkit-docs/` are built with MkDocs Material. Key sections:
 
 When adding new features, update the corresponding docs page in `roomkit-docs`. When adding new API surface, ensure `mkdocstrings` can generate its reference.
 
+`llms.txt` and `llms-full.txt` are written in this repo: edit `llms.txt` and the topic pages in `docs/c7/`, never `llms-full.txt` itself. `make llms-sync` rebuilds `llms-full.txt` and copies both into `roomkit-docs/docs/`, where they are committed as copies and never edited.
+
 ## Build & Test Commands
 
 ```bash
@@ -50,6 +52,7 @@ uv run ty check src/roomkit/     # Type check (ty)
 uv run bandit -r src/ -c pyproject.toml  # Security scan
 uv run pytest --cov=roomkit --cov-report=term-missing  # Coverage (80% minimum)
 make check-models                # Verify providers/*/models.py against upstream (run by make release)
+make llms-sync                   # Rebuild llms-full.txt from docs/c7, copy both llms files into roomkit-docs
 make release VERSION=x.y.z      # Release workflow
 ```
 
