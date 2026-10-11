@@ -82,6 +82,32 @@ _DEFAULT_ROOM_HISTORY = 20
 """Room messages an agent catches up on when it is asked to act (RFC §19.3.2)."""
 
 
+def _agent_transport(
+    command: Sequence[str] | None,
+    transport: ACPTransport | None,
+    *,
+    cwd: str,
+    env: Mapping[str, str] | None,
+    inherit_env: Sequence[str] | None,
+) -> ACPTransport:
+    """How the channel reaches its agent: a spawn of *command*, or the caller's *transport*."""
+    if command is not None and transport is not None:
+        raise ValueError(
+            "command spawns the agent here and transport reaches one that is "
+            "already running: pass one, not both"
+        )
+    if command is not None:
+        return StdioACPTransport(command, cwd=cwd, env=env, inherit_env=inherit_env)
+    if transport is None:
+        raise ValueError("pass command to spawn the agent, or transport to reach one")
+    if env is not None or inherit_env is not None:
+        raise ValueError(
+            "env and inherit_env configure the default subprocess spawn; "
+            "a custom transport carries its own environment"
+        )
+    return transport
+
+
 class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMixin, Channel):
     """Connect a RoomKit Room to an external ACP coding agent.
 
@@ -211,28 +237,13 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         self.role = role
         self.description = description
         self._instructions = instructions if instructions and instructions.strip() else None
-        if command is not None and transport is not None:
-            raise ValueError(
-                "command spawns the agent here and transport reaches one that is "
-                "already running: pass one, not both"
-            )
         # Validated here, not in the transport: ``cwd`` is a session/new field
         # first — with a remote transport it names a directory on the agent's
         # machine, which this process may not have at all.
         self._cwd = _absolute_path(cwd, field_name="cwd")
-        if command is not None:
-            self._transport: ACPTransport = StdioACPTransport(
-                command, cwd=self._cwd, env=env, inherit_env=inherit_env
-            )
-        elif transport is not None:
-            if env is not None or inherit_env is not None:
-                raise ValueError(
-                    "env and inherit_env configure the default subprocess spawn; "
-                    "a custom transport carries its own environment"
-                )
-            self._transport = transport
-        else:
-            raise ValueError("pass command to spawn the agent, or transport to reach one")
+        self._transport = _agent_transport(
+            command, transport, cwd=self._cwd, env=env, inherit_env=inherit_env
+        )
 
         self._additional_directories = [
             _absolute_path(path, field_name="additional_directories")
