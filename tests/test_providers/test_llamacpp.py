@@ -498,6 +498,7 @@ class TestServerEnvironment:
         if sys.platform == "win32":
             pytest.skip("PyInstaller repoints no loader variable on Windows")
         monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "_MEIPASS", "/bundle/_internal", raising=False)
         monkeypatch.setenv(self._VAR, "/bundle/_internal")
 
     def test_a_frozen_host_hands_the_server_its_original_library_path(
@@ -530,6 +531,27 @@ class TestServerEnvironment:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delattr(sys, "frozen", raising=False)
+        monkeypatch.setenv(self._VAR, "/opt/mine")
+
+        assert self._env()[self._VAR] == "/opt/mine"
+
+    def test_a_frozen_host_without_an_original_keeps_the_user_s_entries(
+        self, frozen: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No ``_ORIG``: the bootloader prepended the bundle to the user's own
+        value (macOS keeps none), so only the bundle's entries go."""
+        monkeypatch.delenv(f"{self._VAR}_ORIG", raising=False)
+        monkeypatch.setenv(self._VAR, os.pathsep.join(["/bundle/_internal/lib", "/opt/mine"]))
+
+        assert self._env()[self._VAR] == "/opt/mine"
+
+    def test_a_host_frozen_by_another_tool_passes_its_environment_through(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """cx_Freeze and the like set ``sys.frozen`` but repoint nothing."""
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+        monkeypatch.delenv(f"{self._VAR}_ORIG", raising=False)
         monkeypatch.setenv(self._VAR, "/opt/mine")
 
         assert self._env()[self._VAR] == "/opt/mine"

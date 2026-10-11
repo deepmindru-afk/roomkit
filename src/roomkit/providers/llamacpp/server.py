@@ -198,17 +198,34 @@ _BUNDLE_LOADER_VARS = ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH")
 
 
 def _host_environment() -> dict[str, str]:
-    """The host's environment, with a frozen host's loader path set back."""
+    """The host's environment, with a PyInstaller bundle's loader path set back.
+
+    The bootloader points the loader path at the bundle (``sys._MEIPASS``)
+    and keeps the caller's value as ``<VAR>_ORIG``; with no ``_ORIG``, only
+    the bundle's entries are its own. A host frozen by another tool
+    repoints nothing, and its environment passes through.
+    """
     env = dict(os.environ)
-    if not getattr(sys, "frozen", False):
+    bundle = getattr(sys, "_MEIPASS", None)
+    if not getattr(sys, "frozen", False) or not isinstance(bundle, str):
         return env
     for var in _BUNDLE_LOADER_VARS:
         original = env.pop(f"{var}_ORIG", None)
         if original is not None:
             env[var] = original
+            continue
+        kept = [d for d in env.get(var, "").split(os.pathsep) if d and not _within(d, bundle)]
+        if kept:
+            env[var] = os.pathsep.join(kept)
         else:
             env.pop(var, None)
     return env
+
+
+def _within(directory: str, bundle: str) -> bool:
+    """Whether *directory* is the bundle or one of its subdirectories."""
+    directory, bundle = os.path.normpath(directory), os.path.normpath(bundle)
+    return directory == bundle or directory.startswith(bundle + os.sep)
 
 
 def _environment(binary: LlamaBinary) -> dict[str, str]:
