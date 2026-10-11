@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from roomkit.channels.acp import ACPChannel
     from roomkit.channels.ai import AIChannel
     from roomkit.core.framework import RoomKit
 
@@ -27,11 +28,13 @@ class Orchestration(ABC):
     """
 
     @abstractmethod
-    def agents(self) -> Sequence[AIChannel]:
+    def agents(self) -> Sequence[AIChannel | ACPChannel]:
         """Return agents to register and attach to the room.
 
         The framework calls this to determine which agents should be
         registered on the kit and attached to the room at creation time.
+        An external agent over ACP is one where the strategy takes it (a
+        discussion does).
         """
 
     @abstractmethod

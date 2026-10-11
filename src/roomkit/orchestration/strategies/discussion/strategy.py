@@ -66,7 +66,7 @@ class Discussion(Orchestration):
 
     def __init__(
         self,
-        agents: Sequence[AIChannel],
+        agents: Sequence[AIChannel | ACPChannel],
         *,
         people: Sequence[str] | None = None,
         addressed_only: bool = False,
@@ -91,7 +91,7 @@ class Discussion(Orchestration):
         self.dispatch = dispatch
         self.dispatch_timeout = dispatch_timeout
 
-    def agents(self) -> list[AIChannel]:
+    def agents(self) -> list[AIChannel | ACPChannel]:
         """The agents of the discussion."""
         return list(self._agents)
 
@@ -113,7 +113,7 @@ class Discussion(Orchestration):
 
 
 def _check(
-    agents: Sequence[AIChannel],
+    agents: Sequence[AIChannel | ACPChannel],
     everyone: Sequence[str] | None,
     max_turns: int | None,
     max_depth: int | None,
