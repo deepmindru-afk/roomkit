@@ -82,6 +82,7 @@ class RoomLifecycleMixin(HelpersMixin):
     _file_announced: Any  # see RoomLifecycleHost
     _stop_room_recordings: Any  # see RoomLifecycleHost
     _install_strategy: Any  # see StrategyMixin
+    _forget_strategy: Any  # see StrategyMixin
 
     async def create_room(
         self,
@@ -131,6 +132,8 @@ class RoomLifecycleMixin(HelpersMixin):
             ),
         )
         result = await self._store_recorded_room(room, recorders or [])
+        # A strategy recorded for this id belonged to a room that is gone.
+        await self._forget_strategy(room.id)
 
         # Apply orchestration strategy
         orch = (

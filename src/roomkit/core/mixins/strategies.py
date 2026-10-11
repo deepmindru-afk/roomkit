@@ -136,6 +136,25 @@ class StrategyMixin(HelpersMixin):
         if installed is None and room_id in self._discussions:
             raise ValueError(f"Room {room_id} holds a discussion: no other strategy can join it")
 
+    async def _forget_strategy(self, room_id: str) -> None:
+        """Take back the strategy recorded for *room_id* when the store has
+        just created the room anew.
+
+        The record outlived its room (deleted from the store, or overwritten
+        by a create with the same id): what its install set up in this
+        process (room hooks, tools and turn runners, the strategy's own
+        state) would serve the new room, and the record would refuse it a
+        strategy (RFC §19.7). The new room holds none of the old one's
+        bindings or metadata, so there are none to take back.
+        """
+        installed = self._room_strategies.get(room_id)
+        if installed is None:
+            return
+        await installed.strategy.uninstall(self, room_id)  # ty: ignore[invalid-argument-type]
+        installed.attached, installed.keys = [], []
+        await self._take_back(room_id, installed)
+        del self._room_strategies[room_id]
+
     async def _install_strategy(
         self, room_id: str, strategy: Orchestration, *, organization_id: str | None
     ) -> None:

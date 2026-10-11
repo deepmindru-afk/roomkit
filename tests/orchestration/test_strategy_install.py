@@ -205,6 +205,46 @@ async def test_create_room_installs_through_the_same_path() -> None:
     await kit.close()
 
 
+async def test_a_room_created_again_takes_a_strategy_again() -> None:
+    """A room id used again after its room was deleted: the strategy recorded
+    for the old room is taken back, not left to refuse the new one or to run
+    its hooks there."""
+    kit = RoomKit()
+    await kit.create_room(room_id="r1", orchestration=_Custom())
+    await kit.store.delete_room("r1")
+
+    again = _Custom()
+    await kit.create_room(room_id="r1", orchestration=again)
+
+    assert kit.room_strategy("r1") is again
+    assert kit.hook_engine.room_hook_names("r1").count("custom_tag") == 1
+    await kit.close()
+
+
+async def test_a_room_created_again_without_a_strategy_keeps_none_of_the_old() -> None:
+    kit = RoomKit()
+    await kit.create_room(room_id="r1", orchestration=_Custom())
+    await kit.store.delete_room("r1")
+
+    await kit.create_room(room_id="r1", orchestration=None)
+
+    assert kit.room_strategy("r1") is None
+    assert "custom_tag" not in kit.hook_engine.room_hook_names("r1")
+    await kit.close()
+
+
+async def test_a_discussion_room_created_again_takes_a_discussion_again() -> None:
+    kit = RoomKit()
+    await kit.create_room(room_id="r1", orchestration=Discussion([_agent("a"), _agent("b")]))
+    await kit.store.delete_room("r1")
+
+    again = Discussion([_agent("c"), _agent("d")])
+    await kit.create_room(room_id="r1", orchestration=again)
+
+    assert kit.room_strategy("r1") is again
+    await kit.close()
+
+
 @pytest.mark.parametrize("kind", ["loop", "supervisor"])
 async def test_a_strategy_that_runs_turns_gives_them_back(kind: str) -> None:
     writer = _agent("writer", "draft", "draft", "plain answer")
