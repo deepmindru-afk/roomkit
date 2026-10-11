@@ -533,3 +533,98 @@ class TestOneOpeningAtATime:
         assert channel.session_id(ROOM) is None
         assert channel._room_locks == channel._opening_locks == {}
         await channel.close()
+
+
+class TestACancelReachesATurnWhileItsSessionOpens:
+    """A turn holds the room from the start, its session's opening included (item 7)."""
+
+    @staticmethod
+    async def _cancelled_while(
+        channel: ACPChannel, event: RoomEvent, reached: asyncio.Event
+    ) -> Any:
+        """Start a turn, cancel the room once *reached* is set, and drain the turn."""
+        output = await channel.on_event(event, _binding(event.room_id), _context(event))
+        assert output.response_stream is not None
+        drain = asyncio.create_task(_drain(output.response_stream))
+        await reached.wait()
+        assert channel._prompting(event.room_id)
+        assert channel.active_turns == 1
+        assert await channel.cancel(event.room_id) is True
+        await drain
+        return output
+
+    @staticmethod
+    def _hang(target: Any, name: str, reached: asyncio.Event) -> None:
+        async def hangs(*args: Any, **kwargs: Any) -> Any:
+            reached.set()
+            await asyncio.sleep(3600)
+
+        setattr(target, name, hangs)
+
+    def _assert_never_prompted(self, channel: ACPChannel, connection: Any, output: Any) -> None:
+        assert connection.prompt_calls == []
+        assert output.response_metadata["acp"]["interrupted"] is True
+        assert channel._turns == {} and channel.active_turns == 0
+        assert all(not lock.locked() for lock in channel._room_locks.values())
+
+    async def test_while_the_rooms_session_is_created(self, tmp_path: Any) -> None:
+        channel, connection, _, _ = _setup(tmp_path)
+        reached = asyncio.Event()
+        self._hang(connection, "new_session", reached)
+
+        output = await self._cancelled_while(channel, _request(), reached)
+
+        self._assert_never_prompted(channel, connection, output)
+        assert channel.session_id(ROOM) is None
+        await channel.close()
+
+    @pytest.mark.parametrize("standalone", [False, True], ids=["room", "standalone"])
+    async def test_while_the_session_is_set_up(self, tmp_path: Any, standalone: bool) -> None:
+        channel, connection, _, _ = _setup(tmp_path, session_config={"mode": "default"})
+        reached = asyncio.Event()
+        self._hang(connection, "set_config_option", reached)
+
+        output = await self._cancelled_while(channel, _request(standalone=standalone), reached)
+
+        self._assert_never_prompted(channel, connection, output)
+        assert connection.closed_sessions == ["session-1"]
+        assert connection.cancelled_sessions == []  # nothing was prompting
+        assert channel._sessions == channel._turn_sessions == channel._session_rooms == {}
+        await channel.close()
+
+    async def test_while_the_agent_is_started(self, tmp_path: Any) -> None:
+        channel, connection, transport, _ = _setup(tmp_path)
+        reached = asyncio.Event()
+        self._hang(transport, "open", reached)
+
+        output = await self._cancelled_while(channel, _request(), reached)
+
+        self._assert_never_prompted(channel, connection, output)
+        assert channel._connection is None
+        await channel.close()
+
+    async def test_a_cancel_landing_as_the_opening_ends_closes_the_turn_session(
+        self, tmp_path: Any
+    ) -> None:
+        channel, connection, _, agent = _setup(tmp_path, session_config={"mode": "default"})
+        set_option = agent.set_config_option
+
+        async def cancels_as_it_answers(**kwargs: Any) -> Any:
+            # Scheduled now, it runs once the opening has finished and before
+            # the turn wakes up to prompt.
+            asyncio.ensure_future(channel.cancel(ROOM))
+            return await set_option(**kwargs)
+
+        connection.set_config_option = cancels_as_it_answers  # type: ignore[method-assign]
+        output = await channel.on_event(_request(standalone=True), _binding(), _context())
+        assert output.response_stream is not None
+        await _drain(output.response_stream)
+
+        self._assert_never_prompted(channel, connection, output)
+        assert connection.closed_sessions == ["session-1"]
+        assert channel._turn_sessions == {}
+        await channel.close()
+
+
+async def _drain(stream: Any) -> None:
+    [chunk async for chunk in stream]

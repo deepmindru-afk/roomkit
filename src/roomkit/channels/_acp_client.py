@@ -81,14 +81,14 @@ class _TurnState:
     tools: dict[str, _ToolState] = field(default_factory=dict)
     thinking_open: bool = False
     runner: asyncio.Task[Any] | None = None
-    rebuilding: bool = False
+    preparing: bool = False
+    """The runner opens or rebuilds the turn's session: no prompt went out yet."""
     # The request opened with its sender's label: once the agent accepts it,
     # the room's session labels every later request (RFC §6.4).
     labelled: bool = False
     # The prompt carried the channel's instructions: once the agent accepts
     # it, the room's session keeps them (RFC §6.4).
     instructed: bool = False
-    """The runner is rebuilding a refused session, before another prompt."""
     cancel_requested: bool = False
     started_at: float = field(default_factory=time.monotonic)
     segments: list[list[str]] = field(default_factory=list)

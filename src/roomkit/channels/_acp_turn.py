@@ -10,9 +10,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine, Mapping, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Mapping,
+    Sequence,
+)
 from contextlib import AbstractAsyncContextManager
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any
@@ -46,6 +55,15 @@ if TYPE_CHECKING:
     from roomkit.channels.acp_transport import ACPTransport
 
 logger = logging.getLogger("roomkit.channels.acp")
+
+
+def _opening_key(room_id: str) -> str:
+    """The turn registry key of a turn of *room_id* whose session is being opened.
+
+    Turns are filed by session id, and this one has none yet.
+    """
+    return f"roomkit.live/opening/{room_id}"
+
 
 _CLEAN_STOP_REASON = "end_turn"
 """The one ACP stop reason that means the agent finished what it was asked."""
@@ -103,11 +121,10 @@ class ACPTurnMixin:
         standalone: bool = False,
     ) -> AsyncIterator[StreamDelta]:
         async with self._room_turn_lock(room_id):
-            connection = await self._ensure_connection()
-            if standalone:
-                session_id = await self._open_turn_session(room_id, connection)
-            else:
-                session_id = await self._session_for(room_id, connection)
+            opened = await self._start_turn(room_id, standalone, metadata)
+            if opened is None:
+                return
+            connection, session_id = opened
             recovering = False
             completed = False
             try:
@@ -156,22 +173,74 @@ class ACPTurnMixin:
                     finally:
                         self._room_locks.pop(room_id, None)
 
+    async def _start_turn(
+        self, room_id: str, standalone: bool, metadata: ResponseMetadata
+    ) -> tuple[Any, str] | None:
+        """The connection and the session a turn prompts, opened where a cancel reaches them.
+
+        None when the room's turn was cancelled first, or the channel closed:
+        the turn is marked interrupted and never prompts.
+        """
+        discard = None
+        if standalone:
+            discard = functools.partial(self._close_opened, room_id)
+        opened = await self._prepared(
+            room_id, _opening_key(room_id), self._open_for_turn(room_id, standalone), discard
+        )
+        if opened is None:
+            metadata["acp"]["interrupted"] = True
+        return opened
+
+    async def _open_for_turn(self, room_id: str, standalone: bool) -> tuple[Any, str]:
+        """Connect, then open the session a turn prompts: the room's, or its own if standalone."""
+        connection = await self._ensure_connection()
+        if standalone:
+            return connection, await self._open_turn_session(room_id, connection)
+        return connection, await self._session_for(room_id, connection)
+
+    async def _close_opened(self, room_id: str, opened: tuple[Any, str]) -> None:
+        """Close the standalone session a cancelled turn had opened."""
+        connection, session_id = opened
+        await self._close_turn_session(room_id, session_id, connection)
+
     async def _rebuild_session(self, room_id: str, session_id: str, connection: Any) -> str | None:
-        """Keep reconstruction in the turn registry so public cancel can stop it."""
-        turn = _TurnState(room_id=room_id, rebuilding=True)
-        turn.runner = asyncio.create_task(self._replace_session(room_id, connection))
-        self._turns[session_id] = turn
+        """Rebuild the room's session where public cancel can stop it."""
+        return await self._prepared(
+            room_id, session_id, self._replace_session(room_id, connection)
+        )
+
+    async def _prepared[T](
+        self,
+        room_id: str,
+        key: str,
+        preparation: Coroutine[Any, Any, T],
+        discard: Callable[[T], Awaitable[None]] | None = None,
+    ) -> T | None:
+        """Run *preparation*, a turn's session being opened or rebuilt, as a preparing turn.
+
+        Registered under *key* in the turn registry, so :meth:`ACPChannel.cancel`
+        stops the runner: no prompt is out yet for the agent to cancel.
+        Returns None once the turn is cancelled or the channel closed; a
+        result that came too late is handed to *discard*.
+        """
+        turn = _TurnState(room_id=room_id, preparing=True)
+        turn.runner = asyncio.create_task(preparation)
+        self._turns[key] = turn
         try:
-            replacement = await turn.runner
+            result = await turn.runner
             # A cancel can land after the runner finishes but before we wake.
-            return None if self._closed or turn.cancel_requested else replacement
+            if not (self._closed or turn.cancel_requested):
+                return result
+            if discard is not None:
+                await discard(result)
+            return None
         except asyncio.CancelledError:
             if not turn.cancel_requested:
                 raise
             return None
         finally:
-            if self._turns.get(session_id) is turn:
-                self._turns.pop(session_id, None)
+            if self._turns.get(key) is turn:
+                self._turns.pop(key, None)
 
     async def _replace_session(self, room_id: str, connection: Any) -> str:
         await self._discard_room_session(room_id, connection)

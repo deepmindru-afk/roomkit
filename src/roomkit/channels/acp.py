@@ -306,9 +306,10 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
 
     @property
     def active_turns(self) -> int:
-        """Turns in flight: registered by ``_prompt_stream`` when the prompt
-        goes out, dropped when its stream closes. The whole of the turn as
-        the consumer sees it, not only while the agent is answering."""
+        """Turns in flight: registered by ``_prompt_stream`` once it holds the
+        room, while its session is opened, dropped when its stream closes. The
+        whole of the turn as the consumer sees it, not only while the agent is
+        answering."""
         return len(self._turns)
 
     def session_config(self, room_id: str) -> dict[str, str | bool]:
@@ -478,8 +479,8 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         )
 
     def _prompting(self, room_id: str) -> bool:
-        """Whether a turn of *room_id* is running here, its prompt sent or
-        being rebuilt: what a cancellation reaches."""
+        """Whether a turn of *room_id* is running here, its prompt sent or its
+        session being opened or rebuilt: what a cancellation reaches."""
         return any(turn.room_id == room_id for turn in self._turns.values())
 
     def session_id(self, room_id: str) -> str | None:
@@ -489,9 +490,9 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
     async def cancel(self, room_id: str) -> bool:
         """Request cancellation of the active ACP turn for a Room."""
         for turn in self._turns.values():
-            if turn.room_id == room_id and turn.rebuilding:
-                # The invalid session is already forgotten, but the logical
-                # turn still exists. Stop it before a replacement can prompt.
+            if turn.room_id == room_id and turn.preparing:
+                # The turn's session is being opened or rebuilt: no prompt went
+                # out to cancel. Stop the runner before one can.
                 turn.cancel_requested = True
                 if turn.runner is not None:
                     turn.runner.cancel()
@@ -550,12 +551,12 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
 
     async def _say_goodbye(self) -> None:
         """Best-effort graceful half: stop the turns, close the sessions."""
-        rebuilding = [
+        preparing = [
             turn.runner
             for turn in self._turns.values()
-            if turn.rebuilding and turn.runner is not None
+            if turn.preparing and turn.runner is not None
         ]
-        for runner in rebuilding:
+        for runner in preparing:
             runner.cancel()
         connection = self._connection
         if connection is not None:
@@ -563,7 +564,7 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
                 *(
                     connection.cancel(session_id)
                     for session_id, turn in self._turns.items()
-                    if not turn.rebuilding
+                    if not turn.preparing
                 ),
                 return_exceptions=True,
             )
