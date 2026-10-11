@@ -259,8 +259,11 @@ make docs                      # strict MkDocs build of ../roomkit-docs
   feature owes a guide in `docs/guides/`, a `features.md` section, a `mkdocs.yml`
   nav entry, and a runnable `examples/` script. Missing docs is a finding to raise,
   not a release blocker to decide alone.
-- Check `README.md` / `llms.txt` for counts or minimum versions this release makes
-  stale.
+- Promoting the CHANGELOG makes `tests/test_llms_files.py` fail until the
+  `> Minimum version:` line of `llms.txt` and `docs/c7/overview.md` names the new
+  release: bump both and `make llms-full`. Then `make llms-sync` and commit the two
+  copies in `../roomkit-docs` (`make docs` refuses copies that differ).
+- Check `README.md` for counts this release makes stale.
 
 ## 5. Local gates
 

@@ -36,7 +36,7 @@ The docs at `../roomkit-docs/` are built with MkDocs Material. Key sections:
 
 When adding new features, update the corresponding docs page in `roomkit-docs`. When adding new API surface, ensure `mkdocstrings` can generate its reference.
 
-`llms.txt` and `llms-full.txt` are written in this repo: edit `llms.txt` and the topic pages in `docs/c7/`, never `llms-full.txt` itself. `make llms-sync` rebuilds `llms-full.txt` and copies both into `roomkit-docs/docs/`, where they are committed as copies and never edited.
+`llms.txt` and `llms-full.txt` are written in this repo: edit `llms.txt` and the topic pages in `docs/c7/`, never `llms-full.txt` itself. `make llms-sync` rebuilds `llms-full.txt` and copies both into `roomkit-docs/docs/`, where they are committed as copies and never edited. `make docs` refuses copies that differ; `tests/test_llms_files.py` fails when `llms-full.txt` is not the build of `docs/c7/`, or when the `> Minimum version:` line is behind CHANGELOG's latest release.
 
 ## Build & Test Commands
 

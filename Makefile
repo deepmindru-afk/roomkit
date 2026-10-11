@@ -65,7 +65,7 @@ clean:
 
 DOCS_DIR ?= ../roomkit-docs
 
-docs:
+docs: llms-check
 	uv run --extra docs mkdocs build --strict -f $(DOCS_DIR)/mkdocs.yml
 
 docs-serve:
@@ -75,6 +75,10 @@ docs-serve:
 # docs site serves copies of them. Never edit the copies in roomkit-docs.
 llms-sync: llms-full
 	cp llms.txt llms-full.txt $(DOCS_DIR)/docs/
+
+llms-check:
+	@cmp -s llms.txt $(DOCS_DIR)/docs/llms.txt && cmp -s llms-full.txt $(DOCS_DIR)/docs/llms-full.txt \
+		|| { echo "$(DOCS_DIR)/docs/llms*.txt differ from roomkit's: run 'make llms-sync' and commit the copies"; exit 1; }
 
 # --- Website deployment ---
 

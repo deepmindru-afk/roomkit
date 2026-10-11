@@ -55,11 +55,12 @@ def strip_h1(content: str) -> str:
     return re.sub(r"^# .+\n+", "", content, count=1)
 
 
-def main() -> None:
-    repo_root = Path(__file__).resolve().parent.parent
-    c7_dir = repo_root / "docs" / "c7"
-    output_path = repo_root / "llms-full.txt"
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
+
+def assemble(repo_root: Path = REPO_ROOT) -> str:
+    """Return llms-full.txt as the docs/c7 topic pages assemble it."""
+    c7_dir = repo_root / "docs" / "c7"
     sections: list[str] = []
     for page in PAGES:
         path = c7_dir / page
@@ -69,8 +70,12 @@ def main() -> None:
         content = path.read_text(encoding="utf-8").strip()
         sections.append(strip_h1(content))
 
-    assembled = HEADER + "\n---\n\n".join(sections) + "\n"
+    return HEADER + "\n---\n\n".join(sections) + "\n"
 
+
+def main() -> None:
+    output_path = REPO_ROOT / "llms-full.txt"
+    assembled = assemble()
     output_path.write_text(assembled, encoding="utf-8")
     line_count = assembled.count("\n") + 1
     print(f"Wrote {output_path} ({line_count} lines)")
