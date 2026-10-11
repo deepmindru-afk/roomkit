@@ -28,29 +28,33 @@ class TestMyFeature:
     async def test_message_delivery(self) -> None:
         kit = RoomKit()
 
-        ws = WebSocketChannel("ws-user")
-        kit.register_channel(ws)
-
-        inbox: list = []
-        async def on_recv(_conn: str, event) -> None:
-            inbox.append(event)
-
-        ws.register_connection("conn", on_recv)
+        alice = WebSocketChannel("ws-alice")
+        bob = WebSocketChannel("ws-bob")
+        kit.register_channel(alice)
+        kit.register_channel(bob)
 
         await kit.create_room(room_id="test-room")
-        await kit.attach_channel("test-room", "ws-user")
+        await kit.attach_channel("test-room", "ws-alice")
+        await kit.attach_channel("test-room", "ws-bob")
+
+        bob_inbox: list = []
+        async def on_recv(_conn: str, event) -> None:
+            bob_inbox.append(event)
+
+        bob.register_connection("bob-conn", on_recv, room_id="test-room")
 
         result = await kit.process_inbound(
             InboundMessage(
-                channel_id="ws-user",
-                sender_id="user",
+                channel_id="ws-alice",
+                sender_id="alice",
                 content=TextContent(body="Hello"),
             )
         )
 
         assert not result.blocked
-        assert len(inbox) == 1
-        assert inbox[0].content.body == "Hello"
+        # The room delivers to the other channels, never back to the sender's
+        assert len(bob_inbox) == 1
+        assert bob_inbox[0].content.body == "Hello"
 ```
 
 ## Mock AI Provider

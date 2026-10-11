@@ -531,7 +531,7 @@ from roomkit import WebSocketChannel
 ws = WebSocketChannel("ws-user")
 
 # Register with stream support
-ws.register_connection("conn-1", on_recv, stream_send_fn=on_stream)
+ws.register_connection("conn-1", on_recv, room_id="room-1", stream_send_fn=on_stream)
 
 async def on_stream(conn_id: str, msg) -> None:
     # StreamStart, StreamChunk, StreamEnd

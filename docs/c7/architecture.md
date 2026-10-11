@@ -82,7 +82,7 @@ kit = RoomKit()
 
 # Transport channel (user-facing)
 ws = WebSocketChannel("ws-user")
-ws.register_connection("conn-1", on_recv)
+ws.register_connection("conn-1", on_recv, room_id="chat")
 kit.register_channel(ws)
 
 # Intelligence channel (AI)
