@@ -1,15 +1,20 @@
 """Sandbox with SmolBSD — VM-isolated code execution for local assistants.
 
 Demonstrates using roomkit-sandbox with SmolBSD to give an AI agent
-sandboxed command execution inside a NetBSD microVM. Provides true
-VM isolation (~10ms boot) for local AI assistants.
+sandboxed command execution inside a NetBSD microVM: a kernel of its own,
+booted in about half a second, driven over a VirtIO console (no SSH, no
+port opened on the host).
+
+The VM outlives this script: run it again and the agent finds the same VM,
+with its /workspace and whatever it installed. ``--cleanup`` deletes the
+VM and its workspace.
 
 Prerequisites:
+  - Linux with KVM, QEMU and socat
   - SmolBSD cloned: git clone https://github.com/NetBSDfr/smolBSD.git
   - Builder image: cd smolBSD && bmake fetchimg
-  - SSH key in service/sshd/etc/: cp ~/.ssh/id_ed25519.pub service/sshd/etc/
-  - sshd image built: bmake SERVICE=sshd build
-  - QEMU with KVM support
+  - The roomkit-sandbox guest image, built from a roomkit-sandbox checkout:
+      smolbsd/build.sh /path/to/smolBSD NOSUDO=1
   - pip install roomkit-sandbox
 
 Environment variables:
@@ -17,14 +22,17 @@ Environment variables:
     SMOLBSD_DIR       — path to the smolBSD clone
 
 Try asking:
-  - "List the files in the working directory"
-  - "Clone a git repo and explore it"
-  - "Write a script and run it"
   - "Show system information"
+  - "Clone https://github.com/NetBSDfr/smolBSD and tell me what startnb.sh does"
+  - "Write a shell script that counts the files per extension, then run it"
+  - Quit, run again, and ask "What is in the workspace?"
 
 Run with:
     ANTHROPIC_API_KEY=sk-... SMOLBSD_DIR=/path/to/smolBSD \\
         uv run python examples/sandbox_smolbsd.py
+
+Delete the VM and its workspace:
+    SMOLBSD_DIR=/path/to/smolBSD uv run python examples/sandbox_smolbsd.py --cleanup
 """
 
 from __future__ import annotations
@@ -41,23 +49,34 @@ from roomkit import ChannelCategory, CLIChannel, HookTrigger, RoomKit
 from roomkit.channels.ai import AIChannel
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 
+SESSION_ID = "example-smolbsd-sandbox"
+
+
+async def cleanup(backend) -> None:
+    """Delete this example's VM and its workspace disk."""
+    for info in await backend.list_containers():
+        if info.session_id == SESSION_ID:
+            await backend.delete_container(info.container_id)
+            print(f"Deleted VM {info.container_id} and its workspace.")
+
 
 async def main() -> None:
-    env = require_env("ANTHROPIC_API_KEY", "SMOLBSD_DIR")
-
-    # Create a SmolBSD-based sandbox executor
     from roomkit_sandbox import ContainerSandboxExecutor
     from roomkit_sandbox.commands import NativeCommandBuilder
     from roomkit_sandbox.smolbsd_backend import SmolBSDSandboxBackend
 
-    backend = SmolBSDSandboxBackend(
-        smolbsd_dir=env["SMOLBSD_DIR"],  # where smolBSD is cloned
-        service="sshd",  # Use the sshd image (built with: bmake SERVICE=sshd build)
-        workdir="/home/ssh",
-    )
+    if "--cleanup" in sys.argv:
+        env = require_env("SMOLBSD_DIR")
+        await cleanup(SmolBSDSandboxBackend(smolbsd_dir=env["SMOLBSD_DIR"]))
+        return
+
+    env = require_env("ANTHROPIC_API_KEY", "SMOLBSD_DIR")
+
+    # One NetBSD microVM per session, booted from the roomkit-sandbox image
+    backend = SmolBSDSandboxBackend(smolbsd_dir=env["SMOLBSD_DIR"])
     sandbox = ContainerSandboxExecutor(
         backend=backend,
-        session_id="example-smolbsd-sandbox",
+        session_id=SESSION_ID,
         command_builder=NativeCommandBuilder(),  # No RTK on NetBSD, use native commands
     )
 
@@ -70,10 +89,11 @@ async def main() -> None:
             AnthropicConfig(api_key=env["ANTHROPIC_API_KEY"], model="claude-opus-5")
         ),
         system_prompt=(
-            "You are a helpful developer assistant with a sandboxed environment. "
-            "You can read files, search code, run git commands, write files, and "
-            "execute bash commands inside an isolated NetBSD microVM. Use these "
-            "tools to help the user explore and understand code."
+            "You are a helpful developer assistant with a sandboxed environment: "
+            "a NetBSD microVM with git, curl, bash and jq, and outbound network "
+            "access. You can read, write and edit files, search code, run git and "
+            "execute shell commands there. Work in /workspace: it is kept between "
+            "conversations."
         ),
         sandbox=sandbox,
     )
@@ -100,9 +120,11 @@ async def main() -> None:
         ),
     )
 
-    # Cleanup
+    # The VM keeps running: the next run picks it up with its workspace
     await sandbox.close()
     await kit.close()
+    if await backend.find_container(SESSION_ID):
+        print("\nThe VM keeps running with its /workspace; --cleanup deletes them.")
 
 
 if __name__ == "__main__":
