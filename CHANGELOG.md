@@ -9,15 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `AnthropicAIProvider` sends the turn's `reasoning_effort` (RFC §6.7). It
-  went nowhere: an `AIChannel(reasoning_effort="low")` on Claude ran at the
-  model's default effort (`high`, or `medium` on Claude Opus 5.5 and Claude
-  Haiku 5.5). It now rides `output_config.effort` as the turn spells it,
-  Anthropic's `xhigh` and `max` included, on a turn with tools as on one
-  without, beside the answer's schema when there is one. `none` sends no
-  effort, since it states thinking off. Claude Sonnet 4.5 and Claude Haiku
-  4.5 answer 400 to the parameter: the catalogue tags them `effort_refused`
-  and they are sent none, as before.
+- `AnthropicAIProvider` sends the turn's `reasoning_effort` (RMK-676, RFC
+  §6.7). It went nowhere: an `AIChannel(reasoning_effort="low")` on Claude
+  ran at the model's default effort (`high`, or `medium` on Claude Opus 5.5
+  and Claude Haiku 5.5). It now rides `output_config.effort` as the turn
+  spells it, Anthropic's `xhigh` and `max` included, on a turn with tools as
+  on one without, beside the answer's schema when there is one. `none` is
+  not a level: it states reasoning off (next entry). Claude Sonnet 4.5 and
+  Claude Haiku 4.5 answer 400 to the parameter: the catalogue tags them
+  `effort_refused` and they are sent none, as before.
+- `AnthropicAIProvider` turns reasoning off where the turn states it
+  (RMK-677, RFC §6.7). A turn with `thinking_budget=0`,
+  `enable_thinking=False` or `reasoning_effort="none"` left `thinking` out,
+  which is off on Claude Opus 4.8 and earlier but not on the models that
+  reason by default: Claude Opus 5, Sonnet 5, Haiku 5.5, Sonnet 5.5, Opus 5.5
+  and Fable reasoned anyway. The catalogue now declares how each one is
+  turned off, measured on the wire: `{"type": "disabled"}` on Opus 5,
+  Sonnet 5 and Haiku 5.5; `{"type": "between_tools"}` on Sonnet 5.5, which
+  refuses `disabled`; and the lowest effort, `low`, on Opus 5.5, Fable 5.1
+  and Fable 5, which refuse both and cannot stop reasoning. With reasoning
+  off, Opus 5, Sonnet 5.5 and Haiku 5.5 answer 400 to an effort above
+  `high`, so `xhigh` and `max` go as `high` there. A model the catalogue
+  does not carry is sent what it was before.
 
 ## [0.97.0] — 2026-10-11
 

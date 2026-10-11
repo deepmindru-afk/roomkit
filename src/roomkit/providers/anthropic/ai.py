@@ -32,7 +32,7 @@ from roomkit.providers.ai.base import (
 from roomkit.providers.ai.response_schema import checked_stream, schema_for_generate
 from roomkit.providers.ai.thinking_blocks import ThinkingBlocks
 from roomkit.providers.anthropic.config import AnthropicConfig
-from roomkit.providers.anthropic.models import EFFORT_REFUSED, MODELS
+from roomkit.providers.anthropic.models import MODELS
 from roomkit.providers.anthropic.request import build_kwargs
 from roomkit.providers.anthropic.stream_events import done_event, is_first_output, stream_events
 from roomkit.providers.anthropic.tool_blocks import ToolUseBlocks
@@ -203,14 +203,6 @@ class AnthropicAIProvider(AIProvider):
         return entry is not None and "deferred_tools" in entry.capabilities
 
     @property
-    def _takes_effort(self) -> bool:
-        """Whether the model takes ``output_config.effort``, read from the
-        catalogue: every model but the ones it tags ``effort_refused``. A
-        model it does not carry is assumed to, as each one since Opus 4.5."""
-        entry = self.catalog_entry()
-        return entry is None or EFFORT_REFUSED not in entry.capabilities
-
-    @property
     def supports_vision(self) -> bool:
         """Whether the configured Claude model accepts image input.
 
@@ -279,7 +271,7 @@ class AnthropicAIProvider(AIProvider):
 
     async def _events(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         """The streamed call itself, shared by :meth:`generate`."""
-        kwargs = build_kwargs(self._config, context, takes_effort=self._takes_effort)
+        kwargs = build_kwargs(self._config, context, model=self.catalog_entry())
         # The one place the turn's credential is chosen. ``generate`` and
         # ``generate_stream`` both consume this stream, so they inherit it.
         client, leased_api_key = await self._client_for(context)

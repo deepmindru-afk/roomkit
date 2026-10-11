@@ -15,9 +15,10 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from roomkit.providers.ai.base import AIContext, AIMessage, AITool
+from roomkit.providers.ai.base import AIContext, AIMessage, AITool, ModelInfo
 from roomkit.providers.ai.reasoning import nearest_level, thinking_switch, turn_setting
 from roomkit.providers.anthropic import AnthropicConfig
+from roomkit.providers.anthropic.models import MODELS as ANTHROPIC_MODELS
 from roomkit.providers.anthropic.request import build_kwargs
 from roomkit.providers.cerebras.ai import CerebrasAIProvider
 from roomkit.providers.cerebras.config import CerebrasConfig
@@ -447,6 +448,87 @@ def test_anthropic_sends_no_effort_where_the_turn_states_none(effort: str | None
     config = AnthropicConfig(api_key="k", model="claude-opus-5-5")
 
     assert "output_config" not in build_kwargs(config, _context(reasoning_effort=effort))
+
+
+def _claude(model: str) -> tuple[AnthropicConfig, ModelInfo | None]:
+    """A config for *model* and its catalogue entry, ``None`` where it has none."""
+    entry = next((m for m in ANTHROPIC_MODELS if m.id == model), None)
+    return AnthropicConfig(api_key="k", model=model), entry
+
+
+# How each Claude model's reasoning is turned off, as the wire answered on
+# 2026-10-11: ``disabled``, or ``between_tools`` where ``disabled`` answers 400,
+# on a model that reasons when ``thinking`` is left out; its lowest effort on
+# one that cannot stop; nothing where leaving ``thinking`` out is off already,
+# or the catalogue does not carry the model.
+_CLAUDE_OFF = [
+    ("claude-opus-5", {"type": "disabled"}, None),
+    ("claude-sonnet-5", {"type": "disabled"}, None),
+    ("claude-haiku-5-5", {"type": "disabled"}, None),
+    ("claude-sonnet-5-5", {"type": "between_tools"}, None),
+    ("claude-opus-5-5", None, "low"),
+    ("claude-fable-5-1", None, "low"),
+    ("claude-fable-5", None, "low"),
+    ("claude-opus-4-8", None, None),
+    ("claude-sonnet-4-6", None, None),
+    ("claude-next-1", None, None),
+]
+
+
+@pytest.mark.parametrize("tools", [[], _TOOLS], ids=["no_tools", "tools"])
+@pytest.mark.parametrize(
+    "off",
+    [{"thinking_budget": 0}, {"enable_thinking": False}, {"reasoning_effort": "none"}],
+    ids=["budget_0", "enable_thinking_false", "effort_none"],
+)
+@pytest.mark.parametrize(("model", "thinking", "effort"), _CLAUDE_OFF)
+def test_anthropic_turns_reasoning_off_as_the_catalogue_declares(
+    model: str,
+    thinking: dict[str, str] | None,
+    effort: str | None,
+    off: dict[str, Any],
+    tools: list[AITool],
+) -> None:
+    config, entry = _claude(model)
+
+    kwargs = build_kwargs(config, _context(tools=tools, **off), model=entry)
+
+    assert kwargs.get("thinking") == thinking
+    assert kwargs.get("output_config", {}).get("effort") == effort
+
+
+@pytest.mark.parametrize(
+    ("model", "sent"),
+    [
+        ("claude-opus-5", "high"),
+        ("claude-haiku-5-5", "high"),
+        ("claude-sonnet-5-5", "high"),
+        ("claude-sonnet-5", "max"),
+        ("claude-opus-5-5", "low"),
+    ],
+)
+def test_anthropic_sends_with_reasoning_off_the_nearest_effort_the_model_takes(
+    model: str, sent: str
+) -> None:
+    """``xhigh`` and ``max`` answer 400 beside ``disabled`` or ``between_tools``
+    on three of them (measured 2026-10-11); one that cannot stop is sent low."""
+    config, entry = _claude(model)
+
+    kwargs = build_kwargs(
+        config, _context(enable_thinking=False, reasoning_effort="max"), model=entry
+    )
+
+    assert kwargs["output_config"] == {"effort": sent}
+
+
+@pytest.mark.parametrize("switch", [{"enable_thinking": True}, {}], ids=["on", "unstated"])
+def test_anthropic_effort_goes_whole_where_reasoning_is_not_off(switch: dict[str, Any]) -> None:
+    config, entry = _claude("claude-opus-5")
+
+    kwargs = build_kwargs(config, _context(reasoning_effort="max", **switch), model=entry)
+
+    assert kwargs["output_config"] == {"effort": "max"}
+    assert kwargs.get("thinking", {}).get("type") != "disabled"
 
 
 # The least effort each model takes, as its catalogue declares it and the wire

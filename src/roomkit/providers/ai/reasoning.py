@@ -56,8 +56,8 @@ def nearest_level(effort: str | None, levels: Sequence[str]) -> str | None:
     )
 
 
-# The catalogue tag naming the least ``reasoning_effort`` a model takes on a
-# Chat Completions wire (``reasoning_floor_none``, ``reasoning_floor_minimal``,
+# The catalogue tag naming the least ``reasoning_effort`` a model takes on its
+# vendor's wire (``reasoning_floor_none``, ``reasoning_floor_minimal``,
 # ``reasoning_floor_low``), each one checked on the wire before it is set.
 _FLOOR_TAG = "reasoning_floor_"
 

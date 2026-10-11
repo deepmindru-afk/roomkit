@@ -1287,11 +1287,12 @@ _VERDICT: dict[str, Any] = {
 
 
 class TestAnthropicEffort:
-    """RFC §6.7: the turn's effort rides ``output_config.effort``, save to a
-    model the catalogue says refuses it."""
+    """RFC §6.7: the turn's effort rides ``output_config.effort``, and its
+    reasoning switch the ``thinking`` block, as the catalogue declares the
+    model."""
 
     @staticmethod
-    async def _sent(model: str, effort: str) -> dict[str, Any]:
+    async def _sent(model: str, effort: str, **turn: Any) -> dict[str, Any]:
         with patch.dict("sys.modules", {"anthropic": _mock_anthropic_module()}):
             from roomkit.providers.anthropic.ai import AnthropicAIProvider
 
@@ -1299,13 +1300,21 @@ class TestAnthropicEffort:
         provider._client = MagicMock()
         provider._client.messages.stream = MagicMock(return_value=_mock_stream())
 
-        await provider.generate(_context(reasoning_effort=effort))
+        await provider.generate(_context(reasoning_effort=effort, **turn))
 
         return provider._client.messages.stream.call_args.kwargs
 
     @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-opus-4-5", "claude-next-1"])
     async def test_a_model_that_takes_effort_is_sent_it(self, model: str) -> None:
         assert (await self._sent(model, "high"))["output_config"] == {"effort": "high"}
+
+    async def test_a_turn_off_reaches_the_wire_as_the_catalogue_declares(self) -> None:
+        """RFC §6.7: Claude Sonnet 5.5 reasons when ``thinking`` is left out
+        and refuses ``disabled`` (measured 2026-10-11)."""
+        sent = await self._sent("claude-sonnet-5-5", "max", enable_thinking=False)
+
+        assert sent["thinking"] == {"type": "between_tools"}
+        assert sent["output_config"] == {"effort": "high"}
 
     @pytest.mark.parametrize(
         "model",

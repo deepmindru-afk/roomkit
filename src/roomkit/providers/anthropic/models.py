@@ -54,13 +54,32 @@ model does not support the effort parameter"): Claude Sonnet 4.5 and Claude
 Haiku 4.5, measured 2026-10-11. The provider leaves a turn's effort out for
 them rather than fail the turn (RFC §6.7)."""
 
+# How a model's reasoning is turned off where the turn states off (RFC §6.7),
+# measured 2026-10-11. A model none of them tags reasons not at all when the
+# request leaves ``thinking`` out (Opus 4.8 and earlier, Sonnet 4.6), which is
+# what the provider then does.
+THINKING_OFF_DISABLED = "thinking_off_disabled"
+"""Reasons when ``thinking`` is left out; off is ``{"type": "disabled"}``
+(Claude Opus 5, Claude Sonnet 5, Claude Haiku 5.5)."""
+THINKING_OFF_BETWEEN_TOOLS = "thinking_off_between_tools"
+"""Reasons when ``thinking`` is left out and refuses ``disabled``; off is
+``{"type": "between_tools"}`` (Claude Sonnet 5.5)."""
+THINKING_OFF_EFFORT_HIGH = "thinking_off_effort_high"
+"""With reasoning off, takes no effort above ``high``: ``xhigh`` and ``max``
+answer 400 there (Claude Opus 5, Claude Sonnet 5.5, Claude Haiku 5.5)."""
+CANNOT_STOP = "reasoning_floor_low"
+"""Cannot stop reasoning: ``disabled`` and ``between_tools`` answer 400, so off
+is the lowest effort, ``low`` (Claude Opus 5.5, Claude Fable 5.1, Claude Fable
+5; the Mythos models as Anthropic documents them, not measured). The shared
+tag :func:`~roomkit.providers.ai.reasoning.reasoning_floor` reads."""
+
 MODELS: list[ModelInfo] = [
     ModelInfo(
         id="claude-opus-5-5",
         display_name="Claude Opus 5.5",
         context_window=1_000_000,
         supports_vision=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=["thinking", "deferred_tools", CANNOT_STOP],
         pricing=ModelPricing(
             input_per_million=4.0,
             output_per_million=20.0,
@@ -74,7 +93,12 @@ MODELS: list[ModelInfo] = [
         display_name="Claude Opus 5",
         context_window=1_000_000,
         supports_vision=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=[
+            "thinking",
+            "deferred_tools",
+            THINKING_OFF_DISABLED,
+            THINKING_OFF_EFFORT_HIGH,
+        ],
         pricing=ModelPricing(
             input_per_million=5.0,
             output_per_million=25.0,
@@ -88,7 +112,7 @@ MODELS: list[ModelInfo] = [
         display_name="Claude Fable 5.1",
         context_window=1_000_000,
         supports_vision=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=["thinking", "deferred_tools", CANNOT_STOP],
         pricing=ModelPricing(
             input_per_million=10.0,
             output_per_million=50.0,
@@ -102,7 +126,7 @@ MODELS: list[ModelInfo] = [
         display_name="Claude Fable 5",
         context_window=1_000_000,
         supports_vision=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=["thinking", "deferred_tools", CANNOT_STOP],
         pricing=ModelPricing(
             input_per_million=10.0,
             output_per_million=50.0,
@@ -116,7 +140,7 @@ MODELS: list[ModelInfo] = [
         display_name="Claude Mythos 5.1",
         context_window=1_000_000,
         supports_vision=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=["thinking", "deferred_tools", CANNOT_STOP],
         pricing=ModelPricing(
             input_per_million=10.0,
             output_per_million=50.0,
@@ -130,7 +154,7 @@ MODELS: list[ModelInfo] = [
         display_name="Claude Mythos 5",
         context_window=1_000_000,
         supports_vision=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=["thinking", "deferred_tools", CANNOT_STOP],
         pricing=ModelPricing(
             input_per_million=10.0,
             output_per_million=50.0,
@@ -162,7 +186,12 @@ MODELS: list[ModelInfo] = [
         display_name="Claude Sonnet 5.5",
         context_window=1_000_000,
         supports_vision=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=[
+            "thinking",
+            "deferred_tools",
+            THINKING_OFF_BETWEEN_TOOLS,
+            THINKING_OFF_EFFORT_HIGH,
+        ],
         pricing=ModelPricing(
             input_per_million=2.0,
             output_per_million=10.0,
@@ -176,7 +205,7 @@ MODELS: list[ModelInfo] = [
         display_name="Claude Sonnet 5",
         context_window=1_000_000,
         supports_vision=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=["thinking", "deferred_tools", THINKING_OFF_DISABLED],
         pricing=ModelPricing(
             input_per_million=2.0,
             output_per_million=10.0,
@@ -204,7 +233,12 @@ MODELS: list[ModelInfo] = [
         display_name="Claude Haiku 5.5",
         context_window=1_000_000,
         supports_vision=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=[
+            "thinking",
+            "deferred_tools",
+            THINKING_OFF_DISABLED,
+            THINKING_OFF_EFFORT_HIGH,
+        ],
         # Priced by prompt length: up to 100,000 input tokens at the rates
         # below, five times them above (pricing page, read 2026-10-07).
         pricing=ModelPricing(

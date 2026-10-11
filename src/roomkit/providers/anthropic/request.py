@@ -21,11 +21,12 @@ from roomkit.providers.ai.base import (
     AITool,
     AIToolCallPart,
     AIToolResultPart,
+    ModelInfo,
 )
 from roomkit.providers.ai.image_parts import image_part_base64
-from roomkit.providers.ai.reasoning import thinking_switch
 from roomkit.providers.ai.tool_declaration import ToolNameRule, declared_parameters
 from roomkit.providers.anthropic.config import AnthropicConfig
+from roomkit.providers.anthropic.reasoning import thinking_or_temperature, turn_effort
 from roomkit.providers.vendor_endpoint import ANTHROPIC_BASE_URL, is_vendor_endpoint
 
 ANTHROPIC_TOOL_NAMES = ToolNameRule("anthropic", r"[A-Za-z0-9_-]{1,128}")
@@ -184,12 +185,13 @@ def build_messages(messages: list[AIMessage]) -> list[dict[str, Any]]:
 
 
 def build_kwargs(
-    config: AnthropicConfig, context: AIContext, *, takes_effort: bool = True
+    config: AnthropicConfig, context: AIContext, *, model: ModelInfo | None = None
 ) -> dict[str, Any]:
     """Build kwargs dict shared by generate and streaming paths.
 
-    *takes_effort* is false for a model the catalogue says refuses
-    ``output_config.effort``.
+    *model* is the catalogue's entry for the configured model, which says how
+    its reasoning settings are spelled (:mod:`.reasoning`); ``None`` for a
+    model it does not carry.
     """
     messages = build_messages(context.messages)
     kwargs: dict[str, Any] = {
@@ -199,13 +201,13 @@ def build_kwargs(
     }
     if context.system_prompt:
         kwargs["system"] = context.system_prompt
-    kwargs.update(_thinking_or_temperature(config, context))
+    kwargs.update(thinking_or_temperature(config, context, model))
     if context.tools:
         if is_vendor_endpoint(config.base_url, ANTHROPIC_BASE_URL):
             # Behind another base_url the server decides its names (RFC §6.7).
             ANTHROPIC_TOOL_NAMES.check(t.name for t in context.tools)
         kwargs["tools"] = _tool_definitions(context.tools)
-    output_config = _output_config(context, takes_effort)
+    output_config = _output_config(context, model)
     if output_config:
         kwargs["output_config"] = output_config
     if config.enable_prompt_caching:
@@ -213,18 +215,13 @@ def build_kwargs(
     return kwargs
 
 
-def _output_config(context: AIContext, takes_effort: bool) -> dict[str, Any]:
-    """The turn's ``output_config``: its effort and its answer's schema.
-
-    The effort goes as the turn spells it, Anthropic's own levels (``low``
-    to ``max``) included, on a turn with tools as on one without (RFC §6.7).
-    ``none`` is not one of them: it states thinking off, which
-    :func:`_thinking_or_temperature` applies. A model that refuses the
-    parameter is sent none.
-    """
+def _output_config(context: AIContext, model: ModelInfo | None) -> dict[str, Any]:
+    """The turn's ``output_config``: its effort (:func:`.reasoning.turn_effort`)
+    and its answer's schema."""
     output_config: dict[str, Any] = {}
-    if takes_effort and context.reasoning_effort not in (None, "none"):
-        output_config["effort"] = context.reasoning_effort
+    effort = turn_effort(context, model)
+    if effort is not None:
+        output_config["effort"] = effort
     if context.response_schema is not None:
         output_config["format"] = {"type": "json_schema", "schema": context.response_schema}
     return output_config
@@ -247,34 +244,6 @@ def _tool_definitions(tools: list[AITool]) -> list[dict[str, Any]]:
             definition["defer_loading"] = True
         definitions.append(definition)
     return definitions
-
-
-def _thinking_or_temperature(config: AnthropicConfig, context: AIContext) -> dict[str, Any]:
-    """The turn's ``thinking`` block, or else its ``temperature``, or nothing.
-
-    Anthropic ignores temperature while thinking, so a thinking turn never
-    sends one. Newer models (Opus 4.7/4.8, Fable 5) reject the
-    ``budget_tokens`` shape and want adaptive thinking instead;
-    ``display: "summarized"`` keeps the reasoning trace visible (its default
-    is "omitted" on those models).
-
-    Thinking is on as the turn states it (RFC §6.7): a positive budget, or
-    ``enable_thinking=True``. A model without adaptive thinking needs its
-    budget, so ``enable_thinking=True`` alone leaves it off there.
-
-    ``messages.stream()`` has no ``temperature`` parameter in anthropic 1.x,
-    while the models profiled as taking one still do, so it rides
-    ``extra_body``, which the SDK merges into the request JSON as it is.
-    """
-    budget = context.thinking_budget
-    if thinking_switch(context):
-        if config.use_adaptive_thinking:
-            return {"thinking": {"type": "adaptive", "display": "summarized"}}
-        if budget:
-            return {"thinking": {"type": "enabled", "budget_tokens": budget}}
-    if context.temperature is not None and config.supports_custom_temperature:
-        return {"extra_body": {"temperature": context.temperature}}
-    return {}
 
 
 def _apply_cache_control(kwargs: dict[str, Any]) -> None:
