@@ -108,8 +108,10 @@ await kit.revoke_verification(identity_id, reason="advisor")
 On completion the held messages of the request's window are released to the
 agents as the author's own turns. `ON_VERIFICATION_COMPLETED` and
 `ON_VERIFICATION_ENDED` (ASYNC; `ended` is `"verification"` or `"request"`)
-fire when it happens; a timer ends a verification at its expiry, and
-`async with RoomKit(...)` re-arms timers from the store. A code reply
+fire when it happens; a timer ends a verification at its expiry, and a
+request left unanswered at its own (the identity then has none open, so the
+next message asks again); `async with RoomKit(...)` re-arms the verifications'
+timers from the store. A code reply
 (`method="code"`) is consumed, never stored.
 
 ## Realtime Ephemeral Events

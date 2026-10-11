@@ -214,3 +214,62 @@ async def test_a_kit_whose_store_cannot_answer_still_starts(
             pass
 
     assert "Verifications were not resumed" in caplog.text
+
+
+def _ends(fired: list[tuple[str, dict[str, Any]]]) -> list[tuple[str, str]]:
+    return [(d["reason"], d["ended"]) for t, d in fired if t == HookTrigger.ON_VERIFICATION_ENDED]
+
+
+async def test_a_request_left_unanswered_ends_when_it_expires() -> None:
+    """Its end is announced when it happens, and the person reads as having
+    no request open: the next message calls for a new one (RFC §11.7.5)."""
+    kit, fired = await _kit(request_ttl=0.3)
+    await kit.request_verification("id-alice", room_id="r1", channel_id="sms")
+
+    await _eventually(lambda: _ends(fired), timeout=2.0)
+
+    assert _ends(fired) == [("expired", "request")]
+    state = await kit.verification_of("id-alice")
+    assert state.status == VerificationStatus.UNVERIFIED and state.request_id is None
+    await kit.close()
+
+
+async def test_a_verified_person_s_unanswered_request_leaves_the_verification() -> None:
+    kit, fired = await _kit(ttl=5.0, request_ttl=0.3)
+    await _verified(kit)
+    await kit.request_verification("id-alice", room_id="r1", channel_id="sms")
+
+    await _eventually(lambda: _ends(fired), timeout=2.0)
+
+    assert _ends(fired) == [("expired", "request")]
+    state = await kit.verification_of("id-alice")
+    assert state.status == VerificationStatus.VERIFIED and state.request_id is None
+    await kit.close()
+
+
+async def test_a_request_that_expired_while_nothing_ran_reads_as_ended() -> None:
+    """No timer runs for it in this process: it reads as ended, and the new
+    request announces it as expired, not as cancelled."""
+    store = InMemoryStore()
+    first, _ = await _kit(store, request_ttl=0.3)
+    await first.request_verification("id-alice", room_id="r1", channel_id="sms")
+    await first.close()  # its timer dies with it
+    await asyncio.sleep(0.4)
+
+    second, fired = await _kit(store, request_ttl=0.3)
+    state = await second.verification_of("id-alice")
+    assert state.status == VerificationStatus.UNVERIFIED and state.request_id is None
+
+    await second.request_verification("id-alice", room_id="r1", channel_id="sms")
+    await _eventually(lambda: _ends(fired))
+    assert _ends(fired)[0] == ("expired", "request")
+    await second.close()
+
+
+async def test_a_completed_request_ends_nothing_at_its_expiry() -> None:
+    kit, fired = await _kit(ttl=5.0, request_ttl=0.3)
+    await _verified(kit)
+    await asyncio.sleep(0.5)
+
+    assert _ends(fired) == []
+    await kit.close()

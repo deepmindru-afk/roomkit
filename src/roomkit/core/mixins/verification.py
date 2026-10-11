@@ -56,6 +56,8 @@ ENDED_REQUEST = "request"
 """What an end names (``ended``): a request ended (expired, failed, cancelled),
 the identity's verification left as it was or never reached."""
 
+_REQUEST_TIMER = "request:"
+"""Key prefix of a request's expiry timer, beside the identities' timers."""
 _LINK_SECRET_BYTES = 32  # 256 bits; RFC §11.7.7 asks for at least 128
 HELD_KEY = "roomkit:verification_held"
 """Event metadata marking a message held for verification (RFC §11.7.3); its
@@ -164,10 +166,9 @@ class VerificationMixin(HelpersMixin):
             )
         # Announced once the lock is released: a handler may call back in.
         if cancelled is not None:
-            await self._emit_verification_event(
-                "verification_ended", cancelled, reason="cancelled"
-            )
+            await self._announce_superseded(cancelled)
         await self._emit_verification_event("verification_requested", request)
+        self._arm_request_expiry(request)
         return request, secret
 
     async def complete_verification(
@@ -193,6 +194,7 @@ class VerificationMixin(HelpersMixin):
         async with self._lock_manager.locked(key):
             outcome, request, verification = await self._attempt(request_id, secret, method)
         if outcome == "completed":
+            self._disarm_request_expiry(request.id)
             self._arm_expiry(verification)
             await self._emit_verification_event("verification_completed", request)
             await self._verification_hook(
@@ -204,7 +206,7 @@ class VerificationMixin(HelpersMixin):
                 await self._release_held(request)
             return verification
         await self._after_unfulfilled(outcome, request, verification)
-        raise VerificationRefusedError(outcome)
+        raise VerificationRefusedError(_refusal(outcome, request))
 
     async def record_failed_attempt(
         self, request_id: str, *, organization_id: str | None = None
@@ -230,7 +232,7 @@ class VerificationMixin(HelpersMixin):
                 outcome, request = await self._count_failure(request, current)
         await self._after_unfulfilled(outcome, request, current)
         if outcome in ("not_open", "expired"):
-            raise VerificationRefusedError(outcome)
+            raise VerificationRefusedError(_refusal(outcome, request))
         return request
 
     async def revoke_verification(
@@ -270,9 +272,7 @@ class VerificationMixin(HelpersMixin):
                     )
                 )
         if cancelled is not None:
-            await self._emit_verification_event(
-                "verification_ended", cancelled, reason="cancelled"
-            )
+            await self._announce_superseded(cancelled)
         if ended is not None:
             await self._emit_framework_event(
                 "verification_ended",
@@ -310,10 +310,14 @@ class VerificationMixin(HelpersMixin):
     ) -> Verification:
         """The identity's verification as it stands now: UNVERIFIED when it has none.
 
-        A verification whose time has passed reads EXPIRED, whether or not its
-        end has been recorded yet.
+        A verification whose time has passed reads EXPIRED, and an open
+        request past its expiry reads as ended (no ``request_id``, a PENDING
+        identity back to UNVERIFIED), whether or not the end has been
+        recorded yet.
         """
-        current = await self._stored_verification(identity_id, organization_id)
+        current = await self._without_lapsed_request(
+            await self._stored_verification(identity_id, organization_id)
+        )
         if current.status == VerificationStatus.VERIFIED and not _in_force(
             current, datetime.now(UTC)
         ):
@@ -501,6 +505,29 @@ class VerificationMixin(HelpersMixin):
         if task is not None:
             task.cancel()
 
+    def _arm_request_expiry(self, request: VerificationRequest) -> None:
+        """Arm the timer that ends *request* if it is still open at its expiry."""
+        key = _REQUEST_TIMER + request.id
+        task = asyncio.get_running_loop().create_task(self._end_request_when_due(request))
+        self._verification_timers[key] = task
+        task.add_done_callback(lambda done: _forget_timer(self._verification_timers, key, done))
+
+    def _disarm_request_expiry(self, request_id: str) -> None:
+        task = self._verification_timers.pop(_REQUEST_TIMER + request_id, None)
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+
+    async def _end_request_when_due(self, request: VerificationRequest) -> None:
+        delay = (request.expires_at - datetime.now(UTC)).total_seconds()
+        await asyncio.sleep(max(0.0, delay))
+        key = _lock_key(request.identity_id, request.organization_id)
+        try:
+            async with self._lock_manager.locked(key):
+                outcome, ended, before = await self._open_request(request.id)
+        except VerificationRefusedError:
+            return  # gone from the store
+        await self._after_unfulfilled(outcome or "", ended, before)
+
     def _cancel_verification_timers(self) -> None:
         """Stop every expiry timer (the kit is closing)."""
         for task in self._verification_timers.values():
@@ -613,7 +640,7 @@ class VerificationMixin(HelpersMixin):
         current = await self._stored_verification(request.identity_id, request.organization_id)
         if request.status != VerificationRequestStatus.OPEN:
             return "not_open", request, current
-        if request.expires_at <= datetime.now(UTC):
+        if _lapsed(request, datetime.now(UTC)):
             request = request.model_copy(update={"status": VerificationRequestStatus.EXPIRED})
             await self._store.update_verification_request(request)
             await self._settle_pending(current, request)
@@ -659,33 +686,65 @@ class VerificationMixin(HelpersMixin):
         )
 
     async def _settle_pending(self, current: Verification, request: VerificationRequest) -> None:
-        """Settle the identity once its request ended unfulfilled.
-
-        An expired request proves nothing either way: the identity is left as
-        it was before it. A failed one is someone who could not prove it, so a
-        verification in force ends with it (fail closed): asking a verified
-        person again, on a suspicion, and getting wrong secrets must not leave
-        the old verification standing.
+        """Settle the identity once its request ended unfulfilled (see
+        :func:`_settled`): asking a verified person again, on a suspicion, and
+        getting wrong secrets must not leave the old verification standing.
         """
         if current.request_id != request.id:
             return
-        update: dict[str, Any] = {"request_id": None}
-        if request.status == VerificationRequestStatus.FAILED:
-            update.update(status=VerificationStatus.UNVERIFIED, ended_reason="failed")
-        elif current.status == VerificationStatus.PENDING:
-            update["status"] = VerificationStatus.UNVERIFIED
-        await self._store.put_verification(current.model_copy(update=update))
+        failed = request.status == VerificationRequestStatus.FAILED
+        await self._store.put_verification(current.model_copy(update=_settled(current, failed)))
 
     async def _cancel_open_request(self, current: Verification) -> VerificationRequest | None:
-        """Cancel the identity's open request, if it has one; return it to announce."""
+        """Cancel the identity's open request, if it has one; return it to announce.
+
+        One past its expiry, whose timer did not run here, is recorded as
+        expired: that is how it ended.
+        """
         if current.request_id is None:
             return None
         request = await self._store.get_verification_request(current.request_id)
         if request is None or request.status != VerificationRequestStatus.OPEN:
             return None
-        cancelled = request.model_copy(update={"status": VerificationRequestStatus.CANCELLED})
-        await self._store.update_verification_request(cancelled)
-        return cancelled
+        self._disarm_request_expiry(request.id)
+        status = (
+            VerificationRequestStatus.EXPIRED
+            if _lapsed(request, datetime.now(UTC))
+            else VerificationRequestStatus.CANCELLED
+        )
+        ended = request.model_copy(update={"status": status})
+        await self._store.update_verification_request(ended)
+        return ended
+
+    async def _announce_superseded(self, request: VerificationRequest) -> None:
+        """Announce the open request a new request or a revocation took over:
+        cancelled, or expired when its time had passed (an end the hooks hear)."""
+        if request.status != VerificationRequestStatus.EXPIRED:
+            await self._emit_verification_event("verification_ended", request, reason="cancelled")
+            return
+        await self._emit_verification_event("verification_ended", request, reason="expired")
+        await self._verification_hook(
+            HookTrigger.ON_VERIFICATION_ENDED,
+            request,
+            {"reason": "expired", "ended": ENDED_REQUEST},
+        )
+
+    async def _without_lapsed_request(self, current: Verification) -> Verification:
+        """*current* as it stands once its open request, past its expiry, ended.
+
+        The timer that ends a request runs in the process that opened it: one
+        that restarted, or another process, finds it still open in the store.
+        """
+        if current.request_id is None:
+            return current
+        request = await self._store.get_verification_request(current.request_id)
+        if (
+            request is None
+            or request.status != VerificationRequestStatus.OPEN
+            or not _lapsed(request, datetime.now(UTC))
+        ):
+            return current
+        return current.model_copy(update=_settled(current, failed=False))
 
     async def _stored_verification(
         self, identity_id: str, organization_id: str | None
@@ -760,6 +819,34 @@ def _lock_key(identity_id: str, organization_id: str | None) -> str:
 
 def _iso(moment: datetime | None) -> str | None:
     return moment.isoformat() if moment is not None else None
+
+
+def _refusal(outcome: str, request: VerificationRequest) -> str:
+    """The reason an attempt is refused: "expired" for an expired request,
+    whether this attempt or its timer recorded the expiry."""
+    if request.status == VerificationRequestStatus.EXPIRED:
+        return "expired"
+    return outcome
+
+
+def _lapsed(request: VerificationRequest, now: datetime) -> bool:
+    """Whether *request*'s time to be answered has passed."""
+    return request.expires_at <= now
+
+
+def _settled(current: Verification, failed: bool) -> dict[str, Any]:
+    """The identity's update once its open request ended unfulfilled.
+
+    An expired request proves nothing either way: the identity is left as it
+    was before it. A failed one is someone who could not prove it, so a
+    verification in force ends with it (fail closed).
+    """
+    update: dict[str, Any] = {"request_id": None}
+    if failed:
+        update.update(status=VerificationStatus.UNVERIFIED, ended_reason="failed")
+    elif current.status == VerificationStatus.PENDING:
+        update["status"] = VerificationStatus.UNVERIFIED
+    return update
 
 
 def _forget_timer(

@@ -319,3 +319,29 @@ async def test_an_unlabelled_event_has_no_sender_verification() -> None:
 
     assert seen == [None]
     await kit.close()
+
+
+async def test_a_new_link_goes_out_once_the_first_expired_unanswered() -> None:
+    """The guide's hook asks for a request when none is open: one left
+    unanswered past its expiry is not open, so the next message asks again."""
+    kit, _ = _kit(VerificationPolicy(request_ttl=0.3))
+    links: list[str] = []
+
+    @kit.hook(HookTrigger.ON_VERIFICATION_REQUIRED)
+    async def required(event: Any, ctx: Any) -> HookResult:
+        state = await kit.sender_verification(event, ctx)
+        if state is not None and state.request_id is None:
+            request, _secret = await kit.request_verification(
+                state.identity_id, room_id=ctx.room.id, channel_id="sms"
+            )
+            links.append(request.id)
+        return HookResult.allow()
+
+    await _text(kit, "hello")
+    await asyncio.sleep(0.4)
+    await _text(kit, "still there?")
+
+    assert len(links) == 2
+    state = await kit.verification_of("id-alice")
+    assert state.status == VerificationStatus.PENDING and state.request_id == links[1]
+    await kit.close()
