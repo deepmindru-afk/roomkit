@@ -11,6 +11,8 @@ VM and its workspace.
 
 Prerequisites:
   - Linux with KVM, QEMU and socat
+  - passt, with QEMU 10.1 or later: without it, the VM can reach the
+    services listening on the host's localhost
   - SmolBSD cloned: git clone https://github.com/NetBSDfr/smolBSD.git
   - Builder image: cd smolBSD && bmake fetchimg
   - The roomkit-sandbox guest image, built from a roomkit-sandbox checkout:
