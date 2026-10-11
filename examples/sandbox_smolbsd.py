@@ -17,7 +17,7 @@ Prerequisites:
   - Builder image: cd smolBSD && bmake fetchimg
   - The roomkit-sandbox guest image, built from a roomkit-sandbox checkout:
       smolbsd/build.sh /path/to/smolBSD NOSUDO=1
-  - pip install roomkit-sandbox
+  - roomkit-sandbox 0.5.0 or later (the run commands below install it)
 
 Environment variables:
     ANTHROPIC_API_KEY — Anthropic API key
@@ -31,16 +31,19 @@ Try asking:
 
 Run with:
     ANTHROPIC_API_KEY=sk-... SMOLBSD_DIR=/path/to/smolBSD \\
-        uv run python examples/sandbox_smolbsd.py
+        uv run --with "roomkit-sandbox>=0.5.0" python examples/sandbox_smolbsd.py
 
 Delete the VM and its workspace:
-    SMOLBSD_DIR=/path/to/smolBSD uv run python examples/sandbox_smolbsd.py --cleanup
+    SMOLBSD_DIR=/path/to/smolBSD \\
+        uv run --with "roomkit-sandbox>=0.5.0" python examples/sandbox_smolbsd.py --cleanup
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -54,6 +57,25 @@ from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 SESSION_ID = "example-smolbsd-sandbox"
 
 
+def require_sandbox() -> None:
+    """Exit unless roomkit-sandbox 0.5.0+ is installed.
+
+    0.4.0 imports fine but runs the old SSH backend: its first command
+    times out after 30 s.
+    """
+    try:
+        installed = version("roomkit-sandbox")
+    except PackageNotFoundError:
+        installed = None
+    match = re.match(r"(\d+)\.(\d+)", installed or "")
+    if match is None or (int(match[1]), int(match[2])) < (0, 5):
+        found = f"found {installed}" if installed else "not installed"
+        sys.exit(
+            f"Error: this example needs roomkit-sandbox 0.5.0 or later ({found}): "
+            'uv run --with "roomkit-sandbox>=0.5.0" python examples/sandbox_smolbsd.py'
+        )
+
+
 async def cleanup(backend) -> None:
     """Delete this example's VM and its workspace disk."""
     for info in await backend.list_containers():
@@ -63,6 +85,7 @@ async def cleanup(backend) -> None:
 
 
 async def main() -> None:
+    require_sandbox()
     from roomkit_sandbox import ContainerSandboxExecutor
     from roomkit_sandbox.commands import NativeCommandBuilder
     from roomkit_sandbox.smolbsd_backend import SmolBSDSandboxBackend
