@@ -24,6 +24,30 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.channels.realtime_voice")
 
+
+def resampler_class(session_id: str) -> type[Any]:
+    """The resampler a realtime session uses: NumPy first, sinc without it.
+
+    NumPy's vectorised interpolation releases the GIL; the pure-Python sinc
+    fallback keeps the audio correct but can starve realtime pacing.
+    """
+    try:
+        from roomkit.voice.pipeline.resampler.numpy import NumpyResamplerProvider
+
+        return NumpyResamplerProvider
+    except ImportError:
+        from roomkit.voice.pipeline.resampler.sinc import SincResamplerProvider
+
+        logger.warning(
+            "numpy unavailable — falling back to the pure-Python "
+            "sinc resampler for session %s. Realtime pacing may "
+            "underrun under load; install numpy for GIL-releasing "
+            "resampling.",
+            session_id,
+        )
+        return SincResamplerProvider
+
+
 # Outbound audio chunks a session may have queued before the bound bites.
 # At 20 ms per chunk this is ~10 s of speech; a transport further behind than
 # that is not going to catch up, it has stopped reading.
@@ -86,6 +110,7 @@ class RealtimeAudioHost(Protocol):
     _resample_executor: ThreadPoolExecutor | None
     _session_transport_rates: dict[str, int]
     _session_transport_output_rates: dict[str, int]
+    _session_pipeline_rates: dict[str, int]
     _recording_tracks: dict[str, Any]
     _audio_forward_count: dict[str, int]
     _audio_generation: dict[str, int]
@@ -141,6 +166,7 @@ class RealtimeAudioMixin:
     _resample_executor: ThreadPoolExecutor | None
     _session_transport_rates: dict[str, int]
     _session_transport_output_rates: dict[str, int]
+    _session_pipeline_rates: dict[str, int]
     _recording_tracks: dict[str, Any]
     _audio_forward_count: dict[str, int]
     _audio_generation: dict[str, int]
@@ -356,14 +382,16 @@ class RealtimeAudioMixin:
         so inbound resampling runs off the event loop; task-creation order
         plus the single-thread resample executor keep frames in order.
         """
+        # The pipeline's own rate (its contract's internal format), which may
+        # differ from the transport's; kept for frames buffered pre-connect.
+        with self._state_lock:
+            self._session_pipeline_rates[session.id] = frame.sample_rate
         if self._buffer_preconnect_audio(session, frame.data, processed=True):
             return
         if not self._can_forward_client_audio(session):
             return
 
         with self._state_lock:
-            resamplers = self._session_resamplers.get(session.id)
-            transport_rate = self._session_transport_rates.get(session.id)
             rec = self._recording_tracks.get(session.id)
 
         try:
@@ -372,28 +400,49 @@ class RealtimeAudioMixin:
             return
         self._track_task(
             loop,
-            self._forward_pipeline_frame(session, frame.data, resamplers, transport_rate, rec),
+            self._forward_pipeline_frame(session, frame.data, frame.sample_rate, rec),
             name=f"rt_send_audio:{session.id}",
         )
+
+    def _pipeline_inbound_resampler(self, session_id: str) -> Any:
+        """The session's inbound resampler, created when a frame first needs it.
+
+        A pipeline running at its own rate needs one even when the transport
+        already matches the provider, the case session start creates none for.
+        """
+        with self._state_lock:
+            resamplers = self._session_resamplers.get(session_id)
+            if resamplers is None:
+                cls = resampler_class(session_id)
+                resamplers = (cls(), cls())
+                self._session_resamplers[session_id] = resamplers
+        return resamplers[0]
 
     async def _forward_pipeline_frame(
         self,
         session: VoiceSession,
         audio: bytes,
-        resamplers: tuple[Any, Any] | None,
-        transport_rate: int | None,
+        source_rate: int,
         rec: Any,
     ) -> None:
-        """Resample (off-loop), tap recording, send pipeline audio to provider."""
+        """Resample (off-loop), tap recording, send pipeline audio to provider.
+
+        *source_rate* is the processed frame's own rate: the transport's, or
+        the pipeline contract's internal rate when it has one (Section 12.4:
+        the pipeline normalizes the format for the provider).
+        """
         if not self._can_forward_client_audio(session):
             return
-        # Inbound resampling: transport rate -> provider rate (e.g. SIP 8kHz -> 16kHz)
-        if resamplers and transport_rate and transport_rate != self._input_sample_rate:
-            from roomkit.voice.audio_frame import AudioFrame as _AudioFrame
-
-            f = _AudioFrame(data=audio, sample_rate=transport_rate, channels=1, sample_width=2)
+        # Inbound resampling: frame rate -> provider rate (e.g. SIP 8kHz -> 16kHz,
+        # or a 16 kHz pipeline in front of a 24 kHz provider)
+        if source_rate != self._input_sample_rate:
+            f = AudioFrame(data=audio, sample_rate=source_rate, channels=1, sample_width=2)
             f = await self._resample_off_loop(
-                resamplers[0], f, self._input_sample_rate, direction="inbound", stream=session.id
+                self._pipeline_inbound_resampler(session.id),
+                f,
+                self._input_sample_rate,
+                direction="inbound",
+                stream=session.id,
             )
             audio = f.data
 
@@ -705,16 +754,11 @@ class RealtimeAudioMixin:
             for processed, audio, enqueued_at in batch:
                 if processed:
                     with self._state_lock:
-                        resamplers = self._session_resamplers.get(session.id)
-                        transport_rate = self._session_transport_rates.get(session.id)
+                        source_rate = self._session_pipeline_rates.get(
+                            session.id, self._input_sample_rate
+                        )
                         rec = self._recording_tracks.get(session.id)
-                    await self._forward_pipeline_frame(
-                        session,
-                        audio,
-                        resamplers,
-                        transport_rate,
-                        rec,
-                    )
+                    await self._forward_pipeline_frame(session, audio, source_rate, rec)
                 else:
                     await self._forward_client_audio(session, audio, enqueued_at)
 

@@ -262,8 +262,7 @@ class TestRealtimeBargeInGuard:
         await channel._forward_pipeline_frame(
             session,
             mic_audio,
-            None,
-            None,
+            channel._input_sample_rate,
             ("mic-track", "room-1"),
         )
 
@@ -282,7 +281,7 @@ class TestRealtimeBargeInGuard:
             AudioFrame(data=b"\x01\x00" * 240, sample_rate=24000),
         )
         channel._playback_started_at[session.id] -= 1.0
-        await channel._forward_pipeline_frame(session, mic_audio, None, None, None)
+        await channel._forward_pipeline_frame(session, mic_audio, channel._input_sample_rate, None)
 
         assert provider.sent_audio == [(session.id, mic_audio)]
 
@@ -329,7 +328,7 @@ class TestRealtimeBargeInGuard:
             session,
             AudioFrame(data=b"\x01\x00" * 240, sample_rate=24000),
         )
-        await channel._forward_pipeline_frame(session, mic_audio, None, None, None)
+        await channel._forward_pipeline_frame(session, mic_audio, channel._input_sample_rate, None)
 
         assert provider.sent_audio == [(session.id, mic_audio)]
 

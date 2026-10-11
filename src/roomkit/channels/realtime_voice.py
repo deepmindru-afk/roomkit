@@ -18,7 +18,11 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from roomkit.channels._mark_copies import compile_mark_patterns
-from roomkit.channels._realtime_audio import _MAX_QUEUED_AUDIO_CHUNKS, RealtimeAudioMixin
+from roomkit.channels._realtime_audio import (
+    _MAX_QUEUED_AUDIO_CHUNKS,
+    RealtimeAudioMixin,
+    resampler_class,
+)
 from roomkit.channels._realtime_context import (
     _current_voice_session as _current_voice_session,
 )
@@ -481,6 +485,8 @@ class RealtimeVoiceChannel(
         # Per-session transport sample rates (from transport metadata)
         self._session_transport_rates: dict[str, int] = {}
         self._session_transport_output_rates: dict[str, int] = {}
+        # Per-session rate of the pipeline's processed frames
+        self._session_pipeline_rates: dict[str, int] = {}
         # Audio forward counters (for diagnostics)
         self._audio_forward_count: dict[str, int] = {}
         # Per-session generation counter: bumped on interrupt so pending
@@ -1121,31 +1127,13 @@ class RealtimeVoiceChannel(
         if not (needs_inbound or needs_outbound):
             return
 
-        # NumPy first — vectorised interpolation releases the GIL. The sinc
-        # fallback preserves correctness but can starve realtime pacing.
-        try:
-            from roomkit.voice.pipeline.resampler.numpy import (
-                NumpyResamplerProvider as _Resampler,
-            )
-        except ImportError:
-            from roomkit.voice.pipeline.resampler.sinc import (
-                SincResamplerProvider as _Resampler,
-            )
-
-            logger.warning(
-                "numpy unavailable — falling back to the pure-Python "
-                "sinc resampler for session %s. Realtime pacing may "
-                "underrun under load; install numpy for GIL-releasing "
-                "resampling.",
-                session.id,
-            )
-
-        self._session_resamplers[session.id] = (_Resampler(), _Resampler())
+        cls = resampler_class(session.id)
+        self._session_resamplers[session.id] = (cls(), cls())
         logger.info(
             "Realtime resampler for session %s: %s (transport_in=%d, transport_out=%d, "
             "provider_in=%d, provider_out=%d)",
             session.id,
-            _Resampler.__name__,
+            cls.__name__,
             transport_rate,
             output_rate,
             self._input_sample_rate,
@@ -1329,6 +1317,7 @@ class RealtimeVoiceChannel(
             resamplers = self._session_resamplers.pop(session.id, None)
             self._session_transport_rates.pop(session.id, None)
             self._session_transport_output_rates.pop(session.id, None)
+            self._session_pipeline_rates.pop(session.id, None)
             self._preconnect_audio.pop(session.id, None)
             self._preconnect_audio_bytes.pop(session.id, None)
             self._preconnect_audio_dropped.discard(session.id)
@@ -1733,6 +1722,7 @@ class RealtimeVoiceChannel(
             self._audio_generation.pop(session.id, None)
             self._session_transport_rates.pop(session.id, None)
             self._session_transport_output_rates.pop(session.id, None)
+            self._session_pipeline_rates.pop(session.id, None)
             self._audio_forward_count.pop(session.id, None)
             self._forget_transcription_state(session.id)
             self._end_recording_track(session.id)

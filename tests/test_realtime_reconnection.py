@@ -63,7 +63,7 @@ async def test_channel_preserves_reconnect_audio_and_permissions(
         assert state.pop_audio() == (b"mic!" if allowed else None)
         session.state = VoiceSessionState.ENDED
         await channel._forward_client_audio(session, b"late")
-        await channel._forward_pipeline_frame(session, b"late", None, None, None)
+        await channel._forward_pipeline_frame(session, b"late", channel._input_sample_rate, None)
         assert not state.audio_buffer
     finally:
         await channel.close()

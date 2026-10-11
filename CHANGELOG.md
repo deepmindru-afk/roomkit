@@ -228,6 +228,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `RealtimeVoiceChannel` whose pipeline runs at its own rate hands the
+  provider audio at the provider's rate. Processed frames were resampled from
+  the transport's rate, so a pipeline contract with a 16 kHz internal format
+  (a diarization model's rate) in front of a 24 kHz transport and provider
+  sent 16 kHz bytes as 24 kHz audio: the provider heard the user sped up, and
+  nothing resampled at all when transport and provider rates matched. Frames
+  are now resampled from their own rate, live and when held during the
+  handshake; the inbound resampler is created when a frame first needs it.
 - An `ACPChannel` opens a room's session once, whoever asks for it first
   (RMK-673). Two `set_config_option` calls during a standalone turn, or one
   racing the first prompt after it, each opened a session for the room, and
