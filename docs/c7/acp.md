@@ -21,7 +21,8 @@ agent = ACPChannel(
     cwd="/srv/workspaces/my-project",  # required, absolute — on the AGENT's host
     additional_directories=None,       # extra absolute dirs for the session
     env=None,                          # added to the SDK's restricted env
-    mcp_servers=None,                  # ACP MCP-server descriptors (SDK types)
+    mcp_servers=None,                  # ACP MCP-server descriptors, or room_id -> them
+    session_config=None,               # {"mode": "default"}: set on every session opened
     authentication_method=None,        # optional ACP auth method id
     external_tool_handler=None,        # permission policy; None = reject all
     name=None, role=None, description=None,  # its identity, as an Agent's
@@ -69,6 +70,28 @@ RoomKit limits only this one stream to two attempts.
 
 Runnable without a remote agent: `examples/acp_session_recovery.py`.
 
+### Session setup
+
+What a session is opened with is set per room (RFC ACP agent channel, *Session setup*). `mcp_servers` is a list given to every room's sessions, or a function of the room id (sync or async), called each time a session opens for that room: a stdio server can be told its room in its `env`. `session_config` maps ACP config ids to values (`mode`, `model`, an agent's own options) and is set on every session the channel opens, before its first prompt: the room's first, one rebuilt after a recovery, one opened after the agent restarted, a standalone turn's, a task's child room's. A value the session already announces is not set again. A value the host sets with `set_config_option(room_id, id, value)` belongs to the room: its next session is set to it too, over `session_config`, until `close_session(room_id)` forgets it. A value the agent refuses fails the opening closed: the session is released, never prompted, and the turn fails (or `set_config_option` raises) with a `RuntimeError` naming the option.
+
+```python
+from acp.schema import EnvVariable, McpServerStdio
+
+agent = ACPChannel(
+    "claude-code",
+    command=["npx", "--no-install", "@agentclientprotocol/claude-agent-acp@0.61.0"],
+    cwd="/srv/workspace",
+    mcp_servers=lambda room_id: [
+        McpServerStdio(name="notes", command="notes-server", args=[],
+                       env=[EnvVariable(name="NOTES_ROOM", value=room_id)]),
+    ],
+    session_config={"mode": "default"},  # every MCP call and write is asked of RoomKit
+    external_tool_handler=PolicyExternalToolHandler(policy=ToolPolicy(allow=["mcp__notes__*"])),
+)
+```
+
+Example: `examples/acp_room_mcp.py`.
+
 ### Process and session model
 
 One connection per channel, opened lazily on the first prompt; one ACP **session** per Room, created on demand; its `session/new` `_meta` carries `roomkit.live/roomId` and `roomkit.live/sessionScope: "room"`. A standalone `INSTRUCTION` (RFC §10.1.1 step 7) runs in a session of its own, opened for that turn with `roomkit.live/sessionScope: "turn"` and closed after it; the room's session is neither prompted nor told, and catches up on the reply at its next turn. A relay that keeps one remote session per room must file a `"turn"` session apart and close only that one; one that answers the turn with an open session fails the turn with `RuntimeError`. Prompts are serialized per Room (per-room lock); different Rooms progress concurrently through the same connection. When the transport reports the connection dead (for stdio: the subprocess exited), the next prompt reconnects and clears all session mappings — a reconnect never resumes sessions. The client declares no fs/terminal capabilities: `fs/*`, `terminal/*`, and `session/request_input` (elicitation) requests get `method_not_found` — `ON_USER_INPUT_REQUIRED` never fires from ACP.
@@ -104,7 +127,7 @@ ACP fixes the envelope and leaves the payload to the agent, so `CLIChannel(conso
 
 ### Permission flow
 
-The handler hears only of the calls the agent submits, and the agent's own mode decides which: Claude Code in `auto` mode (a user's settings, inherited with `HOME`) acts without asking; `default` asks before any action that is not a read; `plan` refuses them itself. Set it per room: `await agent.set_config_option(room_id, "mode", "default")`.
+The handler hears only of the calls the agent submits, and the agent's own mode decides which: Claude Code in `auto` mode (a user's settings, inherited with `HOME`) acts without asking; `default` asks before any action that is not a read; `plan` refuses them itself. Set it on every session with `session_config={"mode": "default"}`, or for one room with `await agent.set_config_option(room_id, "mode", "default")`, which the room keeps across a recovery or an agent restart.
 
 Every agent `session/request_permission` goes to the `external_tool_handler` (`ExternalToolHandler` ABC from `roomkit.tools`, with `PolicyExternalToolHandler` and `ToolDecision`):
 

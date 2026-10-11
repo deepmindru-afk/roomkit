@@ -47,7 +47,7 @@ from roomkit.channels._acp_context import (
     contributed_blocks,
 )
 from roomkit.channels._acp_events import ACPEventsMixin
-from roomkit.channels._acp_sessions import ACPSessionsMixin
+from roomkit.channels._acp_sessions import ACPSessionsMixin, MCPServersForRoom
 from roomkit.channels._acp_turn import ACPTurnMixin
 from roomkit.channels._discussion_turn import discussion_notes
 from roomkit.channels._instruction import instruction_fingerprint, is_standalone, mark_instruction
@@ -80,6 +80,18 @@ _SHUTDOWN_TIMEOUT = 5.0
 
 _DEFAULT_ROOM_HISTORY = 20
 """Room messages an agent catches up on when it is asked to act (RFC §19.3.2)."""
+
+
+def _session_setup(session_config: Mapping[str, str | bool] | None) -> dict[str, str | bool]:
+    """``session_config`` checked and copied: ACP config values are strings or booleans."""
+    setup = dict(session_config or {})
+    for config_id, value in setup.items():
+        if not isinstance(config_id, str) or not config_id or not isinstance(value, (str, bool)):
+            raise TypeError(
+                f"session_config maps an ACP config id to a string or a boolean, "
+                f"got {config_id!r}: {value!r}"
+            )
+    return setup
 
 
 def _agent_transport(
@@ -144,7 +156,22 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
             process spawn; unset names are skipped; explicit ``env`` entries
             win over inherited ones. Nothing is forwarded by default. Spawned
             agents only.
-        mcp_servers: ACP MCP-server descriptors accepted by the official SDK.
+        mcp_servers: The MCP servers each session is given, as ACP MCP-server
+            descriptors of the official SDK: a list, the same for every room,
+            or a function of the room id (sync or async), called each time a
+            session opens for that room, so a server can be told which room
+            it acts for (a stdio server's ``env``, a URL).
+        session_config: ACP session config values set on every session the
+            channel opens for a room, ``{"mode": "default"}`` for instance:
+            the room's first session, one opened again after a recovery or an
+            agent restart, and a standalone turn's. A value the session
+            already has is not set again. A value the host sets on a room
+            with :meth:`set_config_option` is set again too, over this, on the
+            room's next session, until :meth:`close_session` forgets it. A
+            value the agent refuses fails the opening, and the turn with it:
+            the session is released, never prompted (RFC ACP agent channel,
+            *Session setup*). The mode matters most, since it decides what
+            the agent asks ``external_tool_handler`` before acting.
         authentication_method: Optional ACP authentication method identifier.
         external_tool_handler: Permission policy and tool observability bridge.
             Without a handler, every permission request is rejected.
@@ -221,7 +248,8 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         additional_directories: Sequence[str | Path] | None = None,
         env: Mapping[str, str] | None = None,
         inherit_env: Sequence[str] | None = None,
-        mcp_servers: Sequence[Any] | None = None,
+        mcp_servers: Sequence[Any] | MCPServersForRoom | None = None,
+        session_config: Mapping[str, str | bool] | None = None,
         authentication_method: str | None = None,
         external_tool_handler: ExternalToolHandler | None = None,
         room_history: int = _DEFAULT_ROOM_HISTORY,
@@ -249,7 +277,15 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
             _absolute_path(path, field_name="additional_directories")
             for path in (additional_directories or ())
         ]
-        self._mcp_servers = list(mcp_servers or ())
+        self._mcp_servers: list[Any] | MCPServersForRoom = (
+            list(mcp_servers or ())
+            if mcp_servers is None or isinstance(mcp_servers, Sequence)
+            else mcp_servers
+        )
+        self._session_setup = _session_setup(session_config)
+        # Room -> config values the host set on its session, set again on the
+        # room's next one until close_session forgets them (RFC *Session setup*).
+        self._room_config: dict[str, dict[str, str | bool]] = {}
         self._authentication_method = authentication_method
         self._external_tool_handler = external_tool_handler
         # ON_TOOL_CALL's report on a call the agent ran, wired by the kit.
@@ -346,6 +382,10 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         sees the value it landed on (agents resolve aliases) plus any option
         the change invalidated. Opens the room's session if the first prompt
         has not yet done so, which connects to the agent.
+
+        The value belongs to the room, not only to this session: the room's
+        next session (after a recovery or an agent restart) is set to it too,
+        over ``session_config``, until :meth:`close_session`.
         """
         connection = await self._ensure_connection()
         session_id = self._sessions.get(room_id)
@@ -371,6 +411,7 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         options = _model_dump(getattr(response, "config_options", None))
         self._session_options[session_id] = options if isinstance(options, list) else []
         values = _config_values(self._session_options[session_id])
+        self._room_config.setdefault(room_id, {})[config_id] = values.get(config_id, value)
         await self._publish_config_options(session_id, self._session_options[session_id], values)
         return values
 
@@ -510,8 +551,12 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         agent that announces it; one that does not keeps the session until the
         connection closes. Never raises for a close the agent refuses: returns
         ``True`` once the session is forgotten, ``False`` when there was none.
+
+        The config values the host set on the room are forgotten too: its
+        next session opens on ``session_config`` alone.
         """
         async with self._room_turn_lock(room_id):
+            self._room_config.pop(room_id, None)
             try:
                 return await self._discard_room_session(room_id, self._connection)
             finally:
@@ -589,6 +634,7 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         self._turn_sessions.clear()
         self._session_rooms.clear()
         self._session_options.clear()
+        self._room_config.clear()
         self._prompted_index.clear()
         self._labelled_rooms.clear()
         self._instructed_rooms.clear()

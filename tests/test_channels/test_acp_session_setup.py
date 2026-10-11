@@ -1,0 +1,312 @@
+"""What an ACP session is opened with (RFC ACP agent channel, *Session setup*).
+
+The room's MCP servers go in ``session/new``; ``session_config`` and the values
+the host set on the room are set before the session is prompted, on every
+session the channel opens for the room: the first, a rebuilt one, one opened
+after the agent restarted, and a standalone turn's. A value the agent refuses
+fails the opening: the agent's mode is what makes it ask RoomKit's gate before
+acting, so a session left off it is ungated, not degraded.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import patch
+
+import acp
+import pytest
+from acp.schema import (
+    McpServerStdio,
+    SessionConfigOptionSelect,
+    SessionConfigSelectOption,
+    SetSessionConfigOptionResponse,
+)
+
+from roomkit import ACPChannel, ACPSessionInvalidatedError
+from roomkit.models.context import RoomContext
+from roomkit.models.delivery import STANDALONE
+from roomkit.models.enums import EventType
+from roomkit.models.event import RoomEvent
+from roomkit.models.room import Room
+from roomkit.providers.ai.base import ProviderError
+from tests.conftest import make_event
+from tests.test_channels.test_acp import (
+    _binding,
+    _context,
+    _FakeACPConnection,
+    _FakeTransport,
+    _prompt,
+)
+
+ROOM = "room-1"
+OTHER_ROOM = "room-2"
+DEFAULTS = {"model": "opus", "mode": "auto"}
+
+
+def _select(config_id: str, current: str) -> SessionConfigOptionSelect:
+    choices = ["opus", "sonnet"] if config_id == "model" else ["auto", "default", "plan"]
+    return SessionConfigOptionSelect(
+        id=config_id,
+        name=config_id.title(),
+        type="select",
+        current_value=current,
+        options=[SessionConfigSelectOption(value=value, name=value) for value in choices],
+    )
+
+
+class _Agent:
+    """Keeps each session's config the way a real agent does.
+
+    A new session starts on the agent's defaults (the shared fake keeps one
+    config for every session, which would hide a session opened unconfigured).
+    """
+
+    def __init__(self, connection: _FakeACPConnection, *, refuses: str | None = None) -> None:
+        self.connection = connection
+        self.refuses = refuses
+        self.sessions: dict[str, dict[str, str]] = {}
+        self._open = connection.new_session
+        connection.new_session = self.new_session  # type: ignore[method-assign]
+        connection.set_config_option = self.set_config_option  # type: ignore[method-assign]
+
+    def options(self, session_id: str) -> list[Any]:
+        return [_select(key, value) for key, value in self.sessions[session_id].items()]
+
+    async def new_session(self, **kwargs: Any) -> Any:
+        response = await self._open(**kwargs)
+        self.sessions[response.session_id] = dict(DEFAULTS)
+        return response.model_copy(update={"config_options": self.options(response.session_id)})
+
+    async def set_config_option(
+        self, *, config_id: str, session_id: str, value: str | bool
+    ) -> SetSessionConfigOptionResponse:
+        self.connection.set_config_calls.append(
+            {"config_id": config_id, "session_id": session_id, "value": value}
+        )
+        if config_id == self.refuses or config_id not in self.sessions[session_id]:
+            raise acp.RequestError.invalid_params({"configId": config_id})
+        self.sessions[session_id][config_id] = str(value)
+        return SetSessionConfigOptionResponse(config_options=self.options(session_id))
+
+
+def _setup(
+    tmp_path: Any,
+    *,
+    mcp_servers: Any = None,
+    session_config: dict[str, str | bool] | None = None,
+    refuses: str | None = None,
+) -> tuple[ACPChannel, _FakeACPConnection, _FakeTransport, _Agent]:
+    connection = _FakeACPConnection(None, emit_updates=False)
+    transport = _FakeTransport(connection)
+    channel = ACPChannel(
+        "acp-agent",
+        transport=transport,
+        cwd=tmp_path,
+        mcp_servers=mcp_servers,
+        session_config=session_config,
+    )
+    connection.client = channel._client
+    return channel, connection, transport, _Agent(connection, refuses=refuses)
+
+
+def _server(room_id: str) -> McpServerStdio:
+    return McpServerStdio(
+        name="notes",
+        command="notes-server",
+        args=[],
+        env=[acp.schema.EnvVariable(name="NOTES_ROOM", value=room_id)],
+    )
+
+
+def _request(room_id: str = ROOM, *, standalone: bool = False) -> RoomEvent:
+    event = make_event(room_id=room_id, body="request", index=0)
+    if not standalone:
+        return event
+    return event.model_copy(update={"type": EventType.INSTRUCTION, "metadata": {STANDALONE: True}})
+
+
+async def _turn(channel: ACPChannel, event: RoomEvent) -> None:
+    context = RoomContext(
+        room=Room(id=event.room_id), bindings=[_binding(event.room_id)], recent_events=[event]
+    )
+    output = await channel.on_event(event, _binding(event.room_id), context)
+    assert output.response_stream is not None
+    [chunk async for chunk in output.response_stream]
+
+
+def _prompted_sessions(connection: _FakeACPConnection) -> list[str]:
+    return [call["session_id"] for call in connection.prompt_calls]
+
+
+class TestMCPServersPerRoom:
+    async def test_a_list_goes_to_every_room(self, tmp_path: Any) -> None:
+        shared = [_server("any")]
+        channel, connection, _, _ = _setup(tmp_path, mcp_servers=shared)
+        await _turn(channel, _request(ROOM))
+        await _turn(channel, _request(OTHER_ROOM))
+
+        assert [call["mcp_servers"] for call in connection.new_session_calls] == [shared, shared]
+        await channel.close()
+
+    @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+    async def test_a_function_gives_each_room_its_servers(
+        self, tmp_path: Any, asynchronous: bool
+    ) -> None:
+        asked: list[str] = []
+
+        def servers(room_id: str) -> list[McpServerStdio]:
+            asked.append(room_id)
+            return [_server(room_id)]
+
+        async def servers_async(room_id: str) -> list[McpServerStdio]:
+            return servers(room_id)
+
+        channel, connection, _, _ = _setup(
+            tmp_path, mcp_servers=servers_async if asynchronous else servers
+        )
+        await _turn(channel, _request(ROOM))
+        await _turn(channel, _request(OTHER_ROOM))
+
+        assert asked == [ROOM, OTHER_ROOM]
+        assert [call["mcp_servers"] for call in connection.new_session_calls] == [
+            [_server(ROOM)],
+            [_server(OTHER_ROOM)],
+        ]
+        await channel.close()
+
+    async def test_a_standalone_turn_gets_its_rooms_servers(self, tmp_path: Any) -> None:
+        channel, connection, _, _ = _setup(tmp_path, mcp_servers=lambda room: [_server(room)])
+        await _turn(channel, _request(ROOM, standalone=True))
+
+        [call] = connection.new_session_calls
+        assert call["mcp_servers"] == [_server(ROOM)]
+        assert call["roomkit.live/sessionScope"] == "turn"
+        await channel.close()
+
+
+class TestSessionConfig:
+    async def test_it_is_set_before_the_first_prompt(self, tmp_path: Any) -> None:
+        channel, connection, _, agent = _setup(tmp_path, session_config={"mode": "default"})
+        await _turn(channel, _request())
+
+        assert connection.set_config_calls == [
+            {"config_id": "mode", "session_id": "session-1", "value": "default"}
+        ]
+        assert agent.sessions["session-1"]["mode"] == "default"
+        assert channel.session_config(ROOM) == {"model": "opus", "mode": "default"}
+        await channel.close()
+
+    async def test_a_value_the_session_already_has_is_not_set_again(self, tmp_path: Any) -> None:
+        channel, connection, _, _ = _setup(tmp_path, session_config={"model": "opus"})
+        await _turn(channel, _request())
+
+        assert connection.set_config_calls == []
+        await channel.close()
+
+    async def test_it_and_the_hosts_values_survive_an_agent_restart(self, tmp_path: Any) -> None:
+        channel, _connection, transport, agent = _setup(
+            tmp_path, session_config={"mode": "default"}
+        )
+        await _turn(channel, _request())
+        await channel.set_config_option(ROOM, "model", "sonnet")
+
+        transport.alive = False  # the agent died; its sessions with it
+        await _turn(channel, _request())
+
+        assert channel.session_id(ROOM) == "session-2"
+        assert agent.sessions["session-2"] == {"model": "sonnet", "mode": "default"}
+        assert channel.session_config(ROOM) == {"model": "sonnet", "mode": "default"}
+        await channel.close()
+
+    async def test_it_and_the_hosts_values_survive_a_rebuilt_session(self, tmp_path: Any) -> None:
+        channel, connection, _, agent = _setup(tmp_path, session_config={"mode": "default"})
+        await channel.set_config_option(ROOM, "model", "sonnet")
+        prompt = connection.prompt
+        refused: list[str] = []
+
+        async def refuses_once(session_id: str, *args: Any, **kwargs: Any) -> Any:
+            if not refused:
+                refused.append(session_id)
+                raise ACPSessionInvalidatedError("unusable", recovery_authorized=True)
+            return await prompt(session_id, *args, **kwargs)
+
+        with patch.object(connection, "prompt", refuses_once):
+            await _turn(channel, _request())
+
+        assert refused == ["session-1"]
+        assert _prompted_sessions(connection) == ["session-2"]
+        assert agent.sessions["session-2"] == {"model": "sonnet", "mode": "default"}
+        await channel.close()
+
+    async def test_a_standalone_turn_takes_it_without_a_room_session(self, tmp_path: Any) -> None:
+        channel, connection, _, agent = _setup(tmp_path, session_config={"mode": "default"})
+        await _turn(channel, _request(standalone=True))
+
+        assert channel.session_id(ROOM) is None
+        assert _prompted_sessions(connection) == ["session-1"]
+        assert agent.sessions["session-1"]["mode"] == "default"
+        await channel.close()
+
+    async def test_close_session_forgets_what_the_host_set(self, tmp_path: Any) -> None:
+        channel, _connection, _, agent = _setup(tmp_path, session_config={"mode": "default"})
+        await channel.set_config_option(ROOM, "model", "sonnet")
+
+        await channel.close_session(ROOM)
+        await _turn(channel, _request())
+
+        assert agent.sessions["session-2"] == {"model": "opus", "mode": "default"}
+        await channel.close()
+
+    async def test_the_hosts_values_are_per_room(self, tmp_path: Any) -> None:
+        channel, _connection, _, agent = _setup(tmp_path)
+        await channel.set_config_option(ROOM, "model", "sonnet")
+        await _turn(channel, _request(OTHER_ROOM))
+
+        assert agent.sessions["session-2"] == DEFAULTS
+        await channel.close()
+
+    def test_values_acp_cannot_carry_are_refused(self, tmp_path: Any) -> None:
+        with pytest.raises(TypeError, match="session_config"):
+            ACPChannel("acp", ["agent"], cwd=tmp_path, session_config={"effort": 3})  # type: ignore[dict-item]
+
+
+class TestARefusedValueFailsClosed:
+    """The session is released and never prompted; the error names the option."""
+
+    @pytest.mark.parametrize("standalone", [False, True], ids=["room", "standalone"])
+    async def test_a_turn_fails_and_prompts_nothing(self, tmp_path: Any, standalone: bool) -> None:
+        channel, connection, _, _ = _setup(
+            tmp_path, session_config={"mode": "default"}, refuses="mode"
+        )
+        with pytest.raises((ProviderError, RuntimeError), match="mode='default'"):
+            await _prompt(channel, _request(standalone=standalone), _context(_request()))
+
+        assert connection.prompt_calls == []
+        assert connection.closed_sessions == ["session-1"]
+        assert channel._sessions == channel._turn_sessions == channel._session_rooms == {}
+        assert all(not lock.locked() for lock in channel._room_locks.values())
+        await channel.close()
+
+    async def test_set_config_option_fails_when_it_opens_the_session(self, tmp_path: Any) -> None:
+        channel, connection, _, _ = _setup(
+            tmp_path, session_config={"mode": "default"}, refuses="mode"
+        )
+        with pytest.raises(RuntimeError, match="mode='default'"):
+            await channel.set_config_option(ROOM, "model", "sonnet")
+
+        assert [call["config_id"] for call in connection.set_config_calls] == ["mode"]
+        assert channel.session_id(ROOM) is None
+        assert connection.closed_sessions == ["session-1"]
+        await channel.close()
+
+    async def test_a_refused_host_value_fails_the_rooms_next_session(self, tmp_path: Any) -> None:
+        channel, connection, transport, agent = _setup(tmp_path)
+        await channel.set_config_option(ROOM, "model", "sonnet")
+
+        transport.alive = False
+        agent.refuses = "model"  # the restarted agent no longer has that model
+        with pytest.raises((ProviderError, RuntimeError), match="model='sonnet'"):
+            await _prompt(channel, _request(), _context(_request()))
+
+        assert connection.prompt_calls == []
+        await channel.close()

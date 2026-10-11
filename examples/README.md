@@ -123,6 +123,7 @@ CONSOLE=1 uv run python examples/<example>.py
 | `deepseek_ai.py` | DeepSeek | Interactive CLI with DeepSeek's thinking mode and effort tiers |
 | `qwen_ai.py` | Qwen | Interactive CLI on Alibaba Model Studio, with a real thinking token budget |
 | `acp_claude_code.py` | ACP / Claude Code | Interactive Claude Code with live Markdown, reasoning, tools, and permissions |
+| `acp_room_mcp.py` | ACP / Claude Code | One channel, two rooms: an MCP server per room (`mcp_servers` as a function of the room) and every session in `default` mode (`session_config`), so each MCP call reaches RoomKit's gate |
 | `gemini_vertex_ai.py` | Gemini / Vertex | Gemini on Vertex AI — regional endpoint, data residency, ADC auth |
 | `ollama_ai.py` | Ollama | AI-powered assistant using Ollama's native API (proper thinking support) |
 | `llamacpp_tools.py` | llama.cpp | A local model RoomKit downloads and runs itself, calling tools (nothing to install beside it) |

@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- An `ACPChannel` sets each session up for its room (RMK-673, RFC ACP agent
+  channel, *Session setup*). `mcp_servers` also takes a function of the room
+  id, sync or async, called each time a session opens for that room: a stdio
+  server can be told its room in its `env`. `session_config={"mode":
+  "default"}` is set on every session the channel opens before it is
+  prompted: the room's first, one rebuilt after a recovery or opened after
+  the agent restarted, a standalone turn's and a task's child room's. A value
+  set with `set_config_option` now belongs to the room: the room's next
+  session is set to it too, until `close_session` forgets it. Before, a
+  restarted agent reopened the room in its own defaults, Claude Code under a
+  user's `auto` mode, which acts without asking the `external_tool_handler`.
+  A value the agent refuses fails the opening: the session is released and
+  never prompted, and the turn (or `set_config_option`) raises a
+  `RuntimeError` naming the option. Example: `examples/acp_room_mcp.py`.
 - Long work runs as a task, off a discussion's floor (RMK-668, RFC §23.3,
   §23.4, §19.7.5 rule 19). `kit.setup_background(agent, worker=None,
   hand_back="relay")` gives an AI channel the `work_in_background` tool: it

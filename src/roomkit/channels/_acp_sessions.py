@@ -10,20 +10,35 @@ Both name their room to ``session/new`` and say which of the two they are: a
 relay that files sessions by room would otherwise take the turn's for the
 room's, and close it. They are serialized on the room's turn lock, and told
 apart here by :meth:`ACPSessionsMixin._is_room_session`.
+
+Both are set up the same way before they are prompted (RFC ACP agent channel,
+*Session setup*): the room's MCP servers in ``session/new``, then the channel's
+``session_config`` and the values the host set on the room. A value the agent
+refuses fails the opening rather than leave a session off its setup.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
-from collections.abc import AsyncGenerator, Callable, Coroutine
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
 from roomkit.channels._acp_client import _config_values, _model_dump
 
 logger = logging.getLogger("roomkit.channels.acp")
+
+MCPServersForRoom = Callable[[str], Sequence[Any] | Awaitable[Sequence[Any]]]
+"""The MCP servers a room's sessions get, from the room's id (sync or async)."""
+
+
+def _reported_options(response: Any) -> list[Any]:
+    """The config options an ACP response reports, as a list (empty when none)."""
+    options = _model_dump(getattr(response, "config_options", None))
+    return options if isinstance(options, list) else []
 
 
 class ACPSessionsMixin:
@@ -32,7 +47,9 @@ class ACPSessionsMixin:
     channel_id: str
     _cwd: str
     _additional_directories: list[Path | str]
-    _mcp_servers: list[Any]
+    _mcp_servers: list[Any] | MCPServersForRoom
+    _session_setup: dict[str, str | bool]
+    _room_config: dict[str, dict[str, str | bool]]
     _room_locks: dict[str, asyncio.Lock]
     _sessions: dict[str, str]
     _turn_sessions: dict[str, str]
@@ -57,9 +74,43 @@ class ACPSessionsMixin:
         return await connection.new_session(
             cwd=self._cwd,
             additional_directories=self._additional_directories or None,
-            mcp_servers=self._mcp_servers,
+            mcp_servers=await self._servers_for(room_id),
             **{"roomkit.live/roomId": room_id, "roomkit.live/sessionScope": scope},
         )
+
+    async def _servers_for(self, room_id: str) -> list[Any]:
+        """The MCP servers a session of *room_id* is given."""
+        servers = self._mcp_servers
+        if isinstance(servers, list):
+            return list(servers)
+        computed = servers(room_id)
+        resolved: Sequence[Any] = await computed if inspect.isawaitable(computed) else computed
+        return list(resolved or ())
+
+    async def _configure_session(
+        self, connection: Any, session_id: str, room_id: str, options: list[Any]
+    ) -> list[Any]:
+        """Set on a new session each value its room's setup wants and it lacks.
+
+        The setup is ``session_config`` overlaid with what the host set on the
+        room. Returns the options the agent last reported. A value the agent
+        refuses raises: the session is left for the caller to release.
+        """
+        wanted = {**self._session_setup, **self._room_config.get(room_id, {})}
+        for config_id, value in wanted.items():
+            if _config_values(options).get(config_id) == value:
+                continue
+            try:
+                response = await connection.set_config_option(
+                    config_id=config_id, session_id=session_id, value=value
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"ACP session for room {room_id!r} could not take {config_id}={value!r} "
+                    f"({self.channel_id}); it is not prompted"
+                ) from exc
+            options = _reported_options(response) or options
+        return options
 
     async def _session_for(self, room_id: str, connection: Any) -> str:
         session_id = self._sessions.get(room_id)
@@ -67,10 +118,16 @@ class ACPSessionsMixin:
             return session_id
         response = await self._new_session(room_id, connection, "room")
         session_id = response.session_id
+        try:
+            options = await self._configure_session(
+                connection, session_id, room_id, _reported_options(response)
+            )
+        except BaseException:
+            await self._release_session(connection, session_id)
+            raise
         self._sessions[room_id] = session_id
         self._session_rooms[session_id] = room_id
-        options = _model_dump(getattr(response, "config_options", None))
-        self._session_options[session_id] = options if isinstance(options, list) else []
+        self._session_options[session_id] = options
         await self._publish_config_options(
             session_id,
             self._session_options[session_id],
@@ -137,11 +194,12 @@ class ACPSessionsMixin:
     async def _open_turn_session(self, room_id: str, connection: Any) -> str:
         """Open the session a standalone turn runs in.
 
-        It takes the room session's current configuration (a model the host
-        chose, a mode) where the agent accepts it: the turn is blank on
-        history, not on how the channel was set up. A session this opens is
-        closed here if anything interrupts the setup, cancellation included,
-        so no half-open session outlives it.
+        It takes the room's setup as the room's next session would, a refused
+        value failing the turn, then the room session's current configuration
+        (a model the host chose, a mode) where the agent accepts it: the turn
+        is blank on history, not on how the channel was set up. A session
+        this opens is closed here if anything interrupts the setup,
+        cancellation included, so no half-open session outlives it.
         """
         response = await self._new_session(room_id, connection, "turn")
         session_id = response.session_id
@@ -157,7 +215,10 @@ class ACPSessionsMixin:
         self._turn_sessions[room_id] = session_id
         self._session_rooms[session_id] = room_id
         try:
-            fresh = _config_values(getattr(response, "config_options", None))
+            options = await self._configure_session(
+                connection, session_id, room_id, _reported_options(response)
+            )
+            fresh = _config_values(options)
             for config_id, value in self.session_config(room_id).items():
                 if fresh.get(config_id) != value:
                     await self._copy_config(connection, session_id, config_id, value)

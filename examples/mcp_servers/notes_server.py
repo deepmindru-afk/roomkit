@@ -1,24 +1,30 @@
-"""A tiny MCP server over stdio, for examples/mcp_stdio_tools.py and mcp_read_resource.py.
+"""A tiny MCP server over stdio, for examples/mcp_stdio_tools.py, mcp_read_resource.py
+and acp_room_mcp.py.
 
 Keeps notes in memory for as long as it runs. Any MCP server started as a
-command works the same way; this one only needs the ``mcp`` package.
+command works the same way; this one only needs the ``mcp`` package. Started
+with ``NOTES_ROOM`` in its environment, it files its notes under that room.
 
     python examples/mcp_servers/notes_server.py   # speaks MCP on stdin/stdout
 """
 
 from __future__ import annotations
 
+import os
+
 from mcp.server.fastmcp import FastMCP
 
 server = FastMCP("notes", log_level="WARNING")  # its logs go to our stderr
 _notes: list[str] = []
+_room = os.environ.get("NOTES_ROOM", "")
 
 
 @server.tool()
 def add_note(text: str) -> str:
     """Save a note."""
     _notes.append(text)
-    return f"Saved note #{len(_notes)}."
+    where = f" in room {_room}" if _room else ""
+    return f"Saved note #{len(_notes)}{where}."
 
 
 @server.tool()

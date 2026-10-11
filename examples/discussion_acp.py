@@ -106,6 +106,11 @@ async def build() -> RoomKit:
         inherit_env=["HOME", "PATH", "USER", "XDG_CONFIG_HOME"],
         # RoomKit's gate: the policy, then BEFORE_TOOL_USE, each call reported.
         external_tool_handler=PolicyExternalToolHandler(policy=READ_ONLY),
+        # Claude Code's own mode decides what it asks before acting: under a
+        # user's "auto" mode it acts without asking, and RoomKit's gate never
+        # hears of it. "default" asks before any action that is not a read. Set
+        # on every session the channel opens: the room's, and a task's child room's.
+        session_config={"mode": "default"},
         name="Developer",
         description="reads the checkout service's source and its support tickets",
         instructions=(
@@ -121,10 +126,6 @@ async def build() -> RoomKit:
     )
     await kit.create_room(room_id=ROOM, orchestration=Discussion([sre, dev]))
     await kit.attach_channel(ROOM, "oncall")
-    # Claude Code's own mode decides what it asks before acting: under a
-    # user's "auto" mode it acts without asking, and RoomKit's gate never
-    # hears of it. "default" asks before any action that is not a read.
-    await dev.set_config_option(ROOM, "mode", "default")
     return kit
 
 
