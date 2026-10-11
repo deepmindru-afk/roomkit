@@ -78,13 +78,15 @@ def notes_server(room_id: str) -> list[McpServerStdio]:
     ]
 
 
-async def build(answers: asyncio.Queue[AIResponseEvent]) -> tuple[RoomKit, ACPChannel]:
+async def build(
+    answers: asyncio.Queue[AIResponseEvent], workspace: str
+) -> tuple[RoomKit, ACPChannel]:
     kit = RoomKit()
     kit.register_channel(WebSocketChannel("desk"))
     agent = ACPChannel(
         "claude-code",
         command=["npx", "--no-install", CLAUDE_AGENT_ACP],
-        cwd=tempfile.mkdtemp(prefix="roomkit-acp-room-mcp-"),
+        cwd=workspace,
         inherit_env=["HOME", "PATH", "USER", "XDG_CONFIG_HOME"],
         mcp_servers=notes_server,
         session_config={"mode": "default"},
@@ -112,22 +114,28 @@ async def main() -> None:
     if shutil.which("npx") is None:
         raise SystemExit("npx is needed to run Claude Code over ACP (Node.js 22+)")
     answers: asyncio.Queue[AIResponseEvent] = asyncio.Queue()
-    kit, agent = await build(answers)
-    try:
-        for room_id in ROOMS:
-            request = f"Save a note saying 'call the customer back' for the {room_id} team."
-            print(f"\n[{room_id}] you: {request}")
-            await kit.process_inbound(
-                InboundMessage(
-                    channel_id="desk", sender_id="you", content=TextContent(body=request)
-                ),
-                room_id=room_id,
-            )
-            answer = await asyncio.wait_for(answers.get(), timeout=180)
-            print(f"[{room_id}] Claude Code: {answer.response_content.strip()}")
-            print(f"[{room_id}] session mode: {agent.session_config(room_id).get('mode')}")
-    finally:
-        await kit.close()
+    with tempfile.TemporaryDirectory(prefix="roomkit-acp-room-mcp-") as workspace:
+        kit, agent = await build(answers, workspace)
+        try:
+            await ask_each_room(kit, agent, answers)
+        finally:
+            await kit.close()
+
+
+async def ask_each_room(
+    kit: RoomKit, agent: ACPChannel, answers: asyncio.Queue[AIResponseEvent]
+) -> None:
+    """Ask the agent to save a note in each room, and print what came back."""
+    for room_id in ROOMS:
+        request = f"Save a note saying 'call the customer back' for the {room_id} team."
+        print(f"\n[{room_id}] you: {request}")
+        await kit.process_inbound(
+            InboundMessage(channel_id="desk", sender_id="you", content=TextContent(body=request)),
+            room_id=room_id,
+        )
+        answer = await asyncio.wait_for(answers.get(), timeout=180)
+        print(f"[{room_id}] Claude Code: {answer.response_content.strip()}")
+        print(f"[{room_id}] session mode: {agent.session_config(room_id).get('mode')}")
 
 
 if __name__ == "__main__":

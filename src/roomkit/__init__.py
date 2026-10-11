@@ -25,6 +25,7 @@ from roomkit.channels import (
     split_turn_notes,
 )
 from roomkit.channels._acp_context import ACPContextContributor, acp_event_text
+from roomkit.channels._acp_sessions import MCPServersForRoom
 from roomkit.channels._turn_config import AIChannelTurnConfig
 from roomkit.channels.acp import ACPChannel
 from roomkit.channels.acp_transport import (
@@ -399,6 +400,7 @@ __all__ = [
     # Channels
     "ACPChannel",
     "ACPContextContributor",
+    "MCPServersForRoom",
     "acp_event_text",
     "ACPTransport",
     "ACPSessionInvalidatedError",

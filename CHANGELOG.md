@@ -9,20 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- An `ACPChannel` sets each session up for its room (RMK-673, RFC ACP agent
-  channel, *Session setup*). `mcp_servers` also takes a function of the room
-  id, sync or async, called each time a session opens for that room: a stdio
-  server can be told its room in its `env`. `session_config={"mode":
-  "default"}` is set on every session the channel opens before it is
-  prompted: the room's first, one rebuilt after a recovery or opened after
-  the agent restarted, a standalone turn's and a task's child room's. A value
-  set with `set_config_option` now belongs to the room: the room's next
-  session is set to it too, until `close_session` forgets it. Before, a
-  restarted agent reopened the room in its own defaults, Claude Code under a
-  user's `auto` mode, which acts without asking the `external_tool_handler`.
-  A value the agent refuses fails the opening: the session is released and
-  never prompted, and the turn (or `set_config_option`) raises a
-  `RuntimeError` naming the option. Example: `examples/acp_room_mcp.py`.
+- An `ACPChannel` sets each session up for its room (RMK-673, RFC §6.4, ACP
+  agent channel, *Session setup*). `mcp_servers` also takes a function of the
+  room id (`MCPServersForRoom`), sync or async, called each time a session
+  opens for that room: a stdio server can be told its room in its `env`.
+  `session_config={"mode": "default"}` is set on every session the channel
+  opens before it is prompted: the room's first, one rebuilt after a recovery
+  or opened after the agent restarted, a standalone turn's and a task's child
+  room's. A value the agent refuses fails the opening: the session is
+  released and never prompted, and the turn raises a `RuntimeError` naming
+  the option. Example: `examples/acp_room_mcp.py`.
 - Long work runs as a task, off a discussion's floor (RMK-668, RFC §23.3,
   §23.4, §19.7.5 rule 19). `kit.setup_background(agent, worker=None,
   hand_back="relay")` gives an AI channel the `work_in_background` tool: it
@@ -213,6 +209,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   §21.2): a host that only reads a resource (an MCP App's HTML) skips the
   catalogue. `get_tools()` and `tool_meta()` are then empty and no call is
   checked against an output schema. Example: `examples/mcp_read_resource.py`.
+
+### Changed
+
+- **BREAKING — a value set with `ACPChannel.set_config_option` belongs to
+  the room** (RMK-673, RFC §6.4, ACP agent channel, *Session setup*): the
+  room's next session, after a recovery or an agent restart, is set to it
+  too, and so is a standalone turn's, until `close_session(room_id)` forgets
+  it. Before, a restarted agent reopened the room in its own defaults, Claude
+  Code under a user's `auto` mode, which acts without asking the
+  `external_tool_handler`. A value the reopened session refuses (a model the
+  agent no longer offers) now fails the room's turns with a `RuntimeError`
+  naming it, where it used to be silently lost, and a standalone turn that
+  cannot take it fails where it used to log a warning. Migration: to change
+  a value the agent refuses, set another one with `set_config_option` (a
+  call that opens the room's session sets its value in place of the room's
+  earlier one), or call `close_session(room_id)` to forget the room's values.
 
 ### Fixed
 

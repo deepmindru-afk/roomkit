@@ -38,7 +38,6 @@ from roomkit.channels._acp_client import (
     _absolute_path,
     _ACPClient,
     _config_values,
-    _model_dump,
     _TurnState,
 )
 from roomkit.channels._acp_context import (
@@ -47,13 +46,19 @@ from roomkit.channels._acp_context import (
     contributed_blocks,
 )
 from roomkit.channels._acp_events import ACPEventsMixin
-from roomkit.channels._acp_sessions import ACPSessionsMixin, MCPServersForRoom
+from roomkit.channels._acp_sessions import (
+    ACPSessionsMixin,
+    MCPServersForRoom,
+    _reported_options,
+    _servers_source,
+    _session_setup,
+)
 from roomkit.channels._acp_turn import ACPTurnMixin
 from roomkit.channels._discussion_turn import discussion_notes
 from roomkit.channels._instruction import instruction_fingerprint, is_standalone, mark_instruction
 from roomkit.channels._mark_copies import compile_mark_patterns
 from roomkit.channels._turn_notes import turn_notes
-from roomkit.channels.acp_transport import ACPTransport, StdioACPTransport
+from roomkit.channels.acp_transport import ACPTransport, _agent_transport
 from roomkit.channels.base import Channel
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
@@ -80,44 +85,6 @@ _SHUTDOWN_TIMEOUT = 5.0
 
 _DEFAULT_ROOM_HISTORY = 20
 """Room messages an agent catches up on when it is asked to act (RFC §19.3.2)."""
-
-
-def _session_setup(session_config: Mapping[str, str | bool] | None) -> dict[str, str | bool]:
-    """``session_config`` checked and copied: ACP config values are strings or booleans."""
-    setup = dict(session_config or {})
-    for config_id, value in setup.items():
-        if not isinstance(config_id, str) or not config_id or not isinstance(value, (str, bool)):
-            raise TypeError(
-                f"session_config maps an ACP config id to a string or a boolean, "
-                f"got {config_id!r}: {value!r}"
-            )
-    return setup
-
-
-def _agent_transport(
-    command: Sequence[str] | None,
-    transport: ACPTransport | None,
-    *,
-    cwd: str,
-    env: Mapping[str, str] | None,
-    inherit_env: Sequence[str] | None,
-) -> ACPTransport:
-    """How the channel reaches its agent: a spawn of *command*, or the caller's *transport*."""
-    if command is not None and transport is not None:
-        raise ValueError(
-            "command spawns the agent here and transport reaches one that is "
-            "already running: pass one, not both"
-        )
-    if command is not None:
-        return StdioACPTransport(command, cwd=cwd, env=env, inherit_env=inherit_env)
-    if transport is None:
-        raise ValueError("pass command to spawn the agent, or transport to reach one")
-    if env is not None or inherit_env is not None:
-        raise ValueError(
-            "env and inherit_env configure the default subprocess spawn; "
-            "a custom transport carries its own environment"
-        )
-    return transport
 
 
 class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMixin, Channel):
@@ -169,8 +136,8 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
             with :meth:`set_config_option` is set again too, over this, on the
             room's next session, until :meth:`close_session` forgets it. A
             value the agent refuses fails the opening, and the turn with it:
-            the session is released, never prompted (RFC ACP agent channel,
-            *Session setup*). The mode matters most, since it decides what
+            the session is released, never prompted (RFC §6.4, ACP agent
+            channel, *Session setup*). The mode matters most, since it decides what
             the agent asks ``external_tool_handler`` before acting.
         authentication_method: Optional ACP authentication method identifier.
         external_tool_handler: Permission policy and tool observability bridge.
@@ -277,14 +244,10 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
             _absolute_path(path, field_name="additional_directories")
             for path in (additional_directories or ())
         ]
-        self._mcp_servers: list[Any] | MCPServersForRoom = (
-            list(mcp_servers or ())
-            if mcp_servers is None or isinstance(mcp_servers, Sequence)
-            else mcp_servers
-        )
+        self._mcp_servers = _servers_source(mcp_servers)
         self._session_setup = _session_setup(session_config)
         # Room -> config values the host set on its session, set again on the
-        # room's next one until close_session forgets them (RFC *Session setup*).
+        # room's next one until close_session forgets them (RFC §6.4, *Session setup*).
         self._room_config: dict[str, dict[str, str | bool]] = {}
         self._authentication_method = authentication_method
         self._external_tool_handler = external_tool_handler
@@ -385,34 +348,36 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
 
         The value belongs to the room, not only to this session: the room's
         next session (after a recovery or an agent restart) is set to it too,
-        over ``session_config``, until :meth:`close_session`.
+        over ``session_config``, until :meth:`close_session`. A call that opens
+        the room's session sets its value in place of the room's earlier one,
+        so a value the agent has come to refuse is replaced, not replayed.
         """
         connection = await self._ensure_connection()
+        # An existing session is set without the room's turn lock: an in-flight
+        # turn holds it for its whole duration, and waiting for that would
+        # deadlock a caller running inside the turn (a tool handler).
         session_id = self._sessions.get(room_id)
-        if session_id is None and room_id in self._turn_sessions:
-            # A standalone turn is in flight and holds the room's lock, so this
-            # caller may be running inside it (a tool handler): waiting would
-            # deadlock. That turn never opens the room's session, so nothing
-            # races this one. The setting is the room's, not the turn's.
-            session_id = await self._session_for(room_id, connection)
-        elif session_id is None:
-            # Session creation is serialized on the room's turn lock so a
-            # concurrent first prompt cannot open a second session. An
-            # existing session skips the lock deliberately: an in-flight turn
-            # holds it for its whole duration, and waiting for that would
-            # deadlock a caller running inside the turn (a tool handler).
-            async with self._room_turn_lock(room_id):
-                session_id = await self._session_for(room_id, connection)
-        response = await connection.set_config_option(
-            config_id=config_id,
-            session_id=session_id,
-            value=value,
-        )
-        options = _model_dump(getattr(response, "config_options", None))
-        self._session_options[session_id] = options if isinstance(options, list) else []
-        values = _config_values(self._session_options[session_id])
+        opened = False
+        if session_id is None:
+            session_id, opened = await self._open_for_host(room_id, connection, {config_id: value})
+        if opened:
+            # Opening the session set the value, in place of the room's.
+            options = self._session_options.get(session_id, [])
+        else:
+            response = await connection.set_config_option(
+                config_id=config_id,
+                session_id=session_id,
+                value=value,
+            )
+            options = _reported_options(response)
+        values = _config_values(options)
+        if self._sessions.get(room_id) != session_id:
+            # Closed (or rebuilt) while the agent answered: what it reports,
+            # and the value, are no longer the room's to keep.
+            return values
+        self._session_options[session_id] = options
         self._room_config.setdefault(room_id, {})[config_id] = values.get(config_id, value)
-        await self._publish_config_options(session_id, self._session_options[session_id], values)
+        await self._publish_config_options(session_id, options, values)
         return values
 
     def capabilities(self) -> ChannelCapabilities:

@@ -274,3 +274,29 @@ class StdioACPTransport(ACPTransport):
             return
         while await stream.read(8192):
             pass
+
+
+def _agent_transport(
+    command: Sequence[str] | None,
+    transport: ACPTransport | None,
+    *,
+    cwd: str,
+    env: Mapping[str, str] | None,
+    inherit_env: Sequence[str] | None,
+) -> ACPTransport:
+    """How the channel reaches its agent: a spawn of *command*, or the caller's *transport*."""
+    if command is not None and transport is not None:
+        raise ValueError(
+            "command spawns the agent here and transport reaches one that is "
+            "already running: pass one, not both"
+        )
+    if command is not None:
+        return StdioACPTransport(command, cwd=cwd, env=env, inherit_env=inherit_env)
+    if transport is None:
+        raise ValueError("pass command to spawn the agent, or transport to reach one")
+    if env is not None or inherit_env is not None:
+        raise ValueError(
+            "env and inherit_env configure the default subprocess spawn; "
+            "a custom transport carries its own environment"
+        )
+    return transport

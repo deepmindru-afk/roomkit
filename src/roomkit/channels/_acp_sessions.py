@@ -11,10 +11,10 @@ relay that files sessions by room would otherwise take the turn's for the
 room's, and close it. They are serialized on the room's turn lock, and told
 apart here by :meth:`ACPSessionsMixin._is_room_session`.
 
-Both are set up the same way before they are prompted (RFC ACP agent channel,
-*Session setup*): the room's MCP servers in ``session/new``, then the channel's
-``session_config`` and the values the host set on the room. A value the agent
-refuses fails the opening rather than leave a session off its setup.
+Both are set up the same way before they are prompted (RFC §6.4, ACP agent
+channel, *Session setup*): the room's MCP servers in ``session/new``, then the
+channel's ``session_config`` and the values the host set on the room. A value
+the agent refuses fails the opening rather than leave a session off its setup.
 """
 
 from __future__ import annotations
@@ -23,9 +23,9 @@ import asyncio
 import contextlib
 import inspect
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from roomkit.channels._acp_client import _config_values, _model_dump
 
@@ -33,6 +33,27 @@ logger = logging.getLogger("roomkit.channels.acp")
 
 MCPServersForRoom = Callable[[str], Sequence[Any] | Awaitable[Sequence[Any]]]
 """The MCP servers a room's sessions get, from the room's id (sync or async)."""
+
+
+def _servers_source(
+    mcp_servers: Sequence[Any] | MCPServersForRoom | None,
+) -> list[Any] | MCPServersForRoom:
+    """``mcp_servers`` as the channel keeps it: the function, or a copy of the list."""
+    if callable(mcp_servers):
+        return cast(MCPServersForRoom, mcp_servers)
+    return list(mcp_servers or ())
+
+
+def _session_setup(session_config: Mapping[str, str | bool] | None) -> dict[str, str | bool]:
+    """``session_config`` checked and copied: ACP config values are strings or booleans."""
+    setup = dict(session_config or {})
+    for config_id, value in setup.items():
+        if not isinstance(config_id, str) or not config_id or not isinstance(value, (str, bool)):
+            raise TypeError(
+                f"session_config maps an ACP config id to a string or a boolean, "
+                f"got {config_id!r}: {value!r}"
+            )
+    return setup
 
 
 def _reported_options(response: Any) -> list[Any]:
@@ -88,15 +109,22 @@ class ACPSessionsMixin:
         return list(resolved or ())
 
     async def _configure_session(
-        self, connection: Any, session_id: str, room_id: str, options: list[Any]
+        self,
+        connection: Any,
+        session_id: str,
+        room_id: str,
+        options: list[Any],
+        overlay: Mapping[str, str | bool] | None = None,
     ) -> list[Any]:
         """Set on a new session each value its room's setup wants and it lacks.
 
         The setup is ``session_config`` overlaid with what the host set on the
-        room. Returns the options the agent last reported. A value the agent
-        refuses raises: the session is left for the caller to release.
+        room, then with *overlay*, the value a host call opening the session is
+        setting (it replaces the room's earlier one). Returns the options the
+        agent last reported. A value the agent refuses raises: the session is
+        left for the caller to release.
         """
-        wanted = {**self._session_setup, **self._room_config.get(room_id, {})}
+        wanted = {**self._session_setup, **self._room_config.get(room_id, {}), **(overlay or {})}
         for config_id, value in wanted.items():
             if _config_values(options).get(config_id) == value:
                 continue
@@ -104,15 +132,24 @@ class ACPSessionsMixin:
                 response = await connection.set_config_option(
                     config_id=config_id, session_id=session_id, value=value
                 )
+            except ConnectionError:
+                raise  # the agent is gone, it refused nothing
             except Exception as exc:
                 raise RuntimeError(
                     f"ACP session for room {room_id!r} could not take {config_id}={value!r} "
-                    f"({self.channel_id}); it is not prompted"
+                    f"({self.channel_id}); it is not prompted. Set another value with "
+                    "set_config_option, or close_session to forget the room's"
                 ) from exc
             options = _reported_options(response) or options
         return options
 
-    async def _session_for(self, room_id: str, connection: Any) -> str:
+    async def _session_for(
+        self,
+        room_id: str,
+        connection: Any,
+        overlay: Mapping[str, str | bool] | None = None,
+    ) -> str:
+        """The room's session, opened and set up if it has none (*overlay* as set up)."""
         session_id = self._sessions.get(room_id)
         if session_id is not None:
             return session_id
@@ -120,10 +157,10 @@ class ACPSessionsMixin:
         session_id = response.session_id
         try:
             options = await self._configure_session(
-                connection, session_id, room_id, _reported_options(response)
+                connection, session_id, room_id, _reported_options(response), overlay
             )
         except BaseException:
-            await self._release_session(connection, session_id)
+            await self._release_unset_session(connection, session_id)
             raise
         self._sessions[room_id] = session_id
         self._session_rooms[session_id] = room_id
@@ -134,6 +171,27 @@ class ACPSessionsMixin:
             _config_values(self._session_options[session_id]),
         )
         return session_id
+
+    async def _open_for_host(
+        self, room_id: str, connection: Any, overlay: Mapping[str, str | bool]
+    ) -> tuple[str, bool]:
+        """The room's session for a host call, set up with *overlay* if this call opens it.
+
+        Returns the session and whether this call opened it: a first prompt
+        that got the lock first opened it without *overlay*.
+        """
+        if room_id in self._turn_sessions:
+            # A standalone turn is in flight and holds the room's lock, so this
+            # caller may be running inside it (a tool handler): waiting would
+            # deadlock. That turn never opens the room's session, so nothing
+            # races this one. The setting is the room's, not the turn's.
+            opened = room_id not in self._sessions
+            return await self._session_for(room_id, connection, overlay), opened
+        # Session creation is serialized on the room's turn lock so a
+        # concurrent first prompt cannot open a second session.
+        async with self._room_turn_lock(room_id):
+            opened = room_id not in self._sessions
+            return await self._session_for(room_id, connection, overlay), opened
 
     async def _discard_room_session(self, room_id: str, connection: Any) -> bool:
         """Forget a room session while its caller holds the turn lock.
@@ -254,6 +312,17 @@ class ACPSessionsMixin:
             logger.warning(
                 "ACP standalone turn session %s stays open in the agent until the connection "
                 "closes: the agent does not announce session/close (%s)",
+                session_id,
+                self.channel_id,
+            )
+        await self._release_session(connection, session_id)
+
+    async def _release_unset_session(self, connection: Any, session_id: str) -> None:
+        """Release a room session whose setup failed. Never raises."""
+        if not self._agent_closes_sessions:
+            logger.warning(
+                "ACP session %s was not set up and stays open in the agent until the "
+                "connection closes: the agent does not announce session/close (%s)",
                 session_id,
                 self.channel_id,
             )

@@ -79,7 +79,7 @@ class ACPTurnMixin:
     _ensure_connection: Callable[[], Coroutine[Any, Any, Any]]
     _drain_session_updates: Callable[[str], Coroutine[Any, Any, None]]
     _room_turn_lock: Callable[[str], AbstractAsyncContextManager[None]]
-    _session_for: Callable[[str, Any], Coroutine[Any, Any, str]]
+    _session_for: Callable[..., Coroutine[Any, Any, str]]
     _discard_room_session: Callable[[str, Any], Coroutine[Any, Any, bool]]
     _open_turn_session: Callable[[str, Any], Coroutine[Any, Any, str]]
     _close_turn_session: Callable[[str, str, Any], Coroutine[Any, Any, None]]
