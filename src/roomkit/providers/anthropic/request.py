@@ -183,8 +183,14 @@ def build_messages(messages: list[AIMessage]) -> list[dict[str, Any]]:
     return result
 
 
-def build_kwargs(config: AnthropicConfig, context: AIContext) -> dict[str, Any]:
-    """Build kwargs dict shared by generate and streaming paths."""
+def build_kwargs(
+    config: AnthropicConfig, context: AIContext, *, takes_effort: bool = True
+) -> dict[str, Any]:
+    """Build kwargs dict shared by generate and streaming paths.
+
+    *takes_effort* is false for a model the catalogue says refuses
+    ``output_config.effort``.
+    """
     messages = build_messages(context.messages)
     kwargs: dict[str, Any] = {
         "model": config.model,
@@ -199,13 +205,29 @@ def build_kwargs(config: AnthropicConfig, context: AIContext) -> dict[str, Any]:
             # Behind another base_url the server decides its names (RFC §6.7).
             ANTHROPIC_TOOL_NAMES.check(t.name for t in context.tools)
         kwargs["tools"] = _tool_definitions(context.tools)
-    if context.response_schema is not None:
-        kwargs["output_config"] = {
-            "format": {"type": "json_schema", "schema": context.response_schema}
-        }
+    output_config = _output_config(context, takes_effort)
+    if output_config:
+        kwargs["output_config"] = output_config
     if config.enable_prompt_caching:
         _apply_cache_control(kwargs)
     return kwargs
+
+
+def _output_config(context: AIContext, takes_effort: bool) -> dict[str, Any]:
+    """The turn's ``output_config``: its effort and its answer's schema.
+
+    The effort goes as the turn spells it, Anthropic's own levels (``low``
+    to ``max``) included, on a turn with tools as on one without (RFC §6.7).
+    ``none`` is not one of them: it states thinking off, which
+    :func:`_thinking_or_temperature` applies. A model that refuses the
+    parameter is sent none.
+    """
+    output_config: dict[str, Any] = {}
+    if takes_effort and context.reasoning_effort not in (None, "none"):
+        output_config["effort"] = context.reasoning_effort
+    if context.response_schema is not None:
+        output_config["format"] = {"type": "json_schema", "schema": context.response_schema}
+    return output_config
 
 
 def _tool_definitions(tools: list[AITool]) -> list[dict[str, Any]]:

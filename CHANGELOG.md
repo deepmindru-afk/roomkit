@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `AnthropicAIProvider` sends the turn's `reasoning_effort` (RFC §6.7). It
+  went nowhere: an `AIChannel(reasoning_effort="low")` on Claude ran at the
+  model's default effort (`high`, or `medium` on Claude Opus 5.5 and Claude
+  Haiku 5.5). It now rides `output_config.effort` as the turn spells it,
+  Anthropic's `xhigh` and `max` included, on a turn with tools as on one
+  without, beside the answer's schema when there is one. `none` sends no
+  effort, since it states thinking off. Claude Sonnet 4.5 and Claude Haiku
+  4.5 answer 400 to the parameter: the catalogue tags them `effort_refused`
+  and they are sent none, as before.
+
 ## [0.97.0] — 2026-10-11
 
 This release lets several agents and people hold one conversation in a room:

@@ -1286,6 +1286,36 @@ _VERDICT: dict[str, Any] = {
 }
 
 
+class TestAnthropicEffort:
+    """RFC §6.7: the turn's effort rides ``output_config.effort``, save to a
+    model the catalogue says refuses it."""
+
+    @staticmethod
+    async def _sent(model: str, effort: str) -> dict[str, Any]:
+        with patch.dict("sys.modules", {"anthropic": _mock_anthropic_module()}):
+            from roomkit.providers.anthropic.ai import AnthropicAIProvider
+
+            provider = AnthropicAIProvider(_config(model=model))
+        provider._client = MagicMock()
+        provider._client.messages.stream = MagicMock(return_value=_mock_stream())
+
+        await provider.generate(_context(reasoning_effort=effort))
+
+        return provider._client.messages.stream.call_args.kwargs
+
+    @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-opus-4-5", "claude-next-1"])
+    async def test_a_model_that_takes_effort_is_sent_it(self, model: str) -> None:
+        assert (await self._sent(model, "high"))["output_config"] == {"effort": "high"}
+
+    @pytest.mark.parametrize(
+        "model",
+        ["claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-sonnet-4-5"],
+    )
+    async def test_a_model_that_refuses_effort_is_sent_none(self, model: str) -> None:
+        """They answer 400 to the parameter (measured 2026-10-11)."""
+        assert "output_config" not in await self._sent(model, "high")
+
+
 class TestAnthropicResponseSchema:
     """RFC §6.7: the schema rides ``output_config.format``."""
 
@@ -1296,6 +1326,16 @@ class TestAnthropicResponseSchema:
 
     def test_no_schema_sends_no_output_config(self) -> None:
         assert "output_config" not in build_kwargs(_config(), _context())
+
+    def test_the_effort_shares_output_config_with_the_schema(self) -> None:
+        kwargs = build_kwargs(
+            _config(), _context(response_schema=_VERDICT, reasoning_effort="low")
+        )
+
+        assert kwargs["output_config"] == {
+            "effort": "low",
+            "format": {"type": "json_schema", "schema": _VERDICT},
+        }
 
     @staticmethod
     def _provider(stream: Any) -> Any:

@@ -428,6 +428,27 @@ def test_anthropic_turns_adaptive_thinking_on_from_enable_thinking() -> None:
     assert budget["thinking"] == {"type": "enabled", "budget_tokens": 2048}
 
 
+@pytest.mark.parametrize("effort", ["low", "xhigh", "max"])
+@pytest.mark.parametrize("tools", [[], _TOOLS], ids=["no_tools", "tools"])
+def test_anthropic_sends_the_turn_effort_as_the_turn_spells_it(
+    effort: str, tools: list[AITool]
+) -> None:
+    """RFC §6.7: the effort rides ``output_config.effort``, Anthropic's own
+    ``max`` included, on a turn with tools as on one without."""
+    config = AnthropicConfig(api_key="k", model="claude-opus-5-5")
+
+    kwargs = build_kwargs(config, _context(tools=tools, reasoning_effort=effort))
+
+    assert kwargs["output_config"] == {"effort": effort}
+
+
+@pytest.mark.parametrize("effort", [None, "none"])
+def test_anthropic_sends_no_effort_where_the_turn_states_none(effort: str | None) -> None:
+    config = AnthropicConfig(api_key="k", model="claude-opus-5-5")
+
+    assert "output_config" not in build_kwargs(config, _context(reasoning_effort=effort))
+
+
 # The least effort each model takes, as its catalogue declares it and the wire
 # answered on 2026-10-04: a model that cannot stop reasoning is sent its lowest
 # level where the turn states off, never a ``none`` it answers 400 to.

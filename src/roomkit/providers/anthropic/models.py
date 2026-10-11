@@ -48,6 +48,12 @@ from roomkit.providers.ai.base import ModelInfo, ModelPricing
 
 _VERIFIED = date(2026, 9, 3)
 
+EFFORT_REFUSED = "effort_refused"
+"""The tag of a model that answers 400 to ``output_config.effort`` ("This
+model does not support the effort parameter"): Claude Sonnet 4.5 and Claude
+Haiku 4.5, measured 2026-10-11. The provider leaves a turn's effort out for
+them rather than fail the turn (RFC §6.7)."""
+
 MODELS: list[ModelInfo] = [
     ModelInfo(
         id="claude-opus-5-5",
@@ -217,7 +223,7 @@ MODELS: list[ModelInfo] = [
         display_name="Claude Haiku 4.5",
         context_window=200_000,
         supports_vision=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=["thinking", "deferred_tools", EFFORT_REFUSED],
         pricing=ModelPricing(
             input_per_million=1.0,
             output_per_million=5.0,
@@ -231,7 +237,7 @@ MODELS: list[ModelInfo] = [
         display_name="Claude Haiku 4.5",
         context_window=200_000,
         supports_vision=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=["thinking", "deferred_tools", EFFORT_REFUSED],
         pricing=ModelPricing(
             input_per_million=1.0,
             output_per_million=5.0,
@@ -277,7 +283,7 @@ MODELS: list[ModelInfo] = [
         context_window=200_000,
         supports_vision=True,
         deprecated=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=["thinking", "deferred_tools", EFFORT_REFUSED],
         pricing=ModelPricing(
             input_per_million=3.0,
             output_per_million=15.0,
@@ -292,7 +298,7 @@ MODELS: list[ModelInfo] = [
         context_window=200_000,
         supports_vision=True,
         deprecated=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=["thinking", "deferred_tools", EFFORT_REFUSED],
         pricing=ModelPricing(
             input_per_million=3.0,
             output_per_million=15.0,
