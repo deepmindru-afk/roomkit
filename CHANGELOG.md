@@ -22,9 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that fails retires the skill, which the model activates again. A skill the
   listing did not hold is asked of its server by name (`skills/get`). An
   entry the extension does not allow, one past its limits and a dynamic one
-  (unless `allow_dynamic=True`) are listed as unavailable with their reason.
-  A served skill's `allowed_tools` grants nothing, its scripts never run,
-  and an activation is not replayed from the stored history. New:
+  (unless `allow_dynamic=True`) are listed as unavailable with their reason,
+  an entry read again after a failed check included. A registry and its
+  copies share the servers' entries: a skill one of them retires is retired
+  in each. A served skill's `allowed_tools` grants nothing, its scripts
+  never run, and an activation is not replayed from the stored history. New:
   `SkillRegistry.load_skill()`, `read_file()`, `is_served()`, `origin()`,
   `MCPSkill`, `SkillChangedError`; `SkillRegistry.add()` refuses a name
   holding `:`.

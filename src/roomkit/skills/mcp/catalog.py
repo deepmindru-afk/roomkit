@@ -144,6 +144,16 @@ class MCPSkillCatalog:
         """The entry the server last gave for *name*."""
         return self._entries.get(name)
 
+    def refusal(self, name: str) -> str | None:
+        """Why the entry held for *name* is not one this host takes, or
+        ``None``. An entry read again after a failed check is held to the
+        listing's rules, as one a registry sharing this catalog took when it
+        registered the server again (RFC §24.7)."""
+        entry, label = self._entries.get(name), self._labels.get(name)
+        if entry is None or label is None:
+            return None
+        return _unavailable_reason(entry, self._origins[label])
+
     @property
     def has_servers(self) -> bool:
         return bool(self._origins)

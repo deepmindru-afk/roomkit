@@ -61,6 +61,9 @@ class SkillRegistry:
         # listing did not hold be asked of its server. A copy narrowed to
         # some names reaches those names and no other (RFC §24.3).
         self._owned_labels: set[str] = set()
+        # Served names a copy was made without, with their marks: never asked
+        # of their server as names the listing did not hold either.
+        self._withheld: set[str] = set()
 
     def discover(self, *directories: str | Path, strict: bool = True) -> int:
         """Scan directories for subdirectories containing SKILL.md.
@@ -210,12 +213,16 @@ class SkillRegistry:
         With *marks*, the copy keeps the source's unlisted marks and the
         unavailable reasons of the names it copies; without, every skill it
         copies is available and listed (a hand-picked set, say), and a name
-        the source marks unavailable is not copied at all.
+        the source marks unavailable is not copied at all, nor asked of its
+        server.
         """
         wanted = set(self._metadata) | set(self._unavailable) if names is None else set(names)
         copied = SkillRegistry(requires_match=self.requires_match)
         copied._mcp = self._mcp
         copied._owned_labels = set(self._owned_labels) if names is None else set()
+        copied._withheld = set(self._withheld)
+        if not marks:
+            copied._withheld |= {name for name in self._unavailable if self.is_served(name)}
         for name, metadata in self._metadata.items():
             if name not in wanted:
                 continue
@@ -327,7 +334,8 @@ class SkillRegistry:
         hold, under a label this registry registered (not a copy narrowed to
         some names), is asked of its server with ``skills/get`` and kept out
         of the manifest. A skill marked unavailable is never loaded, one
-        loaded before included.
+        loaded before included, nor one the catalog this registry shares no
+        longer holds, or holds in a form this host does not take.
 
         Raises:
             SkillError: A served skill that is not found on its server, or
@@ -336,6 +344,7 @@ class SkillRegistry:
         """
         if self._mcp.label_of(name) is None:
             return await asyncio.to_thread(self.get_skill, name)
+        self._follow_catalog(name)
         if name in self._unavailable:
             return None
         metadata = self._metadata.get(name)
@@ -343,17 +352,45 @@ class SkillRegistry:
         if metadata is not None and loaded is not None:
             return loaded
         if metadata is None:
-            if self._mcp.label_of(name) not in self._owned_labels:
-                raise SkillValidationError(f"Skill {name!r} not found")
-            listed = await self._mcp.fetch_unlisted(name)
-            self._record_served(listed)
-            if listed.metadata is None:
+            metadata = await self._fetch_unlisted(name)
+            if metadata is None:
                 return None
-            self._unlisted.add(name)
-            metadata = listed.metadata
         skill = await self._mcp.load(name, metadata)
         self._skills[name] = skill
         return skill
+
+    def _follow_catalog(self, name: str) -> None:
+        """Bring this registry's record of served *name* in line with the
+        catalog it shares: a registry sharing it may have registered the
+        server again without the skill, or in a form this host does not
+        take, and an entry read again after a failed check is held to the
+        listing's rules (RFC §24.7)."""
+        if name not in self._metadata:
+            return
+        if self._mcp.entry(name) is None:
+            self._metadata.pop(name, None)
+            self._skills.pop(name, None)
+            self._unlisted.discard(name)
+            return
+        reason = self._mcp.refusal(name)
+        if reason is not None:
+            self._record_served(Listed(name, None, None, reason))
+
+    async def _fetch_unlisted(self, name: str) -> SkillMetadata | None:
+        """Ask the server for *name*, a skill its listing did not hold: only
+        under a label this registry took whole, and never a name a copy was
+        made without. ``None`` when the entry is one this host does not take.
+
+        Raises:
+            SkillError: Not found here or on its server.
+        """
+        if self._mcp.label_of(name) not in self._owned_labels or name in self._withheld:
+            raise SkillValidationError(f"Skill {name!r} not found")
+        listed = await self._mcp.fetch_unlisted(name)
+        self._record_served(listed)
+        if listed.metadata is not None:
+            self._unlisted.add(name)
+        return listed.metadata
 
     async def read_file(self, name: str, filename: str) -> str:
         """The text of *filename*, a file of skill *name* (RFC §24.6, §24.7).
@@ -369,8 +406,10 @@ class SkillRegistry:
             SkillPathError: The name escapes the skill, or is not one of a
                 served skill's files (nothing is read then).
             FileNotFoundError: A host's skill has no such reference.
-            SkillChangedError: A served skill's file failed verification:
-                the skill is retired here and must be activated again.
+            SkillChangedError: A served skill's file failed verification,
+                or the catalog this registry shares no longer holds the
+                skill in a form this host takes: the skill is retired here
+                and must be activated again.
         """
         if self._mcp.label_of(name) is None:
             skill = await asyncio.to_thread(self.get_skill, name)
@@ -380,6 +419,9 @@ class SkillRegistry:
         served = self._skills.get(name)
         if not isinstance(served, MCPSkill):
             raise KeyError(name)
+        self._follow_catalog(name)
+        if name not in self._skills:
+            raise SkillChangedError(name)
         try:
             return await self._mcp.read_file(served, filename)
         except SkillChangedError:
@@ -413,6 +455,8 @@ class SkillRegistry:
 
     def get_skill(self, name: str) -> Skill | None:
         """Get full skill (with instructions), loading lazily if needed."""
+        if self._mcp.label_of(name) is not None:
+            self._follow_catalog(name)
         if name in self._skills:
             return self._skills[name]
 

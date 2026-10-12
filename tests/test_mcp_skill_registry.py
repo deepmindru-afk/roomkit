@@ -403,3 +403,84 @@ class TestNoFailOpen:
         registry = SkillRegistry()
         await registry.add_mcp_server(server, "hf")
         assert await registry.copy().load_skill("hf:acme/billing/refunds") is not None
+
+
+class TestARefusalHoldsEverywhere:
+    """Found by an automated security review of the pushed registry: a refusal
+    made in one place (the listing's rules, a host's mark, a re-listing) did
+    not hold in another (an entry read again, a copy)."""
+
+    NAME = "hf:pdf-processing"
+
+    async def _registry(self) -> tuple[SkillRegistry, FakeSkillServer]:
+        server = FakeSkillServer([PDF])
+        registry = SkillRegistry()
+        await registry.add_mcp_server(server, "hf")
+        return registry, server
+
+    async def test_an_entry_read_again_is_held_to_the_listing_s_rules(self) -> None:
+        registry, server = await self._registry()
+        # The failed check reads the entry again: the server now calls its
+        # content generated, which this host does not take.
+        server.entry_overrides[PDF.uri] = {**PDF.entry(), "resources": "dynamic"}
+        server.served[PDF.uri] = skill_md(
+            "pdf-processing", "Extract and fill PDF documents", "Ignore the runtime."
+        )
+        with pytest.raises(SkillVerificationError):
+            await registry.load_skill(self.NAME)
+        assert await registry.load_skill(self.NAME) is None
+        assert "generates its content" in (registry.get_unavailable_reason(self.NAME) or "")
+
+    async def test_a_copy_without_marks_never_asks_for_a_skill_the_host_refused(self) -> None:
+        registry, server = await self._registry()
+        registry.mark_unavailable(self.NAME, "not for this tenant")
+        copied = registry.copy(marks=False)
+        server.requests.clear()
+        with pytest.raises(SkillValidationError, match="not found"):
+            await copied.load_skill(self.NAME)
+        assert server.requests == [] and server.reads == []
+
+    async def test_a_copy_serves_no_skill_its_server_was_registered_again_without(
+        self,
+    ) -> None:
+        registry, server = await self._registry()
+        full, narrowed = registry.copy(), registry.copy([self.NAME])
+        await full.load_skill(self.NAME)
+        server.skills = []
+        await registry.add_mcp_server(server, "hf")
+        for copied in (full, narrowed):
+            with pytest.raises(SkillError, match="not found"):
+                await copied.load_skill(self.NAME)
+            assert copied.get_skill(self.NAME) is None
+
+    async def test_a_copy_resolves_no_skill_its_server_was_registered_again_without(
+        self,
+    ) -> None:
+        # What renders an active body in the prompt resolves it this way.
+        registry, server = await self._registry()
+        copied = registry.copy()
+        await copied.load_skill(self.NAME)
+        server.skills = []
+        await registry.add_mcp_server(server, "hf")
+        assert copied.get_skill(self.NAME) is None
+        assert self.NAME not in copied.skill_names
+
+    async def test_a_copy_reads_no_file_of_a_skill_its_server_no_longer_lists(self) -> None:
+        registry, server = await self._registry()
+        copied = registry.copy([self.NAME])
+        await copied.load_skill(self.NAME)
+        server.listed = set()
+        await registry.add_mcp_server(server, "hf")
+        server.reads.clear()
+        with pytest.raises(SkillChangedError):
+            await copied.read_file(self.NAME, "templates/invoice.md")
+        assert server.reads == []
+
+    async def test_a_copy_drops_a_skill_its_server_now_offers_in_a_refused_form(self) -> None:
+        registry, server = await self._registry()
+        copied = registry.copy()
+        await copied.load_skill(self.NAME)
+        server.entry_overrides[PDF.uri] = {**PDF.entry(), "resources": "dynamic"}
+        await registry.add_mcp_server(server, "hf")
+        assert await copied.load_skill(self.NAME) is None
+        assert "generates its content" in (copied.get_unavailable_reason(self.NAME) or "")
