@@ -546,6 +546,10 @@ class RealtimeToolsMixin:
         :class:`~roomkit.core.exceptions.ToolFailedError` through.
         """
         name, session = call.name, call.session
+        # Before whether anything serves it: a call nothing serves falls to
+        # ON_TOOL_CALL's hooks, which may serve it, and code a served skill
+        # asked for runs only with the host's approval (RFC §24.7).
+        await self._refuse_unapproved_execution(call, call.room_id or session.room_id)
         if not self._serves_tool(name, call.room_id or session.room_id):
             raise UnservedToolCallError(name)
         logger.info(
@@ -580,7 +584,6 @@ class RealtimeToolsMixin:
         whichever door brought the call: the tool orchestration set up for the
         room, else the host's handler."""
         async with self._tool_call_scope(call, gate_context) as loop_ctx:
-            await self._refuse_unapproved_execution(call, loop_ctx.room_id)
             timeout = self._call_timeout(call.name, loop_ctx.room_id)
             answer = self._answer(call.name, call.arguments, loop_ctx.room_id)
             return await answer_within(timeout, call.name, answer)

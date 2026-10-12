@@ -188,3 +188,30 @@ async def test_a_host_tool_running_code_waits_for_the_host_s_approval() -> None:
         ran = await _call(channel, provider, session, "run_python", {"action": "x"})
         assert ran == {"text": "ran"}
         handler.assert_awaited_once()
+
+
+async def test_a_code_tool_nothing_serves_is_refused_before_the_hooks() -> None:
+    """Found by an automated security review: the gate ran only once a handler
+    served the call, and ON_TOOL_CALL's hooks may serve one no handler does."""
+    registration = {"execution_tools": ["run_*"]}
+    async with _session(registration=registration, tools=[tool("run_python")]) as ctx:
+        channel, provider, session, _ = ctx
+        await _call(channel, provider, session, "activate_skill", {"name": NAME})
+        refused = await _call(channel, provider, session, "run_python", {"action": "x"})
+        assert "has not approved" in refused["error"]
+
+
+async def test_a_body_the_session_keeps_after_the_registry_drops_it_still_gates() -> None:
+    """Found by an automated security review: a served skill the registry no
+    longer held was skipped by the gate while its body stayed in the session."""
+    handler = AsyncMock(return_value="ran")
+    registration = {"execution_tools": ["run_*"]}
+    async with _session(
+        registration=registration, tools=[tool("run_python")], tool_handler=handler
+    ) as (channel, provider, session, server):
+        await _call(channel, provider, session, "activate_skill", {"name": NAME})
+        server.entry_overrides[PDF.uri] = {**PDF.entry(), "resources": None}
+        await channel._skill_support.registry.add_mcp_server(server, "hf", **registration)
+        refused = await _call(channel, provider, session, "run_python", {"action": "x"})
+        assert "has not approved" in refused["error"]
+        handler.assert_not_awaited()

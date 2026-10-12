@@ -230,3 +230,32 @@ class TestGateUnit:
         registry = await self._registry()
         gate = ServedExecutionGate()
         assert await gate.refusal(registry, {NAME}, "r1", "read_skill_reference") is None
+
+
+class TestGateNeverFailsOpen:
+    """Found by an automated security review of the first gate commit."""
+
+    async def test_an_active_served_skill_the_registry_no_longer_holds_is_refused(self) -> None:
+        approver = Approver(True)
+        server = FakeSkillServer([PDF])
+        registry = SkillRegistry()
+        await registry.add_mcp_server(server, "hf", approve_execution=approver)
+        await registry.load_skill(NAME)
+        server.skills = []
+        await registry.add_mcp_server(server, "hf", approve_execution=approver)
+        refusal = await ServedExecutionGate().refusal(
+            registry, {NAME}, "r1", "sandbox_bash", sandbox_tools={"sandbox_bash"}
+        )
+        assert refusal is not None and approver.asked == []
+
+    async def test_without_a_conversation_no_approval_is_kept(self) -> None:
+        approver = Approver(True)
+        registry = SkillRegistry()
+        await registry.add_mcp_server(FakeSkillServer([PDF]), "hf", approve_execution=approver)
+        await registry.load_skill(NAME)
+        gate = ServedExecutionGate()
+        for _ in range(2):
+            await gate.refusal(
+                registry, {NAME}, None, "sandbox_bash", sandbox_tools={"sandbox_bash"}
+            )
+        assert len(approver.asked) == 2

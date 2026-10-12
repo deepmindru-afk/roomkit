@@ -50,7 +50,10 @@ class ServedExecutionGate:
         """
         if skills is None or not skills.has_served:
             return None
-        served = [name for name in sorted(active) if isinstance(skills.get_skill(name), MCPSkill)]
+        # Every served name the conversation holds active, loaded or not: a
+        # session may still carry the body of a skill the registry dropped,
+        # and one no approval can bind is refused, never skipped.
+        served = [name for name in sorted(active) if skills.is_served(name)]
         if not served or not _runs_code(skills, tool, sandbox_tools):
             return None
         for name in served:
@@ -69,7 +72,9 @@ class ServedExecutionGate:
         if not isinstance(skill, MCPSkill) or origin is None:
             return False
         fingerprint = skill.held.fingerprint
-        key = (room_id, name, fingerprint) if fingerprint is not None else None
+        # Kept only for a conversation and a fingerprint: without either, an
+        # approval would cover what it never saw, so the host is asked again.
+        key = (room_id, name, fingerprint) if fingerprint and room_id else None
         if key is not None and key in self._approved:
             self._approved.move_to_end(key)
             return True
