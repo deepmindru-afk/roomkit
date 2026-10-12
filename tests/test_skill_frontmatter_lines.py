@@ -1,17 +1,17 @@
-"""A local SKILL.md frontmatter read line by line keeps what the skill gates
-and requires (RFC §24.1), whichever reason sends it there: no PyYAML
-installed, or a frontmatter that is not YAML."""
+"""A local SKILL.md frontmatter read line by line, one that is not YAML,
+keeps what the skill gates and requires (RFC §24.1); of a text YAML reads too,
+the line reader gates at least what YAML does."""
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
+from roomkit.skills._frontmatter_lines import parse_lines
 from roomkit.skills.errors import SkillParseError
 from roomkit.skills.models import parse_tool_names
-from roomkit.skills.parser import parse_frontmatter
+from roomkit.skills.parser import parse_frontmatter, split_frontmatter
 from roomkit.skills.registry import SkillRegistry
 
 RFC_EXAMPLE = """---
@@ -30,14 +30,16 @@ requires:
 """
 
 
-@pytest.fixture(params=["without PyYAML", "not YAML"])
-def head(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
-    """The first lines of a frontmatter the line reader reads: PyYAML is
-    gone, or the description's colon makes the text invalid YAML."""
-    if request.param == "without PyYAML":
-        monkeypatch.setitem(sys.modules, "yaml", None)
-        return "---\nname: refunds\ndescription: Process refund requests\n"
+@pytest.fixture
+def head() -> str:
+    """The first lines of a frontmatter the line reader reads: the
+    description's colon makes the text invalid YAML."""
     return "---\nname: refunds\ndescription: Refunds: process them\n"
+
+
+def _by_lines(text: str) -> dict[str, str | list[str]]:
+    """The frontmatter of *text* as the line reader reads it, YAML or not."""
+    return parse_lines(split_frontmatter(text)[0])
 
 
 def _write_skill(root: Path, text: str) -> None:
@@ -136,13 +138,10 @@ def test_a_gating_key_a_line_cannot_hold_whole_refuses_the_skill(head: str, line
     ],
     ids=["block", "block with comment", "flow", "flow with comment", "text", "quoted text"],
 )
-def test_each_form_reads_as_yaml_reads_it(
-    monkeypatch: pytest.MonkeyPatch, lines: str, expected: object
-) -> None:
+def test_each_form_reads_as_yaml_reads_it(lines: str, expected: object) -> None:
     text = "---\nname: refunds\ndescription: d\n" + lines + "\n---\n"
     as_yaml, _ = parse_frontmatter(text)
-    monkeypatch.setitem(sys.modules, "yaml", None)
-    by_lines, _ = parse_frontmatter(text)
+    by_lines = _by_lines(text)
     assert by_lines == as_yaml
     assert by_lines["allowed_tools"] == expected
 
@@ -240,9 +239,7 @@ def test_yaml_refuses_a_gating_key_that_is_not_a_list_of_texts(tmp_path: Path, l
         "escaped flow item",
     ],
 )
-def test_the_line_reader_never_gates_less_than_yaml(
-    monkeypatch: pytest.MonkeyPatch, lines: str
-) -> None:
+def test_the_line_reader_never_gates_less_than_yaml(lines: str) -> None:
     # RFC §24.1: of a frontmatter that is also YAML, the line-by-line reading
     # gates and requires at least what YAML does, or refuses the skill.
     text = "---\nname: refunds\ndescription: d\n" + lines + "---\n"
@@ -250,9 +247,8 @@ def test_the_line_reader_never_gates_less_than_yaml(
         as_yaml, _ = parse_frontmatter(text)
     except SkillParseError:
         as_yaml = None
-    monkeypatch.setitem(sys.modules, "yaml", None)
     try:
-        by_lines, _ = parse_frontmatter(text)
+        by_lines = _by_lines(text)
     except SkillParseError:
         return
     assert as_yaml is not None
@@ -263,9 +259,8 @@ def test_the_line_reader_never_gates_less_than_yaml(
         assert not missing, key
 
 
-def test_the_rfc_example_reads_the_same_without_pyyaml(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_rfc_example_reads_the_same_by_lines() -> None:
     as_yaml, _ = parse_frontmatter(RFC_EXAMPLE)
-    monkeypatch.setitem(sys.modules, "yaml", None)
-    by_lines, _ = parse_frontmatter(RFC_EXAMPLE)
+    by_lines = _by_lines(RFC_EXAMPLE)
     assert by_lines == as_yaml
     assert by_lines["allowed_tools"] == ["search_*", "fetch_*"]

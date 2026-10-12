@@ -7,8 +7,9 @@ import logging
 import re
 from collections.abc import Iterable
 from pathlib import Path
-from types import ModuleType
 from typing import Any
+
+import yaml
 
 from roomkit.skills._frontmatter_lines import GATING_KEYS, parse_lines
 from roomkit.skills.errors import SkillParseError, SkillValidationError
@@ -64,10 +65,10 @@ an integer past Python's digit limit."""
 
 
 class _FrontmatterNotReadError(SkillParseError):
-    """A frontmatter that was not read as a YAML mapping: PyYAML is missing,
-    the text is not YAML or not a mapping, or it holds a value JSON cannot
-    hold. Unlike a bound, it says nothing against the text, which a caller
-    may read another way."""
+    """A frontmatter that was not read as a YAML mapping: the text is not
+    YAML or not a mapping, or it holds a value JSON cannot hold. Unlike a
+    bound, it says nothing against the text, which a caller may read another
+    way."""
 
 
 def _read_skill_md(skill_dir: Path) -> tuple[Path, str]:
@@ -157,20 +158,13 @@ def _load_bounded_yaml(text: str) -> dict[Any, Any]:
         SkillParseError: The text is past one of those bounds, or was not
             read as a YAML mapping.
     """
-    try:
-        import yaml
-    except ImportError as exc:
-        raise _FrontmatterNotReadError(
-            "PyYAML is needed to read a frontmatter as YAML: "
-            "install it with pip install roomkit[mcp]"
-        ) from exc
     if len(text) > FRONTMATTER_MAX:
         raise SkillParseError(f"the frontmatter is past {FRONTMATTER_MAX} characters")
     if _flow_depth(text) > _FLOW_DEPTH_MAX:
         raise SkillParseError("the frontmatter nests too deep")
     loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
     try:
-        _refuse_unsafe_events(yaml.parse(text, loader), yaml)
+        _refuse_unsafe_events(yaml.parse(text, loader))
         if loader is yaml.SafeLoader:
             data = yaml.safe_load(text)
         else:
@@ -188,7 +182,7 @@ def _load_bounded_yaml(text: str) -> dict[Any, Any]:
     return data
 
 
-def _refuse_unsafe_events(events: Iterable[Any], yaml: ModuleType) -> None:
+def _refuse_unsafe_events(events: Iterable[Any]) -> None:
     """Refuse an alias, or collections nested past :data:`_DEPTH_MAX`, from
     the parse events alone: nothing is built yet, and the pass stops at the
     first one found."""
@@ -222,7 +216,7 @@ def parse_frontmatter(content: str) -> tuple[dict[str, FrontmatterValue], str]:
 
     The frontmatter is read as YAML within the bounds of
     :func:`read_frontmatter_yaml`, and line by line (``key: value``) when it
-    cannot be read as YAML or PyYAML is not installed.
+    is not YAML.
 
     Raises:
         SkillParseError: If content has no valid frontmatter delimiters, or

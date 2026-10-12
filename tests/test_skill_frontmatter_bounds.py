@@ -141,19 +141,12 @@ class TestTheLocalDoorStillReadsByLines:
         assert data == {"name": "refunds", "description": "Use it: for refunds"}
         assert body == "Body"
 
-    def test_without_pyyaml_no_bound_applies(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setitem(sys.modules, "yaml", None)
-        text = "---\nname: refunds\ndescription: " + "d" * 70_000 + "\n---\nBody\n"
-        data, _ = parse_frontmatter(text)
-        assert data["description"] == "d" * 70_000
-
-
-def test_the_served_door_refuses_a_frontmatter_without_pyyaml(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setitem(sys.modules, "yaml", None)
-    with pytest.raises(SkillVerificationError, match=r"PyYAML is needed.*roomkit\[mcp\]"):
-        _served(skill_md("refunds", "d"))
+    def test_a_bound_holds_on_a_frontmatter_that_is_not_yaml(self) -> None:
+        # The size bound is checked before YAML reads anything, so it holds
+        # for the line reader's text too.
+        text = "---\nname: refunds\ndescription: Use it: " + "d" * 70_000 + "\n---\nBody\n"
+        with pytest.raises(SkillParseError, match="past 65536 characters"):
+            parse_frontmatter(text)
 
 
 def _write_skill(root: Path, name: str, frontmatter: str) -> None:

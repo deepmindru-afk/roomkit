@@ -1,6 +1,6 @@
-"""A SKILL.md frontmatter read line by line, for one that is not YAML or is
-read without PyYAML (RFC §24.1): ``key: value`` lines, and the two YAML list
-forms, read whole or refused for the keys that gate tools."""
+"""A SKILL.md frontmatter read line by line, for one that is not YAML
+(RFC §24.1): ``key: value`` lines, and the two YAML list forms, read whole or
+refused for the keys that gate tools."""
 
 from __future__ import annotations
 

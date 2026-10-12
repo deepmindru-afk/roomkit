@@ -30,54 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   some, as it refuses an agent's skills, and names the voice channel's own
   `server_instructions=` instead (RFC §19.5).
 
-### Security
+### Changed
 
-- **BREAKING — a local skill's `SKILL.md` frontmatter is read within the
-  bounds a served skill's is** (RMK-691, RFC §24.5). It was read by
-  `yaml.safe_load` with no bound, and every value turned into a string: 372
-  bytes of YAML aliases of aliases became 254 MB of text, two levels more
-  about 20 GB. It is now read by the reader that checks a served skill's
-  frontmatter: a YAML alias, collections nested past 64 levels, more than
-  64 brackets or braces open at once (quoted ones counted too) and a
-  frontmatter past 65536 characters raise `SkillParseError` before
-  anything is built, where they used to load (a nesting past a few
-  hundred levels was read line by line). `discover()` fails on such a
-  skill, or skips and logs it with `strict=False`. A frontmatter that is
-  not YAML, or read without PyYAML installed, is still read line by line,
-  unbounded.
-  Migration: write the value in place of the alias.
-- **BREAKING — a skill read line by line keeps what it gates and requires**
-  (RMK-693, RFC §24.1). A local `SKILL.md` frontmatter is read line by line
-  when it is not YAML (a description with an unquoted colon) and whenever
-  PyYAML is not installed, which is RoomKit's base install. That reading
-  kept no list: `allowed_tools:` followed by `- item` lines was dropped, and
-  `allowed_tools: [search_*, fetch_*]` gated the patterns `[search_*` and
-  `fetch_*]`, which match no tool. Either way the tools the skill gates were
-  offered to the model before any activation, and the RFC's own example
-  lost them without PyYAML. Both list forms are now read as lists, items
-  unquoted and a trailing `# comment` dropped. An `allowed_tools` or
-  `requires` the line reader cannot read whole (a list spread over several
-  lines, a block scalar, an anchor or a tag, a line under the key that is
-  not a `- item`) raises `SkillParseError` naming the skill, where the
-  skill loaded without the key; so does one YAML reads as a mapping or a
-  nested list, which used to become a single pattern matching no tool.
-  Of a frontmatter that is also YAML, the line reader now gates and
-  requires at least what YAML does, or refuses the skill: a key indented under
-  another (`metadata:` then `  allowed_tools:`) is that key's value and no
-  longer replaces the top-level one, a quoted key or value is read whole
-  (a ` #` inside it is no comment), a gating key read again is joined to
-  the first (a flow collection or quoted text over several lines may hold
-  a line that looks like one), a key YAML reads where this reading cannot
-  (`? key`, a tag, an anchor, a merge key, an escape in a quoted key)
-  refuses the skill, so does a `\` escape in a double-quoted gating
-  entry, and YAML no longer gates the pattern `None` for a null list
-  item, local or served. `allowed_tools`
-  and `requires` now read a value with one reader (RFC §24.2): a text
-  `[a, b]`, or quoted entries (`'a', 'b'`), gate `a` and `b` where
-  `allowed_tools` used to gate the patterns `[a`, `'a'`, which match no
-  tool. Migration: a skill that loaded with its gating lost now keeps its tools
-  closed until it is activated; one refused needs its list written as
-  `- item` lines or `[a, b]` on one line.
+- PyYAML (`pyyaml>=6`) is a core dependency: every `SKILL.md` frontmatter,
+  local or served, is read as YAML (RMK-693). The `mcp` extra no longer
+  lists it.
 
 ### Removed
 
@@ -103,6 +60,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same way, and so is a local skill's `name`: a skill named `combat\n` in a
   directory of that name loaded, and its name reached the prompt's skill
   list with the line break.
+
+### Security
+
+- **BREAKING — a local skill's `SKILL.md` frontmatter is read within the
+  bounds a served skill's is** (RMK-691, RFC §24.5). It was read by
+  `yaml.safe_load` with no bound, and every value turned into a string: 372
+  bytes of YAML aliases of aliases became 254 MB of text, two levels more
+  about 20 GB. It is now read by the reader that checks a served skill's
+  frontmatter: a YAML alias, collections nested past 64 levels, more than
+  64 brackets or braces open at once (quoted ones counted too) and a
+  frontmatter past 65536 characters raise `SkillParseError` before
+  anything is built, where they used to load (a nesting past a few
+  hundred levels was read line by line). `discover()` fails on such a
+  skill, or skips and logs it with `strict=False`. A frontmatter that is
+  not YAML, or read without PyYAML installed, is still read line by line,
+  unbounded.
+  Migration: write the value in place of the alias.
+- **BREAKING — a local skill keeps what it gates and requires, whatever its
+  frontmatter looks like** (RMK-693, RFC §24.1, §24.2). PyYAML is now a core
+  dependency, so a frontmatter that is YAML is always read as YAML. The base
+  install, which had no PyYAML, read every local `SKILL.md` line by line,
+  and that reading kept no list: `allowed_tools:` followed by `- item` lines
+  was dropped, `allowed_tools: [search_*, fetch_*]` gated the patterns
+  `[search_*` and `fetch_*]`, and valid YAML (a key nested under
+  `metadata:`, a quoted key, a value continued over lines) could replace or
+  hide what the top level gates. The tools a skill gates were offered to
+  the model before any activation, those of the RFC's own example included.
+  The line reader now reads only a frontmatter that is not YAML (a
+  description with an unquoted colon); it keeps both list forms, items
+  unquoted and a trailing `# comment` dropped, and of a text YAML also reads
+  it gates at least what YAML does. An `allowed_tools` or `requires` neither
+  reader can read whole as a text or a list of texts (a list spread over
+  several lines, a block scalar, an anchor or a tag, a mapping or a nested
+  list, a line under the key that is not a `- item`, a `\` escape in a
+  double-quoted entry) raises `SkillParseError` naming the skill, where the
+  skill loaded without the key. Both keys read a value with one reader: a
+  text `[a, b]` or quoted entries gate `a` and `b`, where `allowed_tools`
+  gated `[a` and `'a'`, which match no tool, and a text in brackets also
+  gates the glob it is (`[ab]` covers `a` and `b`). A null list item no
+  longer reads as the name `None`, local or served. Migration: a skill that
+  loaded with its gating lost now keeps its tools closed until it is
+  activated; one refused needs its list written as `- item` lines or
+  `[a, b]` on one line.
 
 ## [0.98.0] — 2026-10-12
 

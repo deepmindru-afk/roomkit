@@ -10,15 +10,13 @@ insertions and deletions of YAML's own characters. A seed keeps them fixed.
 from __future__ import annotations
 
 import random
-import sys
 
 import pytest
 
+from roomkit.skills._frontmatter_lines import parse_lines
 from roomkit.skills.errors import SkillError
 from roomkit.skills.models import parse_tool_names
 from roomkit.skills.parser import parse_frontmatter, read_frontmatter_yaml, split_frontmatter
-
-pytest.importorskip("yaml")
 
 KEYS = ("allowed_tools", "requires")
 NAMES = (
@@ -113,27 +111,26 @@ def _read_as_yaml(text: str) -> bool:
     return True
 
 
-def _gating_of(text: str) -> dict[str, set[str]] | None:
+def _gating_of(text: str, *, by_lines: bool) -> dict[str, set[str]] | None:
+    """What *text* gates and requires, read as SKILL.md is or by the line
+    reader alone; ``None`` when the reading refuses it."""
     try:
-        data, _ = parse_frontmatter(text)
+        data = parse_lines(split_frontmatter(text)[0]) if by_lines else parse_frontmatter(text)[0]
     except SkillError:
         return None
     return {key: set(parse_tool_names(data.get(key))) for key in KEYS}
 
 
 @pytest.mark.parametrize("mutate", [False, True], ids=["generated", "mutated"])
-def test_generated_frontmatters_never_gate_less_on_the_line_reader(
-    monkeypatch: pytest.MonkeyPatch, mutate: bool
-) -> None:
+def test_generated_frontmatters_never_gate_less_on_the_line_reader(mutate: bool) -> None:
     rng = random.Random(693)
     texts = [_document(rng) for _ in range(3000)]
     if mutate:
         texts = [_mutated(rng, text) for text in texts]
-    as_yaml = {text: _gating_of(text) for text in texts if _read_as_yaml(text)}
-    monkeypatch.setitem(sys.modules, "yaml", None)
     compared = 0
-    for text, yaml_gating in as_yaml.items():
-        line_gating = _gating_of(text)
+    for text in filter(_read_as_yaml, texts):
+        yaml_gating = _gating_of(text, by_lines=False)
+        line_gating = _gating_of(text, by_lines=True)
         if yaml_gating is None or line_gating is None:
             continue
         compared += any(yaml_gating.values())
