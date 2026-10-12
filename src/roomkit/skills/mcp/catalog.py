@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from roomkit._text import is_label
 from roomkit.skills.errors import (
     SkillDiscoveryError,
     SkillError,
@@ -36,7 +37,6 @@ from roomkit.skills.models import SkillMetadata
 
 logger = logging.getLogger("roomkit.skills.mcp")
 
-_LABEL = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 _PATH = re.compile(r"^(?:[a-z][a-z0-9+.-]*://)?[A-Za-z0-9._~@+-]+(?:/[A-Za-z0-9._~@+-]+)*$")
 """A skill's path as a registry names it: the characters of an identifier and
 ``/``, the scheme kept when it is not ``skill://``; a path holding anything
@@ -192,7 +192,7 @@ class MCPSkillCatalog:
             SkillDiscoveryError: The server does not declare the extension, or
                 its listing cannot be read.
         """
-        if not _LABEL.fullmatch(label):
+        if not is_label(label):
             raise SkillValidationError(f"Label {label!r} is not an identifier")
         held = self._origins.get(label)
         if held is not None and held.server is not server:

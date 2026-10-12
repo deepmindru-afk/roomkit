@@ -262,6 +262,14 @@ class TestLoading:
         with pytest.raises(SkillError, match="not found"):
             await registry.load_skill(name)
 
+    async def test_a_name_ending_in_a_line_break_is_not_asked_of_the_server(self) -> None:
+        server = FakeSkillServer([PDF, REFUNDS], listed={PDF.uri})
+        registry = SkillRegistry()
+        await registry.add_mcp_server(server, "hf")
+        with pytest.raises(SkillError, match="not found"):
+            await registry.load_skill("hf:acme/billing/refunds\n")
+        assert not any(method == "skills/get" for method, _ in server.requests)
+
 
 class TestFiles:
     async def test_a_listed_file_is_read_verified(self) -> None:

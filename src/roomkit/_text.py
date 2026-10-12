@@ -73,8 +73,9 @@ passage, a memory's summary of the conversation, content a realtime provider
 adds to its prompt, the goal or task an orchestration strategy copies into
 another model's prompt, and what a vision provider saw. A prompt's own blocks,
 which no cut reaches (``agent``, ``instructions``, a speech model's
-``transcript``, the content of a skill an MCP server serves, ``skill``), are
-fenced as well and are not listed."""
+``transcript``, the content of a skill an MCP server serves, ``skill``, what an
+MCP server publishes on using its tools, ``server_instructions``), are fenced
+as well and are not listed."""
 
 
 def _tag_name(tag: str, *, exact: bool = False) -> str:
@@ -307,6 +308,19 @@ def identifier(value: Any, fallback: str, limit: int = 64) -> str:
     when nothing is left."""
     kept = re.sub(r"-{2,}", "-", _kept(str(value or ""), "_.@+-", "-"))
     return kept.strip("-")[:limit] or fallback
+
+
+_LABEL = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+
+def is_label(value: Any) -> bool:
+    """Whether *value* is a host's label for a server: letters, digits and
+    ``_ . -``, 64 at most, and nothing else, a final line break included.
+
+    Checked, never cleaned: a label names a server in the model's context
+    (a served skill's name, a server's instructions), so a wrong one is the
+    host's mistake to hear about."""
+    return isinstance(value, str) and _LABEL.fullmatch(value) is not None
 
 
 def one_of(value: Any, allowed: Collection[str], fallback: str) -> str:

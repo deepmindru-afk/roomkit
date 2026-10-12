@@ -62,6 +62,55 @@ async def turn_reply(replies: asyncio.Queue[str]) -> str:
     return " ".join(part.strip() for part in parts)
 
 
+async def notes_room(
+    provider: LlamaCppAIProvider, mcp: MCPToolProvider
+) -> tuple[RoomKit, asyncio.Queue[str]]:
+    """A kit holding the user and the AI in the notes room, and the queue the
+    AI's replies arrive on."""
+    kit = RoomKit()
+    user = WebSocketChannel("user")
+    kit.register_channel(user)
+    kit.register_channel(
+        AIChannel(
+            "ai",
+            provider=provider,
+            system_prompt="You are a helpful assistant. Use the tools when they help.",
+            tools=mcp.get_tools(),
+            tool_handler=mcp.as_tool_handler(),
+            # The server's own word on its tools, under our name for it.
+            server_instructions={"notes": mcp.instructions},
+        )
+    )
+
+    replies: asyncio.Queue[str] = asyncio.Queue()
+
+    async def on_event(_conn: str, event: RoomEvent) -> None:
+        if event.source.channel_id == "ai" and isinstance(event.content, TextContent):
+            await replies.put(event.content.body)
+
+    user.register_connection("me", on_event, room_id="notes")
+    await kit.create_room(room_id="notes")
+    await kit.attach_channel("notes", "user")
+    await kit.attach_channel("notes", "ai", category=ChannelCategory.INTELLIGENCE)
+    return kit, replies
+
+
+async def converse(kit: RoomKit, replies: asyncio.Queue[str]) -> None:
+    """Ask the AI to take two notes, then to read them back."""
+    for question in (
+        "Note that the team meeting moved to Thursday at 3pm.",
+        "Also note: buy coffee.",
+        "What notes do I have?",
+    ):
+        logger.info("You: %s", question)
+        result = await kit.process_inbound(
+            InboundMessage(channel_id="user", sender_id="me", content=TextContent(body=question))
+        )
+        if result.error is not None:
+            sys.exit(f"The model failed: {result.error}")
+        logger.info("AI:  %s", await turn_reply(replies))
+
+
 async def main() -> None:
     command = shlex.split(os.environ.get("MCP_COMMAND", f"{sys.executable} {NOTES_SERVER}"))
     provider = LlamaCppAIProvider(
@@ -75,47 +124,8 @@ async def main() -> None:
         async with MCPToolProvider.from_command(command[0], command[1:]) as mcp:
             logger.info("MCP tools: %s", mcp.tool_names)
             logger.info("MCP server instructions: %s", mcp.instructions)
-
-            kit = RoomKit()
-            user = WebSocketChannel("user")
-            kit.register_channel(user)
-            kit.register_channel(
-                AIChannel(
-                    "ai",
-                    provider=provider,
-                    system_prompt="You are a helpful assistant. Use the tools when they help.",
-                    tools=mcp.get_tools(),
-                    tool_handler=mcp.as_tool_handler(),
-                    server_instructions={"notes": mcp.instructions},
-                )
-            )
-
-            replies: asyncio.Queue[str] = asyncio.Queue()
-
-            async def on_event(_conn: str, event: RoomEvent) -> None:
-                if event.source.channel_id == "ai" and isinstance(event.content, TextContent):
-                    await replies.put(event.content.body)
-
-            user.register_connection("me", on_event, room_id="notes")
-            await kit.create_room(room_id="notes")
-            await kit.attach_channel("notes", "user")
-            await kit.attach_channel("notes", "ai", category=ChannelCategory.INTELLIGENCE)
-
-            for question in (
-                "Note that the team meeting moved to Thursday at 3pm.",
-                "Also note: buy coffee.",
-                "What notes do I have?",
-            ):
-                logger.info("You: %s", question)
-                result = await kit.process_inbound(
-                    InboundMessage(
-                        channel_id="user", sender_id="me", content=TextContent(body=question)
-                    )
-                )
-                if result.error is not None:
-                    sys.exit(f"The model failed: {result.error}")
-                logger.info("AI:  %s", await turn_reply(replies))
-
+            kit, replies = await notes_room(provider, mcp)
+            await converse(kit, replies)
             await kit.close()  # leaving the block then stops the MCP server
     finally:
         await provider.close()  # stops llama-server, even when a step above fails

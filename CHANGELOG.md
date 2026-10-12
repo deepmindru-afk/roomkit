@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compaction reaches them. Each server's text is set apart as that server's
   data, in a `<server_instructions>` block under `## MCP server: <label>`,
   the label being the host's name for the server (an identifier, else
-  `ValueError`), and is cut at 8192 characters with a warning. A server
+  `ValueError`; a value neither text nor `None` raises `TypeError`), and is
+  cut at 8192 characters with a warning. A server
   mapped to `None` is left out, which is also how a host leaves one out. A
   realtime session whose provider takes no tools reads none of them. The
   `Agent` an `AgentReasoningBackend` drives reads its own in its model's

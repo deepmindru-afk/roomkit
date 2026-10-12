@@ -12,8 +12,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 
-from roomkit._text import bounded_text, fence
-from roomkit.skills.mcp.catalog import _LABEL
+from roomkit._text import bounded_text, fence, is_label
 
 logger = logging.getLogger("roomkit.channels.server_instructions")
 
@@ -43,12 +42,12 @@ def server_instructions_block(instructions: Mapping[str, str | None] | None) -> 
         ValueError: A label is not an identifier (letters, digits, ``_ . -``,
             64 at most), as :meth:`~roomkit.skills.SkillRegistry.add_mcp_server`
             requires.
+        TypeError: A server is mapped to something other than text or ``None``
+            (the provider itself, say, rather than its ``instructions``).
     """
-    named = {_checked_label(label): text for label, text in (instructions or {}).items()}
+    named = dict(_checked(label, text) for label, text in (instructions or {}).items())
     sections = [
-        _server_section(label, text)
-        for label, text in named.items()
-        if isinstance(text, str) and text.strip()
+        _server_section(label, text) for label, text in named.items() if text and text.strip()
     ]
     if not sections:
         return None
@@ -57,12 +56,19 @@ def server_instructions_block(instructions: Mapping[str, str | None] | None) -> 
     )
 
 
-def _checked_label(label: str) -> str:
-    """*label*, the host's name for a server, once known to be an identifier:
-    checked whatever it maps to, so a wrong one fails at construction."""
-    if not isinstance(label, str) or not _LABEL.fullmatch(label):
+def _checked(label: str, text: str | None) -> tuple[str, str | None]:
+    """One entry of the host's mapping, once known to be well formed: its label
+    an identifier, its text a string or ``None``. Checked whatever the server
+    published, so a wrong entry fails at construction, not on the day the
+    server publishes something."""
+    if not is_label(label):
         raise ValueError(f"MCP server label {label!r} is not an identifier")
-    return label
+    if text is not None and not isinstance(text, str):
+        raise TypeError(
+            f"MCP server {label}'s instructions must be text or None, not "
+            f"{type(text).__name__}: pass the provider's .instructions"
+        )
+    return label, text
 
 
 def _server_section(label: str, text: str) -> str:

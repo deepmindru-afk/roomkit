@@ -277,6 +277,16 @@ def test_a_label_that_is_not_an_identifier_is_refused(
         make(server_instructions={label: None})
 
 
+@pytest.mark.parametrize("make", CHANNELS.values(), ids=CHANNELS.keys())
+def test_a_server_mapped_to_something_other_than_text_is_refused(
+    make: Callable[..., object],
+) -> None:
+    provider = MCPToolProvider.from_command(sys.executable, ["server.py"])
+
+    with pytest.raises(TypeError, match="pass the provider's .instructions"):
+        make(server_instructions={"gm": provider})
+
+
 # -- One path's own -------------------------------------------------------------
 
 
