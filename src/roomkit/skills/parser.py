@@ -185,11 +185,20 @@ def _load_bounded_yaml(text: str) -> dict[Any, Any]:
 def _refuse_unsafe_events(events: Iterable[Any]) -> None:
     """Refuse an alias, or collections nested past :data:`_DEPTH_MAX`, from
     the parse events alone: nothing is built yet, and the pass stops at the
-    first one found."""
+    first one found.
+
+    Only an alias to an anchor defined before it is refused. One naming no
+    anchor cannot expand, and the load that follows fails on it: the text is
+    not YAML (``allowed_tools: *_admin``, a glob)."""
     depth = 0
+    anchors: set[str] = set()
     for event in events:
         if isinstance(event, yaml.AliasEvent):
-            raise SkillParseError("the frontmatter holds a YAML alias")
+            if event.anchor in anchors:
+                raise SkillParseError("the frontmatter holds a YAML alias")
+            continue
+        if isinstance(event, yaml.NodeEvent) and event.anchor is not None:
+            anchors.add(event.anchor)
         if isinstance(event, yaml.CollectionStartEvent):
             depth += 1
             if depth > _DEPTH_MAX:

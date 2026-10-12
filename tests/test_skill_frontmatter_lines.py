@@ -147,19 +147,39 @@ def test_each_form_reads_as_yaml_reads_it(lines: str, expected: object) -> None:
 
 
 @pytest.mark.parametrize(
-    ("lines", "expected"),
+    "first_lines",
     [
-        ("allowed_tools: *", "*"),
-        ("allowed_tools:\n  - *_admin\n  - search_*", ["*_admin", "search_*"]),
-        ("allowed_tools: [*_admin, search_*]", ["*_admin", "search_*"]),
+        "---\nname: refunds\ndescription: Refunds: process them\n",
+        "---\nname: refunds\ndescription: Refunds\n",
     ],
-    ids=["every tool", "block", "flow"],
+    ids=["text YAML refuses", "YAML but for the star"],
 )
-def test_a_glob_starting_with_a_star_is_a_pattern(head: str, lines: str, expected: object) -> None:
+@pytest.mark.parametrize(
+    ("lines", "key", "expected"),
+    [
+        ("allowed_tools: *", "allowed_tools", "*"),
+        ("allowed_tools: *_admin", "allowed_tools", "*_admin"),
+        ("allowed_tools:\n  - *_admin\n  - search_*", "allowed_tools", ["*_admin", "search_*"]),
+        ("allowed_tools: [*_admin, search_*]", "allowed_tools", ["*_admin", "search_*"]),
+        ("license: *Use with care* when refunding", "license", "*Use with care* when refunding"),
+    ],
+    ids=["every tool", "one glob", "block", "flow", "text"],
+)
+def test_a_star_naming_no_anchor_is_read_line_by_line(
+    first_lines: str, lines: str, key: str, expected: object
+) -> None:
     # YAML reads a leading * as an alias and fails; no line defines an
-    # anchor, so the line reader takes it as the glob it is.
-    data, _ = parse_frontmatter(head + lines + "\n---\n")
-    assert data["allowed_tools"] == expected
+    # anchor, so the alias cannot expand and is not refused as one: the line
+    # reader takes the glob or the text it is, even when the star is the only
+    # thing YAML cannot read.
+    data, _ = parse_frontmatter(first_lines + lines + "\n---\n")
+    assert data[key] == expected
+
+
+def test_an_alias_to_an_anchor_is_still_refused() -> None:
+    text = "---\nname: refunds\ndescription: &d Refunds\nlicense: *d\n---\n"
+    with pytest.raises(SkillParseError, match="YAML alias"):
+        parse_frontmatter(text)
 
 
 @pytest.mark.parametrize("item", ["~", "null", "NULL"])
