@@ -6,10 +6,12 @@ import asyncio
 import copy
 import json
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from types import TracebackType
 from typing import Any
+
+from pydantic import BaseModel
 
 from roomkit.core.exceptions import ToolFailedError, UnservedToolCallError
 from roomkit.providers.ai.base import AITool, some_vendor_accepts_tool_name
@@ -79,6 +81,28 @@ async def _list_tools(session: Any, target: str) -> list[Any]:
         len(tools),
     )
     return tools
+
+
+class _RawRequest(BaseModel):
+    """A request the SDK does not model, in the shape its session sends one."""
+
+    method: str
+    params: dict[str, Any]
+
+
+def _declared_extensions(init: Any) -> dict[str, dict[str, Any]]:
+    """The extensions a server declared in its ``initialize`` result (RFC §21.2).
+
+    Read from the capabilities' wire form, so an SDK that does not model the
+    field (``mcp`` 1.x keeps it as an extra) gives it all the same.
+    """
+    capabilities = getattr(init, "capabilities", None)
+    if not isinstance(capabilities, BaseModel):
+        return {}
+    declared = capabilities.model_dump(by_alias=True, exclude_none=True).get("extensions")
+    if not isinstance(declared, dict):
+        return {}
+    return {str(key): dict(value) for key, value in declared.items() if isinstance(value, dict)}
 
 
 _DEFAULT_CALL_TIMEOUT = 30.0
@@ -186,6 +210,7 @@ class MCPToolProvider:
         self._tool_set: set[str] = set()
         self._tool_meta: dict[str, dict[str, Any]] = {}
         self._output_schemas: dict[str, dict[str, Any]] = {}
+        self._server_extensions: dict[str, dict[str, Any]] = {}
         self._connected = False
 
     @classmethod
@@ -284,7 +309,7 @@ class MCPToolProvider:
         try:
             read_stream, write_stream = await self._open_transport(stack)
             session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
-            await session.initialize()
+            init = await session.initialize()
             # Inside the try: a listing the catalogue cannot read releases what
             # was opened, the stdio server included (RFC §21.2).
             if self._discover:
@@ -295,6 +320,7 @@ class MCPToolProvider:
 
         self._stack = stack
         self._session = session
+        self._server_extensions = _declared_extensions(init)
         self._connected = True
         logger.info(
             "Connected to MCP server %s (%s) — %s",
@@ -423,6 +449,37 @@ class MCPToolProvider:
         """
         self._ensure_connected()
         return await asyncio.wait_for(self._session.read_resource(uri), timeout=timeout)
+
+    @property
+    def server_extensions(self) -> dict[str, dict[str, Any]]:
+        """The extensions the server declared when it connected, by identifier,
+        with their settings (``io.modelcontextprotocol/skills`` among them);
+        empty for a server that declared none (RFC §21.2)."""
+        self._ensure_connected()
+        return copy.deepcopy(self._server_extensions)
+
+    async def request(
+        self,
+        method: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        timeout: float = _DEFAULT_CALL_TIMEOUT,
+    ) -> dict[str, Any]:
+        """Send *method*, a request the SDK does not model (``skills/list``,
+        say), and return its result as the server sent it (RFC §21.2).
+
+        Raises:
+            McpError: The server answered with an error.
+            TimeoutError: No answer within *timeout* seconds.
+        """
+        self._ensure_connected()
+        from mcp.types import Result
+
+        request = _RawRequest(method=method, params=dict(params or {}))
+        result = await asyncio.wait_for(
+            self._session.send_request(request, Result), timeout=timeout
+        )
+        return result.model_dump(by_alias=True, mode="json", exclude_none=True)
 
     async def call_tool_result(
         self,

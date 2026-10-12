@@ -16,6 +16,8 @@ __all__ = [
     "parse_frontmatter",
     "parse_skill",
     "parse_skill_metadata",
+    "split_frontmatter",
+    "valid_skill_name",
     "validate_metadata",
 ]
 
@@ -64,10 +66,15 @@ def find_skill_md(skill_dir: Path) -> Path | None:
     return None
 
 
-def parse_frontmatter(content: str) -> tuple[dict[str, FrontmatterValue], str]:
-    """Split SKILL.md into frontmatter dict and body string.
+def valid_skill_name(name: str) -> bool:
+    """Whether *name* is a skill name as SKILL.md spells one (RFC §24.1):
+    lowercase letters and digits in hyphen-separated runs, at most 64
+    characters."""
+    return bool(_NAME_PATTERN.match(name)) and len(name) <= _NAME_MAX_LEN
 
-    Tries yaml.safe_load first, falls back to simple key: value parsing.
+
+def split_frontmatter(content: str) -> tuple[str, str]:
+    """Split SKILL.md into its frontmatter text and its body, both stripped.
 
     Raises:
         SkillParseError: If content has no valid frontmatter delimiters.
@@ -81,9 +88,18 @@ def parse_frontmatter(content: str) -> tuple[dict[str, FrontmatterValue], str]:
     if end_idx == -1:
         raise SkillParseError("SKILL.md missing closing '---' frontmatter delimiter")
 
-    fm_text = stripped[3:end_idx].strip()
-    body = stripped[end_idx + 4 :].strip()  # skip past \n---
+    return stripped[3:end_idx].strip(), stripped[end_idx + 4 :].strip()  # skip past \n---
 
+
+def parse_frontmatter(content: str) -> tuple[dict[str, FrontmatterValue], str]:
+    """Split SKILL.md into frontmatter dict and body string.
+
+    Tries yaml.safe_load first, falls back to simple key: value parsing.
+
+    Raises:
+        SkillParseError: If content has no valid frontmatter delimiters.
+    """
+    fm_text, body = split_frontmatter(content)
     data = _parse_yaml_or_fallback(fm_text)
     return data, body
 

@@ -252,7 +252,16 @@ from roomkit.providers.image import (
     MockImageProvider,
 )
 from roomkit.sandbox import SandboxExecutor, SandboxResult
-from roomkit.skills import RequiresMatch, ScriptExecutor, Skill, SkillMetadata, SkillRegistry
+from roomkit.skills import (
+    MCPSkillServer,
+    RequiresMatch,
+    ScriptExecutor,
+    Skill,
+    SkillEntry,
+    SkillMetadata,
+    SkillRegistry,
+    SkillResource,
+)
 from roomkit.speaking import (
     AlwaysSpeak,
     AnswerOnly,
@@ -565,10 +574,13 @@ __all__ = [
     "SandboxExecutor",
     "SandboxResult",
     # Skills
+    "MCPSkillServer",
     "ScriptExecutor",
     "Skill",
+    "SkillEntry",
     "SkillMetadata",
     "SkillRegistry",
+    "SkillResource",
     "Answers",
     "ChoiceAnswer",
     "ChoiceQuestion",

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `MCPToolProvider.server_extensions` and `MCPToolProvider.request()`
+  (RMK-681, RFC §21.2): the extensions a server declared when it connected,
+  and a request the MCP SDK does not model, returned as the server sent it.
+  They are what a registry needs to serve the skills an MCP server publishes
+  under the MCP Skills extension (`io.modelcontextprotocol/skills`,
+  SEP-2640), and rely on nothing a session alone holds. `roomkit.skills.mcp`
+  reads one entry of such a server on its own (`parse_entry`, `SkillEntry`,
+  `SkillResource`, the extension's 512-file and 16 MiB limits) and checks
+  what the server serves against it: `verify_skill_resource` (length, then
+  SHA-256) and `verify_frontmatter` (field by field). Checked against
+  `huggingface.co/mcp`: its 25 skills list over a `2025-11-25` session and
+  verify. The `mcp` extra now brings PyYAML, which the frontmatter check
+  needs.
+
 ### Fixed
 
 - A pipeline AEC fed by `LocalAudioBackend` in realtime mode keeps running

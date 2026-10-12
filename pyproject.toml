@@ -152,7 +152,9 @@ redis = ["redis>=5.0.1"]
 # 1.24 brought streamable_http_client (streamablehttp_client is deprecated).
 # Below 2: mcp 2 renames its model fields and moves to httpx2, which roomkit
 # caps (see httpx above).
-mcp = ["mcp>=1.24.0,<2"]
+# PyYAML: a skill an MCP server serves has its SKILL.md frontmatter checked
+# field by field against its entry (RFC §24.7), which needs a real YAML reader.
+mcp = ["mcp>=1.24.0,<2", "pyyaml>=6"]
 acp = ["agent-client-protocol>=0.11.0,<0.13"]
 console = ["rich>=13.0", "prompt-toolkit>=3.0.36"]
 sources = [

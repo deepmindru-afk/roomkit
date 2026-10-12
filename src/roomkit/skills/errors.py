@@ -26,6 +26,12 @@ class SkillDiscoveryError(SkillError):
     """A directory handed to ``SkillRegistry.discover`` cannot be scanned."""
 
 
+class SkillVerificationError(SkillError):
+    """Content an MCP server served for a skill does not match its entry: a
+    length, a digest, a frontmatter, or a file the entry does not list
+    (RFC §24.7). The content is not used."""
+
+
 class SkillPathError(SkillError, ValueError):
     """A skill-relative path escapes the directory it must stay inside.
 
