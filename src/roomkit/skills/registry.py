@@ -363,8 +363,8 @@ class SkillRegistry:
         """Bring this registry's record of served *name* in line with the
         catalog it shares: a registry sharing it may have registered the
         server again without the skill, or in a form this host does not
-        take, and an entry read again after a failed check is held to the
-        listing's rules (RFC §24.7)."""
+        take, or retired it on a failed file check; and an entry read again
+        after a failed check is held to the listing's rules (RFC §24.7)."""
         if name not in self._metadata:
             return
         if self._mcp.entry(name) is None:
@@ -375,6 +375,10 @@ class SkillRegistry:
         reason = self._mcp.refusal(name)
         if reason is not None:
             self._record_served(Listed(name, None, None, reason))
+            return
+        loaded = self._skills.get(name)
+        if isinstance(loaded, MCPSkill) and self._mcp.is_retired(loaded):
+            self._skills.pop(name, None)
 
     async def _fetch_unlisted(self, name: str) -> SkillMetadata | None:
         """Ask the server for *name*, a skill its listing did not hold: only

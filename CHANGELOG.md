@@ -28,13 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in each. A served skill's `allowed_tools` grants nothing, its scripts
   never run, and an activation is not replayed from the stored history. New:
   `SkillRegistry.load_skill()`, `read_file()`, `is_served()`, `origin()`,
-  `MCPSkill`, `SkillChangedError`; `SkillRegistry.add()` refuses a name
-  holding `:`.
+  `has_served`, `execution_tool_patterns`; `MCPSkill`, `MCPSkillServer` (what
+  `add_mcp_server` takes), `ServedOrigin`, `SkillChangedError`,
+  `SkillVerificationError`.
 - While a skill an MCP server serves is active in a conversation, a tool
   that runs code is served only with the host's approval of that skill
   (RMK-684, RFC §24.7): a sandbox command, `run_skill_script`, and the
   host's own tools named in `add_mcp_server(..., execution_tools=[...])`.
-  The host answers through `approve_execution`, which receives a
+  The host answers through `add_mcp_server(..., approve_execution=...)`, an
+  `ApproveExecution` callback that receives a
   `SkillExecutionRequest` (the skill, its server's label, its URI, the
   conversation, the tool, and the fingerprint of the skill's files); an
   approval holds for that conversation and fingerprint only, so a skill
@@ -50,7 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session starts, a served skill is listed as unavailable, with that reason.
 - `MCPToolProvider.server_extensions` and `MCPToolProvider.request()`
   (RMK-681, RFC §21.2): the extensions a server declared when it connected,
-  and a request the MCP SDK does not model, returned as the server sent it.
+  and a request the MCP SDK does not model, returned as the server sent it,
+  its null fields left out.
   They are what a registry needs to serve the skills an MCP server publishes
   under the MCP Skills extension (`io.modelcontextprotocol/skills`,
   SEP-2640), and rely on nothing a session alone holds. `roomkit.skills.mcp`
@@ -59,9 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   what the server serves against it: `verify_skill_resource` (length, then
   SHA-256) and `verify_frontmatter` (field by field). A frontmatter past
   64 KiB, in the entry's JSON as in `SKILL.md`, is refused, and so is a YAML
-  one holding an alias, nesting brackets past 64 levels or a value JSON
-  cannot hold: aliases of aliases expand exponentially, and the server
-  controls the digest too. Checked against
+  one holding an alias, collections nested past 64 levels (flow or block) or
+  a value JSON cannot hold: aliases of aliases expand exponentially, nesting
+  deep enough overflows the C loader's stack and ends the process, and the
+  server controls the digest too. Checked against
   `huggingface.co/mcp`: its 25 skills list over a `2025-11-25` session and
   verify. The `mcp` extra now brings PyYAML, which the frontmatter check
   needs.
@@ -84,6 +88,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `metadata["parent_room_id"]` is set where a list must show a tenant's
   conversations only; a `_child_metadata` envelope carrying the tenant for
   the child room's sake is no longer needed for it.
+- **BREAKING — `SkillRegistry.add()` refuses a skill name holding `:`**
+  (RMK-682, RFC §24.7), with `SkillValidationError`: `<label>:<path>` names a
+  skill an MCP server serves, which a host's skill must never shadow. A skill
+  built in memory under such a name was registered before. Migration: rename
+  it; a skill discovered from a directory never held one.
+- An active skill the registry can no longer return leaves the conversation's
+  active set as its body leaves the prompt (RMK-682, RFC §24.4). Behaviour
+  change: a host's skill marked unavailable while active stayed active with
+  no body in the prompt, and once registered again its body came back
+  without an activation; it now leaves the active set, and its next
+  activation delivers its body.
 
 ### Fixed
 

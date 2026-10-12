@@ -484,3 +484,46 @@ class TestARefusalHoldsEverywhere:
         await registry.add_mcp_server(server, "hf")
         assert await copied.load_skill(self.NAME) is None
         assert "generates its content" in (copied.get_unavailable_reason(self.NAME) or "")
+
+
+class TestAFailedCheckRetiresEverywhere:
+    """Found by a pre-release review: a copy kept serving a skill its source
+    retired on a failed file check, through the loaded skill they share."""
+
+    NAME = "hf:pdf-processing"
+
+    async def _tampered(self) -> tuple[SkillRegistry, FakeSkillServer]:
+        server = FakeSkillServer([PDF])
+        registry = SkillRegistry()
+        await registry.add_mcp_server(server, "hf")
+        return registry, server
+
+    async def test_a_copy_sharing_the_loaded_skill_drops_it(self) -> None:
+        registry, server = await self._tampered()
+        await registry.load_skill(self.NAME)
+        copied = registry.copy()
+        server.served[PDF.file_uri("templates/invoice.md")] = "# Tampered\n"
+        with pytest.raises(SkillChangedError):
+            await registry.read_file(self.NAME, "templates/invoice.md")
+        assert copied.get_skill(self.NAME) is None
+
+    async def test_a_copy_that_loaded_it_on_its_own_drops_it(self) -> None:
+        registry, server = await self._tampered()
+        copied = registry.copy()
+        await registry.load_skill(self.NAME)
+        held = await copied.load_skill(self.NAME)
+        server.served[PDF.file_uri("templates/invoice.md")] = "# Tampered\n"
+        with pytest.raises(SkillChangedError):
+            await registry.read_file(self.NAME, "templates/invoice.md")
+        assert copied.get_skill(self.NAME) is None
+        server.reads.clear()
+        reloaded = await copied.load_skill(self.NAME)
+        assert reloaded is not None and reloaded is not held
+        assert server.reads == [PDF.uri]
+
+    async def test_registering_the_server_again_retires_nothing_still_offered(self) -> None:
+        registry, server = await self._tampered()
+        copied = registry.copy()
+        loaded = await copied.load_skill(self.NAME)
+        await registry.add_mcp_server(server, "hf")
+        assert copied.get_skill(self.NAME) is loaded

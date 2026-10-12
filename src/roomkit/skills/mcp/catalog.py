@@ -126,6 +126,9 @@ class MCPSkillCatalog:
         self._origins: dict[str, ServedOrigin] = {}
         self._entries: dict[str, SkillEntry] = {}
         self._labels: dict[str, str] = {}
+        # Failed file checks per name: each retires the skill loaded before it
+        # in every registry sharing this catalog (RFC §24.7).
+        self._retirements: dict[str, int] = {}
 
     def origin(self, label: str) -> ServedOrigin | None:
         """The server registered under *label*."""
@@ -153,6 +156,11 @@ class MCPSkillCatalog:
         if entry is None or label is None:
             return None
         return _unavailable_reason(entry, self._origins[label])
+
+    def is_retired(self, skill: MCPSkill) -> bool:
+        """Whether a failed check retired *skill*'s name since it was loaded,
+        in any registry sharing this catalog."""
+        return skill.retirements < self._retirements.get(skill.name, 0)
 
     @property
     def has_servers(self) -> bool:
@@ -304,6 +312,7 @@ class MCPSkillCatalog:
             entry=entry,
             files={entry.uri: content},
             read_total=len(content),
+            retirements=self._retirements.get(name, 0),
         )
 
     async def read_file(self, skill: MCPSkill, filename: str) -> str:
@@ -331,6 +340,7 @@ class MCPSkillCatalog:
                     raise SkillVerificationError(f"{uri}: past {MAX_TOTAL_SIZE} bytes in all")
             except SkillVerificationError as exc:
                 logger.warning("MCP server %r: %s", skill.origin, exc)
+                self._retirements[skill.name] = self._retirements.get(skill.name, 0) + 1
                 await self.refresh(skill.name)
                 raise SkillChangedError(skill.name) from exc
             skill.files[uri] = content

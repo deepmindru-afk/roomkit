@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from types import ModuleType
 from typing import Any
 
 from roomkit.skills.errors import SkillParseError, SkillVerificationError
@@ -18,6 +19,11 @@ from roomkit.skills.parser import split_frontmatter
 _FLOW_DEPTH_MAX = 64
 """Brackets and braces open at once, read at most: pure-Python YAML takes time
 quadratic in that depth (5000 levels, 3.5 s)."""
+
+_DEPTH_MAX = 64
+"""Collections a frontmatter may nest, in flow or block style: the C loader
+builds a node by recursion, and 31000 nested ``- `` overflow its stack and
+end the process."""
 
 
 def verify_skill_resource(resource: SkillResource, content: bytes) -> None:
@@ -76,8 +82,9 @@ def _yaml_as_json(uri: str, text: str) -> dict[str, Any]:
     An alias is refused before anything is built: YAML keeps an aliased node
     shared, so a few hundred bytes of aliases of aliases parse at once and
     then expand exponentially into JSON. A server controls the content and
-    its digest alike, so the digest does not stand in the way. Nesting too
-    deep to read is refused as well, and so is a frontmatter past
+    its digest alike, so the digest does not stand in the way. Collections
+    nested past :data:`_DEPTH_MAX` are refused from the same pass, before
+    the loader recurses into them, and so is a frontmatter past
     :data:`~roomkit.skills.mcp.entry.FRONTMATTER_MAX` or nesting brackets past
     :data:`_FLOW_DEPTH_MAX`.
     """
@@ -96,8 +103,7 @@ def _yaml_as_json(uri: str, text: str) -> dict[str, Any]:
         ) from exc
     loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
     try:
-        if any(isinstance(event, yaml.AliasEvent) for event in yaml.parse(text, loader)):
-            raise SkillVerificationError(f"{uri}: its frontmatter holds a YAML alias")
+        _refuse_unsafe_events(uri, yaml.parse(text, loader), yaml)
         if loader is yaml.SafeLoader:
             data = yaml.safe_load(text)
         else:
@@ -117,6 +123,22 @@ def _yaml_as_json(uri: str, text: str) -> dict[str, Any]:
     if not isinstance(rendered, dict):
         raise SkillVerificationError(f"{uri}: its frontmatter is not a mapping")
     return rendered
+
+
+def _refuse_unsafe_events(uri: str, events: Iterable[Any], yaml: ModuleType) -> None:
+    """Refuse an alias, or collections nested past :data:`_DEPTH_MAX`, from
+    the parse events alone: nothing is built yet, and the pass stops at the
+    first one found."""
+    depth = 0
+    for event in events:
+        if isinstance(event, yaml.AliasEvent):
+            raise SkillVerificationError(f"{uri}: its frontmatter holds a YAML alias")
+        if isinstance(event, yaml.CollectionStartEvent):
+            depth += 1
+            if depth > _DEPTH_MAX:
+                raise SkillVerificationError(f"{uri}: its frontmatter nests too deep")
+        elif isinstance(event, yaml.CollectionEndEvent):
+            depth -= 1
 
 
 def _flow_depth(text: str) -> int:

@@ -33,6 +33,10 @@ class MCPSkill(Skill):
     read_total: int = 0
     """Bytes read so far: what bounds a dynamic skill, which lists no sizes."""
 
+    retirements: int = field(default=0, repr=False)
+    """How many times a failed check had retired its name when it was loaded:
+    a later one retires it in every registry holding it."""
+
     @property
     def held(self) -> SkillEntry:
         """The entry it was loaded from."""

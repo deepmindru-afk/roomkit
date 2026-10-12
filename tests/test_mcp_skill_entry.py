@@ -4,6 +4,9 @@ against it (RFC §24.7, SEP-2640)."""
 from __future__ import annotations
 
 import hashlib
+import subprocess
+import sys
+import textwrap
 from typing import Any
 
 import pytest
@@ -288,6 +291,30 @@ class TestVerifyFrontmatter:
         text = "---\nname: refunds\ndescription: d\ndeep: " + "[" * 5000 + "]" * 5000 + "\n---\n"
         with pytest.raises(SkillVerificationError, match="nests too deep"):
             verify_frontmatter(parse_entry(REFUNDS.entry()), text)
+
+    def test_block_nesting_too_deep_is_refused_without_crashing(self) -> None:
+        # Found by a pre-release review: 31000 nested "- " fit under the size
+        # bound and overflowed the C loader's stack, ending the process (exit
+        # 139). Run apart, so a regression fails this test, not the run.
+        code = textwrap.dedent(
+            """
+            from roomkit.skills.errors import SkillVerificationError
+            from roomkit.skills.mcp import parse_entry, verify_frontmatter
+            from tests.mcp_skill_fakes import ServedSkill, skill_md
+
+            skill = ServedSkill("refunds", {"SKILL.md": skill_md("refunds", "d")})
+            text = "---\\nname: refunds\\ndescription: d\\nk:\\n" + "- " * 31000 + "v\\n---\\n"
+            try:
+                verify_frontmatter(parse_entry(skill.entry()), text)
+            except SkillVerificationError as exc:
+                print(exc)
+            """
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
+        )
+        assert done.returncode == 0, done.stderr[-500:]
+        assert "nests too deep" in done.stdout
 
 
 def test_an_entry_whose_frontmatter_nests_too_deep_is_refused() -> None:
