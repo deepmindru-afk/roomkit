@@ -44,7 +44,7 @@ _SPEECH_MODELS = ("eleven_multilingual_v2", "eleven_flash_v2", "eleven_turbo_v2"
 _DIALOGUE_MODELS = ("eleven_v4",)
 _END = object()
 _AUDIO_TAG = re.compile(r"\[[^\]]*\]")
-_WORD = re.compile(r"\w")
+_WORD = re.compile(r"[^\W_]")  # a letter or a digit: an underscore says nothing
 
 
 class ElevenLabsSocket(ABC):

@@ -517,6 +517,15 @@ class TestWordlessChunks:
 
         assert [m["inputs"][0]["text"] for m in socket.sent if "inputs" in m] == ["Bravo !"]
 
+    async def test_underscores_are_no_words(self) -> None:
+        # A Markdown rule ("___") before a tool call: nothing to say on its own.
+        provider = ElevenLabsTTSProvider(_config(api_key="k", model_id="eleven_v4"))
+
+        _, socket, _ = await _run(provider, "Voici.", "___", "La suite.")
+
+        inputs = [m["inputs"][0]["text"] for m in socket.sent if "inputs" in m]
+        assert inputs == ["Voici.", "___ La suite."]
+
     async def test_punctuation_alone_waits_on_the_speech_socket_too(self) -> None:
         provider = ElevenLabsTTSProvider(_config(api_key="k", model_id="eleven_flash_v2_5"))
 

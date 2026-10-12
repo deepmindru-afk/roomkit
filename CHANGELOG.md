@@ -24,10 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`input_text_empty`), and the rest of the response went unspoken: an
   audio tag the model wrote before a tool call ("[Calling show_join_codes
   now]") went alone once the text before a call became its own segment
-  (RMK-695), as did a reply ending on a tag. A chunk of audio tags, spaces
-  and punctuation now waits for the next one, whose words it colours; one
-  left at the end is not sent. The speech socket (v2, v2.5) holds only
-  punctuation alone: those models read a bracket out.
+  (RMK-695), as did a reply ending on a tag. A chunk with no letter or digit
+  (audio tags, spaces, punctuation, emoji, symbols, underscores) now waits
+  for the next one, whose words it colours; one left at the end is not sent,
+  so a reply ending on a lone "€" or "[laughs]" loses it. The speech socket
+  (v2, v2.5) does the same, except that a tag's words are words to say
+  there: those models read a bracket out.
 - A response's own echo no longer cuts it at a session's start (RMK-697,
   RFC §12.3.13). A fresh echo canceller had heard nothing yet: the first
   response's opening words came back through the microphone (5 dB down), a
