@@ -132,10 +132,6 @@ def read_frontmatter_yaml(text: str) -> dict[str, Any]:
         SkillParseError: The text is past one of those bounds, or was not
             read as a YAML mapping.
     """
-    if len(text) > FRONTMATTER_MAX:
-        raise SkillParseError(f"the frontmatter is past {FRONTMATTER_MAX} characters")
-    if _flow_depth(text) > _FLOW_DEPTH_MAX:
-        raise SkillParseError("the frontmatter nests too deep")
     try:
         import yaml
     except ImportError as exc:
@@ -143,6 +139,10 @@ def read_frontmatter_yaml(text: str) -> dict[str, Any]:
             "PyYAML is needed to read a frontmatter as YAML: "
             "install it with pip install roomkit[mcp]"
         ) from exc
+    if len(text) > FRONTMATTER_MAX:
+        raise SkillParseError(f"the frontmatter is past {FRONTMATTER_MAX} characters")
+    if _flow_depth(text) > _FLOW_DEPTH_MAX:
+        raise SkillParseError("the frontmatter nests too deep")
     loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
     try:
         _refuse_unsafe_events(yaml.parse(text, loader), yaml)
@@ -195,10 +195,14 @@ def _flow_depth(text: str) -> int:
 def parse_frontmatter(content: str) -> tuple[dict[str, FrontmatterValue], str]:
     """Split SKILL.md into frontmatter dict and body string.
 
-    Tries yaml.safe_load first, falls back to simple key: value parsing.
+    The frontmatter is read as YAML within the bounds of
+    :func:`read_frontmatter_yaml`, and line by line (``key: value``) when it
+    cannot be read as YAML or PyYAML is not installed.
 
     Raises:
-        SkillParseError: If content has no valid frontmatter delimiters.
+        SkillParseError: If content has no valid frontmatter delimiters, or
+            its YAML holds an alias, nests past 64 levels or is past
+            :data:`FRONTMATTER_MAX` characters.
     """
     fm_text, body = split_frontmatter(content)
     data = _parse_yaml_or_fallback(fm_text)
@@ -206,25 +210,26 @@ def parse_frontmatter(content: str) -> tuple[dict[str, FrontmatterValue], str]:
 
 
 def _parse_yaml_or_fallback(fm_text: str) -> dict[str, FrontmatterValue]:
-    """Try yaml.safe_load, fall back to regex key-value parsing."""
+    """Read the frontmatter as bounded YAML, or line by line when it is not
+    read as YAML at all."""
     try:
-        import yaml
-
-        result = yaml.safe_load(fm_text)
-        if isinstance(result, dict):
-            # A list value keeps its items. Stringifying it produced
-            # "['search_*', 'fetch_*']" — the literal repr — which then split
-            # on commas into "['search_*'" and "'fetch_*']", gating nothing.
-            # The RFC's own SKILL.md example uses the list form.
-            return {
-                str(k): [str(item) for item in v] if isinstance(v, list) else str(v)
-                for k, v in result.items()
-                if v is not None
-            }
-    except Exception:
+        result = read_frontmatter_yaml(fm_text)
+    except _FrontmatterNotReadError:
         logger.debug("YAML parse failed, falling back to regex parser")
+        return _parse_lines(fm_text)
+    # A list value keeps its items. Stringifying it produced
+    # "['search_*', 'fetch_*']" — the literal repr — which then split
+    # on commas into "['search_*'" and "'fetch_*']", gating nothing.
+    # The RFC's own SKILL.md example uses the list form.
+    return {
+        str(k): [str(item) for item in v] if isinstance(v, list) else str(v)
+        for k, v in result.items()
+        if v is not None
+    }
 
-    # Simple key: value parser
+
+def _parse_lines(fm_text: str) -> dict[str, FrontmatterValue]:
+    """Read the ``key: value`` lines of a frontmatter, quotes stripped."""
     data: dict[str, FrontmatterValue] = {}
     for line in fm_text.splitlines():
         match = re.match(r"^(\w[\w_-]*)\s*:\s*(.+)$", line.strip())

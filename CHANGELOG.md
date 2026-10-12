@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **BREAKING — a local skill's `SKILL.md` frontmatter is read within the
+  bounds a served skill's is** (RMK-691, RFC §24.5). It was read by
+  `yaml.safe_load` with no bound, and every value turned into a string: 372
+  bytes of YAML aliases of aliases became 254 MB of text, two levels more
+  about 20 GB. It is now read by the reader that checks a served skill's
+  frontmatter: a YAML alias, collections nested past 64 levels and a
+  frontmatter past 64 KiB raise `SkillParseError`, before anything is
+  built, where they used to load (an alias, a size) or fall back to the
+  line reader (a nesting). `discover()` fails on such a skill, or skips and
+  logs it with `strict=False`. A frontmatter that is not YAML, or read
+  without PyYAML installed, is still read line by line, unbounded.
+  Migration: write the value in place of the alias.
+
 ## [0.98.0] — 2026-10-12
 
 ### Added
