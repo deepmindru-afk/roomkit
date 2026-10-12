@@ -41,11 +41,17 @@ def parse_lines(fm_text: str) -> dict[str, str | list[str]]:
     data: dict[str, str | list[str]] = {}
     open_key: str | None = None  # a key alone on its line, its items to follow
     list_key: str | None = None  # allowed_tools or requires, read last at the top
+    item_indent: int | None = None  # where the open key's first item starts
     for line in fm_text.splitlines():
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         item = _ITEM_LINE.match(line)
         if item and open_key is not None:
+            indent = len(line) - len(line.lstrip())
+            # YAML folds an item indented otherwise into the one before it.
+            if open_key in GATING_KEYS and item_indent not in (None, indent):
+                raise _unread(open_key)
+            item_indent = indent
             _append_item(data, open_key, item[1])
             continue
         # A line indented under a key belongs to that key's value: read as a
@@ -56,6 +62,7 @@ def parse_lines(fm_text: str) -> dict[str, str | list[str]]:
         key, is_open = read or (None, False)
         open_key = key if is_open else None
         list_key = key if key in GATING_KEYS else None
+        item_indent = None
     return data
 
 
@@ -116,7 +123,7 @@ def _list_value(key: str, text: str) -> str | list[str]:
         return [item for part in text[1:-1].split(",") for item in _list_item(key, part)]
     if _NOT_A_PLAIN_TEXT.match(text):
         raise _unread(key)
-    return text.strip("\"'")
+    return _unquoted(text)
 
 
 def _append_item(data: dict[str, str | list[str]], key: str, text: str | None) -> None:
@@ -139,8 +146,17 @@ def _list_item(key: str, text: str | None) -> list[str]:
     item = _entry_text(key, text or "")
     if key in GATING_KEYS and _NOT_A_PLAIN_TEXT.match(item):
         raise _unread(key)
-    item = "" if item in _NULLS else item.strip("\"'")
+    item = "" if item in _NULLS else _unquoted(item)
     return [item] if item else []
+
+
+def _unquoted(text: str) -> str:
+    """*text* without the one pair of quotes around it, as YAML reads a
+    quoted text (``''`` inside single quotes standing for one quote)."""
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
+        inner = text[1:-1]
+        return inner.replace("''", "'") if text[0] == "'" else inner
+    return text
 
 
 def _unread(key: str) -> SkillParseError:

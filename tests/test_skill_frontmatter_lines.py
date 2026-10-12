@@ -219,6 +219,8 @@ def test_yaml_refuses_a_gating_key_that_is_not_a_list_of_texts(tmp_path: Path, l
         '"allowed\\x5ftools": [issue_refund]\n',
         'allowed_tools:\n  - "issue\\x5frefund"\n',
         'allowed_tools: ["issue\\u005frefund"]\n',
+        "requires: '\"[ab]'\n",
+        "requires:\n - lookup_order\n  - refund_x\n",
     ],
     ids=[
         "nested empty key",
@@ -245,6 +247,8 @@ def test_yaml_refuses_a_gating_key_that_is_not_a_list_of_texts(tmp_path: Path, l
         "escaped key",
         "escaped item",
         "escaped flow item",
+        "quote in a quoted text",
+        "item YAML folds into the one before",
     ],
 )
 def test_the_line_reader_never_gates_less_than_yaml(lines: str) -> None:
