@@ -308,6 +308,9 @@ def test_an_effort_goes_as_the_nearest_level_the_model_takes() -> None:
     assert nearest_level("minimal", ("minimal", *three)) == "minimal"
     assert nearest_level("none", three) is None and nearest_level("max", three) is None
     assert nearest_level("low", ()) is None
+    vendor = ("minimal", "low", "medium", "high", "xhigh", "max")
+    assert nearest_level("max", three, scale=vendor) == "high"
+    assert nearest_level("xhigh", ("low", "high", "max"), scale=vendor) == "high"
 
 
 def _off_gemini(provider: Any, context: AIContext) -> bool:
@@ -529,6 +532,46 @@ def test_anthropic_effort_goes_whole_where_reasoning_is_not_off(switch: dict[str
 
     assert kwargs["output_config"] == {"effort": "max"}
     assert kwargs.get("thinking", {}).get("type") != "disabled"
+
+
+# What a turn's effort becomes on each model, from the levels the wire took on
+# 2026-10-12: Opus 4.6 and Sonnet 4.6 answer 400 to ``xhigh``, Opus 4.5 to
+# ``xhigh`` and ``max``, and no Claude model takes ``minimal``.
+_CLAUDE_EFFORTS = [
+    ("claude-opus-5-5", "minimal", "low"),
+    ("claude-next-1", "minimal", "low"),
+    ("claude-opus-4-8", "xhigh", "xhigh"),
+    ("claude-opus-4-6", "xhigh", "high"),
+    ("claude-opus-4-6", "max", "max"),
+    ("claude-sonnet-4-6", "xhigh", "high"),
+    ("claude-opus-4-5", "xhigh", "high"),
+    ("claude-opus-4-5", "max", "high"),
+    ("claude-opus-4-5-20251101", "max", "high"),
+    ("claude-opus-4-5", "medium", "medium"),
+]
+
+
+@pytest.mark.parametrize("tools", [[], _TOOLS], ids=["no_tools", "tools"])
+@pytest.mark.parametrize(("model", "effort", "sent"), _CLAUDE_EFFORTS)
+def test_anthropic_sends_the_nearest_effort_the_model_takes(
+    model: str, effort: str, sent: str, tools: list[AITool]
+) -> None:
+    """RFC §6.7: a model the catalogue declares is sent the value it accepts,
+    a level it refuses as the nearest it takes; one it does not carry, the
+    turn's effort on Anthropic's levels."""
+    config, entry = _claude(model)
+
+    kwargs = build_kwargs(config, _context(tools=tools, reasoning_effort=effort), model=entry)
+
+    assert kwargs["output_config"] == {"effort": sent}
+
+
+def test_anthropic_sends_no_effort_outside_its_scale() -> None:
+    config, entry = _claude("claude-opus-5-5")
+
+    assert "output_config" not in build_kwargs(
+        config, _context(reasoning_effort="turbo"), model=entry
+    )
 
 
 # The least effort each model takes, as its catalogue declares it and the wire

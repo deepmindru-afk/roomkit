@@ -42,18 +42,19 @@ def thinking_switch(context: AIContext, configured: bool | None = None) -> bool 
     return configured
 
 
-def nearest_level(effort: str | None, levels: Sequence[str]) -> str | None:
-    """The level of *levels* (least to most) nearest to *effort*, the lower
-    one on a tie; ``None`` for an effort outside the shared scale, ``none``
-    included, or a model that takes no level (RFC §6.7)."""
-    if effort not in _EFFORTS or not levels:
+def nearest_level(
+    effort: str | None, levels: Sequence[str], *, scale: Sequence[str] = _EFFORTS
+) -> str | None:
+    """The level of *levels* (least to most) nearest to *effort* on *scale*,
+    the shared one unless a vendor's runs further, the lower one on a tie;
+    ``None`` for an effort outside *scale*, ``none`` included, or a model
+    that takes no level (RFC §6.7)."""
+    if effort not in scale or not levels:
         return None
     if effort in levels:
         return effort
-    rank = _EFFORTS.index(effort)
-    return min(
-        levels, key=lambda level: (abs(_EFFORTS.index(level) - rank), _EFFORTS.index(level))
-    )
+    rank = scale.index(effort)
+    return min(levels, key=lambda level: (abs(scale.index(level) - rank), scale.index(level)))
 
 
 # The catalogue tag naming the least ``reasoning_effort`` a model takes on its

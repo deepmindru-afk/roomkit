@@ -3,7 +3,8 @@
 Whether the model reasons and how much: the ``thinking`` block, the
 ``output_config.effort`` and the ``temperature`` a turn sends, for the model
 the catalogue (``models.py``) declares. A model it does not carry is sent
-what the turn states, and nothing where the turn states off.
+the turn's effort on Anthropic's levels, and nothing where the turn states
+off.
 """
 
 from __future__ import annotations
@@ -11,10 +12,17 @@ from __future__ import annotations
 from typing import Any
 
 from roomkit.providers.ai.base import AIContext, ModelInfo
-from roomkit.providers.ai.reasoning import floored_effort, reasoning_floor, thinking_switch
+from roomkit.providers.ai.reasoning import (
+    floored_effort,
+    nearest_level,
+    reasoning_floor,
+    thinking_switch,
+)
 from roomkit.providers.anthropic.config import AnthropicConfig
 from roomkit.providers.anthropic.models import (
+    EFFORT_NO_XHIGH,
     EFFORT_REFUSED,
+    EFFORT_UP_TO_HIGH,
     THINKING_OFF_BETWEEN_TOOLS,
     THINKING_OFF_DISABLED,
     THINKING_OFF_EFFORT_HIGH,
@@ -27,8 +35,12 @@ _OFF_BLOCKS = (
     (THINKING_OFF_BETWEEN_TOOLS, "between_tools"),
 )
 
-# The efforts a model tagged ``thinking_off_effort_high`` refuses with reasoning off.
-_ABOVE_HIGH = ("xhigh", "max")
+# Anthropic's efforts, least to most, under the turn's ``minimal``, which no
+# Claude model takes (400, measured 2026-10-12): it goes as ``low``.
+_SCALE = ("minimal", "low", "medium", "high", "xhigh", "max")
+_LEVELS = _SCALE[1:]
+_UP_TO_HIGH = ("low", "medium", "high")
+_NO_XHIGH = ("low", "medium", "high", "max")
 
 
 def thinking_or_temperature(
@@ -84,21 +96,30 @@ def _thinking_off(model: ModelInfo | None) -> dict[str, Any] | None:
 def turn_effort(context: AIContext, model: ModelInfo | None) -> str | None:
     """The ``output_config.effort`` the turn sends, ``None`` for none.
 
-    The turn's effort goes as it spells it, Anthropic's own levels (``low``
-    to ``max``) included, on a turn with tools as on one without; ``none``
-    is not one of them, it states reasoning off. Where the turn states off,
-    a model that cannot stop reasoning is sent its lowest level, and one that
-    takes no effort above ``high`` with reasoning off is sent ``high`` for a
-    higher one, the nearest it takes (RFC §6.7). A model that refuses the
-    parameter is sent none.
+    The turn's effort goes as the nearest level the model takes, as its
+    catalogue entry declares them (RFC §6.7), on a turn with tools as on one
+    without: Anthropic's own ``max`` included, ``minimal`` as ``low``, and
+    ``none`` is not one of them, it states reasoning off. Where the turn
+    states off, a model that cannot stop reasoning is sent its lowest level,
+    and one that takes no effort above ``high`` with reasoning off is sent
+    ``high`` for a higher one. A model that refuses the parameter is sent
+    none, and so is an effort outside Anthropic's scale.
     """
     tags = model.capabilities if model is not None else []
     if EFFORT_REFUSED in tags:
         return None
     effort = floored_effort(context, None, reasoning_floor(model))
-    if effort == "none":
-        return None
     off = thinking_switch(context) is False
-    if off and THINKING_OFF_EFFORT_HIGH in tags and effort in _ABOVE_HIGH:
-        return "high"
-    return effort
+    return nearest_level(effort, _levels(tags, off), scale=_SCALE)
+
+
+def _levels(tags: list[str], off: bool) -> tuple[str, ...]:
+    """The efforts a model takes, least to most, as its catalogue *tags*
+    declare them; every Anthropic level for a model the catalogue does not
+    carry. With reasoning *off*, none above ``high`` where the model takes
+    none there."""
+    if EFFORT_UP_TO_HIGH in tags or (off and THINKING_OFF_EFFORT_HIGH in tags):
+        return _UP_TO_HIGH
+    if EFFORT_NO_XHIGH in tags:
+        return _NO_XHIGH
+    return _LEVELS

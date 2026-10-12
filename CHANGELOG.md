@@ -101,13 +101,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bypassed there as before.
 - `AnthropicAIProvider` sends the turn's `reasoning_effort` (RMK-676, RFC
   §6.7). It went nowhere: an `AIChannel(reasoning_effort="low")` on Claude
-  ran at the model's default effort (`high`, or `medium` on Claude Opus 5.5
-  and Claude Haiku 5.5). It now rides `output_config.effort` as the turn
-  spells it, Anthropic's `xhigh` and `max` included, on a turn with tools as
-  on one without, beside the answer's schema when there is one. `none` is
-  not a level: it states reasoning off (next entry). Claude Sonnet 4.5 and
-  Claude Haiku 4.5 answer 400 to the parameter: the catalogue tags them
-  `effort_refused` and they are sent none, as before.
+  ran at the model's default effort. It now rides `output_config.effort` as
+  the nearest level the model takes, as the catalogue declares them from
+  what the wire took on 2026-10-12: Anthropic's `xhigh` and `max` where the
+  model takes them, `xhigh` as `high` on Claude Opus 4.6, Sonnet 4.6 and
+  Opus 4.5, `max` as `high` on Opus 4.5 (tags `effort_no_xhigh`,
+  `effort_up_to_high`), and the turn's `minimal`, which no Claude model
+  takes, as `low`; a model the catalogue does not carry is sent the turn's
+  effort on Anthropic's levels, and an effort outside them goes nowhere. It
+  rides a turn with tools as one without, beside the answer's schema when
+  there is one. `none` is not a level: it states reasoning off (next entry).
+  Claude Sonnet 4.5 and Claude Haiku 4.5 answer 400 to the parameter: the
+  catalogue tags them `effort_refused` and they are sent none, as before.
 - `AnthropicAIProvider` turns reasoning off where the turn states it
   (RMK-677, RFC §6.7). A turn with `thinking_budget=0`,
   `enable_thinking=False` or `reasoning_effort="none"` left `thinking` out,

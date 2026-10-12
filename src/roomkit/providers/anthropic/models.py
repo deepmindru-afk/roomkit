@@ -53,6 +53,12 @@ EFFORT_REFUSED = "effort_refused"
 model does not support the effort parameter"): Claude Sonnet 4.5 and Claude
 Haiku 4.5, measured 2026-10-11. The provider leaves a turn's effort out for
 them rather than fail the turn (RFC §6.7)."""
+EFFORT_NO_XHIGH = "effort_no_xhigh"
+"""Answers 400 to the effort ``xhigh`` and takes the other levels, ``max``
+included (Claude Opus 4.6, Claude Sonnet 4.6, measured 2026-10-12)."""
+EFFORT_UP_TO_HIGH = "effort_up_to_high"
+"""Takes the efforts ``low``, ``medium`` and ``high`` only: ``xhigh`` and
+``max`` answer 400 (Claude Opus 4.5, measured 2026-10-12)."""
 
 # How a model's reasoning is turned off where the turn states off (RFC §6.7),
 # measured 2026-10-11. A model none of them tags reasons not at all when the
@@ -219,7 +225,7 @@ MODELS: list[ModelInfo] = [
         display_name="Claude Sonnet 4.6",
         context_window=1_000_000,
         supports_vision=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=["thinking", "deferred_tools", EFFORT_NO_XHIGH],
         pricing=ModelPricing(
             input_per_million=3.0,
             output_per_million=15.0,
@@ -299,7 +305,7 @@ MODELS: list[ModelInfo] = [
         display_name="Claude Opus 4.6",
         context_window=1_000_000,
         supports_vision=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=["thinking", "deferred_tools", EFFORT_NO_XHIGH],
         pricing=ModelPricing(
             input_per_million=5.0,
             output_per_million=25.0,
@@ -346,7 +352,7 @@ MODELS: list[ModelInfo] = [
         display_name="Claude Opus 4.5",
         context_window=200_000,
         supports_vision=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=["thinking", "deferred_tools", EFFORT_UP_TO_HIGH],
         pricing=ModelPricing(
             input_per_million=5.0,
             output_per_million=25.0,
@@ -360,7 +366,7 @@ MODELS: list[ModelInfo] = [
         display_name="Claude Opus 4.5",
         context_window=200_000,
         supports_vision=True,
-        capabilities=["thinking", "deferred_tools"],
+        capabilities=["thinking", "deferred_tools", EFFORT_UP_TO_HIGH],
         pricing=ModelPricing(
             input_per_million=5.0,
             output_per_million=25.0,
