@@ -32,6 +32,7 @@ from roomkit.channels._realtime_tool_executor import (
     submit_tool_outcome,
     tool_loop_context,
 )
+from roomkit.channels._served_execution import ServedExecutionGate
 from roomkit.channels._served_tools import dict_tool_name
 from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
 from roomkit.channels._tool_registry import ChannelRegistry, schema_tool
@@ -114,6 +115,7 @@ class RealtimeToolsHost(Protocol):
     _mute_on_tool_call: bool
     _tool_result_max_length: int
     _skill_support: Any
+    _served_execution: ServedExecutionGate
     _registry: ChannelRegistry
     _tool_timeouts: ToolTimeouts
     _tool_search_support: Any
@@ -217,6 +219,7 @@ class RealtimeToolsMixin:
     _mute_on_tool_call: bool
     _tool_result_max_length: int
     _skill_support: Any
+    _served_execution: ServedExecutionGate
     _registry: ChannelRegistry
     _tool_timeouts: ToolTimeouts
     _tool_search_support: Any
@@ -527,6 +530,7 @@ class RealtimeToolsMixin:
         """A skill tool's answer (a reference, a script's output), bounded in
         time, inside the tool call context as a handler's (RFC §12.4)."""
         async with self._tool_call_scope(call, carrying) as loop_ctx:
+            await self._refuse_unapproved_execution(call, loop_ctx.room_id)
             answer = self._skill_support.handle_tool_call(
                 call.name, call.arguments, call.session.id
             )
@@ -576,9 +580,24 @@ class RealtimeToolsMixin:
         whichever door brought the call: the tool orchestration set up for the
         room, else the host's handler."""
         async with self._tool_call_scope(call, gate_context) as loop_ctx:
+            await self._refuse_unapproved_execution(call, loop_ctx.room_id)
             timeout = self._call_timeout(call.name, loop_ctx.room_id)
             answer = self._answer(call.name, call.arguments, loop_ctx.room_id)
             return await answer_within(timeout, call.name, answer)
+
+    async def _refuse_unapproved_execution(
+        self, call: RealtimeToolCall, room_id: str | None
+    ) -> None:
+        """Refuse a call that runs code while a served skill is active in the
+        session, unless the host approved that skill (RFC §24.7)."""
+        support = self._skill_support
+        if support is None:
+            return
+        refusal = await self._served_execution.refusal(
+            support.registry, support.active_names(call.session.id), room_id, call.name
+        )
+        if refusal is not None:
+            raise ToolRefusedError(json.dumps({"error": refusal}))
 
     @contextlib.asynccontextmanager
     async def _tool_call_scope(

@@ -1,0 +1,105 @@
+"""Code a served skill would cause to run, approved by the host (RFC §24.7).
+
+While a skill an MCP server serves is active in a conversation, its content
+may direct the model to run code: a sandbox command, a skill's script, a tool
+the host names as running code. Such a call is served only when the host's
+``approve_execution`` approves every served skill active there. An approval
+holds for the conversation and for the skill's fingerprint only: an entry
+read again with another set of files is asked again, and a dynamic skill,
+which has no fingerprint, is asked every time.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections import OrderedDict
+from collections.abc import Container, Iterable
+
+from roomkit.channels._skill_constants import TOOL_RUN_SCRIPT
+from roomkit.skills.mcp.approval import SkillExecutionRequest
+from roomkit.skills.mcp.skill import MCPSkill
+from roomkit.skills.registry import SkillRegistry
+from roomkit.tools.policy import matches_any_pattern
+
+logger = logging.getLogger("roomkit.channels.skills")
+
+_MAX_APPROVALS = 1000
+"""Approvals a channel remembers, oldest dropped first: one forgotten is asked again."""
+
+
+class ServedExecutionGate:
+    """The approvals a host gave, per conversation, skill and fingerprint."""
+
+    def __init__(self, max_approvals: int = _MAX_APPROVALS) -> None:
+        self._max = max_approvals
+        self._approved: OrderedDict[tuple[str | None, str, str], None] = OrderedDict()
+
+    async def refusal(
+        self,
+        skills: SkillRegistry | None,
+        active: Iterable[str],
+        room_id: str | None,
+        tool: str,
+        *,
+        sandbox_tools: Container[str] = (),
+    ) -> str | None:
+        """Why *tool* may not run now, or ``None`` when it may.
+
+        *active* are the skills active in the conversation; *sandbox_tools*
+        the sandbox commands the channel serves, by exact name.
+        """
+        if skills is None or not skills.has_served:
+            return None
+        served = [name for name in sorted(active) if isinstance(skills.get_skill(name), MCPSkill)]
+        if not served or not _runs_code(skills, tool, sandbox_tools):
+            return None
+        for name in served:
+            if not await self._approves(skills, name, room_id, tool):
+                return (
+                    f"Tool {tool!r} runs code, and skill {name!r}, served by an MCP server, "
+                    "is active: the host has not approved code run on that skill's behalf."
+                )
+        return None
+
+    async def _approves(
+        self, skills: SkillRegistry, name: str, room_id: str | None, tool: str
+    ) -> bool:
+        """Whether the host approves code run while *name* is active."""
+        skill, origin = skills.get_skill(name), skills.origin(name)
+        if not isinstance(skill, MCPSkill) or origin is None:
+            return False
+        fingerprint = skill.held.fingerprint
+        key = (room_id, name, fingerprint) if fingerprint is not None else None
+        if key is not None and key in self._approved:
+            self._approved.move_to_end(key)
+            return True
+        if origin.approve_execution is None:
+            return False
+        request = SkillExecutionRequest(
+            name=name,
+            label=origin.label,
+            uri=skill.held.uri,
+            fingerprint=fingerprint,
+            room_id=room_id,
+            tool=tool,
+        )
+        try:
+            approved = await origin.approve_execution(request)
+        except Exception:
+            logger.exception("approve_execution failed for skill %s; the call is refused", name)
+            return False
+        if approved is not True:
+            return False
+        if key is not None:
+            self._approved[key] = None
+            while len(self._approved) > self._max:
+                self._approved.popitem(last=False)
+        return True
+
+
+def _runs_code(skills: SkillRegistry, tool: str, sandbox_tools: Container[str]) -> bool:
+    """Whether *tool* runs code: a sandbox command, a skill's script, or a
+    tool a host named so when it registered a server."""
+    if tool in sandbox_tools or tool == TOOL_RUN_SCRIPT:
+        return True
+    return matches_any_pattern(tool, list(skills.execution_tool_patterns))

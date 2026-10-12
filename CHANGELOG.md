@@ -28,6 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SkillRegistry.load_skill()`, `read_file()`, `is_served()`, `origin()`,
   `MCPSkill`, `SkillChangedError`; `SkillRegistry.add()` refuses a name
   holding `:`.
+- While a skill an MCP server serves is active in a conversation, a tool
+  that runs code is served only with the host's approval of that skill
+  (RMK-684, RFC §24.7): a sandbox command, `run_skill_script`, and the
+  host's own tools named in `add_mcp_server(..., execution_tools=[...])`.
+  The host answers through `approve_execution`, which receives a
+  `SkillExecutionRequest` (the skill, its server's label, its URI, the
+  conversation, the tool, and the fingerprint of the skill's files); an
+  approval holds for that conversation and fingerprint only, so a skill
+  whose files changed is asked again, and a dynamic skill every time.
+  Without a callback, such a call is refused. On `AIChannel` and
+  `RealtimeVoiceChannel` alike.
 - A `RealtimeVoiceChannel` serves the skills an MCP server publishes as an
   `AIChannel` does (RMK-683, RFC §24.7): an activation loads and verifies
   the skill, its body enters the session's instructions as its server's

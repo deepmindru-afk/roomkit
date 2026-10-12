@@ -400,6 +400,13 @@ class SkillRegistry:
         """Whether a server's skills were registered here."""
         return self._mcp.has_servers
 
+    @property
+    def execution_tool_patterns(self) -> frozenset[str]:
+        """The patterns of the host's tools that run code, named when its
+        servers were registered (``execution_tools``): gated like the sandbox's
+        while a served skill is active (RFC §24.7)."""
+        return frozenset(self._mcp.execution_tools())
+
     def get_metadata(self, name: str) -> SkillMetadata | None:
         """Get metadata for a skill by name."""
         return self._metadata.get(name)

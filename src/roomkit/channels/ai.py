@@ -36,6 +36,7 @@ from roomkit.channels._ai_streaming import AIStreamingMixin
 from roomkit.channels._ai_thinking import AIThinkingMixin
 from roomkit.channels._ai_tools import AIToolsMixin
 from roomkit.channels._discussion_turn import discussion_turn
+from roomkit.channels._served_execution import ServedExecutionGate
 from roomkit.channels._served_tools import (
     CollisionLog,
     refuse_host_tools,
@@ -259,6 +260,8 @@ class AIChannel(
         # answers with a short ACK instead of re-sending a multi-KB body every
         # turn (the rebuilt context drops tool results). See _skill_activation.
         self._skill_activation = SkillActivationMemory()
+        # The host's approvals of code run while a served skill is active.
+        self._served_execution = ServedExecutionGate()
         self._planner = TaskPlanner() if enable_planning else None
         # Tool Search: ``None`` auto-enables it when the deferrable schemas
         # pass ``tool_search_threshold_tokens`` (cost, whatever the window) or

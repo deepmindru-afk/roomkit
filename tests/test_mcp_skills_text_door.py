@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
+
 from roomkit.channels._skill_activation import SkillActivationMemory
 from roomkit.channels.ai import AIChannel
 from roomkit.models.channel import ChannelBinding
@@ -54,11 +56,14 @@ def _binding() -> ChannelBinding:
 
 
 async def _setup(
-    script: list[AIResponse], streaming: bool, **channel: Any
+    script: list[AIResponse],
+    streaming: bool,
+    registration: dict[str, Any] | None = None,
+    **channel: Any,
 ) -> tuple[AIChannel, MockAIProvider, FakeSkillServer]:
     server = FakeSkillServer([PDF])
     registry = SkillRegistry()
-    await registry.add_mcp_server(server, "hf")
+    await registry.add_mcp_server(server, "hf", **(registration or {}))
     provider = MockAIProvider(ai_responses=script, streaming=streaming)
     return AIChannel("ai1", provider=provider, skills=registry, **channel), provider, server
 
@@ -175,7 +180,12 @@ async def test_a_skill_that_fails_to_load_is_not_active(streaming: bool) -> None
     assert channel.active_skill_names("r1") == set()
 
 
-async def test_a_served_script_is_never_run(streaming: bool) -> None:
+@pytest.mark.parametrize(
+    ("approved", "error"),
+    [(False, "has not approved"), (True, "runs nothing")],
+    ids=["unapproved", "approved"],
+)
+async def test_a_served_script_is_never_run(streaming: bool, approved: bool, error: str) -> None:
     class Recording(ScriptExecutor):
         def __init__(self) -> None:
             self.calls: list[str] = []
@@ -192,10 +202,17 @@ async def test_a_served_script_is_never_run(streaming: bool) -> None:
         _say("done"),
     ]
     executor = Recording()
-    channel, _, _ = await _setup(script, streaming, script_executor=executor)
+
+    async def approve(request: Any) -> bool:
+        return approved
+
+    registration = {"approve_execution": approve}
+    channel, _, _ = await _setup(script, streaming, registration, script_executor=executor)
     run = await _turn(channel)
-    result = _tool_result(run, "run_skill_script")
-    assert "runs nothing" in result["error"]
+    call = next(c for c in run.calls if c.name == "run_skill_script")
+    # Unapproved, the gate refuses the call; approved, the script still never
+    # runs: a served skill has no file on disk to run (RFC §24.7).
+    assert error in f"{call.result} {call.error or ''}"
     assert executor.calls == []
 
 

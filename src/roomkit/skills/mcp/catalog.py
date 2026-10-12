@@ -148,6 +148,11 @@ class MCPSkillCatalog:
     def has_servers(self) -> bool:
         return bool(self._origins)
 
+    def execution_tools(self) -> set[str]:
+        """The patterns of the tools the hosts named as running code, every
+        registered server's (RFC §24.7)."""
+        return {pattern for origin in self._origins.values() for pattern in origin.execution_tools}
+
     def names_of(self, label: str) -> list[str]:
         """The names the server under *label* was last listed with."""
         return [name for name, held in self._labels.items() if held == label]

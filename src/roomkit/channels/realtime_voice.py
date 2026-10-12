@@ -49,6 +49,7 @@ from roomkit.channels._realtime_tool_gate import RealtimeToolGateMixin
 from roomkit.channels._realtime_tool_recovery import RealtimeToolRecoveryMixin
 from roomkit.channels._realtime_tools import RealtimeToolsMixin
 from roomkit.channels._realtime_transcription import RealtimeTranscriptionMixin
+from roomkit.channels._served_execution import ServedExecutionGate
 from roomkit.channels._served_tools import (
     CollisionLog,
     dict_tool_name,
@@ -653,6 +654,8 @@ class RealtimeVoiceChannel(
         names = skills.skill_names if skills is not None else None
         warn_tools_uncallable(names, "skill(s)", self._provider, self.channel_id)
         self._skill_support = self._skill_support_for(skills, script_executor, skill_delivery_mode)
+        # The host's approvals of code run while a served skill is active.
+        self._served_execution = ServedExecutionGate()
         self._tool_search_support = self._tool_search_for(
             self._tools,
             skills,

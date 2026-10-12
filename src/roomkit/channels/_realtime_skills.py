@@ -144,6 +144,15 @@ class RealtimeSkillSupport:
     def delivery_mode(self) -> SkillDeliveryMode:
         return self._delivery_mode
 
+    @property
+    def registry(self) -> SkillRegistry:
+        """The registry the sessions read their skills from."""
+        return self._skills
+
+    def active_names(self, session_id: str) -> set[str]:
+        """The skills active in the session."""
+        return set(self._activated_skills.get(session_id, set()))
+
     # -- Tool definitions (as dicts, the format provider.connect expects) --
 
     def skill_tool_dicts(self) -> list[dict[str, Any]]:

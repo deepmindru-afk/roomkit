@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._ai_stream_external_tools import report_cut
 from roomkit.channels._sandbox_handlers import handle_sandbox_command
+from roomkit.channels._served_execution import ServedExecutionGate
 from roomkit.channels._served_tools import CollisionLog, declared_once
 from roomkit.channels._skill_constants import (
     ACTIVATE_SKILL_SCHEMA,
@@ -184,6 +185,7 @@ class AIToolsMixin(_AIChannelContract):
     _eviction: ToolEviction
     _tool_usage: ToolUsageMemory
     _skill_activation: SkillActivationMemory
+    _served_execution: ServedExecutionGate
     _planner: TaskPlanner | None
     _human_input: ChannelHumanInput
     _collisions: CollisionLog
@@ -1015,6 +1017,17 @@ class AIToolsMixin(_AIChannelContract):
         guard = self._repeated_call_guard(name, arguments)
         if guard is not None:
             raise ChannelRefusalError(guard)
+        # Code a served skill's content may have asked for runs only with the
+        # host's approval of that skill (RFC §24.7).
+        refusal = await self._served_execution.refusal(
+            self._skills,
+            self._activated_skill_names(),
+            self._get_loop_ctx().room_id,
+            name,
+            sandbox_tools=self._sandbox_tool_names(),
+        )
+        if refusal is not None:
+            raise ChannelRefusalError(json.dumps({"error": refusal}))
         entry = self._registry.lookup(name, self._get_loop_ctx().room_id)
         if entry is not None and entry.serve is not None:
             result = entry.serve(arguments)
