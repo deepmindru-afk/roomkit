@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.100.0] — 2026-10-12
+
 ### Added
 
 - Muse Wonder, Meta's preview model above Muse Spark, is in the Meta catalog:
@@ -14362,7 +14364,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.99.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.100.0...HEAD
+[0.100.0]: https://github.com/roomkit-live/roomkit/compare/v0.99.0...v0.100.0
 [0.99.0]: https://github.com/roomkit-live/roomkit/compare/v0.98.0...v0.99.0
 [0.98.0]: https://github.com/roomkit-live/roomkit/compare/v0.97.0...v0.98.0
 [0.97.0]: https://github.com/roomkit-live/roomkit/compare/v0.96.1...v0.97.0
