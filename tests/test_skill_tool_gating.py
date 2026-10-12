@@ -90,6 +90,42 @@ class TestGlobsGate:
         assert meta.gates("send_email") is False
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (["search_*", " fetch_* "], ["search_*", "fetch_*"]),
+        ("search_*, fetch_*", ["search_*", "fetch_*"]),
+        ("[search_*, fetch_*]", ["search_*", "fetch_*"]),
+        ("'search_*', \"fetch_*\"", ["search_*", "fetch_*"]),
+        ("['search_*', 'fetch_*']", ["search_*", "fetch_*"]),
+        ("search_*, , ", ["search_*"]),
+        ("", []),
+        (None, []),
+    ],
+    ids=[
+        "list",
+        "text",
+        "bracketed",
+        "quoted",
+        "repr of a list",
+        "empty entries",
+        "blank",
+        "none",
+    ],
+)
+def test_allowed_tools_and_requires_read_a_value_alike(value: object, expected: list[str]) -> None:
+    # One reader for both keys (RFC §24.2): a form one of them takes, the
+    # other takes too, so no form gates less than it requires or the reverse.
+    metadata = SkillMetadata(
+        name="research-helper",
+        description="d",
+        allowed_tools=value,  # type: ignore[arg-type]
+        extra_metadata={} if value is None else {"requires": value},  # type: ignore[dict-item]
+    )
+    assert metadata.gated_tool_names == expected
+    assert metadata.required_tool_names == expected
+
+
 class TestGatingSitesUseTheSameMatcher:
     """Skill gating, ``allowed_tools`` and ToolPolicy decide the same question.
 

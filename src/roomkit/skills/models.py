@@ -20,14 +20,21 @@ _SCRIPTS_DIR = "scripts"
 _REFERENCES_DIR = "references"
 
 
-def parse_skill_requires(value: object) -> list[str]:
-    """Normalize exact tool names from CSV, YAML lists or stringified lists."""
+def parse_tool_names(value: object) -> list[str]:
+    """The tool names or patterns of an ``allowed_tools`` or ``requires``
+    value (RFC §24.2): a list, or a text separated by commas, read alike
+    whether bracketed (``[a, b]``) or quoted entries."""
     if isinstance(value, list | tuple):
-        return [str(t).strip() for t in value if str(t).strip()]
-    if not isinstance(value, str):
+        entries = [str(entry) for entry in value]
+    elif isinstance(value, str):
+        text = value.strip()
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1]
+        entries = text.split(",")
+    else:
         return []
-    cleaned = value.strip().strip("[]")
-    return [t.strip().strip("'\"") for t in cleaned.split(",") if t.strip().strip("'\"")]
+    names = (entry.strip().strip("'\"").strip() for entry in entries)
+    return [name for name in names if name]
 
 
 @dataclass
@@ -55,7 +62,7 @@ class SkillMetadata:
         These describe dependencies, not grants. Applications resolve skill
         availability against their authorized catalogue before using it.
         """
-        return parse_skill_requires(self.extra_metadata.get("requires"))
+        return parse_tool_names(self.extra_metadata.get("requires"))
 
     @property
     def gated_tool_names(self) -> list[str]:
@@ -65,11 +72,7 @@ class SkillMetadata:
         is ``None`` or blank. The entries are patterns, not names — match them
         with :meth:`gates`, never with ``in``.
         """
-        if not self.allowed_tools:
-            return []
-        if isinstance(self.allowed_tools, list):
-            return [str(t).strip() for t in self.allowed_tools if str(t).strip()]
-        return [t.strip() for t in self.allowed_tools.split(",") if t.strip()]
+        return parse_tool_names(self.allowed_tools)
 
     def gates(self, tool_name: str) -> bool:
         """Whether this skill gates *tool_name* (RFC §24.2 glob semantics).

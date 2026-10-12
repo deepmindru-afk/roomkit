@@ -66,7 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another (`metadata:` then `  allowed_tools:`) is that key's value and no
   longer replaces the top-level one, a quoted key or value is read whole
   (a ` #` inside it is no comment), and a null list item gates nothing on
-  either reader where YAML used to gate the pattern `None`. Migration: a skill that loaded with its gating lost now keeps its tools
+  either reader where YAML used to gate the pattern `None`. `allowed_tools`
+  and `requires` now read a value with one reader (RFC §24.2): a text
+  `[a, b]`, or quoted entries (`'a', 'b'`), gate `a` and `b` where
+  `allowed_tools` used to gate the patterns `[a`, `'a'`, which match no
+  tool. Migration: a skill that loaded with its gating lost now keeps its tools
   closed until it is activated; one refused needs its list written as
   `- item` lines or `[a, b]` on one line.
 
