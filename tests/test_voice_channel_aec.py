@@ -186,6 +186,34 @@ class TestSetupPipelineFeedsAEC:
         assert aec.active_changes == [("s1", True), ("s1", False)]
         assert aec.reset_streams == []
 
+    def test_a_reference_that_goes_on_keeps_the_pipeline_aec_active(self):
+        """RFC §12.3.4: the backend reports the silence between responses
+        too, so the canceller runs on it rather than drop it and resume
+        with its timelines out of step."""
+        aec = MockAECProvider()
+        backend = _StubBackend(supports_playback=True)
+
+        from roomkit.channels.voice import VoiceChannel
+
+        channel = VoiceChannel(
+            "voice",
+            backend=backend,
+            pipeline=AudioPipelineConfig(aec=aec),
+        )
+        assert channel._pipeline is not None
+        channel._pipeline.set_aec_active("s1", True)
+        final_frame = AudioFrame(
+            data=b"\x00\x00" * 160,
+            sample_rate=16000,
+            metadata={"playback_ended": True, "reference_continues": True},
+        )
+
+        for callback in backend.audio_played_callbacks:
+            callback(_session(), final_frame)
+
+        assert aec.reference_streams == ["s1"]
+        assert aec.active_changes == [("s1", True)]
+
 
 class TestBridgeAECActivity:
     """Bridge playback participates in per-session AEC lifecycle."""

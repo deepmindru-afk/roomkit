@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A pipeline AEC fed by `LocalAudioBackend` in realtime mode keeps running
+  between responses (RMK-678, RFC §12.3.4). It was bypassed at the end of
+  each response's playback while the backend went on reporting the silence
+  it played; WebRTC AEC3 dropped that reference while capture ran on, and
+  came back at the next response with its timelines out of step. The echo it
+  left reached the provider, whose server VAD took it for the user and cut
+  its own reply (a recorded session replayed through AEC3: the next
+  response's echo 0 to 5 dB below the microphone, against 34 to 44 dB kept
+  running). The backend now marks each played block `reference_continues`,
+  and the pipeline keeps the canceller active through a response's end when
+  it does. A backend whose played blocks stop between responses (SIP) is
+  bypassed there as before.
 - `AnthropicAIProvider` sends the turn's `reasoning_effort` (RMK-676, RFC
   §6.7). It went nowhere: an `AIChannel(reasoning_effort="low")` on Claude
   ran at the model's default effort (`high`, or `medium` on Claude Opus 5.5

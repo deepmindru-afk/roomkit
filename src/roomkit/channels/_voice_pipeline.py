@@ -119,7 +119,16 @@ class VoicePipelineMixin:
                 # states the pause in metadata for this consumer to honour.
                 if not frame.metadata.get("capture_paused"):
                     self._pipeline.feed_aec_reference(frame, session.id)
-                if frame.metadata.get("playback_ended"):
+                # A reference that goes on between responses (silence played
+                # and reported) keeps the canceller running on it: bypassed at
+                # a response's end, AEC3 drops that silence while capture runs
+                # on, and resumes at the next response with its timelines out
+                # of step — the echo it then leaves can read as the user
+                # speaking (RFC §12.3.4).  Only a reference that stops with the
+                # playback leaves nothing to run on.
+                if frame.metadata.get("playback_ended") and not frame.metadata.get(
+                    "reference_continues"
+                ):
                     self._pipeline.set_aec_active(session.id, False)
 
             self._pipeline_unsubscribers.append(backend.on_audio_played(_on_audio_played))

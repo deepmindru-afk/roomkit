@@ -501,6 +501,8 @@ class TestLocalAudioSpeakerPlayback:
         assert sum(f.metadata["played_bytes"] for f in frames) == 1200
         assert all(f.metadata["playback_ended"] is False for f in frames)
         assert all(f.metadata["capture_paused"] for f in frames)
+        # Nothing is reported once it has played: the reference stops there.
+        assert all(f.metadata["reference_continues"] is False for f in frames)
 
     async def test_disconnect_releases_a_streamed_response(self) -> None:
         backend, _ = _speaker_backend()
@@ -837,17 +839,18 @@ class TestContinuousPlayedCallbacks:
         assert played == [b"\x00" * _BLOCK, b"\x00" * _BLOCK]
 
     async def test_empty_response_still_signals_playback_end(self) -> None:
-        """A response_start without audio must not leave pipeline AEC active."""
+        """A response_start without audio still ends its playback, and the
+        silence after it is reported as the reference that goes on."""
         backend, session = await _rt_backend()
-        ended: list[bool] = []
-        backend.on_audio_played(
-            lambda _session, frame: ended.append(bool(frame.metadata.get("playback_ended")))
-        )
+        frames: list[AudioFrame] = []
+        backend.on_audio_played(lambda _session, frame: frames.append(frame))
 
         backend.end_of_response(session)
         _drain_block(backend)
+        _drain_block(backend)
 
-        assert ended == [True]
+        assert [f.metadata["playback_ended"] for f in frames] == [True, False]
+        assert all(f.metadata["reference_continues"] for f in frames)
 
     async def test_transport_aec_reference_is_every_block_from_capture_start(self) -> None:
         aec = MagicMock()
@@ -1113,3 +1116,58 @@ class TestLocalAudioTTSStreamFailure:
         await backend.send_audio(session, audio_gen())
 
         assert "no output device" in caplog.text
+
+
+class TestRealtimePipelineAecBetweenResponses:
+    """RFC §12.3.4: a pipeline AEC runs on the silence played between responses.
+
+    Bypassed at a response's end, WebRTC AEC3 dropped that silent reference
+    while capture ran on, and came back at the next response with its
+    timelines out of step: the echo it left read as the user speaking, and the
+    provider cut its own reply.
+    """
+
+    async def test_the_pipeline_aec_stays_active_after_a_response(self) -> None:
+        from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+        from roomkit.voice.pipeline.aec.mock import MockAECProvider
+        from roomkit.voice.pipeline.config import AudioPipelineConfig
+        from roomkit.voice.realtime.mock import MockRealtimeProvider
+
+        backend, _ = _make_backend(
+            input_sample_rate=24000,
+            output_sample_rate=24000,
+            block_duration_ms=20,
+            rt_prebuffer_ms=0,
+        )
+        provider = MockRealtimeProvider()
+        aec = MockAECProvider()
+        channel = RealtimeVoiceChannel(
+            "rt",
+            provider=provider,
+            transport=backend,
+            input_sample_rate=24000,
+            output_sample_rate=24000,
+            pipeline=AudioPipelineConfig(aec=aec),
+        )
+        session = await channel.start_session("room-1", "user-1", None)
+        ended: list[bool] = []
+        backend.on_audio_played(lambda _s, frame: ended.append(frame.metadata["playback_ended"]))
+        try:
+            await provider.simulate_response_start(session)
+            await provider.simulate_audio(session, _PCM * (_BLOCK // 2))
+            await provider.simulate_response_end(session)
+            for _ in range(10):
+                await asyncio.sleep(0.01)
+                _drain_block(backend)
+                if True in ended:
+                    break
+            assert True in ended  # the response has played to its end
+
+            fed = len(aec.reference_frames)
+            _drain_block(backend)  # the silence after it
+
+            assert len(aec.reference_frames) == fed + 1
+            assert aec.active_changes == [(session.id, True)]
+        finally:
+            await channel.close()
+            await backend.close()

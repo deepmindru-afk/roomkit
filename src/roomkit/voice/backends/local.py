@@ -941,13 +941,13 @@ class LocalAudioBackend(VoiceBackend):
             # output, forcing AEC3 to re-estimate its delay after every gap —
             # measured as ~1 s echo-leak windows at each response start, which
             # Gemini's server VAD can mistake for user speech (false barge-in).
-            self._notify_played(stream, block, ended=block.drained)
+            self._notify_played(stream, block, ended=block.drained, continues=True)
             self._track_realtime_playing(block)
             return
         # A streamed response's playback is send_audio()'s call; the channel
         # owns what follows it (VoiceChannel's AEC echo tail).
         if stream in self._playing_sessions:
-            self._notify_played(stream, block, ended=False)
+            self._notify_played(stream, block, ended=False, continues=False)
         if block.drained:
             self._signal_drained()
 
@@ -965,9 +965,16 @@ class LocalAudioBackend(VoiceBackend):
         with contextlib.suppress(RuntimeError):  # the loop has closed
             loop.call_soon_threadsafe(event.set)
 
-    def _notify_played(self, stream: str, block: SpeakerBlock, *, ended: bool) -> None:
+    def _notify_played(
+        self, stream: str, block: SpeakerBlock, *, ended: bool, continues: bool
+    ) -> None:
         """Hand listeners the played block: the time-aligned reference for a
-        pipeline AEC, and the output level at playback pace."""
+        pipeline AEC, and the output level at playback pace.
+
+        *continues* says the blocks keep coming between responses, silence
+        included (realtime mode): a pipeline AEC then stays active at a
+        response's end instead of dropping that silent reference (RFC §12.3.4).
+        """
         session = self._sessions.get(stream)
         if not self._audio_played_callbacks or session is None:
             return
@@ -986,6 +993,7 @@ class LocalAudioBackend(VoiceBackend):
                 # and level/position listeners must keep seeing it.  The
                 # pipeline consumer honours the flag.
                 "capture_paused": self._capture_paused(stream),
+                "reference_continues": continues,
             },
         )
         for cb in list(self._audio_played_callbacks):
