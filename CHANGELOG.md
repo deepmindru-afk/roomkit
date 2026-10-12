@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A response's own echo no longer cuts it at a session's start (RMK-697,
+  RFC §12.3.13). A fresh echo canceller had heard nothing yet: the first
+  response's opening words came back through the microphone (5 dB down), a
+  streaming STT transcribed them ("Salut"), and the agent stopped; the
+  echo's final, seconds later, came in as the person's turn. While a session
+  has played less than `InterruptionConfig.echo_guard_ms` of response audio
+  (6000 by default, 0 turns it off), speech made only of words of the
+  response being played, consecutive and in order, is its echo, whatever the
+  strategy: it does not interrupt, is not queued, and its final is
+  discarded, even once the response is over. A word the response does not
+  say there makes it speech. `InterruptionHandler.evaluate()` takes the
+  response's text and the session's played audio for it
+  (`response_text=`, `session_played_ms=`), and `InterruptionDecision.is_echo`
+  says when it applied; `roomkit.voice.interruption.echoes()` is the test.
 - A voice channel says the text before a tool call before the call runs
   (RMK-695, RFC §12.2 step 12s.a). The splitter held a reply's last sentence
   until a space followed its full stop, so "Let me check." waited for the

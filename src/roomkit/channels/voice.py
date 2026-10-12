@@ -39,7 +39,7 @@ from roomkit.models.enums import (
 )
 from roomkit.voice.base import VoiceCapability
 from roomkit.voice.bridge import AudioBridge, AudioBridgeConfig, BridgeFrameFilter
-from roomkit.voice.interruption import InterruptionConfig
+from roomkit.voice.interruption import InterruptionConfig, InterruptionDecision
 from roomkit.voice.stt.base import diarizes
 from roomkit.voice.tts.context import TTSContextConfig, TTSContextLevel, TTSContextStore
 from roomkit.voice.utils import rms_db
@@ -183,6 +183,9 @@ class TTSPlaybackState:
     it taken. The playback leaves ``_playing_sessions`` only once that barge-in
     reaches :meth:`VoiceChannel.interrupt`, and the user is still talking in
     between."""
+    counted: bool = False
+    """Whether what was heard of it joined its session's played total, which
+    the echo guard reads (``InterruptionConfig.echo_guard_ms``)."""
 
     @property
     def position_ms(self) -> int:
@@ -375,6 +378,10 @@ class VoiceChannel(
         # the words of it judged a backchannel (SEMANTIC, RFC §12.3.13)
         self._burst_words: dict[str, str] = {}
         self._burst_backchannel: dict[str, str] = {}
+        # Response audio each session played (ms), and the response whose
+        # echo the speech under way was taken for (echo_guard_ms, §12.3.13)
+        self._session_played_ms: dict[str, int] = {}
+        self._echo_bursts: dict[str, str] = {}
         # Speech segments captured while queueing, replayed once TTS finishes,
         # each with its pipeline speaker claim (pipeline_speakers)
         self._queued_speech: dict[
@@ -785,9 +792,9 @@ class VoiceChannel(
                     with self._state_lock:
                         self._suppressed_sessions.add(session.id)
                 else:
-                    decision = self._interruption_handler.evaluate(
-                        playback_position_ms=playback.played_ms,
-                        speech_duration_ms=0,
+                    decision = self._judge_barge_in(
+                        session.id,
+                        playback,
                         transcript_expected=self._can_transcribe_held_speech(),
                     )
                     if decision.should_interrupt:
@@ -1434,6 +1441,8 @@ class VoiceChannel(
         self._held_for_transcript.pop(session_id, None)
         self._burst_words.pop(session_id, None)
         self._burst_backchannel.pop(session_id, None)
+        self._echo_bursts.pop(session_id, None)
+        self._session_played_ms.pop(session_id, None)
         self._speech_started_at.pop(session_id, None)
         self._barge_in_energy_count.pop(session_id, None)
         self._suppressed_sessions.discard(session_id)
@@ -1688,10 +1697,8 @@ class VoiceChannel(
         if done_ev is not None and done_ev.is_set():
             return
         duration_ms = int((time.monotonic() - onset) * 1000) if onset is not None else 0
-        decision = self._interruption_handler.evaluate(
-            playback_position_ms=playback.played_ms,
-            speech_duration_ms=duration_ms,
-            speech_text=text,
+        decision = self._judge_barge_in(
+            session.id, playback, speech_duration_ms=duration_ms, speech_text=text
         )
         if decision.should_interrupt:
             with self._state_lock:
@@ -1817,8 +1824,9 @@ class VoiceChannel(
                     return
                 words, transcript_expected = self._barge_in_words(session.id)
                 speech_duration_ms = int((time.monotonic() - onset) * 1000)
-                decision = self._interruption_handler.evaluate(
-                    playback_position_ms=playback.played_ms,
+                decision = self._judge_barge_in(
+                    session.id,
+                    playback,
                     speech_duration_ms=speech_duration_ms,
                     speech_text=words,
                     transcript_expected=transcript_expected,
@@ -1854,6 +1862,38 @@ class VoiceChannel(
             with self._state_lock:
                 if self._confirm_tasks.get(session.id) is task:
                     self._confirm_tasks.pop(session.id, None)
+
+    def _judge_barge_in(
+        self,
+        session_id: str,
+        playback: TTSPlaybackState,
+        *,
+        speech_duration_ms: int = 0,
+        speech_text: str = "",
+        transcript_expected: bool = False,
+    ) -> InterruptionDecision:
+        """The interruption policy's verdict on speech over *playback*.
+
+        It reads the response's text and the session's played audio for the
+        echo guard (RFC §12.3.13), and remembers a response whose echo the
+        speech under way was taken for: its final is then no turn.
+        """
+        played = playback.played_ms
+        with self._state_lock:
+            before = self._session_played_ms.get(session_id, 0)
+        decision = self._interruption_handler.evaluate(
+            playback_position_ms=played,
+            speech_duration_ms=speech_duration_ms,
+            speech_text=speech_text,
+            transcript_expected=transcript_expected,
+            response_text=playback.text,
+            session_played_ms=before + (0 if playback.counted else played),
+        )
+        if decision.is_echo:
+            with self._state_lock:
+                self._echo_bursts[session_id] = playback.text
+            logger.info("Taken for the response's echo: %r (pos=%dms)", speech_text, played)
+        return decision
 
     def _claim_barge_in(self, playback: TTSPlaybackState) -> bool:
         """Take *playback* for one barge-in; False when one already owns it."""
@@ -2101,11 +2141,8 @@ class VoiceChannel(
         # duration, so a duration-based strategy gets its second look the same
         # way the VAD path does.
         words, transcript_expected = self._barge_in_words(session.id)
-        decision = self._interruption_handler.evaluate(
-            playback_position_ms=playback.played_ms,
-            speech_duration_ms=0,
-            speech_text=words,
-            transcript_expected=transcript_expected,
+        decision = self._judge_barge_in(
+            session.id, playback, speech_text=words, transcript_expected=transcript_expected
         )
         if not decision.should_interrupt:
             if decision.is_backchannel and self._continuous_stt:

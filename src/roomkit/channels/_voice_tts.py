@@ -100,6 +100,7 @@ class TTSHost(Protocol):
     _pipeline_config: AudioPipelineConfig | None
     _session_bindings: dict[str, tuple[str, ChannelBinding]]
     _playing_sessions: dict[str, TTSPlaybackState]
+    _session_played_ms: dict[str, int]
     _playback_done_events: dict[str, asyncio.Event]
     _delivered_tts_events: OrderedDict[str, None]
     _last_tts_ended_at: dict[str, float]
@@ -133,6 +134,7 @@ class VoiceTTSMixin:
     _pipeline_config: AudioPipelineConfig | None
     _session_bindings: dict[str, tuple[str, ChannelBinding]]
     _playing_sessions: dict[str, TTSPlaybackState]
+    _session_played_ms: dict[str, int]
     _playback_done_events: dict[str, asyncio.Event]
     _delivered_tts_events: OrderedDict[str, None]
     _last_tts_ended_at: dict[str, float]
@@ -201,12 +203,9 @@ class VoiceTTSMixin:
         """Record what the user heard of a synthesis call in its context.
 
         Runs once per call: at the interruption, so the call that replaces it
-        already sees the cut turn, or when the call ends.
+        already sees the cut turn, or when the call ends. What was heard also
+        joins the session's played total, which the echo guard reads.
         """
-        pending, playback.context_turn = playback.context_turn, None
-        if pending is None or self._tts_context is None:
-            return
-        recorder, speaker_id = pending
         interrupted = playback.stopped_at is not None
         if playback.first_audio_at is None:
             # No chunk reached the transport: the user heard nothing of it.
@@ -217,6 +216,15 @@ class VoiceTTSMixin:
             # Not cut off: all of it plays, even when the transport returned
             # before the last sample left the speaker.
             played_ms = int(playback.audio_ms)
+        with self._state_lock:
+            if not playback.counted:
+                playback.counted = True
+                total = self._session_played_ms.get(playback.session_id, 0)
+                self._session_played_ms[playback.session_id] = total + played_ms
+        pending, playback.context_turn = playback.context_turn, None
+        if pending is None or self._tts_context is None:
+            return
+        recorder, speaker_id = pending
         self._tts_context.commit_assistant_turn(
             recorder, speaker_id, playback.text, played_ms=played_ms, interrupted=interrupted
         )

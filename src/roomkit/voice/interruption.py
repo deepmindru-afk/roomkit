@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum, unique
 from typing import TYPE_CHECKING
@@ -59,6 +61,16 @@ class InterruptionConfig:
     without words before it is judged on duration alone (RFC §12.3.13). The
     wait is ``max(min_speech_ms, transcript_wait_ms)``."""
 
+    echo_guard_ms: int = 6000
+    """While a session has played less than this much response audio in all
+    (ms), speech whose words are only words of the response being played,
+    consecutive and in order, is that response's echo: it does not interrupt,
+    and its final transcript is no turn (RFC §12.3.13). An echo canceller
+    learns the room from the responses it hears; until it has, their opening
+    words come back through the microphone. Past it, someone repeating the
+    response's words ("the sword" to "the sword or the shield?") cuts in as
+    anyone does. 0 turns the guard off."""
+
 
 @dataclass
 class InterruptionDecision:
@@ -69,6 +81,10 @@ class InterruptionDecision:
 
     is_backchannel: bool = False
     """True if the utterance was classified as a backchannel."""
+
+    is_echo: bool = False
+    """True if the utterance was taken for the response's own echo
+    (``InterruptionConfig.echo_guard_ms``): it is no turn either."""
 
     reason: str = ""
     """Human-readable reason for the decision."""
@@ -126,6 +142,8 @@ class InterruptionHandler:
         speech_duration_ms: int = 0,
         speech_text: str = "",
         transcript_expected: bool = False,
+        response_text: str = "",
+        session_played_ms: int | None = None,
     ) -> InterruptionDecision:
         """Evaluate whether an interruption should proceed.
 
@@ -135,10 +153,26 @@ class InterruptionHandler:
             speech_text: Transcribed text of the speech (for SEMANTIC).
             transcript_expected: A streaming STT is transcribing this speech,
                 so SEMANTIC waits up to ``transcript_wait_ms`` for its words.
+            response_text: The text of the response being played, as far as
+                it was handed to the TTS, for the echo guard.
+            session_played_ms: Response audio the session played in all, this
+                playback included; ``playback_position_ms`` when not given.
 
         Returns:
             An InterruptionDecision.
         """
+        played = playback_position_ms if session_played_ms is None else session_played_ms
+        if (
+            played < self._config.echo_guard_ms
+            and speech_text
+            and echoes(speech_text, response_text)
+        ):
+            return InterruptionDecision(
+                should_interrupt=False,
+                is_echo=True,
+                reason="echo of the response",
+            )
+
         # Check allow_during_first_ms constraint
         if (
             self._config.allow_during_first_ms > 0
@@ -232,3 +266,30 @@ class InterruptionHandler:
             should_interrupt=False,
             reason=f"unknown strategy: {strategy}",
         )
+
+
+_WORD = re.compile(r"[^\W_]+")
+
+
+def _words(text: str) -> list[str]:
+    """Lowercase words without accents: the STT spells the response its own way."""
+    folded = unicodedata.normalize("NFKD", text.casefold())
+    return _WORD.findall("".join(c for c in folded if not unicodedata.combining(c)))
+
+
+def echoes(speech_text: str, response_text: str) -> bool:
+    """Whether *speech_text* is only words of *response_text*, consecutive and in order.
+
+    Its last word may be cut short, as a partial transcript catches a word
+    being said ("Salut ! Ça va" echoes "Salut ! Ça va très bien", and so does
+    "Salut ! Ça v"); one word the response does not say there makes it speech.
+    """
+    heard, said = _words(speech_text), _words(response_text)
+    if not heard:
+        return False
+    *whole, last = heard
+    span = len(heard)
+    return any(
+        said[start : start + span - 1] == whole and said[start + span - 1].startswith(last)
+        for start in range(len(said) - span + 1)
+    )
