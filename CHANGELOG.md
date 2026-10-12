@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A voice channel says the text before a tool call before the call runs
+  (RMK-695, RFC §12.2 step 12s.a). The splitter held a reply's last sentence
+  until a space followed its full stop, so "Let me check." waited for the
+  tool and the model's next round, then ran on into its first word ("Let me
+  check.It is 9."): silence for as long as a tool took. Each call's start now
+  ends the text segment; the splitter lets out what it holds, however short,
+  and a streaming filter flushes there. `split_sentences` and
+  `filtered_stream` take a `SegmentBreakMarker` for it. The final assistant
+  transcript and `AFTER_TTS` keep the segments apart, as `ON_AI_RESPONSE`
+  does.
+- A sentence budget stops a reply of exactly its sentences that goes on with
+  a tool call, before the call runs (RFC §12.2 step 12s.e): the voice channel
+  did not recognise the call in the stream the framework hands it, so the
+  call ran.
+
 ## [0.99.0] — 2026-10-12
 
 ### Added

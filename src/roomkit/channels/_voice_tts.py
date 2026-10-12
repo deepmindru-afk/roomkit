@@ -17,7 +17,12 @@ from roomkit.channels._tts_sentence_budget import SentenceBudget, first_sentence
 from roomkit.channels._tts_sentence_gate import SentenceHookGate
 from roomkit.channels._voice_unheard import UnheardTurns
 from roomkit.models.enums import EventType, HookTrigger, Visibility
-from roomkit.models.streaming import SegmentBreakMarker, ToolCallStartMarker
+from roomkit.models.streaming import (
+    SegmentBreakMarker,
+    ThinkingDeltaMarker,
+    ToolCallStartMarker,
+)
+from roomkit.models.tool_call import response_transcript
 from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
 from roomkit.telemetry.noop import NoopTelemetryProvider
 from roomkit.telemetry.redaction import redact
@@ -481,7 +486,7 @@ class VoiceTTSMixin:
             raise fan_out.error
         delivered = _served_sessions(target_sessions, results)
 
-        full_text = self._streamed_text(text.accumulated, gate, budget)
+        full_text = self._streamed_text(text.text(), gate, budget)
         await self._close_streamed_response(delivered, full_text, room_id, context, _vs_parent)
         if text.failure is not None:
             # The response failed: what it produced was spoken, the failure is the turn's.
@@ -628,7 +633,7 @@ class VoiceTTSMixin:
 
     def _streamed_text(
         self,
-        accumulated: list[str],
+        full_text: str,
         gate: SentenceHookGate | None,
         budget: SentenceBudget | None,
     ) -> str:
@@ -636,13 +641,13 @@ class VoiceTTSMixin:
 
         What the sessions were sent: the sentences the budget let through once
         they are all said, the sentences as BEFORE_TTS left them when a hook
-        changed or dropped one, the whole filtered stream otherwise.
+        changed or dropped one, the whole filtered stream otherwise
+        (*full_text*, its segments apart).
         """
         if budget is not None and budget.spent():
             return budget.text()
         if gate is not None and gate.changed:
             return gate.text()
-        full_text = "".join(accumulated)
         if self._tts_filter is not None and full_text:
             full_text = self._tts_filter(full_text)
         return full_text
@@ -1318,37 +1323,64 @@ class _ResponseText:
     def __init__(self) -> None:
         self.accumulated: list[str] = []
         self.failure: Exception | None = None
+        # Each text segment's deltas: the text before a call is one (RFC §6.4).
+        self._segments: list[list[str]] = [[]]
+
+    def text(self) -> str:
+        """The response's text, its segments apart as ``ON_AI_RESPONSE`` sets them."""
+        return response_transcript("".join(segment) for segment in self._segments)[1]
 
     async def read(
         self, text_stream: AsyncIterator[Any], *, said: Callable[[], bool] | None = None
-    ) -> AsyncIterator[str]:
-        """Each text delta of *text_stream*, kept as it passes.
+    ) -> AsyncIterator[str | SegmentBreakMarker]:
+        """Each text delta of *text_stream*, kept as it passes, and a
+        :class:`SegmentBreakMarker` where a text segment ends.
+
+        Anything but text and reasoning ends the segment: a row the framework
+        writes at a call's start (RFC §12.2 step 13s), or a marker of the loop
+        on a stream handed over as the loop made it. The splitter then says
+        what the segment held before the call runs (step 12s.a).
 
         A response that fails ends here, its failure kept: the splitter then
         hands on its last partial sentence, so the sessions speak all the
-        text the response produced (RFC §12.2 step 15s). Once *said* (a
-        sentence budget spent, step 12s.e), reading stops at the next text or
-        tool call: the reply goes on past the budget, and nothing more of it is
-        generated, no call it would make next starts.
+        text the response produced (step 15s). Once *said* (a sentence budget
+        spent, step 12s.e), reading stops at the next text or tool call: the
+        reply goes on past the budget, and nothing more of it is generated, no
+        call it would make next starts.
         """
+
+        def past_budget(delta: Any) -> bool:
+            if said is not None and _goes_on(delta) and said():
+                logger.info("Reply stopped past its sentence budget")
+                return True
+            return False
+
         try:
             async for delta in text_stream:
-                if said is not None and _goes_on(delta) and said():
-                    logger.info("Reply stopped past its sentence budget")
+                if past_budget(delta):
                     return
-                if not isinstance(delta, str):
-                    continue
-                self.accumulated.append(delta)
-                yield delta
+                if isinstance(delta, str):
+                    self.accumulated.append(delta)
+                    self._segments[-1].append(delta)
+                    yield delta
+                elif not isinstance(delta, ThinkingDeltaMarker) and self._segments[-1]:
+                    self._segments.append([])
+                    yield SegmentBreakMarker()
+                    # The sentence the break let out may be the budget's last.
+                    if past_budget(delta):
+                        return
         except Exception as exc:
             self.failure = exc
 
 
 def _goes_on(delta: Any) -> bool:
-    """Whether a stream item carries the reply on: words, a tool call, or a round
-    the loop goes on to."""
+    """Whether a stream item carries the reply on: words, a tool call (its
+    marker, or the row the framework writes at its start), or a round the loop
+    goes on to."""
     if isinstance(delta, str):
         return bool(delta.strip())
+    if getattr(delta, "type", None) == EventType.TOOL_CALL_START:
+        return True
     return isinstance(delta, ToolCallStartMarker | SegmentBreakMarker)
 
 
@@ -1378,11 +1410,15 @@ def _served_sessions(sessions: list[VoiceSession], results: list[Any]) -> list[V
 
 
 async def _filter_sentences_plain(
-    source: AsyncIterator[str],
+    source: AsyncIterator[str | SegmentBreakMarker],
     fn: Any,
-) -> AsyncGenerator[str, None]:
-    """Wrap an async token stream through a plain ``Callable[[str], str]``."""
+) -> AsyncGenerator[str | SegmentBreakMarker, None]:
+    """Wrap an async token stream through a plain ``Callable[[str], str]``;
+    a segment's break goes on as it came."""
     async for chunk in source:
+        if isinstance(chunk, SegmentBreakMarker):
+            yield chunk
+            continue
         cleaned = fn(chunk)
         if cleaned:
             yield cleaned

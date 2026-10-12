@@ -5,13 +5,15 @@ from __future__ import annotations
 import re
 from collections.abc import AsyncIterator
 
+from roomkit.models.streaming import SegmentBreakMarker
+
 # Sentence-ending punctuation followed by whitespace, or a line break: a list
 # (one item per line, no final punctuation) is otherwise one block for the TTS.
 _SENTENCE_END = re.compile(r"[.!?][\s]|\n")
 
 
 async def split_sentences(
-    token_stream: AsyncIterator[str],
+    token_stream: AsyncIterator[str | SegmentBreakMarker],
     min_chunk_chars: int = 20,
 ) -> AsyncIterator[str]:
     """Buffer streaming tokens and yield complete sentences.
@@ -23,10 +25,14 @@ async def split_sentences(
     Short lines (list items) gather until the chunk reaches that length.
 
     On stream end any remaining buffered text is yielded as-is (the final
-    partial sentence).
+    partial sentence), and so it is at a :class:`SegmentBreakMarker`: the
+    text before a tool call ends there, so it is said before the call runs,
+    however short, never run on into the next round's text (RFC §12.2 step
+    12s.a).
 
     Args:
-        token_stream: Async iterator of text token deltas from an LLM.
+        token_stream: Async iterator of text token deltas from an LLM,
+            with a :class:`SegmentBreakMarker` where a text segment ends.
         min_chunk_chars: Minimum characters before yielding a sentence.
             Prevents very short fragments like ``"Hi."`` that sound
             unnatural when sent individually to TTS.
@@ -34,6 +40,11 @@ async def split_sentences(
     buf = ""
 
     async for token in token_stream:
+        if isinstance(token, SegmentBreakMarker):
+            if remaining := buf.strip():
+                yield remaining
+            buf = ""
+            continue
         buf += token
 
         # Scan for the *last* sentence boundary that satisfies min_chunk_chars

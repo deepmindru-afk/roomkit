@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterable
 from typing import Literal
 
+from roomkit.models.streaming import SegmentBreakMarker
 from roomkit.telemetry.redaction import redact
 
 logger = logging.getLogger("roomkit.voice.tts.filters")
@@ -579,16 +580,23 @@ class TTSFilterChain(TTSStreamFilter):
 
 
 async def filtered_stream(
-    source: AsyncIterator[str],
+    source: AsyncIterator[str | SegmentBreakMarker],
     tts_filter: TTSStreamFilter,
-) -> AsyncIterator[str]:
+) -> AsyncIterator[str | SegmentBreakMarker]:
     """Wrap an async token stream through a :class:`TTSStreamFilter`.
 
     Yields non-empty cleaned chunks.  Calls :meth:`~TTSStreamFilter.reset`
-    at the start and :meth:`~TTSStreamFilter.flush` at the end.
+    at the start and :meth:`~TTSStreamFilter.flush` at the end, and at each
+    :class:`SegmentBreakMarker`, which it passes on after what the filter
+    held: a segment's text never waits for the next one (RFC §12.2 step 12s.a).
     """
     tts_filter.reset()
     async for chunk in source:
+        if isinstance(chunk, SegmentBreakMarker):
+            if remaining := tts_filter.flush():
+                yield remaining
+            yield chunk
+            continue
         cleaned = tts_filter.feed(chunk)
         if cleaned:
             yield cleaned
