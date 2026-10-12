@@ -53,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check with `SkillVerificationError`, as any unreadable frontmatter does,
   where PyYAML's own `KeyError`, `IndexError` or `AttributeError` escaped
   it (RMK-691, RFC §24.7).
+- `SkillRegistry.add_mcp_server()` refuses a label that ends in a line break
+  (`"hf\n"`), as it refuses any label that is not an identifier: the check
+  let a trailing newline through, which every served skill's name then
+  carried into the prompt (RMK-692). A served skill's path is checked the
+  same way.
 
 ## [0.98.0] — 2026-10-12
 

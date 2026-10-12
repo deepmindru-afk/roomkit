@@ -82,7 +82,7 @@ class Listed:
 def served_name(label: str, entry: SkillEntry) -> str | None:
     """``<label>:<path>``, the skill's name in a registry, or ``None`` when its
     path holds characters a name cannot."""
-    return f"{label}:{entry.path}" if _PATH.match(entry.path) else None
+    return f"{label}:{entry.path}" if _PATH.fullmatch(entry.path) else None
 
 
 def _scalar(value: Any) -> str:
@@ -192,7 +192,7 @@ class MCPSkillCatalog:
             SkillDiscoveryError: The server does not declare the extension, or
                 its listing cannot be read.
         """
-        if not _LABEL.match(label):
+        if not _LABEL.fullmatch(label):
             raise SkillValidationError(f"Label {label!r} is not an identifier")
         held = self._origins.get(label)
         if held is not None and held.server is not server:
@@ -256,7 +256,7 @@ class MCPSkillCatalog:
         """
         label, _, path = name.partition(":")
         origin = self._origins.get(label)
-        if origin is None or not path or not _PATH.match(path):
+        if origin is None or not path or not _PATH.fullmatch(path):
             raise SkillValidationError(f"Skill {name!r} not found")
         uri = f"{path}/SKILL.md" if "://" in path else f"skill://{path}/SKILL.md"
         entry = await self._get(origin, name, uri)

@@ -68,7 +68,7 @@ class TestRegistration:
         assert '<skill name="hf:pdf-processing" origin="hf">' in xml
         assert "<description>“Extract and fill PDF documents”</description>" in xml
 
-    @pytest.mark.parametrize("label", ["", "h f", "a:b", "x" * 65, "hf/x"])
+    @pytest.mark.parametrize("label", ["", "h f", "a:b", "x" * 65, "hf/x", "hf\n"])
     async def test_a_label_that_is_not_an_identifier_is_refused(self, label: str) -> None:
         with pytest.raises(SkillValidationError, match="not an identifier"):
             await SkillRegistry().add_mcp_server(FakeSkillServer([PDF]), label)
