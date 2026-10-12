@@ -23,6 +23,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verify. The `mcp` extra now brings PyYAML, which the frontmatter check
   needs.
 
+### Changed
+
+- **BREAKING — a delegation's child room belongs to its parent room's
+  organization** (RMK-686, RFC §17.2, §23.3 step 1). `kit.delegate()` created
+  the child room without an `organization_id`, so what acts in it read none:
+  a tool reading `current_tool_room().organization_id`, a hook or a provider
+  reading `RoomContext.room.organization_id` got `None` for a task started
+  from a tenant's room, and code that filters by tenant only when it has one
+  ran the task's work across every tenant, with the parent's messages a
+  `conversation=` hand-over copies into the child room. The child room now
+  takes the parent's `organization_id`, a nested delegation's included; a
+  room without one still has a child without one. A read scoped to the
+  parent's organization finds the child room, one scoped to another does
+  not, and `find_rooms(organization_id=...)` now lists a tenant's task rooms
+  beside its own. Migration: leave out the rooms whose
+  `metadata["parent_room_id"]` is set where a list must show a tenant's
+  conversations only; a `_child_metadata` envelope carrying the tenant for
+  the child room's sake is no longer needed for it.
+
 ### Fixed
 
 - A pipeline AEC fed by `LocalAudioBackend` in realtime mode keeps running

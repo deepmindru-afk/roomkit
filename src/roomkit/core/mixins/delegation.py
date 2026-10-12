@@ -532,8 +532,11 @@ class DelegationMixin(HelpersMixin):
         # Delegation bookkeeping keys are applied last so the envelope can
         # never overwrite them.
         inherited_metadata = parent_room.metadata.get("_child_metadata") or {}
+        # The child room is the parent's organization's (RFC §17.2, §23.3 step
+        # 1): what acts in it reads its tenant from the room, as in the parent.
         await self.create_room(
             room_id=child_room_id,
+            organization_id=parent_room.organization_id,
             metadata={
                 **inherited_metadata,
                 "_child_metadata": inherited_metadata,
