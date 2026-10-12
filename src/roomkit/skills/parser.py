@@ -257,11 +257,13 @@ def _refuse_nested_lists(mapping: dict[Any, Any]) -> None:
 
 def _as_strings(mapping: dict[Any, Any]) -> dict[str, FrontmatterValue]:
     """A loaded frontmatter with each key and value as a string, and each list
-    as a list of strings: ``allowed_tools`` and ``requires`` take the YAML
-    list form of the RFC's own SKILL.md example."""
+    as a list of strings, an empty item left out: ``allowed_tools`` and
+    ``requires`` take the YAML list form of the RFC's own SKILL.md example."""
     try:
         return {
-            str(k): [str(item) for item in v] if isinstance(v, list) else str(v)
+            str(k): [str(item) for item in v if item is not None]
+            if isinstance(v, list)
+            else str(v)
             for k, v in mapping.items()
             if v is not None
         }

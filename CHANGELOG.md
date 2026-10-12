@@ -61,7 +61,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not a `- item`) raises `SkillParseError` naming the skill, where the
   skill loaded without the key; so does one YAML reads as a mapping or a
   nested list, which used to become a single pattern matching no tool.
-  Migration: a skill that loaded with its gating lost now keeps its tools
+  Of a frontmatter that is also YAML, the line reader now gates and
+  requires what YAML does, or refuses the skill: a key indented under
+  another (`metadata:` then `  allowed_tools:`) is that key's value and no
+  longer replaces the top-level one, a quoted key or value is read whole
+  (a ` #` inside it is no comment), and a null list item gates nothing on
+  either reader where YAML used to gate the pattern `None`. Migration: a skill that loaded with its gating lost now keeps its tools
   closed until it is activated; one refused needs its list written as
   `- item` lines or `[a, b]` on one line.
 

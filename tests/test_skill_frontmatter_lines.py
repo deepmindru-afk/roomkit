@@ -184,6 +184,59 @@ def test_yaml_refuses_a_gating_key_that_is_not_a_list_of_texts(tmp_path: Path, l
         SkillRegistry().discover(tmp_path)
 
 
+@pytest.mark.parametrize(
+    "lines",
+    [
+        "allowed_tools: [issue_refund]\nmetadata:\n  allowed_tools:\n",
+        "allowed_tools: [issue_refund]\nmetadata:\n  allowed_tools: other\n",
+        "requires:\n  - lookup_order\nmetadata:\n  requires: []\n",
+        '"allowed_tools": [issue_refund]\n',
+        "'allowed_tools':\n  - issue_refund\n",
+        'allowed_tools: "issue_refund #1, void_*"\n',
+        "allowed_tools:\n  - 'issue_refund # money'\n",
+        'allowed_tools: ["issue,refund", void_*]\n',
+        "allowed_tools:\n  - - issue_refund\n",
+        "allowed_tools:\n  - ? issue_refund\n",
+        "allowed_tools:\n  - issue_refund\n  - #void_*\n",
+        "allowed_tools: issue_refund # money, void_*\n",
+        " allowed_tools: [issue_refund]\n name: refunds\n",
+    ],
+    ids=[
+        "nested empty key",
+        "nested value",
+        "nested requires",
+        "double-quoted key",
+        "single-quoted key",
+        "quoted value with a hash",
+        "quoted item with a hash",
+        "quoted item with a comma",
+        "nested sequence",
+        "complex key",
+        "comment item",
+        "comment after a value",
+        "indented document",
+    ],
+)
+def test_the_line_reader_never_gates_less_than_yaml(
+    monkeypatch: pytest.MonkeyPatch, lines: str
+) -> None:
+    # RFC §24.1: of a frontmatter that is also YAML, the line-by-line reading
+    # gates and requires what YAML does, or refuses the skill.
+    text = "---\nname: refunds\ndescription: d\n" + lines + "---\n"
+    try:
+        as_yaml, _ = parse_frontmatter(text)
+    except SkillParseError:
+        as_yaml = None
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    try:
+        by_lines, _ = parse_frontmatter(text)
+    except SkillParseError:
+        return
+    assert as_yaml is not None
+    for key in ("allowed_tools", "requires"):
+        assert by_lines.get(key) == as_yaml.get(key), key
+
+
 def test_the_rfc_example_reads_the_same_without_pyyaml(monkeypatch: pytest.MonkeyPatch) -> None:
     as_yaml, _ = parse_frontmatter(RFC_EXAMPLE)
     monkeypatch.setitem(sys.modules, "yaml", None)
