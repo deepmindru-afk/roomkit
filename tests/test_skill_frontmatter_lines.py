@@ -162,6 +162,14 @@ def test_a_glob_starting_with_a_star_is_a_pattern(head: str, lines: str, expecte
     assert data["allowed_tools"] == expected
 
 
+@pytest.mark.parametrize("item", ["~", "null", "NULL"])
+def test_a_null_item_reads_as_nothing(head: str, item: str) -> None:
+    # YAML reads these as no value, so a line must not read them as a name
+    # a skill then requires and nothing serves.
+    data, _ = parse_frontmatter(head + f"requires:\n  - {item}\n  - lookup_order\n---\n")
+    assert data["requires"] == ["lookup_order"]
+
+
 def test_a_bracketed_description_stays_whole() -> None:
     # Only allowed_tools and requires read [a, b] as a list; this one is not
     # YAML either, so it goes to the line reader.

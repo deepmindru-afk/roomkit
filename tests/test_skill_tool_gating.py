@@ -116,9 +116,9 @@ class TestGlobsGate:
         "none",
     ],
 )
-def test_allowed_tools_and_requires_read_a_value_alike(value: object, expected: list[str]) -> None:
+def test_requires_reads_a_value_as_allowed_tools_does(value: object, expected: list[str]) -> None:
     # One reader for both keys (RFC §24.2): a form one of them takes, the
-    # other takes too, so no form gates less than it requires or the reverse.
+    # other takes too; allowed_tools adds the glob a bracketed text is.
     metadata = SkillMetadata(
         name="research-helper",
         description="d",
@@ -132,6 +132,30 @@ def test_allowed_tools_and_requires_read_a_value_alike(value: object, expected: 
     assert metadata.gated_tool_names == [*expected, *([value] if bracketed else [])]
 
 
+def _read_by(path: str, allowed_tools: str, tmp_path: Path) -> SkillMetadata:
+    """The metadata of a skill whose allowed_tools is the quoted *allowed_tools*,
+    read the way *path* names: built directly, read as YAML, or read by the
+    line reader alone, with the key read again or items following."""
+    if path == "metadata":
+        return SkillMetadata(name="refunds", description="d", allowed_tools=allowed_tools)
+    description = "d" if path == "yaml" else "Refunds: process them"
+    lines = [f'allowed_tools: "{allowed_tools}"']
+    if path == "lines, key again":
+        lines.append("allowed_tools: zz_other")
+    if path == "lines, items after":
+        lines += ["allowed_tools:", "  - zz_other"]
+    skill_dir = tmp_path / "refunds"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: refunds\ndescription: {description}\n" + "\n".join(lines) + "\n---\nB\n",
+        encoding="utf-8",
+    )
+    return parse_skill_metadata(skill_dir)
+
+
+@pytest.mark.parametrize(
+    "path", ["metadata", "yaml", "lines", "lines, key again", "lines, items after"]
+)
 @pytest.mark.parametrize(
     ("allowed_tools", "gated", "open_"),
     [
@@ -142,11 +166,12 @@ def test_allowed_tools_and_requires_read_a_value_alike(value: object, expected: 
     ids=["character classes", "one class or a list of one", "a list"],
 )
 def test_a_bracketed_text_gates_every_reading_of_it(
-    allowed_tools: str, gated: list[str], open_: list[str]
+    path: str, allowed_tools: str, gated: list[str], open_: list[str], tmp_path: Path
 ) -> None:
     # Entries are fnmatch globs: a bracket is a character class as well as
-    # the edge of a list, and gating both readings leaves neither tool open.
-    metadata = SkillMetadata(name="research-helper", description="d", allowed_tools=allowed_tools)
+    # the edge of a list, and gating both readings leaves neither tool open,
+    # whichever reader read the text and however it was joined.
+    metadata = _read_by(path, allowed_tools, tmp_path)
     assert all(metadata.gates(tool) for tool in gated)
     assert not any(metadata.gates(tool) for tool in open_)
 

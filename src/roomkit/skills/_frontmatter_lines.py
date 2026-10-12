@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 
 from roomkit.skills.errors import SkillParseError
-from roomkit.skills.models import parse_tool_names
+from roomkit.skills.models import gated_patterns, parse_tool_names
 
 GATING_KEYS = ("allowed_tools", "requires")
 """What a skill gates and what it requires: whichever reader, their value is
@@ -20,6 +20,8 @@ _HIDDEN_KEY = re.compile(r"""^(?:\?(?:\s|$)|[!&]|<<|"[^"]*\\)""")
 """How a top-level line starts when YAML may read a key there that this
 reading cannot name: an explicit key, a tag or an anchor on the key, a merge
 key, or an escape in a double-quoted key."""
+_NULLS = ("~", "null", "Null", "NULL")
+"""The plain texts YAML reads as no value."""
 _NOT_A_PLAIN_TEXT = re.compile(r"^(?:[\[\]{}|>&!%@`,]|[-?:](?:\s|$))")
 """How a value starts when YAML reads it as more than a plain text: a
 collection, a block scalar, an anchor, a tag, a reserved indicator, or a
@@ -92,16 +94,24 @@ def _add_gating(data: dict[str, str | list[str]], key: str, value: str | list[st
     if earlier is None:
         data[key] = value
         return
-    data[key] = list(dict.fromkeys([*parse_tool_names(earlier), *parse_tool_names(value)]))
+    data[key] = list(dict.fromkeys([*_readings(key, earlier), *_readings(key, value)]))
+
+
+def _readings(key: str, value: str | list[str]) -> list[str]:
+    """Every name or pattern a gating *value* stands for, the glob a
+    bracketed ``allowed_tools`` text also is included (RFC §24.2)."""
+    return gated_patterns(value) if key == "allowed_tools" else parse_tool_names(value)
 
 
 def _list_value(key: str, text: str) -> str | list[str]:
     """The value of an ``allowed_tools`` or ``requires`` line: ``[a, b]`` as
-    a list, a plain or quoted text as text.
+    a list, a plain or quoted text as text, a YAML null as nothing.
 
     Raises:
         SkillParseError: The value is YAML a line cannot hold whole.
     """
+    if text in _NULLS:
+        return []
     if text.startswith("[") and text.endswith("]") and not any(c in text[1:-1] for c in "[]{}"):
         return [item for part in text[1:-1].split(",") for item in _list_item(key, part)]
     if _NOT_A_PLAIN_TEXT.match(text):
@@ -113,7 +123,7 @@ def _append_item(data: dict[str, str | list[str]], key: str, text: str | None) -
     """Add what a ``- item`` line holds to the list of *key*."""
     items = data.get(key)
     if not isinstance(items, list):
-        items = parse_tool_names(items)
+        items = _readings(key, items) if items else []
         data[key] = items
     items.extend(_list_item(key, text))
 
@@ -129,7 +139,7 @@ def _list_item(key: str, text: str | None) -> list[str]:
     item = _entry_text(key, text or "")
     if key in GATING_KEYS and _NOT_A_PLAIN_TEXT.match(item):
         raise _unread(key)
-    item = item.strip("\"'")
+    item = "" if item in _NULLS else item.strip("\"'")
     return [item] if item else []
 
 

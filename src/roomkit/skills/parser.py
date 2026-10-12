@@ -215,8 +215,8 @@ def parse_frontmatter(content: str) -> tuple[dict[str, FrontmatterValue], str]:
     """Split SKILL.md into frontmatter dict and body string.
 
     The frontmatter is read as YAML within the bounds of
-    :func:`read_frontmatter_yaml`, and line by line (``key: value``) when it
-    is not YAML.
+    :func:`read_frontmatter_yaml`, and line by line (``key: value``) when
+    YAML does not read it as a mapping.
 
     Raises:
         SkillParseError: If content has no valid frontmatter delimiters, or

@@ -44,10 +44,10 @@ def verify_frontmatter(entry: SkillEntry, skill_md: str) -> str:
             differs, is missing or is extra.
     """
     try:
-        frontmatter_text, body = split_frontmatter(skill_md)
+        fm_text, body = split_frontmatter(skill_md)
     except SkillParseError as exc:
         raise SkillVerificationError(f"{entry.uri}: {exc}") from exc
-    written = _yaml_as_json(entry.uri, frontmatter_text)
+    written = _yaml_as_json(entry.uri, fm_text)
     try:
         differing = sorted(
             key

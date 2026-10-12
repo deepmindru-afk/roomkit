@@ -33,13 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - PyYAML (`pyyaml>=6`) is a core dependency: every `SKILL.md` frontmatter,
-  local or served, is read as YAML (RMK-693). The `mcp` extra no longer
-  lists it.
+  local or served, is read by YAML first, and only one YAML cannot read as
+  a mapping is read line by line (RMK-693). The `mcp` extra no longer lists
+  it.
 
 ### Removed
 
 - `roomkit.skills.models.parse_skill_requires`, never exported: use
-  `parse_tool_names`, which reads `allowed_tools` and `requires` alike
+  `parse_tool_names`, which reads `requires` and, its glob reading aside,
+  `allowed_tools`
   (RMK-693).
 
 ### Fixed
@@ -73,9 +75,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frontmatter past 65536 characters raise `SkillParseError` before
   anything is built, where they used to load (a nesting past a few
   hundred levels was read line by line). `discover()` fails on such a
-  skill, or skips and logs it with `strict=False`. A frontmatter that is
-  not YAML, or read without PyYAML installed, is still read line by line,
-  unbounded.
+  skill, or skips and logs it with `strict=False`. A frontmatter YAML
+  cannot read as a mapping is read line by line, within the size and
+  bracket bounds.
   Migration: write the value in place of the alias.
 - **BREAKING — a local skill keeps what it gates and requires, whatever its
   frontmatter looks like** (RMK-693, RFC §24.1, §24.2). PyYAML is now a core
@@ -87,8 +89,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `metadata:`, a quoted key, a value continued over lines) could replace or
   hide what the top level gates. The tools a skill gates were offered to
   the model before any activation, those of the RFC's own example included.
-  The line reader now reads only a frontmatter that is not YAML (a
-  description with an unquoted colon); it keeps both list forms, items
+  The line reader now reads only a frontmatter YAML cannot read as a
+  mapping (a description with an unquoted colon); it keeps both list forms, items
   unquoted and a trailing `# comment` dropped, and of a text YAML also reads
   it gates at least what YAML does. An `allowed_tools` or `requires` neither
   reader can read whole as a text or a list of texts (a list spread over
@@ -98,8 +100,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skill loaded without the key. Both keys read a value with one reader: a
   text `[a, b]` or quoted entries gate `a` and `b`, where `allowed_tools`
   gated `[a` and `'a'`, which match no tool, and a text in brackets also
-  gates the glob it is (`[ab]` covers `a` and `b`). A null list item no
-  longer reads as the name `None`, local or served. Migration: a skill that
+  gates the glob it is (`[ab]` covers `a` and `b`), on every reader. A null
+  list item no longer reads as the name `None` or `null`, local or served. Migration: a skill that
   loaded with its gating lost now keeps its tools closed until it is
   activated; one refused needs its list written as `- item` lines or
   `[a, b]` on one line.

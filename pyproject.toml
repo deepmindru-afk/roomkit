@@ -23,8 +23,9 @@ classifiers = [
     "Topic :: Communications :: Chat",
     "Typing :: Typed",
 ]
-# PyYAML reads every SKILL.md frontmatter, local or served (RFC §24.1): a
-# frontmatter that is YAML read any other way may gate less than YAML says.
+# PyYAML reads every SKILL.md frontmatter first, local or served (RFC §24.1):
+# a frontmatter that is YAML read any other way may gate less than YAML says.
+# Only one YAML cannot read as a mapping is read line by line.
 dependencies = ["pydantic>=2.9", "pyyaml>=6"]
 
 [project.optional-dependencies]
