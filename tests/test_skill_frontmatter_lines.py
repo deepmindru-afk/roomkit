@@ -93,6 +93,81 @@ def test_a_line_it_cannot_place_under_a_list_key_refuses_the_skill(
         SkillRegistry().discover(tmp_path)
 
 
+@pytest.mark.parametrize(
+    "lines",
+    [
+        "allowed_tools: [\n  issue_refund,\n  void_*\n]",
+        "allowed_tools: >-\n  issue_refund,\n  void_*",
+        "allowed_tools: |\n  issue_refund",
+        "allowed_tools:\nissue_refund",
+        "allowed_tools: issue_refund\n  - void_*",
+        "allowed_tools: [issue_refund, [void_*]]",
+        "allowed_tools: {issue_refund: true}",
+        "allowed_tools:\n  - &money issue_refund",
+        "requires:\n  - *lookup",
+    ],
+    ids=[
+        "flow over lines",
+        "folded",
+        "literal",
+        "bare line",
+        "item after a value",
+        "nested flow",
+        "mapping",
+        "anchor",
+        "alias",
+    ],
+)
+def test_a_gating_key_a_line_cannot_hold_whole_refuses_the_skill(head: str, lines: str) -> None:
+    with pytest.raises(SkillParseError, match="cannot be read line by line"):
+        parse_frontmatter(head + lines + "\n---\nBody\n")
+
+
+@pytest.mark.parametrize(
+    ("lines", "expected"),
+    [
+        ('allowed_tools:\n  - "issue_refund"\n  - void_*', ["issue_refund", "void_*"]),
+        ("allowed_tools:\n- issue_refund  # money", ["issue_refund"]),
+        ("allowed_tools: [issue_refund, 'void_*']", ["issue_refund", "void_*"]),
+        ("allowed_tools: [issue_refund, void_*]  # money", ["issue_refund", "void_*"]),
+        ("allowed_tools: issue_refund, void_*", "issue_refund, void_*"),
+        ('allowed_tools: "issue_refund, void_*"', "issue_refund, void_*"),
+    ],
+    ids=["block", "block with comment", "flow", "flow with comment", "text", "quoted text"],
+)
+def test_each_form_reads_as_yaml_reads_it(
+    monkeypatch: pytest.MonkeyPatch, lines: str, expected: object
+) -> None:
+    text = "---\nname: refunds\ndescription: d\n" + lines + "\n---\n"
+    as_yaml, _ = parse_frontmatter(text)
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    by_lines, _ = parse_frontmatter(text)
+    assert by_lines == as_yaml
+    assert by_lines["allowed_tools"] == expected
+
+
+def test_a_bracketed_description_stays_whole() -> None:
+    # Only allowed_tools and requires read [a, b] as a list; this one is not
+    # YAML either, so it goes to the line reader.
+    text = "---\nname: refunds\ndescription: [Beta] Refunds, returns: see [docs]\n---\n"
+    data, _ = parse_frontmatter(text)
+    assert data["description"] == "[Beta] Refunds, returns: see [docs]"
+
+
+@pytest.mark.parametrize(
+    "lines",
+    ["allowed_tools: {issue_refund: true}", "allowed_tools:\n  - [a, b]", "requires: [a, [b]]"],
+    ids=["mapping", "nested list", "nested flow"],
+)
+def test_yaml_refuses_a_gating_key_that_is_not_a_list_of_texts(tmp_path: Path, lines: str) -> None:
+    # As one text, it would gate nothing (RFC §24.1).
+    _write_skill(tmp_path, "---\nname: refunds\ndescription: d\n" + lines + "\n---\n")
+    with pytest.raises(
+        SkillParseError, match="Parsing failed for refunds: .*neither a text nor a list of texts"
+    ):
+        SkillRegistry().discover(tmp_path)
+
+
 def test_the_rfc_example_reads_the_same_without_pyyaml(monkeypatch: pytest.MonkeyPatch) -> None:
     as_yaml, _ = parse_frontmatter(RFC_EXAMPLE)
     monkeypatch.setitem(sys.modules, "yaml", None)

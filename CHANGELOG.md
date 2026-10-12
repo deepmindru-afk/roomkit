@@ -55,11 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fetch_*]`, which match no tool. Either way the tools the skill gates were
   offered to the model before any activation, and the RFC's own example
   lost them without PyYAML. Both list forms are now read as lists, items
-  unquoted and a trailing `# comment` dropped. A line under `allowed_tools`
-  or `requires` that is not a `- item` raises `SkillParseError` naming the
-  skill, where the skill loaded without the key. Migration: a skill that
-  loaded with its gating lost now keeps its tools closed until it is
-  activated; one refused needs its list written as `- item` lines.
+  unquoted and a trailing `# comment` dropped. An `allowed_tools` or
+  `requires` the line reader cannot read whole (a list spread over several
+  lines, a block scalar, an anchor or alias, a line under the key that is
+  not a `- item`) raises `SkillParseError` naming the skill, where the
+  skill loaded without the key; so does one YAML reads as a mapping or a
+  nested list, which used to become a single pattern matching no tool.
+  Migration: a skill that loaded with its gating lost now keeps its tools
+  closed until it is activated; one refused needs its list written as
+  `- item` lines or `[a, b]` on one line.
 
 ### Fixed
 
