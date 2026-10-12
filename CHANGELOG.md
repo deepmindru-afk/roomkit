@@ -62,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skill loaded without the key; so does one YAML reads as a mapping or a
   nested list, which used to become a single pattern matching no tool.
   Of a frontmatter that is also YAML, the line reader now gates and
-  requires what YAML does, or refuses the skill: a key indented under
+  requires at least what YAML does, or refuses the skill: a key indented under
   another (`metadata:` then `  allowed_tools:`) is that key's value and no
   longer replaces the top-level one, a quoted key or value is read whole
   (a ` #` inside it is no comment), a gating key read again is joined to
@@ -70,14 +70,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a line that looks like one), a key YAML reads where this reading cannot
   (`? key`, a tag, an anchor, a merge key, an escape in a quoted key)
   refuses the skill, so does a `\` escape in a double-quoted gating
-  entry, and a null list item gates nothing on
-  either reader where YAML used to gate the pattern `None`. `allowed_tools`
+  entry, and YAML no longer gates the pattern `None` for a null list
+  item, local or served. `allowed_tools`
   and `requires` now read a value with one reader (RFC §24.2): a text
   `[a, b]`, or quoted entries (`'a', 'b'`), gate `a` and `b` where
   `allowed_tools` used to gate the patterns `[a`, `'a'`, which match no
   tool. Migration: a skill that loaded with its gating lost now keeps its tools
   closed until it is activated; one refused needs its list written as
   `- item` lines or `[a, b]` on one line.
+
+### Removed
+
+- `roomkit.skills.models.parse_skill_requires`, never exported: use
+  `parse_tool_names`, which reads `allowed_tools` and `requires` alike
+  (RMK-693).
 
 ### Fixed
 

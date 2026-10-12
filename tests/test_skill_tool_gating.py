@@ -16,10 +16,13 @@ import pytest
 
 from roomkit.channels.ai import AIChannel
 from roomkit.providers.ai.base import AITool, AIToolCall
+from roomkit.skills.mcp import parse_entry
+from roomkit.skills.mcp.catalog import served_metadata
 from roomkit.skills.models import SkillMetadata
-from roomkit.skills.parser import parse_frontmatter
+from roomkit.skills.parser import parse_frontmatter, parse_skill_metadata
 from roomkit.skills.registry import SkillRegistry
 from roomkit.tools.policy import ToolPolicy, matches_any_pattern
+from tests.mcp_skill_fakes import ServedSkill, skill_md
 from tests.test_skills_integration import ToolCallMockProvider, _binding, _ctx, make_event
 from tests.tool_loop_modes import respond
 
@@ -122,8 +125,44 @@ def test_allowed_tools_and_requires_read_a_value_alike(value: object, expected: 
         allowed_tools=value,  # type: ignore[arg-type]
         extra_metadata={} if value is None else {"requires": value},  # type: ignore[dict-item]
     )
-    assert metadata.gated_tool_names == expected
     assert metadata.required_tool_names == expected
+    # allowed_tools gates the same names, and a text in brackets as the one
+    # glob it also is.
+    bracketed = isinstance(value, str) and value.startswith("[")
+    assert metadata.gated_tool_names == [*expected, *([value] if bracketed else [])]
+
+
+@pytest.mark.parametrize(
+    ("allowed_tools", "gated", "open_"),
+    [
+        ("[sw]earch_*, fetch_v[12]", ["search_x", "wearch_x", "fetch_v1"], ["fetch_v3"]),
+        ("[ab]", ["a", "b", "ab"], ["c"]),
+        ("[a, b]", ["a", "b"], ["c"]),
+    ],
+    ids=["character classes", "one class or a list of one", "a list"],
+)
+def test_a_bracketed_text_gates_every_reading_of_it(
+    allowed_tools: str, gated: list[str], open_: list[str]
+) -> None:
+    # Entries are fnmatch globs: a bracket is a character class as well as
+    # the edge of a list, and gating both readings leaves neither tool open.
+    metadata = SkillMetadata(name="research-helper", description="d", allowed_tools=allowed_tools)
+    assert all(metadata.gates(tool) for tool in gated)
+    assert not any(metadata.gates(tool) for tool in open_)
+
+
+def test_a_null_item_reads_as_nothing_on_a_local_and_a_served_skill(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "refunds"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: refunds\ndescription: d\nrequires: [null, lookup_order]\n---\nBody\n",
+        encoding="utf-8",
+    )
+    local = parse_skill_metadata(skill_dir)
+    raw = ServedSkill("refunds", {"SKILL.md": skill_md("refunds", "d")}).entry()
+    raw["frontmatter"] = {**raw["frontmatter"], "requires": [None, "lookup_order"]}
+    served = served_metadata("hf:refunds", parse_entry(raw))
+    assert local.required_tool_names == served.required_tool_names == ["lookup_order"]
 
 
 class TestGatingSitesUseTheSameMatcher:

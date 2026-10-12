@@ -17,7 +17,6 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from roomkit._text import is_label
 from roomkit.skills.errors import (
@@ -34,6 +33,7 @@ from roomkit.skills.mcp.server import MCPSkillServer
 from roomkit.skills.mcp.skill import MCPSkill
 from roomkit.skills.mcp.verify import verify_frontmatter, verify_skill_resource
 from roomkit.skills.models import SkillMetadata
+from roomkit.skills.parser import frontmatter_text
 
 logger = logging.getLogger("roomkit.skills.mcp")
 
@@ -85,13 +85,6 @@ def served_name(label: str, entry: SkillEntry) -> str | None:
     return f"{label}:{entry.path}" if _PATH.fullmatch(entry.path) else None
 
 
-def _scalar(value: Any) -> str:
-    """A frontmatter value as ``SkillMetadata.extra_metadata`` keeps one."""
-    if isinstance(value, list):
-        return ", ".join(str(item) for item in value)
-    return "" if value is None else str(value)
-
-
 def served_metadata(name: str, entry: SkillEntry) -> SkillMetadata:
     """The metadata of a served skill. ``allowed_tools`` is never read: what a
     served skill's frontmatter would grant is not granted (RFC §24.7)."""
@@ -99,10 +92,12 @@ def served_metadata(name: str, entry: SkillEntry) -> SkillMetadata:
     return SkillMetadata(
         name=name,
         description=entry.description,
-        license=_scalar(frontmatter.get("license")) or None,
-        compatibility=_scalar(frontmatter.get("compatibility")) or None,
+        license=frontmatter_text(frontmatter.get("license")) or None,
+        compatibility=frontmatter_text(frontmatter.get("compatibility")) or None,
         allowed_tools=None,
-        extra_metadata={k: _scalar(v) for k, v in frontmatter.items() if k not in _KNOWN_KEYS},
+        extra_metadata={
+            k: frontmatter_text(v) for k, v in frontmatter.items() if k not in _KNOWN_KEYS
+        },
     )
 
 

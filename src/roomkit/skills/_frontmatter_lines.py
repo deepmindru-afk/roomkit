@@ -32,7 +32,8 @@ def parse_lines(fm_text: str) -> dict[str, str | list[str]]:
     on its line followed by ``- item`` lines as a list (RFC §24.1).
 
     Raises:
-        SkillParseError: ``allowed_tools`` or ``requires`` is not read whole:
+        SkillParseError: ``allowed_tools`` or ``requires`` is not read whole,
+            or a line holds a key YAML reads where this reading cannot:
             reading the skill without it would leave open what it gates.
     """
     data: dict[str, str | list[str]] = {}
@@ -58,7 +59,12 @@ def parse_lines(fm_text: str) -> dict[str, str | list[str]]:
 
 def _read_key_line(data: dict[str, str | list[str]], line: str) -> tuple[str, bool] | None:
     """The key a ``key: value`` *line* names, and whether ``- item`` lines
-    hold its value; a value on the line itself is recorded in *data*."""
+    hold its value; a value on the line itself is recorded in *data*.
+
+    Raises:
+        SkillParseError: The line holds a key YAML reads where this reading
+            cannot, or a gating value it cannot read whole.
+    """
     match = _KEY_LINE.match(line)
     if not match:
         if _HIDDEN_KEY.match(line):
@@ -71,7 +77,7 @@ def _read_key_line(data: dict[str, str | list[str]], line: str) -> tuple[str, bo
         else:
             data.pop(key, None)
         return key, not value
-    value = _without_comment(key, value)
+    value = _entry_text(key, value)
     if value:
         _add_gating(data, key, _list_value(key, value))
     return key, not value
@@ -120,7 +126,7 @@ def _list_item(key: str, text: str | None) -> list[str]:
         SkillParseError: An item of ``allowed_tools`` or ``requires`` is YAML
             a line cannot hold (a collection, an anchor, a tag, a nested item).
     """
-    item = _without_comment(key, text or "")
+    item = _entry_text(key, text or "")
     if key in GATING_KEYS and _NOT_A_PLAIN_TEXT.match(item):
         raise _unread(key)
     item = item.strip("\"'")
@@ -132,9 +138,10 @@ def _unread(key: str) -> SkillParseError:
     return SkillParseError(f"the frontmatter's {key} cannot be read line by line")
 
 
-def _without_comment(key: str, text: str) -> str:
-    """*text* up to its YAML comment (a ``#`` first or after a space),
-    stripped, a quoted text kept whole whatever it holds.
+def _entry_text(key: str, text: str) -> str:
+    """The text a value or an item holds: up to its YAML comment (a ``#``
+    first or after a space), or a quoted text whole whatever it holds; a
+    gating one this reading cannot read whole is refused.
 
     Raises:
         SkillParseError: A quoted value or item of ``allowed_tools`` or

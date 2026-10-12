@@ -16,12 +16,23 @@ import pytest
 
 from roomkit.skills.errors import SkillError
 from roomkit.skills.models import parse_tool_names
-from roomkit.skills.parser import parse_frontmatter
+from roomkit.skills.parser import parse_frontmatter, read_frontmatter_yaml, split_frontmatter
 
 pytest.importorskip("yaml")
 
 KEYS = ("allowed_tools", "requires")
-NAMES = ("issue_refund", "void_*", "*_admin", "a-b", "it's", "x y", "x#y", "x, y", "[ab]")
+NAMES = (
+    "issue_refund",
+    "void_*",
+    "*_admin",
+    "a-b",
+    "it's",
+    "x y",
+    "x#y",
+    "x, y",
+    "[ab]",
+    "[sw]earch_*",
+)
 SPECIALS = [*" :-#'\"[]{},\n\t&!?|>\\", "\n  ", "\n- ", ": ", " #"]
 
 
@@ -92,6 +103,16 @@ def _mutated(rng: random.Random, text: str) -> str:
     return "---\n" + body + "\n---\n"
 
 
+def _read_as_yaml(text: str) -> bool:
+    """Whether YAML itself reads *text*, rather than the line reader it
+    falls back to."""
+    try:
+        read_frontmatter_yaml(split_frontmatter(text)[0])
+    except SkillError:
+        return False
+    return True
+
+
 def _gating_of(text: str) -> dict[str, set[str]] | None:
     try:
         data, _ = parse_frontmatter(text)
@@ -101,21 +122,21 @@ def _gating_of(text: str) -> dict[str, set[str]] | None:
 
 
 @pytest.mark.parametrize("mutate", [False, True], ids=["generated", "mutated"])
-def test_the_line_reader_never_gates_less_than_yaml(
+def test_generated_frontmatters_never_gate_less_on_the_line_reader(
     monkeypatch: pytest.MonkeyPatch, mutate: bool
 ) -> None:
     rng = random.Random(693)
     texts = [_document(rng) for _ in range(3000)]
     if mutate:
         texts = [_mutated(rng, text) for text in texts]
-    as_yaml = {text: _gating_of(text) for text in texts}
+    as_yaml = {text: _gating_of(text) for text in texts if _read_as_yaml(text)}
     monkeypatch.setitem(sys.modules, "yaml", None)
     compared = 0
     for text, yaml_gating in as_yaml.items():
         line_gating = _gating_of(text)
         if yaml_gating is None or line_gating is None:
             continue
-        compared += 1
+        compared += any(yaml_gating.values())
         for key in KEYS:
             assert yaml_gating[key] <= line_gating[key], (key, text)
-    assert compared > 300
+    assert compared > 100

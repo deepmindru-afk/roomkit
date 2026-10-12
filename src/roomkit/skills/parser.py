@@ -18,6 +18,7 @@ __all__ = [
     "SkillParseError",
     "SkillValidationError",
     "find_skill_md",
+    "frontmatter_text",
     "parse_frontmatter",
     "parse_skill",
     "parse_skill_metadata",
@@ -272,8 +273,10 @@ def _as_strings(mapping: dict[Any, Any]) -> dict[str, FrontmatterValue]:
         raise _FrontmatterNotReadError("the frontmatter holds a value text cannot hold") from exc
 
 
-def _scalar(value: FrontmatterValue | None) -> str:
-    """Read a frontmatter value that is meant to be a scalar.
+def frontmatter_text(value: object) -> str:
+    """A frontmatter value as text, as ``SkillMetadata`` keeps a scalar and
+    ``extra_metadata`` every other key, local or served alike: a list joined
+    by commas, an empty item left out.
 
     ``allowed_tools`` is the one field whose list form carries meaning. A list
     written where a scalar belongs is joined rather than refused — a skill with
@@ -282,15 +285,15 @@ def _scalar(value: FrontmatterValue | None) -> str:
     if value is None:
         return ""
     if isinstance(value, list):
-        return ", ".join(str(item) for item in value)
-    return value
+        return ", ".join(str(item) for item in value if item is not None)
+    return str(value)
 
 
 def validate_metadata(data: dict[str, FrontmatterValue], skill_dir: Path) -> list[str]:
     """Validate parsed frontmatter data. Returns list of error strings."""
     errors: list[str] = []
 
-    name = _scalar(data.get("name"))
+    name = frontmatter_text(data.get("name"))
     if not name:
         errors.append("Missing required field: name")
     elif not _NAME_PATTERN.fullmatch(name):
@@ -304,7 +307,7 @@ def validate_metadata(data: dict[str, FrontmatterValue], skill_dir: Path) -> lis
     if name and name != skill_dir.name:
         errors.append(f"Name {name!r} does not match directory name {skill_dir.name!r}")
 
-    description = _scalar(data.get("description"))
+    description = frontmatter_text(data.get("description"))
     if not description:
         errors.append("Missing required field: description")
     elif len(description) > _DESC_MAX_LEN:
@@ -352,12 +355,12 @@ def _validated_metadata(data: dict[str, FrontmatterValue], skill_dir: Path) -> S
     if errors:
         raise SkillValidationError(f"Validation failed for {skill_dir.name}: {'; '.join(errors)}")
 
-    extra = {k: _scalar(v) for k, v in data.items() if k not in _KNOWN_KEYS}
+    extra = {k: frontmatter_text(v) for k, v in data.items() if k not in _KNOWN_KEYS}
     return SkillMetadata(
-        name=_scalar(data["name"]),
-        description=_scalar(data["description"]),
-        license=_scalar(data.get("license")) or None,
-        compatibility=_scalar(data.get("compatibility")) or None,
+        name=frontmatter_text(data["name"]),
+        description=frontmatter_text(data["description"]),
+        license=frontmatter_text(data.get("license")) or None,
+        compatibility=frontmatter_text(data.get("compatibility")) or None,
         allowed_tools=data.get("allowed_tools"),
         extra_metadata=extra,
     )
