@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from roomkit.skills.errors import SkillParseError
+from roomkit.skills.models import parse_tool_names
 from roomkit.skills.parser import parse_frontmatter
 from roomkit.skills.registry import SkillRegistry
 
@@ -200,6 +201,15 @@ def test_yaml_refuses_a_gating_key_that_is_not_a_list_of_texts(tmp_path: Path, l
         "allowed_tools:\n  - issue_refund\n  - #void_*\n",
         "allowed_tools: issue_refund # money, void_*\n",
         " allowed_tools: [issue_refund]\n name: refunds\n",
+        "allowed_tools: [issue_refund]\nmetadata: {a: 1,\nallowed_tools: x}\n",
+        "allowed_tools: [issue_refund]\nnotes: [a,\nallowed_tools: x]\n",
+        'allowed_tools: [issue_refund]\nnotes: "a\nallowed_tools:\nlicense: MIT"\n',
+        "allowed_tools: [issue_refund]\nnotes: 'a\nallowed_tools: x'\n",
+        "? allowed_tools\n: [issue_refund]\n",
+        "!!str allowed_tools: [issue_refund]\n",
+        "&key allowed_tools: [issue_refund]\n",
+        "<<: {allowed_tools: [issue_refund]}\n",
+        '"allowed\\x5ftools": [issue_refund]\n',
     ],
     ids=[
         "nested empty key",
@@ -215,13 +225,22 @@ def test_yaml_refuses_a_gating_key_that_is_not_a_list_of_texts(tmp_path: Path, l
         "comment item",
         "comment after a value",
         "indented document",
+        "flow mapping over lines",
+        "flow sequence over lines",
+        "double-quoted text over lines",
+        "single-quoted text over lines",
+        "explicit key",
+        "tagged key",
+        "anchored key",
+        "merge key",
+        "escaped key",
     ],
 )
 def test_the_line_reader_never_gates_less_than_yaml(
     monkeypatch: pytest.MonkeyPatch, lines: str
 ) -> None:
     # RFC §24.1: of a frontmatter that is also YAML, the line-by-line reading
-    # gates and requires what YAML does, or refuses the skill.
+    # gates and requires at least what YAML does, or refuses the skill.
     text = "---\nname: refunds\ndescription: d\n" + lines + "---\n"
     try:
         as_yaml, _ = parse_frontmatter(text)
@@ -234,7 +253,10 @@ def test_the_line_reader_never_gates_less_than_yaml(
         return
     assert as_yaml is not None
     for key in ("allowed_tools", "requires"):
-        assert by_lines.get(key) == as_yaml.get(key), key
+        missing = set(parse_tool_names(as_yaml.get(key))) - set(
+            parse_tool_names(by_lines.get(key))
+        )
+        assert not missing, key
 
 
 def test_the_rfc_example_reads_the_same_without_pyyaml(monkeypatch: pytest.MonkeyPatch) -> None:

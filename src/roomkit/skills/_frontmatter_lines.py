@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 
 from roomkit.skills.errors import SkillParseError
+from roomkit.skills.models import parse_tool_names
 
 GATING_KEYS = ("allowed_tools", "requires")
 """What a skill gates and what it requires: whichever reader, their value is
@@ -15,6 +16,10 @@ read whole, a text or a list of texts, or the skill is refused (RFC §24.1)."""
 _KEY_LINE = re.compile(r"""^(["']?)(\w[\w-]*)\1\s*:\s*(.*)$""")
 _ITEM_LINE = re.compile(r"^\s*-(?:\s+(.*))?$")
 _COMMENT = re.compile(r"(?:^|\s)#")
+_HIDDEN_KEY = re.compile(r"""^(?:\?(?:\s|$)|[!&]|<<|"[^"]*\\)""")
+"""How a top-level line starts when YAML may read a key there that this
+reading cannot name: an explicit key, a tag or an anchor on the key, a merge
+key, or an escape in a double-quoted key."""
 _NOT_A_PLAIN_TEXT = re.compile(r"^(?:[\[\]{}|>&!%@`,]|[-?:](?:\s|$))")
 """How a value starts when YAML reads it as more than a plain text: a
 collection, a block scalar, an anchor, a tag, a reserved indicator, or a
@@ -56,15 +61,32 @@ def _read_key_line(data: dict[str, str | list[str]], line: str) -> tuple[str, bo
     hold its value; a value on the line itself is recorded in *data*."""
     match = _KEY_LINE.match(line)
     if not match:
+        if _HIDDEN_KEY.match(line):
+            raise SkillParseError("the frontmatter holds a key it cannot read line by line")
         return None
     key, value = match[2], match[3].strip()
-    if key in GATING_KEYS:
-        value = _without_comment(key, value)
-    if not value:
-        data.pop(key, None)
-        return key, True
-    data[key] = _list_value(key, value) if key in GATING_KEYS else value.strip("\"'")
-    return key, False
+    if key not in GATING_KEYS:
+        if value:
+            data[key] = value.strip("\"'")
+        else:
+            data.pop(key, None)
+        return key, not value
+    value = _without_comment(key, value)
+    if value:
+        _add_gating(data, key, _list_value(key, value))
+    return key, not value
+
+
+def _add_gating(data: dict[str, str | list[str]], key: str, value: str | list[str]) -> None:
+    """Record *value* for a gating *key*, joined to what an earlier line of
+    that key gave: a line YAML reads as the rest of another value (a flow
+    collection or a quoted text over several lines) never takes back what
+    the top level gates."""
+    earlier = data.get(key)
+    if earlier is None:
+        data[key] = value
+        return
+    data[key] = list(dict.fromkeys([*parse_tool_names(earlier), *parse_tool_names(value)]))
 
 
 def _list_value(key: str, text: str) -> str | list[str]:
@@ -85,7 +107,7 @@ def _append_item(data: dict[str, str | list[str]], key: str, text: str | None) -
     """Add what a ``- item`` line holds to the list of *key*."""
     items = data.get(key)
     if not isinstance(items, list):
-        items = []
+        items = parse_tool_names(items)
         data[key] = items
     items.extend(_list_item(key, text))
 

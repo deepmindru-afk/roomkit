@@ -65,7 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requires what YAML does, or refuses the skill: a key indented under
   another (`metadata:` then `  allowed_tools:`) is that key's value and no
   longer replaces the top-level one, a quoted key or value is read whole
-  (a ` #` inside it is no comment), and a null list item gates nothing on
+  (a ` #` inside it is no comment), a gating key read again is joined to
+  the first (a flow collection or quoted text over several lines may hold
+  a line that looks like one), a key YAML reads where this reading cannot
+  (`? key`, a tag, an anchor, a merge key, an escape in a quoted key)
+  refuses the skill, and a null list item gates nothing on
   either reader where YAML used to gate the pattern `None`. `allowed_tools`
   and `requires` now read a value with one reader (RFC §24.2): a text
   `[a, b]`, or quoted entries (`'a', 'b'`), gate `a` and `b` where
