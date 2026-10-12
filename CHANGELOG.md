@@ -61,13 +61,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hummed "no" (RMK-696). A player's « Ouh. » cut a story under semantic
   barge-in: `ENGLISH_BACKCHANNELS` and `FRENCH_BACKCHANNELS` now hold the
   continuers, agreement, assessments, surprise, disgust, laughter and thanks
-  people say over a speaker (123 and 130 entries, from Switchboard counts,
+  people say over a speaker (123 and 127 entries, from Switchboard counts,
   French CID and Québec CFPQ work, and voice-agent lists), Québec's « ouin »,
   « ayoye » or « mets-en » included. What asks the bot to stop or repeat,
   disagrees, doubts or opens a turn stays out ("wait", "huh?", "oh no",
-  "really?", « hein », « voyons donc », « c'est bon »). "mm-mm", the way
-  Deepgram writes "no", read as two "mm" and let the bot talk on: a hummed
-  no ("mm-mm", "uh-uh", "nuh-uh") reads as "no".
+  "really?", "that's true?", « hein », « voyons donc », « c'est bon »,
+  « c'est vrai ? », « ben », « dis donc »), and so does an intensifier on
+  its own: "very cool" and « trop bien » pass, « Trop ! » cuts. "mm-mm", the
+  way Deepgram writes "no", read as two "mm" and let the bot talk on: a
+  hummed no ("mm-mm", "uh-uh", "nuh-uh") in what the user said reads as
+  "no", and a phrase list naming one never makes "no" an acknowledgement.
 
 ## [0.99.0] — 2026-10-12
 

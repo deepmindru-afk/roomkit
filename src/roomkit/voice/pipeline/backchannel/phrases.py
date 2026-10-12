@@ -54,7 +54,6 @@ ENGLISH_BACKCHANNELS: tuple[str, ...] = (
     "definitely",
     "totally",
     "certainly",
-    "for sure",
     "agreed",
     "i agree",
     "fair enough",
@@ -62,11 +61,9 @@ ENGLISH_BACKCHANNELS: tuple[str, ...] = (
     "that makes sense",
     "good point",
     "that's right",
-    "that's true",
     "you're right",
-    # Assessments; "very" only ever joins listed words ("very cool"), and "that's" is no
-    # phrase of its own, or "that's okay" (a polite no) would pass
-    "very",
+    # Assessments; "very" is no phrase of its own, nor is "that's", or "that's okay" (a
+    # polite no) would pass
     "cool",
     "nice",
     "great",
@@ -85,6 +82,11 @@ ENGLISH_BACKCHANNELS: tuple[str, ...] = (
     "interesting",
     "funny",
     "crazy",
+    "very good",
+    "very nice",
+    "very cool",
+    "very interesting",
+    "very funny",
     "sounds good",
     "sounds great",
     "love it",
@@ -95,7 +97,6 @@ ENGLISH_BACKCHANNELS: tuple[str, ...] = (
     "that's awesome",
     "that's funny",
     "that's nice",
-    "that's good",
     # Surprise, sympathy, relief, disgust
     "wow",
     "oh my",
@@ -119,8 +120,6 @@ ENGLISH_BACKCHANNELS: tuple[str, ...] = (
     "gross",
     "yuck",
     "ugh",
-    # A news-marker: "really" alone is often a challenge
-    "oh really",
     # Laughter, spelled out or as the words of a tag ("[laughter]", "(laughs)")
     "ha",
     "haha",
@@ -147,7 +146,8 @@ ENGLISH_BACKCHANNELS: tuple[str, ...] = (
 """Acknowledgements, continuers, agreement, assessments, reactions, laughter and thanks
 in English, said to what the bot just said or did, not to stop it (RMK-696). Left out
 on purpose: what asks it to stop or repeat ("wait", "huh"), disagrees ("no", "oh no",
-"but"), or opens a turn ("um", "well", "so")."""
+"but"), doubts ("really?", "for sure?", "that's true?") or opens a turn ("um", "well",
+"so")."""
 
 FRENCH_BACKCHANNELS: tuple[str, ...] = (
     # Acknowledgements and continuers
@@ -167,7 +167,6 @@ FRENCH_BACKCHANNELS: tuple[str, ...] = (
     "oh",
     "ah bon",
     "bon",
-    "ben",
     "bien",
     "voilà",
     "je vois",
@@ -184,15 +183,14 @@ FRENCH_BACKCHANNELS: tuple[str, ...] = (
     "continue",
     "envoye",
     "envoie",
-    # Agreement; "sûr" and "vrai" alone stay out: « Sûr ? », « Vrai ? » doubt
+    # Agreement; « sûr », « vrai » and « certain » stay out, alone or after « c'est »:
+    # « C'est vrai ? » doubts
     "exact",
     "exactement",
     "effectivement",
     "en effet",
     "tout à fait",
     "c'est ça",
-    "c'est vrai",
-    "c'est sûr",
     "bien sûr",
     "c'est clair",
     "clairement",
@@ -200,18 +198,19 @@ FRENCH_BACKCHANNELS: tuple[str, ...] = (
     "absolument",
     "certainement",
     "carrément",
-    "justement",
-    "certain",
     "mets-en",
     "en plein ça",
     "t'as raison",
     "tu as raison",
     "vous avez raison",
-    # Assessments; "très" and "trop" only join listed words, and "c'est" is no phrase of
-    # its own, or « c'est bon » (also "enough!") would pass
-    "très",
+    # Assessments; « très », « trop » and « c'est » are no phrases of their own: « Trop ! »
+    # protests, and « c'est bon » is also "enough!"
     "très bien",
-    "trop",
+    "très intéressant",
+    "très drôle",
+    "trop bien",
+    "trop cool",
+    "trop drôle",
     "super",
     "cool",
     "génial",
@@ -254,7 +253,6 @@ FRENCH_BACKCHANNELS: tuple[str, ...] = (
     "oulà",
     "houlà",
     "oulala",
-    "dis donc",
     "mon dieu",
     "my god",
     "oh boy",
@@ -293,13 +291,14 @@ FRENCH_BACKCHANNELS: tuple[str, ...] = (
 included (live, a « Merci » to « je m'occupe de ça » cut the result that came next,
 RMK-555), and reactions (an « Ouh. » cut a story, RMK-696). Left out on purpose:
 « non », « attends », « hein », « euh », « ben là », « voyons donc », « c'est bon » (also
-"enough!") and « c'est correct » (a polite no in Québec)."""
+"enough!"), « c'est correct » (a polite no in Québec), doubts (« c'est vrai ? »,
+« c'est sûr ? ») and what opens a turn (« ben », « dis donc », « justement »)."""
 
 _WORD = re.compile(r"[^\W_]+")  # letters and digits: apostrophes and hyphens split words
 _REPEATED = re.compile(r"(\w)\1+")
 # A "no" an STT writes as hummed syllables (Deepgram's "mm-mm", "uh-uh", "nuh-uh"):
 # split on the hyphen, "mm-mm" read as two "mm", an acknowledgement.
-_HUMMED_NO = re.compile(r"\b(?:m+-m+|u+h+-u+h+|h+u+h+-u+h+|n+u+h+-u+h+)\b")
+_HUMMED_NO = re.compile(r"\b(?:m+-m+|u+h+-u+h+|h+u+h+-u+h+|n+u+h+-u+h+)\b", re.IGNORECASE)
 
 
 def _words(text: str) -> tuple[str, ...]:
@@ -307,10 +306,18 @@ def _words(text: str) -> tuple[str, ...]:
 
     Applied to the phrases and the transcript alike, so a held sound matches
     however the STT spells it: "hmm", "hmmm" and "hm" are one word, as are
-    "oui" and "ouiii". A hummed "no" ("mm-mm") reads as "no".
+    "oui" and "ouiii".
     """
-    lowered = _HUMMED_NO.sub(" no ", text.lower())
-    return tuple(_WORD.findall(_REPEATED.sub(r"\1", lowered)))
+    return tuple(_WORD.findall(_REPEATED.sub(r"\1", text.lower())))
+
+
+def _heard_words(transcript: str) -> tuple[str, ...]:
+    """The words of *transcript*, a hummed "no" ("mm-mm") read as "no".
+
+    The transcript's only: a phrase list naming "mm-mm" never makes "no" an
+    acknowledgement.
+    """
+    return _words(_HUMMED_NO.sub(" no ", transcript))
 
 
 class PhraseBackchannelDetector(BackchannelDetector):
@@ -355,7 +362,7 @@ class PhraseBackchannelDetector(BackchannelDetector):
         return "PhraseBackchannelDetector"
 
     def classify(self, context: BackchannelContext) -> BackchannelDecision:
-        words = _words(context.transcript or "")
+        words = _heard_words(context.transcript or "")
         if not words:
             return BackchannelDecision(
                 is_backchannel=not self._cut_without_words, confidence=0.5, label="no words"

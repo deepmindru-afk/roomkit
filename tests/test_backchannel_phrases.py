@@ -83,11 +83,7 @@ def test_anything_else_is_an_interruption(text: str) -> None:
         "Oh là là",
         "Oh la la !",
         "Oulala",
-        "Ah ben dis donc",
-        "C'est vrai ?",
-        "Ben oui.",
         "Ouais ouais ouais",
-        "C'est sûr",
         "Bien sûr",
         "Mets-en!",
         "Pas pire",
@@ -104,7 +100,6 @@ def test_anything_else_is_an_interruption(text: str) -> None:
         "Oh mon dieu",
         "uhhuh",
         "um-hum",
-        "Oh really?",
         "Oh my god",
         "That's awesome",
         "Very cool",
@@ -159,6 +154,21 @@ def test_reactions_and_regional_acknowledgements_are_backchannels(text: str) -> 
         "that's enough",
         "that's okay",
         "yeah but",
+        # Doubts, turn openers and a lone intensifier
+        "C'est vrai ?",
+        "C'est sûr ?",
+        "Certain ?",
+        "Oh really?",
+        "That's true?",
+        "For sure?",
+        "That's good",
+        "Ben",
+        "Bon ben",
+        "Dis donc",
+        "Justement",
+        "Very",
+        "Très",
+        "Trop !",
     ],
 )
 def test_what_stops_doubts_or_opens_a_turn_still_cuts(text: str) -> None:
@@ -170,6 +180,15 @@ def test_a_hummed_no_cuts(text: str) -> None:
     """Deepgram writes "no" as "mm-mm": split on its hyphen, it read as two "mm"."""
     assert not _is_backchannel(text)
     assert _is_backchannel("Mm-hmm") and _is_backchannel("uh-huh")
+
+
+@pytest.mark.parametrize("hummed", ["mm-mm", "Mmm-mmm", "uh-uh"])
+def test_a_phrase_list_naming_a_hummed_no_never_lets_no_through(hummed: str) -> None:
+    """The hummed no is read in the transcript only: listed, it is no "no"."""
+    detector = PhraseBackchannelDetector((*ENGLISH_BACKCHANNELS, hummed))
+
+    assert not _is_backchannel("No.", detector)
+    assert not _is_backchannel("no no no", detector)
 
 
 @pytest.mark.parametrize("text", [None, "", "  ", "..."])
