@@ -75,7 +75,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`"hf\n"`), as it refuses any label that is not an identifier: the check
   let a trailing newline through, which every served skill's name then
   carried into the prompt (RMK-692). A served skill's path is checked the
-  same way.
+  same way, and so is a local skill's `name`: a skill named `combat\n` in a
+  directory of that name loaded, and its name reached the prompt's skill
+  list with the line break.
 
 ## [0.98.0] — 2026-10-12
 

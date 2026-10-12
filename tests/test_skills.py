@@ -19,6 +19,7 @@ from roomkit.skills.parser import (
     parse_frontmatter,
     parse_skill,
     parse_skill_metadata,
+    valid_skill_name,
     validate_metadata,
 )
 from roomkit.skills.registry import SkillRegistry
@@ -149,6 +150,15 @@ class TestValidateMetadata:
         skill_dir.mkdir()
         errors = validate_metadata({"name": "BadName", "description": "Bad"}, skill_dir)
         assert any("kebab-case" in e for e in errors)
+
+    def test_a_name_ending_in_a_line_break_is_refused(self, tmp_path: Path) -> None:
+        """``$`` matches before a final line break: the name would carry it
+        into the prompt's skill list."""
+        skill_dir = tmp_path / "combat\n"
+        skill_dir.mkdir()
+        errors = validate_metadata({"name": "combat\n", "description": "Bad"}, skill_dir)
+        assert any("kebab-case" in e for e in errors)
+        assert not valid_skill_name("combat\n")
 
     def test_name_too_long(self, tmp_path: Path) -> None:
         long_name = "a" * 65

@@ -110,7 +110,7 @@ def valid_skill_name(name: str) -> bool:
     """Whether *name* is a skill name as SKILL.md spells one (RFC §24.1):
     lowercase letters and digits in hyphen-separated runs, at most 64
     characters."""
-    return bool(_NAME_PATTERN.match(name)) and len(name) <= _NAME_MAX_LEN
+    return bool(_NAME_PATTERN.fullmatch(name)) and len(name) <= _NAME_MAX_LEN
 
 
 def split_frontmatter(content: str) -> tuple[str, str]:
@@ -340,7 +340,7 @@ def validate_metadata(data: dict[str, FrontmatterValue], skill_dir: Path) -> lis
     name = _scalar(data.get("name"))
     if not name:
         errors.append("Missing required field: name")
-    elif not _NAME_PATTERN.match(name):
+    elif not _NAME_PATTERN.fullmatch(name):
         errors.append(
             f"Invalid name {name!r}: must be kebab-case (lowercase alphanumeric + hyphens)"
         )
