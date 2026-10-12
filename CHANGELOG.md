@@ -57,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lost them without PyYAML. Both list forms are now read as lists, items
   unquoted and a trailing `# comment` dropped. An `allowed_tools` or
   `requires` the line reader cannot read whole (a list spread over several
-  lines, a block scalar, an anchor or alias, a line under the key that is
+  lines, a block scalar, an anchor or a tag, a line under the key that is
   not a `- item`) raises `SkillParseError` naming the skill, where the
   skill loaded without the key; so does one YAML reads as a mapping or a
   nested list, which used to become a single pattern matching no tool.

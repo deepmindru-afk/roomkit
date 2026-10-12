@@ -104,7 +104,7 @@ def test_a_line_it_cannot_place_under_a_list_key_refuses_the_skill(
         "allowed_tools: [issue_refund, [void_*]]",
         "allowed_tools: {issue_refund: true}",
         "allowed_tools:\n  - &money issue_refund",
-        "requires:\n  - *lookup",
+        "requires:\n  - !tool lookup_order",
     ],
     ids=[
         "flow over lines",
@@ -115,7 +115,7 @@ def test_a_line_it_cannot_place_under_a_list_key_refuses_the_skill(
         "nested flow",
         "mapping",
         "anchor",
-        "alias",
+        "tag",
     ],
 )
 def test_a_gating_key_a_line_cannot_hold_whole_refuses_the_skill(head: str, lines: str) -> None:
@@ -144,6 +144,22 @@ def test_each_form_reads_as_yaml_reads_it(
     by_lines, _ = parse_frontmatter(text)
     assert by_lines == as_yaml
     assert by_lines["allowed_tools"] == expected
+
+
+@pytest.mark.parametrize(
+    ("lines", "expected"),
+    [
+        ("allowed_tools: *", "*"),
+        ("allowed_tools:\n  - *_admin\n  - search_*", ["*_admin", "search_*"]),
+        ("allowed_tools: [*_admin, search_*]", ["*_admin", "search_*"]),
+    ],
+    ids=["every tool", "block", "flow"],
+)
+def test_a_glob_starting_with_a_star_is_a_pattern(head: str, lines: str, expected: object) -> None:
+    # YAML reads a leading * as an alias and fails; no line defines an
+    # anchor, so the line reader takes it as the glob it is.
+    data, _ = parse_frontmatter(head + lines + "\n---\n")
+    assert data["allowed_tools"] == expected
 
 
 def test_a_bracketed_description_stays_whole() -> None:

@@ -15,9 +15,10 @@ read whole, a text or a list of texts, or the skill is refused (RFC §24.1)."""
 _KEY_LINE = re.compile(r"^(\w[\w_-]*)\s*:\s*(.*)$")
 _ITEM_LINE = re.compile(r"^\s*-(?:\s+(.*))?$")
 _COMMENT = re.compile(r"\s#")
-_NOT_A_TEXT = tuple("[]{}|>&*!")
+_NOT_A_TEXT = tuple("[]{}|>&!")
 """How a value starts when it is YAML a line cannot hold: a collection, a block
-scalar, an anchor, an alias or a tag."""
+scalar, an anchor or a tag. A leading ``*`` stays text: no line defines an
+anchor for it to name, and ``*`` or ``*_admin`` is a glob a skill gates."""
 
 
 def parse_lines(fm_text: str) -> dict[str, str | list[str]]:
@@ -92,7 +93,7 @@ def _list_item(key: str, text: str | None) -> list[str]:
 
     Raises:
         SkillParseError: An item of ``allowed_tools`` or ``requires`` is YAML
-            a line cannot hold (a collection, an anchor, an alias, a tag).
+            a line cannot hold (a collection, an anchor, a tag).
     """
     item = _without_comment(text or "")
     if key in GATING_KEYS and item.startswith(_NOT_A_TEXT):
