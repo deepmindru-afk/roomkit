@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Muse Wonder, Meta's preview model above Muse Spark, is in the Meta catalog:
+  `MetaConfig(model="muse-wonder-1.0")` (1,048,576-token window, tools, image
+  input, reasoning from `minimal` to `max`; $4.00 / $20.00 per million tokens,
+  $0.20 cached; no contributor id). Meta's `/v1/models` already served it, but
+  `MetaAIProvider.list_models()` kept only `muse-spark-*` ids and left it out;
+  it now keeps `muse-wonder-*` ids too. Its `"none"` effort is refused by
+  the service, as Muse Spark's, and sent as `"minimal"` (checked live).
+
 ### Fixed
 
 - ElevenLabs streaming input never sends a chunk with no word to say on its

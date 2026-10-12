@@ -1,4 +1,4 @@
-"""Offline metadata for Meta's Muse Spark chat models.
+"""Offline metadata for Meta's Muse Spark and Muse Wonder chat models.
 
 Hand-maintained list returned by ``MetaAIProvider.available_models`` — the
 context windows and rates roomkit needs before it can make a network call.
@@ -6,13 +6,15 @@ context windows and rates roomkit needs before it can make a network call.
 account's ``/v1/models`` for what is live.
 
 Sourced from the Meta Model API docs (dev.meta.ai/docs/models and
-/docs/pricing-rate-limits), verified 2026-09-27, and the ids against a live
-``GET /v1/models`` the same day.
+/docs/pricing-rate-limits), verified 2026-09-27 (Muse Wonder 2026-10-12), and
+the ids against a live ``GET /v1/models`` the same days.
 
-Every Muse Spark model reads images (and video, PDF and audio, which roomkit's
-AI parts do not carry), calls tools and always reasons — ``"thinking"`` is on
-every entry, and ``reasoning_effort="none"`` is refused by the service. The
-reasoning itself is not returned by Chat Completions, only counted.
+Every model reads images (and video, PDF and audio, which roomkit's AI parts do
+not carry), calls tools and always reasons — ``"thinking"`` is on every entry,
+and ``reasoning_effort="none"`` is refused by the service (checked live on
+Muse Wonder too, which takes ``"minimal"`` to ``"max"``). The reasoning itself
+is not returned by Chat Completions, only counted. Muse Wonder is a preview,
+Standard mode only: it has no contributor id.
 
 The ``-contributor`` ids are the same models at a fraction of the price,
 because Meta trains its models on their traffic. Meta charges no long-context
@@ -26,6 +28,7 @@ from datetime import date
 from roomkit.providers.ai.base import ModelInfo, ModelPricing
 
 _VERIFIED = date(2026, 9, 27)
+_WONDER_VERIFIED = date(2026, 10, 12)
 _WINDOW = 1_048_576
 _CAPS = ["tools", "thinking"]
 
@@ -35,6 +38,12 @@ _STANDARD = ModelPricing(
     cache_read_per_million=0.15,
     verified=_VERIFIED,
 )
+_WONDER = ModelPricing(
+    input_per_million=4.00,
+    output_per_million=20.00,
+    cache_read_per_million=0.20,
+    verified=_WONDER_VERIFIED,
+)
 _CONTRIBUTOR = ModelPricing(
     input_per_million=0.10,
     output_per_million=0.20,
@@ -43,6 +52,14 @@ _CONTRIBUTOR = ModelPricing(
 )
 
 MODELS: list[ModelInfo] = [
+    ModelInfo(
+        id="muse-wonder-1.0",
+        display_name="Muse Wonder 1.0 (preview)",
+        context_window=_WINDOW,
+        supports_vision=True,
+        capabilities=_CAPS,
+        pricing=_WONDER,
+    ),
     ModelInfo(
         id="muse-spark-1.3",
         display_name="Muse Spark 1.3",

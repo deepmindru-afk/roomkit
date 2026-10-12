@@ -132,13 +132,19 @@ class TestProvider:
             "muse-image-1.0",
             "muse-voice-transcribe-1.0",
             "muse-spark-1.2-contributor",
+            "muse-wonder-1.0",
         ]
         provider._client.models.list = AsyncMock(
             return_value=SimpleNamespace(data=[SimpleNamespace(id=i) for i in ids])
         )
         listed = await provider.list_models()
-        assert [m.id for m in listed] == ["muse-spark-1.3", "muse-spark-1.2-contributor"]
+        assert [m.id for m in listed] == [
+            "muse-spark-1.3",
+            "muse-spark-1.2-contributor",
+            "muse-wonder-1.0",
+        ]
         assert listed[0].context_window == 1_048_576  # backfilled from the catalog
+        assert listed[2].pricing is not None and listed[2].pricing.output_per_million == 20.00
 
     async def test_status_errors_carry_the_meta_provider(self) -> None:
         provider = _provider()

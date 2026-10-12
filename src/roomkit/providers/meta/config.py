@@ -76,8 +76,9 @@ class MetaConfig(OpenAIConfig):
     endpoint, the model and two defaults change.
 
     ``reasoning_effort`` takes ``minimal``, ``low``, ``medium``, ``high`` or
-    ``xhigh``. Muse Spark always reasons: ``"none"`` is refused by the service
-    and sent as ``"minimal"``, its lightest effort.
+    ``xhigh``, and Muse Wonder ``max`` too. Every Muse chat model always
+    reasons: ``"none"`` is refused by the service and sent as ``"minimal"``,
+    its lightest effort.
 
     The ``-contributor`` model ids cost a fraction of the standard ones because
     Meta trains its models on their prompts and completions. They are never a
@@ -90,7 +91,7 @@ class MetaConfig(OpenAIConfig):
     """Meta Model API endpoint. Override only to point at a proxy."""
 
     model: str = "muse-spark-1.3"
-    """Muse Spark model id — see :mod:`roomkit.providers.meta.models`."""
+    """Muse Spark or Muse Wonder model id — see :mod:`roomkit.providers.meta.models`."""
 
     use_max_completion_tokens: bool = True
     """Meta documents ``max_completion_tokens`` for Chat Completions."""
