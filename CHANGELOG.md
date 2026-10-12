@@ -17,8 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   has played less than `InterruptionConfig.echo_guard_ms` of response audio
   (6000 by default, 0 turns it off), speech made only of words of the
   response being played, consecutive and in order, is its echo, whatever the
-  strategy: it does not interrupt, is not queued, and its final is
-  discarded, even once the response is over. A word the response does not
+  strategy: it does not interrupt, is not queued, its partials are not
+  published (`ON_PARTIAL_TRANSCRIPTION`), and its final is discarded, even
+  once the response is over. A word the response does not
   say there makes it speech. `InterruptionHandler.evaluate()` takes the
   response's text and the session's played audio for it
   (`response_text=`, `session_played_ms=`), and `InterruptionDecision.is_echo`

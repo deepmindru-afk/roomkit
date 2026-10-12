@@ -134,6 +134,7 @@ async def _speak_over(partials: list[str], final: str, *, played_before_ms: int 
     session = await kit.connect_voice("r1", "user-1", "voice-1")
     turns: list[str] = []
     cuts: list[object] = []
+    partials: list[str] = []
 
     @kit.hook(HookTrigger.ON_BARGE_IN, HookExecution.ASYNC)
     async def on_barge_in(event: object, context: object) -> None:
@@ -143,6 +144,10 @@ async def _speak_over(partials: list[str], final: str, *, played_before_ms: int 
     async def on_transcription(event: Any, context: object) -> HookResult:
         turns.append(event.text)
         return HookResult.allow()
+
+    @kit.hook(HookTrigger.ON_PARTIAL_TRANSCRIPTION, HookExecution.ASYNC)
+    async def on_partial(event: Any, context: object) -> None:
+        partials.append(event.text)
 
     if played_before_ms:
         channel._session_played_ms[session.id] = played_before_ms  # noqa: SLF001
@@ -157,26 +162,30 @@ async def _speak_over(partials: list[str], final: str, *, played_before_ms: int 
     await asyncio.sleep(0.3)
     await channel.close()
     await kit.close()
-    return turns, cuts
+    return turns, cuts, partials
 
 
 async def test_the_echo_of_a_response_opening_neither_cuts_it_nor_becomes_a_turn() -> None:
     # The final comes after the response ended, as Meta's did 5.5 s later.
-    turns, cuts = await _speak_over(["Salut"], "Salut")
+    turns, cuts, partials = await _speak_over(["Salut", "Salut ! Ça va"], "Salut")
 
     assert cuts == []
     assert turns == []
+    assert partials == []  # nobody's words: a chat shows none of them
 
 
 async def test_words_the_response_does_not_say_cut_it_and_are_the_turn() -> None:
-    turns, cuts = await _speak_over(["Salut", "Salut, attends"], "Salut, attends une seconde")
+    turns, cuts, partials = await _speak_over(
+        ["Salut", "Salut, attends"], "Salut, attends une seconde"
+    )
 
     assert len(cuts) == 1
     assert turns == ["Salut, attends une seconde"]
+    assert partials == ["Salut, attends"]
 
 
 async def test_past_the_guard_the_response_words_cut_in_and_are_the_turn() -> None:
-    turns, cuts = await _speak_over(["Salut"], "Salut", played_before_ms=10_000)
+    turns, cuts, _ = await _speak_over(["Salut"], "Salut", played_before_ms=10_000)
 
     assert len(cuts) == 1
     assert turns == ["Salut"]

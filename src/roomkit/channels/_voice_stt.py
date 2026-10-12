@@ -610,6 +610,12 @@ class VoiceSTTMixin:
             self._burst_backchannel.pop(session_id, None)
             self._echo_bursts.pop(session_id, None)
 
+    def _echoes_burst(self, session_id: str, text: str) -> bool:
+        """Whether *text* still echoes the response the speech under way was taken for."""
+        with self._state_lock:
+            response = self._echo_bursts.get(session_id)
+        return response is not None and echoes(text, response)
+
     def _took_for_echo(self, session_id: str, text: str) -> bool:
         """Whether a final is the echo of the response its first words were taken for.
 
@@ -947,10 +953,15 @@ class VoiceSTTMixin:
                                             self._handle_barge_in(session, playback, room_id),
                                             name=f"barge_in:{session.id}",
                                         )
-                            self._schedule(
-                                self._fire_partial_transcription_hook(session, result, room_id),
-                                name=f"partial_stt:{session.id}",
-                            )
+                            # An echo is nobody's words: its partials are not
+                            # published, as its final is no turn (§12.3.13).
+                            if not self._echoes_burst(session.id, result.text):
+                                self._schedule(
+                                    self._fire_partial_transcription_hook(
+                                        session, result, room_id
+                                    ),
+                                    name=f"partial_stt:{session.id}",
+                                )
                 except asyncio.CancelledError:
                     return
                 except Exception:

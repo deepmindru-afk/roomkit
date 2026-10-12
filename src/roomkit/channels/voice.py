@@ -1891,8 +1891,10 @@ class VoiceChannel(
         )
         if decision.is_echo:
             with self._state_lock:
+                first = self._echo_bursts.get(session_id) != playback.text
                 self._echo_bursts[session_id] = playback.text
-            logger.info("Taken for the response's echo: %r (pos=%dms)", speech_text, played)
+            if first:  # once per utterance: the energy path asks at every frame
+                logger.info("Taken for the response's echo: %r (pos=%dms)", speech_text, played)
         return decision
 
     def _claim_barge_in(self, playback: TTSPlaybackState) -> bool:
