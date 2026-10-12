@@ -10,6 +10,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from roomkit.skills._frontmatter_lines import GATING_KEYS, parse_lines
 from roomkit.skills.errors import SkillParseError, SkillValidationError
 from roomkit.skills.models import Skill, SkillMetadata
 
@@ -39,17 +40,6 @@ _SKILL_FILENAMES = ("SKILL.md", "skill.md")
 
 # Known frontmatter keys that map to SkillMetadata fields
 _KNOWN_KEYS = {"name", "description", "license", "compatibility", "allowed_tools"}
-
-_LIST_KEYS = ("allowed_tools", "requires")
-"""The keys whose list a line-by-line reading must keep or refuse: what a
-skill gates and what it requires (RFC §24.1)."""
-
-_KEY_LINE = re.compile(r"^(\w[\w_-]*)\s*:\s*(.*)$")
-_ITEM_LINE = re.compile(r"^\s*-(?:\s+(.*))?$")
-_COMMENT = re.compile(r"\s#")
-_NOT_A_TEXT = tuple("[]{}|>&*!")
-"""How a value starts when it is YAML a line cannot hold: a collection, a block
-scalar, an anchor, an alias or a tag."""
 
 FRONTMATTER_MAX = 64 * 1024
 """Characters a skill's frontmatter may take, in its entry's JSON as in its
@@ -252,13 +242,13 @@ def _parse_yaml_or_fallback(fm_text: str) -> dict[str, FrontmatterValue]:
         return _as_strings(mapping)
     except _FrontmatterNotReadError:
         logger.debug("YAML parse failed, falling back to regex parser")
-        return _parse_lines(fm_text)
+        return parse_lines(fm_text)
 
 
 def _refuse_nested_lists(mapping: dict[Any, Any]) -> None:
     """Refuse an ``allowed_tools`` or ``requires`` that is neither a text nor
     a list of texts (RFC §24.1): turned into one text, it would gate nothing."""
-    for key in _LIST_KEYS:
+    for key in GATING_KEYS:
         value = mapping.get(key)
         items = value if isinstance(value, list) else [value]
         if any(isinstance(item, dict | list | set | tuple) for item in items):
@@ -278,98 +268,6 @@ def _as_strings(mapping: dict[Any, Any]) -> dict[str, FrontmatterValue]:
     except ValueError as exc:
         # A hexadecimal integer past Python's digit limit for a decimal string.
         raise _FrontmatterNotReadError("the frontmatter holds a value text cannot hold") from exc
-
-
-def _parse_lines(fm_text: str) -> dict[str, FrontmatterValue]:
-    """Read the ``key: value`` lines of a frontmatter, a key alone on its
-    line followed by ``- item`` lines as a list (RFC §24.1).
-
-    Raises:
-        SkillParseError: ``allowed_tools`` or ``requires`` is not read whole:
-            reading the skill without it would leave open what it gates.
-    """
-    data: dict[str, FrontmatterValue] = {}
-    open_key: str | None = None  # a key alone on its line, its items to follow
-    list_key: str | None = None  # allowed_tools or requires, read last at the top
-    for line in fm_text.splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        item = _ITEM_LINE.match(line)
-        if item and open_key is not None:
-            _append_item(data, open_key, item[1])
-            continue
-        read = _read_key_line(data, line)
-        if list_key is not None and (read is None or line[:1].isspace()):
-            raise _unread(list_key)
-        key, is_open = read or (None, False)
-        open_key = key if is_open else None
-        list_key = key if key in _LIST_KEYS and not line[:1].isspace() else None
-    return data
-
-
-def _read_key_line(data: dict[str, FrontmatterValue], line: str) -> tuple[str, bool] | None:
-    """The key a ``key: value`` *line* names, and whether ``- item`` lines
-    hold its value; a value on the line itself is recorded in *data*."""
-    match = _KEY_LINE.match(line.strip())
-    if not match:
-        return None
-    key, value = match[1], match[2].strip()
-    if key in _LIST_KEYS:
-        value = _without_comment(value)
-    if not value:
-        data.pop(key, None)
-        return key, True
-    data[key] = _list_value(key, value) if key in _LIST_KEYS else value.strip("\"'")
-    return key, False
-
-
-def _list_value(key: str, text: str) -> FrontmatterValue:
-    """The value of an ``allowed_tools`` or ``requires`` line: ``[a, b]`` as
-    a list, a plain or quoted text as text.
-
-    Raises:
-        SkillParseError: The value is YAML a line cannot hold whole.
-    """
-    if text.startswith("[") and text.endswith("]") and not any(c in text[1:-1] for c in "[]{}"):
-        return [item for part in text[1:-1].split(",") for item in _list_item(key, part)]
-    if text.startswith(_NOT_A_TEXT):
-        raise _unread(key)
-    return text.strip("\"'")
-
-
-def _append_item(data: dict[str, FrontmatterValue], key: str, text: str | None) -> None:
-    """Add what a ``- item`` line holds to the list of *key*."""
-    items = data.get(key)
-    if not isinstance(items, list):
-        items = []
-        data[key] = items
-    items.extend(_list_item(key, text))
-
-
-def _list_item(key: str, text: str | None) -> list[str]:
-    """An item of *key*'s list as text, its trailing ``# comment`` and quotes
-    stripped: none when nothing is left.
-
-    Raises:
-        SkillParseError: An item of ``allowed_tools`` or ``requires`` is YAML
-            a line cannot hold (a collection, an anchor, an alias, a tag).
-    """
-    item = _without_comment(text or "")
-    if key in _LIST_KEYS and item.startswith(_NOT_A_TEXT):
-        raise _unread(key)
-    item = item.strip("\"'")
-    return [item] if item else []
-
-
-def _unread(key: str) -> SkillParseError:
-    """The refusal of a gating key a line-by-line reading cannot read whole."""
-    return SkillParseError(f"the frontmatter's {key} cannot be read line by line")
-
-
-def _without_comment(text: str) -> str:
-    """*text* up to a YAML comment (a ``#`` after a space), stripped."""
-    comment = _COMMENT.search(text)
-    return (text[: comment.start()] if comment else text).strip()
 
 
 def _scalar(value: FrontmatterValue | None) -> str:

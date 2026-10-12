@@ -1,0 +1,112 @@
+"""A SKILL.md frontmatter read line by line, for one that is not YAML or is
+read without PyYAML (RFC §24.1): ``key: value`` lines, and the two YAML list
+forms, read whole or refused for the keys that gate tools."""
+
+from __future__ import annotations
+
+import re
+
+from roomkit.skills.errors import SkillParseError
+
+GATING_KEYS = ("allowed_tools", "requires")
+"""What a skill gates and what it requires: whichever reader, their value is
+read whole, a text or a list of texts, or the skill is refused (RFC §24.1)."""
+
+_KEY_LINE = re.compile(r"^(\w[\w_-]*)\s*:\s*(.*)$")
+_ITEM_LINE = re.compile(r"^\s*-(?:\s+(.*))?$")
+_COMMENT = re.compile(r"\s#")
+_NOT_A_TEXT = tuple("[]{}|>&*!")
+"""How a value starts when it is YAML a line cannot hold: a collection, a block
+scalar, an anchor, an alias or a tag."""
+
+
+def parse_lines(fm_text: str) -> dict[str, str | list[str]]:
+    """Read the ``key: value`` lines of a frontmatter, a key alone on its
+    line followed by ``- item`` lines as a list (RFC §24.1).
+
+    Raises:
+        SkillParseError: ``allowed_tools`` or ``requires`` is not read whole:
+            reading the skill without it would leave open what it gates.
+    """
+    data: dict[str, str | list[str]] = {}
+    open_key: str | None = None  # a key alone on its line, its items to follow
+    list_key: str | None = None  # allowed_tools or requires, read last at the top
+    for line in fm_text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        item = _ITEM_LINE.match(line)
+        if item and open_key is not None:
+            _append_item(data, open_key, item[1])
+            continue
+        read = _read_key_line(data, line)
+        if list_key is not None and (read is None or line[:1].isspace()):
+            raise _unread(list_key)
+        key, is_open = read or (None, False)
+        open_key = key if is_open else None
+        list_key = key if key in GATING_KEYS and not line[:1].isspace() else None
+    return data
+
+
+def _read_key_line(data: dict[str, str | list[str]], line: str) -> tuple[str, bool] | None:
+    """The key a ``key: value`` *line* names, and whether ``- item`` lines
+    hold its value; a value on the line itself is recorded in *data*."""
+    match = _KEY_LINE.match(line.strip())
+    if not match:
+        return None
+    key, value = match[1], match[2].strip()
+    if key in GATING_KEYS:
+        value = _without_comment(value)
+    if not value:
+        data.pop(key, None)
+        return key, True
+    data[key] = _list_value(key, value) if key in GATING_KEYS else value.strip("\"'")
+    return key, False
+
+
+def _list_value(key: str, text: str) -> str | list[str]:
+    """The value of an ``allowed_tools`` or ``requires`` line: ``[a, b]`` as
+    a list, a plain or quoted text as text.
+
+    Raises:
+        SkillParseError: The value is YAML a line cannot hold whole.
+    """
+    if text.startswith("[") and text.endswith("]") and not any(c in text[1:-1] for c in "[]{}"):
+        return [item for part in text[1:-1].split(",") for item in _list_item(key, part)]
+    if text.startswith(_NOT_A_TEXT):
+        raise _unread(key)
+    return text.strip("\"'")
+
+
+def _append_item(data: dict[str, str | list[str]], key: str, text: str | None) -> None:
+    """Add what a ``- item`` line holds to the list of *key*."""
+    items = data.get(key)
+    if not isinstance(items, list):
+        items = []
+        data[key] = items
+    items.extend(_list_item(key, text))
+
+
+def _list_item(key: str, text: str | None) -> list[str]:
+    """An item of *key*'s list as text, its trailing ``# comment`` and quotes
+    stripped: none when nothing is left.
+
+    Raises:
+        SkillParseError: An item of ``allowed_tools`` or ``requires`` is YAML
+            a line cannot hold (a collection, an anchor, an alias, a tag).
+    """
+    item = _without_comment(text or "")
+    if key in GATING_KEYS and item.startswith(_NOT_A_TEXT):
+        raise _unread(key)
+    item = item.strip("\"'")
+    return [item] if item else []
+
+
+def _unread(key: str) -> SkillParseError:
+    """The refusal of a gating key a line-by-line reading cannot read whole."""
+    return SkillParseError(f"the frontmatter's {key} cannot be read line by line")
+
+
+def _without_comment(text: str) -> str:
+    """*text* up to a YAML comment (a ``#`` after a space), stripped."""
+    comment = _COMMENT.search(text)
+    return (text[: comment.start()] if comment else text).strip()
