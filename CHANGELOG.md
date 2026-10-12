@@ -7,35 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.99.0] — 2026-10-12
+
 ### Added
 
 - What an MCP server publishes on how to use its tools now reaches the model
   (RMK-692, RFC §21.2). `MCPToolProvider.instructions` keeps the
-  `InitializeResult.instructions` a server sends when it connects (`None`
-  when it sends none), and `MCPToolProvider.server_info` what it says of
-  itself (`name`, `version`). `AIChannel(..., server_instructions={"gm":
+  `InitializeResult.instructions` a server sends when it connects (`None` when
+  it sends none), and `MCPToolProvider.server_info` what it says of itself
+  (`name`, `version`). `AIChannel(..., server_instructions={"gm":
   mcp.instructions})` and the same parameter on `RealtimeVoiceChannel` put
   them in every system prompt the channel composes, after its own prompt and
   before the skills: a prompt a binding or a `config_provider` sets for the
   room keeps them, Tool Search does not hide them, and no eviction or
   compaction reaches them. Each server's text is set apart as that server's
-  data, in a `<server_instructions>` block under `## MCP server: <label>`,
-  the label being the host's name for the server (an identifier, else
-  `ValueError`; a value neither text nor `None` raises `TypeError`), and is
-  cut at 8192 characters with a warning. A server
-  mapped to `None` is left out, which is also how a host leaves one out. A
-  realtime session whose provider takes no tools reads none of them. The
-  `Agent` an `AgentReasoningBackend` drives reads its own in its model's
-  prompt; a realtime pipeline refuses, at install, an agent that carries
-  some, as it refuses an agent's skills, and names the voice channel's own
-  `server_instructions=` instead (RFC §19.5).
+  data, in a `<server_instructions>` block under `## MCP server: <label>`, the
+  label being the host's name for the server (ASCII letters, digits and `_ .
+  -`, at most 64, else `ValueError`; anything but a mapping, or a server
+  mapped to neither text nor `None`, raises `TypeError`), and is cut at 8192
+  characters with a warning. A server mapped to `None` is left out, which is
+  also how a host leaves one out. A realtime session whose provider takes no
+  tools reads none of them. The `Agent` an `AgentReasoningBackend` drives
+  reads its own in its model's prompt; a realtime pipeline refuses, at
+  install, an agent that carries some, as it refuses an agent's skills, and
+  names the voice channel's own `server_instructions=` instead (RFC §19.5).
 
 ### Changed
 
 - PyYAML (`pyyaml>=6`) is a core dependency: every `SKILL.md` frontmatter,
-  local or served, is read by YAML first, and only one YAML cannot read as
-  a mapping is read line by line (RMK-693). The `mcp` extra no longer lists
-  it.
+  local or served, is read by YAML first (RMK-693). A local one YAML cannot
+  read as a mapping is read line by line; a served one fails its check. The
+  `mcp` extra no longer lists it.
 
 ### Removed
 
@@ -70,41 +72,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `yaml.safe_load` with no bound, and every value turned into a string: 372
   bytes of YAML aliases of aliases became 254 MB of text, two levels more
   about 20 GB. It is now read by the reader that checks a served skill's
-  frontmatter: a YAML alias, collections nested past 64 levels, more than
-  64 brackets or braces open at once (quoted ones counted too) and a
-  frontmatter past 65536 characters raise `SkillParseError` before
-  anything is built, where they used to load (a nesting past a few
-  hundred levels was read line by line). `discover()` fails on such a
-  skill, or skips and logs it with `strict=False`. A frontmatter YAML
-  cannot read as a mapping is read line by line, within the size and
+  frontmatter: a YAML alias (to an anchor defined before it; a `*` naming
+  none, as in the glob `*_admin`, is not YAML and is read line by line),
+  collections nested past 64 levels, more than 64 brackets or braces open at
+  once (quoted ones counted too) and a frontmatter past 65536 characters raise
+  `SkillParseError` before anything is built, where they used to load (a
+  nesting past a few hundred levels was read line by line). `discover()` fails
+  on such a skill, or skips and logs it with `strict=False`. A frontmatter
+  YAML cannot read as a mapping is read line by line, within the size and
   bracket bounds.
   Migration: write the value in place of the alias.
 - **BREAKING — a local skill keeps what it gates and requires, whatever its
   frontmatter looks like** (RMK-693, RFC §24.1, §24.2). PyYAML is now a core
   dependency, so a frontmatter that is YAML is always read as YAML. The base
-  install, which had no PyYAML, read every local `SKILL.md` line by line,
-  and that reading kept no list: `allowed_tools:` followed by `- item` lines
-  was dropped, `allowed_tools: [search_*, fetch_*]` gated the patterns
-  `[search_*` and `fetch_*]`, and valid YAML (a key nested under
-  `metadata:`, a quoted key, a value continued over lines) could replace or
-  hide what the top level gates. The tools a skill gates were offered to
-  the model before any activation, those of the RFC's own example included.
-  The line reader now reads only a frontmatter YAML cannot read as a
-  mapping (a description with an unquoted colon); it keeps both list forms, items
-  unquoted and a trailing `# comment` dropped, and of a text YAML also reads
-  it gates at least what YAML does. An `allowed_tools` or `requires` neither
-  reader can read whole as a text or a list of texts (a list spread over
-  several lines, a block scalar, an anchor or a tag, a mapping or a nested
-  list, a line under the key that is not a `- item`, a `\` escape in a
-  double-quoted entry) raises `SkillParseError` naming the skill, where the
-  skill loaded without the key. Both keys read a value with one reader: a
-  text `[a, b]` or quoted entries gate `a` and `b`, where `allowed_tools`
-  gated `[a` and `'a'`, which match no tool, and a text in brackets also
-  gates the glob it is (`[ab]` covers `a` and `b`), on every reader. A null
-  list item no longer reads as the name `None` or `null`, local or served. Migration: a skill that
-  loaded with its gating lost now keeps its tools closed until it is
-  activated; one refused needs its list written as `- item` lines or
-  `[a, b]` on one line.
+  install, which had no PyYAML, read every local `SKILL.md` line by line, and
+  that reading kept no list: `allowed_tools:` followed by `- item` lines was
+  dropped, `allowed_tools: [search_*, fetch_*]` gated the patterns `[search_*`
+  and `fetch_*]`, and valid YAML (a key nested under `metadata:`, a quoted
+  key, a value continued over lines) could replace or hide what the top level
+  gates. The tools a skill gates were offered to the model before any
+  activation, those of the RFC's own example included. The line reader now
+  reads only a frontmatter YAML cannot read as a mapping (a description with
+  an unquoted colon); it keeps both list forms, items unquoted and a trailing
+  `# comment` dropped, and of a text YAML also reads it gates at least what
+  YAML does. An `allowed_tools` or `requires` neither reader can read whole as
+  a text or a list of texts (a list spread over several lines, a block scalar,
+  an anchor or a tag, a mapping or a nested list, a line under the key that is
+  not a `- item`, a `\` escape in a double-quoted entry, a value or item
+  opening on another YAML indicator: `{`, `%`, `@`, a backtick, or a bracket
+  that does not close a one-line list, as in `[sw]earch_*`) raises
+  `SkillParseError` naming the skill, where the skill loaded without the key
+  or with it as one text. Read line by line, a top-level line opening on `!`,
+  `&`, `? ` or `<<`, where YAML may read a key this reading cannot name,
+  refuses the skill too, and a line indented under a key is left out: the keys
+  of a `metadata:` block no longer reach `extra_metadata`. A `metadata:` block
+  YAML reads is one `extra_metadata["metadata"]` entry, where the base
+  install's line reading spread its keys there, so a `requires` nested under
+  it requires nothing. Both keys read a value with one reader: a text `[a, b]`
+  or quoted entries gate `a` and `b`, where `allowed_tools` gated `[a` and
+  `'a'`, which match no tool, and a text in brackets also gates the glob it is
+  (`[ab]` covers `a` and `b`), on every reader. A null list item no longer
+  reads as the name `None` or `null`, local or served. A served skill's entry
+  whose `allowed_tools` or `requires` is a mapping or a nested list is listed
+  as malformed, as a local skill is refused, where its `requires` became one
+  text naming a tool nothing serves.
+  Migration: a skill that loaded with its gating lost now keeps its tools
+  closed until it is activated; one refused needs its list written as `- item`
+  lines or `[a, b]` on one line.
 
 ## [0.98.0] — 2026-10-12
 
@@ -14262,7 +14276,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.98.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.99.0...HEAD
+[0.99.0]: https://github.com/roomkit-live/roomkit/compare/v0.98.0...v0.99.0
 [0.98.0]: https://github.com/roomkit-live/roomkit/compare/v0.97.0...v0.98.0
 [0.97.0]: https://github.com/roomkit-live/roomkit/compare/v0.96.1...v0.97.0
 [0.96.1]: https://github.com/roomkit-live/roomkit/compare/v0.96.0...v0.96.1
