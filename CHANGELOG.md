@@ -38,15 +38,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   until a space followed its full stop, so "Let me check." waited for the
   tool and the model's next round, then ran on into its first word ("Let me
   check.It is 9."): silence for as long as a tool took. Each call's start now
-  ends the text segment; the splitter lets out what it holds, however short,
-  and a streaming filter flushes there. `split_sentences` and
-  `filtered_stream` take a `SegmentBreakMarker` for it. The final assistant
-  transcript and `AFTER_TTS` keep the segments apart, as `ON_AI_RESPONSE`
-  does.
+  ends the text segment; the splitter lets out what it holds, however short.
+  `split_sentences` and `filtered_stream` take a `SegmentBreakMarker` for
+  it. At the marker, `filtered_stream` calls the filter's new
+  `TTSStreamFilter.end_segment()`, never `flush()`, which stays the end of
+  the stream's: it lets out the text the filter has decided to speak and
+  keeps a span it removes open, so an `[internal]` block opened before the
+  call and closed after it is never spoken. Its default lets out nothing, so
+  a filter of your own keeps what it holds as before; override it if your
+  filter holds text it has decided to speak. When the reply is said as it
+  was read, the final assistant transcript and `AFTER_TTS` keep the segments
+  apart, as `ON_AI_RESPONSE` does, a reply of exactly its sentence budget
+  included; a reply a `BEFORE_TTS` hook changed, or a budget cut, is
+  reported as said, one sentence after another.
 - A sentence budget stops a reply of exactly its sentences that goes on with
-  a tool call, before the call runs (RFC §12.2 step 12s.e): the voice channel
-  did not recognise the call in the stream the framework hands it, so the
-  call ran.
+  a tool call, before the call runs (RMK-695, RFC §12.2 step 12s.e): the
+  voice channel did not recognise the call in the stream the framework hands
+  it, so the call ran. With `max_sentences=1`, a reply that announces its
+  call in one sentence ("Let me check.") now ends there and the tool never
+  runs: give the budget room for the announcement if your agent makes one.
 - `PhraseBackchannelDetector` lets more reactions through and still cuts on a
   hummed "no" (RMK-696). A player's « Ouh. » cut a story under semantic
   barge-in: `ENGLISH_BACKCHANNELS` and `FRENCH_BACKCHANNELS` now hold the

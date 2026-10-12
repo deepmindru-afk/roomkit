@@ -647,17 +647,20 @@ class VoiceTTSMixin:
     ) -> str:
         """The text a streamed response leaves for its transcript and AFTER_TTS.
 
-        What the sessions were sent: the sentences the budget let through once
-        they are all said, the sentences as BEFORE_TTS left them when a hook
+        What the sessions were sent: the sentences the budget let through when
+        it cut the reply, the sentences as BEFORE_TTS left them when a hook
         changed or dropped one, the whole filtered stream otherwise
-        (*full_text*, its segments apart).
+        (*full_text*, its segments apart), a reply of exactly its budget
+        included.
         """
-        if budget is not None and budget.spent():
+        if budget is not None and budget.cut:
             return budget.text()
         if gate is not None and gate.changed:
             return gate.text()
         if self._tts_filter is not None and full_text:
             full_text = self._tts_filter(full_text)
+        if budget is not None and budget.spent():
+            return full_text.strip()  # read up to the spacing after its last sentence
         return full_text
 
     async def _stream_to_session(

@@ -25,7 +25,7 @@ from roomkit.providers.ai.base import (
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.base import AudioChunk
 from roomkit.voice.tts.base import TTSProvider
-from roomkit.voice.tts.filters import TTSStreamFilter, filtered_stream
+from roomkit.voice.tts.filters import StripInternalTags, TTSStreamFilter, filtered_stream
 from roomkit.voice.tts.sentence_splitter import split_sentences
 
 ANNOUNCED = "Je relance le dé."
@@ -59,10 +59,11 @@ class _HeardTTS(TTSProvider):
 
 
 class _RollsAfterSaying(AIProvider):
-    """Says *before* (a sentence per item), calls ``roll_dice``, then says the result."""
+    """Says *before* (a sentence per item), calls ``roll_dice``, then says *after*."""
 
-    def __init__(self, before: list[str]) -> None:
+    def __init__(self, before: list[str], after: str) -> None:
         self._before = before
+        self._after = after
         self.rounds = 0
 
     @property
@@ -83,7 +84,7 @@ class _RollsAfterSaying(AIProvider):
     async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         self.rounds += 1
         if self.rounds > 1:
-            yield StreamTextDelta(text=RESULT)
+            yield StreamTextDelta(text=self._after)
             yield StreamDone(finish_reason="stop")
             return
         for text in self._before:
@@ -109,10 +110,10 @@ class _Dice:
 
 
 async def _voice_turn(
-    before: list[str], **voice_options: Any
+    before: list[str], after: str = RESULT, **voice_options: Any
 ) -> tuple[RoomKit, MockVoiceBackend, _HeardTTS, _Dice, _RollsAfterSaying, str]:
     backend, tts = MockVoiceBackend(), _HeardTTS()
-    model, dice = _RollsAfterSaying(before), _Dice(tts)
+    model, dice = _RollsAfterSaying(before, after), _Dice(tts)
     kit = RoomKit(voice=backend)
     kit.register_channel(VoiceChannel("voice-1", tts=tts, backend=backend, **voice_options))
     roll = AITool(name="roll_dice", description="Roll a die.", parameters={"type": "object"})
@@ -145,7 +146,7 @@ async def test_a_break_with_nothing_held_says_nothing() -> None:
 
 
 class _HoldsAll(TTSStreamFilter):
-    """Holds every chunk until it is flushed."""
+    """Holds every chunk until it is flushed: a filter written before ``end_segment``."""
 
     def __init__(self) -> None:
         self._held = ""
@@ -162,13 +163,37 @@ class _HoldsAll(TTSStreamFilter):
         self._held = ""
 
 
-async def test_a_streaming_filter_lets_out_what_it_held_at_a_break() -> None:
+class _HoldsAllUntilASegmentEnds(_HoldsAll):
+    def end_segment(self) -> str:
+        return self.flush()
+
+
+async def test_a_streaming_filter_lets_out_what_it_decided_at_a_break() -> None:
     marker = SegmentBreakMarker()
-    out = [
-        c async for c in filtered_stream(_items("Let me ", "check.", marker, "Nine."), _HoldsAll())
-    ]
+    chunks = _items("Let me ", "check.", marker, "Nine.")
+
+    out = [c async for c in filtered_stream(chunks, _HoldsAllUntilASegmentEnds())]
 
     assert out == ["Let me check.", marker, "Nine."]
+
+
+async def test_a_filter_that_lets_nothing_out_at_a_break_keeps_it_for_the_end() -> None:
+    """``flush`` is the end of the stream's: a break never calls it."""
+    marker = SegmentBreakMarker()
+    chunks = _items("Let me ", "check.", marker, "Nine.")
+
+    out = [c async for c in filtered_stream(chunks, _HoldsAll())]
+
+    assert out == [marker, "Let me check.Nine."]
+
+
+async def test_a_span_open_at_a_break_stays_open_across_it() -> None:
+    marker = SegmentBreakMarker()
+    chunks = _items("Sure. [internal]I need ", marker, "the dice.[/internal] It is 9.")
+
+    out = [c async for c in filtered_stream(chunks, StripInternalTags())]
+
+    assert out == ["Sure. ", marker, " It is 9."]
 
 
 async def test_the_sentence_before_a_call_is_said_while_the_tool_runs() -> None:
@@ -178,6 +203,31 @@ async def test_the_sentence_before_a_call_is_said_while_the_tool_runs() -> None:
     assert tts.heard == [ANNOUNCED, RESULT]  # not "Je relance le dé.Le d20 donne 9."
     final = [text for _, text, role in backend.sent_transcriptions if role == "assistant"]
     assert final[-1] == f"{ANNOUNCED}\n\n{RESULT}"  # its segments apart, as ON_AI_RESPONSE
+    await kit.close()
+
+
+async def test_a_span_the_filter_removes_is_not_spoken_across_the_call() -> None:
+    """An ``[internal]`` block opened before the call and closed after it."""
+    kit, backend, tts, _, _, _ = await _voice_turn(
+        ["Sure. [internal]I need the dice "],
+        after="first.[/internal] It is 9.",
+        tts_filter=StripInternalTags(),
+    )
+
+    assert tts.heard == ["Sure.", "It is 9."]
+    final = [text for _, text, role in backend.sent_transcriptions if role == "assistant"]
+    assert final[-1] == "Sure. It is 9."
+    await kit.close()
+
+
+async def test_a_reply_of_exactly_its_budget_keeps_its_segments_apart() -> None:
+    """Not cut, the reply was said as read: its transcript is the read text's."""
+    kit, backend, tts, dice, _, _ = await _voice_turn([ANNOUNCED], max_sentences=2)
+
+    assert tts.heard == [ANNOUNCED, RESULT]
+    assert dice.heard_when_rolled == [ANNOUNCED]
+    final = [text for _, text, role in backend.sent_transcriptions if role == "assistant"]
+    assert final[-1] == f"{ANNOUNCED}\n\n{RESULT}"
     await kit.close()
 
 

@@ -48,6 +48,19 @@ class TTSStreamFilter(ABC):
     def reset(self) -> None:
         """Reset internal state for a new utterance."""
 
+    def end_segment(self) -> str:
+        """Let out, at the end of a text segment, the text already decided.
+
+        A text segment ends at a tool call's start: what the filter lets out
+        then is said before the call runs (RFC §12.2 step 12s.a). A span the
+        filter removes, opened before the call, stays open: it may close after
+        it, and its text is never spoken. The default lets out nothing, so the
+        filter keeps all it holds until the next segment's text or the end of
+        the stream; a filter that holds text it has decided to speak overrides
+        it.
+        """
+        return ""
+
     def __call__(self, text: str) -> str:
         """Non-streaming convenience: filter a complete text string."""
         self.reset()
@@ -543,8 +556,8 @@ class TTSFilterChain(TTSStreamFilter):
 
     ``VoiceChannel`` takes one filter: ``TTSFilterChain(StripEmoji(),
     StripBrackets(keep=...))`` gives it both. Each chunk goes through every
-    filter in turn; at the end of the stream each filter's flush goes through
-    the filters after it.
+    filter in turn; at the end of a segment or of the stream, what each filter
+    lets out goes through the filters after it.
     """
 
     def __init__(self, *filters: TTSStreamFilter) -> None:
@@ -573,6 +586,15 @@ class TTSFilterChain(TTSStreamFilter):
             out += tail
         return out
 
+    def end_segment(self) -> str:
+        out = ""
+        for i, f in enumerate(self._filters):
+            tail = f.end_segment()
+            for later in self._filters[i + 1 :]:
+                tail = later.feed(tail)
+            out += tail
+        return out
+
 
 # ---------------------------------------------------------------------------
 # filtered_stream — wrap an async token stream through a TTSStreamFilter
@@ -586,14 +608,16 @@ async def filtered_stream(
     """Wrap an async token stream through a :class:`TTSStreamFilter`.
 
     Yields non-empty cleaned chunks.  Calls :meth:`~TTSStreamFilter.reset`
-    at the start and :meth:`~TTSStreamFilter.flush` at the end, and at each
-    :class:`SegmentBreakMarker`, which it passes on after what the filter
-    held: a segment's text never waits for the next one (RFC §12.2 step 12s.a).
+    at the start and :meth:`~TTSStreamFilter.flush` at the end. At each
+    :class:`SegmentBreakMarker` it calls :meth:`~TTSStreamFilter.end_segment`
+    and passes the marker on after what that let out: the text the filter has
+    decided goes out before the call, and a span it removes stays open across
+    it (RFC §12.2 step 12s.a).
     """
     tts_filter.reset()
     async for chunk in source:
         if isinstance(chunk, SegmentBreakMarker):
-            if remaining := tts_filter.flush():
+            if remaining := tts_filter.end_segment():
                 yield remaining
             yield chunk
             continue
