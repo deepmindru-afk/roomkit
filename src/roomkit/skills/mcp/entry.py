@@ -9,8 +9,8 @@ verifies is checked against it.
 
 from __future__ import annotations
 
-import copy
 import hashlib
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -30,6 +30,11 @@ MAX_TOTAL_SIZE = 16 * 1024 * 1024
 
 DYNAMIC = "dynamic"
 """The ``resources`` of a skill whose content has no stable digests."""
+
+FRONTMATTER_MAX = 64 * 1024
+"""Characters a skill's frontmatter may take, in its entry's JSON as in its
+``SKILL.md``'s YAML: far above any real one (a name, a description of 1024
+characters, some metadata), and a bound on what reading and comparing it costs."""
 
 _SKILL_MD = "SKILL.md"
 _DESCRIPTION_MAX = 1024
@@ -162,9 +167,22 @@ def parse_entry(raw: object) -> SkillEntry:
     _check_frontmatter(uri, root, frontmatter)
     return SkillEntry(
         uri=uri,
-        frontmatter=copy.deepcopy(dict(frontmatter)),
+        frontmatter=_json_copy(uri, frontmatter),
         resources=_resources(uri, root, raw.get("resources")),
     )
+
+
+def _json_copy(uri: str, frontmatter: Mapping[str, Any]) -> dict[str, Any]:
+    """A copy of *frontmatter* through its JSON, within :data:`FRONTMATTER_MAX`
+    characters: what is kept is plain JSON, sized before anything else reads it."""
+    try:
+        text = json.dumps(frontmatter)
+    except (RecursionError, TypeError, ValueError) as exc:
+        raise SkillValidationError(f"{uri}: the frontmatter is not plain JSON") from exc
+    if len(text) > FRONTMATTER_MAX:
+        raise SkillValidationError(f"{uri}: the frontmatter is past {FRONTMATTER_MAX} characters")
+    copied: dict[str, Any] = json.loads(text)
+    return copied
 
 
 def _segments_ok(segments: list[str]) -> bool:

@@ -18,7 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads one entry of such a server on its own (`parse_entry`, `SkillEntry`,
   `SkillResource`, the extension's 512-file and 16 MiB limits) and checks
   what the server serves against it: `verify_skill_resource` (length, then
-  SHA-256) and `verify_frontmatter` (field by field). Checked against
+  SHA-256) and `verify_frontmatter` (field by field). A frontmatter past
+  64 KiB, in the entry's JSON as in `SKILL.md`, is refused, and so is a YAML
+  one holding an alias, nesting brackets past 64 levels or a value JSON
+  cannot hold: aliases of aliases expand exponentially, and the server
+  controls the digest too. Checked against
   `huggingface.co/mcp`: its 25 skills list over a `2025-11-25` session and
   verify. The `mcp` extra now brings PyYAML, which the frontmatter check
   needs.

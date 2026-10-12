@@ -268,3 +268,44 @@ class TestVerifyFrontmatter:
     def test_unreadable_frontmatter_fails(self, text: str) -> None:
         with pytest.raises(SkillVerificationError):
             verify_frontmatter(parse_entry(REFUNDS.entry()), text)
+
+    def test_an_alias_is_refused_before_it_expands(self) -> None:
+        # Aliases of aliases: a few hundred bytes YAML keeps shared, which JSON
+        # would expand to 9**7 strings. The server controls the digest too.
+        lines = ["a: &a [x, x, x, x, x, x, x, x, x]"]
+        for prev, cur in zip("abcdef", "bcdefg", strict=True):
+            lines.append(f"{cur}: &{cur} [" + ", ".join([f"*{prev}"] * 9) + "]")
+        text = "---\nname: refunds\ndescription: d\n" + "\n".join(lines) + "\n---\n"
+        with pytest.raises(SkillVerificationError, match="YAML alias"):
+            verify_frontmatter(parse_entry(REFUNDS.entry()), text)
+
+    def test_a_frontmatter_too_large_is_refused(self) -> None:
+        text = "---\nname: refunds\ndescription: " + "d" * 70_000 + "\n---\n"
+        with pytest.raises(SkillVerificationError, match="past 65536 characters"):
+            verify_frontmatter(parse_entry(REFUNDS.entry()), text)
+
+    def test_nesting_too_deep_is_refused(self) -> None:
+        text = "---\nname: refunds\ndescription: d\ndeep: " + "[" * 5000 + "]" * 5000 + "\n---\n"
+        with pytest.raises(SkillVerificationError, match="nests too deep"):
+            verify_frontmatter(parse_entry(REFUNDS.entry()), text)
+
+
+def test_an_entry_whose_frontmatter_nests_too_deep_is_refused() -> None:
+    deep: dict[str, object] = {}
+    for _ in range(100_000):
+        deep = {"d": deep}
+    raw = _entry(frontmatter={"name": "refunds", "description": "d", "deep": deep})
+    with pytest.raises(SkillValidationError, match="not plain JSON|past 65536"):
+        parse_entry(raw)
+
+
+def test_an_entry_whose_frontmatter_is_too_large_is_refused() -> None:
+    raw = _entry(frontmatter={"name": "refunds", "description": "d", "notes": "n" * 70_000})
+    with pytest.raises(SkillValidationError, match="past 65536 characters"):
+        parse_entry(raw)
+
+
+def test_an_integer_past_pythons_digit_limit_fails_verification() -> None:
+    text = "---\nname: refunds\ndescription: d\nbig: 1" + "0" * 5000 + "\n---\n"
+    with pytest.raises(SkillVerificationError, match="JSON cannot hold"):
+        verify_frontmatter(parse_entry(REFUNDS.entry()), text)

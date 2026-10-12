@@ -12,8 +12,12 @@ from collections.abc import Mapping
 from typing import Any
 
 from roomkit.skills.errors import SkillParseError, SkillVerificationError
-from roomkit.skills.mcp.entry import SkillEntry, SkillResource
+from roomkit.skills.mcp.entry import FRONTMATTER_MAX, SkillEntry, SkillResource
 from roomkit.skills.parser import split_frontmatter
+
+_FLOW_DEPTH_MAX = 64
+"""Brackets and braces open at once, read at most: pure-Python YAML takes time
+quadratic in that depth (5000 levels, 3.5 s)."""
 
 
 def verify_skill_resource(resource: SkillResource, content: bytes) -> None:
@@ -49,13 +53,16 @@ def verify_frontmatter(entry: SkillEntry, skill_md: str) -> str:
     except SkillParseError as exc:
         raise SkillVerificationError(f"{entry.uri}: {exc}") from exc
     written = _yaml_as_json(entry.uri, frontmatter_text)
-    differing = sorted(
-        key
-        for key in set(written) | set(entry.frontmatter)
-        if key not in written
-        or key not in entry.frontmatter
-        or _canonical(written[key]) != _canonical(entry.frontmatter[key])
-    )
+    try:
+        differing = sorted(
+            key
+            for key in set(written) | set(entry.frontmatter)
+            if key not in written
+            or key not in entry.frontmatter
+            or _canonical(written[key]) != _canonical(entry.frontmatter[key])
+        )
+    except (RecursionError, TypeError, ValueError) as exc:
+        raise SkillVerificationError(f"{entry.uri}: its frontmatter cannot be compared") from exc
     if differing:
         raise SkillVerificationError(
             f"{entry.uri}: its frontmatter differs from the entry's on {', '.join(differing)}"
@@ -64,7 +71,22 @@ def verify_frontmatter(entry: SkillEntry, skill_md: str) -> str:
 
 
 def _yaml_as_json(uri: str, text: str) -> dict[str, Any]:
-    """The frontmatter *text* as a JSON object."""
+    """The frontmatter *text* as a JSON object.
+
+    An alias is refused before anything is built: YAML keeps an aliased node
+    shared, so a few hundred bytes of aliases of aliases parse at once and
+    then expand exponentially into JSON. A server controls the content and
+    its digest alike, so the digest does not stand in the way. Nesting too
+    deep to read is refused as well, and so is a frontmatter past
+    :data:`~roomkit.skills.mcp.entry.FRONTMATTER_MAX` or nesting brackets past
+    :data:`_FLOW_DEPTH_MAX`.
+    """
+    if len(text) > FRONTMATTER_MAX:
+        raise SkillVerificationError(
+            f"{uri}: its frontmatter is past {FRONTMATTER_MAX} characters"
+        )
+    if _flow_depth(text) > _FLOW_DEPTH_MAX:
+        raise SkillVerificationError(f"{uri}: its frontmatter nests too deep")
     try:
         import yaml
     except ImportError as exc:
@@ -72,16 +94,42 @@ def _yaml_as_json(uri: str, text: str) -> dict[str, Any]:
             "PyYAML is needed to verify a served skill's frontmatter: "
             "install it with pip install roomkit[mcp]"
         ) from exc
+    loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
     try:
-        data = yaml.safe_load(text)
+        if any(isinstance(event, yaml.AliasEvent) for event in yaml.parse(text, loader)):
+            raise SkillVerificationError(f"{uri}: its frontmatter holds a YAML alias")
+        if loader is yaml.SafeLoader:
+            data = yaml.safe_load(text)
+        else:
+            data = yaml.load(text, Loader=yaml.CSafeLoader)
+        if not isinstance(data, Mapping):
+            raise SkillVerificationError(f"{uri}: its frontmatter is not a mapping")
+        rendered = json.loads(json.dumps(data, default=str))
     except yaml.YAMLError as exc:
         raise SkillVerificationError(f"{uri}: its frontmatter is not YAML") from exc
-    if not isinstance(data, Mapping):
-        raise SkillVerificationError(f"{uri}: its frontmatter is not a mapping")
-    rendered = json.loads(json.dumps(data, default=str))
+    except RecursionError as exc:
+        raise SkillVerificationError(f"{uri}: its frontmatter nests too deep") from exc
+    except (OverflowError, TypeError, ValueError) as exc:
+        # An integer past Python's digit limit, a value JSON cannot render.
+        raise SkillVerificationError(
+            f"{uri}: its frontmatter holds a value JSON cannot hold"
+        ) from exc
     if not isinstance(rendered, dict):
         raise SkillVerificationError(f"{uri}: its frontmatter is not a mapping")
     return rendered
+
+
+def _flow_depth(text: str) -> int:
+    """The most brackets and braces *text* holds open at once, quotes not
+    read: an upper bound on its YAML flow nesting."""
+    depth = deepest = 0
+    for char in text:
+        if char in "[{":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif char in "]}" and depth:
+            depth -= 1
+    return deepest
 
 
 def _canonical(value: Any) -> str:
