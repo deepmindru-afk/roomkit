@@ -147,3 +147,15 @@ async def test_inline_delivery_marks_a_served_skill_unavailable() -> None:
         result = await _call(channel, provider, session, "activate_skill", {"name": NAME})
         assert "unavailable in this session" in json.dumps(result)
         assert server.reads == []
+
+
+async def test_a_session_keeps_a_served_body_fenced_after_the_registry_drops_it() -> None:
+    """Found by an automated security review: the body fell back to the host
+    skills' unfenced rendering once the registry no longer held the skill."""
+    async with _session() as (channel, provider, session, server):
+        await _call(channel, provider, session, "activate_skill", {"name": NAME})
+        server.entry_overrides[PDF.uri] = {**PDF.entry(), "resources": None}
+        await channel._skill_support._skills.add_mcp_server(server, "hf")
+        prompt = channel._skill_support.activated_skills_prompt(session.id) or ""
+        assert "<skill>\nUse templates/.\n</skill>" in prompt
+        assert "## Active skill: hf:pdf-processing" not in prompt

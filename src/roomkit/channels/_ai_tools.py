@@ -1050,9 +1050,8 @@ class AIToolsMixin(_AIChannelContract):
         """Load and return full skill instructions, tracking activation for gating."""
         if not self._skills:
             return json.dumps({"error": "No skills registry configured"})
-        result_str, skill_name = await handle_activate_skill(arguments, self._skills)
+        result_str, skill_name, skill = await handle_activate_skill(arguments, self._skills)
         loop_ctx = self._get_loop_ctx()
-        skill = self._skills.get_skill(skill_name) if skill_name else None
         if skill_name and skill is None and self._skills.is_served(skill_name):
             # A served skill that failed to load is retired, so no later
             # acknowledgement stands in for a body it does not have (RFC §24.7).

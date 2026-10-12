@@ -113,12 +113,14 @@ def activation_ack(skill: Skill, note: str, *, already_active: bool = False) -> 
 async def handle_activate_skill(
     arguments: dict[str, Any],
     skills: SkillRegistry,
-) -> tuple[str, str]:
+) -> tuple[str, str, Skill | None]:
     """Load a skill and return its full instructions.
 
     Returns:
-        A tuple of ``(json_result, skill_name)`` so callers can track
-        activation in their own state store.
+        ``(json_result, skill_name, skill)``: the skill this activation
+        loaded, ``None`` when it loaded none. A caller tracks the activation
+        from it, never from a second lookup, which could find a skill the
+        load refused (one loaded before, now unavailable).
     """
     skill_name = arguments.get("name", "")
     try:
@@ -126,7 +128,8 @@ async def handle_activate_skill(
     except SkillError as exc:
         # A served skill not found on its server, or whose content does not
         # match its entry: the message names the skill only (RFC §24.7).
-        return json.dumps({"error": str(exc), "available_skills": skills.skill_names}), skill_name
+        error = {"error": str(exc), "available_skills": skills.skill_names}
+        return json.dumps(error), skill_name, None
     if skill is None:
         error_json = json.dumps(
             {
@@ -134,9 +137,9 @@ async def handle_activate_skill(
                 "available_skills": skills.skill_names,
             }
         )
-        return error_json, skill_name
+        return error_json, skill_name, None
 
-    return await asyncio.to_thread(activation_content, skill), skill_name
+    return await asyncio.to_thread(activation_content, skill), skill_name, skill
 
 
 def activation_content(skill: Skill) -> str:

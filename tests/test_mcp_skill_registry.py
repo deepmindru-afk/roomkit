@@ -90,14 +90,24 @@ class TestRegistration:
         await registry.add_mcp_server(server, "hf")
         assert registry.skill_names == ["hf:pdf-processing"]
 
-    async def test_a_loaded_skill_keeps_its_entry_when_the_server_is_listed_again(self) -> None:
+    async def test_a_loaded_skill_still_offered_keeps_its_entry(self) -> None:
         server = FakeSkillServer([PDF])
         registry = SkillRegistry()
         await registry.add_mcp_server(server, "hf")
         loaded = await registry.load_skill("hf:pdf-processing")
-        server.skills = []
+        server.skills = [ServedSkill(PDF.path, {**PDF.files, "templates/invoice.md": "# New\n"})]
         await registry.add_mcp_server(server, "hf")
         assert registry.get_skill("hf:pdf-processing") is loaded
+        assert await registry.load_skill("hf:pdf-processing") is loaded
+
+    async def test_a_loaded_skill_no_longer_offered_retires(self) -> None:
+        server = FakeSkillServer([PDF])
+        registry = SkillRegistry()
+        await registry.add_mcp_server(server, "hf")
+        await registry.load_skill("hf:pdf-processing")
+        server.skills = []
+        await registry.add_mcp_server(server, "hf")
+        assert registry.get_skill("hf:pdf-processing") is None
 
 
 class TestUnavailableEntries:
@@ -351,3 +361,45 @@ class TestFiles:
 
 def test_digest_helper_matches_the_entry() -> None:
     assert PDF.entry()["resources"][0]["digest"] == digest(PDF.raw("SKILL.md"))
+
+
+class TestNoFailOpen:
+    """Found by an automated security review of the first registry commit."""
+
+    async def test_a_loaded_skill_its_server_now_refuses_is_served_nowhere(self) -> None:
+        server = FakeSkillServer([PDF])
+        registry = SkillRegistry()
+        await registry.add_mcp_server(server, "hf")
+        await registry.load_skill("hf:pdf-processing")
+        server.entry_overrides[PDF.uri] = {**PDF.entry(), "resources": "dynamic"}
+        await registry.add_mcp_server(server, "hf")
+        assert await registry.load_skill("hf:pdf-processing") is None
+        assert registry.get_skill("hf:pdf-processing") is None
+
+    async def test_a_skill_dropped_from_the_listing_loads_only_if_still_served(self) -> None:
+        server = FakeSkillServer([PDF])
+        registry = SkillRegistry()
+        await registry.add_mcp_server(server, "hf")
+        await registry.load_skill("hf:pdf-processing")
+        server.skills = []
+        await registry.add_mcp_server(server, "hf")
+        with pytest.raises(SkillError, match="not found"):
+            await registry.load_skill("hf:pdf-processing")
+
+    async def test_a_narrowed_copy_reaches_no_other_skill_of_the_server(self) -> None:
+        server = FakeSkillServer([PDF, REFUNDS], listed={PDF.uri})
+        registry = SkillRegistry()
+        await registry.add_mcp_server(server, "hf")
+        narrowed = registry.copy(["hf:pdf-processing"])
+        server.requests.clear()
+        with pytest.raises(SkillValidationError, match="not found"):
+            await narrowed.load_skill("hf:acme/billing/refunds")
+        assert server.requests == []
+        # The registry that took the server whole still asks for it.
+        assert await registry.load_skill("hf:acme/billing/refunds") is not None
+
+    async def test_a_full_copy_keeps_the_servers_it_took_whole(self) -> None:
+        server = FakeSkillServer([PDF, REFUNDS], listed={PDF.uri})
+        registry = SkillRegistry()
+        await registry.add_mcp_server(server, "hf")
+        assert await registry.copy().load_skill("hf:acme/billing/refunds") is not None

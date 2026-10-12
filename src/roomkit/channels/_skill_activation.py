@@ -173,9 +173,15 @@ class SkillActivationMemory:
             return None
         sections: list[str] = []
         served: list[str] = []
-        for name in room.names:
+        for name in list(room.names):
             skill = skills.get_skill(name)
-            body = skill.instructions.strip() if skill and skill.instructions else ""
+            if skill is None:
+                # No longer served (a served skill retired or dropped): its
+                # body is not in this prompt, so it is not active either, and
+                # its next activation delivers the body (RFC §24.4).
+                room.names.pop(name, None)
+                continue
+            body = skill.instructions.strip() if skill.instructions else ""
             if not body:
                 continue
             if isinstance(skill, MCPSkill):

@@ -207,3 +207,26 @@ def test_a_served_activation_is_not_replayed_from_history() -> None:
     ]
     memory.seed("r1", calls, skip=lambda name: name == NAME)
     assert memory.active_names("r1") == {"local"}
+
+
+async def test_a_skill_its_server_now_refuses_does_not_activate(streaming: bool) -> None:
+    script = [_call("activate_skill", name=NAME), _say("done")] * 2
+    channel, _, server = await _setup(script, streaming)
+    await _turn(channel)
+    server.entry_overrides[PDF.uri] = {**PDF.entry(), "resources": "dynamic"}
+    await channel._skills.add_mcp_server(server, "hf")  # type: ignore[union-attr]
+    run = await _turn(channel, "use it again")
+    call = next(c for c in run.calls if c.name == "activate_skill")
+    assert "unavailable" in str(call.result) + str(call.error)
+    assert channel.active_skill_names("r1") == set()
+
+
+async def test_a_skill_no_longer_held_leaves_the_prompt_and_the_room(streaming: bool) -> None:
+    script = [_call("activate_skill", name=NAME), _say("done"), _say("next")]
+    channel, provider, server = await _setup(script, streaming)
+    await _turn(channel)
+    server.entry_overrides[PDF.uri] = {**PDF.entry(), "resources": None}
+    await channel._skills.add_mcp_server(server, "hf")  # type: ignore[union-attr]
+    await _turn(channel, "and now?")
+    assert "Use templates/." not in (provider.calls[-1].system_prompt or "")
+    assert channel.active_skill_names("r1") == set()

@@ -57,6 +57,10 @@ class SkillRegistry:
         # The skills MCP servers serve: shared by a registry's copies, which
         # name a subset of them (RFC §24.7).
         self._mcp = MCPSkillCatalog()
+        # The servers this registry took whole: only there may a name the
+        # listing did not hold be asked of its server. A copy narrowed to
+        # some names reaches those names and no other (RFC §24.3).
+        self._owned_labels: set[str] = set()
 
     def discover(self, *directories: str | Path, strict: bool = True) -> int:
         """Scan directories for subdirectories containing SKILL.md.
@@ -211,6 +215,7 @@ class SkillRegistry:
         wanted = set(self._metadata) | set(self._unavailable) if names is None else set(names)
         copied = SkillRegistry(requires_match=self.requires_match)
         copied._mcp = self._mcp
+        copied._owned_labels = set(self._owned_labels) if names is None else set()
         for name, metadata in self._metadata.items():
             if name not in wanted:
                 continue
@@ -246,8 +251,9 @@ class SkillRegistry:
         extension does not allow, one past its limits, and a dynamic one
         unless *allow_dynamic* are registered as unavailable with their
         reason, the server's other skills staying usable. Registering a server
-        again replaces its entries; a skill loaded at that moment keeps the
-        entry it was loaded from until it retires.
+        again replaces its entries: a skill it no longer offers, or offers in
+        a form this host does not take, retires; one it still offers keeps,
+        while loaded, the entry it was loaded from.
 
         Args:
             server: The connected server
@@ -278,11 +284,17 @@ class SkillRegistry:
             approve_execution=approve_execution,
             execution_tools=execution_tools,
         )
+        offered = {item.name for item in listed if item.metadata is not None}
         for name in self._mcp.names_of(label):
             self._metadata.pop(name, None)
             self._unavailable.pop(name, None)
             self._unlisted.discard(name)
+            if name not in offered:
+                # No longer offered, or not in a form this host takes: it
+                # retires, served nowhere any more (RFC §24.7).
+                self._skills.pop(name, None)
         self._mcp.record(origin, listed)
+        self._owned_labels.add(label)
         for item in listed:
             self._record_served(item)
         available = sum(1 for item in listed if item.metadata is not None)
@@ -296,12 +308,13 @@ class SkillRegistry:
 
     def _record_served(self, item: Listed) -> None:
         """Record one entry of a server: available, or unavailable with its
-        reason. A skill loaded already keeps what it holds until it retires."""
+        reason, and then served nowhere, a skill loaded before included."""
         if item.metadata is not None:
             self._metadata[item.name] = item.metadata
             self._unavailable.pop(item.name, None)
         else:
             self._metadata.pop(item.name, None)
+            self._skills.pop(item.name, None)
             self._unavailable[item.name] = item.reason or "unavailable"
 
     async def load_skill(self, name: str) -> Skill | None:
@@ -311,8 +324,10 @@ class SkillRegistry:
         an MCP server serves is read from its server now, and checked against
         its entry, unless it is loaded already: it then keeps the entry it was
         loaded from (RFC §24.7). A ``<label>:<path>`` the listing did not
-        hold, under a registered label, is asked of its server with
-        ``skills/get`` and kept out of the manifest.
+        hold, under a label this registry registered (not a copy narrowed to
+        some names), is asked of its server with ``skills/get`` and kept out
+        of the manifest. A skill marked unavailable is never loaded, one
+        loaded before included.
 
         Raises:
             SkillError: A served skill that is not found on its server, or
@@ -321,13 +336,15 @@ class SkillRegistry:
         """
         if self._mcp.label_of(name) is None:
             return await asyncio.to_thread(self.get_skill, name)
-        loaded = self._skills.get(name)
-        if loaded is not None:
-            return loaded
         if name in self._unavailable:
             return None
         metadata = self._metadata.get(name)
+        loaded = self._skills.get(name)
+        if metadata is not None and loaded is not None:
+            return loaded
         if metadata is None:
+            if self._mcp.label_of(name) not in self._owned_labels:
+                raise SkillValidationError(f"Skill {name!r} not found")
             listed = await self._mcp.fetch_unlisted(name)
             self._record_served(listed)
             if listed.metadata is None:

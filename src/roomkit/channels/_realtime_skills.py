@@ -133,12 +133,12 @@ class RealtimeSkillSupport:
         # skill activation and reference reading, and Tool Search's when the
         # channel has it. Never gated (RFC §21.1).
         self._exempt_tools = exempt_tools
-        # session_id -> ordered list of (skill_name, instructions) tuples
+        # session_id -> ordered list of (skill_name, text, served) tuples
         # for skills activated so far in this session. Concatenated into
         # the system_instruction on the next reconfigure_session call.
         # Order matches activation sequence so a chained flow can layer
         # later skills on top of earlier ones.
-        self._activated_bodies: dict[str, list[tuple[str, str]]] = {}
+        self._activated_bodies: dict[str, list[tuple[str, str, bool]]] = {}
 
     @property
     def delivery_mode(self) -> SkillDeliveryMode:
@@ -250,18 +250,16 @@ class RealtimeSkillSupport:
             and self._delivery_mode == "on_demand"
             and pending.name not in self._activated_skills.get(session_id, set())
         ):
-            bodies.append((pending.name, pending.instructions))
+            bodies.append(_session_body(pending))
         sections: list[str] = []
         served: list[str] = []
-        for name, instructions in bodies:
-            if not instructions or not instructions.strip():
+        for name, text, is_served in bodies:
+            if not text or not text.strip():
                 continue
-            skill = pending if pending is not None and pending.name == name else None
-            skill = skill or self._skills.get_skill(name)
-            if isinstance(skill, MCPSkill):
-                served.append(served_skill_section(skill, instructions.strip()))
+            if is_served:
+                served.append(text)
             else:
-                sections.append(f"## Active skill: {name}\n{instructions.strip()}")
+                sections.append(f"## Active skill: {name}\n{text.strip()}")
         if served:
             sections.append(served_skills_block(served))
         return "\n\n".join(sections) if sections else None
@@ -375,7 +373,7 @@ class RealtimeSkillSupport:
         if activated is not None and skill.name not in activated:
             activated.add(skill.name)
             if self._delivery_mode == "on_demand":
-                self._activated_bodies[session_id].append((skill.name, skill.instructions))
+                self._activated_bodies[session_id].append(_session_body(skill))
 
     def unknown_skill_hint(
         self, result: str, skill_name: str, reachable: Iterable[str], *, call_tool: bool = False
@@ -499,6 +497,17 @@ class RealtimeSkillSupport:
     async def _handle_run_script(self, arguments: dict[str, Any]) -> str:
         """Execute a script via the configured ScriptExecutor."""
         return await handle_run_script(arguments, self._skills, self._script_executor)
+
+
+def _session_body(skill: Skill) -> tuple[str, str, bool]:
+    """What a session keeps of an activated skill: its name, the text its
+    instructions carry, and whether it is served. A served skill's text is its
+    ``<skill>`` section, rendered when it is activated, so that nothing read
+    later (a registry that no longer holds it) can carry its body unfenced
+    (RFC §24.7)."""
+    if isinstance(skill, MCPSkill):
+        return skill.name, served_skill_section(skill, skill.instructions.strip()), True
+    return skill.name, skill.instructions, False
 
 
 def _names(tools: list[dict[str, Any]]) -> list[str]:
