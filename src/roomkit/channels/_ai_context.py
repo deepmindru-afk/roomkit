@@ -739,11 +739,14 @@ class AIContextMixin(_AIChannelContract):
         """The context of a turn another component drives with a conversation
         of its own (a reasoning backend's, RFC §12.4.1): the channel's settings
         and turn budget as a turn with no room override starts from, the
-        conversation's orphaned calls answered as a room turn's are, and
-        *tools* as the turn's resolved toolset."""
+        conversation's orphaned calls answered as a room turn's are, its MCP
+        servers' instructions after its prompt (RFC §21.2), and *tools* as the
+        turn's resolved toolset."""
         loop_ctx.turn_budget = self._turn_budget(binding, None)
         self._stamp_toolset(loop_ctx, tools)
         settings = self._turn_settings(binding, None)
+        prompt = settings["system_prompt"]
+        settings["system_prompt"] = with_server_instructions(prompt, self._server_instructions)
         return AIContext(messages=patch_dangling_tool_calls(messages), tools=tools, **settings)
 
     def _prompt_identity(self, context: RoomContext) -> str | None:

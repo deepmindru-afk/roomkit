@@ -12,16 +12,18 @@ import asyncio
 import logging
 import sys
 import textwrap
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from roomkit import RoomKit
+from roomkit import AIChannelTurnConfig, RoomKit
 from roomkit.channels._server_instructions import MAX_SERVER_INSTRUCTIONS_CHARS
 from roomkit.channels._tool_search_constants import TOOL_SEARCH_PREAMBLE
+from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.channel import ChannelBinding
@@ -29,11 +31,18 @@ from roomkit.models.context import RoomContext
 from roomkit.models.delivery import STANDALONE
 from roomkit.models.enums import ChannelCategory, ChannelType, EventType
 from roomkit.models.room import Room
+from roomkit.orchestration.pipeline import ConversationPipeline, PipelineStage
 from roomkit.providers.ai.base import AITool
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.skills.registry import SkillRegistry
 from roomkit.tools.mcp import MCPToolProvider
+from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from roomkit.voice.realtime.reasoning import (
+    AgentReasoningBackend,
+    ReasoningRequest,
+    TranscriptLine,
+)
 from tests.conftest import make_event
 from tests.tool_loop_modes import respond
 
@@ -139,6 +148,27 @@ async def _ai_prompt(room_prompt: str | None = None, **channel: Any) -> str:
     return provider.calls[0].system_prompt or ""
 
 
+@asynccontextmanager
+async def _in_session(
+    rt: RealtimeVoiceChannel, metadata: dict[str, Any] | None = None
+) -> AsyncIterator[VoiceSession]:
+    """A session of *rt* in a room of its own; the kit closes after."""
+    kit = RoomKit()
+    kit.register_channel(rt)
+    room = await kit.create_room()
+    await kit.attach_channel(room.id, rt.channel_id)
+    try:
+        yield await rt.start_session(room.id, "user-1", "ws", metadata=metadata)
+    finally:
+        await kit.close()
+
+
+def _connected_with(provider: MockRealtimeProvider) -> str:
+    """The system prompt the session connected with."""
+    connect = next(call for call in provider.calls if call.method == "connect")
+    return connect.args["system_prompt"] or ""
+
+
 async def _realtime_prompt(room_prompt: str | None = None, **channel: Any) -> str:
     """The system prompt a realtime session connects with."""
     provider = MockRealtimeProvider()
@@ -150,17 +180,8 @@ async def _realtime_prompt(room_prompt: str | None = None, **channel: Any) -> st
         tool_handler=_tool,
         **channel,
     )
-    kit = RoomKit()
-    kit.register_channel(rt)
-    room = await kit.create_room()
-    await kit.attach_channel(room.id, "rt1")
-    try:
-        metadata = {"system_prompt": room_prompt} if room_prompt else None
-        await rt.start_session(room.id, "user-1", "ws", metadata=metadata)
-        connect = next(call for call in provider.calls if call.method == "connect")
-        return connect.args["system_prompt"] or ""
-    finally:
-        await kit.close()
+    async with _in_session(rt, {"system_prompt": room_prompt} if room_prompt else None):
+        return _connected_with(provider)
 
 
 PromptOf = Callable[..., Awaitable[str]]
@@ -285,16 +306,8 @@ async def test_a_realtime_provider_without_tools_reads_none() -> None:
         system_prompt=HOST,
         server_instructions={"gm": GM},
     )
-    kit = RoomKit()
-    kit.register_channel(rt)
-    room = await kit.create_room()
-    await kit.attach_channel(room.id, "rt1")
-    try:
-        await rt.start_session(room.id, "user-1", "ws")
-        connect = next(call for call in provider.calls if call.method == "connect")
-        assert connect.args["system_prompt"] == HOST
-    finally:
-        await kit.close()
+    async with _in_session(rt):
+        assert _connected_with(provider) == HOST
 
 
 async def test_a_realtime_skill_activation_keeps_them_once(tmp_path: Path) -> None:
@@ -308,12 +321,7 @@ async def test_a_realtime_skill_activation_keeps_them_once(tmp_path: Path) -> No
         skill_delivery_mode="on_demand",
         server_instructions={"gm": GM},
     )
-    kit = RoomKit()
-    kit.register_channel(rt)
-    room = await kit.create_room()
-    await kit.attach_channel(room.id, "rt1")
-    try:
-        session = await rt.start_session(room.id, "user-1", "ws")
+    async with _in_session(rt) as session:
         provider.reconfigure = AsyncMock()  # type: ignore[method-assign]
         await provider.simulate_tool_call(session, "c1", "activate_skill", {"name": "combat"})
         await asyncio.sleep(0.1)
@@ -321,5 +329,59 @@ async def test_a_realtime_skill_activation_keeps_them_once(tmp_path: Path) -> No
         sent = provider.reconfigure.call_args.kwargs["system_prompt"]
         assert sent.count(GM) == 1 and "Fight well." in sent
         assert sent.index(GM) < sent.index("Fight well.")
-    finally:
-        await kit.close()
+
+
+async def test_a_prompt_a_turn_config_sets_keeps_them() -> None:
+    async def turn(_binding: ChannelBinding, _context: RoomContext) -> AIChannelTurnConfig:
+        return AIChannelTurnConfig(system_prompt="Turn prompt.")
+
+    prompt = await _ai_prompt(config_provider=turn, server_instructions={"gm": GM})
+
+    assert HOST not in prompt
+    assert prompt.index("Turn prompt.") < prompt.index(GM)
+
+
+async def test_a_reasoning_backends_agent_reads_its_own() -> None:
+    """The agent a reasoning backend drives composes its model's prompt: the
+    voice session's tools it calls are the servers' (RFC §12.4.1, §21.2)."""
+    model = MockAIProvider(responses=["The goblin is hit."])
+    agent = Agent("reasoner", provider=model, system_prompt=HOST, server_instructions={"gm": GM})
+    session = VoiceSession(
+        id="s1",
+        room_id="r1",
+        participant_id="u1",
+        channel_id="rt1",
+        state=VoiceSessionState.ACTIVE,
+    )
+    request = ReasoningRequest(session, "d1", [TranscriptLine("user", "I attack.")], True)
+
+    _ = [output async for output in AgentReasoningBackend(agent).run(request)]
+
+    prompt = model.calls[0].system_prompt or ""
+    assert prompt.index(HOST) < prompt.index(GM)
+    assert prompt.count(GM) == 1
+
+
+def test_a_pipeline_agent_carrying_them_is_refused_for_the_channels() -> None:
+    """A realtime pipeline's session prompt is the channel's: an agent's
+    instructions would be dropped while its tools are served (RFC §19.5)."""
+    teller = Agent("teller", provider=MockAIProvider(), server_instructions={"gm": GM})
+    quiet = Agent("quiet", provider=MockAIProvider(), server_instructions={"gm": None})
+    kit = RoomKit()
+    kit.register_channel(
+        RealtimeVoiceChannel(
+            "rtv", provider=MockRealtimeProvider(), transport=MockRealtimeTransport()
+        )
+    )
+    for agent in (teller, quiet):
+        kit.register_channel(agent)
+
+    def install(agents: list[Agent]) -> None:
+        stages = [PipelineStage(phase=a.channel_id, agent_id=a.channel_id) for a in agents]
+        ConversationPipeline(stages=stages).install(kit, agents, voice_channel_id="rtv")
+
+    with pytest.raises(ValueError) as refused:
+        install([teller])
+    assert "Agent 'teller' carries MCP server instructions," in str(refused.value)
+    assert "server_instructions=..." in str(refused.value)
+    install([quiet])  # published nothing: nothing to drop

@@ -23,7 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the label being the host's name for the server (an identifier, else
   `ValueError`), and is cut at 8192 characters with a warning. A server
   mapped to `None` is left out, which is also how a host leaves one out. A
-  realtime session whose provider takes no tools reads none of them.
+  realtime session whose provider takes no tools reads none of them. The
+  `Agent` an `AgentReasoningBackend` drives reads its own in its model's
+  prompt; a realtime pipeline refuses, at install, an agent that carries
+  some, as it refuses an agent's skills, and names the voice channel's own
+  `server_instructions=` instead (RFC §19.5).
 
 ### Security
 

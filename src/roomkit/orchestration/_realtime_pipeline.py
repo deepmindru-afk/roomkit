@@ -17,7 +17,7 @@ import logging
 from collections.abc import Collection
 from typing import TYPE_CHECKING, Any
 
-from roomkit.channels._agent_features import UnservedFeature, unserved_on_realtime
+from roomkit.channels._agent_features import UnservedFeature, unserved_in_pipeline
 from roomkit.channels._tool_registry import SessionConfig, orchestration_tool
 from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.orchestration.handoff import (
@@ -346,13 +346,14 @@ def _carried_tool_names(rtv: RealtimeVoiceChannel) -> set[str]:
 def refuse_agents_with_unserved(agents: list[Agent], channel_id: str) -> None:
     """Refuse an agent that carries what a realtime session never serves for
     it (skills, a human-input handler, planning, a sandbox, an external tool
-    handler), each cause named: its gated tools would run without their skill,
-    and its other ones would be called by a model never told of them (RFC
-    §19.5). Its own host tools stay served."""
+    handler, MCP server instructions), each cause named: its gated tools would
+    run without their skill, and its other ones would be called by a model
+    never told of them or of how to use them (RFC §19.5). Its own host tools
+    stay served."""
     causes = [
         _unserved_cause(agent.channel_id, feature, channel_id)
         for agent in agents
-        for feature in unserved_on_realtime(agent)
+        for feature in unserved_in_pipeline(agent)
     ]
     if causes:
         raise ValueError(" ".join(causes))

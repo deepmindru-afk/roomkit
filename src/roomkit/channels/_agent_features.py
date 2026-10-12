@@ -60,6 +60,23 @@ _FEATURES = (
 )
 
 
+_SERVER_INSTRUCTIONS = UnservedFeature(
+    "MCP server instructions",
+    "server_instructions=",
+    "MCP server instructions",
+    lambda agent: agent._server_instructions is not None,
+)
+"""Unserved in a realtime pipeline only: the session's prompt is the channel's,
+while a reasoning backend's agent reads its own in its own model's (RFC §21.2)."""
+
+
 def unserved_on_realtime(agent: AIChannel) -> list[UnservedFeature]:
     """What *agent* carries that a realtime session would never serve for it."""
     return [feature for feature in _FEATURES if feature.carried(agent)]
+
+
+def unserved_in_pipeline(agent: AIChannel) -> list[UnservedFeature]:
+    """What *agent* carries that a realtime pipeline's sessions never serve for
+    it: what no realtime session serves, and its MCP servers' instructions,
+    which the channel's own carry instead (RFC §19.5)."""
+    return [f for f in (*_FEATURES, _SERVER_INSTRUCTIONS) if f.carried(agent)]
