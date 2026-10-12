@@ -216,11 +216,7 @@ class VoiceTTSMixin:
             # Not cut off: all of it plays, even when the transport returned
             # before the last sample left the speaker.
             played_ms = int(playback.audio_ms)
-        with self._state_lock:
-            if not playback.counted:
-                playback.counted = True
-                total = self._session_played_ms.get(playback.session_id, 0)
-                self._session_played_ms[playback.session_id] = total + played_ms
+        self._count_played(playback, played_ms)
         pending, playback.context_turn = playback.context_turn, None
         if pending is None or self._tts_context is None:
             return
@@ -228,6 +224,14 @@ class VoiceTTSMixin:
         self._tts_context.commit_assistant_turn(
             recorder, speaker_id, playback.text, played_ms=played_ms, interrupted=interrupted
         )
+
+    def _count_played(self, playback: TTSPlaybackState, played_ms: int) -> None:
+        """Add what was heard of *playback* to its session's played total, once."""
+        with self._state_lock:
+            if not playback.counted:
+                playback.counted = True
+                total = self._session_played_ms.get(playback.session_id, 0)
+                self._session_played_ms[playback.session_id] = total + played_ms
 
     def _release_tts_context(self, session_id: str) -> None:
         """Drop a session's TTS context, here and in the provider."""
@@ -1236,11 +1240,9 @@ class VoiceTTSMixin:
                 session, text, "assistant"
             )
 
+        playback = TTSPlaybackState(session_id=session.id, text=text or "(audio)")
         with self._state_lock:
-            self._playing_sessions[session.id] = TTSPlaybackState(
-                session_id=session.id,
-                text=text or "(audio)",
-            )
+            self._playing_sessions[session.id] = playback
 
         try:
             # Wrap PCM as an AudioChunk stream so the outbound pipeline can
@@ -1259,6 +1261,9 @@ class VoiceTTSMixin:
             if self._pipeline is not None or getattr(self, "_outbound_audio_taps", []):
                 audio_stream = self._wrap_outbound(session, audio_stream)
             await self._session_output_backend(session).send_audio(session, audio_stream)
+            # Played whole: it joins the session's played total, which the echo
+            # guard reads (a cut one was counted at the cut).
+            self._count_played(playback, len(pcm_data) * 1000 // (2 * sample_rate))
         finally:
             self._playback_sent(session.id)
 

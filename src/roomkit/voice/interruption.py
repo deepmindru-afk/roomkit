@@ -277,19 +277,28 @@ def _words(text: str) -> list[str]:
     return _WORD.findall("".join(c for c in folded if not unicodedata.combining(c)))
 
 
-def echoes(speech_text: str, response_text: str) -> bool:
+def echoes(speech_text: str, response_text: str, *, cut_short: bool = True) -> bool:
     """Whether *speech_text* is only words of *response_text*, consecutive and in order.
 
-    Its last word may be cut short, as a partial transcript catches a word
-    being said ("Salut ! Ça va" echoes "Salut ! Ça va très bien", and so does
-    "Salut ! Ça v"); one word the response does not say there makes it speech.
+    With *cut_short*, its last word may be the start of the response's, as a
+    partial transcript catches a word being said ("Salut ! Ça v" echoes "Salut !
+    Ça va très bien"), but only after a whole word: a lone "No" is no echo of
+    "not", nor "Stop" of "stopped". A final transcript is read without it
+    (``cut_short=False``). One word the response does not say there makes it
+    speech.
     """
     heard, said = _words(speech_text), _words(response_text)
     if not heard:
         return False
     *whole, last = heard
     span = len(heard)
+    partial_last = cut_short and bool(whole)
     return any(
-        said[start : start + span - 1] == whole and said[start + span - 1].startswith(last)
+        said[start : start + span - 1] == whole
+        and (
+            said[start + span - 1].startswith(last)
+            if partial_last
+            else said[start + span - 1] == last
+        )
         for start in range(len(said) - span + 1)
     )

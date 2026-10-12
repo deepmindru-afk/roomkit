@@ -28,6 +28,10 @@ from roomkit.voice.stt.base import diarizes
 
 _NOOP = NoopTelemetryProvider()
 
+_ECHO_VERDICT_GRACE_S = 10.0
+"""How long after its response ends an echo verdict still holds: an STT may
+close the echo's utterance seconds later (Meta's final came 5.5 s after)."""
+
 if TYPE_CHECKING:
     import threading
     from concurrent.futures import Future
@@ -201,7 +205,7 @@ class STTHost(Protocol):
     _speech_started_at: dict[str, float]
     _burst_words: dict[str, str]
     _burst_backchannel: dict[str, str]
-    _echo_bursts: dict[str, str]
+    _echo_bursts: dict[str, TTSPlaybackState]
     _speaker_trackers: dict[str, SpeakerTracker]
     _transcript_locks: dict[str, asyncio.Lock]
     _pipeline_speaker_tally: PipelineSpeakerTally | None
@@ -242,7 +246,7 @@ class VoiceSTTMixin:
     _speech_started_at: dict[str, float]
     _burst_words: dict[str, str]
     _burst_backchannel: dict[str, str]
-    _echo_bursts: dict[str, str]
+    _echo_bursts: dict[str, TTSPlaybackState]
     _speaker_trackers: dict[str, SpeakerTracker]
     _transcript_locks: dict[str, asyncio.Lock]
     _pipeline_speaker_tally: PipelineSpeakerTally | None
@@ -255,6 +259,7 @@ class VoiceSTTMixin:
     _fire_partial_transcription_hook: Any  # see STTHost — VoiceHooksMixin
     _handle_barge_in: Any  # see STTHost — VoiceChannel._handle_barge_in
     _judge_barge_in: Any  # see STTHost — VoiceChannel._judge_barge_in
+    _echo_guard_open: Any  # see STTHost — VoiceChannel._echo_guard_open
     _evaluate_turn: Any  # see STTHost — VoiceTurnMixin._evaluate_turn
     _route_text: Any  # see STTHost — VoiceTurnMixin._route_text
     _supersede_unheard_turn: Any  # VoiceTurnMixin._supersede_unheard_turn
@@ -570,6 +575,8 @@ class VoiceSTTMixin:
                 acknowledged = bool(words) and self._burst_backchannel.get(session.id) == words
             if acknowledged:
                 return  # these words were judged already: nothing new to decide
+            if not words and self._waits_for_words(session.id, playback, speech_duration_ms):
+                return
             decision = self._judge_barge_in(
                 session.id,
                 playback,
@@ -610,10 +617,41 @@ class VoiceSTTMixin:
             self._burst_backchannel.pop(session_id, None)
             self._echo_bursts.pop(session_id, None)
 
+    def _waits_for_words(
+        self, session_id: str, playback: TTSPlaybackState, speech_duration_ms: int
+    ) -> bool:
+        """Whether an energy run without words yet waits for them before it may cut.
+
+        While the echo guard is open, only words tell the response's echo from
+        the person (RFC §12.3.13): the run waits for the STT's first partial,
+        up to ``transcript_wait_ms``, as SEMANTIC does.
+        """
+        wait_ms = self._interruption_handler.config.transcript_wait_ms
+        return speech_duration_ms < wait_ms and self._echo_guard_open(session_id, playback)
+
+    def _echo_verdict(self, session_id: str, *, pop: bool = False) -> str | None:
+        """The response whose echo the speech under way was taken for, while that holds.
+
+        The verdict holds while its response plays and ``_ECHO_VERDICT_GRACE_S``
+        after the session's playback ended; past that, it is dropped, so it
+        never outlives its utterance (RFC §12.3.13).
+        """
+        with self._state_lock:
+            playback = self._echo_bursts.get(session_id)
+            if playback is None:
+                return None
+            playing = self._playing_sessions.get(session_id) is playback
+            ended_at = self._last_tts_ended_at.get(session_id)
+            holds = playing or (
+                ended_at is not None and time.monotonic() - ended_at <= _ECHO_VERDICT_GRACE_S
+            )
+            if pop or not holds:
+                del self._echo_bursts[session_id]
+        return playback.text if holds else None
+
     def _echoes_burst(self, session_id: str, text: str) -> bool:
         """Whether *text* still echoes the response the speech under way was taken for."""
-        with self._state_lock:
-            response = self._echo_bursts.get(session_id)
+        response = self._echo_verdict(session_id)
         return response is not None and echoes(text, response)
 
     def _took_for_echo(self, session_id: str, text: str) -> bool:
@@ -621,11 +659,42 @@ class VoiceSTTMixin:
 
         It may come once the response is over (an STT can take seconds to close
         a short utterance): the echo guard's verdict on its partials holds, as
-        long as the final adds nothing the response did not say (RFC §12.3.13).
+        long as the final adds no word the response did not say (RFC §12.3.13).
         """
+        response = self._echo_verdict(session_id, pop=True)
+        return response is not None and echoes(text, response, cut_short=False)
+
+    def _drop_echo_verdict(self, session_id: str) -> None:
         with self._state_lock:
-            response = self._echo_bursts.pop(session_id, None)
-        return response is not None and echoes(text, response)
+            self._echo_bursts.pop(session_id, None)
+
+    def _final_cuts_in(
+        self, session: VoiceSession, playback: TTSPlaybackState, text: str, room_id: str
+    ) -> bool:
+        """Judge a final over *playback* whose first words were taken for its echo.
+
+        Nothing cut the response, as its partials echoed it; the final says
+        words the response does not, so it is the person: judged now, as a
+        whole utterance (past any minimum of sustained speech), and when the
+        policy cuts, the playback is cut and the final is the turn (RFC
+        §12.3.13).
+        """
+        decision = self._judge_barge_in(
+            session.id,
+            playback,
+            speech_duration_ms=self._interruption_handler.config.min_speech_ms,
+            speech_text=text,
+        )
+        if decision.is_backchannel:
+            self._report_burst_backchannel(session, text, room_id)
+        if not decision.should_interrupt:
+            return False
+        logger.info("Barge-in on a final its echo verdict held back: %r", text)
+        self._schedule(
+            self._handle_barge_in(session, playback, room_id),
+            name=f"barge_in:{session.id}",
+        )
+        return True
 
     def _report_burst_backchannel(self, session: VoiceSession, text: str, room_id: str) -> None:
         """Remember the words judged a backchannel; fire ON_BACKCHANNEL once per burst."""
@@ -849,13 +918,20 @@ class VoiceSTTMixin:
 
                         # Provider signals speech detected (server-side VAD)
                         if result.is_speech_start:
+                            if not playing:
+                                # Speech that starts once nothing plays is no
+                                # echo: an earlier verdict says nothing of it.
+                                self._drop_echo_verdict(session.id)
                             self._schedule(
                                 self._fire_speech_start_hooks(session, room_id),
                                 name=f"speech_start:{session.id}",
                             )
 
                         if result.is_final and result.text:
-                            echo_of_response = self._took_for_echo(session.id, result.text)
+                            held_back_by = self._echo_verdict(session.id, pop=True)
+                            echo_of_response = held_back_by is not None and echoes(
+                                result.text, held_back_by, cut_short=False
+                            )
                             # The utterance is over: its words and verdict
                             # say nothing about the next one.
                             self._forget_burst_words(session.id)
@@ -873,6 +949,15 @@ class VoiceSTTMixin:
                             # Discard it and reconnect for a fresh stream.
                             with self._state_lock:
                                 playback = self._playing_sessions.get(session.id)
+                            if (
+                                not barge_in_fired
+                                and playback is not None
+                                and held_back_by is not None
+                                and not echo_of_response
+                                and self._final_cuts_in(session, playback, result.text, room_id)
+                            ):
+                                barge_in_fired = True
+                                barge_in_playback = playback
                             if not barge_in_fired and (playback or echo_of_response):
                                 logger.info(
                                     "Discarding echo transcription %s: %r",
@@ -973,6 +1058,8 @@ class VoiceSTTMixin:
                     backoff = min(backoff * 2, 30.0)
 
                 if not state.cancelled:
+                    # A stream's end ends its utterance: no final of it comes.
+                    self._forget_burst_words(session.id)
                     last_tts = self._last_tts_ended_at.get(session.id, 0.0)
                     since_tts_end = _time.monotonic() - last_tts if last_tts else -1.0
                     logger.info(

@@ -378,10 +378,10 @@ class VoiceChannel(
         # the words of it judged a backchannel (SEMANTIC, RFC §12.3.13)
         self._burst_words: dict[str, str] = {}
         self._burst_backchannel: dict[str, str] = {}
-        # Response audio each session played (ms), and the response whose
+        # Response audio each session played (ms), and the playback whose
         # echo the speech under way was taken for (echo_guard_ms, §12.3.13)
         self._session_played_ms: dict[str, int] = {}
-        self._echo_bursts: dict[str, str] = {}
+        self._echo_bursts: dict[str, TTSPlaybackState] = {}
         # Speech segments captured while queueing, replayed once TTS finishes,
         # each with its pipeline speaker claim (pipeline_speakers)
         self._queued_speech: dict[
@@ -1875,27 +1875,36 @@ class VoiceChannel(
         """The interruption policy's verdict on speech over *playback*.
 
         It reads the response's text and the session's played audio for the
-        echo guard (RFC §12.3.13), and remembers a response whose echo the
+        echo guard (RFC §12.3.13), and remembers the playback whose echo the
         speech under way was taken for: its final is then no turn.
         """
         played = playback.played_ms
-        with self._state_lock:
-            before = self._session_played_ms.get(session_id, 0)
         decision = self._interruption_handler.evaluate(
             playback_position_ms=played,
             speech_duration_ms=speech_duration_ms,
             speech_text=speech_text,
             transcript_expected=transcript_expected,
             response_text=playback.text,
-            session_played_ms=before + (0 if playback.counted else played),
+            session_played_ms=self._session_played(session_id, playback),
         )
         if decision.is_echo:
             with self._state_lock:
-                first = self._echo_bursts.get(session_id) != playback.text
-                self._echo_bursts[session_id] = playback.text
+                first = self._echo_bursts.get(session_id) is not playback
+                self._echo_bursts[session_id] = playback
             if first:  # once per utterance: the energy path asks at every frame
                 logger.info("Taken for the response's echo: %r (pos=%dms)", speech_text, played)
         return decision
+
+    def _session_played(self, session_id: str, playback: TTSPlaybackState) -> int:
+        """Response audio the session played in all (ms), *playback* included."""
+        with self._state_lock:
+            before = self._session_played_ms.get(session_id, 0)
+        return before + (0 if playback.counted else playback.played_ms)
+
+    def _echo_guard_open(self, session_id: str, playback: TTSPlaybackState) -> bool:
+        """Whether speech over *playback* may still be its echo (``echo_guard_ms``)."""
+        guard_ms = self._interruption_handler.config.echo_guard_ms
+        return self._session_played(session_id, playback) < guard_ms
 
     def _claim_barge_in(self, playback: TTSPlaybackState) -> bool:
         """Take *playback* for one barge-in; False when one already owns it."""

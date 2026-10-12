@@ -34,15 +34,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streaming STT transcribed them ("Salut"), and the agent stopped; the
   echo's final, seconds later, came in as the person's turn. While a session
   has played less than `InterruptionConfig.echo_guard_ms` of response audio
-  (6000 by default, 0 turns it off), speech made only of words of the
-  response being played, consecutive and in order, is its echo, whatever the
-  strategy: it does not interrupt, is not queued, its partials are not
-  published (`ON_PARTIAL_TRANSCRIPTION`), and its final is discarded, even
-  once the response is over. A word the response does not
-  say there makes it speech. `InterruptionHandler.evaluate()` takes the
-  response's text and the session's played audio for it
-  (`response_text=`, `session_played_ms=`), and `InterruptionDecision.is_echo`
-  says when it applied; `roomkit.voice.interruption.echoes()` is the test.
+  (6000 by default, 0 turns it off; audio played with `VoiceChannel.play()`
+  counts), speech made only of words of the response being played,
+  consecutive and in order, is its echo, whatever the strategy: it does not
+  interrupt, is not queued, its partials are not published
+  (`ON_PARTIAL_TRANSCRIPTION`), and its final is discarded, even once the
+  response is over (up to 10 s after it). A partial's last word may be cut
+  short after a whole word; a lone word, and a final, are matched whole, so
+  "No" over "I'm not sure" cuts in. A word the response does not say makes
+  it speech: when only the final says it, during the playback, the final is
+  judged then and, if the strategy cuts, is the turn. A verdict ends with its
+  utterance, its STT stream, or speech that starts once nothing plays. In
+  continuous STT, while the guard is open, loud audio with no words yet waits
+  for them up to `transcript_wait_ms` before it may cut on its duration.
+  `InterruptionHandler.evaluate()` takes the response's text and the
+  session's played audio for it (`response_text=`, `session_played_ms=`),
+  and `InterruptionDecision.is_echo` says when it applied;
+  `roomkit.voice.interruption.echoes()` is the test (`cut_short=False` for a
+  final).
 - A voice channel says the text before a tool call before the call runs
   (RMK-695, RFC §12.2 step 12s.a). The splitter held a reply's last sentence
   until a space followed its full stop, so "Let me check." waited for the

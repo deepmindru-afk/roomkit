@@ -9,7 +9,12 @@ agent off; the final of that echo, seconds later, came in as the person's turn.
 from __future__ import annotations
 
 import asyncio
+import io
+import struct
+import time
+import wave
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -26,10 +31,12 @@ from roomkit.voice.interruption import (
     echoes,
 )
 from roomkit.voice.pipeline import AudioPipelineConfig
+from roomkit.voice.pipeline.backchannel import PhraseBackchannelDetector
 from roomkit.voice.stt.base import STTProvider
 
 RESPONSE = "Salut ! Ça va très bien, merci. Et toi, comment tu vas ?"
 _SILENT_CHUNK = AudioFrame(data=b"\x00\x00" * 1600)
+_LOUD_CHUNK = AudioFrame(data=struct.pack("<320h", *([3000, -3000] * 160)))  # 20 ms
 
 
 @pytest.mark.parametrize(
@@ -48,6 +55,26 @@ _SILENT_CHUNK = AudioFrame(data=b"\x00\x00" * 1600)
 )
 def test_speech_echoes_a_response_by_its_words_in_order(heard: str, echo: bool) -> None:
     assert echoes(heard, RESPONSE) is echo
+
+
+@pytest.mark.parametrize(
+    ("heard", "response"),
+    [
+        ("No", "I'm not sure I follow."),
+        ("Stop", "It stopped raining."),
+        ("Wait", "I'm waiting for the result."),
+        ("Yes", "Yesterday it rained."),
+        ("Non", "Nonante euros, c'est le prix."),
+    ],
+)
+def test_a_lone_word_is_no_echo_of_a_longer_one(heard: str, response: str) -> None:
+    """Only after a whole word may the last one be cut short."""
+    assert not echoes(heard, response)
+
+
+def test_a_final_is_read_in_whole_words() -> None:
+    assert not echoes("Salut ! Ça v", RESPONSE, cut_short=False)
+    assert echoes("Salut ! Ça va", RESPONSE, cut_short=False)
 
 
 @pytest.mark.parametrize(
@@ -158,6 +185,7 @@ async def _speak_over(partials: list[str], final: str, *, played_before_ms: int 
     await asyncio.wait_for(stt.partials_said.wait(), 2)
     await asyncio.sleep(0.2)
     channel._playing_sessions.pop(session.id, None)  # noqa: SLF001 — the response ended
+    channel._last_tts_ended_at[session.id] = time.monotonic()  # noqa: SLF001
     stt.release.set()
     await asyncio.sleep(0.3)
     await channel.close()
@@ -189,3 +217,229 @@ async def test_past_the_guard_the_response_words_cut_in_and_are_the_turn() -> No
 
     assert len(cuts) == 1
     assert turns == ["Salut"]
+
+
+class _ScriptedSTT(STTProvider):
+    """Continuous STT: each step a result, or ``("wait", name)`` until ``go(name)``."""
+
+    def __init__(self, script: list[Any]) -> None:
+        self._script = script
+        self._go: dict[str, asyncio.Event] = {}
+        self._at: dict[str, asyncio.Event] = {}
+
+    def go(self, name: str) -> None:
+        self._go.setdefault(name, asyncio.Event()).set()
+
+    async def reached(self, name: str) -> None:
+        await asyncio.wait_for(self._at.setdefault(name, asyncio.Event()).wait(), 2)
+
+    @property
+    def supports_streaming(self) -> bool:
+        return True
+
+    async def transcribe(self, audio: Any, *, language: str | None = None) -> TranscriptionResult:
+        return TranscriptionResult(text="", is_final=True)
+
+    async def transcribe_stream(
+        self, audio_stream: AsyncIterator[AudioChunk], *, language: str | None = None
+    ) -> AsyncIterator[TranscriptionResult]:
+        async for _ in audio_stream:
+            break
+        while self._script:
+            step = self._script.pop(0)
+            if isinstance(step, tuple):
+                self._at.setdefault(step[1], asyncio.Event()).set()
+                await self._go.setdefault(step[1], asyncio.Event()).wait()
+                continue
+            yield step
+        await asyncio.Event().wait()
+
+
+def _partial(text: str) -> TranscriptionResult:
+    return TranscriptionResult(text=text, is_final=False)
+
+
+def _final(text: str) -> TranscriptionResult:
+    return TranscriptionResult(text=text, is_final=True)
+
+
+class _Call:
+    """A continuous-STT session whose response is set by hand, with what came of it."""
+
+    def __init__(self, script: list[Any], strategy: InterruptionStrategy, **config: Any) -> None:
+        self.stt = _ScriptedSTT(script)
+        self.backend = MockVoiceBackend(capabilities=VoiceCapability.INTERRUPTION)
+        detector = {}
+        if strategy == InterruptionStrategy.SEMANTIC:
+            detector = {"backchannel_detector": PhraseBackchannelDetector()}
+        self.channel = VoiceChannel(
+            "voice-1",
+            stt=self.stt,
+            backend=self.backend,
+            pipeline=AudioPipelineConfig(),
+            interruption=InterruptionConfig(strategy=strategy, **detector, **config),
+        )
+        self.kit = RoomKit(stt=self.stt, voice=self.backend)
+        self.kit.register_channel(self.channel)
+        self.turns: list[str] = []
+        self.cuts: list[object] = []
+
+    async def __aenter__(self) -> _Call:
+        await self.kit.create_room(room_id="r1")
+        await self.kit.attach_channel("r1", "voice-1")
+        self.session = await self.kit.connect_voice("r1", "user-1", "voice-1")
+
+        @self.kit.hook(HookTrigger.ON_BARGE_IN, HookExecution.ASYNC)
+        async def on_barge_in(event: object, context: object) -> None:
+            self.cuts.append(event)
+
+        @self.kit.hook(HookTrigger.ON_TRANSCRIPTION)
+        async def on_transcription(event: Any, context: object) -> HookResult:
+            self.turns.append(event.text)
+            return HookResult.allow()
+
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.channel.close()
+        await self.kit.close()
+
+    def play(self, text: str) -> None:
+        self.channel._playing_sessions[self.session.id] = TTSPlaybackState(  # noqa: SLF001
+            session_id=self.session.id, text=text
+        )
+
+    def end(self, *, seconds_ago: float = 0.0) -> None:
+        """The response ended *seconds_ago*."""
+        self.channel._playing_sessions.pop(self.session.id, None)  # noqa: SLF001
+        ended = time.monotonic() - seconds_ago
+        self.channel._last_tts_ended_at[self.session.id] = ended  # noqa: SLF001
+
+    async def hear(self, frame: AudioFrame = _SILENT_CHUNK) -> None:
+        await self.backend.simulate_audio_received(self.session, frame)
+
+
+async def test_a_one_word_answer_starting_a_word_of_the_response_cuts_in() -> None:
+    """ "No" over "I'm not sure": a lone word is matched whole (review of RMK-697)."""
+    script = [_partial("No"), ("wait", "final"), _final("No.")]
+    async with _Call(script, InterruptionStrategy.IMMEDIATE) as call:
+        call.play("I'm not sure I follow. Could you say that again?")
+        await call.hear()
+        await call.stt.reached("final")
+        await asyncio.sleep(0.1)
+        call.end()
+        call.stt.go("final")
+        await asyncio.sleep(0.3)
+
+    assert len(call.cuts) == 1
+    assert call.turns == ["No."]
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [
+        InterruptionStrategy.IMMEDIATE,
+        InterruptionStrategy.CONFIRMED,
+        InterruptionStrategy.SEMANTIC,
+    ],
+)
+async def test_a_final_saying_more_than_the_echo_cuts_in_while_it_plays(
+    strategy: InterruptionStrategy,
+) -> None:
+    """Its only partial echoed the response; the final, during playback, is the
+    person's: before, it was thrown away as echo (review of RMK-697)."""
+    script = [_partial("Salut"), ("wait", "final"), _final("Salut, attends une seconde")]
+    async with _Call(script, strategy) as call:
+        call.play(RESPONSE)
+        await call.hear()
+        await call.stt.reached("final")
+        await asyncio.sleep(0.1)
+        call.stt.go("final")
+        await asyncio.sleep(0.3)
+
+    assert len(call.cuts) == 1
+    assert call.turns == ["Salut, attends une seconde"]
+
+
+async def test_an_echo_verdict_ends_with_its_response() -> None:
+    """An echo whose utterance closed without words leaves no verdict on the
+    person's answer, once the response is long over (review of RMK-697)."""
+    script = [
+        _partial("Salut"),
+        _final(""),
+        ("wait", "later"),
+        _partial("Très bien"),
+        _final("Très bien, merci"),
+    ]
+    async with _Call(script, InterruptionStrategy.IMMEDIATE) as call:
+        call.play(RESPONSE)
+        await call.hear()
+        await call.stt.reached("later")
+        await asyncio.sleep(0.1)
+        call.end(seconds_ago=60)
+        call.stt.go("later")
+        await asyncio.sleep(0.3)
+
+    assert call.turns == ["Très bien, merci"]
+
+
+async def test_speech_starting_once_nothing_plays_is_no_echo() -> None:
+    script = [
+        _partial("Salut"),
+        ("wait", "later"),
+        TranscriptionResult(text="", is_final=False, is_speech_start=True),
+        _final("Très bien, merci"),
+    ]
+    async with _Call(script, InterruptionStrategy.IMMEDIATE) as call:
+        call.play(RESPONSE)
+        await call.hear()
+        await call.stt.reached("later")
+        await asyncio.sleep(0.1)
+        call.end()
+        call.stt.go("later")
+        await asyncio.sleep(0.3)
+
+    assert call.turns == ["Très bien, merci"]
+
+
+@pytest.mark.parametrize(
+    "strategy", [InterruptionStrategy.IMMEDIATE, InterruptionStrategy.CONFIRMED]
+)
+async def test_loud_echo_before_its_words_waits_for_them(strategy: InterruptionStrategy) -> None:
+    """The energy run reaches the channel before the STT's first partial: while
+    the guard is open it waits for words, and they are the echo's (review of
+    RMK-697)."""
+    script = [("wait", "words"), _partial("Salut"), ("wait", "final"), _final("Salut")]
+    async with _Call(script, strategy) as call:
+        call.play(RESPONSE)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        while loop.time() - started < 0.5:  # half a second of loud echo
+            await call.hear(_LOUD_CHUNK)
+            await asyncio.sleep(0.02)
+        call.stt.go("words")
+        await call.stt.reached("final")
+        await asyncio.sleep(0.1)
+        call.end()
+        call.stt.go("final")
+        await asyncio.sleep(0.3)
+
+    assert call.cuts == []
+    assert call.turns == []
+
+
+async def test_a_wav_played_whole_counts_toward_the_guard(tmp_path: Path) -> None:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(b"\x01\x00" * 16000 * 8)  # 8 s
+    greeting = tmp_path / "greeting.wav"
+    greeting.write_bytes(buffer.getvalue())
+
+    async with _Call([("wait", "never")], InterruptionStrategy.IMMEDIATE) as call:
+        await call.channel.play(call.session, str(greeting), text="Hello and welcome.")
+        played = call.channel._session_played_ms.get(call.session.id)  # noqa: SLF001
+
+    assert played == 8000
