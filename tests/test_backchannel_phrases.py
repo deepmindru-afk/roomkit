@@ -68,6 +68,110 @@ def test_anything_else_is_an_interruption(text: str) -> None:
     assert not _is_backchannel(text)
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        # RMK-696: an « Ouh. » cut a story
+        "Ouh.",
+        "Ouuuh !",
+        "Ouah!",
+        "Waouh",
+        "Wow.",
+        "Génial.",
+        "Ah ouin.",
+        "Ayoye!",
+        "Oh là là",
+        "Oh la la !",
+        "Oulala",
+        "Ah ben dis donc",
+        "C'est vrai ?",
+        "Ben oui.",
+        "Ouais ouais ouais",
+        "C'est sûr",
+        "Bien sûr",
+        "Mets-en!",
+        "Pas pire",
+        "Trop bien!",
+        "Très intéressant",
+        "C'est malade!",
+        "T'as raison",
+        "Vas-y",
+        "Envoye!",
+        "Hahaha!",
+        "Ha ha ha",
+        "(Rires)",
+        "Ouache",
+        "Oh mon dieu",
+        "uhhuh",
+        "um-hum",
+        "Oh really?",
+        "Oh my god",
+        "That's awesome",
+        "Very cool",
+        "[laughter]",
+        "(laughs)",
+        "Thanks so much!",
+        "Got it, thanks",
+        "Sounds good",
+        "Fair enough",
+        "Ew, gross",
+        "Aww",
+        "Go on",
+        "Makes sense",
+    ],
+)
+def test_reactions_and_regional_acknowledgements_are_backchannels(text: str) -> None:
+    assert _is_backchannel(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Ouh, attends",
+        "Euh, je voulais dire",
+        "Ah non",
+        "Oh non",
+        "Hein?",
+        "Pardon?",
+        "Pantoute",
+        "Ben là!",
+        "Voyons donc",
+        "Sérieux?",
+        "C'est pas vrai",
+        "C'est bon",
+        "C'est correct",
+        "Laisse faire",
+        "Je sais",
+        "Mouais",
+        "Trop fort",
+        "C'est trop",
+        "Oups",
+        "hold on",
+        "huh?",
+        "excuse me",
+        "well",
+        "um",
+        "really?",
+        "no way",
+        "oh no",
+        "whoa whoa whoa",
+        "I know",
+        "that's enough",
+        "that's okay",
+        "yeah but",
+    ],
+)
+def test_what_stops_doubts_or_opens_a_turn_still_cuts(text: str) -> None:
+    assert not _is_backchannel(text)
+
+
+@pytest.mark.parametrize("text", ["mm-mm", "Mm-mm.", "Mmm-mmm", "uh-uh", "huh-uh", "nuh-uh"])
+def test_a_hummed_no_cuts(text: str) -> None:
+    """Deepgram writes "no" as "mm-mm": split on its hyphen, it read as two "mm"."""
+    assert not _is_backchannel(text)
+    assert _is_backchannel("Mm-hmm") and _is_backchannel("uh-huh")
+
+
 @pytest.mark.parametrize("text", [None, "", "  ", "..."])
 def test_without_words_the_duration_decides_by_default(text: str | None) -> None:
     assert not _is_backchannel(text)
