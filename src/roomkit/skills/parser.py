@@ -40,6 +40,14 @@ _SKILL_FILENAMES = ("SKILL.md", "skill.md")
 # Known frontmatter keys that map to SkillMetadata fields
 _KNOWN_KEYS = {"name", "description", "license", "compatibility", "allowed_tools"}
 
+_LIST_KEYS = ("allowed_tools", "requires")
+"""The keys whose list a line-by-line reading must keep or refuse: what a
+skill gates and what it requires (RFC §24.1)."""
+
+_KEY_LINE = re.compile(r"^(\w[\w_-]*)\s*:\s*(.*)$")
+_ITEM_LINE = re.compile(r"^\s*-(?:\s+(.*))?$")
+_ITEM_COMMENT = re.compile(r"\s+#.*$")
+
 FRONTMATTER_MAX = 64 * 1024
 """Characters a skill's frontmatter may take, in its entry's JSON as in its
 ``SKILL.md``'s YAML: far above any real one (a name, a description of 1024
@@ -258,15 +266,57 @@ def _as_strings(mapping: dict[Any, Any]) -> dict[str, FrontmatterValue]:
 
 
 def _parse_lines(fm_text: str) -> dict[str, FrontmatterValue]:
-    """Read the ``key: value`` lines of a frontmatter, quotes stripped."""
+    """Read the ``key: value`` lines of a frontmatter, a key alone on its
+    line followed by ``- item`` lines as a list (RFC §24.1).
+
+    Raises:
+        SkillParseError: A line under ``allowed_tools`` or ``requires`` is
+            not a ``- item``: reading the skill without it would leave open
+            what it gates.
+    """
     data: dict[str, FrontmatterValue] = {}
+    open_key: str | None = None  # a key alone on its line, its items to follow
     for line in fm_text.splitlines():
-        match = re.match(r"^(\w[\w_-]*)\s*:\s*(.+)$", line.strip())
-        if match:
-            key = match.group(1).strip()
-            value = match.group(2).strip().strip("\"'")
-            data[key] = value
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        item = _ITEM_LINE.match(line)
+        if item and open_key is not None:
+            items = data.get(open_key)
+            data[open_key] = [*(items if isinstance(items, list) else []), *_list_item(item[1])]
+            continue
+        if open_key in _LIST_KEYS and line[:1].isspace():
+            raise SkillParseError(f"the frontmatter's {open_key} cannot be read line by line")
+        open_key = _read_key_line(data, line)
     return data
+
+
+def _read_key_line(data: dict[str, FrontmatterValue], line: str) -> str | None:
+    """Record the ``key: value`` *line* holds in *data*, and return its key
+    when the value is left to the ``- item`` lines that follow."""
+    match = _KEY_LINE.match(line.strip())
+    if not match:
+        return None
+    key, value = match[1], match[2].strip()
+    if not value:
+        data.pop(key, None)
+        return key
+    data[key] = _line_value(value)
+    return None
+
+
+def _line_value(text: str) -> FrontmatterValue:
+    """The value of a ``key: value`` line: ``[a, b]`` as a list, anything
+    else as text, quotes stripped."""
+    if text.startswith("[") and text.endswith("]"):
+        return [item for part in text[1:-1].split(",") for item in _list_item(part)]
+    return text.strip("\"'")
+
+
+def _list_item(text: str | None) -> list[str]:
+    """A list item as text, its trailing ``# comment`` and quotes stripped:
+    none when nothing is left."""
+    item = _ITEM_COMMENT.sub("", text or "").strip().strip("\"'")
+    return [item] if item else []
 
 
 def _scalar(value: FrontmatterValue | None) -> str:

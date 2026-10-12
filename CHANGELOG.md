@@ -41,6 +41,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not YAML, or read without PyYAML installed, is still read line by line,
   unbounded.
   Migration: write the value in place of the alias.
+- **BREAKING — a skill read line by line keeps what it gates and requires**
+  (RMK-693, RFC §24.1). A local `SKILL.md` frontmatter is read line by line
+  when it is not YAML (a description with an unquoted colon) and whenever
+  PyYAML is not installed, which is RoomKit's base install. That reading
+  kept no list: `allowed_tools:` followed by `- item` lines was dropped, and
+  `allowed_tools: [search_*, fetch_*]` gated the patterns `[search_*` and
+  `fetch_*]`, which match no tool. Either way the tools the skill gates were
+  offered to the model before any activation, and the RFC's own example
+  lost them without PyYAML. Both list forms are now read as lists, items
+  unquoted and a trailing `# comment` dropped. A line under `allowed_tools`
+  or `requires` that is not a `- item` raises `SkillParseError` naming the
+  skill, where the skill loaded without the key. Migration: a skill that
+  loaded with its gating lost now keeps its tools closed until it is
+  activated; one refused needs its list written as `- item` lines.
 
 ### Fixed
 
