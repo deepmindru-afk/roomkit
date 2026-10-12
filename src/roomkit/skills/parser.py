@@ -288,9 +288,34 @@ def parse_skill_metadata(skill_dir: Path) -> SkillMetadata:
         SkillParseError: If SKILL.md cannot be found or parsed.
         SkillValidationError: If metadata fails validation.
     """
-    skill_dir, content = _read_skill_md(skill_dir)
-    data, _ = parse_frontmatter(content)
+    _, metadata, _ = _parse_skill_md(skill_dir)
+    return metadata
 
+
+def parse_skill(skill_dir: Path) -> Skill:
+    """Parse full SKILL.md including instructions body (level 2).
+
+    Raises:
+        SkillParseError: If SKILL.md cannot be found or parsed.
+        SkillValidationError: If metadata fails validation.
+    """
+    resolved_dir, metadata, body = _parse_skill_md(skill_dir)
+    return Skill(metadata=metadata, instructions=body, path=resolved_dir)
+
+
+def _parse_skill_md(skill_dir: Path) -> tuple[Path, SkillMetadata, str]:
+    """Read the SKILL.md of *skill_dir* into its resolved directory, its
+    validated metadata and its body; an error names the skill (RFC §24.5)."""
+    resolved_dir, content = _read_skill_md(skill_dir)
+    try:
+        data, body = parse_frontmatter(content)
+    except SkillParseError as exc:
+        raise SkillParseError(f"Parsing failed for {resolved_dir.name}: {exc}") from exc
+    return resolved_dir, _validated_metadata(data, resolved_dir), body
+
+
+def _validated_metadata(data: dict[str, FrontmatterValue], skill_dir: Path) -> SkillMetadata:
+    """The metadata a parsed frontmatter declares, once it validates."""
     errors = validate_metadata(data, skill_dir)
     if errors:
         raise SkillValidationError(f"Validation failed for {skill_dir.name}: {'; '.join(errors)}")
@@ -304,30 +329,3 @@ def parse_skill_metadata(skill_dir: Path) -> SkillMetadata:
         allowed_tools=data.get("allowed_tools"),
         extra_metadata=extra,
     )
-
-
-def parse_skill(skill_dir: Path) -> Skill:
-    """Parse full SKILL.md including instructions body (level 2).
-
-    Raises:
-        SkillParseError: If SKILL.md cannot be found or parsed.
-        SkillValidationError: If metadata fails validation.
-    """
-    skill_dir, content = _read_skill_md(skill_dir)
-    data, body = parse_frontmatter(content)
-
-    errors = validate_metadata(data, skill_dir)
-    if errors:
-        raise SkillValidationError(f"Validation failed for {skill_dir.name}: {'; '.join(errors)}")
-
-    extra = {k: _scalar(v) for k, v in data.items() if k not in _KNOWN_KEYS}
-    metadata = SkillMetadata(
-        name=_scalar(data["name"]),
-        description=_scalar(data["description"]),
-        license=_scalar(data.get("license")) or None,
-        compatibility=_scalar(data.get("compatibility")) or None,
-        allowed_tools=data.get("allowed_tools"),
-        extra_metadata=extra,
-    )
-
-    return Skill(metadata=metadata, instructions=body, path=skill_dir)

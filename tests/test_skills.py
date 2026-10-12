@@ -234,6 +234,28 @@ class TestParseSkillMetadata:
         assert meta.license == "MIT"
         assert meta.extra_metadata["custom_key"] == "custom_val"
 
+    @pytest.mark.parametrize(
+        ("frontmatter", "reason"),
+        [
+            ("name: refunds\n---\nBody", "must start with"),
+            ("---\nname: refunds\ndescription: d\n", "missing closing"),
+            ("---\nname: refunds\ndescription: &d d\nlicense: *d\n---\nBody", "YAML alias"),
+        ],
+    )
+    def test_a_frontmatter_that_cannot_be_parsed_names_its_skill(
+        self, tmp_path: Path, frontmatter: str, reason: str
+    ) -> None:
+        # RFC §24.5: strict discovery re-raises the error as is, and must
+        # report which skill failed.
+        skill_dir = tmp_path / "refunds"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(frontmatter, encoding="utf-8")
+
+        with pytest.raises(SkillParseError, match=f"Parsing failed for refunds: .*{reason}"):
+            SkillRegistry().discover(tmp_path)
+        with pytest.raises(SkillParseError, match=f"Parsing failed for refunds: .*{reason}"):
+            parse_skill(skill_dir)
+
     def test_invalid_utf8_uses_skill_error_hierarchy(self, tmp_path: Path) -> None:
         skill_dir = tmp_path / "bad-encoding"
         skill_dir.mkdir()
