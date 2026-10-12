@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ElevenLabs streaming input never sends a chunk with no word to say on its
+  own (RMK-698). The v4 models' dialogue socket refused one
+  (`input_text_empty`), and the rest of the response went unspoken: an
+  audio tag the model wrote before a tool call ("[Calling show_join_codes
+  now]") went alone once the text before a call became its own segment
+  (RMK-695), as did a reply ending on a tag. A chunk of audio tags, spaces
+  and punctuation now waits for the next one, whose words it colours; one
+  left at the end is not sent. The speech socket (v2, v2.5) holds only
+  punctuation alone: those models read a bracket out.
 - A response's own echo no longer cuts it at a session's start (RMK-697,
   RFC §12.3.13). A fresh echo canceller had heard nothing yet: the first
   response's opening words came back through the microphone (5 dB down), a

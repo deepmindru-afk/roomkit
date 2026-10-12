@@ -11,6 +11,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import re
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -60,6 +61,11 @@ class FakeSocket:
     async def send(self, raw: str) -> None:
         message = json.loads(raw)
         self.sent.append(message)
+        inputs = "".join(i["text"] for i in message.get("inputs", []))
+        if inputs and not re.search(r"\w", re.sub(r"\[[^\]]*\]", "", inputs)):
+            # The dialogue socket acts a tag out: a chunk of tags has nothing to say.
+            self._inbox.put_nowait({"error": "input_text_empty"})
+            return
         text = (
             message.get("text") or "".join(i["text"] for i in message.get("inputs", []))
         ).strip()
@@ -486,3 +492,42 @@ class TestThroughTheVoiceChannel:
         spoken = [m["inputs"][0]["text"] for m in socket.sent if "inputs" in m]
         assert "".join(spoken).split() == ["[laughs]", "Sure", "thing.", "Anything", "else?"]
         assert backend.sent_audio
+
+
+class TestWordlessChunks:
+    """A chunk with no word to say waits for the next one (RMK-698): the dialogue
+    socket refused a tag the model wrote before a tool call, and the whole
+    response stopped."""
+
+    async def test_an_audio_tag_alone_goes_with_the_words_after_it(self) -> None:
+        provider = ElevenLabsTTSProvider(_config(api_key="k", model_id="eleven_v4_turbo"))
+
+        chunks, socket, _ = await _run(
+            provider, "[Calling show_join_codes now]", "Voici les codes."
+        )
+
+        inputs = [m["inputs"][0]["text"] for m in socket.sent if "inputs" in m]
+        assert inputs == ["[Calling show_join_codes now] Voici les codes."]
+        assert chunks[-1].is_final
+
+    async def test_a_tag_left_at_the_end_is_not_sent(self) -> None:
+        provider = ElevenLabsTTSProvider(_config(api_key="k", model_id="eleven_v4"))
+
+        _, socket, _ = await _run(provider, "Bravo !", "[laughs]")
+
+        assert [m["inputs"][0]["text"] for m in socket.sent if "inputs" in m] == ["Bravo !"]
+
+    async def test_punctuation_alone_waits_on_the_speech_socket_too(self) -> None:
+        provider = ElevenLabsTTSProvider(_config(api_key="k", model_id="eleven_flash_v2_5"))
+
+        _, socket, _ = await _run(provider, "»", "Romane, à toi.")
+
+        assert [m["text"] for m in socket.sent if m.get("flush")] == ["» Romane, à toi. "]
+
+    async def test_the_speech_socket_says_what_a_bracket_holds(self) -> None:
+        # v2 and v2.5 read a bracket out: its words are words to say.
+        provider = ElevenLabsTTSProvider(_config(api_key="k", model_id="eleven_flash_v2_5"))
+
+        _, socket, _ = await _run(provider, "[laughs]", "Ok.")
+
+        assert [m["text"] for m in socket.sent if m.get("flush")] == ["[laughs] ", "Ok. "]

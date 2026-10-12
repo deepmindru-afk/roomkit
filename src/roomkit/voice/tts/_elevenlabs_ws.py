@@ -12,6 +12,12 @@ chunks are whole sentences, and without a flush both sockets hold the text
 until enough of it has piled up, one to three seconds of a slow LLM. Neither
 socket stitches a response to the previous ones: no request id comes back and
 no previous text is taken.
+
+A chunk with no word to say is never sent on its own: the dialogue socket
+refuses one (``input_text_empty``), and the whole response stops there. The
+v4 models act an audio tag out (``[laughs]``) rather than say it, so a chunk
+of tags, spaces and punctuation waits for the next one, whose words it
+colours; one left at the end is not sent.
 """
 
 from __future__ import annotations
@@ -19,10 +25,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
+import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Any
 from urllib.parse import quote, urlencode
+
+logger = logging.getLogger("roomkit.voice.tts.elevenlabs")
 
 BASE_URL = "wss://api.elevenlabs.io"
 # Both sockets close after 20 s without a client message; an LLM that pauses
@@ -33,6 +43,8 @@ CLOSE_TIMEOUT_S = 1.0
 _SPEECH_MODELS = ("eleven_multilingual_v2", "eleven_flash_v2", "eleven_turbo_v2")
 _DIALOGUE_MODELS = ("eleven_v4",)
 _END = object()
+_AUDIO_TAG = re.compile(r"\[[^\]]*\]")
+_WORD = re.compile(r"\w")
 
 
 class ElevenLabsSocket(ABC):
@@ -40,6 +52,8 @@ class ElevenLabsSocket(ABC):
 
     path: str
     final_key: str
+    performs_tags: bool = False
+    """Whether its models act ``[tags]`` out rather than say them."""
 
     def url(self, voice_id: str, query: dict[str, Any]) -> str:
         path = self.path.format(voice_id=quote(voice_id, safe=""))
@@ -83,6 +97,7 @@ class DialogueSocket(ElevenLabsSocket):
 
     path = "/v1/text-to-dialogue/stream-input"
     final_key = "is_final"
+    performs_tags = True
 
     def open_message(self, voice_id: str, voice_settings: dict[str, Any]) -> dict[str, Any]:
         return {"voices": [voice_id]}
@@ -187,6 +202,7 @@ async def _send_text(
     """
     iterator = aiter(text_stream)
     pending: asyncio.Task[Any] | None = None
+    held = ""  # chunks with no word to say yet (an audio tag), sent with the next
     try:
         while True:
             pending = asyncio.create_task(_next_text(iterator))
@@ -195,9 +211,17 @@ async def _send_text(
             text = pending.result()
             if text is _END:
                 break
-            if text:
-                for message in socket.text_messages(voice_id, text):
-                    await ws.send(json.dumps(message))
+            if not text:
+                continue
+            text = held + text
+            if not _says_words(socket, text):
+                held = text if text.endswith(" ") else f"{text} "
+                continue
+            held = ""
+            for message in socket.text_messages(voice_id, text):
+                await ws.send(json.dumps(message))
+        if held.strip():
+            logger.debug("Not sent, no word after it: %r", held.strip())
         await ws.send(json.dumps(socket.end_message()))
     except Exception as exc:
         failure.append(exc)
@@ -205,6 +229,12 @@ async def _send_text(
     finally:
         if pending is not None:
             await _stop(pending)
+
+
+def _says_words(socket: ElevenLabsSocket, text: str) -> bool:
+    """Whether *text* has a word to say, its audio tags aside on a socket acting them out."""
+    spoken = _AUDIO_TAG.sub("", text) if socket.performs_tags else text
+    return bool(_WORD.search(spoken))
 
 
 async def _stop(task: asyncio.Task[Any]) -> None:
