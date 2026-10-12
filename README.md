@@ -104,7 +104,7 @@ More examples in [`examples/`](examples/).
 
 ## Installation
 
-RoomKit's core has a single dependency (`pydantic`). Everything else is optional:
+RoomKit's core has two dependencies (`pydantic`, and `pyyaml` for skill frontmatter). Everything else is optional:
 
 ```bash
 pip install roomkit                    # core only

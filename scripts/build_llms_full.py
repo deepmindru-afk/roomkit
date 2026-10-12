@@ -45,7 +45,7 @@ HEADER = """\
 > systems. It provides room-based abstractions for managing conversations across
 > SMS, Email, Voice, WebSocket, AI, and other channels with pluggable storage,
 > identity resolution, hooks, and realtime events.
-> Python 3.12+, Pydantic 2.x, fully typed, zero required dependencies beyond Pydantic.
+> Python 3.12+, Pydantic 2.x, fully typed, no required dependency beyond Pydantic and PyYAML.
 
 """
 

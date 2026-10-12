@@ -8,7 +8,7 @@ pip install roomkit
 uv add roomkit
 ```
 
-The core library has a single dependency: `pydantic>=2.9`.
+The core library has two dependencies: `pydantic>=2.9`, and `pyyaml>=6`, which reads skill frontmatter.
 
 ## Optional Extras
 
