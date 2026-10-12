@@ -13,10 +13,12 @@ from collections.abc import Callable, Container, Iterable
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._served_tools import dict_tool_name
+from roomkit.channels._skill_activation import served_skill_section, served_skills_block
 from roomkit.channels._skill_constants import (
     ACTIVATE_SKILL_SCHEMA,
     READ_REFERENCE_SCHEMA,
     RUN_SCRIPT_SCHEMA,
+    SERVED_SKILLS_PREAMBLE,
     SKILL_INFRA_TOOL_NAMES,
     SKILLS_INLINE_PREAMBLE,
     SKILLS_NO_SCRIPTS_NOTE,
@@ -34,6 +36,9 @@ from roomkit.channels._skill_handlers import (
     tools_hint,
 )
 from roomkit.core.exceptions import ToolRefusedError
+from roomkit.skills.errors import SkillError
+from roomkit.skills.mcp.catalog import SkillChangedError
+from roomkit.skills.mcp.skill import MCPSkill
 from roomkit.skills.models import (
     RequiresMatch,
     missing_required_tools,
@@ -48,6 +53,15 @@ if TYPE_CHECKING:
     from roomkit.skills.models import Skill
 
 logger = logging.getLogger("roomkit.channels.realtime_voice")
+
+
+_INLINE_UNAVAILABLE = (
+    "its server's content is fetched only when the skill is activated, and this "
+    "session loads every skill's instructions when it starts"
+)
+"""Why a served skill is unavailable to a session in ``inline_full`` mode:
+loading every body at its start would fetch the skill ahead of need
+(RFC §24.7)."""
 
 
 SkillDeliveryMode = str
@@ -163,7 +177,9 @@ class RealtimeSkillSupport:
             preamble = SKILLS_PREAMBLE
         if not self._script_executor or not scripts_allowed:
             preamble += SKILLS_NO_SCRIPTS_NOTE
-        skills_xml = self._skills.to_prompt_xml()
+        if self._skills.has_served:
+            preamble += SERVED_SKILLS_PREAMBLE
+        skills_xml = self._session_registry().to_prompt_xml()
         skill_block = f"\n\n{preamble}\n\n{skills_xml}"
 
         if self._delivery_mode == "inline_full":
@@ -181,8 +197,9 @@ class RealtimeSkillSupport:
         them; nothing actionable to add).
         """
         sections: list[str] = []
-        for meta in self._skills.all_metadata():
-            skill = self._skills.get_skill(meta.name)
+        registry = self._session_registry()
+        for meta in registry.all_metadata():
+            skill = registry.get_skill(meta.name)
             body = getattr(skill, "instructions", None) if skill else None
             if not body or not body.strip():
                 continue
@@ -190,6 +207,18 @@ class RealtimeSkillSupport:
         if not sections:
             return None
         return "# Loaded skill instructions (binding rules)\n\n" + "\n\n".join(sections)
+
+    def _session_registry(self) -> SkillRegistry:
+        """The registry a session reads: in ``inline_full`` mode, the served
+        skills marked unavailable, as loading every body when the session
+        starts would fetch them ahead of need (RFC §24.7)."""
+        if self._delivery_mode != "inline_full" or not self._skills.has_served:
+            return self._skills
+        view = self._skills.copy()
+        for name in view.skill_names:
+            if view.is_served(name):
+                view.mark_unavailable(name, _INLINE_UNAVAILABLE)
+        return view
 
     # -- Per-session activation tracking --
 
@@ -222,14 +251,30 @@ class RealtimeSkillSupport:
             and pending.name not in self._activated_skills.get(session_id, set())
         ):
             bodies.append((pending.name, pending.instructions))
-        if not bodies:
-            return None
-        sections = [
-            f"## Active skill: {name}\n{instructions.strip()}"
-            for name, instructions in bodies
-            if instructions and instructions.strip()
-        ]
+        sections: list[str] = []
+        served: list[str] = []
+        for name, instructions in bodies:
+            if not instructions or not instructions.strip():
+                continue
+            skill = pending if pending is not None and pending.name == name else None
+            skill = skill or self._skills.get_skill(name)
+            if isinstance(skill, MCPSkill):
+                served.append(served_skill_section(skill, instructions.strip()))
+            else:
+                sections.append(f"## Active skill: {name}\n{instructions.strip()}")
+        if served:
+            sections.append(served_skills_block(served))
         return "\n\n".join(sections) if sections else None
+
+    def retire(self, session_id: str, name: str) -> None:
+        """Retire *name* in the session, as if it had never been activated: its
+        gates close, and its body leaves the instructions at the next
+        reconfiguration (RFC §24.4)."""
+        self._activated_skills.get(session_id, set()).discard(name)
+        if session_id in self._activated_bodies:
+            self._activated_bodies[session_id] = [
+                body for body in self._activated_bodies[session_id] if body[0] != name
+            ]
 
     # -- Tool dispatch --
 
@@ -242,7 +287,7 @@ class RealtimeSkillSupport:
         if name == TOOL_ACTIVATE_SKILL:
             return await self._handle_activate_skill(arguments, session_id)
         if name == TOOL_READ_REFERENCE:
-            return await self._handle_read_reference(arguments)
+            return await self._handle_read_reference(arguments, session_id)
         if name == TOOL_RUN_SCRIPT:
             return await self._handle_run_script(arguments)
         return json.dumps({"error": f"Unknown skill tool: {name}"})
@@ -373,7 +418,18 @@ class RealtimeSkillSupport:
     ) -> tuple[str, Skill | None]:
         """Build an immutable delivery candidate from the authorized catalogue."""
         skill_name = arguments.get("name", "")
-        skill = await asyncio.to_thread(self._skills.get_skill, skill_name)
+        if self._session_registry() is not self._skills and self._skills.is_served(skill_name):
+            error = f"Skill {skill_name!r} is unavailable in this session: {_INLINE_UNAVAILABLE}"
+            return json.dumps({"error": error, "available_skills": self._skills.skill_names}), None
+        try:
+            skill = await self._skills.load_skill(skill_name)
+        except SkillError as exc:
+            # A served skill not found on its server, or whose content does
+            # not match its entry: the message names the skill only (RFC §24.7).
+            self.retire(session_id, skill_name)
+            return json.dumps(
+                {"error": str(exc), "available_skills": self._skills.skill_names}
+            ), None
         if skill is None:
             return json.dumps(
                 {
@@ -410,6 +466,11 @@ class RealtimeSkillSupport:
             if self._delivery_mode == "inline_full"
             else "Loading the skill instructions into your system rules before continuing."
         )
+        if isinstance(skill, MCPSkill):
+            note = (
+                "Loading the skill's content into your instructions, set apart as its "
+                "server's, before continuing."
+            )
         result = await asyncio.to_thread(
             activation_ack,
             skill,
@@ -426,9 +487,14 @@ class RealtimeSkillSupport:
             return refusal.message
         return result
 
-    async def _handle_read_reference(self, arguments: dict[str, Any]) -> str:
-        """Read a reference file from a skill."""
-        return await handle_read_reference(arguments, self._skills)
+    async def _handle_read_reference(self, arguments: dict[str, Any], session_id: str) -> str:
+        """Read a reference file from a skill; a served skill whose file fails
+        verification is retired in the session (RFC §24.7)."""
+        try:
+            return await handle_read_reference(arguments, self._skills)
+        except SkillChangedError as exc:
+            self.retire(session_id, exc.name)
+            return json.dumps({"error": str(exc)})
 
     async def _handle_run_script(self, arguments: dict[str, Any]) -> str:
         """Execute a script via the configured ScriptExecutor."""

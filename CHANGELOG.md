@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SkillRegistry.load_skill()`, `read_file()`, `is_served()`, `origin()`,
   `MCPSkill`, `SkillChangedError`; `SkillRegistry.add()` refuses a name
   holding `:`.
+- A `RealtimeVoiceChannel` serves the skills an MCP server publishes as an
+  `AIChannel` does (RMK-683, RFC §24.7): an activation loads and verifies
+  the skill, its body enters the session's instructions as its server's
+  data, a fixed provider takes it in the activation's result set apart the
+  same way, and a file that fails retires it in the session. In
+  `inline_full` mode, which loads every skill's instructions when the
+  session starts, a served skill is listed as unavailable, with that reason.
 - `MCPToolProvider.server_extensions` and `MCPToolProvider.request()`
   (RMK-681, RFC §21.2): the extensions a server declared when it connected,
   and a request the MCP SDK does not model, returned as the server sent it.
