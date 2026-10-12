@@ -138,16 +138,17 @@ def _without_comment(key: str, text: str) -> str:
 
     Raises:
         SkillParseError: A quoted value or item of ``allowed_tools`` or
-            ``requires`` does not close, or more than a comment follows it.
+            ``requires`` does not close, holds a ``\\`` escape this reading
+            does not decode, or has more than a comment after it.
     """
     text = text.strip()
     if text[:1] in ("'", '"'):
         closing = text.find(text[0], 1)
         after = text[closing + 1 :].strip() if closing > 0 else "unclosed"
-        if not after or after.startswith("#"):
-            return text[: closing + 1]
-        if key in GATING_KEYS:
+        whole = not after or after.startswith("#")
+        escaped = text[0] == '"' and "\\" in text[: closing + 1]
+        if key in GATING_KEYS and (escaped or not whole):
             raise _unread(key)
-        return text
+        return text[: closing + 1] if whole else text
     comment = _COMMENT.search(text)
     return (text[: comment.start()] if comment else text).strip()

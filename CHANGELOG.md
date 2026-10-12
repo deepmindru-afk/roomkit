@@ -69,7 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the first (a flow collection or quoted text over several lines may hold
   a line that looks like one), a key YAML reads where this reading cannot
   (`? key`, a tag, an anchor, a merge key, an escape in a quoted key)
-  refuses the skill, and a null list item gates nothing on
+  refuses the skill, so does a `\` escape in a double-quoted gating
+  entry, and a null list item gates nothing on
   either reader where YAML used to gate the pattern `None`. `allowed_tools`
   and `requires` now read a value with one reader (RFC §24.2): a text
   `[a, b]`, or quoted entries (`'a', 'b'`), gate `a` and `b` where

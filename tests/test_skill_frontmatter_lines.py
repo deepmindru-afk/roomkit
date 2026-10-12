@@ -210,6 +210,8 @@ def test_yaml_refuses_a_gating_key_that_is_not_a_list_of_texts(tmp_path: Path, l
         "&key allowed_tools: [issue_refund]\n",
         "<<: {allowed_tools: [issue_refund]}\n",
         '"allowed\\x5ftools": [issue_refund]\n',
+        'allowed_tools:\n  - "issue\\x5frefund"\n',
+        'allowed_tools: ["issue\\u005frefund"]\n',
     ],
     ids=[
         "nested empty key",
@@ -234,6 +236,8 @@ def test_yaml_refuses_a_gating_key_that_is_not_a_list_of_texts(tmp_path: Path, l
         "anchored key",
         "merge key",
         "escaped key",
+        "escaped item",
+        "escaped flow item",
     ],
 )
 def test_the_line_reader_never_gates_less_than_yaml(
