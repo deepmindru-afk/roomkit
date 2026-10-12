@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -252,11 +252,22 @@ def _parse_yaml_or_fallback(fm_text: str) -> dict[str, FrontmatterValue]:
 def _refuse_nested_lists(mapping: dict[Any, Any]) -> None:
     """Refuse an ``allowed_tools`` or ``requires`` that is neither a text nor
     a list of texts (RFC §24.1): turned into one text, it would gate nothing."""
+    key = unreadable_gating_key(mapping)
+    if key is not None:
+        raise SkillParseError(f"the frontmatter's {key} is neither a text nor a list of texts")
+
+
+def unreadable_gating_key(mapping: Mapping[Any, Any]) -> str | None:
+    """The first of ``allowed_tools`` and ``requires`` in *mapping* that is
+    neither a text nor a list of texts, or ``None``: one rule for a local
+    skill's frontmatter and a served skill's entry (RFC §24.1, whichever
+    reader)."""
     for key in GATING_KEYS:
         value = mapping.get(key)
         items = value if isinstance(value, list) else [value]
         if any(isinstance(item, dict | list | set | tuple) for item in items):
-            raise SkillParseError(f"the frontmatter's {key} is neither a text nor a list of texts")
+            return key
+    return None
 
 
 def _as_strings(mapping: dict[Any, Any]) -> dict[str, FrontmatterValue]:

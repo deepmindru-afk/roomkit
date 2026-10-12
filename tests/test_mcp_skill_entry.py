@@ -113,6 +113,21 @@ class TestARefusedEntry:
         with pytest.raises(SkillValidationError, match="description"):
             parse_entry(_entry(frontmatter={"name": "refunds", "description": description}))
 
+    @pytest.mark.parametrize("key", ["requires", "allowed_tools"])
+    @pytest.mark.parametrize(
+        "value",
+        [{"search_web": True}, [["search_web", "fetch"]], [{}]],
+        ids=["mapping", "nested list", "mapping item"],
+    )
+    def test_whose_gating_key_is_neither_a_text_nor_a_list_of_texts(
+        self, key: str, value: object
+    ) -> None:
+        # Refused as a local skill's is (RFC §24.1, whichever reader): read
+        # as one text, it would name a tool nothing serves.
+        raw = _entry(frontmatter={"name": "refunds", "description": "d", key: value})
+        with pytest.raises(SkillValidationError, match=f"{key} is neither a text"):
+            parse_entry(raw)
+
     @pytest.mark.parametrize("resources", [None, "static", {"uri": "x"}, 3])
     def test_whose_resources_are_neither_a_list_nor_dynamic(self, resources: object) -> None:
         raw = _entry()

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from roomkit.skills.errors import SkillPathError, SkillValidationError
-from roomkit.skills.parser import FRONTMATTER_MAX, valid_skill_name
+from roomkit.skills.parser import FRONTMATTER_MAX, unreadable_gating_key, valid_skill_name
 
 SKILLS_EXTENSION = "io.modelcontextprotocol/skills"
 """The identifier a server declares the extension under."""
@@ -198,7 +198,9 @@ def _skill_root(uri: str) -> str:
 
 
 def _check_frontmatter(uri: str, root: str, frontmatter: Mapping[str, Any]) -> None:
-    """Refuse a frontmatter whose name or description the extension does not allow."""
+    """Refuse a frontmatter whose name or description the extension does not
+    allow, or whose ``allowed_tools`` or ``requires`` a local skill could not
+    hold either."""
     name = frontmatter.get("name")
     if not isinstance(name, str) or not valid_skill_name(name):
         raise SkillValidationError(f"{uri}: the frontmatter name is not a skill name")
@@ -207,6 +209,11 @@ def _check_frontmatter(uri: str, root: str, frontmatter: Mapping[str, Any]) -> N
     description = frontmatter.get("description")
     if not isinstance(description, str) or not 1 <= len(description) <= _DESCRIPTION_MAX:
         raise SkillValidationError(f"{uri}: the frontmatter description is missing or too long")
+    key = unreadable_gating_key(frontmatter)
+    if key is not None:
+        raise SkillValidationError(
+            f"{uri}: the frontmatter's {key} is neither a text nor a list of texts"
+        )
 
 
 def _resources(uri: str, root: str, raw: object) -> tuple[SkillResource, ...] | Literal["dynamic"]:
