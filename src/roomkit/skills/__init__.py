@@ -9,7 +9,14 @@ from roomkit.skills.errors import (
     SkillVerificationError,
 )
 from roomkit.skills.executor import ScriptExecutor
-from roomkit.skills.mcp import MCPSkillServer, SkillEntry, SkillResource
+from roomkit.skills.mcp import (
+    MCPSkill,
+    MCPSkillServer,
+    SkillChangedError,
+    SkillEntry,
+    SkillExecutionRequest,
+    SkillResource,
+)
 from roomkit.skills.models import (
     RequiresMatch,
     ScriptResult,
@@ -22,14 +29,17 @@ from roomkit.skills.paths import safe_join_filename
 from roomkit.skills.registry import SkillRegistry
 
 __all__ = [
+    "MCPSkill",
     "MCPSkillServer",
     "RequiresMatch",
     "ScriptExecutor",
     "ScriptResult",
     "Skill",
+    "SkillChangedError",
     "SkillDiscoveryError",
     "SkillEntry",
     "SkillError",
+    "SkillExecutionRequest",
     "SkillMetadata",
     "SkillParseError",
     "SkillPathError",

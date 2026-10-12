@@ -20,6 +20,9 @@ from roomkit.channels._mark_copies import (
 )
 from roomkit.channels._runtime_record import written_by_runtime
 from roomkit.channels._skill_constants import (
+    SERVED_SKILLS_PREAMBLE as _SERVED_SKILLS_PREAMBLE,
+)
+from roomkit.channels._skill_constants import (
     SKILLS_NO_SCRIPTS_NOTE as _SKILLS_NO_SCRIPTS_NOTE,
 )
 from roomkit.channels._skill_constants import (
@@ -586,6 +589,8 @@ class AIContextMixin(_AIChannelContract):
             # the model must not be told it can run a skill's scripts.
             if not self._script_executor or not self._policy_allows(TOOL_RUN_SCRIPT):
                 preamble += _SKILLS_NO_SCRIPTS_NOTE
+            if self._skills.has_served:
+                preamble += _SERVED_SKILLS_PREAMBLE
             skills_xml = self._skills.to_prompt_xml()
             skill_block = f"\n\n{preamble}\n\n{skills_xml}"
             system_prompt = (system_prompt or "") + skill_block
@@ -865,7 +870,9 @@ class AIContextMixin(_AIChannelContract):
         if usage_needs:
             self._tool_usage.seed(usage_room_id, past_calls)
         if skills_needs:
-            self._skill_activation.seed(activation_room_id, past_calls)
+            skills = self._skills
+            skip = skills.is_served if skills is not None else None
+            self._skill_activation.seed(activation_room_id, past_calls, skip=skip)
 
     def _determine_role(self, event: RoomEvent) -> str:
         if event.source.channel_id == self.channel_id:

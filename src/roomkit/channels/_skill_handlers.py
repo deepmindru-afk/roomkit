@@ -8,8 +8,15 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
+from roomkit._text import fence
+from roomkit.channels._skill_constants import (
+    ALREADY_ACTIVE_NOTE,
+    SERVED_ALREADY_ACTIVE_NOTE,
+    SERVED_SKILL_NOTE,
+)
 from roomkit.core.exceptions import ToolRefusedError
-from roomkit.skills.errors import SkillPathError
+from roomkit.skills.errors import SkillError, SkillPathError
+from roomkit.skills.mcp.skill import MCPSkill
 
 if TYPE_CHECKING:
     from roomkit.skills.executor import ScriptExecutor
@@ -69,6 +76,20 @@ def tools_hint(
     return json.dumps(data), matching
 
 
+def already_active_note(skill: Skill) -> str:
+    """What an acknowledgement says of a skill already active: where its
+    content is in force (RFC §24.4), a served skill's apart (RFC §24.7)."""
+    return SERVED_ALREADY_ACTIVE_NOTE if isinstance(skill, MCPSkill) else ALREADY_ACTIVE_NOTE
+
+
+def _origin(skill: Skill) -> dict[str, Any]:
+    """The origin a served skill's content names as it reaches the model
+    (RFC §24.7); nothing for a host's own skill."""
+    if not isinstance(skill, MCPSkill):
+        return {}
+    return {"origin": skill.origin, "uri": skill.held.uri, "origin_note": SERVED_SKILL_NOTE}
+
+
 def activation_ack(skill: Skill, note: str, *, already_active: bool = False) -> str:
     """Acknowledge an activation without re-sending the skill's body.
 
@@ -77,7 +98,7 @@ def activation_ack(skill: Skill, note: str, *, already_active: bool = False) -> 
     the text channel. What the tool still owes the model is the activation itself
     plus the skill's file inventory, which is what this returns.
     """
-    payload: dict[str, Any] = {"ok": True, "name": skill.name, "_note": note}
+    payload: dict[str, Any] = {"ok": True, "name": skill.name, "_note": note, **_origin(skill)}
     if already_active:
         payload["already_active"] = True
     scripts = skill.list_scripts()
@@ -100,7 +121,12 @@ async def handle_activate_skill(
         activation in their own state store.
     """
     skill_name = arguments.get("name", "")
-    skill = await asyncio.to_thread(skills.get_skill, skill_name)
+    try:
+        skill = await skills.load_skill(skill_name)
+    except SkillError as exc:
+        # A served skill not found on its server, or whose content does not
+        # match its entry: the message names the skill only (RFC §24.7).
+        return json.dumps({"error": str(exc), "available_skills": skills.skill_names}), skill_name
     if skill is None:
         error_json = json.dumps(
             {
@@ -115,10 +141,16 @@ async def handle_activate_skill(
 
 def activation_content(skill: Skill) -> str:
     """Serialize full instructions and the file inventory without truncation."""
+    # A served skill's content goes out set apart as its server's, in a block
+    # it cannot close, wherever it travels (RFC §6.4, §24.7).
+    instructions = (
+        fence("skill", skill.instructions) if isinstance(skill, MCPSkill) else skill.instructions
+    )
     payload: dict[str, Any] = {
         "name": skill.name,
         "description": skill.description,
-        "instructions": skill.instructions,
+        "instructions": instructions,
+        **_origin(skill),
     }
     scripts = skill.list_scripts()
     if scripts:
@@ -136,17 +168,25 @@ async def handle_read_reference(
     """Read a reference file from a skill."""
     skill_name = arguments.get("skill_name", "")
     filename = arguments.get("filename", "")
-    skill = await asyncio.to_thread(skills.get_skill, skill_name)
-    if skill is None:
-        # A skill the registry does not offer: the call is refused, as a
-        # call to a tool it cannot reach is (RFC §9.3).
-        raise ToolRefusedError(json.dumps({"error": missing_skill_error(skills, skill_name)}))
-
     try:
-        content = await asyncio.to_thread(skill.read_reference, filename)
-        return json.dumps({"filename": filename, "content": content})
+        content = await skills.read_file(skill_name, filename)
+    except KeyError:
+        # A skill the registry does not offer: the call is refused, as a
+        # call to a tool it cannot reach is (RFC §9.3). A served skill's
+        # files are read once it is active (RFC §24.7).
+        error = (
+            f"Skill {skill_name!r} is not active: activate it before reading its files"
+            if skills.is_served(skill_name) and skill_name in skills.skill_names
+            else missing_skill_error(skills, skill_name)
+        )
+        raise ToolRefusedError(json.dumps({"error": error})) from None
     except (ValueError, FileNotFoundError) as exc:
         return json.dumps({"error": str(exc)})
+    payload: dict[str, Any] = {"filename": filename, "content": content}
+    origin = skills.origin(skill_name)
+    if origin is not None:
+        payload["origin"] = origin.label
+    return json.dumps(payload)
 
 
 async def handle_run_script(

@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Container, Iterable
+from collections.abc import Container, Iterable, Sequence
 from html import escape
 from pathlib import Path
 
+from roomkit._text import quoted
 from roomkit.skills.errors import (
     SkillDiscoveryError,
     SkillParseError,
     SkillValidationError,
 )
+from roomkit.skills.mcp.approval import ApproveExecution
+from roomkit.skills.mcp.catalog import Listed, MCPSkillCatalog, ServedOrigin, SkillChangedError
+from roomkit.skills.mcp.server import MCPSkillServer
+from roomkit.skills.mcp.skill import MCPSkill
 from roomkit.skills.models import RequiresMatch, Skill, SkillMetadata, serves_exactly
 from roomkit.skills.parser import (
     find_skill_md,
@@ -20,6 +26,10 @@ from roomkit.skills.parser import (
 )
 
 logger = logging.getLogger("roomkit.skills")
+
+_QUOTED_MAX = 1100
+"""Characters of a served skill's description, license or compatibility the
+manifest quotes: a description holds 1024 at most."""
 
 
 class SkillRegistry:
@@ -44,6 +54,9 @@ class SkillRegistry:
         # activated here, so what it gates stays closed (RFC §24.2).
         self._closed_gates: dict[str, list[str]] = {}
         self._unlisted: set[str] = set()
+        # The skills MCP servers serve: shared by a registry's copies, which
+        # name a subset of them (RFC §24.7).
+        self._mcp = MCPSkillCatalog()
 
     def discover(self, *directories: str | Path, strict: bool = True) -> int:
         """Scan directories for subdirectories containing SKILL.md.
@@ -173,7 +186,15 @@ class SkillRegistry:
         Its ``path`` is where its scripts and references are read from. Adding
         it clears its marks, as registering a directory does. Logged at debug:
         a store adds its whole catalogue at once, and says so itself.
+
+        Raises:
+            SkillValidationError: The name holds ``:``, which only a skill an
+                MCP server serves is named with (RFC §24.7).
         """
+        if ":" in skill.metadata.name:
+            raise SkillValidationError(
+                f"Skill name {skill.metadata.name!r} holds ':', which names a served skill"
+            )
         self._commit(skill.path, skill.metadata, log_level=logging.DEBUG)
         self._skills[skill.metadata.name] = skill
 
@@ -189,6 +210,7 @@ class SkillRegistry:
         """
         wanted = set(self._metadata) | set(self._unavailable) if names is None else set(names)
         copied = SkillRegistry(requires_match=self.requires_match)
+        copied._mcp = self._mcp
         for name, metadata in self._metadata.items():
             if name not in wanted:
                 continue
@@ -206,6 +228,160 @@ class SkillRegistry:
                 name: gates for name, gates in self._closed_gates.items() if name in wanted
             }
         return copied
+
+    async def add_mcp_server(
+        self,
+        server: MCPSkillServer,
+        label: str,
+        *,
+        allow_dynamic: bool = False,
+        approve_execution: ApproveExecution | None = None,
+        execution_tools: Sequence[str] = (),
+    ) -> int:
+        """Register the skills an MCP server serves, under *label* (RFC §24.7).
+
+        Only the listing is read: a skill's ``SKILL.md`` is fetched when it is
+        activated, and checked then against the entry the listing gave. Each
+        skill is named ``<label>:<path>`` (``hf:hf-cli``). An entry the
+        extension does not allow, one past its limits, and a dynamic one
+        unless *allow_dynamic* are registered as unavailable with their
+        reason, the server's other skills staying usable. Registering a server
+        again replaces its entries; a skill loaded at that moment keeps the
+        entry it was loaded from until it retires.
+
+        Args:
+            server: The connected server
+                (:class:`~roomkit.tools.mcp.MCPToolProvider`).
+            label: The host's name for the server: an identifier, never the
+                name the server gives itself.
+            allow_dynamic: Take skills whose content the server generates,
+                which nothing can verify.
+            approve_execution: Asked before a tool that runs code is served
+                while one of this server's skills is active; without it, such
+                a call is refused.
+            execution_tools: Patterns of the host's own tools that run code,
+                gated like the sandbox's.
+
+        Returns:
+            How many of the server's skills are available.
+
+        Raises:
+            SkillValidationError: *label* is not an identifier, or names
+                another server already.
+            SkillDiscoveryError: The server does not declare the extension,
+                or its listing cannot be read.
+        """
+        origin, listed = await self._mcp.read_listing(
+            server,
+            label,
+            allow_dynamic=allow_dynamic,
+            approve_execution=approve_execution,
+            execution_tools=execution_tools,
+        )
+        for name in self._mcp.names_of(label):
+            self._metadata.pop(name, None)
+            self._unavailable.pop(name, None)
+            self._unlisted.discard(name)
+        self._mcp.record(origin, listed)
+        for item in listed:
+            self._record_served(item)
+        available = sum(1 for item in listed if item.metadata is not None)
+        logger.info(
+            "Registered %d skills from MCP server %r (%d unavailable)",
+            available,
+            label,
+            len(listed) - available,
+        )
+        return available
+
+    def _record_served(self, item: Listed) -> None:
+        """Record one entry of a server: available, or unavailable with its
+        reason. A skill loaded already keeps what it holds until it retires."""
+        if item.metadata is not None:
+            self._metadata[item.name] = item.metadata
+            self._unavailable.pop(item.name, None)
+        else:
+            self._metadata.pop(item.name, None)
+            self._unavailable[item.name] = item.reason or "unavailable"
+
+    async def load_skill(self, name: str) -> Skill | None:
+        """The skill *name*, loaded: what an activation reads (RFC §24.4).
+
+        A host's own skill is parsed as :meth:`get_skill` parses it. A skill
+        an MCP server serves is read from its server now, and checked against
+        its entry, unless it is loaded already: it then keeps the entry it was
+        loaded from (RFC §24.7). A ``<label>:<path>`` the listing did not
+        hold, under a registered label, is asked of its server with
+        ``skills/get`` and kept out of the manifest.
+
+        Raises:
+            SkillError: A served skill that is not found on its server, or
+                whose content does not match its entry; the message names
+                the skill only.
+        """
+        if self._mcp.label_of(name) is None:
+            return await asyncio.to_thread(self.get_skill, name)
+        loaded = self._skills.get(name)
+        if loaded is not None:
+            return loaded
+        if name in self._unavailable:
+            return None
+        metadata = self._metadata.get(name)
+        if metadata is None:
+            listed = await self._mcp.fetch_unlisted(name)
+            self._record_served(listed)
+            if listed.metadata is None:
+                return None
+            self._unlisted.add(name)
+            metadata = listed.metadata
+        skill = await self._mcp.load(name, metadata)
+        self._skills[name] = skill
+        return skill
+
+    async def read_file(self, name: str, filename: str) -> str:
+        """The text of *filename*, a file of skill *name* (RFC §24.6, §24.7).
+
+        A host's own skill reads a reference by name, confined to its
+        ``references/`` directory. A served skill reads a path inside the
+        skill (``templates/invoice.md``) that the entry it was loaded from
+        lists, from its own server, checked against that entry; it must be
+        loaded (activated) first.
+
+        Raises:
+            KeyError: No skill *name* is loaded or found here.
+            SkillPathError: The name escapes the skill, or is not one of a
+                served skill's files (nothing is read then).
+            FileNotFoundError: A host's skill has no such reference.
+            SkillChangedError: A served skill's file failed verification:
+                the skill is retired here and must be activated again.
+        """
+        if self._mcp.label_of(name) is None:
+            skill = await asyncio.to_thread(self.get_skill, name)
+            if skill is None:
+                raise KeyError(name)
+            return await asyncio.to_thread(skill.read_reference, filename)
+        served = self._skills.get(name)
+        if not isinstance(served, MCPSkill):
+            raise KeyError(name)
+        try:
+            return await self._mcp.read_file(served, filename)
+        except SkillChangedError:
+            self._skills.pop(name, None)
+            raise
+
+    def is_served(self, name: str) -> bool:
+        """Whether *name* is, or could be, a skill an MCP server serves."""
+        return self._mcp.label_of(name) is not None
+
+    def origin(self, name: str) -> ServedOrigin | None:
+        """The server that serves *name*, or ``None`` for a host's own skill."""
+        label = self._mcp.label_of(name)
+        return None if label is None else self._mcp.origin(label)
+
+    @property
+    def has_served(self) -> bool:
+        """Whether a server's skills were registered here."""
+        return self._mcp.has_servers
 
     def get_metadata(self, name: str) -> SkillMetadata | None:
         """Get metadata for a skill by name."""
@@ -352,15 +528,7 @@ class SkillRegistry:
         if listed:
             lines.append("<available_skills>")
             for meta in listed:
-                lines.append(f'  <skill name="{escape(meta.name)}">')
-                lines.append(f"    <description>{escape(meta.description)}</description>")
-                if meta.license:
-                    lines.append(f"    <license>{escape(meta.license)}</license>")
-                if meta.compatibility:
-                    lines.append(
-                        f"    <compatibility>{escape(meta.compatibility)}</compatibility>"
-                    )
-                lines.append("  </skill>")
+                lines.extend(self._manifest_lines(meta))
             lines.append("</available_skills>")
         if self._unavailable:
             lines.append("<unavailable_skills>")
@@ -370,3 +538,26 @@ class SkillRegistry:
                 lines.append("  </skill>")
             lines.append("</unavailable_skills>")
         return "\n".join(lines)
+
+    def _manifest_lines(self, meta: SkillMetadata) -> list[str]:
+        """One skill of the manifest. A served skill names its origin, and what
+        its server wrote is quoted as a text from outside (RFC §6.4, §24.7)."""
+        label = self._mcp.label_of(meta.name)
+        if label is None:
+            opening = f'  <skill name="{escape(meta.name)}">'
+            fields = [meta.description, meta.license, meta.compatibility]
+        else:
+            opening = f'  <skill name="{escape(meta.name)}" origin="{escape(label)}">'
+            fields = [
+                quoted(value, _QUOTED_MAX) if value else None
+                for value in (meta.description, meta.license, meta.compatibility)
+            ]
+        lines = [opening]
+        for tag, value in zip(("description", "license", "compatibility"), fields, strict=True):
+            if value:
+                # A quote made every double quote mark a single one: element
+                # text needs no quote escaped, only its brackets and ampersands.
+                text = escape(value) if label is None else escape(value, quote=False)
+                lines.append(f"    <{tag}>{text}</{tag}>")
+        lines.append("  </skill>")
+        return lines

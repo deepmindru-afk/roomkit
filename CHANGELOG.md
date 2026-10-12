@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `SkillRegistry.add_mcp_server(server, label)` registers the skills an MCP
+  server publishes under the MCP Skills extension, and an `AIChannel` serves
+  them (RMK-682, RFC §24.7). Each is named `<label>:<path>` (`hf:hf-cli`),
+  so it never shadows a host's skill or another server's, and nothing of it
+  is fetched before it is activated. `activate_skill` then reads its
+  `SKILL.md` from its own server and checks it against the entry (length,
+  SHA-256, frontmatter field by field); the body reaches the model as that
+  server's data, in a `<skill>` block naming its origin, after the host's
+  own skills and never among their binding rules. `read_skill_reference`
+  reads only a file the entry lists, from the same server, verified; a file
+  that fails retires the skill, which the model activates again. A skill the
+  listing did not hold is asked of its server by name (`skills/get`). An
+  entry the extension does not allow, one past its limits and a dynamic one
+  (unless `allow_dynamic=True`) are listed as unavailable with their reason.
+  A served skill's `allowed_tools` grants nothing, its scripts never run,
+  and an activation is not replayed from the stored history. New:
+  `SkillRegistry.load_skill()`, `read_file()`, `is_served()`, `origin()`,
+  `MCPSkill`, `SkillChangedError`; `SkillRegistry.add()` refuses a name
+  holding `:`.
 - `MCPToolProvider.server_extensions` and `MCPToolProvider.request()`
   (RMK-681, RFC §21.2): the extensions a server declared when it connected,
   and a request the MCP SDK does not model, returned as the server sent it.

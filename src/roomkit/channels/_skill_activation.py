@@ -31,11 +31,17 @@ from __future__ import annotations
 
 import json
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
+from roomkit._text import fence
+from roomkit.channels._skill_constants import (
+    SERVED_SKILLS_HEADING,
+    SERVED_SKILLS_INTRO,
+    TOOL_ACTIVATE_SKILL,
+)
+from roomkit.skills.mcp.skill import MCPSkill
 from roomkit.tools._outcome import OutcomeKind
 
 if TYPE_CHECKING:
@@ -91,6 +97,14 @@ class SkillActivationMemory:
             self._by_room.popitem(last=False)
         return is_new
 
+    def deactivate(self, room_id: str | None, name: str) -> None:
+        """Retire *name* in this room, as if it had never been activated: its
+        next activation delivers the body again (RFC §24.4). A served skill
+        whose file failed verification is retired so (RFC §24.7)."""
+        room = self._by_room.get(room_id) if room_id else None
+        if room is not None:
+            room.names.pop(name, None)
+
     def is_active(self, room_id: str | None, name: str) -> bool:
         """Whether *name* is currently active in this room."""
         if not room_id:
@@ -117,7 +131,9 @@ class SkillActivationMemory:
         room = self._by_room.get(room_id)
         return room is None or (not room.hydrated and not room.names)
 
-    def seed(self, room_id: str | None, calls: Any) -> None:
+    def seed(
+        self, room_id: str | None, calls: Any, *, skip: Callable[[str], bool] | None = None
+    ) -> None:
         """Seed the room from persisted tool-call history (oldest → newest).
 
         Reads the same ``TOOL_CALL_END`` rows the tool-usage digest hydrates from,
@@ -128,7 +144,9 @@ class SkillActivationMemory:
         inject a body the model never asked for. Anything whose result isn't a
         readable JSON object — an old evicted placeholder, a hook override — is
         skipped for the same reason: an activation we cannot confirm is one the
-        model re-does once, which costs a body and never lies.
+        model re-does once, which costs a body and never lies. A name *skip*
+        holds is never replayed: a skill an MCP server serves, whose body is
+        no longer held, is activated again (RFC §24.7).
         """
         if not room_id:
             return
@@ -138,7 +156,7 @@ class SkillActivationMemory:
             if call.get("name") != TOOL_ACTIVATE_SKILL:
                 continue
             name = (call.get("arguments") or {}).get("name", "")
-            if name and _succeeded(call):
+            if name and _succeeded(call) and not (skip is not None and skip(name)):
                 self.activate(room_id, name)
 
     def render_prompt(self, room_id: str | None, skills: SkillRegistry) -> str | None:
@@ -154,14 +172,38 @@ class SkillActivationMemory:
         if room is None or not room.names:
             return None
         sections: list[str] = []
+        served: list[str] = []
         for name in room.names:
             skill = skills.get_skill(name)
             body = skill.instructions.strip() if skill and skill.instructions else ""
-            if body:
+            if not body:
+                continue
+            if isinstance(skill, MCPSkill):
+                served.append(served_skill_section(skill, body))
+            else:
                 sections.append(f"## Skill: {name}\n{body}")
-        if not sections:
-            return None
-        return f"{_PROMPT_HEADING}\n\n" + "\n\n".join(sections)
+        blocks = []
+        if sections:
+            blocks.append(f"{_PROMPT_HEADING}\n\n" + "\n\n".join(sections))
+        if served:
+            blocks.append(served_skills_block(served))
+        return "\n\n".join(blocks) or None
+
+
+def served_skills_block(sections: list[str]) -> str:
+    """Served skills' sections under the heading that says whose they are."""
+    return f"{SERVED_SKILLS_HEADING}\n\n{SERVED_SKILLS_INTRO}\n\n" + "\n\n".join(sections)
+
+
+def served_skill_section(skill: MCPSkill, body: str) -> str:
+    """A served skill's content as the prompt carries it: data in a ``<skill>``
+    block it cannot close, under a line naming its origin (RFC §6.4, §24.7).
+    The name and the URI keep to a name's characters, which the registry
+    checked when it named the skill."""
+    return (
+        f"## Skill: {skill.name} (served by MCP server {skill.origin}, {skill.held.uri})\n"
+        + fence("skill", body)
+    )
 
 
 def _succeeded(call: Mapping[str, Any]) -> bool:

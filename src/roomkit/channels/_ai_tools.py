@@ -16,12 +16,12 @@ from roomkit.channels._sandbox_handlers import handle_sandbox_command
 from roomkit.channels._served_tools import CollisionLog, declared_once
 from roomkit.channels._skill_constants import (
     ACTIVATE_SKILL_SCHEMA,
-    ALREADY_ACTIVE_NOTE,
     READ_REFERENCE_SCHEMA,
     RUN_SCRIPT_SCHEMA,
 )
 from roomkit.channels._skill_handlers import (
     activation_ack,
+    already_active_note,
     handle_activate_skill,
     handle_read_reference,
     handle_run_script,
@@ -64,6 +64,7 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.tool_calls import partial_call_error
 from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX, TOOL_SANDBOX_BASH
+from roomkit.skills.mcp.catalog import SkillChangedError
 from roomkit.skills.models import missing_required_tools, missing_tools_error
 from roomkit.telemetry.base import SpanKind, TelemetryProvider
 from roomkit.telemetry.redaction import redact
@@ -1052,6 +1053,10 @@ class AIToolsMixin(_AIChannelContract):
         result_str, skill_name = await handle_activate_skill(arguments, self._skills)
         loop_ctx = self._get_loop_ctx()
         skill = self._skills.get_skill(skill_name) if skill_name else None
+        if skill_name and skill is None and self._skills.is_served(skill_name):
+            # A served skill that failed to load is retired, so no later
+            # acknowledgement stands in for a body it does not have (RFC §24.7).
+            self._retire_skill(loop_ctx, skill_name)
         if skill_name and skill is None:
             own = self._channel_tool_names()
             reachable = self._reachable_tools(loop_ctx.all_context_tools or ())
@@ -1078,7 +1083,7 @@ class AIToolsMixin(_AIChannelContract):
         # Already active: _build_context put these very instructions in front of
         # the model before the turn started, so the body just built above would
         # be a second copy of rules it already holds. Ack instead.
-        return activation_ack(skill, ALREADY_ACTIVE_NOTE, already_active=True)
+        return activation_ack(skill, already_active_note(skill), already_active=True)
 
     def _missing_required_tools(self, skill: Skill) -> list[str]:
         """The tools *skill* requires that this turn does not offer once its
@@ -1165,11 +1170,23 @@ class AIToolsMixin(_AIChannelContract):
         # system prompt instead of being re-fetched every turn.
         self._skill_activation.activate(loop_ctx.room_id, skill_name)
 
+    def _retire_skill(self, loop_ctx: _ToolLoopContext, skill_name: str) -> None:
+        """Retire *skill_name* for the turn and the room: as if it had never
+        been activated, its gates closed again (RFC §24.4)."""
+        loop_ctx.activated_skills.discard(skill_name)
+        self._skill_activation.deactivate(loop_ctx.room_id, skill_name)
+
     async def _handle_read_reference(self, arguments: dict[str, Any]) -> str:
         """Read a reference file from a skill."""
         if not self._skills:
             return json.dumps({"error": "No skills registry configured"})
-        return await handle_read_reference(arguments, self._skills)
+        try:
+            return await handle_read_reference(arguments, self._skills)
+        except SkillChangedError as exc:
+            # A served skill's file failed verification: the skill is retired,
+            # and its next activation delivers its current body (RFC §24.7).
+            self._retire_skill(self._get_loop_ctx(), exc.name)
+            return json.dumps({"error": str(exc)})
 
     async def _handle_run_script(self, arguments: dict[str, Any]) -> str:
         """Execute a script via the configured ScriptExecutor."""

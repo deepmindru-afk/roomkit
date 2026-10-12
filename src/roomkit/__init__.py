@@ -253,11 +253,13 @@ from roomkit.providers.image import (
 )
 from roomkit.sandbox import SandboxExecutor, SandboxResult
 from roomkit.skills import (
+    MCPSkill,
     MCPSkillServer,
     RequiresMatch,
     ScriptExecutor,
     Skill,
     SkillEntry,
+    SkillExecutionRequest,
     SkillMetadata,
     SkillRegistry,
     SkillResource,
@@ -574,10 +576,12 @@ __all__ = [
     "SandboxExecutor",
     "SandboxResult",
     # Skills
+    "MCPSkill",
     "MCPSkillServer",
     "ScriptExecutor",
     "Skill",
     "SkillEntry",
+    "SkillExecutionRequest",
     "SkillMetadata",
     "SkillRegistry",
     "SkillResource",

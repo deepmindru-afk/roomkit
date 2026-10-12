@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from roomkit.channels._skill_constants import ALREADY_ACTIVE_NOTE, TOOL_ACTIVATE_SKILL
-from roomkit.channels._skill_handlers import activation_ack
+from roomkit.channels._skill_constants import TOOL_ACTIVATE_SKILL
+from roomkit.channels._skill_handlers import activation_ack, already_active_note
 from roomkit.channels._tool_search import render_find_payload
 from roomkit.channels._tool_search_constants import TOOL_FIND_TOOLS
 from roomkit.providers.ai.base import AIMessage, AITool, AIToolCallPart
@@ -69,7 +69,7 @@ def reopening_exchanges(
         gated = [t for t in left if skill is not None and skill.metadata.gates(t.name)]
         if skill is None or not gated:
             continue
-        ack = activation_ack(skill, ALREADY_ACTIVE_NOTE, already_active=True)
+        ack = activation_ack(skill, already_active_note(skill), already_active=True)
         call = f"{call_id}_{len(exchanges) // 2}"
         exchanges += _exchange(call, TOOL_ACTIVATE_SKILL, {"name": name}, ack, gated)
         left = [t for t in left if t not in gated]

@@ -73,7 +73,8 @@ passage, a memory's summary of the conversation, content a realtime provider
 adds to its prompt, the goal or task an orchestration strategy copies into
 another model's prompt, and what a vision provider saw. A prompt's own blocks,
 which no cut reaches (``agent``, ``instructions``, a speech model's
-``transcript``), are fenced as well and are not listed."""
+``transcript``, the content of a skill an MCP server serves, ``skill``), are
+fenced as well and are not listed."""
 
 
 def _tag_name(tag: str, *, exact: bool = False) -> str:
