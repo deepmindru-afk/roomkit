@@ -14,13 +14,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `yaml.safe_load` with no bound, and every value turned into a string: 372
   bytes of YAML aliases of aliases became 254 MB of text, two levels more
   about 20 GB. It is now read by the reader that checks a served skill's
-  frontmatter: a YAML alias, collections nested past 64 levels and a
-  frontmatter past 64 KiB raise `SkillParseError`, before anything is
-  built, where they used to load (an alias, a size) or fall back to the
-  line reader (a nesting). `discover()` fails on such a skill, or skips and
-  logs it with `strict=False`. A frontmatter that is not YAML, or read
-  without PyYAML installed, is still read line by line, unbounded.
+  frontmatter: a YAML alias, collections nested past 64 levels, more than
+  64 brackets or braces open at once (quoted ones counted too) and a
+  frontmatter past 65536 characters raise `SkillParseError` before
+  anything is built, where they used to load (a nesting past a few
+  hundred levels was read line by line). `discover()` fails on such a
+  skill, or skips and logs it with `strict=False`. A frontmatter that is
+  not YAML, or read without PyYAML installed, is still read line by line,
+  unbounded.
   Migration: write the value in place of the alias.
+
+### Fixed
+
+- A `SKILL.md` frontmatter that cannot be parsed names its skill: the
+  `SkillParseError` reads `Parsing failed for <skill>: …`, so a strict
+  `discover()`, which raises it as is, reports which skill failed (RMK-691,
+  RFC §24.5). A validation error already named it.
+- A served skill whose frontmatter holds a value its YAML tag cannot
+  construct (`!!bool maybe`, `!!int ''`, `!!timestamp abc`) fails its
+  check with `SkillVerificationError`, as any unreadable frontmatter does,
+  where PyYAML's own `KeyError`, `IndexError` or `AttributeError` escaped
+  it (RMK-691, RFC §24.7).
 
 ## [0.98.0] — 2026-10-12
 

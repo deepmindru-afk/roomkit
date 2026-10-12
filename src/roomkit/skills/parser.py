@@ -55,6 +55,12 @@ builds a node by recursion, and 31000 nested ``- `` overflow its stack and
 end the process."""
 
 
+_CONSTRUCTOR_ERRORS = (AttributeError, IndexError, KeyError, OverflowError, TypeError, ValueError)
+"""What PyYAML's safe constructors raise, outside ``YAMLError``, on a scalar
+its tag cannot hold (``!!bool maybe``, ``!!int ''``, ``!!timestamp abc``) or
+an integer past Python's digit limit."""
+
+
 class _FrontmatterNotReadError(SkillParseError):
     """A frontmatter that was not read as a YAML mapping: PyYAML is missing,
     the text is not YAML or not a mapping, or it holds a value JSON cannot
@@ -118,15 +124,32 @@ def split_frontmatter(content: str) -> tuple[str, str]:
 
 
 def read_frontmatter_yaml(text: str) -> dict[str, Any]:
-    """The frontmatter *text* read as YAML, as JSON renders it (a date as its
-    ISO string).
+    """The frontmatter *text* read as YAML within the bounds of
+    :func:`_load_bounded_yaml`, as JSON renders it (a date as its ISO string).
+
+    Raises:
+        SkillParseError: The text is past a bound, was not read as a YAML
+            mapping, or holds a key or a value JSON cannot hold.
+    """
+    data = _load_bounded_yaml(text)
+    try:
+        rendered: dict[str, Any] = json.loads(json.dumps(data, default=str))
+    except (OverflowError, TypeError, ValueError) as exc:
+        # A date or binary key, an integer past Python's digit limit.
+        raise _FrontmatterNotReadError("the frontmatter holds a value JSON cannot hold") from exc
+    return rendered
+
+
+def _load_bounded_yaml(text: str) -> dict[Any, Any]:
+    """The frontmatter *text* loaded as a YAML mapping, once it is within the
+    bounds.
 
     An alias is refused before anything is built: YAML keeps an aliased node
     shared, so a few hundred bytes of aliases of aliases parse at once and
-    then expand exponentially into JSON. Collections nested past
+    then expand exponentially once read. Collections nested past
     :data:`_DEPTH_MAX` are refused from the same pass, before the loader
     recurses into them, and so is a frontmatter past :data:`FRONTMATTER_MAX`
-    or nesting brackets past :data:`_FLOW_DEPTH_MAX`.
+    or holding more than :data:`_FLOW_DEPTH_MAX` brackets open at once.
 
     Raises:
         SkillParseError: The text is past one of those bounds, or was not
@@ -150,17 +173,17 @@ def read_frontmatter_yaml(text: str) -> dict[str, Any]:
             data = yaml.safe_load(text)
         else:
             data = yaml.load(text, Loader=yaml.CSafeLoader)
-        rendered = json.loads(json.dumps(data, default=str))
     except yaml.YAMLError as exc:
         raise _FrontmatterNotReadError("the frontmatter is not YAML") from exc
     except RecursionError as exc:
         raise SkillParseError("the frontmatter nests too deep") from exc
-    except (OverflowError, TypeError, ValueError) as exc:
-        # An integer past Python's digit limit, a value JSON cannot render.
-        raise _FrontmatterNotReadError("the frontmatter holds a value JSON cannot hold") from exc
-    if not isinstance(rendered, dict):
+    except _CONSTRUCTOR_ERRORS as exc:
+        raise _FrontmatterNotReadError(
+            "the frontmatter holds a value its YAML tag cannot construct"
+        ) from exc
+    if not isinstance(data, dict):
         raise _FrontmatterNotReadError("the frontmatter is not a mapping")
-    return rendered
+    return data
 
 
 def _refuse_unsafe_events(events: Iterable[Any], yaml: ModuleType) -> None:
@@ -213,19 +236,25 @@ def _parse_yaml_or_fallback(fm_text: str) -> dict[str, FrontmatterValue]:
     """Read the frontmatter as bounded YAML, or line by line when it is not
     read as YAML at all."""
     try:
-        result = read_frontmatter_yaml(fm_text)
+        return _as_strings(_load_bounded_yaml(fm_text))
     except _FrontmatterNotReadError:
         logger.debug("YAML parse failed, falling back to regex parser")
         return _parse_lines(fm_text)
-    # A list value keeps its items. Stringifying it produced
-    # "['search_*', 'fetch_*']" — the literal repr — which then split
-    # on commas into "['search_*'" and "'fetch_*']", gating nothing.
-    # The RFC's own SKILL.md example uses the list form.
-    return {
-        str(k): [str(item) for item in v] if isinstance(v, list) else str(v)
-        for k, v in result.items()
-        if v is not None
-    }
+
+
+def _as_strings(mapping: dict[Any, Any]) -> dict[str, FrontmatterValue]:
+    """A loaded frontmatter with each key and value as a string, and each list
+    as a list of strings: ``allowed_tools`` and ``requires`` take the YAML
+    list form of the RFC's own SKILL.md example."""
+    try:
+        return {
+            str(k): [str(item) for item in v] if isinstance(v, list) else str(v)
+            for k, v in mapping.items()
+            if v is not None
+        }
+    except ValueError as exc:
+        # A hexadecimal integer past Python's digit limit for a decimal string.
+        raise _FrontmatterNotReadError("the frontmatter holds a value text cannot hold") from exc
 
 
 def _parse_lines(fm_text: str) -> dict[str, FrontmatterValue]:

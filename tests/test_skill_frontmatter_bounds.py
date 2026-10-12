@@ -1,6 +1,6 @@
-"""A SKILL.md frontmatter is read as YAML within the same bounds whichever door
-it comes through: a local skill's (``parse_frontmatter``) or one an MCP server
-serves (``verify_frontmatter``, RFC §24.7)."""
+"""A SKILL.md frontmatter is read as YAML by the same bounded reader whichever
+door it comes through: a local skill's (``parse_frontmatter``) or one an MCP
+server serves (``verify_frontmatter``, RFC §24.7)."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from roomkit.skills.registry import SkillRegistry
 from tests.mcp_skill_fakes import ServedSkill, skill_md
 
 REFUNDS = ServedSkill("refunds", {"SKILL.md": skill_md("refunds", "d")})
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _local(text: str) -> object:
@@ -38,7 +39,7 @@ DOORS: dict[str, tuple[Callable[[str], object], type[SkillError]]] = {
 
 def _aliases_of_aliases() -> str:
     # A few hundred bytes YAML keeps shared, which reading would expand to
-    # 9**7 strings (254 MB on the local door before it was bounded).
+    # 9**7 strings, about 254 MB of text.
     lines = ["a: &a [x, x, x, x, x, x, x, x, x]"]
     for prev, cur in zip("abcdef", "bcdefg", strict=True):
         lines.append(f"{cur}: &{cur} [" + ", ".join([f"*{prev}"] * 9) + "]")
@@ -82,11 +83,54 @@ class TestABoundRefusesTheFrontmatter:
             """
         )
         done = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=False
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            cwd=REPO_ROOT,
         )
         assert done.returncode == 0, done.stderr[-500:]
         assert DOORS[door][1].__name__ in done.stdout
         assert "nests too deep" in done.stdout
+
+
+@pytest.mark.parametrize(
+    "value", ["!!bool maybe", "!!int ''", "!!timestamp abc", "0x" + "f" * 5000]
+)
+class TestAValueTheReaderCannotHold:
+    def test_the_local_door_reads_its_frontmatter_by_lines(self, value: str) -> None:
+        text = f"---\nname: refunds\ndescription: d\nflag: {value}\n---\nBody\n"
+        data, _ = parse_frontmatter(text)
+        assert data["name"] == "refunds"
+        assert data["description"] == "d"
+        assert "flag" in data
+
+    def test_the_served_door_refuses_it(self, value: str) -> None:
+        text = f"---\nname: refunds\ndescription: d\nflag: {value}\n---\nBody\n"
+        with pytest.raises(SkillVerificationError, match="cannot"):
+            _served(text)
+
+    def test_lenient_discovery_goes_on(self, tmp_path: Path, value: str) -> None:
+        _write_skill(
+            tmp_path, "refunds", f"---\nname: refunds\ndescription: d\nflag: {value}\n---\n"
+        )
+        _write_skill(tmp_path, "orders", "---\nname: orders\ndescription: d\n---\n")
+        registry = SkillRegistry()
+        assert registry.discover(tmp_path, strict=False) == 2
+        assert registry.skill_names == ["orders", "refunds"]
+
+
+def test_a_date_key_keeps_the_lists_of_the_local_frontmatter() -> None:
+    # JSON holds no date key; the local door reads the mapping as it loads.
+    text = (
+        "---\nname: refunds\ndescription: d\nreleases:\n  2026-09-01: first\n"
+        "allowed_tools:\n  - issue_refund\nrequires:\n  - lookup_order\n---\nBody\n"
+    )
+    data, _ = parse_frontmatter(text)
+    assert data["allowed_tools"] == ["issue_refund"]
+    assert data["requires"] == ["lookup_order"]
+    assert "2026-09-01" not in data
 
 
 class TestTheLocalDoorStillReadsByLines:

@@ -334,5 +334,5 @@ def test_an_entry_whose_frontmatter_is_too_large_is_refused() -> None:
 
 def test_an_integer_past_pythons_digit_limit_fails_verification() -> None:
     text = "---\nname: refunds\ndescription: d\nbig: 1" + "0" * 5000 + "\n---\n"
-    with pytest.raises(SkillVerificationError, match="JSON cannot hold"):
+    with pytest.raises(SkillVerificationError, match="cannot construct"):
         verify_frontmatter(parse_entry(REFUNDS.entry()), text)
