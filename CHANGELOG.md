@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.98.0] — 2026-10-12
+
 ### Added
 
 - `SkillRegistry.add_mcp_server(server, label)` registers the skills an MCP
@@ -78,16 +80,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a tool reading `current_tool_room().organization_id`, a hook or a provider
   reading `RoomContext.room.organization_id` got `None` for a task started
   from a tenant's room, and code that filters by tenant only when it has one
-  ran the task's work across every tenant, with the parent's messages a
-  `conversation=` hand-over copies into the child room. The child room now
-  takes the parent's `organization_id`, a nested delegation's included; a
-  room without one still has a child without one. A read scoped to the
-  parent's organization finds the child room, one scoped to another does
-  not, and `find_rooms(organization_id=...)` now lists a tenant's task rooms
-  beside its own. Migration: leave out the rooms whose
-  `metadata["parent_room_id"]` is set where a list must show a tenant's
-  conversations only; a `_child_metadata` envelope carrying the tenant for
-  the child room's sake is no longer needed for it.
+  ran the task's work, and the parent's messages a `conversation=` hand-over
+  quotes in its description, across every tenant; a verification a tool
+  requested from the child room was opened outside the tenant. The child
+  room now takes the parent's `organization_id`, a nested delegation's
+  included; a room without one still has a child without one. A read or a
+  verb scoped to the parent's organization finds the child room, one scoped
+  to another does not, and `store.find_rooms(organization_id=...)` now lists
+  a tenant's task rooms beside its own, counted toward its `limit`.
+  Migration: where a list must show a tenant's conversations only, leave out
+  the rooms whose `metadata["parent_room_id"]` is set; a `_child_metadata`
+  envelope stamped only so the child room would carry the tenant can go:
+  read `room.organization_id` instead.
 - **BREAKING — `SkillRegistry.add()` refuses a skill name holding `:`**
   (RMK-682, RFC §24.7), with `SkillValidationError`: `<label>:<path>` names a
   skill an MCP server serves, which a host's skill must never shadow. A skill
@@ -112,8 +116,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   response's echo 0 to 5 dB below the microphone, against 34 to 44 dB kept
   running). The backend now marks each played block `reference_continues`,
   and the pipeline keeps the canceller active through a response's end when
-  it does. A backend whose played blocks stop between responses (SIP) is
-  bypassed there as before.
+  it does. A backend that does not mark its blocks so is bypassed there as
+  before: SIP's, whose played blocks stop between responses unless
+  `outbound_silence_fill=True`.
 - `AnthropicAIProvider` sends the turn's `reasoning_effort` (RMK-676, RFC
   §6.7). It went nowhere: an `AIChannel(reasoning_effort="low")` on Claude
   ran at the model's default effort. It now rides `output_config.effort` as
@@ -137,10 +142,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turned off, measured on the wire: `{"type": "disabled"}` on Opus 5,
   Sonnet 5 and Haiku 5.5; `{"type": "between_tools"}` on Sonnet 5.5, which
   refuses `disabled`; and the lowest effort, `low`, on Opus 5.5, Fable 5.1
-  and Fable 5, which refuse both and cannot stop reasoning. With reasoning
+  and Fable 5, which refuse both and cannot stop reasoning (and on Mythos 5.1
+  and Mythos 5, as Anthropic documents them, not measured). With reasoning
   off, Opus 5, Sonnet 5.5 and Haiku 5.5 answer 400 to an effort above
   `high`, so `xhigh` and `max` go as `high` there. A model the catalogue
-  does not carry is sent what it was before.
+  does not carry is sent no `thinking` block for off, as before.
 
 ## [0.97.0] — 2026-10-11
 
@@ -14157,7 +14163,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.97.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.98.0...HEAD
+[0.98.0]: https://github.com/roomkit-live/roomkit/compare/v0.97.0...v0.98.0
 [0.97.0]: https://github.com/roomkit-live/roomkit/compare/v0.96.1...v0.97.0
 [0.96.1]: https://github.com/roomkit-live/roomkit/compare/v0.96.0...v0.96.1
 [0.96.0]: https://github.com/roomkit-live/roomkit/compare/v0.95.0...v0.96.0
