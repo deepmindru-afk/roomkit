@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- What an MCP server publishes on how to use its tools now reaches the model
+  (RMK-692, RFC §21.2). `MCPToolProvider.instructions` keeps the
+  `InitializeResult.instructions` a server sends when it connects (`None`
+  when it sends none), and `MCPToolProvider.server_info` what it says of
+  itself (`name`, `version`). `AIChannel(..., server_instructions={"gm":
+  mcp.instructions})` and the same parameter on `RealtimeVoiceChannel` put
+  them in every system prompt the channel composes, after its own prompt and
+  before the skills: a prompt a binding or a `config_provider` sets for the
+  room keeps them, Tool Search does not hide them, and no eviction or
+  compaction reaches them. Each server's text is set apart as that server's
+  data, in a `<server_instructions>` block under `## MCP server: <label>`,
+  the label being the host's name for the server (an identifier, else
+  `ValueError`), and is cut at 8192 characters with a warning. A server
+  mapped to `None` is left out, which is also how a host leaves one out. A
+  realtime session whose provider takes no tools reads none of them.
+
 ### Security
 
 - **BREAKING — a local skill's `SKILL.md` frontmatter is read within the

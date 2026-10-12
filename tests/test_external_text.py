@@ -51,6 +51,7 @@ from roomkit.channels._instruction import INSTRUCTION_MARKER
 from roomkit.channels._mark_copies import COPIED_MARK, without_mark_copies
 from roomkit.channels._realtime_host_hooks import broadcast_text
 from roomkit.channels._realtime_tool_recovery import recovered_result_text
+from roomkit.channels._server_instructions import server_instructions_block
 from roomkit.channels._skill_activation import SkillActivationMemory
 from roomkit.channels._speaker import (
     SPEAKER_ATTRIBUTION_NOTE,
@@ -296,6 +297,10 @@ FENCED: dict[str, tuple[str, Callable[[str], str]]] = {
         lambda text: vision_note(VisionResult(description=text, labels=[text], text=text)),
     ),
     "served skill body": ("skill", _served_body),
+    "mcp server instructions": (
+        "server_instructions",
+        lambda text: str(server_instructions_block({"srv": text})),
+    ),
     "gemini tts transcript": (
         "transcript",
         lambda text: GeminiTTSProvider(
@@ -1291,8 +1296,10 @@ def test_every_fence_the_runtime_writes_uses_a_known_tag() -> None:
     }
 
     # Prompt blocks a cut never reaches: an agent's, a speech model's, a served
-    # skill's content in the system prompt (RFC §24.4: never truncated).
-    assert used <= {*FENCED_TAGS, "agent", "instructions", "transcript", "skill"}
+    # skill's content and an MCP server's instructions in the system prompt
+    # (RFC §24.4, §21.2: never truncated by a cut).
+    prompt_blocks = {"agent", "instructions", "transcript", "skill", "server_instructions"}
+    assert used <= {*FENCED_TAGS, *prompt_blocks}
 
 
 def test_a_lone_surrogate_does_not_stop_a_split() -> None:

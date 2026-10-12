@@ -2,6 +2,9 @@
 
 MCPToolProvider.from_command() starts an MCP server as a subprocess, lists its
 tools and stops it at the end; its tools plug into an AIChannel like any other.
+What the server publishes on how to use them (its instructions) goes to the
+channel's ``server_instructions``, under a name of our choosing, which puts it
+in the model's system prompt, set apart as the server's.
 The model runs locally through llama.cpp, so nothing else needs to be running.
 
     AIChannel ── LlamaCppAIProvider (local model)
@@ -71,6 +74,7 @@ async def main() -> None:
 
         async with MCPToolProvider.from_command(command[0], command[1:]) as mcp:
             logger.info("MCP tools: %s", mcp.tool_names)
+            logger.info("MCP server instructions: %s", mcp.instructions)
 
             kit = RoomKit()
             user = WebSocketChannel("user")
@@ -82,6 +86,7 @@ async def main() -> None:
                     system_prompt="You are a helpful assistant. Use the tools when they help.",
                     tools=mcp.get_tools(),
                     tool_handler=mcp.as_tool_handler(),
+                    server_instructions={"notes": mcp.instructions},
                 )
             )
 

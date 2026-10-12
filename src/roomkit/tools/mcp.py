@@ -211,6 +211,8 @@ class MCPToolProvider:
         self._tool_meta: dict[str, dict[str, Any]] = {}
         self._output_schemas: dict[str, dict[str, Any]] = {}
         self._server_extensions: dict[str, dict[str, Any]] = {}
+        self._instructions: str | None = None
+        self._server_info: dict[str, Any] = {}
         self._connected = False
 
     @classmethod
@@ -320,7 +322,7 @@ class MCPToolProvider:
 
         self._stack = stack
         self._session = session
-        self._server_extensions = _declared_extensions(init)
+        self._keep_handshake(init)
         self._connected = True
         logger.info(
             "Connected to MCP server %s (%s) — %s",
@@ -329,6 +331,18 @@ class MCPToolProvider:
             f"discovered {len(self._tools)} tools" if self._discover else "tools not listed",
         )
         return self
+
+    def _keep_handshake(self, init: Any) -> None:
+        """Keep what the server's ``initialize`` result says of it (RFC §21.2)."""
+        self._server_extensions = _declared_extensions(init)
+        instructions = getattr(init, "instructions", None)
+        self._instructions = instructions if isinstance(instructions, str) else None
+        info = getattr(init, "serverInfo", None)
+        self._server_info = (
+            info.model_dump(by_alias=True, mode="json", exclude_none=True)
+            if isinstance(info, BaseModel)
+            else {}
+        )
 
     async def _discover_tools(self, session: Any) -> None:
         """Read the server's whole tool listing into this provider.
@@ -457,6 +471,30 @@ class MCPToolProvider:
         empty for a server that declared none (RFC §21.2)."""
         self._ensure_connected()
         return copy.deepcopy(self._server_extensions)
+
+    @property
+    def instructions(self) -> str | None:
+        """What the server published, when it connected, on how to use its
+        tools (``InitializeResult.instructions``); ``None`` when it published
+        nothing (RFC §21.2).
+
+        The server's text, as it sent it: hand it to a channel's
+        ``server_instructions``, which sets it apart and bounds it, rather than
+        into a prompt directly.
+        """
+        self._ensure_connected()
+        return self._instructions
+
+    @property
+    def server_info(self) -> dict[str, Any]:
+        """What the server said of itself when it connected (``serverInfo``:
+        ``name``, ``version``...), as it sent it (RFC §21.2).
+
+        The server's own words, not a name for it: a host names a server by a
+        label of its own (``server_instructions``, ``add_mcp_server``).
+        """
+        self._ensure_connected()
+        return copy.deepcopy(self._server_info)
 
     async def request(
         self,

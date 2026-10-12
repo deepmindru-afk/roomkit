@@ -19,6 +19,7 @@ from roomkit.channels._mark_copies import (
     without_split_blocks,
 )
 from roomkit.channels._runtime_record import written_by_runtime
+from roomkit.channels._server_instructions import with_server_instructions
 from roomkit.channels._skill_constants import (
     SERVED_SKILLS_PREAMBLE as _SERVED_SKILLS_PREAMBLE,
 )
@@ -124,6 +125,7 @@ class AIContextMixin(_AIChannelContract):
     _provider: AIProvider
     _fallback_provider: AIProvider | None
     _system_prompt: str | None
+    _server_instructions: str | None
     _temperature: float
     _max_tokens: int | None
     _thinking_budget: int | None
@@ -348,8 +350,11 @@ class AIContextMixin(_AIChannelContract):
         standalone: bool,
     ) -> str | None:
         """The turn's system prompt with what the channel's own features add to
-        it: skills, sandbox, planner, Tool Search, the large-result re-read and
-        the channel's identity, in that order. Their tools join *tools* in place.
+        it: the MCP servers' instructions, skills, sandbox, planner, Tool Search,
+        the large-result re-read and the channel's identity, in that order. Their
+        tools join *tools* in place. The servers' instructions are the same on
+        every turn: ahead of the skills, whose active bodies change, they stay in
+        the prefix a provider caches (RFC §21.2).
 
         What changes from turn to turn is not here but in ``_turn_notes``: the
         system prompt stays the same between turns (RFC §6.4).
@@ -367,6 +372,7 @@ class AIContextMixin(_AIChannelContract):
         # are rendered into the prompt just below.
         await self._hydrate_room_memories(event.room_id, activation_room)
 
+        system_prompt = with_server_instructions(system_prompt, self._server_instructions)
         system_prompt = self._add_skills(
             tools, system_prompt, activation_room, standalone=standalone
         )

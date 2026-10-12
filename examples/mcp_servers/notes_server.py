@@ -14,7 +14,13 @@ import os
 
 from mcp.server.fastmcp import FastMCP
 
-server = FastMCP("notes", log_level="WARNING")  # its logs go to our stderr
+# What the server publishes on how to use its tools: a host that hands it to
+# its channel (``server_instructions``) puts it in front of the model.
+INSTRUCTIONS = (
+    "Save each thing to remember as its own note with add_note, in the user's words. "
+    "Before answering a question about the notes, call list_notes: never answer from memory."
+)
+server = FastMCP("notes", instructions=INSTRUCTIONS, log_level="WARNING")  # logs to our stderr
 _notes: list[str] = []
 _room = os.environ.get("NOTES_ROOM", "")
 

@@ -58,6 +58,10 @@ from roomkit.channels._served_tools import (
     refuse_unnamable,
     warn_tools_uncallable,
 )
+from roomkit.channels._server_instructions import (
+    server_instructions_block,
+    with_server_instructions,
+)
 from roomkit.channels._skill_constants import (
     ACTIVATE_SKILL_SCHEMA,
     READ_REFERENCE_SCHEMA,
@@ -230,6 +234,7 @@ class RealtimeVoiceChannel(
         skills: SkillRegistry | None = None,
         script_executor: ScriptExecutor | None = None,
         skill_delivery_mode: str | None = None,
+        server_instructions: Mapping[str, str | None] | None = None,
         tool_recovery: bool = True,
         tool_search: bool | None = None,
         tool_search_pinned: list[str] | None = None,
@@ -329,6 +334,13 @@ class RealtimeVoiceChannel(
                 when the provider reports
                 ``supports_mid_session_reconfigure=False`` (e.g.
                 Gemini 3.x Flash Live), ``"on_demand"`` otherwise.
+            server_instructions: What the MCP servers whose tools this
+                channel serves published for the model
+                (:attr:`~roomkit.tools.MCPToolProvider.instructions`), by
+                the host's label for each server, an identifier. Each is
+                set apart in a block of its own and added to the session's
+                system prompt after the channel's, while the provider takes
+                tools (RFC §21.2). A server mapped to ``None`` is left out.
             tool_recovery: If True, detect tool calls that the model speaks
                 as text (e.g. ``call:name{args}``) instead of issuing through
                 the function calling API, and run them: a call said as a
@@ -401,7 +413,7 @@ class RealtimeVoiceChannel(
         self._owns_transport = owns_transport
         self._transport_unsubscribers: list[Callable[[], None] | None] = []
         self._recording = recording
-        self._system_prompt = system_prompt
+        self._store_prompt_sources(system_prompt, server_instructions)
         self._voice = voice
         self._temperature = temperature
         self._input_sample_rate = input_sample_rate
@@ -582,6 +594,15 @@ class RealtimeVoiceChannel(
             self._transport_unsubscribers.append(
                 transport.on_audio_played(self._on_transport_audio_played)
             )
+
+    def _store_prompt_sources(
+        self, system_prompt: str | None, server_instructions: Mapping[str, str | None] | None
+    ) -> None:
+        """Keep the host's system prompt and the MCP servers' instructions,
+        rendered once: a label that is not an identifier raises ``ValueError``
+        (RFC §21.2)."""
+        self._system_prompt = system_prompt
+        self._server_instructions = server_instructions_block(server_instructions)
 
     def _init_human_input(
         self, human_input_handler: HumanInputToolHandler | None, tool_handler: ToolHandler | None
@@ -1820,7 +1841,8 @@ class RealtimeVoiceChannel(
     ) -> str | None:
         """One composition path for connection, discovery, activation and handoff."""
         if not self._provider.supports_tools:
-            return prompt  # no tool to call, so no skill or search to advertise
+            return prompt  # no tool to call: no server instructions, skill or search
+        prompt = with_server_instructions(prompt, self._server_instructions)
         if self._skill_support:
             scripts_allowed = self._session_admits(session.id, TOOL_RUN_SCRIPT)
             prompt = self._skill_support.inject_skills_prompt(
