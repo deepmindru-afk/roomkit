@@ -210,7 +210,7 @@ class AIChannel(
         self._store_thinker(thinker, think_wait, speak_policy)
         self._store_turn_budget(turn_budget_tokens, turn_budget_usd, provider, fallback_provider)
         self._provider = provider
-        self._system_prompt = system_prompt
+        self._store_prompt_sources(system_prompt, skills, skills_in_prompt)
         # Per-turn config resolution — see channels/_turn_config.py. When
         # set, system prompt / tools / sampling are resolved fresh at the
         # start of every turn instead of living as attach-time snapshots.
@@ -236,12 +236,6 @@ class AIChannel(
         self._thinking_coalesce_chars = thinking_coalesce_chars
         self._retry_policy = retry_policy
         self._fallback_provider = fallback_provider
-        self._skills = skills
-        # Hosts that render their own skills manifest inside ``system_prompt``
-        # (e.g. positioned above a prompt-cache boundary) set this to False to
-        # skip the automatic preamble+XML injection while keeping the skill
-        # activation tools.
-        self._skills_in_prompt = skills_in_prompt
         self._script_executor = script_executor
         self._sandbox = sandbox
         self._tool_policy = tool_policy
@@ -285,6 +279,19 @@ class AIChannel(
         self._init_framework_callbacks()
         # External tool handler for provider-executed tools (e.g. Claude Code)
         self._external_tool_handler = external_tool_handler
+
+    def _store_prompt_sources(
+        self, system_prompt: str | None, skills: SkillRegistry | None, skills_in_prompt: bool
+    ) -> None:
+        """Keep what the turn's system prompt is built from, besides the
+        channel's tools: the host's prompt and the skills."""
+        self._system_prompt = system_prompt
+        self._skills = skills
+        # Hosts that render their own skills manifest inside ``system_prompt``
+        # (e.g. positioned above a prompt-cache boundary) set this to False to
+        # skip the automatic preamble+XML injection while keeping the skill
+        # activation tools.
+        self._skills_in_prompt = skills_in_prompt
 
     def _store_turn_budget(
         self,
