@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from roomkit.skills.errors import SkillPathError, SkillValidationError
-from roomkit.skills.parser import valid_skill_name
+from roomkit.skills.parser import FRONTMATTER_MAX, valid_skill_name
 
 SKILLS_EXTENSION = "io.modelcontextprotocol/skills"
 """The identifier a server declares the extension under."""
@@ -30,11 +30,6 @@ MAX_TOTAL_SIZE = 16 * 1024 * 1024
 
 DYNAMIC = "dynamic"
 """The ``resources`` of a skill whose content has no stable digests."""
-
-FRONTMATTER_MAX = 64 * 1024
-"""Characters a skill's frontmatter may take, in its entry's JSON as in its
-``SKILL.md``'s YAML: far above any real one (a name, a description of 1024
-characters, some metadata), and a bound on what reading and comparing it costs."""
 
 _SKILL_MD = "SKILL.md"
 _DESCRIPTION_MAX = 1024

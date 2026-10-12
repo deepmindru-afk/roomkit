@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from collections.abc import Iterable
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
 from roomkit.skills.errors import SkillParseError, SkillValidationError
 from roomkit.skills.models import Skill, SkillMetadata
@@ -16,6 +20,7 @@ __all__ = [
     "parse_frontmatter",
     "parse_skill",
     "parse_skill_metadata",
+    "read_frontmatter_yaml",
     "split_frontmatter",
     "valid_skill_name",
     "validate_metadata",
@@ -34,6 +39,27 @@ _SKILL_FILENAMES = ("SKILL.md", "skill.md")
 
 # Known frontmatter keys that map to SkillMetadata fields
 _KNOWN_KEYS = {"name", "description", "license", "compatibility", "allowed_tools"}
+
+FRONTMATTER_MAX = 64 * 1024
+"""Characters a skill's frontmatter may take, in its entry's JSON as in its
+``SKILL.md``'s YAML: far above any real one (a name, a description of 1024
+characters, some metadata), and a bound on what reading and comparing it costs."""
+
+_FLOW_DEPTH_MAX = 64
+"""Brackets and braces open at once, read at most: pure-Python YAML takes time
+quadratic in that depth (5000 levels, 3.5 s)."""
+
+_DEPTH_MAX = 64
+"""Collections a frontmatter may nest, in flow or block style: the C loader
+builds a node by recursion, and 31000 nested ``- `` overflow its stack and
+end the process."""
+
+
+class _FrontmatterNotReadError(SkillParseError):
+    """A frontmatter that was not read as a YAML mapping: PyYAML is missing,
+    the text is not YAML or not a mapping, or it holds a value JSON cannot
+    hold. Unlike a bound, it says nothing against the text, which a caller
+    may read another way."""
 
 
 def _read_skill_md(skill_dir: Path) -> tuple[Path, str]:
@@ -89,6 +115,81 @@ def split_frontmatter(content: str) -> tuple[str, str]:
         raise SkillParseError("SKILL.md missing closing '---' frontmatter delimiter")
 
     return stripped[3:end_idx].strip(), stripped[end_idx + 4 :].strip()  # skip past \n---
+
+
+def read_frontmatter_yaml(text: str) -> dict[str, Any]:
+    """The frontmatter *text* read as YAML, as JSON renders it (a date as its
+    ISO string).
+
+    An alias is refused before anything is built: YAML keeps an aliased node
+    shared, so a few hundred bytes of aliases of aliases parse at once and
+    then expand exponentially into JSON. Collections nested past
+    :data:`_DEPTH_MAX` are refused from the same pass, before the loader
+    recurses into them, and so is a frontmatter past :data:`FRONTMATTER_MAX`
+    or nesting brackets past :data:`_FLOW_DEPTH_MAX`.
+
+    Raises:
+        SkillParseError: The text is past one of those bounds, or was not
+            read as a YAML mapping.
+    """
+    if len(text) > FRONTMATTER_MAX:
+        raise SkillParseError(f"the frontmatter is past {FRONTMATTER_MAX} characters")
+    if _flow_depth(text) > _FLOW_DEPTH_MAX:
+        raise SkillParseError("the frontmatter nests too deep")
+    try:
+        import yaml
+    except ImportError as exc:
+        raise _FrontmatterNotReadError(
+            "PyYAML is needed to read a frontmatter as YAML: "
+            "install it with pip install roomkit[mcp]"
+        ) from exc
+    loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+    try:
+        _refuse_unsafe_events(yaml.parse(text, loader), yaml)
+        if loader is yaml.SafeLoader:
+            data = yaml.safe_load(text)
+        else:
+            data = yaml.load(text, Loader=yaml.CSafeLoader)
+        rendered = json.loads(json.dumps(data, default=str))
+    except yaml.YAMLError as exc:
+        raise _FrontmatterNotReadError("the frontmatter is not YAML") from exc
+    except RecursionError as exc:
+        raise SkillParseError("the frontmatter nests too deep") from exc
+    except (OverflowError, TypeError, ValueError) as exc:
+        # An integer past Python's digit limit, a value JSON cannot render.
+        raise _FrontmatterNotReadError("the frontmatter holds a value JSON cannot hold") from exc
+    if not isinstance(rendered, dict):
+        raise _FrontmatterNotReadError("the frontmatter is not a mapping")
+    return rendered
+
+
+def _refuse_unsafe_events(events: Iterable[Any], yaml: ModuleType) -> None:
+    """Refuse an alias, or collections nested past :data:`_DEPTH_MAX`, from
+    the parse events alone: nothing is built yet, and the pass stops at the
+    first one found."""
+    depth = 0
+    for event in events:
+        if isinstance(event, yaml.AliasEvent):
+            raise SkillParseError("the frontmatter holds a YAML alias")
+        if isinstance(event, yaml.CollectionStartEvent):
+            depth += 1
+            if depth > _DEPTH_MAX:
+                raise SkillParseError("the frontmatter nests too deep")
+        elif isinstance(event, yaml.CollectionEndEvent):
+            depth -= 1
+
+
+def _flow_depth(text: str) -> int:
+    """The most brackets and braces *text* holds open at once, quotes not
+    read: an upper bound on its YAML flow nesting."""
+    depth = deepest = 0
+    for char in text:
+        if char in "[{":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif char in "]}" and depth:
+            depth -= 1
+    return deepest
 
 
 def parse_frontmatter(content: str) -> tuple[dict[str, FrontmatterValue], str]:
