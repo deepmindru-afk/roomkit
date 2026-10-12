@@ -287,6 +287,23 @@ def test_a_server_mapped_to_something_other_than_text_is_refused(
         make(server_instructions={"gm": provider})
 
 
+@pytest.mark.parametrize("make", CHANNELS.values(), ids=CHANNELS.keys())
+@pytest.mark.parametrize("given", ["text", "blank text", "provider"])
+def test_instructions_not_mapped_to_a_label_are_refused(
+    make: Callable[..., object], given: str
+) -> None:
+    # The mapping forgotten: refused whatever the server published, blank
+    # text included, rather than failing on the day it publishes some.
+    value = {
+        "text": "Roll dice yourself.",
+        "blank text": "",
+        "provider": MCPToolProvider.from_command(sys.executable, ["server.py"]),
+    }[given]
+
+    with pytest.raises(TypeError, match="maps a label to each server's instructions"):
+        make(server_instructions=value)
+
+
 # -- One path's own -------------------------------------------------------------
 
 

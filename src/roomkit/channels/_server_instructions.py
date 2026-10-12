@@ -42,9 +42,16 @@ def server_instructions_block(instructions: Mapping[str, str | None] | None) -> 
         ValueError: A label is not an identifier (letters, digits, ``_ . -``,
             64 at most), as :meth:`~roomkit.skills.SkillRegistry.add_mcp_server`
             requires.
-        TypeError: A server is mapped to something other than text or ``None``
-            (the provider itself, say, rather than its ``instructions``).
+        TypeError: *instructions* is not a mapping (one server's text passed
+            without its label, say), or a server is mapped to something other
+            than text or ``None`` (the provider itself rather than its
+            ``instructions``).
     """
+    if instructions is not None and not isinstance(instructions, Mapping):
+        raise TypeError(
+            "server_instructions maps a label to each server's instructions, "
+            f"not {type(instructions).__name__}: {{'gm': provider.instructions}}"
+        )
     named = dict(_checked(label, text) for label, text in (instructions or {}).items())
     sections = [
         _server_section(label, text) for label, text in named.items() if text and text.strip()
