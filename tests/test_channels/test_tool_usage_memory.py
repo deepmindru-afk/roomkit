@@ -159,7 +159,16 @@ class TestToolUsageMemory:
         mem.record("r1", "list_boards", {}, boards)
         digest = mem.render_digest("r1") or ""
         assert "Board 20" in digest
-        assert "never state a detail" in digest
+        assert "never guess" in digest
+
+    def test_an_answer_given_from_a_whole_result_is_not_taken_back(self) -> None:
+        """A light's state stood past the 6000 characters kept of a 34 094-
+        character list: told never to state what the excerpt lacks, the agent
+        retracted the right answer it had given from the whole list (RMK-707)."""
+        mem = ToolUsageMemory()
+        mem.record("r1", "list_lights", {}, "x" * 9000)
+        digest = mem.render_digest("r1") or ""
+        assert "do not take it back" in digest
 
     def test_an_oversized_result_is_cut_and_says_so(self) -> None:
         mem = ToolUsageMemory()

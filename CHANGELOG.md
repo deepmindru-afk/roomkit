@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An agent no longer takes back an answer because the tool-usage digest
+  shows too little of the result it came from (RMK-707). Each turn replays the
+  three latest results cut at 6,000 characters; a light's state stood past the
+  cut in a 34,094-character list, and, told never to state a detail the
+  excerpt lacks, the agent retracted the right answer it had given from the
+  whole list. The digest now says to call the tool again before stating a
+  detail it does not show, never to guess one, and not to take back what was
+  already said from the whole result.
 - With an STT that tells voices apart, the agent's own voice is no turn past
   the echo guard either (RMK-706). The echo canceller let "c'est bien la lampe
   Salon" through 20 s into a session; Meta heard "Eh bien, la lampe salon"
