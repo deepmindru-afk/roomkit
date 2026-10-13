@@ -541,3 +541,153 @@ async def test_words_taken_for_an_echo_cut_no_later_response() -> None:
 async def test_an_echo_verdict_past_its_grace_takes_its_words_with_it() -> None:
     # Stale, "Je" would be the words of whatever is heard next, and cut.
     assert await _echo_then_next_response(grace_passed=True) == []
+
+
+# -- the agent's own voice, past the guard (diarizing STT) ---------------------------
+
+_LAMP = "Oui, c'est bien la lampe Salon (Hue, id 525) : elle est allumée, à 92 %."
+
+
+class _ScriptedDiarizingSTT(STTProvider):
+    """A diarizing streaming STT that says what the test hands it, when it does."""
+
+    def __init__(self) -> None:
+        self.results: asyncio.Queue[TranscriptionResult] = asyncio.Queue()
+
+    @property
+    def supports_streaming(self) -> bool:
+        return True
+
+    @property
+    def supports_diarization(self) -> bool:
+        return True
+
+    async def transcribe(self, audio: Any, *, language: str | None = None) -> TranscriptionResult:
+        return TranscriptionResult(text="", is_final=True)
+
+    async def transcribe_stream(
+        self, audio_stream: AsyncIterator[AudioChunk], *, language: str | None = None
+    ) -> AsyncIterator[TranscriptionResult]:
+        async for _ in audio_stream:
+            break
+        while True:
+            yield await self.results.get()
+
+
+async def _voices_over_a_response(
+    utterances: list[tuple[str, str, bool]],
+) -> tuple[list[tuple[str, str]], list[object]]:
+    """Each (voice, words, over the response) said in turn, the session past its
+    echo guard; the turns (voice, words) and barge-ins that came of them."""
+    from datetime import UTC, datetime
+
+    from roomkit.models.channel import ChannelBinding
+    from roomkit.models.enums import ChannelType
+    from roomkit.voice.base import SpeakerSegment
+    from roomkit.voice.pipeline.backchannel import PhraseBackchannelDetector
+
+    stt = _ScriptedDiarizingSTT()
+    backend = MockVoiceBackend()
+    channel = VoiceChannel(
+        "voice-1",
+        stt=stt,
+        backend=backend,
+        pipeline=AudioPipelineConfig(),
+        interruption=InterruptionConfig(
+            strategy=InterruptionStrategy.SEMANTIC,
+            backchannel_detector=PhraseBackchannelDetector(),
+        ),
+    )
+    kit = RoomKit(voice=backend)
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "voice-1")
+    session = await kit.connect_voice("r1", "user-1", "voice-1")
+    channel.bind_session(
+        session,
+        "r1",
+        ChannelBinding(room_id="r1", channel_id="voice-1", channel_type=ChannelType.VOICE),
+    )
+    channel._session_played_ms[session.id] = 60_000  # noqa: SLF001 — past the guard
+    turns: list[tuple[str, str]] = []
+    cuts: list[object] = []
+
+    @kit.hook(HookTrigger.ON_TRANSCRIPTION)
+    async def on_transcription(event: Any, context: object) -> HookResult:
+        turns.append((str(event.speaker or ""), event.text))
+        return HookResult.allow()
+
+    @kit.hook(HookTrigger.ON_BARGE_IN, HookExecution.ASYNC)
+    async def on_barge_in(event: object, context: object) -> None:
+        cuts.append(event)
+
+    await backend.simulate_audio_received(session, _SILENT_CHUNK)
+    playing = channel._playing_sessions  # noqa: SLF001
+    for voice, words, over in utterances:
+        if over:
+            playing[session.id] = TTSPlaybackState(
+                session_id=session.id, text=_LAMP, started_at=datetime.now(UTC)
+            )
+        await stt.results.put(TranscriptionResult(text="", is_speech_start=True))
+        await stt.results.put(TranscriptionResult(text=words.split()[0], is_final=False))
+        await asyncio.sleep(0.05)
+        playing.pop(session.id, None)  # cut, or over
+        await stt.results.put(
+            TranscriptionResult(text=words, segments=[SpeakerSegment(voice, words)])
+        )
+        await asyncio.sleep(0.1)
+    await channel.close()
+    await kit.close()
+    return turns, cuts
+
+
+async def test_the_agents_voice_misheard_past_the_guard_is_no_turn() -> None:
+    turns, _cuts = await _voices_over_a_response(
+        [
+            ("Speaker A", "Et la lampe du salon ?", False),
+            # "c'est bien la lampe Salon" back through the canceller, another
+            # voice to the STT, one word misheard
+            ("Speaker B", "Eh bien, la lampe salon.", True),
+        ]
+    )
+
+    assert [words for _voice, words in turns] == ["Et la lampe du salon ?"]
+
+
+async def test_a_person_heard_alone_repeating_the_response_is_heard() -> None:
+    turns, cuts = await _voices_over_a_response(
+        [
+            ("Speaker A", "Et la lampe du salon ?", False),
+            ("Speaker A", "Eh bien, la lampe salon.", True),
+        ]
+    )
+
+    assert [words for _voice, words in turns][-1] == "Eh bien, la lampe salon."
+    assert len(cuts) == 1
+
+
+async def test_a_new_voice_saying_its_own_words_over_a_response_is_heard() -> None:
+    turns, _cuts = await _voices_over_a_response(
+        [
+            ("Speaker A", "Et la lampe du salon ?", False),
+            ("Speaker B", "Attends, je veux la cuisine.", True),
+        ]
+    )
+
+    assert [words for _voice, words in turns][-1] == "Attends, je veux la cuisine."
+
+
+@pytest.mark.parametrize(
+    ("heard", "near"),
+    [
+        ("Eh bien, la lampe salon.", True),  # one word misheard
+        ("c'est bien la lampe salon", True),
+        ("la lampe salon", True),
+        ("la lampe", False),  # too few words to tell
+        ("Eh oui, la lampe cuisine.", False),  # two words differ
+    ],
+)
+def test_nearly_the_responses_words(heard: str, near: bool) -> None:
+    from roomkit.voice.interruption import echoes_nearly
+
+    assert echoes_nearly(heard, _LAMP) is near

@@ -23,7 +23,7 @@ from roomkit.telemetry.noop import NoopTelemetryProvider
 from roomkit.telemetry.redaction import redact
 from roomkit.voice.base import AudioChunk, SpeakerSegment, TranscriptionResult
 from roomkit.voice.events import SpeakerChangeEvent, TranscriptionEvent
-from roomkit.voice.interruption import echoes
+from roomkit.voice.interruption import echoes, echoes_nearly
 from roomkit.voice.stt.base import diarizes
 
 _NOOP = NoopTelemetryProvider()
@@ -206,6 +206,7 @@ class STTHost(Protocol):
     _burst_words: dict[str, str]
     _burst_backchannel: dict[str, str]
     _echo_bursts: dict[str, TTSPlaybackState]
+    _voices_heard_alone: dict[str, set[str]]
     _speaker_trackers: dict[str, SpeakerTracker]
     _transcript_locks: dict[str, asyncio.Lock]
     _pipeline_speaker_tally: PipelineSpeakerTally | None
@@ -247,6 +248,7 @@ class VoiceSTTMixin:
     _burst_words: dict[str, str]
     _burst_backchannel: dict[str, str]
     _echo_bursts: dict[str, TTSPlaybackState]
+    _voices_heard_alone: dict[str, set[str]]
     _speaker_trackers: dict[str, SpeakerTracker]
     _transcript_locks: dict[str, asyncio.Lock]
     _pipeline_speaker_tally: PipelineSpeakerTally | None
@@ -675,6 +677,34 @@ class VoiceSTTMixin:
         response = self._echo_verdict(session_id, pop=True)
         return response is not None and echoes(text, response, cut_short=False)
 
+    def _agents_own_voice(
+        self,
+        session_id: str,
+        segments: list[SpeakerSegment],
+        text: str,
+        over: TTSPlaybackState | None,
+    ) -> bool:
+        """Whether a diarized final is the agent's own voice (RFC §12.3.13).
+
+        A voice heard speaking while nothing played is a person's. One never
+        heard so, whose words over a response are that response's, one
+        misheard at most, is the response coming back past the echo canceller,
+        which the STT took for another speaker: whatever ``echo_guard_ms``.
+        """
+        voices = {segment.speaker for segment in segments if segment.speaker}
+        if len(voices) != 1:
+            return False
+        (voice,) = voices
+        with self._state_lock:
+            alone = self._voices_heard_alone.setdefault(session_id, set())
+            if over is None:
+                alone.add(voice)
+                return False
+            if voice in alone or not echoes_nearly(text, over.text):
+                return False
+        logger.info("Discarding the agent's own voice (%s over its response): %r", voice, text)
+        return True
+
     def _drop_echo_verdict(self, session_id: str) -> None:
         with self._state_lock:
             self._echo_bursts.pop(session_id, None)
@@ -908,6 +938,8 @@ class VoiceSTTMixin:
                     epoch = state.streams_opened
                     state.streams_opened += 1
                     barge_in_playback: Any = None
+                    # The playback the utterance under way began over, if any.
+                    began_over: Any = None
                     stream_audio = (
                         self._kept_stream_audio(state, cur_queue, first_chunk)
                         if keep_stream
@@ -929,6 +961,7 @@ class VoiceSTTMixin:
 
                         # Provider signals speech detected (server-side VAD)
                         if result.is_speech_start:
+                            began_over = current_playback
                             if not playing:
                                 # Speech that starts once nothing plays is no
                                 # echo: an earlier verdict says nothing of it.
@@ -1002,6 +1035,13 @@ class VoiceSTTMixin:
                             stage_speaker = (
                                 None if keep_stream else self._pipeline_speaker(session.id)
                             )
+                            segments = _segments_of(result) if keep_stream else None
+                            over = began_over or (barge_in_playback if cut_by_it else None)
+                            began_over = None
+                            if segments is not None and self._agents_own_voice(
+                                session.id, segments, result.text, over
+                            ):
+                                continue  # the stream, and its labels, stay
                             # Provider signals turn complete — route to AI
                             self._schedule(
                                 self._handle_continuous_transcription(
@@ -1009,7 +1049,7 @@ class VoiceSTTMixin:
                                     result.text,
                                     room_id,
                                     language=result.language,
-                                    segments=_segments_of(result) if keep_stream else None,
+                                    segments=segments,
                                     epoch=epoch,
                                     speaker=stage_speaker,
                                     cut_playback=cut_by_it,

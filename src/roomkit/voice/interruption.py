@@ -277,6 +277,24 @@ def _words(text: str) -> list[str]:
     return _WORD.findall("".join(c for c in folded if not unicodedata.combining(c)))
 
 
+def echoes_nearly(speech_text: str, response_text: str) -> bool:
+    """Whether *speech_text* is words of *response_text* in their order, one of
+    them misheard at most, and three at least heard right.
+
+    How an echo the canceller let through comes back from the STT: "c'est bien
+    la lampe Salon" heard as "Eh bien, la lampe salon".
+    """
+    heard, said = _words(speech_text), _words(response_text)
+    span = len(heard)
+    if span < 3:
+        return False
+    for start in range(len(said) - span + 1):
+        slips = sum(h != s for h, s in zip(heard, said[start : start + span], strict=True))
+        if slips <= 1 and span - slips >= 3:
+            return True
+    return False
+
+
 def echoes(speech_text: str, response_text: str, *, cut_short: bool = True) -> bool:
     """Whether *speech_text* is only words of *response_text*, consecutive and in order.
 

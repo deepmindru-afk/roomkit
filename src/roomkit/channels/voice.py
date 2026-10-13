@@ -382,6 +382,9 @@ class VoiceChannel(
         # echo the speech under way was taken for (echo_guard_ms, §12.3.13)
         self._session_played_ms: dict[str, int] = {}
         self._echo_bursts: dict[str, TTSPlaybackState] = {}
+        # The voices a diarizing STT heard speak while nothing played: people,
+        # whose words over a response are never taken for its echo
+        self._voices_heard_alone: dict[str, set[str]] = {}
         # Speech segments captured while queueing, replayed once TTS finishes,
         # each with its pipeline speaker claim (pipeline_speakers)
         self._queued_speech: dict[
@@ -1442,6 +1445,7 @@ class VoiceChannel(
         self._burst_words.pop(session_id, None)
         self._burst_backchannel.pop(session_id, None)
         self._echo_bursts.pop(session_id, None)
+        self._voices_heard_alone.pop(session_id, None)
         self._session_played_ms.pop(session_id, None)
         self._speech_started_at.pop(session_id, None)
         self._barge_in_energy_count.pop(session_id, None)

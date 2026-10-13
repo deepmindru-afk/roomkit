@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- With an STT that tells voices apart, the agent's own voice is no turn past
+  the echo guard either (RMK-706). The echo canceller let "c'est bien la lampe
+  Salon" through 20 s into a session; Meta heard "Eh bien, la lampe salon"
+  from another speaker, and the agent answered it. A voice heard speaking
+  while nothing played is a person's; a final from a voice never heard so,
+  said over a response, whose words are that response's in their order, one
+  misheard at most and three at least heard right, is discarded as its echo.
+  The barge-in its first words decided still stands: the voice is known only
+  with the final.
 - A response no longer cuts the agent off: one that reaches a voice session
   while another plays there waits until that playback has been sent whole,
   then plays (RMK-704). A background task's result, relayed as the agent
