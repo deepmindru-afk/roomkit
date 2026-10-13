@@ -47,6 +47,7 @@ from roomkit.channels._turn_notes import (
     conversation_without_header_copies,
     turn_input,
     turn_notes,
+    with_turn_images,
     with_turn_notes,
 )
 from roomkit.channels._user_text import with_leading_text
@@ -305,6 +306,11 @@ class AIContextMixin(_AIChannelContract):
             own_notes, speakers=attribute_speakers, retrieved=memory_result.notes
         )
         messages = with_turn_notes(messages, notes)
+        if not standalone and self._provider.supports_vision:
+            # The latest images the room's tools returned, after the notes:
+            # the digest only says what they showed in their tool's words.
+            images = self._tool_usage.render_images(loop_ctx.room_id)
+            messages = with_turn_images(messages, images)
         return messages
 
     def _turn_base_tools(

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- An image a tool returned stays in view on the next turns (RMK-708). From one
+  turn to the next the conversation keeps only a text digest of the tools used:
+  a drawing or a screenshot was seen on its own turn and gone after, and "set
+  the lights to that picture's colours" was answered blind. For a model that
+  sees, the two latest images the room's tool results returned now ride each
+  turn's input, after its notes, each after the call that returned it, framed
+  as data a tool returned, never instructions; never in an assistant's
+  message, where providers refuse an image. Only a live result's are kept. As
+  the computer-use loop and other agent frameworks keep the last few, the
+  bound holds each turn's cost (an image is a thousand tokens and more).
+
 ### Fixed
 
 - An agent no longer takes back an answer because the tool-usage digest

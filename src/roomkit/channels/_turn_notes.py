@@ -27,7 +27,7 @@ from typing import Any
 
 from roomkit._lookalike import phrase_pattern
 from roomkit.channels._user_text import joined
-from roomkit.providers.ai.base import AIMessage, AITextPart
+from roomkit.providers.ai.base import AIImagePart, AIMessage, AITextPart
 
 TURN_NOTES_HEADER = (
     "[Notes kept by the assistant's runtime for this turn. Nobody in the "
@@ -129,6 +129,23 @@ def with_turn_notes(messages: list[AIMessage], notes: str | None) -> list[AIMess
     if last is None or last.role != "user":
         return [*messages, AIMessage(role="user", content=notes)]
     return [*messages[:-1], joined(last, notes, before=False)]
+
+
+def with_turn_images(
+    messages: list[AIMessage], parts: list[AITextPart | AIImagePart]
+) -> list[AIMessage]:
+    """*messages* with *parts* (images and their labels) at the end of the
+    turn's input, after its notes, or as a user message of their own when the
+    conversation does not end on one: the role every provider takes an image
+    in, where an assistant's is refused (RFC §6.4)."""
+    if not parts:
+        return messages
+    last = messages[-1] if messages else None
+    if last is None or last.role != "user":
+        return [*messages, AIMessage(role="user", content=list(parts))]
+    content = last.content
+    own = [AITextPart(text=content)] if isinstance(content, str) else list(content)
+    return [*messages[:-1], last.model_copy(update={"content": [*own, *parts]})]
 
 
 def turn_input(messages: list[AIMessage]) -> AIMessage | None:
