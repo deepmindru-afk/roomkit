@@ -443,3 +443,101 @@ async def test_a_wav_played_whole_counts_toward_the_guard(tmp_path: Path) -> Non
         played = call.channel._session_played_ms.get(call.session.id)  # noqa: SLF001
 
     assert played == 8000
+
+
+class _UnfinishedPartialSTT(STTProvider):
+    """Continuous STT: one partial at the first audio, and never its final."""
+
+    def __init__(self, partial: str) -> None:
+        self._partial = partial
+
+    @property
+    def supports_streaming(self) -> bool:
+        return True
+
+    async def transcribe(self, audio: Any, *, language: str | None = None) -> TranscriptionResult:
+        return TranscriptionResult(text="", is_final=True)
+
+    async def transcribe_stream(
+        self, audio_stream: AsyncIterator[AudioChunk], *, language: str | None = None
+    ) -> AsyncIterator[TranscriptionResult]:
+        async for _ in audio_stream:
+            break
+        yield TranscriptionResult(text=self._partial, is_final=False)
+        async for _ in audio_stream:
+            pass
+
+
+async def _echo_then_next_response(*, grace_passed: bool) -> list[object]:
+    """A response whose opening echo ("Je") the STT never finalized, cut short
+    by the next one (a task's result relayed), the room still ringing with it:
+    the barge-ins that next response gets."""
+    import time
+    from datetime import UTC, datetime
+
+    from roomkit.models.channel import ChannelBinding
+    from roomkit.models.enums import ChannelType
+    from roomkit.voice.pipeline.backchannel import PhraseBackchannelDetector
+
+    backend = MockVoiceBackend()
+    channel = VoiceChannel(
+        "voice-1",
+        stt=_UnfinishedPartialSTT("Je"),
+        backend=backend,
+        pipeline=AudioPipelineConfig(),
+        interruption=InterruptionConfig(
+            strategy=InterruptionStrategy.SEMANTIC,
+            backchannel_detector=PhraseBackchannelDetector(),
+            min_speech_ms=50,
+        ),
+    )
+    kit = RoomKit(voice=backend)
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "voice-1")
+    session = await kit.connect_voice("r1", "user-1", "voice-1")
+    channel.bind_session(
+        session,
+        "r1",
+        ChannelBinding(room_id="r1", channel_id="voice-1", channel_type=ChannelType.VOICE),
+    )
+    cuts: list[object] = []
+
+    @kit.hook(HookTrigger.ON_BARGE_IN, HookExecution.ASYNC)
+    async def on_barge_in(event: object, context: object) -> None:
+        cuts.append(event)
+
+    playing = channel._playing_sessions  # noqa: SLF001
+    playing[session.id] = TTSPlaybackState(
+        session_id=session.id, text="Je lance ça en arrière-plan.", started_at=datetime.now(UTC)
+    )
+    for _ in range(3):
+        await backend.simulate_audio_received(session, _SILENT_CHUNK)
+    await asyncio.sleep(0.2)
+    assert channel._echo_bursts.get(session.id)  # noqa: SLF001 — "Je" taken for the echo
+
+    await channel.interrupt(session, reason="new_tts")
+    if grace_passed:
+        channel._last_tts_ended_at[session.id] = time.monotonic() - 60  # noqa: SLF001
+    playing[session.id] = TTSPlaybackState(
+        session_id=session.id,
+        text="Voici les campagnes : Le Trésor du Dragon.",
+        started_at=datetime.now(UTC),
+    )
+    loud = AudioFrame(data=(2000).to_bytes(2, "little", signed=True) * 320)
+    for _ in range(15):  # 300 ms of the cut response's tail
+        await backend.simulate_audio_received(session, loud)
+        await asyncio.sleep(0.02)
+    await asyncio.sleep(0.1)
+    await channel.close()
+    await kit.close()
+    return cuts
+
+
+async def test_words_taken_for_an_echo_cut_no_later_response() -> None:
+    assert await _echo_then_next_response(grace_passed=False) == []
+
+
+async def test_an_echo_verdict_past_its_grace_takes_its_words_with_it() -> None:
+    # Stale, "Je" would be the words of whatever is heard next, and cut.
+    assert await _echo_then_next_response(grace_passed=True) == []

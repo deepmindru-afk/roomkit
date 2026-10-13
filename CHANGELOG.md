@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Words taken for a response's echo decide no barge-in on another response
+  (RMK-703). The STT never closed the echo's "Je": those words, still the
+  utterance's, were judged against the next response, which does not say
+  them, and the energy barge-in cut it at 0 ms. While the echo verdict holds
+  they decide nothing; when it lapses with the utterance still open, they
+  go with it.
+
 ## [0.100.0] — 2026-10-12
 
 ### Added

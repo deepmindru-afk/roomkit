@@ -569,12 +569,17 @@ class VoiceSTTMixin:
                 int((time.monotonic() - started_at) * 1000) if started_at is not None else 0
             )
             # The words the STT heard in this burst decide under SEMANTIC; an
-            # acknowledgement is not cut for running long (RFC §12.3.13).
+            # acknowledgement is not cut for running long (RFC §12.3.13). An
+            # echo verdict past its grace is dropped first, its words with it.
+            echo = self._echo_verdict(session.id)
             with self._state_lock:
                 words = self._burst_words.get(session.id, "")
                 acknowledged = bool(words) and self._burst_backchannel.get(session.id) == words
-            if acknowledged:
-                return  # these words were judged already: nothing new to decide
+            if acknowledged or (echo is not None and echoes(words, echo)):
+                # These words were judged already, an acknowledgement or the
+                # echo of a response (one this playback may have cut short):
+                # nothing new to decide.
+                return
             if not words and self._waits_for_words(session.id, playback, speech_duration_ms):
                 return
             decision = self._judge_barge_in(
@@ -634,7 +639,9 @@ class VoiceSTTMixin:
 
         The verdict holds while its response plays and ``_ECHO_VERDICT_GRACE_S``
         after the session's playback ended; past that, it is dropped, so it
-        never outlives its utterance (RFC §12.3.13).
+        never outlives its utterance (RFC §12.3.13), and the utterance's words,
+        still the echo's when the STT never closed it, go with it: they would
+        otherwise decide a barge-in on a later response.
         """
         with self._state_lock:
             playback = self._echo_bursts.get(session_id)
@@ -647,6 +654,10 @@ class VoiceSTTMixin:
             )
             if pop or not holds:
                 del self._echo_bursts[session_id]
+            words = self._burst_words.get(session_id, "")
+            if not holds and words and echoes(words, playback.text):
+                self._burst_words.pop(session_id, None)
+                self._burst_backchannel.pop(session_id, None)
         return playback.text if holds else None
 
     def _echoes_burst(self, session_id: str, text: str) -> bool:
