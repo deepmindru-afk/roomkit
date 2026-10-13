@@ -340,8 +340,10 @@ class VoiceTTSMixin:
             self._backend is not None and VoiceCapability.NATIVE_AEC in self._backend.capabilities
         )
         if not pipeline_aec and not backend_aec:
+            with self._state_lock:
+                sent = self._playing_sessions.get(session_id)
             self._schedule(
-                self._finish_playback(session_id),
+                self._finish_playback(session_id, sent),
                 name=f"finish_playback:{session_id}",
             )
             return
@@ -358,23 +360,32 @@ class VoiceTTSMixin:
             name=f"flush_queued_speech:{session_id}",
         )
 
-    async def _finish_playback(self, session_id: str) -> None:
-        """Clear playback state after the echo-decay window (no AEC).
+    async def _finish_playback(self, session_id: str, playback: TTSPlaybackState | None) -> None:
+        """Clear *playback* after the echo-decay window (no AEC).
 
         If ``interrupt()`` fires during the delay, it pops
-        ``_playing_sessions`` immediately — the delayed pop becomes a no-op.
+        ``_playing_sessions`` immediately, and a response that took over the
+        session meanwhile owns it: the delayed pop is then a no-op.
         """
         await asyncio.sleep(_PLAYBACK_DRAIN_S)
-        self._end_playback(session_id, drain_s=_PLAYBACK_DRAIN_S)
+        self._end_playback(session_id, drain_s=_PLAYBACK_DRAIN_S, playback=playback)
         # The bot has finished — anything the DISABLED strategy queued while it
         # spoke gets its turn now (RFC §12.6).
         await self._flush_queued_speech(session_id)
 
-    def _end_playback(self, session_id: str, *, drain_s: float) -> None:
-        """Drop the playback state and stamp when the agent stopped speaking."""
+    def _end_playback(
+        self, session_id: str, *, drain_s: float, playback: TTSPlaybackState | None = None
+    ) -> None:
+        """Drop the playback state and stamp when the agent stopped speaking.
+
+        With *playback*, only that one: a later playback is not its to end.
+        """
         with self._state_lock:
-            playback = self._playing_sessions.pop(session_id, None)
-        if playback:
+            current = self._playing_sessions.get(session_id)
+            if current is None or (playback is not None and current is not playback):
+                return
+            del self._playing_sessions[session_id]
+        if current:
             self._last_tts_ended_at[session_id] = time.monotonic()
             logger.debug(
                 "Playback drain complete for session %s (delay=%.1fs)",
@@ -707,6 +718,39 @@ class VoiceTTSMixin:
             sentences.close()
         return True
 
+    async def _make_way(self, session: VoiceSession, *, response: bool) -> None:
+        """Clear *session* for a new playback, so no two overlap.
+
+        A response waits for the one under way to have been sent (RFC §12.2):
+        the agent's words are cut by the person, never by its own next
+        response, such as a background task's result relayed as it finishes
+        a sentence; a playback sent whole that only drains its echo, it takes
+        over. ``say()`` cuts the playback under way, as before.
+        """
+        while True:
+            with self._state_lock:
+                existing = self._playing_sessions.get(session.id)
+                sent = self._playback_done_events.get(session.id)
+            if existing is None:
+                return
+            if response and sent is not None:
+                if not sent.is_set():
+                    logger.info(
+                        "Response waits for the playback under way on session %s", session.id
+                    )
+                    await sent.wait()
+                    continue  # another response may have taken the floor first
+                # Sent whole, only its echo is draining: this one takes over
+                # without cancelling it or the audio still leaving the speaker.
+                self._end_playback(session.id, drain_s=0.0, playback=existing)
+                return
+            logger.info(
+                "Cancelling previous TTS for session %s before starting new one",
+                session.id,
+            )
+            await self.interrupt(session, reason="new_tts")
+            return
+
     async def _play_branch(
         self,
         session: VoiceSession,
@@ -725,15 +769,7 @@ class VoiceTTSMixin:
         """Interrupt, play and drain one session's streamed response."""
         from .voice import TTSPlaybackState
 
-        # Cancel any existing TTS to prevent overlapping audio
-        with self._state_lock:
-            existing = self._playing_sessions.get(session.id)
-        if existing:
-            logger.info(
-                "Cancelling previous TTS for session %s before starting new one",
-                session.id,
-            )
-            await self.interrupt(session, reason="new_tts")
+        await self._make_way(session, response=True)
 
         playback = TTSPlaybackState(
             session_id=session.id,
@@ -900,15 +936,7 @@ class VoiceTTSMixin:
 
         tts_name = self._tts.name  # capture before async yields (may become None)
 
-        # Cancel any existing TTS to prevent overlapping audio
-        with self._state_lock:
-            existing = self._playing_sessions.get(session.id)
-        if existing:
-            logger.info(
-                "Cancelling previous TTS for session %s before starting new one",
-                session.id,
-            )
-            await self.interrupt(session, reason="new_tts")
+        await self._make_way(session, response=response)
 
         await self._session_output_backend(session).send_transcription(session, text, "assistant")
 

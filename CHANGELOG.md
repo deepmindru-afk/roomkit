@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A response no longer cuts the agent off: one that reaches a voice session
+  while another plays there waits until that playback has been sent whole,
+  then plays (RMK-704). A background task's result, relayed as the agent
+  finished saying the task was under way, cancelled that sentence
+  (`new_tts`), and the room, still ringing with it, barged in on the result
+  before its first word. Responses waiting play in turn, each whole; the
+  agent's words are cut by the person, never by its own next response. A
+  playback sent whole whose echo is still draining (no AEC) is taken over
+  without being reported cancelled, and its drain no longer ends the playback
+  that followed it. `say()` still cuts the playback under way.
 - Words taken for a response's echo decide no barge-in on another response
   (RMK-703). The STT never closed the echo's "Je": those words, still the
   utterance's, were judged against the next response, which does not say
