@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them, and the energy barge-in cut it at 0 ms. While the echo verdict holds
   they decide nothing; when it lapses with the utterance still open, they
   go with it.
+- `work_in_background` asks the agent to say once that the work is under way
+  (RMK-705). Told by the tool's answer to say it, an agent that had said it
+  before the call said it again after.
 
 ## [0.100.0] — 2026-10-12
 

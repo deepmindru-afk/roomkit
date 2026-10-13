@@ -38,9 +38,9 @@ BACKGROUND_TOOL_DEF = AITool(
         "Start long work as a background task, so the conversation goes on: going "
         "through many records, logs, traces or files, or an analysis that takes several "
         "tool calls. It runs away from the conversation, handed its last messages, and "
-        "its result comes back when it is done. After calling it, say in one short "
-        "sentence that the work is under way, and end your turn. A quick look you answer "
-        "now, without it."
+        "its result comes back when it is done. Say once, in one short sentence, that the "
+        "work is under way (before the call or after it, never both), and end your turn. "
+        "A quick look you answer now, without it."
     ),
     parameters={
         "type": "object",
@@ -156,8 +156,9 @@ def background_tool_server(kit: RoomKit, agent_id: str) -> Any:
                 "task_id": started.id,
                 "status": "started",
                 "message": (
-                    f"The work runs in the background and {back} when it is done. Say in "
-                    "one short sentence that it is under way, then end your turn."
+                    f"The work runs in the background and {back} when it is done. If "
+                    "this turn has not said so yet, say in one short sentence that it is "
+                    "under way; then end your turn, without saying it again."
                 ),
             }
         )

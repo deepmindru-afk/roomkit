@@ -82,6 +82,8 @@ async def test_the_tool_starts_the_task_and_answers_at_once() -> None:
     assert answer["status"] == "started"
     assert "end your turn" in answer["message"]
     assert "a turn of its own" in answer["message"]
+    # Said before the call, the agent does not say it again after it.
+    assert "has not said so yet" in answer["message"]
     # The agent itself does the work, in a child room, and is told the result.
     await _until(lambda: _asked(speaker, 2))
     await kit.close()
