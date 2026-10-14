@@ -27,7 +27,9 @@ return 1
 
 # Queue again the retries whose delay has passed: KEYS[1] the delayed set,
 # KEYS[2] the pending stream, ARGV[1] how many at most. Atomic, so two workers
-# never queue one retry twice.
+# never queue one retry twice. Returns {queued}, or {queued, ms} while a retry
+# still waits: ms until the next one is due on the server's clock, 0 or less
+# when one was due but past the limit.
 PROMOTE = """
 local now = redis.call('TIME')
 local ms = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
@@ -36,7 +38,9 @@ for _, member in ipairs(due) do
     redis.call('XADD', KEYS[2], '*', 'data', member)
     redis.call('ZREM', KEYS[1], member)
 end
-return #due
+local nxt = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+if #nxt == 0 then return {#due} end
+return {#due, tonumber(nxt[2]) - ms}
 """
 
 # A slow, live worker renews only entries it still owns. XCLAIM without this

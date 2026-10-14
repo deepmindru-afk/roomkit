@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from roomkit.delivery._redis_scripts import PROMOTE
 from roomkit.delivery.base import DeliveryItem, DeliveryItemStatus
 
 # -- Mock Redis -----------------------------------------------------------
@@ -20,13 +21,18 @@ def _build_mock_redis_module() -> MagicMock:
     return mod
 
 
+async def _eval(script: str, *args: object) -> list[int] | int:
+    """PROMOTE finds no retry waiting; every transition succeeds."""
+    return [0] if script == PROMOTE else 1
+
+
 def _build_mock_client() -> AsyncMock:
     """Build a mock redis.asyncio.Redis client."""
     client = AsyncMock()
     client.xadd = AsyncMock(return_value=b"1679001234567-0")
     client.xreadgroup = AsyncMock(return_value=[])
     client.xautoclaim = AsyncMock(return_value=[b"0-0", [], []])
-    client.eval = AsyncMock(return_value=1)
+    client.eval = AsyncMock(side_effect=_eval)
     client.xack = AsyncMock(return_value=1)
     client.xdel = AsyncMock(return_value=1)
     client.xlen = AsyncMock(return_value=0)
@@ -123,6 +129,40 @@ class TestDequeue:
         items = await backend.dequeue("w1")
         assert items[0].id in backend._entry_ids
         assert backend._entry_ids[items[0].id] == "456-0"
+
+    async def test_a_wait_ends_when_a_retry_falls_due(self) -> None:
+        backend, client = _make_backend()
+        item = _make_item()
+        # A retry falls due in 200 ms; promoted on the next pass.
+        promotions = iter([[0, 200], [1]])
+
+        async def promote_then_settle(script: str, *args: object) -> list[int] | int:
+            return next(promotions) if script == PROMOTE else 1
+
+        client.eval.side_effect = promote_then_settle
+        client.xreadgroup.side_effect = [
+            [],
+            [[b"roomkit:delivery:pending", [(b"7-0", {b"data": item.model_dump_json()})]]],
+        ]
+
+        items = await backend.dequeue("w1", timeout=5.0)
+
+        assert [i.id for i in items] == [item.id]
+        blocks = [call.kwargs["block"] for call in client.xreadgroup.call_args_list]
+        assert blocks[0] == 200
+        assert blocks[1] <= 5000
+
+    async def test_a_retry_due_after_the_timeout_does_not_shorten_it(self) -> None:
+        backend, client = _make_backend()
+
+        async def promote_far_off(script: str, *args: object) -> list[int] | int:
+            return [0, 60_000] if script == PROMOTE else 1
+
+        client.eval.side_effect = promote_far_off
+
+        assert await backend.dequeue("w1", timeout=2.0) == []
+        client.xreadgroup.assert_called_once()
+        assert client.xreadgroup.call_args.kwargs["block"] == 2000
 
     async def test_parses_string_mode_response(self) -> None:
         """redis-py with decode_responses=True returns strings, not bytes."""

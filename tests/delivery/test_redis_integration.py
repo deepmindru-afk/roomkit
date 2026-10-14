@@ -239,3 +239,26 @@ async def test_a_retry_waits_out_its_delay_on_the_server_clock() -> None:
         await second.close()
         await client.delete(first._pending_key, first._dl_key, first._delayed_key)
         await client.aclose()
+
+
+async def test_a_retry_falling_due_during_a_wait_is_returned_then() -> None:
+    redis = pytest.importorskip("redis.asyncio")
+    client = redis.from_url(os.environ["REDIS_URL"])
+    prefix = f"roomkit:test:{uuid4().hex}"
+    backend = RedisDeliveryBackend(client=client, stream_prefix=prefix, retry_delay=0.2)
+    await client.xgroup_create(backend._pending_key, backend._group, id="0", mkstream=True)
+    try:
+        await backend.enqueue(DeliveryItem(room_id="r1", content="soon"))
+        [item] = await backend.dequeue("w1")
+        await backend.nack(item.id, "offline")
+
+        # The wait is cut short when the retry falls due, not at its timeout.
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        [retried] = await backend.dequeue("w1", timeout=3.0)
+        assert retried.id == item.id and retried.retry_count == 1
+        assert loop.time() - started < 1.0
+    finally:
+        await backend.close()
+        await client.delete(backend._pending_key, backend._dl_key, backend._delayed_key)
+        await client.aclose()

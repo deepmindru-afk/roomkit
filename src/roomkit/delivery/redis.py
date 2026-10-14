@@ -40,6 +40,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.delivery.redis")
 
+# Shortest wait for a retry about to fall due: a pass costs a round trip.
+_MIN_BLOCK_MS = 10
+
 
 class RedisDeliveryBackend(DeliveryBackend):
     """Redis Streams delivery backend with consumer groups.
@@ -61,7 +64,8 @@ class RedisDeliveryBackend(DeliveryBackend):
         retry_delay: Seconds before the first retry; each next one waits
             twice as long, up to *max_retry_delay*. A retry waits in a sorted
             set (``{stream_prefix}:delayed``) on the Redis server's clock, and
-            a worker queues it again once due. 0 retries at once.
+            a worker queues it again once due; one waiting in ``dequeue()``
+            stops waiting when it falls due. 0 retries at once.
         max_retry_delay: Cap on the wait before a retry.
     """
 
@@ -127,8 +131,47 @@ class RedisDeliveryBackend(DeliveryBackend):
         batch_size: int = 1,
         timeout: float = 5.0,
     ) -> list[DeliveryItem]:
-        # Retries whose delay has passed go back on the stream first.
-        await self._client.eval(PROMOTE, 2, self._delayed_key, self._pending_key, batch_size)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        remaining = timeout
+        while True:
+            next_due_ms = await self._promote_due(batch_size)
+            # A retry falling due before the wait ends cuts the wait short:
+            # XREADGROUP does not wake for the delayed set, only the next pass does.
+            retry_first = (
+                remaining > 0 and next_due_ms is not None and next_due_ms < remaining * 1000
+            )
+            if retry_first:
+                block: int | None = max(_MIN_BLOCK_MS, next_due_ms or 0)
+            else:
+                block = max(1, int(remaining * 1000)) if remaining > 0 else None
+            resp = await self._claim_or_read(worker_id, batch_size, block)
+            remaining = deadline - loop.time()
+            if resp or not retry_first or remaining <= 0:
+                break
+        if not resp:
+            return []
+
+        items = await self._take_entries(worker_id, resp)
+        if items and (self._heartbeat_task is None or self._heartbeat_task.done()):
+            self._heartbeat_task = asyncio.create_task(
+                self._renew_pending(), name="redis-delivery-heartbeat"
+            )
+        return items
+
+    async def _promote_due(self, batch_size: int) -> int | None:
+        """Queue again the retries whose delay has passed.
+
+        Returns the milliseconds until the next waiting retry is due, 0 when
+        one is due already, None when none waits.
+        """
+        result = await self._client.eval(
+            PROMOTE, 2, self._delayed_key, self._pending_key, batch_size
+        )
+        return max(0, int(result[1])) if len(result) > 1 else None
+
+    async def _claim_or_read(self, worker_id: str, batch_size: int, block: int | None) -> Any:
+        """Reclaim abandoned entries, else read new ones, waiting up to *block* ms."""
         # Scan the PEL before reading new work, advancing the cursor even
         # when this scan finds no sufficiently idle entry.
         claimed = await self._client.xautoclaim(
@@ -141,19 +184,17 @@ class RedisDeliveryBackend(DeliveryBackend):
         )
         self._claim_cursor = claimed[0]
         if claimed[1]:
-            resp = [(self._pending_key, claimed[1])]
-        else:
-            resp = await self._client.xreadgroup(
-                self._group,
-                worker_id,
-                {self._pending_key: ">"},
-                count=batch_size,
-                block=max(1, int(timeout * 1000)) if timeout > 0 else None,
-            )
+            return [(self._pending_key, claimed[1])]
+        return await self._client.xreadgroup(
+            self._group,
+            worker_id,
+            {self._pending_key: ">"},
+            count=batch_size,
+            block=block,
+        )
 
-        if not resp:
-            return []
-
+    async def _take_entries(self, worker_id: str, resp: Any) -> list[DeliveryItem]:
+        """Track the entries *resp* carries as *worker_id*'s items."""
         items: list[DeliveryItem] = []
         # resp format: [[stream_name, [(entry_id, {field: value}), ...]]]
         for _stream_name, entries in resp:
@@ -172,11 +213,6 @@ class RedisDeliveryBackend(DeliveryBackend):
                 self._entry_ids[item.id] = eid
                 self._items[item.id] = item
                 items.append(item)
-
-        if items and (self._heartbeat_task is None or self._heartbeat_task.done()):
-            self._heartbeat_task = asyncio.create_task(
-                self._renew_pending(), name="redis-delivery-heartbeat"
-            )
         return items
 
     async def _renew_pending(self) -> None:
