@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import importlib
-import sys
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from roomkit.voice.base import VoiceSession
+from tests.private_module import load_private_copy
 
 
 def _make_session(sid: str = "s1") -> VoiceSession:
@@ -47,11 +45,7 @@ def _load_provider():
         "sphn": fake_sphn,
         "numpy": fake_np,
     }
-    with patch.dict(sys.modules, mods):
-        import roomkit.providers.personaplex.realtime as mod
-
-        importlib.reload(mod)
-        return mod
+    return load_private_copy("roomkit.providers.personaplex.realtime", mods)
 
 
 class TestPersonaPlexRealtimeProvider:

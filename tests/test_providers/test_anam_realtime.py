@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import importlib
-import sys
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from roomkit.voice.base import VoiceSession
+from tests.private_module import load_private_copy
 
 
 def _make_session(sid: str = "s1") -> VoiceSession:
@@ -37,14 +35,11 @@ def _load_provider():
         "av": fake_av,
         "numpy": fake_np,
     }
-    with patch.dict(sys.modules, mods):
-        import roomkit.providers.anam.realtime as mod
-
-        importlib.reload(mod)
-        # Reset the lazy-loaded globals so _ensure_deps succeeds
-        mod._anam_mod = fake_anam
-        mod._np = fake_np
-        return mod
+    mod = load_private_copy("roomkit.providers.anam.realtime", mods)
+    # Reset the lazy-loaded globals so _ensure_deps succeeds
+    mod._anam_mod = fake_anam
+    mod._np = fake_np
+    return mod
 
 
 class TestAnamRealtimeProvider:
