@@ -8,6 +8,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._video_hooks import VideoHooksMixin
+from roomkit.channels._video_resources import _VideoResources
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.channel import ChannelCapabilities
 from roomkit.models.enums import ChannelMediaType, ChannelType, HookTrigger
@@ -81,18 +82,10 @@ class RealtimeAudioVideoChannel(VideoHooksMixin, RealtimeVoiceChannel):
         self._video_media_taps: list[Callable[[VideoSession, VideoFrame], None]] = []
         self._video_pipeline_config = video_pipeline
 
-        # Build video pipeline if configured
-        if video_pipeline is not None and (
-            video_pipeline.decoder
-            or video_pipeline.resizer
-            or video_pipeline.transforms
-            or video_pipeline.filters
-        ):
-            from roomkit.video.pipeline.engine import VideoPipeline
-
-            self._video_pipeline: Any = VideoPipeline(video_pipeline)
-        else:
-            self._video_pipeline = None
+        # Video pipeline (decoder, resizer, transforms, filters, vision), owned
+        # as the other video channels own theirs: each vision closed once.
+        self._video_resources = _VideoResources(video_pipeline, vision)
+        self._video_pipeline = self._video_resources.pipeline
 
         # Wire video callback from audio+video provider
         if isinstance(provider, RealtimeAudioVideoProvider):
@@ -110,15 +103,20 @@ class RealtimeAudioVideoChannel(VideoHooksMixin, RealtimeVoiceChannel):
         """Handle a video frame from the realtime A/V provider."""
         with self._state_lock:
             room_id = self._session_rooms.get(session.id)
-        if room_id is None:
+            # A session whose teardown began takes no more video: its state is
+            # reset before the provider disconnects, and a frame arriving
+            # meanwhile would build it again, with no one left to reset it.
+            ending = session.id in self._session_teardowns
+        if room_id is None or ending:
             return
 
-        # Run pipeline stages (decoder, resizer) if configured
+        # Run pipeline stages (decoder, resizer, transforms, filters) if configured
         if self._video_pipeline is not None:
             processed = self._video_pipeline.process_inbound(session.id, frame)
             if processed is None:
                 return
             frame = processed
+            self._dispatch_detections(session, room_id)
 
         # Deliver to all video taps (cast session as VideoSession-like)
         for tap in self._video_media_taps:
@@ -143,6 +141,31 @@ class RealtimeAudioVideoChannel(VideoHooksMixin, RealtimeVoiceChannel):
                 loop,
                 self._analyze_frame(session, frame, room_id),  # ty: ignore[invalid-argument-type]
                 name=f"vision:{session.id}",
+            )
+
+    def _dispatch_detections(self, session: VoiceSession, room_id: str) -> None:
+        """Fire ``ON_VIDEO_DETECTION`` for each event the filters emitted on a frame.
+
+        Drained on every frame, hooks or not: undrained, the session's events
+        pile up for as long as a filter keeps detecting.
+        """
+        assert self._video_pipeline is not None
+        events = self._video_pipeline.drain_events(session.id)
+        loop = self._event_loop
+        if not events or loop is None or not loop.is_running():
+            return
+        for event in events:
+            if event.data is None:
+                continue
+            event.data.session = session
+            self._track_task(
+                loop,
+                self._fire_video_detection_hook(
+                    session,  # ty: ignore[invalid-argument-type]
+                    event.data,
+                    room_id,
+                ),
+                name=f"detection:{session.id}",
             )
 
     # -- Session lifecycle overrides -------------------------------------------
@@ -210,19 +233,26 @@ class RealtimeAudioVideoChannel(VideoHooksMixin, RealtimeVoiceChannel):
             )
 
         # Clean up video state
+        if self._video_pipeline is not None:
+            self._video_pipeline.reset(session.id)
         self._last_vision_results.pop(session.id, None)
         self._forget_session_vision(session.id)
         self._last_vision_ts.pop(session.id, None)
 
     async def close(self) -> None:
-        """Close vision, video state, then delegate to parent."""
-        if self._vision:
-            await self._vision.close()
-        self._last_vision_results.clear()
-        self._last_vision_ts.clear()
-        self._room_vision.clear()
-        self._video_media_taps.clear()
-        await super().close()
+        """End the sessions (parent), then close the video pipeline and vision.
+
+        The pipeline outlives the sessions: each one's teardown resets its
+        state in it, and the analyses still under way are cancelled first.
+        """
+        try:
+            await super().close()
+        finally:
+            await self._video_resources.close()
+            self._last_vision_results.clear()
+            self._last_vision_ts.clear()
+            self._room_vision.clear()
+            self._video_media_taps.clear()
 
     # -- Capabilities ----------------------------------------------------------
 

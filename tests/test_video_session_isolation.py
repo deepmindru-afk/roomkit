@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from roomkit.channels.av import AudioVideoChannel
+from roomkit.channels.realtime_av import RealtimeAudioVideoChannel
 from roomkit.channels.video import VideoChannel
 from roomkit.models.channel import ChannelBinding
 from roomkit.video.backends.mock import MockVideoBackend
 from roomkit.video.base import VideoSession
+from roomkit.video.events import VideoDetectionEvent
 from roomkit.video.pipeline.config import VideoPipelineConfig
 from roomkit.video.pipeline.decoder.base import VideoDecoderProvider
 from roomkit.video.pipeline.engine import VideoPipeline
@@ -20,10 +23,26 @@ from roomkit.video.video_frame import VideoFrame
 from roomkit.video.vision.base import VisionResult
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.base import VoiceSession
+from roomkit.voice.realtime.mock import MockRealtimeAudioVideoProvider, MockRealtimeTransport
 
 
 def frame() -> VideoFrame:
     return VideoFrame(data=b"\xff" * 3, codec="raw_rgb24", width=1, height=1)
+
+
+def realtime_av_channel(
+    config: VideoPipelineConfig,
+    *,
+    vision: AsyncMock | None = None,
+    provider: MockRealtimeAudioVideoProvider | None = None,
+) -> RealtimeAudioVideoChannel:
+    return RealtimeAudioVideoChannel(
+        "rv",
+        provider=provider or MockRealtimeAudioVideoProvider(),
+        transport=MockRealtimeTransport(),
+        video_pipeline=config,
+        vision=vision,
+    )
 
 
 def test_censor_grace_and_reset_do_not_cross_sessions() -> None:
@@ -43,7 +62,7 @@ def test_censor_grace_and_reset_do_not_cross_sessions() -> None:
     assert not pipeline._filter_contexts
 
 
-@pytest.mark.parametrize("kind", ["video", "av"])
+@pytest.mark.parametrize("kind", ["video", "av", "realtime_av"])
 @pytest.mark.parametrize("vision_mode", ["pipeline", "shared", "separate"])
 async def test_channel_closes_pipeline_and_each_vision_once(kind: str, vision_mode: str) -> None:
     decoder = MagicMock(spec=VideoDecoderProvider)
@@ -54,10 +73,12 @@ async def test_channel_closes_pipeline_and_each_vision_once(kind: str, vision_mo
     config = VideoPipelineConfig(decoder=decoder, vision=vision)
     if kind == "video":
         channel = VideoChannel("v", backend=MockVideoBackend(), pipeline=config, vision=direct)
-    else:
+    elif kind == "av":
         channel = AudioVideoChannel(
             "av", backend=MockVoiceBackend(), video_pipeline=config, vision=direct
         )
+    else:
+        channel = realtime_av_channel(config, vision=direct)
     await channel.close()
     await channel.close()
     decoder.close.assert_called_once()
@@ -122,6 +143,70 @@ async def test_av_dispatches_and_drains_detection_events() -> None:
 
         await asyncio.gather(*channel._scheduled_tasks)
         hook.assert_awaited_once_with(session, detection, "r")
+        assert channel._video_pipeline.drain_events(session.id) == []
+    finally:
+        await channel.close()
+
+
+async def test_realtime_av_session_end_removes_only_its_video_context() -> None:
+    channel = realtime_av_channel(
+        VideoPipelineConfig(filters=[CensorVideoFilter({"private"}, grace_frames=2)])
+    )
+    try:
+        session = await channel.start_session("r", "p", "ws")
+        pipeline = channel._video_pipeline
+        pipeline.update_filter_context(session.id, VisionResult(description="a", labels=[]))
+        pipeline.update_filter_context("b", VisionResult(description="b", labels=["private"]))
+        await channel.end_session(session)
+        assert session.id not in pipeline._filter_contexts
+        assert "b" in pipeline._filter_contexts
+    finally:
+        await channel.close()
+
+
+async def test_realtime_av_frame_during_session_end_leaves_no_video_state() -> None:
+    # The session's video state is reset before the provider disconnects: a
+    # frame arriving meanwhile built it again, and nothing reset it after.
+    provider = MockRealtimeAudioVideoProvider()
+    channel = realtime_av_channel(
+        VideoPipelineConfig(filters=[CensorVideoFilter({"private"})]), provider=provider
+    )
+    disconnect = provider.disconnect
+
+    async def late_frame_then_disconnect(session: VoiceSession) -> None:
+        await provider.simulate_video(session, frame())
+        await disconnect(session)
+
+    provider.disconnect = late_frame_then_disconnect  # type: ignore[method-assign]
+    try:
+        session = await channel.start_session("r", "p", "ws")
+        await channel.end_session(session)
+        assert session.id not in channel._video_pipeline._filter_contexts
+        assert session.id not in channel._video_pipeline._sessions
+    finally:
+        await channel.close()
+
+
+async def test_realtime_av_dispatches_and_drains_detection_events() -> None:
+    # The provider's frames went through the filters, whose detections were
+    # never drained: ON_VIDEO_DETECTION never fired and the events piled up.
+    detection = VideoDetectionEvent(
+        session=None, kind="face_touch", labels=["cheek"], confidence=1.0
+    )
+    provider = MockRealtimeAudioVideoProvider()
+    channel = realtime_av_channel(
+        VideoPipelineConfig(filters=[MockFaceTouchFilter({0: [detection]})]), provider=provider
+    )
+    hook = AsyncMock()
+    channel._fire_video_detection_hook = hook
+    try:
+        session = await channel.start_session("r", "p", "ws")
+        await provider.simulate_video(session, frame())
+        await asyncio.gather(
+            *(t for t in channel._scheduled_tasks if t.get_name().startswith("detection:"))
+        )
+        hook.assert_awaited_once_with(session, detection, "r")
+        assert detection.session is session
         assert channel._video_pipeline.drain_events(session.id) == []
     finally:
         await channel.close()
