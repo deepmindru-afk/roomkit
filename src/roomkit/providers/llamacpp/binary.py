@@ -172,7 +172,7 @@ def _extract(archive: Path, dest: Path) -> None:
             zf.extractall(dest)  # nosec B202  # every member path checked above
     else:
         with tarfile.open(archive) as tf:
-            tf.extractall(dest, filter="data")  # nosec B202  # "data" filter refuses escapes
+            tf.extractall(dest, filter="data")  # the "data" filter refuses escapes
 
 
 def _locate(root: Path) -> LlamaBinary:

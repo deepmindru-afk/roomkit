@@ -1112,7 +1112,7 @@ class PostgresStore(ConversationStore):
         if not root_event_ids:
             return {}
         query = (
-            "SELECT parent_event_id, count(*) AS reply_count, "  # nosec B608
+            "SELECT parent_event_id, count(*) AS reply_count, "
             "max(created_at) AS last_reply_at "
             "FROM events "
             "WHERE room_id = $1 AND parent_event_id = ANY($2) AND status != $3 "

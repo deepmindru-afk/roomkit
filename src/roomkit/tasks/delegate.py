@@ -262,7 +262,7 @@ class DelegateHandler:
         cancelled one is run again, as a strategy's dispatch is."""
         try:
             ended = await task.wait(timeout=600.0)
-        except Exception:  # nosec B110
+        except Exception:
             return  # timeout or error — don't cache
         if ended.status == TaskStatus.COMPLETED:
             answer = {**receipt, "status": str(ended.status), "result": ended.output or ""}
