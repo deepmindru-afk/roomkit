@@ -25,10 +25,11 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import inspect
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -547,14 +548,17 @@ class RealtimeAVBridge:
     def _notify_detection(
         self, callback: Callable[[VideoDetectionEvent], Any], event: VideoDetectionEvent
     ) -> None:
-        """Call *callback* with *event*; a failure is logged, the video goes on."""
+        """Call *callback* with *event*; a failure is logged, the video goes on.
+
+        What it returns may be any awaitable (a coroutine, a future): it is
+        awaited in a task of its own.
+        """
         try:
             result = callback(event)
+            if inspect.isawaitable(result):
+                self._safe_create_task(_awaited(result))
         except Exception:
             logger.exception("on_video_detection failed (kind=%s)", event.kind)
-            return
-        if hasattr(result, "__await__"):
-            self._safe_create_task(result)
 
     def _forget_video(self, state: _CallState) -> None:
         """Reset a call's state in the video pipeline as the call ends, and
@@ -606,3 +610,8 @@ class RealtimeAVBridge:
     ) -> None:
         if self._on_transcription is not None and is_final:
             self._on_transcription(role, text, is_final)
+
+
+async def _awaited(awaitable: Awaitable[Any]) -> None:
+    """Await *awaitable* as a coroutine, which is what a task runs."""
+    await awaitable

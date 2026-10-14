@@ -185,3 +185,29 @@ class TestRealtimeAVBridgeVideoDetections:
 
         tap.assert_called_once()
         await bridge.close()
+
+    async def test_a_callback_returning_a_future_does_not_stop_the_video(self) -> None:
+        loop = asyncio.get_running_loop()
+        done = loop.create_future()
+
+        def on_detection(event: VideoDetectionEvent) -> asyncio.Future[None]:
+            done.set_result(None)
+            return done
+
+        tap = MagicMock()
+        provider = MockRealtimeAudioVideoProvider()
+        bridge = RealtimeAVBridge(
+            provider,
+            MockVoiceBackend(),
+            video_pipeline=VideoPipelineConfig(filters=[MockFaceTouchFilter({0: [_detection()]})]),
+            on_video_detection=on_detection,
+        )
+        bridge.add_video_tap(tap)
+        session = await bridge.connect(
+            VoiceSession(id="call-1", room_id="r", participant_id="p", channel_id="voice")
+        )
+
+        await provider.simulate_video(session, _frame())
+
+        tap.assert_called_once()
+        await bridge.close()
