@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A model file of the other family no longer ends the process (RMK-759): given
+  `gtcrn_simple.onnx` under `model_type="dpdfnet"`, or a DPDFNet file under
+  GTCRN, sherpa-onnx exited with code 255 on the first frame of a call ("Expect
+  model type 'dpdfnet'. Given: 'gtcrn'"), out of reach of the provider's
+  pass-through. `SherpaOnnxDenoiserProvider` now reads the file's ONNX
+  `model_type` metadata when it is built (a protobuf walk that skips the graph,
+  no onnx dependency) and raises `ValueError` naming the right type; an 8 kHz
+  DPDFNet file is refused the same way on sherpa-onnx older than 1.13.5.
+  `model_sample_rate` gives the rate the file declares.
+- A new session no longer loads the denoiser's model again: `reset()` used to
+  drop it, so each session start loaded it on the event loop (67 ms measured
+  for dpdfnet2, about 20 MB). The model now waits for the next stream, its
+  state reset (DPDFNet's `OnlineSpeechDenoiser.reset()`; GTCRN's runs keep
+  none): the next session's first frame took 2.5 ms.
+- A model that fails to load is reported once, then the audio passes through.
+  The load was retried, and logged with a traceback, on every frame (about 50
+  a second).
+- The examples' `DENOISE=dpdfnet` takes the 48 kHz model on a 48 kHz pipeline,
+  and is left out with a warning at a rate its model does not run; at 24 kHz it
+  passed the audio through, logged as enabled.
+
 ## [0.103.0] — 2026-10-14
 
 ### Added

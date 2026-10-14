@@ -28,10 +28,12 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from roomkit.voice._onnx_metadata import read_onnx_metadata
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.pipeline.denoiser.base import DenoiserProvider
 
@@ -49,6 +51,9 @@ _DEFAULT_CONTEXT_FRAMES = 3
 # the input goes quiet, twice that delay, so the tail of an utterance comes out
 # before the model stops being fed.
 _DPDFNET_TAIL_MS = 100
+
+# sherpa-onnx reads DPDFNet's 8 kHz exports from this version on (PR #3824).
+_DPDFNET_8KHZ_SINCE = (1, 13, 5)
 
 
 def _pcm_s16le_to_float32(data: bytes) -> np.ndarray[Any, Any]:
@@ -162,6 +167,49 @@ class SherpaOnnxDenoiserConfig:
                 )
 
 
+def _check_model_file(config: SherpaOnnxDenoiserConfig, sherpa: Any) -> int | None:
+    """Refuse a model file sherpa-onnx would end the process on; its rate, if declared.
+
+    sherpa-onnx checks the file's ``model_type`` metadata natively and exits
+    (code 255) on a mismatch, GTCRN's file under a DPDFNet config or the
+    reverse, where no ``except`` reaches.  The same check runs here first.  A
+    file missing or unreadable is left to sherpa-onnx, whose error is a Python
+    exception: the provider then passes audio through.
+    """
+    if not config.model or not os.path.isfile(config.model):
+        return None
+    try:
+        metadata = read_onnx_metadata(config.model)
+    except (OSError, ValueError):
+        return None
+    declared = metadata.get("model_type", "")
+    if declared and declared != config.model_type:
+        raise ValueError(
+            f"{config.model} is a {declared!r} model but the config says "
+            f"model_type={config.model_type!r}: set model_type={declared!r}, or give "
+            f"a {config.model_type} model file"
+        )
+    rate_text = metadata.get("sample_rate", "")
+    rate = int(rate_text) if rate_text.isdigit() else None
+    installed = getattr(sherpa, "__version__", "")
+    if (
+        config.model_type == "dpdfnet"
+        and rate == 8000
+        and _version(installed) < (_DPDFNET_8KHZ_SINCE)
+    ):
+        raise ValueError(
+            f"{config.model} is an 8 kHz DPDFNet model, which sherpa-onnx reads from "
+            f"1.13.5 on (installed: {installed or 'unknown'}). "
+            "Upgrade it with: pip install -U 'roomkit[sherpa-onnx]'"
+        )
+    return rate
+
+
+def _version(text: str) -> tuple[int, ...]:
+    """'1.13.8' as (1, 13, 8); what is not a number counts as 0."""
+    return tuple(int(part) if part.isdigit() else 0 for part in text.split(".")[:3])
+
+
 @dataclass
 class _StreamState:
     """One stream's denoiser and its sliding context window.
@@ -211,15 +259,24 @@ class SherpaOnnxDenoiserProvider(DenoiserProvider):
                 f"{getattr(self._sherpa, '__version__', 'unknown')}). "
                 "Upgrade it with: pip install -U 'roomkit[sherpa-onnx]'"
             )
+        self._model_rate = _check_model_file(config, self._sherpa)
         self._streams: dict[str, _StreamState] = {}
+        # Denoisers of streams that ended, kept for the next ones (reset()).
+        self._idle: list[Any] = []
         self._streams_lock = threading.Lock()
         self._warned_formats: set[tuple[int, int, int, int]] = set()
         self._warned_rates: set[tuple[int, int]] = set()
+        self._init_failed = False
         self._closed = False
 
     @property
     def name(self) -> str:
         return "SherpaOnnxDenoiser"
+
+    @property
+    def model_sample_rate(self) -> int | None:
+        """The rate the model file declares (``sample_rate`` metadata), if any."""
+        return self._model_rate
 
     def _state_for(self, stream: str) -> _StreamState | None:
         """Get or create this stream's state (without its denoiser)."""
@@ -235,7 +292,7 @@ class SherpaOnnxDenoiserProvider(DenoiserProvider):
             return st
 
     def _ensure_denoiser(self, st: _StreamState) -> None:
-        """Lazily create this stream's sherpa-onnx denoiser.
+        """Give this stream a denoiser: one a finished stream left, else a new one.
 
         GTCRN gets an ``OfflineSpeechDenoiser`` fed a sliding window; DPDFNet
         an ``OnlineSpeechDenoiser`` that keeps the model's state between
@@ -243,38 +300,65 @@ class SherpaOnnxDenoiserProvider(DenoiserProvider):
         """
         if st.denoiser is not None:
             return
+        with self._streams_lock:
+            reused = self._idle.pop() if self._idle else None
+        st.denoiser = reused if reused is not None else self._new_denoiser()
+        st.native_rate = st.denoiser.sample_rate
+        if self._config.model_type == "dpdfnet":
+            import numpy as np
 
+            # sherpa-onnx returns nothing for the first hop until the next one
+            # completes its overlap-add: one hop of silence keeps every
+            # returned frame as long as the frame that went in.
+            st.pending = np.zeros(st.denoiser.frame_shift_in_samples, dtype=np.float32)
+            st.quiet_samples = self._tail_samples(st.native_rate) + 1
+
+    def _new_denoiser(self) -> Any:
+        """Load the model: 55 to 75 ms and ~20 MB, once per provider if streams end."""
         cfg = self._config
         sherpa = self._sherpa
-
         model_config = sherpa.OfflineSpeechDenoiserModelConfig(
             **self._model_section(),
             num_threads=cfg.num_threads,
             provider=cfg.provider,
         )
         if cfg.model_type == "dpdfnet":
-            import numpy as np
-
-            st.denoiser = sherpa.OnlineSpeechDenoiser(
+            denoiser = sherpa.OnlineSpeechDenoiser(
                 sherpa.OnlineSpeechDenoiserConfig(model=model_config)
             )
-            # sherpa-onnx returns nothing for the first hop until the next one
-            # completes its overlap-add: one hop of silence keeps every
-            # returned frame as long as the frame that went in.
-            st.pending = np.zeros(st.denoiser.frame_shift_in_samples, dtype=np.float32)
-            st.quiet_samples = self._tail_samples(st.denoiser.sample_rate) + 1
         else:
-            denoiser_config = sherpa.OfflineSpeechDenoiserConfig(
-                model=model_config,
+            denoiser = sherpa.OfflineSpeechDenoiser(
+                sherpa.OfflineSpeechDenoiserConfig(model=model_config)
             )
-            st.denoiser = sherpa.OfflineSpeechDenoiser(denoiser_config)
-        st.native_rate = st.denoiser.sample_rate
         logger.debug(
-            "SherpaOnnxDenoiser: created %s denoiser model=%s native_rate=%d",
+            "SherpaOnnxDenoiser: loaded %s model=%s native_rate=%d",
             cfg.model_type,
             cfg.model,
-            st.native_rate,
+            denoiser.sample_rate,
         )
+        return denoiser
+
+    def _ready(self, st: _StreamState) -> bool:
+        """Whether this stream has its denoiser.
+
+        A model that fails to load is reported once; from then on every frame
+        passes through, rather than the load failing again ~50 times a second.
+        """
+        if st.denoiser is not None:
+            return True
+        if self._init_failed:
+            return False
+        try:
+            self._ensure_denoiser(st)
+        except Exception:
+            self._init_failed = True
+            logger.warning(
+                "SherpaOnnxDenoiser: failed to load %s, passing audio through",
+                self._config.model,
+                exc_info=True,
+            )
+            return False
+        return True
 
     def _model_section(self) -> dict[str, Any]:
         """The model's own section of sherpa-onnx's ``OfflineSpeechDenoiserModelConfig``."""
@@ -308,15 +392,8 @@ class SherpaOnnxDenoiserProvider(DenoiserProvider):
         audio of 50 ms earlier: the delay is constant, so the transport
         timeline holds.
         """
-        if st.denoiser is None:
-            try:
-                self._ensure_denoiser(st)
-            except Exception:
-                logger.warning(
-                    "SherpaOnnxDenoiser: failed to initialize, passing through",
-                    exc_info=True,
-                )
-                return frame
+        if not self._ready(st):
+            return frame
         if frame.sample_rate != st.native_rate:
             # The model runs at its own rate, and sherpa-onnx ends the process
             # when one stream changes rate: refuse the frame instead.
@@ -372,15 +449,8 @@ class SherpaOnnxDenoiserProvider(DenoiserProvider):
         for temporal context.  Only the current frame's portion of the
         denoised output is returned — no latency is added.
         """
-        if st.denoiser is None:
-            try:
-                self._ensure_denoiser(st)
-            except Exception:
-                logger.warning(
-                    "SherpaOnnxDenoiser: failed to initialize, passing through",
-                    exc_info=True,
-                )
-                return frame
+        if not self._ready(st):
+            return frame
 
         try:
             import numpy as np
@@ -476,15 +546,31 @@ class SherpaOnnxDenoiserProvider(DenoiserProvider):
         )
 
     def reset(self, stream: str) -> None:
-        """Drop this stream's denoiser and its context window."""
+        """Forget this stream; its denoiser waits, emptied, for the next one.
+
+        Every session start used to load the model again on the event loop.
+        DPDFNet's recurrent state is reset; GTCRN's runs keep none.
+        """
         with self._streams_lock:
-            self._streams.pop(stream, None)
+            st = self._streams.pop(stream, None)
+        if st is None:
+            return
+        with st.lock:  # a frame of this stream may still be in flight
+            denoiser, st.denoiser = st.denoiser, None
+            if denoiser is None:
+                return
+            if self._config.model_type == "dpdfnet":
+                denoiser.reset()
+        with self._streams_lock:
+            if not self._closed:
+                self._idle.append(denoiser)
 
     def close(self) -> None:
-        """Release every stream's denoiser."""
+        """Release every stream's denoiser, and the idle ones."""
         with self._streams_lock:
             self._closed = True
             self._streams.clear()
+            self._idle.clear()
 
     def _matches_format(self, frame: AudioFrame) -> bool:
         actual = (frame.sample_rate, frame.channels, frame.sample_width)

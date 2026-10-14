@@ -109,8 +109,11 @@ def build_denoiser(sample_rate: int = 16000, *, default: str = "0") -> object | 
 
     Env: ``DENOISE=webrtc|rnnoise|sherpa|dpdfnet|1|0`` (default comes from
     *default* param). For ``sherpa`` (GTCRN) and ``dpdfnet``, ``DENOISE_MODEL``
-    sets the model file (default ``gtcrn_simple.onnx`` / ``dpdfnet2.onnx``);
-    a 16 kHz DPDFNet model needs a 16 kHz pipeline.
+    sets the model file (default ``gtcrn_simple.onnx``; for DPDFNet,
+    ``dpdfnet2_48khz_hr.onnx`` on a 48 kHz pipeline, else ``dpdfnet2.onnx``).
+    DPDFNet denoises only at its model's rate: on another pipeline rate it
+    would pass the audio through, so it is left out with a warning (GTCRN
+    resamples, ``DENOISE=sherpa``).
 
     Returns the provider instance or ``None``.
     """
@@ -137,7 +140,12 @@ def build_denoiser(sample_rate: int = 16000, *, default: str = "0") -> object | 
 
     if mode in ("sherpa", "dpdfnet"):
         model_type = "dpdfnet" if mode == "dpdfnet" else "gtcrn"
-        default_model = "dpdfnet2.onnx" if mode == "dpdfnet" else "gtcrn_simple.onnx"
+        if model_type == "gtcrn":
+            default_model = "gtcrn_simple.onnx"
+        elif sample_rate == 48000:
+            default_model = "dpdfnet2_48khz_hr.onnx"
+        else:
+            default_model = "dpdfnet2.onnx"
         model = os.environ.get("DENOISE_MODEL", default_model)
         try:
             from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
@@ -148,11 +156,21 @@ def build_denoiser(sample_rate: int = 16000, *, default: str = "0") -> object | 
             denoiser = SherpaOnnxDenoiserProvider(
                 SherpaOnnxDenoiserConfig(model_type=model_type, model=model)
             )
-            logger.info("Denoiser enabled (sherpa-onnx %s, model=%s)", model_type, model)
-            return denoiser
-        except ImportError as exc:
+        except (ImportError, ValueError) as exc:
             logger.warning("%s — denoiser disabled", exc)
             return None
+        model_rate = denoiser.model_sample_rate
+        if model_type == "dpdfnet" and model_rate not in (None, sample_rate):
+            logger.warning(
+                "DPDFNet model %s runs at %s Hz and this pipeline at %d Hz: it would "
+                "pass the audio through — denoiser disabled (DENOISE=sherpa resamples)",
+                model,
+                model_rate,
+                sample_rate,
+            )
+            return None
+        logger.info("Denoiser enabled (sherpa-onnx %s, model=%s)", model_type, model)
+        return denoiser
 
     if mode == "rnnoise":
         try:

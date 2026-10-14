@@ -106,6 +106,7 @@ def test_dpdfnet_mode_builds_a_dpdfnet_denoiser(monkeypatch, caplog) -> None:
     monkeypatch.setenv("DENOISE", "dpdfnet")
     monkeypatch.delenv("DENOISE_MODEL", raising=False)
     constructor = MagicMock()
+    constructor.return_value.model_sample_rate = 16000
 
     with (
         patch(
@@ -120,3 +121,39 @@ def test_dpdfnet_mode_builds_a_dpdfnet_denoiser(monkeypatch, caplog) -> None:
     config = constructor.call_args.args[0]
     assert (config.model_type, config.model) == ("dpdfnet", "dpdfnet2.onnx")
     assert "Denoiser enabled (sherpa-onnx dpdfnet, model=dpdfnet2.onnx)" in caplog.messages
+
+
+def test_dpdfnet_is_left_out_at_a_rate_its_model_does_not_run(monkeypatch, caplog) -> None:
+    """At 24 kHz a 16 kHz DPDFNet passed the audio through, logged as enabled."""
+    monkeypatch.setenv("DENOISE", "dpdfnet")
+    monkeypatch.delenv("DENOISE_MODEL", raising=False)
+    constructor = MagicMock()
+    constructor.return_value.model_sample_rate = 16000
+
+    with (
+        patch(
+            "roomkit.voice.pipeline.denoiser.sherpa_onnx.SherpaOnnxDenoiserProvider",
+            constructor,
+        ),
+        caplog.at_level(logging.INFO, logger="examples.shared.audio"),
+    ):
+        result = build_denoiser(24000)
+
+    assert result is None
+    assert not any("Denoiser enabled" in m for m in caplog.messages)
+    assert any("runs at 16000 Hz and this pipeline at 24000 Hz" in m for m in caplog.messages)
+
+
+def test_dpdfnet_takes_the_48khz_model_on_a_48khz_pipeline(monkeypatch) -> None:
+    monkeypatch.setenv("DENOISE", "dpdfnet")
+    monkeypatch.delenv("DENOISE_MODEL", raising=False)
+    constructor = MagicMock()
+    constructor.return_value.model_sample_rate = 48000
+
+    with patch(
+        "roomkit.voice.pipeline.denoiser.sherpa_onnx.SherpaOnnxDenoiserProvider", constructor
+    ):
+        result = build_denoiser(48000)
+
+    assert result is constructor.return_value
+    assert constructor.call_args.args[0].model == "dpdfnet2_48khz_hr.onnx"

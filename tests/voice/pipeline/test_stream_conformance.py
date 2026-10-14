@@ -281,6 +281,10 @@ class _FakeSherpaOnlineDenoiser:
         self._buffer: list[float] = []
         self._calls = 0
 
+    def reset(self) -> None:
+        self._buffer = []
+        self._calls = 0
+
     def run(self, samples, _rate):
         self._calls += 1
         self._buffer.extend(samples)

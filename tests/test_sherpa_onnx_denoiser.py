@@ -586,8 +586,14 @@ class _FakeOnlineDenoiser:
         self.sample_rate = sample_rate
         self.frame_shift_in_samples = hop
         self.calls = 0
+        self.resets = 0
         self._buffer: list[float] = []
         self._previous: list[float] | None = None
+
+    def reset(self) -> None:
+        self.resets += 1
+        self._buffer = []
+        self._previous = None
 
     def run(self, samples: list[float], _rate: int) -> Any:
         self.calls += 1
@@ -770,15 +776,18 @@ class TestDpdfnetStreaming:
 
         assert provider.process(frame, "s1") is frame
 
-    def test_reset_starts_the_stream_over(self) -> None:
+    def test_reset_starts_the_stream_over_on_the_same_model(self) -> None:
+        """Each session start loaded the model again (55-75 ms on the loop)."""
         sherpa = _online_sherpa()
         provider = _make_dpdfnet_provider(sherpa, silence_threshold=0)
         provider.process(_ramp_frame(0, 320), "s1")
+        model = provider._streams["s1"].denoiser
 
         provider.reset("s1")
-        out = provider.process(_ramp_frame(0, 320), "s1")
+        out = provider.process(_ramp_frame(0, 320), "s2")
 
-        assert sherpa.OnlineSpeechDenoiser.call_count == 2
+        assert sherpa.OnlineSpeechDenoiser.call_count == 1
+        assert provider._streams["s2"].denoiser is model and model.resets == 1
         # A fresh stream begins with its one hop of silence again.
         assert _pcm(out)[:160].tolist() == [0] * 160
 
@@ -817,3 +826,102 @@ class TestDpdfnetSilenceGate:
             provider.process(_frame(320, value=0), "s1")
 
         assert provider._streams["s1"].denoiser.calls == 10
+
+
+# ---------------------------------------------------------------------------
+# The model file, the first load, and reuse across streams (RMK-759)
+# ---------------------------------------------------------------------------
+
+
+def _model_file(tmp_path: Any, name: str = "model.onnx", **metadata: str) -> str:
+    from tests.test_onnx_metadata import onnx_bytes
+
+    path = tmp_path / name
+    path.write_bytes(onnx_bytes(**metadata))
+    return str(path)
+
+
+class TestModelFileCheck:
+    """sherpa-onnx ends the process (code 255) on a model of the other family."""
+
+    def _provider(self, sherpa: Any, **config_kwargs: Any) -> Any:
+        fakes = {"sherpa_onnx": sherpa}
+        with patch.dict("sys.modules", fakes):
+            dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
+            return dn_mod.SherpaOnnxDenoiserProvider(
+                dn_mod.SherpaOnnxDenoiserConfig(**config_kwargs)
+            )
+
+    @pytest.mark.parametrize(
+        ("model_type", "declared"), [("dpdfnet", "gtcrn"), ("gtcrn", "dpdfnet")]
+    )
+    def test_a_model_of_the_other_family_is_refused_at_creation(
+        self, tmp_path: Any, model_type: str, declared: str
+    ) -> None:
+        model = _model_file(tmp_path, model_type=declared, sample_rate="16000")
+
+        with pytest.raises(ValueError, match=f"is a '{declared}' model"):
+            self._provider(_online_sherpa(), model_type=model_type, model=model)
+
+    def test_a_matching_model_reports_its_rate(self, tmp_path: Any) -> None:
+        model = _model_file(tmp_path, model_type="dpdfnet", sample_rate="48000")
+
+        provider = self._provider(_online_sherpa(), model_type="dpdfnet", model=model)
+
+        assert provider.model_sample_rate == 48000
+
+    def test_an_8khz_dpdfnet_needs_sherpa_onnx_1_13_5(self, tmp_path: Any) -> None:
+        model = _model_file(tmp_path, model_type="dpdfnet", sample_rate="8000")
+        old, new = _online_sherpa(), _online_sherpa()
+        old.__version__, new.__version__ = "1.13.4", "1.13.5"
+
+        with pytest.raises(ValueError, match="sherpa-onnx reads from 1.13.5"):
+            self._provider(old, model_type="dpdfnet", model=model)
+        assert self._provider(new, model_type="dpdfnet", model=model).model_sample_rate == 8000
+
+    def test_a_file_without_metadata_or_not_onnx_is_left_to_sherpa_onnx(
+        self, tmp_path: Any
+    ) -> None:
+        bare = _model_file(tmp_path, "bare.onnx")
+        text = tmp_path / "notes.onnx"
+        text.write_text("not a model")
+
+        for model in (bare, str(text), str(tmp_path / "missing.onnx")):
+            provider = self._provider(_online_sherpa(), model_type="dpdfnet", model=model)
+            assert provider.model_sample_rate is None
+
+
+class TestFirstLoad:
+    def test_a_failed_load_is_reported_once_then_audio_passes_through(self, caplog: Any) -> None:
+        sherpa = _online_sherpa()
+        sherpa.OnlineSpeechDenoiser.side_effect = RuntimeError("Load model failed")
+        provider = _make_dpdfnet_provider(sherpa, silence_threshold=0)
+        frame = _ramp_frame(0, 320)
+
+        with caplog.at_level("WARNING"):
+            results = [provider.process(frame, "s1") for _ in range(3)]
+            provider.process(frame, "s2")
+
+        assert all(result is frame for result in results)
+        assert sherpa.OnlineSpeechDenoiser.call_count == 1  # not ~50 times a second
+        assert sum("failed to load" in r.message for r in caplog.records) == 1
+
+    def test_gtcrn_reuses_its_model_across_streams(self) -> None:
+        sherpa = _mock_sherpa_module()
+        sherpa.OfflineSpeechDenoiser.return_value = _denoiser_that_returns([0.1] * 320)
+        provider = _make_provider(sherpa, sherpa.OfflineSpeechDenoiser.return_value)
+        provider.process(_frame(320, value=3000), "s1")
+
+        provider.reset("s1")
+        provider.process(_frame(320, value=3000), "s2")
+
+        assert sherpa.OfflineSpeechDenoiser.call_count == 1
+
+    def test_close_drops_the_idle_models(self) -> None:
+        provider = _make_dpdfnet_provider(_online_sherpa(), silence_threshold=0)
+        provider.process(_ramp_frame(0, 320), "s1")
+        provider.reset("s1")
+
+        provider.close()
+
+        assert provider._idle == []
