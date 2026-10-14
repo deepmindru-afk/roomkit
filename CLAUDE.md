@@ -98,7 +98,7 @@ Outbound:  TTS → [PostProcessors] → [Recorder] → AEC.feed_reference → [R
 - AEC/AGC stages auto-skip when backend has `NATIVE_AEC`/`NATIVE_AGC` capabilities
 - **InterruptionHandler** (`voice/interruption.py`): 4 strategies — IMMEDIATE, CONFIRMED, SEMANTIC, DISABLED
 - **AudioFrame** for inbound audio, **AudioChunk** for outbound TTS
-- 10 pipeline provider ABCs, each in own subdirectory under `voice/pipeline/`
+- 12 pipeline provider ABCs, each in own subdirectory under `voice/pipeline/`
 
 ### Providers
 
@@ -122,20 +122,39 @@ All in `providers/` with the pattern: ABC in `base.py`, implementations alongsid
 src/roomkit/
 ├── core/           # Framework, hooks, event routing, inbound pipeline
 ├── channels/       # Channel ABC + implementations (Voice, AI, WebSocket, etc.)
-├── providers/      # 21 subdirs — AI, SMS, Email, Chat provider integrations
+├── providers/      # 38 subdirs — AI, SMS, Email, Chat, realtime provider integrations
 ├── models/         # Pydantic models — enums, events, rooms, participants
 ├── voice/          # Voice subsystem
-│   ├── backends/   # Audio transports (FastRTC, RTP, SIP, Local, Mock)
-│   ├── stt/        # Speech-to-text (Deepgram, SherpaOnnx, Gradium, Mock)
-│   ├── tts/        # Text-to-speech (ElevenLabs, SherpaOnnx, Qwen, Gradium, Mock)
-│   ├── pipeline/   # 10 audio processing stages (VAD, AEC, AGC, Denoiser, etc.)
-│   └── realtime/   # Speech-to-speech (OpenAI Realtime, Gemini Live)
+│   ├── backends/   # Audio transports (FastRTC, RTP, SIP, Twilio, WebTransport, Local, Mock)
+│   ├── capture/    # Local microphone sources
+│   ├── stt/        # Speech-to-text (Deepgram, Sherpa-ONNX, Gemini, Azure MAI, Mock, etc.)
+│   ├── tts/        # Text-to-speech (ElevenLabs, Sherpa-ONNX, Gemini, Azure, Mock, etc.)
+│   ├── pipeline/   # 12 audio processing stages (VAD, AEC, AGC, Denoiser, Turn, etc.)
+│   ├── realtime/   # Speech-to-speech (OpenAI Realtime, Gemini Live)
+│   └── testing/    # Helpers for voice tests
+├── video/          # Video subsystem — backends, pipeline, recorder, vision, avatar
+├── conference/     # Conference support (SFU orchestration, LiveKit)
+├── webrtc/         # Vendored WebRTC transport (from fastrtc 0.0.34, not restyled)
+├── recorder/       # Room-level media recording
 ├── store/          # Conversation persistence (Memory, SQLite, Postgres)
 ├── realtime/       # Ephemeral events (typing, presence, reactions)
+├── delivery/       # Persistent delivery queue (Memory, Redis) and its worker
 ├── sources/        # Event-driven providers (WebSocket, SSE, Neonize)
-└── identity/       # User identification resolution
-tests/              # 100+ test files, conftest.py with shared fixtures
-examples/           # 30+ runnable examples
+├── identity/       # User identification resolution
+├── orchestration/  # Multi-agent conversation orchestration
+├── speaking/       # Speaking turns — whether an agent speaks, offers or stays silent
+├── classifiers/    # Narrow typed questions answered with probabilities
+├── tasks/          # Background task delegation via child rooms
+├── knowledge/      # Knowledge retrieval sources for AI context
+├── memory/         # Memory providers for AI context construction
+├── skills/         # Agent Skills integration
+├── tools/          # Bridges from external tool systems
+├── sandbox/        # Sandboxed execution integration
+├── scoring/        # Conversation scoring and quality evaluation
+├── telemetry/      # Telemetry providers
+└── console/        # Terminal displays for agent development
+tests/              # 800+ test files, conftest.py with shared fixtures
+examples/           # 250+ runnable examples
 ```
 
 ## Important Patterns
@@ -182,7 +201,7 @@ async def log(event, ctx) -> None: ...
 
 ### Pipeline Provider Pattern
 
-Each of the 10 pipeline stages lives in `voice/pipeline/<stage>/`:
+Each of the 12 pipeline stages lives in `voice/pipeline/<stage>/`:
 - `base.py` — ABC with `process()`, `reset()`, `close()`
 - `mock.py` — Mock with pre-configured event sequences
 - Implementation files alongside (e.g., `vad/silero.py`, `aec/speex.py`)
