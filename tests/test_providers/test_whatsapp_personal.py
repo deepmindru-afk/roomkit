@@ -131,6 +131,32 @@ class TestWhatsAppPersonalProvider:
             caption="A photo",
         )
 
+    async def test_a_media_reference_is_refused_never_opened(self, _mock_jid: MagicMock) -> None:
+        # Neonize opens any string that is not a link as a local file: a
+        # reference the application resolves (RFC §6.4) must not reach it.
+        source = _make_source()
+        provider = WhatsAppPersonalProvider(source)
+        event = _make_event(MediaContent(url="app-media://photo-42", mime_type="image/jpeg"))
+
+        result = await provider.send(event, "1234567890")
+
+        assert result.success is False
+        assert "reference" in (result.error or "")
+        source.client.send_image.assert_not_called()
+
+    async def test_a_data_uri_is_sent_as_bytes(self, _mock_jid: MagicMock) -> None:
+        source = _make_source()
+        provider = WhatsAppPersonalProvider(source)
+        event = _make_event(
+            MediaContent(url="data:image/png;base64,iVBORw0K", mime_type="image/png")
+        )
+
+        result = await provider.send(event, "1234567890")
+
+        assert result.success is True
+        sent = source.client.send_image.call_args.args[1]
+        assert isinstance(sent, bytes) and sent.startswith(b"\x89PNG")
+
     async def test_send_media_content_document(self, _mock_jid: MagicMock) -> None:
         source = _make_source()
         provider = WhatsAppPersonalProvider(source)

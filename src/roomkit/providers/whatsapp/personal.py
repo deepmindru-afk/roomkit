@@ -13,6 +13,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from roomkit._media import is_data_uri, is_link
 from roomkit.models.delivery import ProviderResult
 from roomkit.models.event import (
     AudioContent,
@@ -23,6 +24,7 @@ from roomkit.models.event import (
     TextContent,
     VideoContent,
 )
+from roomkit.providers.utils import parse_data_uri
 from roomkit.providers.whatsapp.base import WhatsAppProvider
 from roomkit.sources.base import SourceStatus
 
@@ -65,7 +67,7 @@ def _location_message(content: LocationContent) -> Any:
     return Message(locationMessage=location)
 
 
-async def _send_audio(client: Any, jid: Any, url: str, *, ptt: bool = True) -> Any:
+async def _send_audio(client: Any, jid: Any, url: str | bytes, *, ptt: bool = True) -> Any:
     """Send audio with the correct mimetype for WhatsApp.
 
     Neonize's ``build_audio_message`` uses ``python-magic`` to detect the
@@ -119,9 +121,9 @@ class WhatsAppPersonalProvider(WhatsAppProvider):
                 resp = await self._send_media(client, jid, content)
             elif isinstance(content, AudioContent):
                 ptt = "ogg" in (content.mime_type or "") or "opus" in (content.mime_type or "")
-                resp = await _send_audio(client, jid, content.url, ptt=ptt)
+                resp = await _send_audio(client, jid, _neonize_source(content.url), ptt=ptt)
             elif isinstance(content, VideoContent):
-                resp = await client.send_video(jid, content.url)
+                resp = await client.send_video(jid, _neonize_source(content.url))
             elif isinstance(content, LocationContent):
                 resp = await client.send_message(jid, _location_message(content))
             else:
@@ -159,18 +161,19 @@ class WhatsAppPersonalProvider(WhatsAppProvider):
     @staticmethod
     async def _send_media(client: Any, jid: Any, content: MediaContent) -> Any:
         """Send a single media part via the appropriate neonize method."""
+        source = _neonize_source(content.url)
         mime = (content.mime_type or "").lower()
         if mime.startswith("image/"):
-            return await client.send_image(jid, content.url, caption=content.caption or "")
+            return await client.send_image(jid, source, caption=content.caption or "")
         elif mime.startswith("video/"):
-            return await client.send_video(jid, content.url, caption=content.caption or "")
+            return await client.send_video(jid, source, caption=content.caption or "")
         elif mime.startswith("audio/"):
             ptt = "ogg" in mime or "opus" in mime
-            return await _send_audio(client, jid, content.url, ptt=ptt)
+            return await _send_audio(client, jid, source, ptt=ptt)
         else:
             return await client.send_document(
                 jid,
-                content.url,
+                source,
                 filename=content.filename or "file",
             )
 
@@ -250,3 +253,17 @@ class WhatsAppPersonalProvider(WhatsAppProvider):
 
     async def close(self) -> None:
         """No-op — the source owns the client lifecycle."""
+
+
+def _neonize_source(url: str) -> str | bytes:
+    """What neonize is handed for a media URL: a link as is, a ``data:`` URI's
+    bytes. Neonize opens any other string as a local file, so a reference
+    (RFC §6.4), which the application resolves itself, is refused here."""
+    if is_link(url):
+        return url
+    if is_data_uri(url):
+        return parse_data_uri(url)[1]
+    raise ValueError(
+        "WhatsApp personal cannot send a media reference: resolve it to a link "
+        "or a data: URI before it reaches this channel"
+    )
