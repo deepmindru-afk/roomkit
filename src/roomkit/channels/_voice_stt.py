@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import struct
 import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -383,8 +384,6 @@ class VoiceSTTMixin:
             state.queue.put_nowait(chunk)
         except asyncio.QueueFull:
             # Drop the oldest chunk to make room for fresher audio
-            import contextlib
-
             with contextlib.suppress(asyncio.QueueEmpty):
                 state.queue.get_nowait()
             with contextlib.suppress(asyncio.QueueFull):
@@ -494,7 +493,6 @@ class VoiceSTTMixin:
         if state is None:
             return
         state.cancelled = True
-        import contextlib
 
         # Send sentinel to the current queue.  In continuous mode the queue
         # may be replaced on each reconnect cycle, so we must signal the
@@ -527,8 +525,6 @@ class VoiceSTTMixin:
         echo and noise are stripped.  A simple absolute RMS threshold
         reliably detects speech without false triggers from playback.
         """
-        import struct
-
         # A barge-in already owns this playback: nothing is left to decide.
         if playback.barge_in_claimed:
             return
@@ -857,8 +853,6 @@ class VoiceSTTMixin:
         keep_stream = diarizes(self._stt)
 
         async def run_continuous(state: _STTStreamState) -> None:
-            import time as _time
-
             backoff = 0.1
             while not state.cancelled:
                 # Fresh queue + WebSocket per turn (avoids server-side overlap).
@@ -929,7 +923,7 @@ class VoiceSTTMixin:
                         continue
 
                     last_tts = self._last_tts_ended_at.get(session.id, 0.0)
-                    since_tts = _time.monotonic() - last_tts if last_tts else -1.0
+                    since_tts = time.monotonic() - last_tts if last_tts else -1.0
                     logger.info(
                         "Continuous STT stream cycle starting for %s (since_tts=%.1fs)",
                         session.id,
@@ -980,7 +974,7 @@ class VoiceSTTMixin:
                             # say nothing about the next one.
                             self._forget_burst_words(session.id)
                             last_tts = self._last_tts_ended_at.get(session.id, 0.0)
-                            since_tts_now = _time.monotonic() - last_tts if last_tts else -1.0
+                            since_tts_now = time.monotonic() - last_tts if last_tts else -1.0
                             logger.info(
                                 "STT final: %r (playing=%s, barge_in=%s, since_tts=%.1fs)",
                                 result.text,
@@ -1112,7 +1106,7 @@ class VoiceSTTMixin:
                     # A stream's end ends its utterance: no final of it comes.
                     self._forget_burst_words(session.id)
                     last_tts = self._last_tts_ended_at.get(session.id, 0.0)
-                    since_tts_end = _time.monotonic() - last_tts if last_tts else -1.0
+                    since_tts_end = time.monotonic() - last_tts if last_tts else -1.0
                     logger.info(
                         "STT stream cycle ended for %s, reconnecting (since_tts=%.1fs)",
                         session.id,
@@ -1238,12 +1232,11 @@ class VoiceSTTMixin:
 
             _vs_parent = getattr(self, "_voice_session_spans", {}).get(session.id)
             _vs_token = set_current_span(_vs_parent) if _vs_parent else None
-            import time as _time
 
             with self._state_lock:
                 playback = self._playing_sessions.get(session.id)
             last_tts_end = self._last_tts_ended_at.get(session.id, 0.0)
-            since_tts = _time.monotonic() - last_tts_end if last_tts_end else -1.0
+            since_tts = time.monotonic() - last_tts_end if last_tts_end else -1.0
 
             if playback and not cut_playback:
                 logger.warning(

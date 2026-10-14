@@ -23,6 +23,7 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable
 from typing import Any
@@ -246,8 +247,6 @@ class RTPVideoBackend(RTPVoiceBackend, VideoBackend):
         Schedules ``send_frame()`` on the event loop via
         ``call_soon_threadsafe`` to avoid cross-thread corruption.
         """
-        import asyncio
-
         video_rtp = self._video_rtp_sessions.get(session.id)
         if video_rtp is None:
             return

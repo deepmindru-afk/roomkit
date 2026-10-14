@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import ssl
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlencode
@@ -339,7 +340,6 @@ class PersonaPlexRealtimeProvider(RealtimeVoiceProvider):
     def _build_ssl_context(self, url: str) -> Any:
         if not url.startswith("wss://"):
             return None
-        import ssl
 
         if self._ssl_verify:
             return ssl.create_default_context()

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -108,8 +109,6 @@ class WhatsAppPersonalProvider(WhatsAppProvider):
         content = event.content
 
         try:
-            import time
-
             t0 = time.monotonic()
             resp = None
             if isinstance(content, CompositeContent):

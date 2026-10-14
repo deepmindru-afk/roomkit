@@ -24,6 +24,8 @@ Example::
 
 from __future__ import annotations
 
+import contextlib
+import ctypes
 import json
 import logging
 import os
@@ -257,12 +259,9 @@ def _get_scale_factor() -> tuple[float, float]:
             return 1.0, 1.0
     if system == "Windows":
         if not _dpi_initialized:
-            try:
-                import ctypes
-
+            # Best-effort DPI awareness.
+            with contextlib.suppress(Exception):
                 ctypes.windll.shcore.SetProcessDpiAwareness(2)  # ty: ignore[unresolved-attribute]
-            except Exception:  # nosec B110  # best-effort DPI awareness
-                pass
             _dpi_initialized = True
         return 1.0, 1.0
     # Linux

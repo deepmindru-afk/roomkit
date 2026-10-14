@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 import struct
 from collections.abc import AsyncIterator
@@ -241,8 +242,6 @@ class Qwen3ASRProvider(STTProvider):
             del self._model
             self._model = None
             try:
-                import gc
-
                 gc.collect()
                 import torch
 

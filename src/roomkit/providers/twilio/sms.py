@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 from roomkit.models.delivery import InboundMessage, ProviderResult
@@ -76,8 +77,6 @@ class TwilioSMSProvider(SMSProvider):
             data["From"] = from_number
 
         try:
-            import time
-
             t0 = time.monotonic()
             resp = await self._client.post(
                 self._config.api_url,

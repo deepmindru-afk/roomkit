@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from fractions import Fraction
 from typing import Any
 
 from roomkit.video._annexb import split_annex_b
@@ -64,7 +65,6 @@ class PyAVVideoEncoder(VideoEncoderProvider):
             return
         if self._ctx is not None:
             self._ctx = None  # release old
-        from fractions import Fraction
 
         self._width = width
         self._height = height

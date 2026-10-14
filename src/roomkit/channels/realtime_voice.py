@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -551,9 +552,7 @@ class RealtimeVoiceChannel(
         # Wall-clock of the last user-turn start (VAD SPEECH_START). Consumed by
         # _realtime_transcription when emitting the final user turn as a
         # RoomEvent, so tool_calls fired mid-turn sort after the user message.
-        from datetime import datetime as _dt  # local alias; cross-platform
-
-        self._user_turn_start_at: dict[str, _dt] = {}
+        self._user_turn_start_at: dict[str, datetime] = {}
 
         # Track fire-and-forget tasks for clean shutdown
         self._scheduled_tasks: set[asyncio.Task[Any]] = set()

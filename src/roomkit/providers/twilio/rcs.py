@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, SecretStr, field_validator
@@ -112,8 +113,6 @@ class TwilioRCSProvider(RCSProvider):
             data[f"MediaUrl{i}"] = url
 
         try:
-            import time
-
             t0 = time.monotonic()
             resp = await self._client.post(
                 self._config.api_url,

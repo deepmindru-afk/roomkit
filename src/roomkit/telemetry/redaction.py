@@ -16,6 +16,7 @@ sites log at DEBUG level, so the log level is a second gate.
 from __future__ import annotations
 
 import os
+from urllib.parse import urlsplit, urlunsplit
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -63,8 +64,6 @@ def safe_url(url: str) -> str:
     credential is not content, and there is no debugging session in which
     logging it is the right answer.
     """
-    from urllib.parse import urlsplit, urlunsplit
-
     try:
         parts = urlsplit(url)
     except ValueError:

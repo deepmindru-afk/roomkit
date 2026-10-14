@@ -7,6 +7,7 @@ Web multidevice protocol.  Personal use and experimentation only.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
@@ -153,7 +154,6 @@ def default_message_parser(
             elif msg.HasField("imageMessage"):
                 try:
                     data = await client.download_any(msg)
-                    import base64
 
                     b64 = base64.b64encode(data).decode()
                     mime = getattr(msg.imageMessage, "mimetype", "image/jpeg")
@@ -171,7 +171,6 @@ def default_message_parser(
             elif msg.HasField("audioMessage"):
                 try:
                     data = await client.download_any(msg)
-                    import base64
 
                     b64 = base64.b64encode(data).decode()
                     ptt = getattr(msg.audioMessage, "ptt", False)
@@ -189,7 +188,6 @@ def default_message_parser(
             elif msg.HasField("videoMessage"):
                 try:
                     data = await client.download_any(msg)
-                    import base64
 
                     b64 = base64.b64encode(data).decode()
                     mime = getattr(msg.videoMessage, "mimetype", "video/mp4")
@@ -206,7 +204,6 @@ def default_message_parser(
             elif msg.HasField("documentMessage"):
                 try:
                     data = await client.download_any(msg)
-                    import base64
 
                     b64 = base64.b64encode(data).decode()
                     mime = getattr(msg.documentMessage, "mimetype", "application/octet-stream")
@@ -234,7 +231,6 @@ def default_message_parser(
             elif msg.HasField("stickerMessage"):
                 try:
                     data = await client.download_any(msg)
-                    import base64
 
                     b64 = base64.b64encode(data).decode()
                     url = f"data:image/webp;base64,{b64}"

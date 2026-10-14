@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -168,8 +169,6 @@ class RealtimeAudioVideoChannel(VideoHooksMixin, RealtimeVoiceChannel):
         )
 
         # Cache event loop for cross-thread video callback scheduling
-        import asyncio
-
         self._event_loop = asyncio.get_running_loop()
 
         # Fire video session events

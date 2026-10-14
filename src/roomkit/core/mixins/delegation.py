@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from uuid import uuid4
 
 from roomkit._text import bounded_text, identifier, one_line, quoted
 from roomkit.channels._realtime_context import get_current_voice_session
@@ -379,8 +380,6 @@ class DelegationMixin(HelpersMixin):
             ValueError: An unknown *hand_back*, a ``"post"`` the notified
                 channel cannot take, or a negative *conversation*.
         """
-        from uuid import uuid4
-
         from roomkit.telemetry.context import get_current_span
         from roomkit.telemetry.noop import NoopTelemetryProvider
 

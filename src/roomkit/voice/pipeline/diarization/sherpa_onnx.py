@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import array
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -108,8 +109,6 @@ class SherpaOnnxDiarizationProvider(DiarizationProvider):
         self, st: _StreamState, pcm_bytes: bytes, sample_rate: int
     ) -> DiarizationResult | None:
         """Extract embedding from PCM and search for a matching speaker."""
-        import array
-
         samples = array.array("h")
         samples.frombytes(pcm_bytes)
         float_samples = [s / 32768.0 for s in samples]
@@ -200,8 +199,6 @@ class SherpaOnnxDiarizationProvider(DiarizationProvider):
 
     def extract_embedding(self, pcm_bytes: bytes, sample_rate: int) -> list[float]:
         """Extract a speaker embedding from raw PCM audio."""
-        import array
-
         samples = array.array("h")
         samples.frombytes(pcm_bytes)
         float_samples = [s / 32768.0 for s in samples]

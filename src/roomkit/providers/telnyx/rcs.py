@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, SecretStr, field_validator
@@ -138,8 +139,6 @@ class TelnyxRCSProvider(RCSProvider):
             payload["auto_detect"] = False
 
         try:
-            import time
-
             t0 = time.monotonic()
             resp = await self._client.post(
                 f"{self._config.api_base_url}/v2/messages", headers=headers, json=payload

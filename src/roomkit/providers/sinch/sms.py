@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import time
 from typing import TYPE_CHECKING, Any
 
 from roomkit.models.delivery import InboundMessage, ProviderResult
@@ -80,8 +81,6 @@ class SinchSMSProvider(SMSProvider):
             payload["body"] = body
 
         try:
-            import time
-
             t0 = time.monotonic()
             resp = await self._client.post(
                 self._config.api_url,

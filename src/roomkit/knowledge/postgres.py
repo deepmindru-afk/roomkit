@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+from uuid import uuid4
 
 from roomkit.knowledge.base import KnowledgeResult, KnowledgeSource
 
@@ -150,8 +151,6 @@ class PostgresKnowledgeSource(KnowledgeSource):
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Index a document for full-text search."""
-        from uuid import uuid4
-
         meta = metadata or {}
         doc_id = meta.get("event_id") or meta.get("id") or uuid4().hex
         room_id = meta.get("room_id")

@@ -17,6 +17,7 @@ and ``[excited]`` embedded in the text, alone or stacked.
 
 from __future__ import annotations
 
+import base64
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -286,8 +287,6 @@ class ElevenLabsTTSProvider(TTSProvider):
             unit="ms",
             attributes={"provider": "elevenlabs", "model": self._config.model_id},
         )
-
-        import base64
 
         mime_type = self._get_mime_type()
         data_url = f"data:{mime_type};base64,{base64.b64encode(audio_bytes).decode()}"

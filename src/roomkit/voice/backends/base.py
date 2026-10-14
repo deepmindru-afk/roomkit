@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable
@@ -223,8 +224,6 @@ class VoiceBackend(ABC):
             session: The target session.
             chunk: A single audio chunk to send.
         """
-        import asyncio
-
         from roomkit.core.task_utils import log_task_exception
 
         try:
@@ -446,8 +445,6 @@ class VoiceBackend(ABC):
         Queued transports may override this with a response boundary so that
         continuous silence after the response does not keep the wait open.
         """
-        import asyncio
-
         while self.is_playing(session):
             await asyncio.sleep(0.02)
         return True

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -49,8 +50,6 @@ def validate_storage_path(storage: str) -> str:
     Rejects paths containing '..' components to prevent traversal.
     Creates the directory if it doesn't exist. Returns the resolved path.
     """
-    import pathlib
-
     if ".." in pathlib.PurePath(storage).parts:
         raise ValueError(f"Storage path must not contain '..': {storage}")
     resolved = str(pathlib.Path(storage).resolve())

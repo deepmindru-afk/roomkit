@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -479,8 +480,6 @@ class BuzzHuddleWatcher:
 
     async def start(self) -> None:
         """Register the announcement channel + hook and attach the source."""
-        import time
-
         from roomkit.channels import BuzzChannel
         from roomkit.models.enums import HookExecution, HookTrigger
         from roomkit.models.hook import HookResult

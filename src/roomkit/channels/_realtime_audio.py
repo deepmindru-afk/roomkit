@@ -7,6 +7,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._realtime_tool_calls import audio_starts_answer
@@ -552,8 +553,6 @@ class RealtimeAudioMixin:
 
     def _on_pipeline_speech_start(self, session: VoiceSession) -> None:
         """Handle speech start from local pipeline VAD."""
-        from datetime import UTC, datetime
-
         with self._state_lock:
             self._user_turn_start_at[session.id] = datetime.now(UTC)
         if self._provider.full_duplex:

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import struct
 import time
@@ -413,8 +414,6 @@ def mount_websocket_video(
         backend: The WebSocketVideoBackend instance.
         path: URL path for the WebSocket endpoint.
     """
-    import json as _json
-
     from fastapi import WebSocket, WebSocketDisconnect
 
     # A plain Starlette websocket route: the socket comes in positionally.
@@ -440,9 +439,9 @@ def mount_websocket_video(
                     backend._handle_binary_frame(connection_id, message["bytes"])
                 elif "text" in message and message["text"]:
                     try:
-                        data = _json.loads(message["text"])
+                        data = json.loads(message["text"])
                         backend._handle_json_message(connection_id, data)
-                    except _json.JSONDecodeError:
+                    except json.JSONDecodeError:
                         logger.debug("Invalid JSON from client %s", connection_id[:8])
         except WebSocketDisconnect:
             pass

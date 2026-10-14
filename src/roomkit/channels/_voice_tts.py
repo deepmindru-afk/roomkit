@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import io
 import logging
 import os
 import time
+import wave
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from functools import partial
@@ -925,8 +927,6 @@ class VoiceTTSMixin:
         to a routed turn waits while the user resumes speaking (RFC §12.3.12);
         ``say()`` does not.
         """
-        import time as _time
-
         from .voice import TTSPlaybackState
 
         if self._tts is None:
@@ -989,7 +989,7 @@ class VoiceTTSMixin:
         context_kwargs, recorder = self._begin_tts_turn(session, telemetry)
         if recorder is not None:
             playback.context_turn = (recorder, speaker_id or self.channel_id)
-        t0 = _time.monotonic()
+        t0 = time.monotonic()
         tts_stream: AsyncIterator[AudioChunk] | None = None
         try:
             tts_stream = self._tts.synthesize_stream(text, voice=voice, **context_kwargs)
@@ -1006,7 +1006,7 @@ class VoiceTTSMixin:
         finally:
             self._end_tts_turn(playback)
             await _close_stream(tts_stream)
-            duration_ms = (_time.monotonic() - t0) * 1000
+            duration_ms = (time.monotonic() - t0) * 1000
             if telemetry is not None and span_id is not None:
                 telemetry.end_span(
                     span_id,
@@ -1237,9 +1237,6 @@ class VoiceTTSMixin:
             VoiceBackendNotConfiguredError: If no voice backend is configured.
             ValueError: If the WAV file is not 16-bit PCM mono.
         """
-        import io
-        import wave
-
         from roomkit.core.framework import VoiceBackendNotConfiguredError
 
         from .voice import TTSPlaybackState

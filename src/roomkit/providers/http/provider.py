@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import time
 from typing import TYPE_CHECKING, Any
 
 from roomkit.models.delivery import ProviderResult
@@ -70,8 +71,6 @@ class WebhookHTTPProvider(HTTPProvider):
         headers = self.build_headers(body)
 
         try:
-            import time
-
             t0 = time.monotonic()
             resp = await self._client.post(
                 self._config.webhook_url,

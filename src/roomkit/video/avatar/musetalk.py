@@ -16,6 +16,7 @@ GPU: NVIDIA with 4GB+ VRAM (RTX 3060+ for 30fps)
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import sys
@@ -206,8 +207,6 @@ class MuseTalkAvatarProvider(AvatarProvider):
 
     def _preprocess_face(self, reference_image: bytes) -> None:
         """Preprocess face: detect bbox, VAE-encode, build blending mask."""
-        import io
-
         import cv2
         from PIL import Image
 

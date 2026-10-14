@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import logging
+import sys
+import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -74,7 +77,6 @@ class NeuTTSProvider(TTSProvider):
                 "neutts is required for NeuTTSProvider. "
                 "Install it with: pip install roomkit[neutts]"
             ) from exc
-        import threading
 
         self._config = config
         self._model: Any = None
@@ -97,9 +99,6 @@ class NeuTTSProvider(TTSProvider):
         Note: even if ``import perth`` fails, Python may cache a partially-loaded
         module in ``sys.modules`` — we must check that too.
         """
-        import contextlib
-        import sys
-
         with contextlib.suppress(Exception):
             import perth  # noqa: F401
 

@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import json
 import logging
 import os
 import uuid
@@ -423,8 +424,6 @@ class FastRTCVoiceBackend(VoiceBackend):
     async def send_transcription(
         self, session: VoiceSession, text: str, role: str = "user"
     ) -> None:
-        import json as _json
-
         message = {"type": "transcription", "data": {"text": text, "role": role}}
 
         # WebRTC: send via data channel
@@ -432,7 +431,7 @@ class FastRTCVoiceBackend(VoiceBackend):
             dc = self._resolve_data_channel(session)
             if dc:
                 try:
-                    dc.send(_json.dumps(message))
+                    dc.send(json.dumps(message))
                 except Exception:
                     logger.exception("Error sending transcription via data channel")
             else:

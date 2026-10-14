@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import time
 from typing import TYPE_CHECKING, Any
 
 from roomkit.models.delivery import ProviderResult
@@ -46,8 +47,6 @@ class FacebookMessengerProvider(MessengerProvider):
         }
 
         try:
-            import time
-
             t0 = time.monotonic()
             resp = await self._client.post(
                 self._config.base_url,

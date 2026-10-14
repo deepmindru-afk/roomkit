@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable
@@ -121,8 +122,6 @@ class VideoBackend(ABC):
             session: The target session.
             frame: The video frame to send.
         """
-        import asyncio
-
         from roomkit.core.task_utils import log_task_exception
 
         try:

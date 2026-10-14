@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import textwrap
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -267,12 +268,10 @@ class VoiceMeUpSMSProvider(SMSProvider):
             form_data["attachment"] = attachment
 
         try:
-            import time as _time
-
-            t0 = _time.monotonic()
+            t0 = time.monotonic()
             resp = await self._client.post(url, data=form_data)
             resp.raise_for_status()
-            send_ms = (_time.monotonic() - t0) * 1000
+            send_ms = (time.monotonic() - t0) * 1000
             data = resp.json()
 
             from roomkit.telemetry.noop import NoopTelemetryProvider
@@ -324,7 +323,6 @@ class VoiceMeUpSMSProvider(SMSProvider):
     def _split_message(text: str) -> list[str]:
         if len(text) <= _MAX_SEGMENT_LENGTH:
             return [text]
-        import textwrap
 
         return textwrap.wrap(
             text,

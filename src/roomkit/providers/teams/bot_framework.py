@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Any, cast
 
 from roomkit.models.delivery import ProviderResult
@@ -194,8 +195,6 @@ class BotFrameworkTeamsProvider(TeamsProvider):
             )
 
         try:
-            import time
-
             from botbuilder.schema import Activity, ConversationReference
 
             conv_ref = ConversationReference().deserialize(ref)

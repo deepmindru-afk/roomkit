@@ -2010,14 +2010,12 @@ class VoiceChannel(
 
     async def interrupt(self, session: VoiceSession, *, reason: str = "explicit") -> bool:
         """Interrupt ongoing TTS playback for a session."""
-        import time as _time
-
         with self._state_lock:
             playback = self._playing_sessions.pop(session.id, None)
         if not playback:
             return False
 
-        self._last_tts_ended_at[session.id] = _time.monotonic()
+        self._last_tts_ended_at[session.id] = time.monotonic()
         # send_audio() already returned: the utterance went out whole and only
         # the echo-decay window was left, so nothing is cut off here.
         done_ev = self._playback_done_events.get(session.id)
@@ -2031,7 +2029,7 @@ class VoiceChannel(
         if not drained:
             # The cut the timeline and the TTS context both record: one
             # played_ms, taken here (RFC §12.3.13 steps 2 and 3).
-            playback.stopped_at = _time.monotonic()
+            playback.stopped_at = time.monotonic()
             self._end_tts_turn(playback)
         if (
             config.flush_partial_tts

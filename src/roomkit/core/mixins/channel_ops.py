@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._video_hooks import room_vision_note
@@ -827,8 +828,6 @@ class ChannelOpsMixin(HelpersMixin):
         # Bounded to prevent unbounded growth on long-running servers.
         # Uses OrderedDict as LRU — on overflow, evict oldest 10% instead of
         # clearing all history (which would allow duplicate greetings).
-        from collections import OrderedDict
-
         greeted_rooms: OrderedDict[str, None] = OrderedDict()
         greeted_rooms_max = 10_000
 

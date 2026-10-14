@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from typing import TYPE_CHECKING
 
 from roomkit.video.avatar.base import AvatarProvider
@@ -70,8 +71,6 @@ class MockAvatarProvider(AvatarProvider):
         # Try to decode the reference image for display
         self._ref_frame_data: bytes | None = None
         try:
-            import io
-
             import numpy as np
             from PIL import Image
 
