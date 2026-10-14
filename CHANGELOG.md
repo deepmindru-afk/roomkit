@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `result`, as `task_status` gives it. With `serialize_per_room=True`, the
   handler also kept one lock per room it ever saw; the last delegation out of
   a room now drops it.
+- `PostgresStore.update_room` refuses a room it does not hold and returns
+  the stored `delivered_index`, as the in-memory and SQLite stores do
+  (RMK-720). On a missing room it updated nothing and returned the room it was
+  given; on a stale copy it returned that copy's delivery cursor, though the
+  stored one, never written by this call, had moved on. It now raises
+  `RoomNotFoundError`, and the room it returns carries the stored cursor.
 
 ## [0.101.0] — 2026-10-13
 

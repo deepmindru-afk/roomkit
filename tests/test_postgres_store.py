@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import (
     ChannelType,
@@ -534,10 +535,18 @@ class TestPostgresStore:
     async def test_update_room(self) -> None:
         store, mock_conn = _make_store_with_pool()
         room = _make_room()
+        mock_conn.fetchval.return_value = room.delivered_index
         result = await store.update_room(room)
         assert result.id == room.id
-        call_args = mock_conn.execute.call_args
+        call_args = mock_conn.fetchval.call_args
         assert "UPDATE rooms" in call_args[0][0]
+        assert "delivered_index=" not in call_args[0][0]
+
+    async def test_update_room_not_found(self) -> None:
+        store, mock_conn = _make_store_with_pool()
+        mock_conn.fetchval.return_value = None
+        with pytest.raises(RoomNotFoundError):
+            await store.update_room(_make_room())
 
     async def test_delete_room_success(self) -> None:
         store, mock_conn = _make_store_with_pool()

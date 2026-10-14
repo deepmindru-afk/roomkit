@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
+from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import EventStatus, VerificationStatus
 from roomkit.models.event import RoomEvent, ThreadSummary
@@ -599,13 +600,16 @@ class PostgresStore(ConversationStore):
         return _row_to_room(row)
 
     async def update_room(self, room: Room) -> Room:
+        # delivered_index is store-managed (advance_delivered_index): the
+        # column is not part of this write, so a stale copy cannot rewind it,
+        # and the room returned carries the stored value.
         with self._query_span("update_room", "rooms"):
             async with self._acquire() as conn:
-                await conn.execute(
+                delivered = await conn.fetchval(
                     "UPDATE rooms SET organization_id=$2, status=$3, event_count=$4,"
                     " latest_index=$5, metadata=$6, timers=$7, agent_response_policy=$8,"
                     " updated_at=$9, closed_at=$10"
-                    " WHERE id=$1",
+                    " WHERE id=$1 RETURNING delivered_index",
                     room.id,
                     room.organization_id,
                     room.status.value,
@@ -617,6 +621,10 @@ class PostgresStore(ConversationStore):
                     room.updated_at,
                     room.closed_at,
                 )
+        if delivered is None:
+            raise RoomNotFoundError(room.id)
+        if room.delivered_index != delivered:
+            room = room.model_copy(update={"delivered_index": delivered})
         return room
 
     async def room_exists(self, room_id: str) -> bool:
