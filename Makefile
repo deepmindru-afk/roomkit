@@ -1,4 +1,4 @@
-.PHONY: audit install lint format typecheck security test coverage all clean docs deploy release check-models update-llamacpp
+.PHONY: audit install lint format typecheck security test coverage stress llms-full check-models update-llamacpp all clean docs docs-serve llms-sync llms-check deploy deploy-status release
 
 install:
 	uv sync --extra dev
@@ -24,11 +24,16 @@ security:
 # then dies on "no matching distribution" for any dependency requiring >=3.12 —
 # a resolution failure that reads exactly like a clean run in the extras pass,
 # since that one only reports.
+#
+# The requirement files go to a directory of their own under $TMPDIR, removed
+# on exit, so two runs never share one and nothing is left in /tmp.
 audit:
-	uv export --frozen --no-dev --no-emit-project --format requirements-txt -o /tmp/rk-core.txt
-	uvx --python 3.12 pip-audit --requirement /tmp/rk-core.txt
-	-uv export --frozen --no-dev --no-emit-project --extra all --no-hashes --format requirements-txt -o /tmp/rk-all.txt
-	-uvx --python 3.12 pip-audit --requirement /tmp/rk-all.txt
+	tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
+	uv export --frozen --no-dev --no-emit-project --format requirements-txt -o "$$tmp/core.txt" && \
+	uvx --python 3.12 pip-audit --requirement "$$tmp/core.txt" && \
+	{ uv export --frozen --no-dev --no-emit-project --extra all --no-hashes --format requirements-txt -o "$$tmp/all.txt" && \
+	  uvx --python 3.12 pip-audit --requirement "$$tmp/all.txt" || \
+	  echo "audit: the extras pass failed or found advisories (reported, not gating)"; }
 
 test:
 	uv run pytest
