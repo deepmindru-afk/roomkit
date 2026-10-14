@@ -15,6 +15,7 @@ from collections.abc import Callable, Iterable
 
 from roomkit._lookalike import skeletons
 from roomkit._text import identifier, json_text_line, person_name, quoted
+from roomkit.channels._discussion_turn import discussion_handles
 from roomkit.core._authors import (
     AUTHOR_REGISTER,
     AuthorRegister,
@@ -130,7 +131,8 @@ def _label(event: RoomEvent, unrecorded: _Unrecorded) -> str | None:
     else:
         name = _author_name(event, people)
         if name is None:
-            return channel_label(event.source.channel_id)
+            channel_id = event.source.channel_id
+            return channel_label(unrecorded.handles.get(channel_id, channel_id))
         rank = unrecorded.rank(source, name_keys(salt, name))
     label = name if rank == 1 else f"{name} ({rank})"
     if skeletons(name) & _agent_labels():
@@ -148,6 +150,8 @@ class _Unrecorded:
     def __init__(self, context: RoomContext) -> None:
         self.people = People(context.participants)
         self.salt = context.room.id
+        self.handles = discussion_handles(context.room.metadata)
+        """The handle each agent of the room's discussion is addressed by."""
         self._stored = context.room.metadata.get(AUTHOR_REGISTER)
         self._register: AuthorRegister | None = None
 
@@ -195,7 +199,8 @@ def participant_name(participant: Participant) -> str:
 def channel_label(channel_id: str) -> str:
     """The label of a turn whose author has no name, in a transcript that names
     people by their bare names: its channel as the room addresses it
-    (``@sms1``), kept to an identifier's characters. No name takes that form
+    (``@sms1``; an agent of a discussion by its handle, which the caller
+    passes in place of the channel id), kept to an identifier's characters. No name takes that form
     (a person's name drops ``@``), so a person named ``ai2`` or ``sms1`` does
     not read as an agent or as a nameless channel (RFC §6.4)."""
     return f"@{identifier(channel_id, 'channel')}"

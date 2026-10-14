@@ -183,11 +183,13 @@ class _Hanging(_FakeACPConnection):
         self.release.set()
 
 
-async def _discussion(tmp_path: Any, connection: _FakeACPConnection) -> tuple[RoomKit, ACPChannel]:
+async def _discussion(
+    tmp_path: Any, connection: _FakeACPConnection, channel_id: str = "dev"
+) -> tuple[RoomKit, ACPChannel]:
     kit = RoomKit()
     kit.register_channel(SimpleChannel("ops"))
     dev = ACPChannel(
-        "dev",
+        channel_id,
         transport=_FakeTransport(connection),
         cwd=tmp_path,
         name="Developer",
@@ -217,6 +219,21 @@ async def test_a_discussion_gives_an_acp_agent_its_turn(tmp_path: Any) -> None:
         if e.source.channel_id == "dev" and e.type == EventType.MESSAGE
     ]
     assert answers and "done" in answers[-1]
+    await kit.close()
+
+
+async def test_an_acp_agent_is_addressed_and_told_by_its_handle(tmp_path: Any) -> None:
+    """An ``agent:<uuid>`` id cannot be a name: the agent's name is its handle."""
+    connection = _FakeACPConnection(None)
+    kit, _dev = await _discussion(tmp_path, connection, channel_id="agent:7c1e")
+
+    await _say(kit, "@Developer what does the tax engine do?")
+    await _settle(kit)
+
+    (call,) = connection.prompt_calls
+    sent = str(call["prompt"][0].text)
+    assert "You are @Developer," in sent and "- @sre" in sent
+    assert "agent:7c1e" not in sent and "agent-7c1e" not in sent
     await kit.close()
 
 

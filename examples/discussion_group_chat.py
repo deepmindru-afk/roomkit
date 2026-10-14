@@ -13,6 +13,13 @@ addressed, one agent at a time (RFC §19.7.5).
    sre alone.
 3. "@dev please open a fix ticket" asks dev alone.
 
+The agents' channel ids are ``agent:<uuid>``, as an application that keys
+its agents by record id names them: such an id cannot be a name
+(``@agent:2b7d…`` reads as ``@agent``), so each agent is addressed by its
+handle, here its ``name`` (``@dev``, matched ignoring case). The notes, the
+transcript and the logs below name agents by handle; the queue and
+``addressed_to`` keep channel ids.
+
 Each turn reads the room as it is when the turn starts, and every change of
 the speak queue reaches ``ON_SPEAK_QUEUE``: a console follows it to show who
 speaks, who is next and whether the room waits for a person. The models are
@@ -26,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -71,45 +79,60 @@ async def until_quiet(kit: RoomKit) -> None:
 
 async def main() -> None:
     investigator = Agent(
-        "investigator",
+        "agent:2b7d9c41-5e0a-4f3b-9d6e-1a8c7f20e5b3",
         provider=scripted(
             "Error logs show a null pointer in the payment client from 13:55. "
             "@dev can you confirm what was deployed then?"
         ),
+        name="Investigator",
         role="Investigator",
         description="Reads logs and metrics first",
     )
     dev = Agent(
-        "dev",
+        "agent:8e41f0d2-6b3c-4a7e-b5d9-3c2f1e0a9d84",
         provider=scripted(
             "Confirmed: release 4.2 went out at 13:55 and touched the payment client. "
             "@sre can you roll it back?",
             "Ticket PAY-101 opened for the null check in the payment client.",
         ),
+        name="Dev",
         role="Developer",
         description="Knows the code and the releases",
     )
     sre = Agent(
-        "sre",
+        "agent:c5a3e7b1-0f2d-4e6c-8a9b-7d1f3e5c2a60",
         provider=scripted(
             "Rolling back production needs approval. @oncall may I roll back release 4.2?",
             "Rolled back to 4.1. The error rate is back to 0.1%.",
         ),
+        name="SRE",
         role="Site reliability engineer",
         description="Runs production changes",
     )
+
+    discussion = Discussion(
+        agents=[investigator, dev, sre],
+        people=["oncall"],
+        everyone=[investigator.channel_id, dev.channel_id, sre.channel_id],
+    )
+    # Each agent's handle, by channel id: Investigator, Dev, SRE.
+    handles = discussion.handles()
+
+    def named(channel_ids: Sequence[str]) -> str:
+        return ",".join(f"@{handles.get(c, c)}" for c in channel_ids) or "-"
 
     kit = RoomKit()
 
     @kit.hook(HookTrigger.ON_SPEAK_QUEUE, execution=HookExecution.ASYNC)
     async def follow(event: SpeakQueueEvent, context: RoomContext) -> None:
         queue = event.queue
+        speaking = [queue.speaking] if queue.speaking else []
         logger.info(
             "  [queue] %s %s | speaking=%s next=%s waiting=%s",
             event.change,
-            ",".join(event.channel_ids) or "-",
-            queue.speaking or "-",
-            ",".join(queue.queue) or "-",
+            named(event.channel_ids),
+            named(speaking),
+            named(queue.queue),
             queue.waiting,
         )
 
@@ -117,19 +140,12 @@ async def main() -> None:
 
     async def on_receive(_connection: str, event: RoomEvent) -> None:
         if event.type == EventType.MESSAGE and event.source.channel_id != "oncall":
-            logger.info("%s: %s", event.source.channel_id, event.content.body)  # type: ignore[union-attr]
+            logger.info("%s: %s", named([event.source.channel_id]), event.content.body)  # type: ignore[union-attr]
 
     oncall.register_connection("laptop", on_receive, room_id=ROOM)
     kit.register_channel(oncall)
 
-    await kit.create_room(
-        room_id=ROOM,
-        orchestration=Discussion(
-            agents=[investigator, dev, sre],
-            people=["oncall"],
-            everyone=["investigator", "dev", "sre"],
-        ),
-    )
+    await kit.create_room(room_id=ROOM, orchestration=discussion)
     await kit.attach_channel(ROOM, "oncall")
 
     for said in (

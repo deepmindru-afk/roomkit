@@ -1,8 +1,8 @@
 """What each turn of a discussion knows: the room and how it works (RFC §19.7.5 rule 14).
 
 The notes join the turn's input as the runtime's own block. What they hold of
-the room comes in a form nobody can turn into the runtime's words: channel
-ids, and the names people are addressed by, kept to a name's characters (no
+the room comes in a form nobody can turn into the runtime's words: agents'
+handles, and the names people are addressed by, kept to a name's characters (no
 space, no punctuation but ``_ . -``) and bounded. Everything else a
 participant controls is quoted, on one line, between marks it cannot close
 (``roomkit._text.quoted``): the label an author carries in the transcript
@@ -45,11 +45,12 @@ def turn_notes(
     askers: Sequence[str],
     silent_token: str,
 ) -> str:
-    """The block a discussion's turn adds to the turn's input.
+    """The block a discussion's turn adds to the turn's input, for the agent
+    whose handle is *me*.
 
     *answering* names the event the turn answers (its author's label and a
-    quote of it); *askers* are who asked for the turn, agents as ``@id`` and
-    people by their label.
+    quote of it); *askers* are who asked for the turn, agents as ``@handle``
+    and people by their label.
     """
     lines = [
         HEADER,

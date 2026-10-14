@@ -10,11 +10,13 @@ from roomkit.orchestration.strategies.discussion._names import (
     NAME_LIMIT,
     Names,
     SilentToken,
+    is_handle,
     name_key,
     read_names,
 )
 
-AGENTS = ("investigator", "sre", "dev", "comms")
+AGENTS = {a: a for a in ("investigator", "sre", "dev", "comms")}
+"""Each agent's handle and channel id: here, its channel id is its handle."""
 
 
 def test_names_are_read_in_order_ignoring_case_and_the_speaker() -> None:
@@ -87,7 +89,7 @@ def test_a_custom_token_without_brackets() -> None:
 
 
 def test_names_hold_letters_of_any_script_and_are_never_cut() -> None:
-    names = read_names("@Hélène, which region? café@dev", ["dev"], people=["Hélène"])
+    names = read_names("@Hélène, which region? café@dev", {"dev": "dev"}, people=["Hélène"])
     assert names == Names((), ("Hélène",))
     assert name_key("Zoë O'Brien-Smith") == "ZoëOBrien-Smith"
     # Cut short, a name could be another person's whole one.
@@ -95,5 +97,39 @@ def test_names_hold_letters_of_any_script_and_are_never_cut() -> None:
 
 
 def test_only_one_final_period_is_dropped() -> None:
-    assert read_names("thanks @dev.", ["dev"]).agents == ("dev",)
-    assert read_names("thanks @dev..", ["dev"]).agents == ()
+    assert read_names("thanks @dev.", {"dev": "dev"}).agents == ("dev",)
+    assert read_names("thanks @dev..", {"dev": "dev"}).agents == ()
+
+
+LUGE = {"Jev": "agent:3f2a", "Juriste": "agent:9b1c"}
+"""Agents whose channel ids cannot be names, addressed by their handles."""
+
+
+def test_a_handle_names_its_agent_by_channel_id_and_the_channel_id_names_nobody() -> None:
+    names = read_names("@juriste, check clause 4 with @Jev", LUGE, speaker="agent:3f2a")
+    assert names == Names(("agent:9b1c",))
+    # The channel id is no name: "@agent:9b1c" reads as "@agent".
+    assert read_names("@agent:9b1c over to you", LUGE) == Names()
+    assert read_names("@all heads up", LUGE, speaker="agent:9b1c") == Names(("agent:3f2a",))
+
+
+def test_a_person_named_like_a_handle_is_the_agents_name() -> None:
+    names = read_names("@Jev and @Alice", LUGE, people=["Jev", "Alice"])
+    assert names == Names(agents=("agent:3f2a",), people=("Alice",))
+
+
+@pytest.mark.parametrize("value", ["dev", "Jev", "Hélène", "sre-2", "a.b", "x" * NAME_LIMIT])
+def test_a_handle_is_a_name(value: str) -> None:
+    assert is_handle(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["", "agent:3f2a", "two words", "dev.", "all", "ALL", "x" * (NAME_LIMIT + 1), "dev\n", 3],
+)
+def test_what_cannot_name_an_agent_is_no_handle(value: object) -> None:
+    assert not is_handle(value)
+
+
+def test_a_decomposed_name_is_no_handle_since_a_message_names_it_composed() -> None:
+    assert is_handle("Hélène") and not is_handle("He\u0301le\u0300ne")

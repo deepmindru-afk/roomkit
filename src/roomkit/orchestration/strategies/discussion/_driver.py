@@ -307,7 +307,7 @@ class TurnDriver:
         room = self._room
         others = [
             AgentLine(
-                handle=agent_id,
+                handle=room.handles[agent_id],
                 name=getattr(agent, "name", None),
                 role=getattr(agent, "role", None),
                 description=getattr(agent, "description", None),
@@ -323,13 +323,13 @@ class TurnDriver:
             else TurnKind.ANSWER
         )
         return turn_notes(
-            entry.agent,
+            room.handles[entry.agent],
             others,
             room.people(context),
             kind=kind,
             answering=self._answering(answered, context),
             askers=[
-                quoted(asker, _LABEL) if person else f"@{asker}"
+                quoted(asker, _LABEL) if person else room.label(asker)
                 for asker, person in entry.askers()
             ],
             silent_token=room.silent.token,
@@ -339,7 +339,7 @@ class TurnDriver:
         """The event a turn answers, as the notes name it: its author's label
         and a quote of what it says."""
         if answered.source.channel_id in self._room.agents:
-            author = f"@{answered.source.channel_id}"
+            author = self._room.label(answered.source.channel_id)
         else:
             author = quoted(person_label(answered, context), _LABEL)
         body = answered.content.body if isinstance(answered.content, TextContent) else ""

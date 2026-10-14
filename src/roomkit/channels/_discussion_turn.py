@@ -13,10 +13,14 @@ webhook's fields through). The mark carries only a random turn id, issued by
 :func:`issue_mark` and retired once the turn ends, and the notes are kept here
 under that id. A mark this process did not issue, already retired, or of any
 other shape is no mark.
+
+A transcript labels an agent of a discussion by its handle, which the
+discussion stores with the room (:func:`discussion_handles`).
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
@@ -24,6 +28,10 @@ from roomkit.models.event import RoomEvent
 
 DISCUSSION_TURN = "_discussion_turn"
 """The metadata key a discussion's turn trigger carries."""
+
+DISCUSSION_CONFIG = "_discussion"
+"""The room metadata key a discussion's configuration is stored under
+(RFC §19.7.5 rule 16)."""
 
 # The notes of each turn this process issued and has not retired yet.
 _issued: dict[str, tuple[str, ...]] = {}
@@ -61,3 +69,14 @@ def discussion_notes(event: RoomEvent) -> list[str]:
     """The notes a discussion's turn adds to the turn's input."""
     turn = _turn_of(event)
     return list(_issued[turn]) if turn is not None else []
+
+
+def discussion_handles(metadata: Mapping[str, Any] | None) -> dict[str, str]:
+    """The handle each agent of the discussion a room's *metadata* stores is
+    addressed by, by channel id: empty when the room holds no discussion, or
+    one stored without handles (RFC §19.7.5 rule 4)."""
+    config = (metadata or {}).get(DISCUSSION_CONFIG)
+    handles = config.get("handles") if isinstance(config, Mapping) else None
+    if not isinstance(handles, Mapping):
+        return {}
+    return {k: v for k, v in handles.items() if isinstance(k, str) and isinstance(v, str)}

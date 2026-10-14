@@ -12,10 +12,12 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
 
+from roomkit.channels._discussion_turn import DISCUSSION_CONFIG
+
 if TYPE_CHECKING:
     from .strategy import Discussion
 
-CONFIG_KEY = "_discussion"
+CONFIG_KEY = DISCUSSION_CONFIG
 """The room metadata key the configuration is stored under."""
 
 
@@ -23,6 +25,9 @@ class DiscussionConfig(BaseModel):
     """What a process needs to follow a room's discussion."""
 
     agents: list[str]
+    handles: dict[str, str] | None = None
+    """The name each agent is addressed by, by channel id. None (a
+    configuration an earlier version stored): each agent's channel id."""
     people: list[str] | None = None
     addressed_only: bool = False
     everyone: list[str] | None = None
@@ -37,6 +42,7 @@ class DiscussionConfig(BaseModel):
     def of(cls, strategy: Discussion, default_depth: int) -> DiscussionConfig:
         return cls(
             agents=[a.channel_id for a in strategy.agents()],
+            handles=strategy.handles(),
             people=strategy.people,
             addressed_only=strategy.addressed_only,
             everyone=strategy.everyone,

@@ -1,6 +1,6 @@
 """The names a message addresses, and an agent's answer that stays silent (RFC §19.7.5).
 
-A name is ``@`` followed by an agent's channel id, or a person's name; ``@all``
+A name is ``@`` followed by an agent's handle, or a person's name; ``@all``
 names every agent. It starts the text or follows a character that is neither a
 letter, a digit, ``_`` nor ``@`` (so ``ops@example.com`` names no one), it is
 the longest run of identifier characters that follows (letters of any script,
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 EVERYONE = "all"
@@ -24,6 +24,7 @@ a longer one is not addressable, never cut short, since a cut name could be
 another person's whole one."""
 
 _NAME = re.compile(r"(?<![\w@])@([\w.\-]+)")
+_HANDLE = re.compile(r"[\w.\-]+")
 _NOT_ID = re.compile(r"[^\w.\-]")
 _FENCES = ("```", "~~~")
 _BRACKETS = {"(": ")", "[": "]", "{": "}", "<": ">"}
@@ -43,21 +44,41 @@ def name_key(name: str) -> str:
     return _NOT_ID.sub("", unicodedata.normalize("NFC", name))
 
 
+def is_handle(value: object) -> bool:
+    """Whether *value* can name an agent: a name's characters, as a message
+    names it (NFC), at most :data:`NAME_LIMIT` of them, no final ``.`` (a
+    name drops it) and not ``all``, which names every agent."""
+    return (
+        isinstance(value, str)
+        and len(value) <= NAME_LIMIT
+        and _HANDLE.fullmatch(value) is not None
+        and unicodedata.normalize("NFC", value) == value
+        and not value.endswith(".")
+        and value.casefold() != EVERYONE
+    )
+
+
 def same_name(one: str, other: str) -> bool:
     """Whether two names read as one, ignoring case."""
     return one.casefold() == other.casefold()
 
 
 def read_names(
-    text: str, agents: Iterable[str], *, people: Iterable[str] = (), speaker: str | None = None
+    text: str,
+    agents: Mapping[str, str],
+    *,
+    people: Iterable[str] = (),
+    speaker: str | None = None,
 ) -> Names:
-    """The agents and people *text* names, in order, the speaker left out.
+    """The agents (by channel id) and people *text* names, in order, the
+    speaker (a channel id) left out; *agents* maps each agent's handle to
+    its channel id.
 
-    Where a name reads as both an agent's channel id and a person's name, it
-    is the agent's. A name that is neither addresses nobody.
+    Where a name reads as both an agent's handle and a person's name, it is
+    the agent's. A name that is neither addresses nobody.
     """
-    agent_ids = list(agents)
-    by_agent = {a.casefold(): a for a in agent_ids}
+    agent_ids = list(agents.values())
+    by_agent = {handle.casefold(): agent for handle, agent in agents.items()}
     by_person = {name_key(p).casefold(): p for p in people if name_key(p)}
     named_agents: list[str] = []
     named_people: list[str] = []

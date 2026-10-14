@@ -85,6 +85,10 @@ class DiscussionRoom:
         self.agents: dict[str, Any] = {
             agent_id: own.get(agent_id) or kit.channels.get(agent_id) for agent_id in config.agents
         }
+        stored = config.handles or {}
+        self.handles = {agent_id: stored.get(agent_id, agent_id) for agent_id in config.agents}
+        """The name each agent is addressed by, by channel id (rule 4)."""
+        self.by_handle = {handle: agent_id for agent_id, handle in self.handles.items()}
         self.silent = SilentToken(config.silent_token)
         self.max_depth = config.max_depth
         self.organization_id: str | None = None
@@ -176,6 +180,10 @@ class DiscussionRoom:
             await self.shared.forget()
         self.drop_instructions(mine)
         await self._finish_announcing()
+
+    def label(self, agent_id: str) -> str:
+        """An agent as a model reads it named: ``@`` and its handle."""
+        return f"@{self.handles.get(agent_id, agent_id)}"
 
     def silence_for(self, channel_id: str) -> SilentToken | None:
         return self.silent if channel_id in self.agents else None
@@ -445,7 +453,7 @@ class DiscussionRoom:
     def _names_people(self, event: RoomEvent, context: RoomContext) -> bool:
         if not isinstance(event.content, TextContent):
             return False
-        names = read_names(event.content.body, self.agents, people=self.people(context))
+        names = read_names(event.content.body, self.by_handle, people=self.people(context))
         return bool(names.people)
 
     async def _queue_named(self, event: RoomEvent, reach: set[str], *, asker: str) -> list[str]:
@@ -487,7 +495,7 @@ class DiscussionRoom:
             state.ask(other, ask)
         if isinstance(event.content, TextContent):
             index = self.people_index(context)
-            names = read_names(event.content.body, self.agents, people=names_of(index))
+            names = read_names(event.content.body, self.by_handle, people=names_of(index))
             for name in names.people:
                 label = one_person(index, name)
                 if label is not None:
@@ -505,7 +513,7 @@ class DiscussionRoom:
         return names_of(self.people_index(context))
 
     def people_index(self, context: RoomContext) -> PeopleIndex:
-        return people_index(context, self.agents, self.config.people)
+        return people_index(context, self.handles.values(), self.config.people)
 
     # -- The hooks --
 
@@ -522,7 +530,7 @@ class DiscussionRoom:
         speaker = event.source.channel_id
         names = read_names(
             event.content.body,
-            self.agents,
+            self.by_handle,
             people=self.people(context),
             speaker=speaker if speaker in self.agents else None,
         )

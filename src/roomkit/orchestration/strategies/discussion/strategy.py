@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from roomkit.channels.acp import ACPChannel
 from roomkit.channels.ai import AIChannel
 from roomkit.orchestration.base import Orchestration
 
+from ._names import is_handle, name_key
 from ._room import DiscussionRoom
 from .dispatch import DispatchPolicy
 
@@ -22,7 +23,7 @@ DoneFn = Callable[[str], bool | Awaitable[bool]]
 class Discussion(Orchestration):
     """Several agents and people hold one conversation; one agent speaks at a time.
 
-    Any agent may address any other by ``@channel_id``, a person may address
+    Any agent may address any other by ``@handle``, a person may address
     any agent, and who speaks next follows from who was addressed: the
     strategy queues the agents each message asks for and gives them their
     turns one at a time, each turn reading the room as it is when it starts.
@@ -42,6 +43,15 @@ class Discussion(Orchestration):
     Args:
         agents: The agents of the discussion: AI channels, Agents among them,
             with distinct channel ids.
+        handles: The name each agent is addressed by (``@handle``), by
+            channel id. An agent it leaves out is addressed by its channel id
+            when that can be a name, else by its ``name`` kept to a name's
+            characters (``Research Desk`` gives ``ResearchDesk``): an
+            ``agent:<uuid>`` id cannot be one. A handle is letters, digits,
+            ``_ . -``, at most 32, with no final ``.``, and not ``all``; two
+            agents' handles differ ignoring case. Notes, the transcript and
+            the dispatch policy present agents by their handles; the queue,
+            ``addressed_to`` and every hook keep channel ids.
         people: The names agents address people by. ``None``: the names of
             the room's participants that are neither agents nor bots.
         addressed_only: A person's message asks only the agents it names;
@@ -68,6 +78,7 @@ class Discussion(Orchestration):
         self,
         agents: Sequence[AIChannel | ACPChannel],
         *,
+        handles: Mapping[str, str] | None = None,
         people: Sequence[str] | None = None,
         addressed_only: bool = False,
         everyone: Sequence[str] | None = None,
@@ -81,6 +92,7 @@ class Discussion(Orchestration):
         _check(agents, everyone, max_turns, max_depth, silent_token)
         _check_dispatch(dispatch, dispatch_timeout, addressed_only=addressed_only)
         self._agents = list(agents)
+        self._handles = _handles(agents, handles or {})
         self.people = list(people) if people is not None else None
         self.addressed_only = addressed_only
         self.everyone = list(everyone) if everyone is not None else None
@@ -94,6 +106,10 @@ class Discussion(Orchestration):
     def agents(self) -> list[AIChannel | ACPChannel]:
         """The agents of the discussion."""
         return list(self._agents)
+
+    def handles(self) -> dict[str, str]:
+        """The name each agent is addressed by, by channel id."""
+        return dict(self._handles)
 
     async def install(self, kit: RoomKit, room_id: str) -> None:
         """Give the room to the discussion: its agents attached, its stored
@@ -140,6 +156,54 @@ def _check(
         raise ValueError("max_depth must be at least 2")
     if not silent_token.strip():
         raise ValueError("silent_token must not be blank")
+
+
+def _handles(agents: Sequence[AIChannel | ACPChannel], given: Mapping[str, str]) -> dict[str, str]:
+    """Each agent's handle, by channel id: the one *given*, else its channel
+    id, else its name kept to a name's characters, whichever can name it
+    (RFC §19.7.5 rule 4).
+
+    Raises:
+        ValueError: *given* names a channel that is not an agent or gives a
+            handle that cannot name one, an agent has no handle, or two
+            agents' handles read alike.
+    """
+    ids = [a.channel_id for a in agents]
+    unknown = [channel_id for channel_id in given if channel_id not in ids]
+    if unknown:
+        raise ValueError(f"handles names channels that are not agents: {unknown}")
+    handles = {a.channel_id: _handle_of(a, given.get(a.channel_id)) for a in agents}
+    seen: dict[str, str] = {}
+    for channel_id, handle in handles.items():
+        other = seen.setdefault(handle.casefold(), channel_id)
+        if other != channel_id:
+            raise ValueError(
+                f"{other!r} and {channel_id!r} share the handle @{handle}: give one of "
+                "them another with handles="
+            )
+    return handles
+
+
+def _handle_of(agent: AIChannel | ACPChannel, given: str | None) -> str:
+    """The handle *agent* is addressed by: *given*, else its channel id, else
+    its name kept to a name's characters."""
+    if given is not None:
+        if not is_handle(given):
+            raise ValueError(
+                f"handles gives {agent.channel_id!r} {given!r}, which cannot name an agent: "
+                "letters, digits, '_ . -', at most 32, no final '.', not 'all'"
+            )
+        return given
+    if is_handle(agent.channel_id):
+        return agent.channel_id
+    name = getattr(agent, "name", None)
+    derived = name_key(name) if isinstance(name, str) else ""
+    if is_handle(derived):
+        return derived
+    raise ValueError(
+        f"{agent.channel_id!r} cannot be addressed by its channel id and has no name that "
+        "can: give it a handle with handles="
+    )
 
 
 def _check_dispatch(

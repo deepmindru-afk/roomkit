@@ -28,6 +28,15 @@ class DispatchCandidate:
     description: str | None = None
     """What the agent does, as a turn's notes tell the others (rule 14)."""
 
+    handle: str | None = None
+    """The name the room addresses it by (rule 4), which the conversation a
+    policy reads uses for it; None: its channel id."""
+
+    @property
+    def label(self) -> str:
+        """The agent as a model reads it named: ``@`` and its handle."""
+        return f"@{self.handle or self.channel_id}"
+
 
 @dataclass(frozen=True)
 class DispatchTurn:
@@ -43,7 +52,7 @@ class DispatchTurn:
 
     speakers: Mapping[str, str] = field(default_factory=dict)
     """Who said ``event`` and each of ``recent``, by event id: a person by the
-    label the transcript gives them (RFC §6.4), an agent as ``@channel_id``."""
+    label the transcript gives them (RFC §6.4), an agent as ``@handle``."""
 
     candidates: tuple[DispatchCandidate, ...] = ()
     """The agents the policy may pick: those that asked the message's author,

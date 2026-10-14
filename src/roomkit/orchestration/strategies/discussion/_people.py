@@ -78,13 +78,13 @@ def person_label(event: RoomEvent, context: RoomContext) -> str:
 
 
 def people_index(
-    context: RoomContext, agents: Collection[str], listed: Sequence[str] | None
+    context: RoomContext, handles: Collection[str], listed: Sequence[str] | None
 ) -> PeopleIndex:
     """Each name agents address people by, ignoring case, and the people it
     names, as the transcript labels them (§6.4): the room's active people and
     the speakers of its recent messages; with *listed* (``people``), only
     those. A name is kept to a name's characters (``@AliceMartin``), never an
-    agent's channel id nor longer than :data:`NAME_LIMIT`; two labels behind
+    agent's handle (one of *handles*) nor longer than :data:`NAME_LIMIT`; two labels behind
     one name (``Alice Martin``, ``AliceMartin``) make it ambiguous, and a
     look-alike's ranked label (``Alice (2)``) is addressed by no name."""
     people = People(context.participants)
@@ -98,7 +98,7 @@ def people_index(
         if label and label == label_name(label):
             entries.append((label, tuple(source_of(event, people))))
     allowed = None if listed is None else {name_key(p).casefold() for p in listed}
-    taken = {a.casefold() for a in agents}
+    taken = {handle.casefold() for handle in handles}
     index: PeopleIndex = {}
     for label, source in entries:
         name = name_key(label.removeprefix("@"))

@@ -27,7 +27,7 @@ NO = "it is another agent's part, or nobody needs to act (thanks, small talk)"
 
 def question(candidate: DispatchCandidate) -> YesNoQuestion:
     """Whether *candidate* should take the message, as the policy asks it."""
-    handle = f"@{candidate.channel_id}"
+    handle = candidate.label
     who = ": ".join(p for p in (candidate.name or candidate.role, candidate.description) if p)
     named = f"{handle} ({who})" if who else handle
     return YesNoQuestion(
@@ -99,7 +99,7 @@ class ClassifierDispatchPolicy(DispatchPolicy):
 
 def _member(candidate: DispatchCandidate, *, waits: bool) -> dict[str, str | bool]:
     described = {
-        "agent": f"@{candidate.channel_id}",
+        "agent": candidate.label,
         "name": candidate.name,
         "role": candidate.role,
         "can": candidate.description,

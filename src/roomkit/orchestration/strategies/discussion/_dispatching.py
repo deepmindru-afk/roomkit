@@ -144,7 +144,7 @@ class Dispatcher:
         speakers: dict[str, str] = {}
         for e in (*recent, event):
             author = e.source.channel_id
-            label = f"@{author}" if author in room.agents else labels.get(e.id)
+            label = room.label(author) if author in room.agents else labels.get(e.id)
             if label:
                 speakers[e.id] = label
         return DispatchTurn(
@@ -163,6 +163,7 @@ class Dispatcher:
             name=getattr(agent, "name", None),
             role=getattr(agent, "role", None),
             description=getattr(agent, "description", None),
+            handle=self._room.handles.get(agent_id),
         )
 
     async def _apply(self, pending: Pending, agents: Sequence[str]) -> bool:

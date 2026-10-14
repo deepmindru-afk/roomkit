@@ -47,6 +47,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Haiku 5.5 named the colour of a referenced swatch, then its shape on the
   next turn from history, 2026-10-14).
 
+- A discussion's agents are addressed by handle (RMK-710, RFC §19.7.5 rule 4,
+  §6.4). `Discussion(handles={channel_id: handle})`; an agent it leaves out
+  is addressed by its channel id when that can be a name, else by its `name`
+  kept to a name's characters (`Research Desk` gives `@ResearchDesk`). An
+  application whose channel ids are `agent:<uuid>` had no addressing between
+  agents: `@agent:3f2a…` reads as `@agent`, which names nobody; such an
+  agent named `Jev` is now `@Jev`. The turn's notes, the label of an agent's
+  turn in every transcript (AI and ACP context, memory summary, task brief),
+  `DispatchTurn.speakers` and the classifier's team present agents by
+  handle (`DispatchCandidate.handle`, new); the queue, `addressed_to`,
+  `SpeakQueue` and every hook keep channel ids. `Discussion.handles()`
+  returns them; they are stored with the room, so a process that only
+  follows the discussion reads them too, and a room stored by an earlier
+  version keeps its channel ids. Refused at construction: an agent with no
+  handle (an `agent:<uuid>` id and no name), a handle that cannot name an
+  agent (letters, digits, `_ . -`, at most 32, no final `.`, not `all`), and
+  two agents whose handles read alike ignoring case, two channel ids that
+  differ only in case included. Example: `examples/discussion_group_chat.py`.
+
 ### Changed
 
 - What an image an author sent becomes in the model's input (RMK-763, RFC
