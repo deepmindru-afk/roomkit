@@ -34,6 +34,11 @@ discounted rates are the ones stated — and those three need a re-read in
 January, when the increase makes them silently half of what a consumer is
 billed.
 
+``gemini-4-argon`` (read 2026-10-13) has no long-context tier and a scheduled
+increase instead of a discount: $2.00/$10.00/$0.10 through November 30, 2026,
+then $4.00/$20.00/$0.20 from December 1, 2026. The current rates are stated, and
+the entry needs a re-read in December. Its caching is implicit only.
+
 Context caching is billed by *storage time* ($1.00–$4.50 per million tokens per
 hour), not per token written — so ``cache_write`` stays unset here rather than
 restating an hourly rate as a per-token one.
@@ -59,6 +64,20 @@ _LEVELS = [TAKES_LEVELS]
 _LEVELS_MINIMAL = [TAKES_LEVELS, TAKES_MINIMAL]
 
 MODELS: list[ModelInfo] = [
+    ModelInfo(
+        id="gemini-4-argon",
+        display_name="Gemini 4 Argon",
+        context_window=_CTX,
+        supports_vision=True,
+        # Refuses ``minimal`` with a 400 and takes a budget of 0 (2026-10-13).
+        capabilities=["thinking", "audio", "video", *_LEVELS],
+        pricing=ModelPricing(
+            input_per_million=2.0,
+            output_per_million=10.0,
+            cache_read_per_million=0.1,
+            verified=date(2026, 10, 13),
+        ),
+    ),
     ModelInfo(
         id="gemini-3.8-flash",
         display_name="Gemini 3.8 Flash",

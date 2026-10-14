@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.101.0] — 2026-10-13
+
 ### Added
 
 - An image a tool returned stays in view on the next turns (RMK-708). From one
@@ -16,9 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sees, the two latest images the room's tool results returned now ride each
   turn's input, after its notes, each after the call that returned it, framed
   as data a tool returned, never instructions; never in an assistant's
-  message, where providers refuse an image. Only a live result's are kept. As
-  the computer-use loop and other agent frameworks keep the last few, the
-  bound holds each turn's cost (an image is a thousand tokens and more).
+  message, where OpenAI refuses an image. Only images returned since the
+  process started are kept: a result reloaded from stored history after a
+  restart carries its JSON form, not its image. As the computer-use loop and
+  other agent frameworks keep the last few, the bound holds each turn's cost
+  (an image is a thousand tokens and more).
+- Gemini 4 Argon, Google's new flagship reasoning model, is in the Gemini
+  catalog: `GeminiConfig(model="gemini-4-argon")` (1,048,576-token window;
+  text, image, video, audio and PDF input; thinking at `low`, `medium` and
+  `high`; $2.00 / $10.00 per million tokens, $0.10 cached, through
+  November 30, 2026, then $4.00 / $20.00 / $0.20). The model was already
+  callable, but `GeminiAIProvider.available_models()` did not list it. It
+  refuses `minimal` with a 400 and takes a thinking budget of 0, so turning
+  reasoning off sends the budget (checked live).
 
 ### Fixed
 
@@ -14427,7 +14439,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.100.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.101.0...HEAD
+[0.101.0]: https://github.com/roomkit-live/roomkit/compare/v0.100.0...v0.101.0
 [0.100.0]: https://github.com/roomkit-live/roomkit/compare/v0.99.0...v0.100.0
 [0.99.0]: https://github.com/roomkit-live/roomkit/compare/v0.98.0...v0.99.0
 [0.98.0]: https://github.com/roomkit-live/roomkit/compare/v0.97.0...v0.98.0
