@@ -1005,11 +1005,27 @@ class VoiceChannel(
         (or bridged with an explicit backend) is served by that transport.
         Falls back to the channel's default ``_backend``.
         """
+        return self._backend_for(session.id)
+
+    def _backend_for(self, session_id: str) -> VoiceBackend | None:
+        """The backend serving *session_id*: see :meth:`_resolve_session_backend`."""
         if self._bridge is not None:
-            bridge_backend = self._bridge.get_session_backend(session.id)
+            bridge_backend = self._bridge.get_session_backend(session_id)
             if bridge_backend is not None:
                 return bridge_backend
-        return self._session_backends.get(session.id, self._backend)
+        return self._session_backends.get(session_id, self._backend)
+
+    def _session_by_id(self, session_id: str) -> VoiceSession | None:
+        """The session *session_id*, as the backend serving it holds it."""
+        backend = self._backend_for(session_id)
+        return backend.get_session(session_id) if backend is not None else None
+
+    def _room_sessions(self, room_id: str) -> list[VoiceSession]:
+        """Every backend's sessions in *room_id*, the primary's first."""
+        if self._backend is None:
+            return []
+        backends = [self._backend, *self._extra_backends]
+        return [session for backend in backends for session in backend.list_sessions(room_id)]
 
     def add_backend(self, backend: VoiceBackend) -> None:
         """Serve sessions from another transport on this channel (RFC §12.7.3).
@@ -1327,9 +1343,11 @@ class VoiceChannel(
 
     async def disconnect_session(self, session: Any, room_id: str) -> None:
         """Clean up a voice session on remote disconnect."""
+        # The session's own transport, resolved before unbinding forgets it.
+        backend = self._resolve_session_backend(session)
         self.unbind_session(session)
-        if self._backend is not None:
-            await self._backend.disconnect(session)
+        if backend is not None:
+            await backend.disconnect(session)
 
     def update_binding(self, room_id: str, binding: ChannelBinding) -> None:
         """Update cached bindings for all sessions in a room.
@@ -1583,7 +1601,9 @@ class VoiceChannel(
 
         if session.state == VoiceSessionState.ENDED:
             raise RuntimeError(f"Cannot send DTMF on ended session {session.id}")
-        self._backend.send_dtmf(session, digit, duration_ms)
+        backend = self._resolve_session_backend(session)
+        assert backend is not None  # the primary, at least
+        backend.send_dtmf(session, digit, duration_ms)
 
     # -------------------------------------------------------------------------
     # Barge-in handling
@@ -1601,7 +1621,7 @@ class VoiceChannel(
             binding_info = self._session_bindings.get(session_id)
         if not queued or binding_info is None or not self._framework:
             return
-        session = self._backend.get_session(session_id) if self._backend else None
+        session = self._session_by_id(session_id)
         if session is None:
             return
         room_id, _ = binding_info
@@ -2054,12 +2074,13 @@ class VoiceChannel(
             # played_ms, taken here (RFC §12.3.13 steps 2 and 3).
             playback.stopped_at = time.monotonic()
             self._end_tts_turn(playback)
+        backend = self._resolve_session_backend(session)
         if (
             config.flush_partial_tts
-            and self._backend
-            and VoiceCapability.INTERRUPTION in self._backend.capabilities
+            and backend is not None
+            and VoiceCapability.INTERRUPTION in backend.capabilities
         ):
-            await self._session_output_backend(session).cancel_audio(session)
+            await backend.cancel_audio(session)
 
         # Bypass AEC after TTS stops so user audio passes unchanged.  Keep the
         # converged hardware echo path for the next playback turn.
@@ -2113,7 +2134,7 @@ class VoiceChannel(
             ]
         count = 0
         for sid in session_ids:
-            session = self._backend.get_session(sid) if self._backend else None
+            session = self._session_by_id(sid)
             if session and await self.interrupt(session, reason=reason):
                 count += 1
         return count

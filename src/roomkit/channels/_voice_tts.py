@@ -90,6 +90,9 @@ class TTSHost(Protocol):
 
     Methods provided by VoiceChannel or sibling mixins:
         _schedule: Schedule a coroutine as a tracked background task.
+        _backend_for: The backend serving a session id (VoiceChannel).
+        _session_by_id: A session, as the backend serving it holds it (VoiceChannel).
+        _room_sessions: Every backend's sessions in a room (VoiceChannel).
         _fire_audio_level_hook: Fire ON_OUTPUT_AUDIO_LEVEL hook (VoiceHooksMixin).
         interrupt: Cancel in-progress TTS playback (VoiceChannel).
         _cut_playback: Cut a playback already taken off its session (VoiceChannel).
@@ -118,6 +121,9 @@ class TTSHost(Protocol):
     _state_lock: threading.Lock
     _schedule: Any  # VoiceChannel._schedule
     _resolve_session_backend: Any  # VoiceChannel._resolve_session_backend
+    _backend_for: Any  # VoiceChannel._backend_for
+    _session_by_id: Any  # VoiceChannel._session_by_id
+    _room_sessions: Any  # VoiceChannel._room_sessions
     _fire_audio_level_hook: Any  # VoiceHooksMixin._fire_audio_level_hook
     _fire_level_hook: Any  # VoiceChannel._fire_level_hook
     interrupt: Any  # VoiceChannel.interrupt
@@ -156,6 +162,9 @@ class VoiceTTSMixin:
     # -- cross-mixin methods (annotated as Any to avoid MRO shadowing) --
     _schedule: Any  # see TTSHost — VoiceChannel._schedule
     _resolve_session_backend: Any  # see TTSHost — VoiceChannel._resolve_session_backend
+    _backend_for: Any  # see TTSHost — VoiceChannel._backend_for
+    _session_by_id: Any  # see TTSHost — VoiceChannel._session_by_id
+    _room_sessions: Any  # see TTSHost — VoiceChannel._room_sessions
     _fire_audio_level_hook: Any  # see TTSHost — VoiceHooksMixin._fire_audio_level_hook
     _fire_level_hook: Any  # see TTSHost — VoiceChannel._fire_level_hook
     interrupt: Any  # see TTSHost — VoiceChannel.interrupt
@@ -347,9 +356,8 @@ class VoiceTTSMixin:
         followed it is not its to end.
         """
         pipeline_aec = self._pipeline is not None and self._pipeline.runs_aec
-        backend_aec = (
-            self._backend is not None and VoiceCapability.NATIVE_AEC in self._backend.capabilities
-        )
+        backend = self._backend_for(session_id)
+        backend_aec = backend is not None and VoiceCapability.NATIVE_AEC in backend.capabilities
         if not pipeline_aec and not backend_aec:
             self._schedule(
                 self._finish_playback(session_id, playback),
@@ -421,7 +429,7 @@ class VoiceTTSMixin:
             self._pipeline.set_aec_active(session_id, False)
 
     def _find_sessions(self, room_id: str, binding: ChannelBinding) -> list[VoiceSession]:
-        """Find voice sessions for a room/binding pair."""
+        """Find voice sessions for a room/binding pair, on every backend."""
         if not self._backend:
             return []
 
@@ -430,12 +438,12 @@ class VoiceTTSMixin:
         target_sessions: list[VoiceSession] = []
         for session_id, (bound_room_id, bound_binding) in bindings_snapshot:
             if bound_room_id == room_id and bound_binding.channel_id == binding.channel_id:
-                session = self._backend.get_session(session_id)
+                session = self._session_by_id(session_id)
                 if session:
                     target_sessions.append(session)
 
         if not target_sessions:
-            target_sessions = self._backend.list_sessions(room_id)
+            target_sessions = self._room_sessions(room_id)
         return target_sessions
 
     async def deliver_stream(
@@ -717,7 +725,7 @@ class VoiceTTSMixin:
         if self._tts is None or self._backend is None:
             sentences.close()
             return False
-        tts, backend = self._tts, self._backend
+        tts, backend = self._tts, self._session_output_backend(session)
         try:
             await self._play_branch(
                 session,
