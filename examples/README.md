@@ -38,6 +38,7 @@ CONSOLE=1 uv run python examples/<example>.py
 | `grok_tts.py` | TTS | xAI Grok text-to-speech provider demo |
 | `gemini_tts.py` | TTS | Gemini TTS provider API: one-shot, streaming deltas, `style_prompt` — writes WAV files |
 | `gemini_tts_room.py` | TTS + room | A room that speaks what you type: CLI channel → Gemini TTS → speakers, with expression tags |
+| `ai_image_reference.py` | AI + images | An image by reference: the application keeps its media, a `media_resolver` hands the model the bytes, the store keeps the reference alone |
 | `voice_fish_audio.py` | TTS | Fish Audio Drama 3: a plain line, a directed one, sentences fed one by one, a dialogue — writes WAV files |
 | `meeting_transcription.py` | STT (batch) | A meeting recording → Gemini STT speaker turns → room → AI channel writes the minutes |
 

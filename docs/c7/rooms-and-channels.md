@@ -259,7 +259,7 @@ ws_caps = ChannelCapabilities(
 |-------------|----------------------|----------|
 | `TextContent` | Always passes through | — |
 | `RichContent` | RICH in media_types → pass | `TextContent(plain_text or body)` |
-| `MediaContent` | MEDIA in media_types → pass | `TextContent("[Media: {caption or filename or url}]")` |
+| `MediaContent` | MEDIA in media_types → pass | `TextContent("[Media: {caption or filename or url}]")`, the URL only when a link, else the media type |
 | `AudioContent` | AUDIO in media_types → pass | `TextContent(transcript)` or `"[Voice message: {url}]"` |
 | `VideoContent` | VIDEO in media_types → pass | `TextContent("[Video: {url}]")` |
 | `LocationContent` | LOCATION in media_types → pass | `TextContent("[Location: {label} ({lat}, {lon})]")` |

@@ -1,0 +1,406 @@
+"""What an image an author sent becomes in a model's input (RFC §6.4, RMK-763).
+
+An application that keeps its media in private storage stores a reference (a
+URL in a scheme it chooses) and hands the framework a ``media_resolver``: the
+channel asks it for the bytes as it builds each turn, so the store and every
+broadcast carry the reference alone. The newest images go as images, with
+their author's words; the rest, and anything a provider cannot take, as a
+mention, never a failed turn.
+"""
+
+from __future__ import annotations
+
+import base64
+from collections.abc import Sequence
+
+import pytest
+
+from roomkit import RoomKit
+from roomkit._media import media_label
+from roomkit.channels._turn_notes import TURN_IMAGES_HEADER
+from roomkit.channels.ai import AIChannel
+from roomkit.core.transcoder import DefaultContentTranscoder
+from roomkit.memory.token_estimator import estimate_event_tokens
+from roomkit.models.channel import ChannelBinding, ChannelCapabilities
+from roomkit.models.context import RoomContext
+from roomkit.models.delivery import InboundMessage
+from roomkit.models.enums import ChannelCategory, ChannelMediaType, ChannelType
+from roomkit.models.event import (
+    CompositeContent,
+    EventContent,
+    MediaContent,
+    RoomEvent,
+    TextContent,
+)
+from roomkit.models.room import Room
+from roomkit.providers.ai.base import AIContext, AIImagePart, AIResponse, AITextPart, ProviderError
+from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.utils import to_data_uri
+from tests.conftest import make_event
+from tests.test_framework import SimpleChannel
+from tests.tool_loop_modes import read_reply, respond
+
+_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
+)
+_PNG = to_data_uri(_PNG_BYTES, "image/png")
+_REF = "app-media://photo-1"
+_BINDING = ChannelBinding(
+    channel_id="ai1",
+    room_id="r1",
+    channel_type=ChannelType.AI,
+    category=ChannelCategory.INTELLIGENCE,
+)
+_MEMBER = ChannelBinding(channel_id="sms1", room_id="r1", channel_type=ChannelType.SMS)
+
+
+class _MediaWatcher(SimpleChannel):
+    """A transport that takes media: what a broadcast hands it, untranscoded."""
+
+    def capabilities(self) -> ChannelCapabilities:
+        return ChannelCapabilities(media_types=[ChannelMediaType.TEXT, ChannelMediaType.MEDIA])
+
+
+class _Host:
+    """An application's media store: the bytes of each reference it holds."""
+
+    def __init__(self, media: dict[str, bytes] | None = None, *, fails: bool = False) -> None:
+        self.media = media if media is not None else {_REF: _PNG_BYTES}
+        self.fails = fails
+        self.asked: list[tuple[str, str]] = []
+
+    async def __call__(self, media: MediaContent, room_id: str) -> bytes | None:
+        self.asked.append((media.url, room_id))
+        if self.fails:
+            raise RuntimeError("storage unreachable")
+        return self.media.get(media.url)
+
+
+def _photo(
+    url: str = _REF,
+    *,
+    filename: str | None = "lamp.png",
+    caption: str | None = None,
+    mime_type: str = "image/png",
+) -> MediaContent:
+    return MediaContent(url=url, mime_type=mime_type, filename=filename, caption=caption)
+
+
+def _event(content: EventContent) -> RoomEvent:
+    return make_event(room_id="r1", channel_id="sms1").model_copy(update={"content": content})
+
+
+def _channel(
+    streaming: bool = False,
+    *,
+    vision: bool = True,
+    resolver: _Host | None = None,
+    **kwargs: object,
+) -> AIChannel:
+    provider = MockAIProvider(responses=["ok"] * 5, streaming=streaming, vision=vision)
+    channel = AIChannel("ai1", provider=provider, **kwargs)  # type: ignore[arg-type]
+    channel._media_resolver = resolver  # noqa: SLF001 - the framework wires it at registration
+    return channel
+
+
+async def _turn(
+    channel: AIChannel, event: RoomEvent, history: Sequence[RoomEvent] = ()
+) -> AIContext:
+    # The member's channel is bound too: an unbound source's events are
+    # visible to no other channel.
+    context = RoomContext(
+        room=Room(id="r1"), bindings=[_MEMBER, _BINDING], recent_events=[*history, event]
+    )
+    await respond(channel, event, _BINDING, context)
+    return channel.provider.calls[-1]  # type: ignore[attr-defined]
+
+
+def _parts(context: AIContext) -> list[object]:
+    parts: list[object] = []
+    for message in context.messages:
+        parts.extend(message.content if isinstance(message.content, list) else [message.content])
+    return parts
+
+
+def _images(context: AIContext) -> list[str]:
+    return [part.url for part in _parts(context) if isinstance(part, AIImagePart)]
+
+
+def _text(context: AIContext) -> str:
+    return "\n".join(
+        part if isinstance(part, str) else part.text
+        for part in _parts(context)
+        if isinstance(part, str | AITextPart)
+    )
+
+
+class TestReference:
+    async def test_a_reference_reaches_the_model_as_the_hosts_image(self, streaming: bool) -> None:
+        host = _Host()
+        channel = _channel(streaming, resolver=host)
+        event = _event(CompositeContent(parts=[TextContent(body="compare with mine"), _photo()]))
+
+        context = await _turn(channel, event)
+
+        assert _images(context) == [_PNG]
+        assert host.asked == [(_REF, "r1")]
+        content = context.messages[-1].content
+        assert isinstance(content, list)
+        assert isinstance(content[0], AITextPart) and content[0].text.startswith(
+            "compare with mine"
+        )
+        assert isinstance(content[1], AIImagePart)
+
+    async def test_the_store_and_broadcasts_carry_the_reference_alone(self) -> None:
+        host = _Host()
+        provider = MockAIProvider(responses=["a nice lamp"], vision=True)
+        kit = RoomKit(media_resolver=host)
+        watcher = _MediaWatcher("watcher")
+        kit.register_channel(SimpleChannel("user"))
+        kit.register_channel(watcher)
+        kit.register_channel(AIChannel("ai1", provider=provider))
+        try:
+            await kit.create_room(room_id="room")
+            await kit.attach_channel("room", "user")
+            await kit.attach_channel("room", "watcher")
+            await kit.attach_channel("room", "ai1", category=ChannelCategory.INTELLIGENCE)
+            message = InboundMessage(channel_id="user", sender_id="person", content=_photo())
+
+            await kit.process_inbound(message, room_id="room")
+
+            assert _images(provider.calls[-1]) == [_PNG]
+            stored = [e.content for e in await kit.store.list_events("room")]
+            assert _photo() in stored
+            delivered = [
+                e.content for e in watcher.delivered if isinstance(e.content, MediaContent)
+            ]
+            assert delivered == [_photo()]
+            assert "base64" not in repr(stored) + repr(watcher.delivered)
+        finally:
+            await kit.close()
+
+    async def test_the_image_is_still_there_on_the_next_turn(self, streaming: bool) -> None:
+        host = _Host()
+        channel = _channel(streaming, resolver=host)
+        photo = _event(_photo())
+
+        context = await _turn(
+            channel, _event(TextContent(body="what colour is its foot?")), [photo]
+        )
+
+        assert _images(context) == [_PNG]
+        first, last = context.messages[0], context.messages[-1]
+        assert isinstance(first.content, list) and isinstance(first.content[-1], AIImagePart)
+        assert last.content == "what colour is its foot?"
+        assert host.asked == [(_REF, "r1")]  # resolved as the turn is built, nothing kept
+
+    async def test_a_link_goes_to_the_provider_as_it_is(self) -> None:
+        host = _Host()
+        link = "https://cdn.example.com/lamp.png"
+
+        context = await _turn(_channel(resolver=host), _event(_photo(link)))
+
+        assert _images(context) == [link]
+        assert host.asked == []
+
+    async def test_the_authors_image_comes_before_the_replayed_tool_images(self) -> None:
+        channel = _channel(resolver=_Host())
+        tool_image = to_data_uri(b"tool-image", "image/png")
+        channel._tool_usage.record(  # noqa: SLF001
+            "r1", "generate_image", {"prompt": "a lamp"}, [AIImagePart(url=tool_image)]
+        )
+        event = _event(CompositeContent(parts=[TextContent(body="compare with mine"), _photo()]))
+
+        context = await _turn(channel, event)
+
+        content = context.messages[-1].content
+        assert isinstance(content, list)
+        urls = [p.url for p in content if isinstance(p, AIImagePart)]
+        header = next(
+            i
+            for i, p in enumerate(content)
+            if isinstance(p, AITextPart) and p.text.startswith(TURN_IMAGES_HEADER)
+        )
+        assert urls == [_PNG, tool_image]
+        assert content.index(next(p for p in content if isinstance(p, AIImagePart))) < header
+
+
+class TestBound:
+    @staticmethod
+    def _history(count: int) -> tuple[_Host, list[RoomEvent]]:
+        host = _Host({f"app-media://p{i}": bytes([i]) * 8 for i in range(count)})
+        events = [_event(_photo(f"app-media://p{i}", filename=f"p{i}.png")) for i in range(count)]
+        return host, events
+
+    async def test_only_the_newest_four_images_go(self, streaming: bool) -> None:
+        host, history = self._history(5)
+
+        context = await _turn(
+            _channel(streaming, resolver=host), _event(TextContent(body="?")), history
+        )
+
+        assert _images(context) == [to_data_uri(bytes([i]) * 8, "image/png") for i in range(1, 5)]
+        assert "[Earlier image not shown: “p0.png”]" in _text(context)
+        assert ("app-media://p0", "r1") not in host.asked
+
+    @pytest.mark.parametrize(("bound", "sent"), [(1, 1), (0, 0), (None, 5)])
+    async def test_the_bound_is_the_channels_to_change(self, bound: int | None, sent: int) -> None:
+        host, history = self._history(5)
+        channel = _channel(resolver=host, max_author_images=bound)
+
+        context = await _turn(channel, _event(TextContent(body="?")), history)
+
+        assert len(_images(context)) == sent
+
+    async def test_inline_images_count_the_same(self) -> None:
+        history = [_event(_photo(to_data_uri(bytes([i]) * 8, "image/png"))) for i in range(5)]
+
+        context = await _turn(_channel(), _event(TextContent(body="?")), history)
+
+        assert len(_images(context)) == 4
+
+    def test_a_negative_bound_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="max_author_images"):
+            _channel(max_author_images=-1)
+
+
+class TestMention:
+    @pytest.mark.parametrize(
+        "host",
+        [None, _Host({}), _Host(fails=True), _Host({_REF: b"x" * (5 * 1024 * 1024 + 1)})],
+        ids=["no resolver", "resolver has none", "resolver fails", "too large"],
+    )
+    async def test_an_image_that_does_not_resolve_leaves_the_turn_a_mention(
+        self, host: _Host | None, streaming: bool
+    ) -> None:
+        context = await _turn(_channel(streaming, resolver=host), _event(_photo()))
+
+        assert _images(context) == []
+        assert "[Image unavailable: “lamp.png”]" in _text(context)
+
+    async def test_a_document_is_a_mention_not_an_image(self) -> None:
+        pdf = _photo(
+            to_data_uri(b"%PDF-1.7", "application/pdf"),
+            filename="contract.pdf",
+            mime_type="application/pdf",
+        )
+
+        context = await _turn(_channel(), _event(pdf))
+
+        assert _images(context) == []
+        assert "[Media: contract.pdf]" in _text(context)
+        assert "base64" not in _text(context)
+
+    async def test_an_image_the_provider_refused_reads_as_refused_after(self) -> None:
+        class _RefusesImages(MockAIProvider):
+            async def generate(self, context: AIContext) -> AIResponse:
+                self.calls.append(context)
+                if _images(context):
+                    raise ProviderError("400 the image could not be processed", retryable=False)
+                return AIResponse(content="ok", finish_reason="stop")
+
+        provider = _RefusesImages(vision=True)
+        channel = AIChannel("ai1", provider=provider)
+        channel._media_resolver = _Host()  # noqa: SLF001
+        photo = _event(_photo())
+        context = RoomContext(room=Room(id="r1"))
+        with pytest.raises(ProviderError):
+            await read_reply(await channel.on_event(photo, _BINDING, context))
+
+        question = _event(TextContent(body="and now?"))
+        after = RoomContext(
+            room=Room(id="r1"), bindings=[_MEMBER, _BINDING], recent_events=[photo, question]
+        )
+        await read_reply(await channel.on_event(question, _BINDING, after))
+
+        assert _images(provider.calls[-1]) == []
+        assert "[Image refused by the model's provider: “lamp.png”]" in _text(provider.calls[-1])
+
+
+class TestModelThatDoesNotSee:
+    async def test_it_reads_a_mention_never_the_bytes(self, streaming: bool) -> None:
+        host = _Host()
+        history = [_event(_photo(_PNG, caption="my lamp"))]
+        channel = _channel(streaming, vision=False, resolver=host)
+
+        context = await _turn(channel, _event(TextContent(body="what was that?")), history)
+
+        assert "[Media: my lamp]" in _text(context)
+        assert "base64" not in repr(context.messages)
+        assert host.asked == []
+
+    async def test_a_composite_keeps_its_words(self) -> None:
+        composite = CompositeContent(parts=[TextContent(body="compare with mine"), _photo()])
+
+        context = await _turn(
+            _channel(vision=False), _event(TextContent(body="?")), [_event(composite)]
+        )
+
+        assert "compare with mine\n[Media: lamp.png]" in _text(context)
+
+    async def test_a_captionless_media_reads_as_its_label_without_a_describer(self) -> None:
+        context = await _turn(
+            _channel(vision=False), _event(TextContent(body="?")), [_event(_photo())]
+        )
+
+        assert "[Media: lamp.png]" in _text(context)
+
+
+class TestTranscoding:
+    @pytest.mark.parametrize(
+        ("url", "label"),
+        [
+            (_PNG, "[Media: image/png]"),
+            (_REF, "[Media: image/png]"),
+            ("https://cdn.example.com/a.png", "[Media: https://cdn.example.com/a.png]"),
+        ],
+    )
+    def test_a_media_label_never_shows_a_data_uri_or_a_reference(
+        self, url: str, label: str
+    ) -> None:
+        assert media_label(_photo(url, filename=None)) == label
+
+    async def test_a_text_only_channel_reads_the_label(self) -> None:
+        text_only = ChannelBinding(
+            channel_id="sms",
+            room_id="r1",
+            channel_type=ChannelType.SMS,
+            capabilities=ChannelCapabilities(media_types=[ChannelMediaType.TEXT]),
+        )
+
+        content = await DefaultContentTranscoder().transcode(
+            _photo(_PNG, filename=None), _BINDING, text_only
+        )
+
+        assert content == TextContent(body="[Media: image/png]")
+
+
+class TestBudget:
+    def test_a_document_costs_its_label_not_an_image(self) -> None:
+        pdf = _event(_photo(_REF, filename="contract.pdf", mime_type="application/pdf"))
+        image = _event(_photo())
+
+        assert estimate_event_tokens(pdf) < 50
+        assert estimate_event_tokens(image) >= 1000
+
+
+class TestReferenceURL:
+    @pytest.mark.parametrize("url", ["app-media://photo-1", "store+v2://bucket/a.png", _PNG])
+    def test_a_reference_link_or_data_uri_is_accepted(self, url: str) -> None:
+        assert MediaContent(url=url, mime_type="image/png").url == url
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file:///etc/passwd",
+            "FILE:///etc/passwd",
+            "ftp://example.com/a.png",
+            "javascript://x",
+            "/etc/passwd",
+            "lamp.png",
+        ],
+    )
+    def test_a_url_a_transport_could_read_or_run_is_refused(self, url: str) -> None:
+        # Some transports read a URL they are handed (a path, a file: URI).
+        with pytest.raises(ValueError, match="reference"):
+            MediaContent(url=url, mime_type="image/png")

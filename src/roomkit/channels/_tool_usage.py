@@ -52,6 +52,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from roomkit._media import VISION_IMAGE_TYPES, data_uri_media_type
 from roomkit._text import identifier, quoted
 from roomkit.channels._tool_eviction import (
     eviction_placeholder_size,
@@ -82,7 +83,6 @@ _RESULT_KEEP_CHARS = 6000
 _IMAGES_REPLAYED = 2
 # What an image replayed may be: inline, of a type and a size every vision
 # provider takes. A link may expire or be out of the vendor's reach.
-_REPLAYED_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 _REPLAYED_IMAGE_MAX_CHARS = 2_000_000
 
 
@@ -393,7 +393,4 @@ def _replayable(part: Any) -> bool:
     of a type and a size every vision provider takes."""
     if not isinstance(part, AIImagePart) or len(part.url) > _REPLAYED_IMAGE_MAX_CHARS:
         return False
-    if part.url[: len("data:")].lower() != "data:":
-        return False
-    media_type = part.url[len("data:") :].split(",", 1)[0].split(";", 1)[0]
-    return media_type.lower() in _REPLAYED_IMAGE_TYPES
+    return data_uri_media_type(part.url) in VISION_IMAGE_TYPES

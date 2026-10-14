@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 if TYPE_CHECKING:
+    from roomkit.channels._author_images import MediaResolver
     from roomkit.delivery.base import DeliveryBackend
     from roomkit.orchestration.base import Orchestration
     from roomkit.telemetry.base import TelemetryProvider
@@ -196,6 +197,7 @@ class RoomKit(
         delivery_gap_timeout: float = 30.0,
         delivery_claim_lock_manager: RoomLockManager | None = None,
         verification_policy: VerificationPolicy | None = None,
+        media_resolver: MediaResolver | None = None,
     ) -> None:
         """Initialise the RoomKit orchestrator.
 
@@ -231,6 +233,16 @@ class RoomKit(
                 verification and, while it is not verified, held from the
                 room's agents. Omitted, the API works with the defaults and
                 the pipeline is unchanged.
+            media_resolver: The bytes of a media the application holds
+                (RFC §6.4): ``async (media, room_id) -> bytes | None``. A
+                ``MediaContent`` whose URL is neither a ``data:`` URI nor a
+                link (``http``, ``https``) is a reference, in a scheme the
+                application chooses; every AI channel registered here asks
+                this resolver for its bytes as it builds a turn, so the store
+                and broadcasts carry the reference alone. Any participant
+                can write a reference: answer only for a media the room may
+                show, None otherwise. Without a resolver, a referenced image
+                reads as unavailable to the model.
             process_timeout: Timeout in seconds for the locked processing phase.
             stt: Optional speech-to-text provider for transcription.
             tts: Optional text-to-speech provider for synthesis.
@@ -283,6 +295,7 @@ class RoomKit(
         self._persistence_policy = persistence_policy
         self._identity_resolver = identity_resolver
         self._identity_channel_types = identity_channel_types
+        self._media_resolver = media_resolver
         self._max_chain_depth = max_chain_depth
         # Counted by _store_refusing_room: a stream reads the room's status
         # once, and again only when this moved (RFC §5.1).

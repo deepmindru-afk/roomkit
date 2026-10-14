@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from roomkit._media import is_vision_image, media_label
 from roomkit.models.event import (
     AudioContent,
     CompositeContent,
@@ -104,6 +105,9 @@ def estimate_event_tokens(event: RoomEvent, *, text_only: bool = False) -> int:
             estimate_event_tokens(event.model_copy(update={"content": part}), text_only=text_only)
             for part in content.parts
         )
+    if isinstance(content, MediaContent) and not is_vision_image(content):
+        # Read as its label, never as an image (RFC §6.4).
+        return estimate_tokens(media_label(content))
     if isinstance(content, (MediaContent, AudioContent, VideoContent)):
         parts: list[AITextPart | AIImagePart] = []
         text = getattr(content, "caption", None) or getattr(content, "transcript", None)

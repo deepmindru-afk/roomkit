@@ -39,6 +39,7 @@ from roomkit.tools._turn_calls import TurnCalls
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
 
+    from roomkit.channels._author_images import AuthorImages
     from roomkit.channels._turn_budget import TurnBudget
     from roomkit.models.steering import SteeringDirective
     from roomkit.models.tool_call import DeclaredTool
@@ -207,6 +208,9 @@ class _ToolLoopContext:
     # A thinker's context (RFC §6.4): every speaker is named, the one person of a
     # one-to-one conversation too, whom an answer's context leaves unlabelled.
     names_every_speaker: bool = False
+    # What each image the turn's authors sent became (RFC §6.4): the images
+    # its request carries, which a provider error not retried marks refused.
+    author_images: AuthorImages | None = None
     room_id: str | None = None
     # The channel whose loop runs the turn: the calls it announced are its
     # own, claimed by its reports alone (RFC §9.3).
@@ -351,6 +355,9 @@ class _ToolLoopContext:
             ctx.current_participant_role = parent.current_participant_role
             ctx.actor_id = parent.actor_id
             ctx.requester = parent.requester
+            # What the turn's authors' images became: the images its request
+            # carries, which a provider error not retried marks refused.
+            ctx.author_images = parent.author_images
             ctx.chain_depth = parent.chain_depth
             ctx.all_context_tools = parent.all_context_tools
             ctx.admits = parent.admits

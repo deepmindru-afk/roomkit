@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from uuid import uuid4
@@ -40,8 +41,20 @@ class RichContent(BaseModel):
     quick_replies: list[str] = Field(default_factory=list)
 
 
+_REFERENCE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*)://")
+"""A reference to a media the application holds: ``<scheme>://...`` (RFC §6.4)."""
+_REFUSED_SCHEMES = frozenset({"file", "ftp", "javascript", "vbscript"})
+
+
 class MediaContent(BaseModel):
-    """Media attachment content."""
+    """Media attachment content.
+
+    ``url`` is a link (``http``, ``https``), a ``data:`` URI, or a reference:
+    ``<scheme>://…`` in a scheme the application chooses, naming a media it
+    holds and resolves for the AI channels (RFC §6.4). A scheme a reader could
+    fetch or open itself (``file``, ``ftp``) or run (``javascript``,
+    ``vbscript``) is refused: some transports read a URL they are handed.
+    """
 
     type: Literal["media"] = "media"
     url: str
@@ -53,8 +66,14 @@ class MediaContent(BaseModel):
     @field_validator("url")
     @classmethod
     def _validate_url(cls, v: str) -> str:
-        if not v.startswith(("http://", "https://", "data:")):
-            raise ValueError("URL must start with http://, https://, or data:")
+        if v.startswith(("http://", "https://", "data:")):
+            return v
+        reference = _REFERENCE.match(v)
+        if reference is None or reference.group(1).lower() in _REFUSED_SCHEMES:
+            raise ValueError(
+                "URL must be a link (http://, https://), a data: URI, or a reference "
+                "<scheme>://... in a scheme other than file, ftp, javascript or vbscript"
+            )
         return v
 
 

@@ -35,6 +35,7 @@ from roomkit.channels._ai_steering import AISteeringMixin
 from roomkit.channels._ai_streaming import AIStreamingMixin
 from roomkit.channels._ai_thinking import AIThinkingMixin
 from roomkit.channels._ai_tools import AIToolsMixin
+from roomkit.channels._author_images import DEFAULT_MAX_AUTHOR_IMAGES, RefusedImages
 from roomkit.channels._discussion_turn import discussion_turn
 from roomkit.channels._served_execution import ServedExecutionGate
 from roomkit.channels._served_tools import (
@@ -199,6 +200,7 @@ class AIChannel(
         tool_timeout_seconds: float | None = 30.0,
         tool_timeouts: Mapping[str, float | None] | None = None,
         describe_empty_event: EmptyEventDescriber | None = None,
+        max_author_images: int | None = DEFAULT_MAX_AUTHOR_IMAGES,
         speak_policy: SpeakPolicy | None = None,
         speak_timeout: float = 2.0,
         thinker: Thinker | None = None,
@@ -219,7 +221,9 @@ class AIChannel(
         self._config_provider = config_provider
         self._temperature = temperature
         self._max_tokens = max_tokens
-        self._store_transcript_rules(max_context_events, memory, describe_empty_event)
+        self._store_transcript_rules(
+            max_context_events, memory, describe_empty_event, max_author_images
+        )
         self._thinking_budget = thinking_budget
         self._enable_thinking = enable_thinking
         self._reasoning_effort = reasoning_effort
@@ -326,13 +330,20 @@ class AIChannel(
         max_events: int,
         memory: MemoryProvider | None,
         describe_empty_event: EmptyEventDescriber | None,
+        max_author_images: int | None,
     ) -> None:
         """Keep how a turn's transcript is built: the history it reads (the
-        channel's memory, a sliding window of *max_events* by default) and
-        what it says of an event whose content extracts to nothing."""
+        channel's memory, a sliding window of *max_events* by default), what
+        it says of an event whose content extracts to nothing, and how many
+        of the images its authors sent go as images (RFC §6.4; None, all)."""
+        if max_author_images is not None and max_author_images < 0:
+            raise ValueError(f"max_author_images must be >= 0, got {max_author_images}")
         self._max_context_events = max_events
         self._memory = memory or SlidingWindowMemory(max_events=max_events)
         self._describe_empty_event = describe_empty_event
+        self._max_author_images = max_author_images
+        # The images a provider refused, per room: sent as a mention after.
+        self._refused_images = RefusedImages()
 
     def _store_loop_rules(
         self,
@@ -456,6 +467,9 @@ class AIChannel(
         # What the room's cameras last saw, for the turn's notes (RFC §12.8.7):
         # wired at registration.
         self._room_vision_loader = None
+        # The application's resolver of the media its references name
+        # (RFC §6.4): wired at registration from the framework's.
+        self._media_resolver = None
 
     @property
     def tool_handler(self) -> ToolHandler | None:

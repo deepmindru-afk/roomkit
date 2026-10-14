@@ -51,6 +51,7 @@ from roomkit.tools.context import _current_loop_ctx, _ToolLoopContext
 
 if TYPE_CHECKING:
     from roomkit.channels._ai_callbacks import AfterToolRoundHook, BeforeGenerationHook
+    from roomkit.channels._author_images import RefusedImages
     from roomkit.channels._tool_usage import ToolUsageMemory
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
@@ -197,6 +198,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     _tool_observer_hook: ToolCallObserver | None
     _external_tool_handler: ExternalToolHandler | None
     _tool_usage: ToolUsageMemory
+    _refused_images: RefusedImages
     channel_id: str
 
     def _new_thinking_coalescer(self, room_id: str | None, round_idx: int) -> _ThinkingCoalescer:
@@ -556,11 +558,8 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 async for delta in deltas:
                     yield delta
         except ProviderError as exc:
-            if not exc.retryable and carries_turn_images(context.messages):
-                # An image the provider refused would fail every later turn
-                # that replays it: the room's are replayed no more. A request
-                # that replayed none (a key refused, a quota) keeps them.
-                self._tool_usage.forget_images(turn.room_id)
+            if not exc.retryable:
+                self._forget_sent_images(turn, context)
             if not interrupts_turn(exc, after_round=turn.saw_tool_call):
                 raise
             turn.error = exc
@@ -568,6 +567,18 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             raise
         if round_.state.thinking:
             turn.thinking.append(round_.state.thinking)
+
+    def _forget_sent_images(self, turn: _StreamTurnState, context: AIContext) -> None:
+        """Send no more the images a request a provider error not retried ended
+        carried: one the provider refused would fail every later turn while it
+        stays in the window (RFC §6.4). The room's replayed tool images are
+        replayed no more, its authors' images read as refused; a request that
+        carried none (a key refused, a quota) changes nothing."""
+        if carries_turn_images(context.messages):
+            self._tool_usage.forget_images(turn.room_id)
+        images = turn.loop_ctx.author_images
+        if images is not None and images.sent and turn.room_id is not None:
+            self._refused_images.add(turn.room_id, images.sent)
 
     async def _run_streaming_tool_loop(
         self,

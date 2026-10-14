@@ -184,11 +184,10 @@ class TestAIChannel:
         output = await ch.on_event(event, binding, ctx)
         await read_reply(output)
 
-        # Should still respond but with no content extracted
+        # The model reads that a media was sent, never its bytes (RFC §6.4).
         assert output.responded is True
         call_ctx = provider.calls[0]
-        # No messages since MediaContent has no text to extract
-        assert len(call_ctx.messages) == 0
+        assert [m.content for m in call_ctx.messages] == ["[Media: https://example.com/image.jpg]"]
 
     async def test_composite_content_with_vision(self) -> None:
         """Vision provider receives composite content with text and images."""

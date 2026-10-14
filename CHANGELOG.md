@@ -33,8 +33,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vary, a dialogue's change of voice included. Example:
   `examples/voice_fish_audio.py`.
 
+- An image by reference, resolved by the application (RMK-763, RFC §6.4). A
+  `MediaContent` URL may be a reference, `<scheme>://…` in a scheme the
+  application chooses, naming a media it keeps in private storage;
+  `RoomKit(media_resolver=...)` (`async (media, room_id) -> bytes | None`,
+  exported as `MediaResolver`) gives every AI channel the bytes as it builds a
+  turn, so the store and every broadcast keep the reference alone. The image
+  then goes the way an inline one does: with its author's words, in later
+  turns' history too, before the images tools returned. Any participant can
+  write a reference, so a resolver answers only for the media of the room it
+  is asked for. A transport channel is handed the reference as it is.
+  Example: `examples/ai_image_reference.py` (offline, or `anthropic`: Claude
+  Haiku 5.5 named the colour of a referenced swatch, then its shape on the
+  next turn from history, 2026-10-14).
+
+### Changed
+
+- What an image an author sent becomes in the model's input (RMK-763, RFC
+  §6.4). A turn sends the newest four author images, history and input
+  together (`AIChannel(max_author_images=...)`, `None` for all), inline ones
+  included, where every image of the history window went before; only PNG,
+  JPEG, GIF or WebP up to 5 MB go as images. Anything else reads as a short
+  mention, never a failed turn: `[Media: …]` for a document or for a model
+  that does not see, `[Earlier image not shown: …]` past the bound, `[Image
+  unavailable: …]` for a reference that does not resolve, `[Image refused by
+  the model's provider: …]` after a provider error not retried on a request
+  that carried it. `MediaContent` accepts a reference and still refuses
+  `file:`, `ftp:`, `javascript:`, `vbscript:` and schemeless URLs.
+- `[Media: …]` (RFC §6.6) shows the URL only when it is a link: a `data:` URI
+  or a reference reads as the media type, where a text-only channel and a
+  model without vision used to receive a whole base64 payload as text.
+
 ### Fixed
 
+- A document sent as a `MediaContent` (a PDF, `application/octet-stream`) no
+  longer reaches the model as an image the provider refuses: it reads as its
+  label (RMK-763).
+- An author's image a provider refused no longer fails every later turn while
+  it stays in the history window: it reads as refused, as a tool's replayed
+  image already did (RMK-738), and the turn's own author images are no longer
+  spared while the tool images take the blame (RMK-763).
+- A model that does not see no longer loses a media from the history: it read
+  `""`, and a `CompositeContent` lost its text too, where the live event read
+  `[Media: …]`. Both read the same label now; a captionless media alone in
+  its event still goes to `describe_empty_event` first (RMK-763).
+- The token estimate counts a document as its label, not as a 1000-token
+  image (RMK-763).
 - A model file of the other family no longer ends the process (RMK-759): given
   `gtcrn_simple.onnx` under `model_type="dpdfnet"`, or a DPDFNet file under
   GTCRN, sherpa-onnx exited with code 255 on the first frame of a call ("Expect

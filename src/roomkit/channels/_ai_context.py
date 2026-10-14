@@ -6,8 +6,10 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from roomkit._media import media_label
 from roomkit.channels._ai_cuts import CUT_MARK, cut_answer_ids, cut_records
 from roomkit.channels._ai_policy import policy_check
+from roomkit.channels._author_images import AuthorImages, RefusedImages, author_images
 from roomkit.channels._dangling_recovery import patch_dangling_tool_calls
 from roomkit.channels._discussion_turn import discussion_notes, discussion_turn
 from roomkit.channels._instruction import instruction_fingerprint, is_standalone, mark_instruction
@@ -75,6 +77,7 @@ from roomkit.tools.context import TurnFootprint
 
 if TYPE_CHECKING:
     from roomkit.channels._ai_callbacks import RoomTasksLoader, RoomVisionLoader, ToolUsageLoader
+    from roomkit.channels._author_images import MediaResolver
     from roomkit.channels._skill_activation import SkillActivationMemory
     from roomkit.channels._tool_registry import ChannelRegistry
     from roomkit.channels._tool_usage import ToolUsageMemory
@@ -151,6 +154,9 @@ class AIContextMixin(_AIChannelContract):
     _tool_usage_loader: ToolUsageLoader | None
     _room_tasks_loader: RoomTasksLoader | None
     _room_vision_loader: RoomVisionLoader | None
+    _media_resolver: MediaResolver | None
+    _max_author_images: int | None
+    _refused_images: RefusedImages
     _skill_activation: SkillActivationMemory
     _planner: TaskPlanner | None
     _user_tools: list[AITool]
@@ -300,6 +306,7 @@ class AIContextMixin(_AIChannelContract):
         (*own_notes*) after what the memory retrieved. The notes' header is the
         channel's alone: a copy the conversation holds is replaced (RFC §6.4)."""
         memory_result = await self._visible_memory(event, context, standalone)
+        loop_ctx.author_images = await self._author_images(event, memory_result)
         messages, attribute_speakers, requester = self._turn_messages(
             event, context, memory_result, loop_ctx
         )
@@ -313,6 +320,19 @@ class AIContextMixin(_AIChannelContract):
         # The latest images the room's tools returned, after the notes: the
         # digest only says what they showed in their tool's words.
         return with_turn_images(messages, self._turn_images(loop_ctx))
+
+    async def _author_images(self, event: RoomEvent, memory_result: MemoryResult) -> AuthorImages:
+        """What the images the turn's history and input carry become (RFC §6.4);
+        none decided for a model that does not see, which reads each as its label."""
+        if not self._provider.supports_vision:
+            return _NO_IMAGES
+        return await author_images(
+            [*memory_result.events, event],
+            room_id=event.room_id,
+            resolver=self._media_resolver,
+            limit=self._max_author_images,
+            refused=self._refused_images.of(event.room_id),
+        )
 
     def _turn_images(self, loop_ctx: _ToolLoopContext) -> list[AITextPart | AIImagePart]:
         """The images this channel's tool calls in the room returned that ride
@@ -437,7 +457,7 @@ class AIContextMixin(_AIChannelContract):
         (``loop_ctx.names_every_speaker``, RFC §6.4).
         """
         labels = turn_labels([*memory_result.events, event], context)
-        past_turns, past_indexes = self._past_turns(memory_result, context, labels)
+        past_turns, past_indexes = self._past_turns(memory_result, context, labels, loop_ctx)
         current_content, current_label = self._turn_input(event, loop_ctx, labels)
         speakers = {label for _, _, label in past_turns if label}
         if current_content and current_label:
@@ -478,7 +498,11 @@ class AIContextMixin(_AIChannelContract):
         return conversation, attribute_speakers, requester
 
     def _past_turns(
-        self, memory_result: MemoryResult, context: RoomContext, labels: dict[str, str | None]
+        self,
+        memory_result: MemoryResult,
+        context: RoomContext,
+        labels: dict[str, str | None],
+        loop_ctx: _ToolLoopContext,
     ) -> tuple[list[tuple[str, str | list[_ContentPart], str | None]], list[int | None]]:
         """The history's turns as (role, content, label), a user turn labelled
         by who said it, and the room index of the event each turn is."""
@@ -487,13 +511,14 @@ class AIContextMixin(_AIChannelContract):
         # An answer cut off by a barge-in reads as cut, not as heard whole (§6.4).
         records = cut_records(context, self.channel_id)
         cut_ids = cut_answer_ids(memory_result.events, records, self.channel_id)
+        images = loop_ctx.author_images or _NO_IMAGES
         for past_event in memory_result.events:
             if past_event.metadata.get("cancellation_reason") == SUPERSEDED:
                 # A response nobody heard: the user continued the turn first,
                 # and replaying it would answer what they never heard (§12.3.12).
                 continue
             role = self._determine_role(past_event)
-            content = self._transcript_content(past_event)
+            content = self._transcript_content(past_event, images)
             if content and past_event.id in cut_ids:
                 content = _with_cut_mark(content)
             if content:
@@ -507,7 +532,7 @@ class AIContextMixin(_AIChannelContract):
     ) -> tuple[str | list[_ContentPart] | None, str | None]:
         """The turn's input and its speaker's label; an instruction marked as
         the application's, with none."""
-        current_content = self._transcript_content(event)
+        current_content = self._transcript_content(event, loop_ctx.author_images or _NO_IMAGES)
         current_label = labels.get(event.id)
         if event.type == EventType.INSTRUCTION:
             # The application's direction for this one turn (RFC §10.1.1). It
@@ -912,61 +937,65 @@ class AIContextMixin(_AIChannelContract):
             return "assistant"
         return "user"
 
-    def _transcript_content(self, event: RoomEvent) -> str | list[_ContentPart]:
+    def _transcript_content(
+        self, event: RoomEvent, images: AuthorImages
+    ) -> str | list[_ContentPart]:
         """What *event* says in the turn's transcript, history and input alike:
         its content, or, when that extracts to nothing, what the channel's
         ``describe_empty_event`` says of it. Empty omits the event. A copy of a
         runtime mark in it is replaced here, before the runtime places its own
         marks (an instruction's, a cut answer's) after it (RFC §6.4)."""
-        content = self._extract_content(event)
+        content = self._extract_content(event, images)
         if not content and self._describe_empty_event is not None:
             content = self._describe_empty_event(event) or ""
+        if not content and isinstance(event.content, MediaContent):
+            # A media the host does not describe reads as its label (RFC §6.6).
+            content = media_label(event.content)
         if written_by_runtime(event.metadata):
             # The runtime's own record (a handoff's): its marks are its own.
             return content
         return content_without_mark_copies(content)
 
-    def _extract_content(
-        self,
-        event: RoomEvent,
-    ) -> str | list[_ContentPart]:
-        """Extract content, including images if provider supports vision."""
+    def _extract_content(self, event: RoomEvent, images: AuthorImages) -> str | list[_ContentPart]:
+        """What *event* says to the model: its text, and for a model that sees,
+        each media as *images* decided (its image, else a mention)."""
         content = event.content
-
         if not self._provider.supports_vision:
-            # Text-only fallback (existing behavior)
             return self._extract_text(event)
-
-        # Build multimodal content
         if isinstance(content, TextContent):
-            return content.body  # Simple case: just text
-
+            return content.body
         if isinstance(content, MediaContent):
-            parts: list[_ContentPart] = []
-            if content.caption:
-                parts.append(AITextPart(text=content.caption))
-            parts.append(AIImagePart(url=content.url, mime_type=content.mime_type))
-            return parts
-
+            return list(images.parts(event.id, 0, content))
         if isinstance(content, CompositeContent):
-            cparts: list[_ContentPart] = []
-            for part in content.parts:
+            parts: list[_ContentPart] = []
+            for index, part in enumerate(content.parts):
                 if isinstance(part, TextContent):
-                    cparts.append(AITextPart(text=part.body))
+                    parts.append(AITextPart(text=part.body))
                 elif isinstance(part, MediaContent):
-                    if part.caption:
-                        cparts.append(AITextPart(text=part.caption))
-                    cparts.append(AIImagePart(url=part.url, mime_type=part.mime_type))
-            return cparts if cparts else ""
-
-        # Fallback for other types
+                    parts.extend(images.parts(event.id, index, part))
+            return parts or ""
         return self._extract_text(event)
 
     def _extract_text(self, event: RoomEvent) -> str:
-        if isinstance(event.content, TextContent):
-            return event.content.body
+        """What *event* says to a model that does not see: its text, a media as
+        its label (RFC §6.6), never its bytes; nothing for a lone media without
+        a caption, which the host's describer has the word on first."""
+        content = event.content
+        if isinstance(content, TextContent):
+            return content.body
+        if isinstance(content, MediaContent):
+            return media_label(content) if content.caption else ""
+        if isinstance(content, CompositeContent):
+            return "\n".join(
+                part.body if isinstance(part, TextContent) else media_label(part)
+                for part in content.parts
+                if isinstance(part, TextContent | MediaContent)
+            )
         return ""
 
+
+_NO_IMAGES = AuthorImages()
+"""A turn whose authors' images nothing decided: each media reads as its label."""
 
 _FORMER_VISION_BASE = "_base_system_prompt"
 """Where RoomKit's vision path up to 0.95 kept a binding's own prompt when it

@@ -856,12 +856,47 @@ await kit.process_inbound(
 # AI sees the image and responds with analysis
 ```
 
-An event whose content extracts to nothing (a captionless image on a provider
-without vision, an upload a host stores with an empty body and its files in
-metadata) is omitted from the turn's transcript. `AIChannel(describe_empty_event=...)`
-gives the host the word: a callable asked only for such an event, whose text
-stands in for it in the history and the turn's input, `None` keeping the
-omission. The stored event is never touched.
+A media's URL is a link (`https://…`, handed to the provider as it is), a
+`data:` URI, or a **reference**: `<scheme>://…` in a scheme your application
+chooses, naming a media it keeps in private storage. Hand the framework a
+`media_resolver` and every AI channel asks it for the bytes as it builds a
+turn; the store and every broadcast keep the reference alone.
+
+```python
+async def resolve(media: MediaContent, room_id: str) -> bytes | None:
+    # Any participant can write a reference: answer only for this room's media.
+    return await storage.read(media.url, room_id=room_id)
+
+kit = RoomKit(media_resolver=resolve)
+
+await kit.process_inbound(
+    InboundMessage(
+        channel_id="ws-user",
+        sender_id="user",
+        content=MediaContent(url="media://photo-42", mime_type="image/jpeg", filename="lamp.jpg"),
+    )
+)
+```
+
+Per turn, the newest four images authors sent go to a model that sees, history
+and input together, each with its author's words (`AIChannel(max_author_images=...)`
+changes the bound, `None` removes it). Only PNG, JPEG, GIF and WebP up to 5 MB
+go as images. Anything else takes the image's place as a short mention, never a
+failed turn: `[Media: contract.pdf]` for a document or a model without vision,
+`[Earlier image not shown: …]` past the bound, `[Image unavailable: …]` for a
+reference that does not resolve, `[Image refused by the model's provider: …]`
+for an image a provider refused on an earlier turn. A `file:`, `ftp:`,
+`javascript:` or schemeless URL is refused when the `MediaContent` is built. A
+transport channel receives the reference as it is: resolve it yourself where a
+transport needs the media.
+
+A captionless media alone in its event, on a provider without vision, and an
+upload a host stores with an empty body and its files in metadata, extract to
+nothing. `AIChannel(describe_empty_event=...)` gives the host the word: a
+callable asked only for such an event, whose text stands in for it in the
+history and the turn's input. Without one, or when it answers `None`, the media
+reads as its label (`[Media: lamp.jpg]`) and the empty upload is omitted. The
+stored event is never touched.
 
 ```python
 def describe_upload(event):
