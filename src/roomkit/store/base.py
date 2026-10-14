@@ -112,10 +112,16 @@ class ConversationStore(ABC):
     async def update_room(self, room: Room) -> Room:
         """Update an existing room.
 
-        ``Room.delivered_index`` is store-managed (see
-        :meth:`advance_delivered_index`): implementations SHOULD NOT let a
-        caller's stale copy rewind it. The shipped stores exclude it from
-        this write path.
+        ``Room.delivered_index`` (see :meth:`advance_delivered_index`),
+        ``Room.event_count`` and ``Room.latest_index`` (moved by committing
+        an event) are store-managed: implementations SHOULD NOT let a
+        caller's stale copy rewind them. The shipped stores keep the stored
+        values and return the room with them; a store that does so MUST
+        override :meth:`advance_delivered_index` and :meth:`commit_event`,
+        whose defaults write these fields through this method.
+        ``Room.timers`` is the caller's, ``last_activity_at`` included:
+        :meth:`~roomkit.RoomKit.set_room_timers` sets the idle clock through
+        it.
         """
         ...
 
@@ -528,7 +534,9 @@ class ConversationStore(ABC):
         The default implementation is **NOT atomic** — it indexes, inserts,
         then updates the room in separate steps. Persistent backends that may be
         shared across processes MUST override this with a single storage
-        transaction.
+        transaction. It writes the counters through :meth:`update_room`, so a
+        store whose ``update_room`` keeps the stored counters (as the shipped
+        stores do) MUST override it too.
         """
         indexed = await self.add_event_auto_index(room_id, event)
         room = await self.get_room(room_id)

@@ -33,6 +33,8 @@ class Room(BaseModel):
     # delivery lane, and it must reach the same verdict as every other.
     agent_response_policy: AgentResponsePolicy = AgentResponsePolicy.AGENT_CHAIN
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Store-managed, like delivered_index: committing an event moves them, and
+    # update_room() keeps the stored values over a caller's copy.
     event_count: int = Field(default=0, ge=0)
     latest_index: int = Field(default=0, ge=0)
     # Highest event index whose delivery set has executed (RFC §10.1 step 14);

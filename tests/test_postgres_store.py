@@ -535,16 +535,23 @@ class TestPostgresStore:
     async def test_update_room(self) -> None:
         store, mock_conn = _make_store_with_pool()
         room = _make_room()
-        mock_conn.fetchval.return_value = room.delivered_index
+        mock_conn.fetchrow.return_value = {
+            "delivered_index": 4,
+            "event_count": 7,
+            "latest_index": 6,
+        }
         result = await store.update_room(room)
         assert result.id == room.id
-        call_args = mock_conn.fetchval.call_args
-        assert "UPDATE rooms" in call_args[0][0]
-        assert "delivered_index=" not in call_args[0][0]
+        # The store-managed fields come back as stored, never as given.
+        assert (result.delivered_index, result.event_count, result.latest_index) == (4, 7, 6)
+        sql = mock_conn.fetchrow.call_args[0][0]
+        assert "UPDATE rooms" in sql
+        for column in ("delivered_index=", "event_count=", "latest_index="):
+            assert column not in sql
 
     async def test_update_room_not_found(self) -> None:
         store, mock_conn = _make_store_with_pool()
-        mock_conn.fetchval.return_value = None
+        mock_conn.fetchrow.return_value = None
         with pytest.raises(RoomNotFoundError):
             await store.update_room(_make_room())
 

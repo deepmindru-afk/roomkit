@@ -69,6 +69,31 @@ async def test_a_stale_copy_neither_rewinds_nor_reports_an_old_delivered_index(
         await contract_store.delete_room(room.id)
 
 
+async def test_a_stale_copy_does_not_rewind_the_event_counters(
+    contract_store: ConversationStore,
+) -> None:
+    """event_count and latest_index move when an event is committed; a copy
+    read before two commits must not take them back to where they were."""
+    room = await contract_store.create_room(Room(id=uuid4().hex))
+    try:
+        stale = await contract_store.get_room(room.id)
+        assert stale is not None
+        for i in range(2):
+            await contract_store.commit_event(room.id, make_event(room_id=room.id, body=str(i)))
+
+        updated = await contract_store.update_room(
+            stale.model_copy(update={"status": RoomStatus.PAUSED})
+        )
+        stored = await contract_store.get_room(room.id)
+
+        assert updated.status == RoomStatus.PAUSED
+        assert stored is not None and stored.status == RoomStatus.PAUSED
+        assert (updated.event_count, updated.latest_index) == (2, 1)
+        assert (stored.event_count, stored.latest_index) == (2, 1)
+    finally:
+        await contract_store.delete_room(room.id)
+
+
 async def _rooms_created_out_of_order(store: ConversationStore) -> tuple[str, list[str]]:
     """Five rooms of one organization, stored in an order their creation
     times contradict, two of them created at the same instant."""

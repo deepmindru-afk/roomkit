@@ -114,6 +114,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SQLiteStore.find_rooms()` pages in SQL (RMK-726): it read and decoded
   every matching room, then cut the page in Python. With a
   `metadata_filter` it stops reading once the page is full.
+- `update_room()` keeps the stored `event_count` and `latest_index`, in
+  every store (RMK-727): a copy of the room read before events were
+  committed took them back, and `event_count` never caught up. They are
+  store-managed like `delivered_index`, and the room returned carries the
+  stored values. `timers` stays the caller's: `set_room_timers()` sets
+  `last_activity_at` through it.
 
 ## [0.101.0] — 2026-10-13
 

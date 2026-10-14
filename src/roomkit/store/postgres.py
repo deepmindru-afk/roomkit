@@ -600,32 +600,34 @@ class PostgresStore(ConversationStore):
         return _row_to_room(row)
 
     async def update_room(self, room: Room) -> Room:
-        # delivered_index is store-managed (advance_delivered_index): the
-        # column is not part of this write, so a stale copy cannot rewind it,
-        # and the room returned carries the stored value.
+        # delivered_index, event_count and latest_index are store-managed
+        # (advance_delivered_index, commit_event): their columns are not part
+        # of this write, so a stale copy cannot rewind them, and the room
+        # returned carries the stored values.
         with self._query_span("update_room", "rooms"):
             async with self._acquire() as conn:
-                delivered = await conn.fetchval(
-                    "UPDATE rooms SET organization_id=$2, status=$3, event_count=$4,"
-                    " latest_index=$5, metadata=$6, timers=$7, agent_response_policy=$8,"
-                    " updated_at=$9, closed_at=$10"
-                    " WHERE id=$1 RETURNING delivered_index",
+                stored = await conn.fetchrow(
+                    "UPDATE rooms SET organization_id=$2, status=$3, metadata=$4, timers=$5,"
+                    " agent_response_policy=$6, updated_at=$7, closed_at=$8"
+                    " WHERE id=$1 RETURNING delivered_index, event_count, latest_index",
                     room.id,
                     room.organization_id,
                     room.status.value,
-                    room.event_count,
-                    room.latest_index,
                     room.metadata,
                     room.timers.model_dump(mode="json"),
                     room.agent_response_policy.value,
                     room.updated_at,
                     room.closed_at,
                 )
-        if delivered is None:
+        if stored is None:
             raise RoomNotFoundError(room.id)
-        if room.delivered_index != delivered:
-            room = room.model_copy(update={"delivered_index": delivered})
-        return room
+        return room.model_copy(
+            update={
+                "delivered_index": stored["delivered_index"],
+                "event_count": stored["event_count"],
+                "latest_index": stored["latest_index"],
+            }
+        )
 
     async def room_exists(self, room_id: str) -> bool:
         """Existence, not the row — routing asks this per message."""

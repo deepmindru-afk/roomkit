@@ -655,29 +655,37 @@ class SQLiteStore(ConversationStore):
         return await self._run(self._x_update_room, room)
 
     def _x_update_room(self, room: Room) -> Room:
-        # delivered_index is store-managed (advance_delivered_index): the
-        # column is not part of this write, so a stale copy cannot rewind it.
-        cur = self._db().execute(
-            "UPDATE rooms SET created_ts=?, organization_id=?, status=?, data=? WHERE id=?",
-            (
-                _ts(room.created_at),
-                room.organization_id,
-                str(room.status),
-                room.model_dump_json(),
-                room.id,
-            ),
-        )
-        if cur.rowcount == 0:
-            from roomkit.core.framework import RoomNotFoundError
+        # delivered_index, event_count and latest_index are store-managed
+        # (advance_delivered_index, commit_event): the room written carries
+        # the stored ones, so a stale copy cannot rewind them.
+        conn = self._db()
+        with _write_transaction(conn):
+            stored = conn.execute(
+                "SELECT delivered_index, json_extract(data, '$.event_count'),"
+                " json_extract(data, '$.latest_index') FROM rooms WHERE id=?",
+                (room.id,),
+            ).fetchone()
+            if stored is None:
+                from roomkit.core.framework import RoomNotFoundError
 
-            raise RoomNotFoundError(room.id)
-        delivered = (
-            self._db()
-            .execute("SELECT delivered_index FROM rooms WHERE id=?", (room.id,))
-            .fetchone()
-        )
-        if delivered is not None and room.delivered_index != delivered[0]:
-            room = room.model_copy(update={"delivered_index": delivered[0]})
+                raise RoomNotFoundError(room.id)
+            room = room.model_copy(
+                update={
+                    "delivered_index": stored[0],
+                    "event_count": stored[1],
+                    "latest_index": stored[2],
+                }
+            )
+            conn.execute(
+                "UPDATE rooms SET created_ts=?, organization_id=?, status=?, data=? WHERE id=?",
+                (
+                    _ts(room.created_at),
+                    room.organization_id,
+                    str(room.status),
+                    room.model_dump_json(),
+                    room.id,
+                ),
+            )
         return room
 
     async def room_exists(self, room_id: str) -> bool:

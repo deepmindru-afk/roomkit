@@ -155,11 +155,17 @@ class InMemoryStore(ConversationStore):
             from roomkit.core.framework import RoomNotFoundError
 
             raise RoomNotFoundError(room.id)
-        # delivered_index is store-managed (advance_delivered_index): a
-        # caller's stale copy must never rewind the delivery-lane cursor.
+        # delivered_index, event_count and latest_index are store-managed
+        # (advance_delivered_index, add_event): a caller's stale copy must
+        # never rewind them.
         current = self._rooms[room.id]
-        if room.delivered_index != current.delivered_index:
-            room = room.model_copy(update={"delivered_index": current.delivered_index})
+        room = room.model_copy(
+            update={
+                "delivered_index": current.delivered_index,
+                "event_count": current.event_count,
+                "latest_index": current.latest_index,
+            }
+        )
         self._rooms[room.id] = room
         return room
 
