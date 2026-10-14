@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -664,8 +665,6 @@ class TestDpdfnetConfig:
             self._config_cls()(**kwargs)
 
     def test_sherpa_without_dpdfnet_is_refused(self) -> None:
-        from types import SimpleNamespace
-
         old_sherpa = SimpleNamespace(
             __version__="1.12.29",
             OfflineSpeechDenoiser=MagicMock(),

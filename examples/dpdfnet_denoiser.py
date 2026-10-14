@@ -41,11 +41,16 @@ Run with:
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 import wave
 from pathlib import Path
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from shared import setup_logging
 
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.pipeline import AudioPipeline, AudioPipelineConfig
@@ -53,6 +58,8 @@ from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
     SherpaOnnxDenoiserConfig,
     SherpaOnnxDenoiserProvider,
 )
+
+logger = setup_logging("dpdfnet_denoiser")
 
 MODELS = Path(__file__).resolve().parent / "models"
 DEFAULT_MODEL = {"dpdfnet": "dpdfnet2.onnx", "gtcrn": "gtcrn_simple.onnx"}
@@ -130,16 +137,27 @@ def main() -> None:
     noisy = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
     denoised = np.frombuffer(bytes(out), dtype=np.int16).astype(np.float32)
     delay = rate * 50 // 1000 if args.model_type == "dpdfnet" else 0
-    print(f"{args.model_type} ({model.name}) on {args.input.name}: {seconds:.1f} s at {rate} Hz")
-    print(f"  model load (first frame): {timings[0] * 1000:.0f} ms")
-    print(
-        f"  per {FRAME_MS} ms frame: mean {steady.mean():.2f} ms, "
-        f"p95 {np.percentile(steady, 95):.2f} ms, real-time factor {steady.sum() / 1000 / seconds:.3f}"
+    logger.info(
+        "%s (%s) on %s: %.1f s at %d Hz",
+        args.model_type,
+        model.name,
+        args.input.name,
+        seconds,
+        rate,
     )
-    print(
-        f"  noise floor lowered by {quiet_frames_db(noisy, denoised[delay:], frame_bytes // 2):.1f} dB"
+    logger.info("model load (first frame): %.0f ms", timings[0] * 1000)
+    logger.info(
+        "per %d ms frame: mean %.2f ms, p95 %.2f ms, real-time factor %.3f",
+        FRAME_MS,
+        steady.mean(),
+        np.percentile(steady, 95),
+        steady.sum() / 1000 / seconds,
     )
-    print(f"  wrote {output}")
+    logger.info(
+        "noise floor lowered by %.1f dB",
+        quiet_frames_db(noisy, denoised[delay:], frame_bytes // 2),
+    )
+    logger.info("wrote %s", output)
 
 
 if __name__ == "__main__":

@@ -32,12 +32,11 @@ import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.pipeline.denoiser.base import DenoiserProvider
 
 if TYPE_CHECKING:
     import numpy as np
-
-    from roomkit.voice.audio_frame import AudioFrame
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +86,6 @@ def _resample_linear(
 
 def _with_samples(frame: AudioFrame, data: bytes) -> AudioFrame:
     """``frame`` carrying denoised ``data``, its timing and metadata kept."""
-    from roomkit.voice.audio_frame import AudioFrame
-
     metadata = dict(frame.metadata)
     metadata["noise_suppressed"] = True
     return AudioFrame(
