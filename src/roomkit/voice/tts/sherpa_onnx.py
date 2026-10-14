@@ -1,4 +1,4 @@
-"""sherpa-onnx text-to-speech provider."""
+"""sherpa-onnx text-to-speech provider: VITS/Piper and Kokoro models."""
 
 from __future__ import annotations
 
@@ -23,20 +23,31 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+_MODEL_TYPES = ("vits", "kokoro")
+
+
 @dataclass
 class SherpaOnnxTTSConfig:
     """Configuration for the sherpa-onnx TTS provider.
 
     Attributes:
-        model: Path to VITS/Piper ``.onnx`` model.
+        model: Path to the ``.onnx`` model.
         tokens: Path to ``tokens.txt``.
-        data_dir: Path to espeak-ng data directory (Piper models).
-        lexicon: Path to optional lexicon file.
-        speaker_id: Speaker ID for multi-speaker models.
+        data_dir: Path to espeak-ng data directory (Piper and Kokoro models).
+        lexicon: Path to optional lexicon file. A multi-lang Kokoro takes
+            several, comma-separated (``lexicon-us-en.txt,lexicon-zh.txt``).
+        speaker_id: Speaker ID for multi-speaker models; for Kokoro, the
+            index of a voice in ``voices.bin`` (``ff_siwis`` is 30 in v1.0).
         speed: Speech speed multiplier (1.0 = normal).
-        sample_rate: Output sample rate (usually determined by the model).
+        sample_rate: The rate a caller sets its output up for (Kokoro: 24000).
+            Audio always carries the model's own rate.
         num_threads: Number of CPU threads for inference.
         provider: ONNX execution provider (``"cpu"`` or ``"cuda"``).
+        model_type: ``"vits"`` (VITS/Piper) or ``"kokoro"``.
+        voices: Path to Kokoro's ``voices.bin``, required with ``"kokoro"``.
+        lang: Language espeak-ng reads the text in for a multi-lang Kokoro
+            (``"fr"``, ``"es"``, ``"it"``...). Empty, any text that is not
+            Chinese is read as English: French comes out mispronounced.
     """
 
     model: str = ""
@@ -48,6 +59,18 @@ class SherpaOnnxTTSConfig:
     sample_rate: int = 22050
     num_threads: int = 2
     provider: str = "cpu"
+    model_type: str = "vits"
+    voices: str = ""
+    lang: str = ""
+
+    def __post_init__(self) -> None:
+        if self.model_type not in _MODEL_TYPES:
+            raise ValueError(
+                f"Unknown sherpa-onnx TTS model_type {self.model_type!r}; expected one of "
+                f"{_MODEL_TYPES}"
+            )
+        if self.model_type == "kokoro" and not self.voices:
+            raise ValueError("A Kokoro model needs its voices.bin in SherpaOnnxTTSConfig.voices")
 
 
 def _float32_to_pcm_s16le(samples: list[float]) -> bytes:
@@ -126,7 +149,7 @@ def _split_text(text: str, max_chars: int = 300) -> list[str]:
 
 
 class SherpaOnnxTTSProvider(TTSProvider):
-    """Text-to-speech provider using sherpa-onnx with VITS/Piper models."""
+    """Text-to-speech provider using sherpa-onnx with VITS/Piper or Kokoro models."""
 
     def __init__(self, config: SherpaOnnxTTSConfig) -> None:
         try:
@@ -153,8 +176,9 @@ class SherpaOnnxTTSProvider(TTSProvider):
         if self._tts is None:
             cfg = self._config
             logger.info(
-                "Loading TTS model: model=%s, tokens=%s, data_dir=%s, "
+                "Loading TTS model: type=%s, model=%s, tokens=%s, data_dir=%s, "
                 "lexicon=%s, provider=%s, num_threads=%d",
+                cfg.model_type,
                 cfg.model,
                 cfg.tokens,
                 cfg.data_dir,
@@ -162,14 +186,8 @@ class SherpaOnnxTTSProvider(TTSProvider):
                 cfg.provider,
                 cfg.num_threads,
             )
-            vits_config = self._sherpa.OfflineTtsVitsModelConfig(
-                model=cfg.model,
-                tokens=cfg.tokens,
-                data_dir=cfg.data_dir,
-                lexicon=cfg.lexicon,
-            )
             model_config = self._sherpa.OfflineTtsModelConfig(
-                vits=vits_config,
+                **self._model_kwargs(),
                 num_threads=cfg.num_threads,
                 provider=cfg.provider,
             )
@@ -181,6 +199,27 @@ class SherpaOnnxTTSProvider(TTSProvider):
                 self._tts.num_speakers,
             )
         return self._tts
+
+    def _model_kwargs(self) -> dict[str, Any]:
+        """The model's own section of sherpa-onnx's ``OfflineTtsModelConfig``."""
+        cfg = self._config
+        if cfg.model_type == "kokoro":
+            kokoro = self._sherpa.OfflineTtsKokoroModelConfig(
+                model=cfg.model,
+                voices=cfg.voices,
+                tokens=cfg.tokens,
+                data_dir=cfg.data_dir,
+                lexicon=cfg.lexicon,
+                lang=cfg.lang,
+            )
+            return {"kokoro": kokoro}
+        vits = self._sherpa.OfflineTtsVitsModelConfig(
+            model=cfg.model,
+            tokens=cfg.tokens,
+            data_dir=cfg.data_dir,
+            lexicon=cfg.lexicon,
+        )
+        return {"vits": vits}
 
     async def warmup(self) -> None:
         """Pre-load the TTS model (CUDA init can be slow)."""
@@ -253,6 +292,9 @@ class SherpaOnnxTTSProvider(TTSProvider):
         tts = self._get_tts()
         sid = int(voice) if voice is not None else self._config.speaker_id
         speed = self._config.speed
+        # The rate the model speaks at, which config.sample_rate may not match
+        # (Kokoro speaks 24 kHz, a Piper model 16, 22.05 or 44.1 kHz).
+        sample_rate = tts.sample_rate
         text_chunks = _split_text(text)
 
         queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
@@ -263,7 +305,7 @@ class SherpaOnnxTTSProvider(TTSProvider):
             pcm = _float32_to_pcm_s16le(samples)
             chunk = AudioChunk(
                 data=pcm,
-                sample_rate=self._config.sample_rate,
+                sample_rate=sample_rate,
                 format="pcm_s16le",
                 is_final=False,
             )
@@ -289,7 +331,7 @@ class SherpaOnnxTTSProvider(TTSProvider):
         # Yield final marker
         yield AudioChunk(
             data=b"",
-            sample_rate=self._config.sample_rate,
+            sample_rate=sample_rate,
             format="pcm_s16le",
             is_final=True,
         )

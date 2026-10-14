@@ -432,6 +432,70 @@ class TestSherpaOnnxTTSProvider:
         for c in chunks[:-1]:
             assert len(c.data) > 0
 
+    @pytest.mark.asyncio
+    async def test_stream_carries_the_models_sample_rate(self) -> None:
+        # Kokoro speaks 24 kHz: chunks labelled with the config's 22.05 kHz
+        # default would play slowed down.
+        sherpa = _mock_sherpa_module()
+        tts_mock = MagicMock(sample_rate=24000)
+        tts_mock.generate.side_effect = lambda *_a, callback=None, **_k: callback([0.1], 1.0)
+        sherpa.OfflineTts.return_value = tts_mock
+        provider = self._make_provider(sherpa, model="model.onnx", tokens="tokens.txt")
+
+        chunks = [chunk async for chunk in provider.synthesize_stream("Bonjour.")]
+
+        assert {chunk.sample_rate for chunk in chunks} == {24000}
+
+    def test_vits_is_the_default_model_type(self) -> None:
+        sherpa = _mock_sherpa_module()
+        provider = self._make_provider(sherpa, model="piper.onnx", tokens="tokens.txt")
+
+        provider._get_tts()
+
+        sherpa.OfflineTtsKokoroModelConfig.assert_not_called()
+        sherpa.OfflineTtsVitsModelConfig.assert_called_once()
+        kwargs = sherpa.OfflineTtsModelConfig.call_args.kwargs
+        assert kwargs["vits"] is sherpa.OfflineTtsVitsModelConfig.return_value
+        assert "kokoro" not in kwargs
+
+    def test_kokoro_model_is_built_with_its_voices_and_language(self) -> None:
+        sherpa = _mock_sherpa_module()
+        provider = self._make_provider(
+            sherpa,
+            model_type="kokoro",
+            model="model.int8.onnx",
+            voices="voices.bin",
+            tokens="tokens.txt",
+            data_dir="espeak-ng-data",
+            lexicon="lexicon-us-en.txt,lexicon-zh.txt",
+            lang="fr",
+            speaker_id=30,
+        )
+
+        provider._get_tts()
+
+        sherpa.OfflineTtsVitsModelConfig.assert_not_called()
+        sherpa.OfflineTtsKokoroModelConfig.assert_called_once_with(
+            model="model.int8.onnx",
+            voices="voices.bin",
+            tokens="tokens.txt",
+            data_dir="espeak-ng-data",
+            lexicon="lexicon-us-en.txt,lexicon-zh.txt",
+            lang="fr",
+        )
+        kwargs = sherpa.OfflineTtsModelConfig.call_args.kwargs
+        assert kwargs["kokoro"] is sherpa.OfflineTtsKokoroModelConfig.return_value
+        assert "vits" not in kwargs
+        assert provider.default_voice == "30"
+
+    def test_config_refuses_kokoro_without_voices_and_unknown_types(self) -> None:
+        from roomkit.voice.tts.sherpa_onnx import SherpaOnnxTTSConfig
+
+        with pytest.raises(ValueError, match=r"voices\.bin"):
+            SherpaOnnxTTSConfig(model_type="kokoro", model="model.onnx")
+        with pytest.raises(ValueError, match="Unknown sherpa-onnx TTS model_type"):
+            SherpaOnnxTTSConfig(model_type="matcha")
+
     def test_float32_to_pcm_conversion(self) -> None:
         from roomkit.voice.tts.sherpa_onnx import _float32_to_pcm_s16le
 

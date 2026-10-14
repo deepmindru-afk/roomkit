@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Kokoro speaks through `SherpaOnnxTTSProvider`, on the CPU or a CUDA GPU:
+  `SherpaOnnxTTSConfig(model_type="kokoro", voices="voices.bin", lang="fr", ...)`
+  loads the Kokoro-82M models sherpa-onnx packages (`kokoro-int8-multi-lang-v1_0`,
+  126 MB: 54 voices in American and British English, Spanish, French, Hindi,
+  Italian, Japanese, Brazilian Portuguese and Mandarin). `lang` names the
+  espeak-ng language of text that is neither English nor Chinese: without it
+  the multi-lang model reads French as English ("je suis votre" came back from
+  Whisper as "Jisui, vente"); with `lang="fr"` the same sentence transcribed
+  word for word. A voice is an index into `voices.bin` (`ff_siwis` is 30). On
+  two threads of a desktop CPU the int8 model renders a sentence in about two
+  thirds of its spoken length. `model_type` defaults to `"vits"`, so Piper
+  configurations are unchanged; an unknown type, or Kokoro without `voices`,
+  is refused when the config is built. Example: `examples/kokoro_tts_room.py`.
+
 ### Changed
 
 - `SIPVideoBackend`, `RTPVideoBackend` and `FastRTCVideoBackend` are
@@ -123,6 +139,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PostgresStore.claim_voice_delivery()` refuses a room that does not exist
   with `ValueError`, as the other stores do (RMK-730), instead of letting
   asyncpg's foreign key violation through. The ABC states it.
+
+- `SherpaOnnxTTSProvider.synthesize_stream()` labels its chunks with the
+  model's sample rate, as `synthesize()` already did, instead of
+  `SherpaOnnxTTSConfig.sample_rate`. A config left at its 22,050 Hz default
+  streamed a 24 kHz Kokoro or a 44.1 kHz Piper voice (`fr_FR-tom-medium`)
+  slowed down and lowered.
 
 ## [0.101.0] — 2026-10-13
 
