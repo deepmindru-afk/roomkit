@@ -28,7 +28,7 @@ from roomkit.models.tool_call import response_transcript
 from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
 from roomkit.telemetry.noop import NoopTelemetryProvider
 from roomkit.telemetry.redaction import redact
-from roomkit.voice.base import VoiceCapability, require_pcm16
+from roomkit.voice.base import AudioChunk, VoiceCapability, require_pcm16
 
 _NOOP = NoopTelemetryProvider()
 
@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
     from roomkit.voice.backends.base import VoiceBackend
-    from roomkit.voice.base import AudioChunk, VoiceSession
+    from roomkit.voice.base import VoiceSession
     from roomkit.voice.pipeline.config import AudioPipelineConfig
     from roomkit.voice.pipeline.engine import AudioPipeline
     from roomkit.voice.tts.base import TTSProvider
@@ -1367,40 +1367,42 @@ class VoiceTTSMixin:
             sample_rate = wf.getframerate()
             pcm_data = wf.readframes(wf.getnframes())
 
-        if text is not None:
-            await self._session_output_backend(session).send_transcription(
-                session, text, "assistant"
-            )
-
         playback = TTSPlaybackState(session_id=session.id, text=text or "(audio)")
-        with self._state_lock:
-            # Claimed as a response's playback is: the session's done event
-            # says it plays until send_audio() returns, so a barge-in and a
-            # cut read it as playing, not as an earlier playback's drain.
-            self._claim(session.id, playback)
-
+        # The application's audio does not wait, as say() does not: it cuts
+        # the playback under way (RFC §12.2). Claimed as a response's playback
+        # is, a barge-in and a cut read it as playing until send_audio()
+        # returns, not as an earlier playback's drain.
+        await self._make_way(session, playback, response=False)
         try:
-            # Wrap PCM as an AudioChunk stream so the outbound pipeline can
-            # resample from the WAV sample rate to the backend's codec rate.
-            from roomkit.voice.base import AudioChunk as OutChunk
-
-            async def _pcm_stream() -> AsyncIterator[OutChunk]:
-                yield OutChunk(
-                    data=pcm_data,
-                    sample_rate=sample_rate,
-                    channels=1,
-                    is_final=True,
-                )
-
-            audio_stream: AsyncIterator[OutChunk] = _pcm_stream()
-            if self._pipeline is not None or getattr(self, "_outbound_audio_taps", []):
-                audio_stream = self._wrap_outbound(session, audio_stream)
-            await self._session_output_backend(session).send_audio(session, audio_stream)
-            # Played whole: it joins the session's played total, which the echo
-            # guard reads (a cut one was counted at the cut).
-            self._count_played(playback, len(pcm_data) * 1000 // (2 * sample_rate))
+            await self._play_claimed(session, playback, pcm_data, sample_rate, text)
         finally:
+            # What was heard of it joins the session's played total, which the
+            # echo guard reads (a cut one was counted at the cut).
+            self._end_tts_turn(playback)
             self._mark_sent(session.id, playback)
+
+    async def _play_claimed(
+        self,
+        session: VoiceSession,
+        playback: TTSPlaybackState,
+        pcm_data: bytes,
+        sample_rate: int,
+        text: str | None,
+    ) -> None:
+        """Send a WAV's PCM on *session*, already *playback*'s, measured as it goes out."""
+        backend = self._session_output_backend(session)
+        if text is not None:
+            await backend.send_transcription(session, text, "assistant")
+
+        # Wrap PCM as an AudioChunk stream so the outbound pipeline can
+        # resample from the WAV sample rate to the backend's codec rate.
+        async def _pcm_stream() -> AsyncIterator[AudioChunk]:
+            yield AudioChunk(data=pcm_data, sample_rate=sample_rate, channels=1, is_final=True)
+
+        audio_stream = _observe_audio(playback, None, _pcm_stream())
+        if self._pipeline is not None or getattr(self, "_outbound_audio_taps", []):
+            audio_stream = self._wrap_outbound(session, audio_stream)
+        await backend.send_audio(session, audio_stream)
 
 
 def _observe_audio(

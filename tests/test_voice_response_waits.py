@@ -240,7 +240,10 @@ async def test_say_while_a_response_waits_plays_before_it_never_with_it() -> Non
 
 async def test_a_response_cuts_a_play_under_way() -> None:
     """``play()`` is the application's audio, not the agent's words: a response
-    cuts it, as before, even after a spoken playback left its event set."""
+    cuts it, as before, even after a spoken playback left its event set.
+
+    The play takes over the response draining its echo as ``say()`` does,
+    reporting it cut."""
     backend = _PacedBackend()
     kit, channel, session, cancelled = await _room(_ChunkTTS(0.1), backend)
     await _respond(channel, session, "Hello.")
@@ -251,7 +254,10 @@ async def test_a_response_cuts_a_play_under_way() -> None:
     await kit.close()
 
     assert backend.heard() == ["Hello.", "Your answer."]
-    assert [(event.reason, event.text) for event in cancelled] == [("new_tts", "Hold music")]
+    assert [(event.reason, event.text) for event in cancelled] == [
+        ("new_tts", "Hello."),
+        ("new_tts", "Hold music"),
+    ]
 
 
 async def test_a_cut_playbacks_drain_leaves_the_next_one_playing() -> None:
@@ -334,6 +340,38 @@ async def test_a_play_reads_as_playing_until_its_audio_is_sent() -> None:
     await kit.close()
 
     assert playing.stopped_at is not None
+
+
+async def test_a_play_cuts_the_playback_under_way() -> None:
+    """``play()`` does not wait, as ``say()`` does not: the playback under way
+    is cut and reported, never left to play under it."""
+    backend = _PacedBackend()
+    kit, channel, session, cancelled = await _room(_ChunkTTS(3.0), backend)
+    answer = _respond(channel, session, "A long answer.")
+    await asyncio.sleep(0.2)
+    await channel.play(session, _wav(0.3), text="Hold music")
+    await answer
+    await kit.close()
+
+    assert backend.heard() == ["Hold music"]
+    assert [(event.reason, event.text) for event in cancelled] == [("new_tts", "A long answer.")]
+
+
+async def test_a_cut_play_reports_what_was_heard_of_it() -> None:
+    """A ``play()`` cut short reports the audio heard of it, which joins the
+    session's played total the echo guard reads."""
+    backend = _PacedBackend()
+    kit, channel, session, cancelled = await _room(_ChunkTTS(0.1), backend)
+    hold = asyncio.create_task(channel.play(session, _wav(3.0), text="Hold music"))
+    await asyncio.sleep(0.5)
+    await channel.interrupt(session, reason="barge_in")
+    await hold
+    await kit.close()
+
+    assert [event.text for event in cancelled] == ["Hold music"]
+    assert 300 <= cancelled[0].audio_position_ms <= 1000
+    played = channel._session_played_ms[session.id]  # noqa: SLF001
+    assert 300 <= played <= 1000
 
 
 class _StuckBackend(MockVoiceBackend):
