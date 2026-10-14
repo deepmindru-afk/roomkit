@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.102.0] — 2026-10-14
+
 ### Added
 
 - Kokoro speaks through `SherpaOnnxTTSProvider`, on the CPU or a CUDA GPU:
@@ -25,20 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `SIPVideoBackend`, `RTPVideoBackend` and `FastRTCVideoBackend` are
-  `AudioVideoBackend`s: voice backends whose calls' video is served by
-  their `video` facet, a `VideoBackend` whose sessions carry the call's id
-  (RFC §12.8.3, RMK-723). Their own `on_session_ready` and
-  `on_client_disconnected` report every call; `backend.video.on_session_ready`
-  and `backend.video.on_client_disconnected` report its video. They are no
-  longer `VideoBackend`s: hand `backend.video` to whatever takes one
-  (`VideoChannel("cam", backend=backend.video)`). A custom combined backend
-  subclasses `AudioVideoBackend` (and `CallVideoBackend` for its video) to
-  work with `AudioVideoChannel`. New in `roomkit.video`:
+- **BREAKING — `SIPVideoBackend`, `RTPVideoBackend` and `FastRTCVideoBackend`
+  are no longer `VideoBackend`s** (RFC §12.8.3, RMK-723). They are
+  `AudioVideoBackend`s: voice backends whose calls' video is served by their
+  `video` facet, a `VideoBackend` whose sessions carry the call's id. Their
+  own `on_session_ready` and `on_client_disconnected` report every call;
+  `backend.video.on_session_ready` and `backend.video.on_client_disconnected`
+  report its video. Migration: hand `backend.video` to whatever takes a
+  `VideoBackend` (`VideoChannel("cam", backend=backend.video)`). A custom
+  combined backend subclasses `AudioVideoBackend` (and `CallVideoBackend` for
+  its video) to work with `AudioVideoChannel`. New in `roomkit.video`:
   `AudioVideoBackend`, `CallVideoBackend`.
 - `ConferenceChannel.info` is a property, like every channel's `info`
   (RFC §6.1, RMK-724): code reading `channel.info` on any channel gets the
-  map, where a conference handed it a bound method.
+  map, where a conference handed it a bound method. Source-compatible:
+  `channel.info()` still returns the map (see Deprecated); only a check such
+  as `callable(channel.info)` sees the change.
 - `InMemoryDeliveryBackend.get_dead_letter_items()` returns the most
   recently dead-lettered items first, as `RedisDeliveryBackend` does
   (RMK-725): with a `limit`, both now return the same items. The ABC states
@@ -48,16 +52,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   followed insertion order in the in-memory and SQLite stores, and
   PostgresStore left rooms created at the same instant in no set order, so
   a page boundary fell on different rooms.
-- A voice response no longer cuts the agent off, which 0.101.0 brought in
-  without saying it changed a contract (RMK-704, RMK-735, RFC §12.2): every
-  text the voice channel speaks as a response, an AI reply or a delivery,
-  `Immediate` included, which used to cut the playback under way, waits
-  until that playback has been sent whole, and `ON_TTS_CANCELLED` with
-  reason `new_tts` no longer fires when a response reaches the agent's
-  words. `say()` still cuts the playback under way, and the responses
-  waiting play after it; a response cuts audio played with `play()`.
-  Migration: to have a delivery cut the agent off, call
-  `VoiceChannel.interrupt(session)` or `interrupt_all(room_id)` before it.
+- **BREAKING — a voice response no longer cuts the agent off**, a contract
+  change 0.101.0 made without announcing it (RMK-704, RMK-735, RFC §12.2):
+  every text the voice channel speaks as a response, an AI reply or a
+  delivery, `Immediate` included, which used to cut the playback under way,
+  waits until that playback has been sent whole, and `ON_TTS_CANCELLED` with
+  reason `new_tts` no longer fires when a response reaches the agent's words.
+  `say()` still cuts the playback under way, and the responses waiting play
+  after it; a response cuts audio played with `play()`. Migration: to have a
+  delivery cut the agent off, call `VoiceChannel.interrupt(session)` or
+  `interrupt_all(room_id)` before it.
+- **BREAKING — `DeliveryItem.max_retries` counts retries after the first
+  attempt**, as `RetryPolicy.max_retries` does (RMK-722): 3 meant three
+  attempts, it now means four. Migration: set it one lower to keep the
+  number of attempts.
+- SQLite files migrate to schema 6 the first time 0.102.0 opens them, and
+  the migration is one-way (RMK-721): `read_markers` holds the event index
+  (see Fixed), and 0.101.0 and earlier refuse a schema 6 file with
+  `SQLiteSchemaError`. Copy the file first if you may need to go back.
 
 ### Deprecated
 
@@ -100,15 +112,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty room read on `PostgresStore` set a marker at 0, so the room's first
   event, index 0, arrived already read; an empty room now gets no marker.
   `PostgresStore.mark_read` took an event of another room; it now marks
-  nothing. The in-memory and SQLite stores kept a position, not an index:
-  the marker shifted when an earlier event was deleted and was wrong when
-  events were written out of index order, and an older event marked read
-  moved it back. SQLite files go to schema 6, `read_markers` holding the
-  event index; a marker on an event that no longer exists is dropped, which
-  reads as before (all unread). On `PostgresStore`, marking a missing room
-  read now does nothing instead of raising a foreign-key violation, as the
-  other stores do; a marker an earlier version set at 0 on an empty room
-  cannot be told from a read of event 0, and stays.
+  nothing. The in-memory and SQLite stores kept a position, not an index: the
+  marker shifted when an earlier event was deleted and was wrong when events
+  were written out of index order, and an older event marked read moved it
+  back. SQLite files go to schema 6, `read_markers` holding the event index
+  (one way: see Changed); a marker on an event that no longer exists is
+  dropped, which reads as before (all unread). On `PostgresStore`, marking a
+  missing room read now does nothing instead of raising a foreign-key
+  violation, as the other stores do; a marker an earlier version set at 0 on
+  an empty room cannot be told from a read of event 0, and stays.
 - A delivery that failed is attempted again after a delay, not at once
   (RMK-722). `InMemoryDeliveryBackend` and `RedisDeliveryBackend` put a
   nacked item straight back on the queue, so every retry went out within
@@ -119,11 +131,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backend (`retry_delay=0` retries at once). The Redis backend keeps a
   waiting retry in a sorted set (`{stream_prefix}:delayed`) on the server's
   clock; a worker queues it again once due, atomically. `get_queue_depth()`
-  counts waiting retries. `DeliveryItem.max_retries` now counts retries after
-  the first attempt, as `RetryPolicy.max_retries` does: 3 meant three
-  attempts, it now means four. Retries waiting when a process goes back to
-  an earlier version stay in the delayed set, which that version does not
-  read.
+  counts waiting retries, and `max_retries` counts retries (see Changed).
+  Retries waiting when a process goes back to an earlier version stay in the
+  delayed set, which that version does not read.
 - A call on `SIPVideoBackend` reports itself to its channel, with or without
   video (RMK-723). The A/V backends were a `VoiceBackend` and a `VideoBackend`
   at once, two interfaces whose `on_session_ready` and
@@ -149,16 +159,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PostgresStore.claim_voice_delivery()` refuses a room that does not exist
   with `ValueError`, as the other stores do (RMK-730), instead of letting
   asyncpg's foreign key violation through. The ABC states it.
-
-- Gemini Live sees an image injected while audio flows: `inject_image` sends it as a
-  video frame (`send_realtime_input(video=...)`) instead of `media`, the deprecated
-  `mediaChunks` that `gemini-3.8-live` drops. Asked to describe a red circle and the
-  number 42 shown that way, it answered "I can't see the picture you're referring to";
-  sent as a frame, it described both. `gemini-2.5-flash-native-audio` read the image
-  either way. Checked live on 2026-10-14. A `prompt` sent with the image still reaches
-  `gemini-3.8-live` before it has taken the frame in (it answered without the picture
-  3 times out of 3, the prompt sent before or right after the frame; one second after,
-  it saw it): ask about an image in a later turn.
+- Gemini Live sees an image injected while audio flows: `inject_image` sends
+  it as a video frame (`send_realtime_input(video=...)`) instead of `media`,
+  the deprecated `mediaChunks` that `gemini-3.8-live` drops. Asked to
+  describe a red circle and the number 42 shown that way, it answered "I
+  can't see the picture you're referring to"; sent as a frame, it described
+  both. `gemini-2.5-flash-native-audio` read the image either way. Checked
+  live on 2026-10-14. A `prompt` sent with the image still reaches
+  `gemini-3.8-live` before it has taken the frame in (it answered without
+  the picture 3 times out of 3, the prompt sent before or right after the
+  frame; one second after, it saw it): ask about an image in a later turn.
 - `SherpaOnnxTTSProvider.synthesize_stream()` labels its chunks with the
   model's sample rate, as `synthesize()` already did, instead of
   `SherpaOnnxTTSConfig.sample_rate`. A config left at its 22,050 Hz default
@@ -194,18 +204,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or the living room lamp?") cuts it and is not heard, so the agent stops
   and says nothing; what they say next while nothing plays is heard.
 - An image a tool returned no longer blocks a room (RMK-708, RMK-738, RFC
-  §6.4). 0.101.0 replayed any image, so one the provider refuses (a link
-  that expired, an SVG, an oversized screenshot) came back on every later
-  turn and failed it. Only an image every vision provider takes is replayed
-  now: inline (a `data:` URI), PNG, JPEG, GIF or WebP, up to 2 MB, from a
-  live result, never one rebuilt from the store (the in-memory store handed
-  seeded images back); and a turn that replayed them and fails on a provider
-  error not retried replays none of the room's images after it. The images replayed are the
-  agent's own tool calls' in the room. They count in what the turn measures
-  before its history (RFC §20), a hook's `add_turn_note` joins the turn's
-  one notes section instead of opening a second after them, their labels
-  are cleaned of runtime-mark copies as the digest is, and the thinker's
-  transcript no longer quotes their header as the participant's words.
+  §6.4). 0.101.0 replayed any image, so one the provider refuses (a link that
+  expired, an SVG, an oversized screenshot) came back on every later turn and
+  failed it. Only an image every vision provider takes is replayed now:
+  inline (a `data:` URI), PNG, JPEG, GIF or WebP, up to 2 MB, from a live
+  result, never one rebuilt from the store (the in-memory store handed seeded
+  images back); and a turn that replayed them and fails on a provider error
+  not retried replays none of the room's images after it. The images replayed
+  are the agent's own tool calls' in the room. They count in what the turn
+  measures before its history (RFC §20), a hook's `add_turn_note` joins the
+  turn's one notes section instead of opening a second after them, their
+  labels are cleaned of runtime-mark copies as the digest is, and the
+  thinker's transcript no longer quotes their header as the participant's
+  words.
 - The tool digest no longer tells the agent that what it said came from a
   whole result (RMK-707, RMK-739): with the default eviction threshold, a
   large result reached the model as a placeholder on its own turn, and the
@@ -14644,7 +14655,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.101.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.102.0...HEAD
+[0.102.0]: https://github.com/roomkit-live/roomkit/compare/v0.101.0...v0.102.0
 [0.101.0]: https://github.com/roomkit-live/roomkit/compare/v0.100.0...v0.101.0
 [0.100.0]: https://github.com/roomkit-live/roomkit/compare/v0.99.0...v0.100.0
 [0.99.0]: https://github.com/roomkit-live/roomkit/compare/v0.98.0...v0.99.0
