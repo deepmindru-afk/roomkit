@@ -567,6 +567,11 @@ class VoiceChannel(
         #   AND from on_audio_played at real playback pace (backends that support it).
         #   Both share _last_output_level_at so they naturally deduplicate.
         pipeline.on_processed_frame(self._on_processed_frame_for_level)
+        self._wire_transport_signals(backend)
+
+    def _wire_transport_signals(self, backend: VoiceBackend) -> None:
+        """Listen to what *backend* reports of its sessions beyond their audio:
+        playback pace, its own barge-in detection, out-of-band DTMF."""
         if backend.supports_playback_callback:
             backend.on_audio_played(self._on_audio_played_for_level)
 
@@ -1034,9 +1039,10 @@ class VoiceChannel(
         browser participants on WebRTC. The added backend's inbound audio
         enters this channel's pipeline, and its session-ready and
         client-disconnected signals drive the channel's session lifecycle,
-        as for the backend given at construction. Everything addressed to one
-        of its sessions — bridged audio, TTS, assistant transcriptions, the
-        playback cancel of an interruption — goes out through it.
+        as for the backend given at construction, and so do its barge-in
+        detection and out-of-band DTMF. Everything addressed to one of its
+        sessions — bridged audio, TTS, assistant transcriptions, the playback
+        cancel of an interruption, DTMF — goes out through it.
 
         The pipeline is built once, for the primary backend's capabilities,
         so the channel must have been constructed with a backend. A session
@@ -1061,6 +1067,7 @@ class VoiceChannel(
         )
         backend.on_session_ready(self._on_session_ready)
         backend.on_client_disconnected(self._on_backend_disconnected)
+        self._wire_transport_signals(backend)
 
     def _added_backend_holding(self, session: VoiceSession) -> VoiceBackend | None:
         """The added transport that holds *session*, if one says it does."""

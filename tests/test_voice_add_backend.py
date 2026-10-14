@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,11 +21,15 @@ from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.room import Room
+from roomkit.recorder.base import MediaRecordingConfig, RoomRecorderBinding
+from roomkit.recorder.mock import MockMediaRecorder
+from roomkit.video.backends.av import AudioVideoBackend
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.base import AudioChunk, VoiceCapability
+from roomkit.voice.base import AudioChunk, VoiceCapability, VoiceSession
 from roomkit.voice.bridge import AudioBridgeConfig
 from roomkit.voice.pipeline import AudioPipelineConfig, MockVADProvider
+from roomkit.voice.pipeline.dtmf.base import DTMFEvent
 from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
 from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.base import TTSProvider
@@ -32,6 +38,34 @@ from roomkit.voice.tts.mock import MockTTSProvider
 
 def _frame() -> AudioFrame:
     return AudioFrame(data=b"\x00\x01" * 160, sample_rate=16000)
+
+
+class _PhoneBackend(MockVoiceBackend):
+    """A SIP-like transport: out-of-band DTMF, and a pull model that must be
+    told to start listening on each session."""
+
+    def __init__(self, capabilities: VoiceCapability = VoiceCapability.DTMF_SIGNALING) -> None:
+        super().__init__(capabilities=capabilities)
+        self.dtmf_callbacks: list[Any] = []
+        self.listening: list[str] = []
+
+    def on_dtmf_received(self, callback: Any) -> None:
+        self.dtmf_callbacks.append(callback)
+
+    async def start_listening(self, session: VoiceSession) -> None:
+        self.listening.append(session.id)
+
+
+class _VideoPhoneBackend(MockVoiceBackend, AudioVideoBackend):
+    """A transport whose calls carry video, served by its ``video`` facet."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._video = MagicMock()
+
+    @property
+    def video(self) -> Any:
+        return self._video
 
 
 class _StreamingTTS(TTSProvider):
@@ -300,4 +334,66 @@ class TestEachSessionOnItsOwnBackend:
 
         assert _sent_to(phone, "disconnect") == [session.id]
         assert _sent_to(primary, "disconnect") == []
+        await kit.close()
+
+    async def test_dtmf_a_phone_session_signals_fires_the_hook(self) -> None:
+        kit = RoomKit()
+        phone = _PhoneBackend()
+        channel = VoiceChannel("voice", backend=MockVoiceBackend())
+        channel.add_backend(phone)
+        kit.register_channel(channel)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "voice")
+        digits: list[str] = []
+
+        @kit.hook(HookTrigger.ON_DTMF, execution=HookExecution.ASYNC)
+        async def on_dtmf(event: Any, ctx: object) -> None:
+            digits.append(event.digit)
+
+        session = await kit.join(room.id, "voice", backend=phone)
+        for callback in phone.dtmf_callbacks:
+            callback(session, DTMFEvent(digit="7", duration_ms=160))
+        await asyncio.sleep(0.05)
+
+        assert digits == ["7"]
+        await kit.close()
+
+    async def test_a_phone_that_detects_barge_in_reports_it(self) -> None:
+        phone = MockVoiceBackend(capabilities=VoiceCapability.BARGE_IN)
+        channel = VoiceChannel("voice", backend=MockVoiceBackend())
+
+        channel.add_backend(phone)
+
+        assert "on_barge_in" in [c.method for c in phone.calls]
+
+    async def test_joining_on_a_pull_model_phone_starts_it_listening(self) -> None:
+        kit = RoomKit()
+        primary, phone = _PhoneBackend(VoiceCapability.NONE), _PhoneBackend()
+        channel = VoiceChannel("voice", backend=primary)
+        channel.add_backend(phone)
+        kit.register_channel(channel)
+        room = await kit.create_room()
+        await kit.attach_channel(room.id, "voice")
+
+        session = await kit.join(room.id, "voice", backend=phone)
+
+        assert phone.listening == [session.id]
+        assert primary.listening == []
+        await kit.close()
+
+    async def test_a_recorded_video_call_on_a_phone_is_recorded_from_the_phone(self) -> None:
+        kit = RoomKit()
+        phone = _VideoPhoneBackend()
+        channel = VoiceChannel("voice", backend=MockVoiceBackend())
+        channel.add_backend(phone)
+        kit.register_channel(channel)
+        recorders = [
+            RoomRecorderBinding(recorder=MockMediaRecorder(), config=MediaRecordingConfig())
+        ]
+        room = await kit.create_room(recorders=recorders)
+        await kit.attach_channel(room.id, "voice")
+
+        await kit.join(room.id, "voice", backend=phone)
+
+        phone.video.add_video_tap.assert_called_once()
         await kit.close()

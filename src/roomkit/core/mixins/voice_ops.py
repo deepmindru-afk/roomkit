@@ -16,6 +16,7 @@ from roomkit.core.exceptions import (
     VoiceNotConfiguredError,
 )
 from roomkit.core.mixins.helpers import HelpersMixin
+from roomkit.video.backends.av import AudioVideoBackend
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
@@ -233,26 +234,14 @@ class VoiceOpsMixin(HelpersMixin):
         # AudioVideoChannel — wire video via channel tap
         from roomkit.channels.av import AudioVideoChannel
 
+        # The session's own transport: one added with add_backend() serves it.
+        backend_ref = channel._resolve_session_backend(session)
         if isinstance(channel, AudioVideoChannel):
             self._wire_av_video_recording(room_id, channel_id, session, channel)
         else:
-            # Legacy fallback: plain VoiceChannel with combined A/V backend
-            from roomkit.video.backends.av import AudioVideoBackend
-
-            if isinstance(channel._backend, AudioVideoBackend) and not (
-                channel._recording is not None and not channel._recording.video
-            ):
-                video_session = channel._backend.video.get_session(session.id)
-                if video_session is not None:
-                    self._wire_backend_video_recording(
-                        room_id,
-                        channel_id,
-                        session,
-                        channel._backend.video,
-                    )
+            self._wire_call_video_recording(room_id, channel_id, session, channel, backend_ref)
 
         # Pull model: start listening (push model backends stream already)
-        backend_ref = channel._backend
         if created and backend_ref is not None and hasattr(backend_ref, "start_listening"):
             await backend_ref.start_listening(session)  # ty: ignore[call-non-callable]
 
@@ -267,6 +256,23 @@ class VoiceOpsMixin(HelpersMixin):
             },
         )
         return session
+
+    def _wire_call_video_recording(
+        self,
+        room_id: str,
+        channel_id: str,
+        session: VoiceSession,
+        channel: VoiceChannel,
+        backend: VoiceBackend | None,
+    ) -> None:
+        """Record the video of a call a plain VoiceChannel carries, served by
+        the ``video`` facet of the session's combined A/V backend (legacy)."""
+        if not isinstance(backend, AudioVideoBackend):
+            return
+        if channel._recording is not None and not channel._recording.video:
+            return
+        if backend.video.get_session(session.id) is not None:
+            self._wire_backend_video_recording(room_id, channel_id, session, backend.video)
 
     async def _join_video(
         self,
