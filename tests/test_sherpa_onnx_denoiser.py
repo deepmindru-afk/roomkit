@@ -565,3 +565,256 @@ class TestResampleLinear:
             arr = np.array([], dtype=np.float32)
             result = dn_mod._resample_linear(arr, 16000, 24000)
             assert len(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# DPDFNet (streaming)
+# ---------------------------------------------------------------------------
+
+
+class _FakeOnlineDenoiser:
+    """Frames audio the way sherpa-onnx's OnlineSpeechDenoiser does.
+
+    Whole hops come out, aligned with the input, and the first one only once
+    the next hop has completed its overlap-add — so after T samples in, T minus
+    one hop (minus the partial hop still buffered) have come out.  The
+    "denoising" is the identity, which makes the provider's delay visible.
+    """
+
+    def __init__(self, sample_rate: int = 16000, hop: int = 160) -> None:
+        self.sample_rate = sample_rate
+        self.frame_shift_in_samples = hop
+        self.calls = 0
+        self._buffer: list[float] = []
+        self._previous: list[float] | None = None
+
+    def run(self, samples: list[float], _rate: int) -> Any:
+        self.calls += 1
+        self._buffer.extend(samples)
+        hop = self.frame_shift_in_samples
+        out: list[float] = []
+        while len(self._buffer) >= hop:
+            current, self._buffer = self._buffer[:hop], self._buffer[hop:]
+            if self._previous is not None:
+                out.extend(self._previous)
+            self._previous = current
+        return MagicMock(samples=out)
+
+
+def _make_dpdfnet_provider(sherpa: Any, **config_kwargs: Any) -> Any:
+    fakes = {"sherpa_onnx": sherpa}
+    with patch.dict("sys.modules", fakes):
+        dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
+        config_kwargs.setdefault("model", "/models/dpdfnet2.onnx")
+        cfg = dn_mod.SherpaOnnxDenoiserConfig(model_type="dpdfnet", **config_kwargs)
+        provider = dn_mod.SherpaOnnxDenoiserProvider(cfg)
+        provider._sherpa = sherpa
+        return provider
+
+
+def _online_sherpa(**fake_kwargs: Any) -> MagicMock:
+    """A sherpa_onnx stand-in whose OnlineSpeechDenoiser is a fresh fake per stream."""
+    sherpa = _mock_sherpa_module()
+    sherpa.OnlineSpeechDenoiser.side_effect = lambda _cfg: _FakeOnlineDenoiser(**fake_kwargs)
+    return sherpa
+
+
+def _ramp_frame(start: int, n_samples: int, sample_rate: int = 16000) -> AudioFrame:
+    """Distinct, loud samples so a delayed or duplicated sample shows."""
+    values = [1000 + (start + i) % 20000 for i in range(n_samples)]
+    return AudioFrame(
+        data=struct.pack(f"<{n_samples}h", *values),
+        sample_rate=sample_rate,
+        channels=1,
+        sample_width=2,
+    )
+
+
+def _pcm(frame: AudioFrame) -> np.ndarray:
+    return np.frombuffer(frame.data, dtype=np.int16).astype(np.int32)
+
+
+class TestDpdfnetConfig:
+    def _config_cls(self) -> Any:
+        fakes = {"sherpa_onnx": _mock_sherpa_module()}
+        with patch.dict("sys.modules", fakes):
+            dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
+            return dn_mod.SherpaOnnxDenoiserConfig
+
+    def test_model_type_defaults_to_gtcrn(self) -> None:
+        assert self._config_cls()(model="gtcrn_simple.onnx").model_type == "gtcrn"
+
+    def test_dpdfnet_config_builds(self) -> None:
+        cfg = self._config_cls()(model_type="dpdfnet", model="dpdfnet2.onnx")
+        assert cfg.model_type == "dpdfnet"
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"model_type": "deepfilternet", "model": "x.onnx"}, "model_type"),
+            ({"model_type": "dpdfnet"}, "needs its .onnx file"),
+            (
+                {"model_type": "dpdfnet", "model": "dpdfnet2.onnx", "context_frames": 5},
+                "context_frames",
+            ),
+        ],
+    )
+    def test_wrong_combination_is_refused(self, kwargs: dict[str, Any], match: str) -> None:
+        with pytest.raises(ValueError, match=match):
+            self._config_cls()(**kwargs)
+
+    def test_sherpa_without_dpdfnet_is_refused(self) -> None:
+        from types import SimpleNamespace
+
+        old_sherpa = SimpleNamespace(
+            __version__="1.12.29",
+            OfflineSpeechDenoiser=MagicMock(),
+            OfflineSpeechDenoiserGtcrnModelConfig=MagicMock(),
+        )
+        with pytest.raises(ImportError, match=r"1\.12\.30 or later \(installed: 1\.12\.29\)"):
+            _make_dpdfnet_provider(old_sherpa)
+
+
+class TestDpdfnetStreaming:
+    def test_builds_online_denoiser_from_dpdfnet_section(self) -> None:
+        sherpa = _online_sherpa()
+        provider = _make_dpdfnet_provider(
+            sherpa, model="/m/dpdfnet2.onnx", num_threads=2, provider="cuda"
+        )
+
+        provider.process(_frame(320, value=1000), "s1")
+
+        sherpa.OfflineSpeechDenoiserDpdfNetModelConfig.assert_called_once_with(
+            model="/m/dpdfnet2.onnx"
+        )
+        sherpa.OfflineSpeechDenoiserModelConfig.assert_called_once_with(
+            dpdfnet=sherpa.OfflineSpeechDenoiserDpdfNetModelConfig.return_value,
+            num_threads=2,
+            provider="cuda",
+        )
+        sherpa.OnlineSpeechDenoiserConfig.assert_called_once_with(
+            model=sherpa.OfflineSpeechDenoiserModelConfig.return_value
+        )
+        sherpa.OfflineSpeechDenoiser.assert_not_called()
+        sherpa.OfflineSpeechDenoiserGtcrnModelConfig.assert_not_called()
+
+    def test_output_is_the_input_one_hop_later(self) -> None:
+        """Every frame keeps its length; the stream as a whole is delayed by one hop."""
+        provider = _make_dpdfnet_provider(_online_sherpa(), silence_threshold=0)
+        frames = [_ramp_frame(i * 320, 320) for i in range(8)]
+
+        outputs = [provider.process(f, "s1") for f in frames]
+
+        assert [len(o.data) for o in outputs] == [640] * 8
+        assert all(o.metadata["noise_suppressed"] for o in outputs)
+        sent = np.concatenate([_pcm(f) for f in frames])
+        got = np.concatenate([_pcm(o) for o in outputs])
+        expected = np.concatenate([np.zeros(160, dtype=np.int32), sent[:-160]])
+        assert np.abs(got - expected).max() <= 1  # int16 → float → int16 rounding
+
+    def test_frames_that_split_a_hop_keep_their_length_and_order(self) -> None:
+        provider = _make_dpdfnet_provider(_online_sherpa(), silence_threshold=0)
+        sizes = [100, 250, 37, 400, 160, 333, 90, 512, 210, 300] * 3
+        frames, start = [], 0
+        for size in sizes:
+            frames.append(_ramp_frame(start, size))
+            start += size
+
+        outputs = [provider.process(f, "s1") for f in frames]
+
+        assert [len(o.data) for o in outputs] == [len(f.data) for f in frames]
+        sent = np.concatenate([_pcm(f) for f in frames])
+        got = np.concatenate([_pcm(o) for o in outputs])
+        # Only silence is ever inserted (the ramp never reaches zero): what is
+        # left is the input in order, nothing dropped or repeated, and the
+        # silence — the delay — stays under two hops.
+        audio = got[got != 0]
+        assert np.abs(audio - sent[: len(audio)]).max() <= 1
+        assert 160 <= len(got) - len(audio) < 320
+
+    def test_frames_at_another_rate_pass_through_with_one_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sherpa = _online_sherpa(sample_rate=48000, hop=480)
+        provider = _make_dpdfnet_provider(sherpa, model="/m/dpdfnet2_48khz_hr.onnx")
+        frames = [_frame(320, value=1000), _frame(320, value=1000)]
+
+        with caplog.at_level("WARNING"):
+            results = [provider.process(f, "s1") for f in frames]
+
+        assert results[0] is frames[0]
+        assert results[1] is frames[1]
+        assert provider._streams["s1"].denoiser.calls == 0
+        warnings = [r for r in caplog.records if "48000 Hz" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "16000 Hz frames pass through" in warnings[0].getMessage()
+
+    def test_matching_rate_is_denoised_at_48k(self) -> None:
+        sherpa = _online_sherpa(sample_rate=48000, hop=480)
+        provider = _make_dpdfnet_provider(
+            sherpa, model="/m/dpdfnet2_48khz_hr.onnx", silence_threshold=0
+        )
+
+        result = provider.process(_ramp_frame(0, 960, sample_rate=48000), "s1")
+
+        assert result.metadata["noise_suppressed"] is True
+        assert len(result.data) == 1920
+        assert provider._streams["s1"].denoiser.calls == 1
+
+    def test_error_passes_the_frame_through(self) -> None:
+        sherpa = _mock_sherpa_module()
+        denoiser = MagicMock(sample_rate=16000, frame_shift_in_samples=160)
+        denoiser.run.side_effect = RuntimeError("boom")
+        sherpa.OnlineSpeechDenoiser.return_value = denoiser
+        provider = _make_dpdfnet_provider(sherpa, silence_threshold=0)
+        frame = _frame(320, value=1000)
+
+        assert provider.process(frame, "s1") is frame
+
+    def test_reset_starts_the_stream_over(self) -> None:
+        sherpa = _online_sherpa()
+        provider = _make_dpdfnet_provider(sherpa, silence_threshold=0)
+        provider.process(_ramp_frame(0, 320), "s1")
+
+        provider.reset("s1")
+        out = provider.process(_ramp_frame(0, 320), "s1")
+
+        assert sherpa.OnlineSpeechDenoiser.call_count == 2
+        # A fresh stream begins with its one hop of silence again.
+        assert _pcm(out)[:160].tolist() == [0] * 160
+
+
+class TestDpdfnetSilenceGate:
+    def test_quiet_start_runs_no_inference(self) -> None:
+        provider = _make_dpdfnet_provider(_online_sherpa())
+
+        result = provider.process(_frame(320, value=0), "s1")
+
+        assert result.data == b"\x00" * 640
+        assert result.metadata["noise_suppressed"] is True
+        assert provider._streams["s1"].denoiser.calls == 0
+
+    def test_model_runs_on_for_the_tail_then_stops(self) -> None:
+        """After sound, 100 ms of quiet input still goes through the model."""
+        provider = _make_dpdfnet_provider(_online_sherpa())
+        provider.process(_frame(320, value=1000), "s1")
+        denoiser = provider._streams["s1"].denoiser
+
+        for _ in range(5):  # 5 x 20 ms = the 100 ms tail
+            provider.process(_frame(320, value=0), "s1")
+        assert denoiser.calls == 6
+
+        result = provider.process(_frame(320, value=0), "s1")
+        assert denoiser.calls == 6
+        assert result.data == b"\x00" * 640
+
+        provider.process(_frame(320, value=1000), "s1")
+        assert denoiser.calls == 7
+
+    def test_quiet_frames_are_fed_when_the_gate_is_off(self) -> None:
+        provider = _make_dpdfnet_provider(_online_sherpa(), silence_threshold=0)
+
+        for _ in range(10):
+            provider.process(_frame(320, value=0), "s1")
+
+        assert provider._streams["s1"].denoiser.calls == 10

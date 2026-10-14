@@ -271,6 +271,41 @@ def _make_sherpa_denoiser():
         )
 
 
+class _FakeSherpaOnlineDenoiser:
+    """Holds back part of what it is fed, as sherpa-onnx's streaming denoiser does."""
+
+    sample_rate = 16000
+    frame_shift_in_samples = 160
+
+    def __init__(self, *_a, **_kw) -> None:
+        self._buffer: list[float] = []
+        self._calls = 0
+
+    def run(self, samples, _rate):
+        self._calls += 1
+        self._buffer.extend(samples)
+        out = [s + self._calls / 1000.0 for s in self._buffer[:-100]]
+        self._buffer = self._buffer[-100:]
+        return SimpleNamespace(samples=out)
+
+
+def _make_sherpa_dpdfnet():
+    mod = SimpleNamespace(
+        OfflineSpeechDenoiserDpdfNetModelConfig=MagicMock(),
+        OfflineSpeechDenoiserModelConfig=MagicMock(),
+        OnlineSpeechDenoiserConfig=MagicMock(),
+        OnlineSpeechDenoiser=_FakeSherpaOnlineDenoiser,
+    )
+    fakes = {"sherpa_onnx": mod}
+    with patch.dict(sys.modules, fakes):
+        dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
+        return dn_mod.SherpaOnnxDenoiserProvider(
+            dn_mod.SherpaOnnxDenoiserConfig(
+                model_type="dpdfnet", model="/fake.onnx", silence_threshold=0
+            )
+        )
+
+
 class _FakeQuailProcessor:
     def __init__(self, *_a, **_kw) -> None:
         self._calls = 0
@@ -423,6 +458,11 @@ _STAGES = [
 )
 def test_stage_keeps_state_per_stream(factory, make_frame) -> None:
     assert_stage_keeps_state_per_stream(factory, make_frame)
+
+
+def test_sherpa_dpdfnet_keeps_state_per_stream() -> None:
+    """DPDFNet streams through its own sherpa-onnx state, one per stream."""
+    assert_stage_keeps_state_per_stream(_make_sherpa_dpdfnet, _plain_frame)
 
 
 def test_the_check_rejects_a_stage_that_ignores_the_key() -> None:

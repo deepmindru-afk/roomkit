@@ -1,8 +1,9 @@
-"""Speech enhancement provider using sherpa-onnx GTCRN model.
+"""Speech enhancement provider using sherpa-onnx's GTCRN and DPDFNet models.
 
-Uses sherpa-onnx's ``OfflineSpeechDenoiser`` with the GTCRN model for
-neural noise suppression.  Unlike RNNoise (which requires a system
-library), sherpa-onnx is a pure-Python dependency::
+GTCRN (the default) runs sherpa-onnx's ``OfflineSpeechDenoiser`` over a short
+sliding window of preceding frames.  DPDFNet runs its ``OnlineSpeechDenoiser``,
+which keeps the model's recurrent state across frames.  Unlike RNNoise (which
+requires a system library), sherpa-onnx is a pure-Python dependency::
 
     pip install roomkit[sherpa-onnx]
 
@@ -15,6 +16,10 @@ Usage::
 
     denoiser = SherpaOnnxDenoiserProvider(
         SherpaOnnxDenoiserConfig(model="gtcrn_simple.onnx")
+    )
+    # or, on a 16 kHz pipeline:
+    denoiser = SherpaOnnxDenoiserProvider(
+        SherpaOnnxDenoiserConfig(model_type="dpdfnet", model="dpdfnet2.onnx")
     )
     config = AudioPipelineConfig(denoiser=denoiser)
 """
@@ -35,6 +40,16 @@ if TYPE_CHECKING:
     from roomkit.voice.audio_frame import AudioFrame
 
 logger = logging.getLogger(__name__)
+
+_MODEL_TYPES = ("gtcrn", "dpdfnet")
+_DEFAULT_CONTEXT_FRAMES = 3
+
+# DPDFNet's streaming output trails its input by 50 ms: four 10 ms hops inside
+# the model, plus the hop sherpa-onnx holds back until the next one completes
+# its overlap-add.  The silence gate keeps the model running this long after
+# the input goes quiet, twice that delay, so the tail of an utterance comes out
+# before the model stops being fed.
+_DPDFNET_TAIL_MS = 100
 
 
 def _pcm_s16le_to_float32(data: bytes) -> np.ndarray[Any, Any]:
@@ -70,32 +85,61 @@ def _resample_linear(
     return result
 
 
+def _with_samples(frame: AudioFrame, data: bytes) -> AudioFrame:
+    """``frame`` carrying denoised ``data``, its timing and metadata kept."""
+    from roomkit.voice.audio_frame import AudioFrame
+
+    metadata = dict(frame.metadata)
+    metadata["noise_suppressed"] = True
+    return AudioFrame(
+        data=data,
+        sample_rate=frame.sample_rate,
+        channels=frame.channels,
+        sample_width=frame.sample_width,
+        timestamp_ms=frame.timestamp_ms,
+        metadata=metadata,
+    )
+
+
 @dataclass
 class SherpaOnnxDenoiserConfig:
-    """Configuration for the sherpa-onnx GTCRN denoiser.
+    """Configuration for the sherpa-onnx denoiser (GTCRN or DPDFNet).
 
     Attributes:
-        model: Path to the ``gtcrn_simple.onnx`` model file.
+        model: Path to the model file: ``gtcrn_simple.onnx`` for GTCRN; for
+            DPDFNet, one of the exports sherpa-onnx publishes in its
+            ``speech-enhancement-models`` release (``dpdfnet_baseline.onnx``,
+            ``dpdfnet2.onnx``, ``dpdfnet4.onnx``, ``dpdfnet8.onnx`` at 16 kHz,
+            ``dpdfnet2_48khz_hr.onnx`` at 48 kHz).  Required for DPDFNet.
         num_threads: Number of CPU threads for inference.
         provider: ONNX execution provider (``"cpu"`` or ``"cuda"``).
-        context_frames: Number of preceding frames to include as context
-            when denoising.  GTCRN is an offline model — processing tiny
-            20 ms frames in isolation produces poor quality and boundary
+        context_frames: GTCRN only.  Number of preceding frames to include
+            as context when denoising.  GTCRN is an offline model — processing
+            tiny 20 ms frames in isolation produces poor quality and boundary
             artifacts.  A sliding context window (default 3 = 60 ms,
             ~6 STFT frames at 6.25 ms hop) gives the model's recurrent
             layers enough warmup context while keeping inference ~3x
-            faster than the previous 200 ms window.
+            faster than the previous 200 ms window.  DPDFNet streams and
+            keeps its own state, so a DPDFNet config refuses another value.
         silence_threshold: RMS energy threshold (in float32 [-1, 1] scale)
             below which ONNX inference is skipped entirely.  Frames below
             this level are replaced with silence.  Set to 0 to disable.
-            Default 0.005 ≈ −46 dBFS — well below any speech.
+            Default 0.005 ≈ −46 dBFS — well below any speech.  DPDFNet
+            stops only once the input has stayed below it for 100 ms, so the
+            50 ms its output trails the input is not cut off.
+        model_type: ``"gtcrn"`` (the default) or ``"dpdfnet"``.  DPDFNet
+            denoises frames at the model's own rate only (16 kHz, or 48 kHz
+            for ``dpdfnet2_48khz_hr``); frames at another rate pass through
+            unchanged, with a warning.  Its output trails the input by a
+            constant 50 ms.  Needs sherpa-onnx 1.12.30 or later.
     """
 
     model: str = ""
     num_threads: int = 1
     provider: str = "cpu"
-    context_frames: int = 3
+    context_frames: int = _DEFAULT_CONTEXT_FRAMES
     silence_threshold: float = 0.005
+    model_type: str = "gtcrn"
 
     def __post_init__(self) -> None:
         if self.num_threads <= 0:
@@ -104,6 +148,21 @@ class SherpaOnnxDenoiserConfig:
             raise ValueError("context_frames must be positive")
         if not math.isfinite(self.silence_threshold) or self.silence_threshold < 0:
             raise ValueError("silence_threshold must be finite and non-negative")
+        if self.model_type not in _MODEL_TYPES:
+            raise ValueError(
+                f"Unknown sherpa-onnx denoiser model_type {self.model_type!r}; expected one "
+                f"of {_MODEL_TYPES}"
+            )
+        if self.model_type == "dpdfnet":
+            if not self.model:
+                raise ValueError(
+                    "A DPDFNet denoiser needs its .onnx file in SherpaOnnxDenoiserConfig.model"
+                )
+            if self.context_frames != _DEFAULT_CONTEXT_FRAMES:
+                raise ValueError(
+                    "context_frames sizes GTCRN's sliding window; DPDFNet streams "
+                    "and keeps its own state"
+                )
 
 
 @dataclass
@@ -118,11 +177,15 @@ class _StreamState:
     denoiser: Any = None
     native_rate: int = 0
     context: Any = None  # np.ndarray, allocated on first use
+    # DPDFNet: denoised samples not yet returned, and how long the input has
+    # been below the silence threshold (samples; starts idle).
+    pending: Any = None
+    quiet_samples: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 class SherpaOnnxDenoiserProvider(DenoiserProvider):
-    """Denoiser provider using sherpa-onnx GTCRN speech enhancement.
+    """Denoiser provider using sherpa-onnx GTCRN or DPDFNet speech enhancement.
 
     The denoiser is created lazily on the first call to :meth:`process`.
     sherpa-onnx must be installed (``pip install roomkit[sherpa-onnx]``).
@@ -142,9 +205,19 @@ class SherpaOnnxDenoiserProvider(DenoiserProvider):
 
         self._config = config
         self._sherpa: Any = __import__("sherpa_onnx")
+        if config.model_type == "dpdfnet" and not (
+            hasattr(self._sherpa, "OnlineSpeechDenoiser")
+            and hasattr(self._sherpa, "OfflineSpeechDenoiserDpdfNetModelConfig")
+        ):
+            raise ImportError(
+                "DPDFNet needs sherpa-onnx 1.12.30 or later (installed: "
+                f"{getattr(self._sherpa, '__version__', 'unknown')}). "
+                "Upgrade it with: pip install -U 'roomkit[sherpa-onnx]'"
+            )
         self._streams: dict[str, _StreamState] = {}
         self._streams_lock = threading.Lock()
         self._warned_formats: set[tuple[int, int, int, int]] = set()
+        self._warned_rates: set[tuple[int, int]] = set()
         self._closed = False
 
     @property
@@ -165,31 +238,57 @@ class SherpaOnnxDenoiserProvider(DenoiserProvider):
             return st
 
     def _ensure_denoiser(self, st: _StreamState) -> None:
-        """Lazily create this stream's sherpa-onnx OfflineSpeechDenoiser."""
+        """Lazily create this stream's sherpa-onnx denoiser.
+
+        GTCRN gets an ``OfflineSpeechDenoiser`` fed a sliding window; DPDFNet
+        an ``OnlineSpeechDenoiser`` that keeps the model's state between
+        frames.
+        """
         if st.denoiser is not None:
             return
 
         cfg = self._config
         sherpa = self._sherpa
 
-        gtcrn_config = sherpa.OfflineSpeechDenoiserGtcrnModelConfig(
-            model=cfg.model,
-        )
         model_config = sherpa.OfflineSpeechDenoiserModelConfig(
-            gtcrn=gtcrn_config,
+            **self._model_section(),
             num_threads=cfg.num_threads,
             provider=cfg.provider,
         )
-        denoiser_config = sherpa.OfflineSpeechDenoiserConfig(
-            model=model_config,
-        )
-        st.denoiser = sherpa.OfflineSpeechDenoiser(denoiser_config)
+        if cfg.model_type == "dpdfnet":
+            import numpy as np
+
+            st.denoiser = sherpa.OnlineSpeechDenoiser(
+                sherpa.OnlineSpeechDenoiserConfig(model=model_config)
+            )
+            # sherpa-onnx returns nothing for the first hop until the next one
+            # completes its overlap-add: one hop of silence keeps every
+            # returned frame as long as the frame that went in.
+            st.pending = np.zeros(st.denoiser.frame_shift_in_samples, dtype=np.float32)
+            st.quiet_samples = self._tail_samples(st.denoiser.sample_rate) + 1
+        else:
+            denoiser_config = sherpa.OfflineSpeechDenoiserConfig(
+                model=model_config,
+            )
+            st.denoiser = sherpa.OfflineSpeechDenoiser(denoiser_config)
         st.native_rate = st.denoiser.sample_rate
         logger.debug(
-            "SherpaOnnxDenoiser: created denoiser model=%s native_rate=%d",
+            "SherpaOnnxDenoiser: created %s denoiser model=%s native_rate=%d",
+            cfg.model_type,
             cfg.model,
             st.native_rate,
         )
+
+    def _model_section(self) -> dict[str, Any]:
+        """The model's own section of sherpa-onnx's ``OfflineSpeechDenoiserModelConfig``."""
+        model = self._config.model
+        if self._config.model_type == "dpdfnet":
+            return {"dpdfnet": self._sherpa.OfflineSpeechDenoiserDpdfNetModelConfig(model=model)}
+        return {"gtcrn": self._sherpa.OfflineSpeechDenoiserGtcrnModelConfig(model=model)}
+
+    @staticmethod
+    def _tail_samples(rate: int) -> int:
+        return rate * _DPDFNET_TAIL_MS // 1000
 
     def process(self, frame: AudioFrame, stream: str) -> AudioFrame:
         """Validate and serialize one stream's recurrent model state."""
@@ -201,7 +300,73 @@ class SherpaOnnxDenoiserProvider(DenoiserProvider):
         if st is None:
             return frame
         with st.lock:
+            if self._config.model_type == "dpdfnet":
+                return self._stream_locked(frame, st)
             return self._process_locked(frame, st)
+
+    def _stream_locked(self, frame: AudioFrame, st: _StreamState) -> AudioFrame:
+        """Denoise a frame with DPDFNet's streaming denoiser.
+
+        Every frame comes back as long as it went in, carrying the denoised
+        audio of 50 ms earlier: the delay is constant, so the transport
+        timeline holds.
+        """
+        if st.denoiser is None:
+            try:
+                self._ensure_denoiser(st)
+            except Exception:
+                logger.warning(
+                    "SherpaOnnxDenoiser: failed to initialize, passing through",
+                    exc_info=True,
+                )
+                return frame
+        if frame.sample_rate != st.native_rate:
+            # The model runs at its own rate, and sherpa-onnx ends the process
+            # when one stream changes rate: refuse the frame instead.
+            self._warn_rate(frame.sample_rate, st.native_rate)
+            return frame
+
+        try:
+            import numpy as np
+
+            samples = _pcm_s16le_to_float32(frame.data)
+            if self._dpdfnet_idle(st, samples):
+                # The model is not fed while the input stays quiet; its state
+                # waits as it was, adapted to the room, for the next sound.
+                return _with_samples(frame, b"\x00" * len(frame.data))
+            result = st.denoiser.run(samples.tolist(), st.native_rate)
+            denoised = np.asarray(result.samples, dtype=np.float32)
+            st.pending = np.concatenate([st.pending, denoised])
+            n = len(samples)
+            if len(st.pending) < n:
+                # A frame that is not a whole number of hops leaves part of a
+                # hop inside sherpa-onnx: lengthen the delay to cover it (by
+                # less than one hop over the stream's life).
+                pad = np.zeros(n - len(st.pending), dtype=np.float32)
+                st.pending = np.concatenate([pad, st.pending])
+            out, st.pending = st.pending[:n], st.pending[n:]
+            out_data = _float32_to_pcm_s16le(out)
+        except Exception:
+            logger.warning(
+                "SherpaOnnxDenoiser: error during processing, passing through",
+                exc_info=True,
+            )
+            return frame
+        return _with_samples(frame, out_data)
+
+    def _dpdfnet_idle(self, st: _StreamState, samples: np.ndarray[Any, Any]) -> bool:
+        """Whether the input has been quiet long enough to stop feeding DPDFNet."""
+        import numpy as np
+
+        threshold = self._config.silence_threshold
+        if threshold <= 0:
+            return False
+        rms = float(np.sqrt(np.dot(samples, samples) / len(samples)))
+        if rms >= threshold:
+            st.quiet_samples = 0
+            return False
+        st.quiet_samples += len(samples)
+        return st.quiet_samples > self._tail_samples(st.native_rate)
 
     def _process_locked(self, frame: AudioFrame, st: _StreamState) -> AudioFrame:
         """Denoise an audio frame using GTCRN speech enhancement.
@@ -251,18 +416,7 @@ class SherpaOnnxDenoiserProvider(DenoiserProvider):
             if threshold > 0:
                 rms = float(np.sqrt(np.dot(float_samples, float_samples) / n_frame))
                 if rms < threshold:
-                    from roomkit.voice.audio_frame import AudioFrame
-
-                    metadata = dict(frame.metadata)
-                    metadata["noise_suppressed"] = True
-                    return AudioFrame(
-                        data=b"\x00" * len(frame.data),
-                        sample_rate=frame.sample_rate,
-                        channels=frame.channels,
-                        sample_width=frame.sample_width,
-                        timestamp_ms=frame.timestamp_ms,
-                        metadata=metadata,
-                    )
+                    return _with_samples(frame, b"\x00" * len(frame.data))
 
             # Pad at the START to GTCRN block size (256 samples).
             # Padding must go at the beginning so the real audio stays at
@@ -306,18 +460,22 @@ class SherpaOnnxDenoiserProvider(DenoiserProvider):
                 exc_info=True,
             )
             return frame
+        return _with_samples(frame, out_data)
 
-        from roomkit.voice.audio_frame import AudioFrame
-
-        metadata = dict(frame.metadata)
-        metadata["noise_suppressed"] = True
-        return AudioFrame(
-            data=out_data,
-            sample_rate=frame.sample_rate,
-            channels=frame.channels,
-            sample_width=frame.sample_width,
-            timestamp_ms=frame.timestamp_ms,
-            metadata=metadata,
+    def _warn_rate(self, frame_rate: int, model_rate: int) -> None:
+        key = (frame_rate, model_rate)
+        if key in self._warned_rates:
+            return
+        self._warned_rates.add(key)
+        logger.warning(
+            "SherpaOnnxDenoiser: the DPDFNet model %s runs at %d Hz; %d Hz frames "
+            "pass through undenoised. Run the pipeline at %d Hz, or use a model "
+            "made for %d Hz",
+            self._config.model,
+            model_rate,
+            frame_rate,
+            model_rate,
+            frame_rate,
         )
 
     def reset(self, stream: str) -> None:

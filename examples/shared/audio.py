@@ -107,9 +107,10 @@ def build_aec(
 def build_denoiser(sample_rate: int = 16000, *, default: str = "0") -> object | None:
     """Build a denoiser provider based on the ``DENOISE`` env var.
 
-    Env: ``DENOISE=webrtc|rnnoise|sherpa|1|0`` (default comes from *default* param).
-    For ``sherpa``, ``DENOISE_MODEL`` sets the model file (default
-    ``gtcrn_simple.onnx``).
+    Env: ``DENOISE=webrtc|rnnoise|sherpa|dpdfnet|1|0`` (default comes from
+    *default* param). For ``sherpa`` (GTCRN) and ``dpdfnet``, ``DENOISE_MODEL``
+    sets the model file (default ``gtcrn_simple.onnx`` / ``dpdfnet2.onnx``);
+    a 16 kHz DPDFNet model needs a 16 kHz pipeline.
 
     Returns the provider instance or ``None``.
     """
@@ -134,19 +135,23 @@ def build_denoiser(sample_rate: int = 16000, *, default: str = "0") -> object | 
             logger.warning("aec-audio-processing not installed — denoiser disabled")
             return None
 
-    if mode == "sherpa":
-        model = os.environ.get("DENOISE_MODEL", "gtcrn_simple.onnx")
+    if mode in ("sherpa", "dpdfnet"):
+        model_type = "dpdfnet" if mode == "dpdfnet" else "gtcrn"
+        default_model = "dpdfnet2.onnx" if mode == "dpdfnet" else "gtcrn_simple.onnx"
+        model = os.environ.get("DENOISE_MODEL", default_model)
         try:
             from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
                 SherpaOnnxDenoiserConfig,
                 SherpaOnnxDenoiserProvider,
             )
 
-            denoiser = SherpaOnnxDenoiserProvider(SherpaOnnxDenoiserConfig(model=model))
-            logger.info("Denoiser enabled (sherpa-onnx GTCRN, model=%s)", model)
+            denoiser = SherpaOnnxDenoiserProvider(
+                SherpaOnnxDenoiserConfig(model_type=model_type, model=model)
+            )
+            logger.info("Denoiser enabled (sherpa-onnx %s, model=%s)", model_type, model)
             return denoiser
-        except ImportError:
-            logger.warning("sherpa-onnx not installed — denoiser disabled")
+        except ImportError as exc:
+            logger.warning("%s — denoiser disabled", exc)
             return None
 
     if mode == "rnnoise":

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- DPDFNet denoises through `SherpaOnnxDenoiserProvider`:
+  `SherpaOnnxDenoiserConfig(model_type="dpdfnet", model="dpdfnet2.onnx")`
+  loads the DPDFNet models of sherpa-onnx's `speech-enhancement-models`
+  release (`dpdfnet_baseline`, `dpdfnet2`, `dpdfnet4`, `dpdfnet8` at 16 kHz,
+  `dpdfnet2_48khz_hr` at 48 kHz; sherpa-onnx 1.12.30 or later). It runs
+  sherpa-onnx's streaming denoiser, which keeps the model's state from frame
+  to frame: every frame comes back as long as it went in, and the audio trails
+  the input by a constant 50 ms. On 5 dB SNR mixes of four speech clips, fed
+  in 20 ms frames, `dpdfnet2` raised SI-SDR to 10.8 dB under the release's
+  recorded noise and 11.5 dB under white noise, against 7.3 and 9.4 dB for
+  GTCRN's sliding window, for 2.5 ms of one desktop core per frame (GTCRN:
+  2.0 ms; `dpdfnet_baseline`: 1.5 ms). The offline denoiser, which GTCRN
+  runs over a sliding window, cannot serve DPDFNet: it shifts the model's
+  40 ms delay out of its result and pads the end with silence, so the newest
+  frame always came back silent. A DPDFNet model denoises frames at its own
+  rate only; frames at another rate pass through with a warning (sherpa-onnx
+  ends the process when a stream's rate changes, so it never sees one). The
+  silence gate stops the model after 100 ms of quiet input, so an utterance's
+  tail still comes out. `model_type` defaults to `"gtcrn"`, so existing configs are
+  unchanged; an unknown type, DPDFNet without `model`, or DPDFNet with
+  `context_frames` is refused when the config is built. Example:
+  `examples/dpdfnet_denoiser.py`; the examples' `DENOISE=dpdfnet` uses it.
+
 ### Fixed
 
 - `VoiceChannel.play()` cuts the playback under way, as `say()` does: a

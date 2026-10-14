@@ -100,3 +100,23 @@ def test_failed_denoiser_initialization_is_not_logged_as_enabled(
     assert result is None
     assert "Denoiser enabled (RNNoise)" not in caplog.messages
     assert "RNNoise not installed — denoiser disabled" in caplog.messages
+
+
+def test_dpdfnet_mode_builds_a_dpdfnet_denoiser(monkeypatch, caplog) -> None:
+    monkeypatch.setenv("DENOISE", "dpdfnet")
+    monkeypatch.delenv("DENOISE_MODEL", raising=False)
+    constructor = MagicMock()
+
+    with (
+        patch(
+            "roomkit.voice.pipeline.denoiser.sherpa_onnx.SherpaOnnxDenoiserProvider",
+            constructor,
+        ),
+        caplog.at_level(logging.INFO, logger="examples.shared.audio"),
+    ):
+        result = build_denoiser(16000)
+
+    assert result is constructor.return_value
+    config = constructor.call_args.args[0]
+    assert (config.model_type, config.model) == ("dpdfnet", "dpdfnet2.onnx")
+    assert "Denoiser enabled (sherpa-onnx dpdfnet, model=dpdfnet2.onnx)" in caplog.messages
