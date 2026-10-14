@@ -103,7 +103,12 @@ class RecordingMixin:
         buf_lock = threading.Lock()
         max_outbound_samples = sample_rate * 5  # 5 s cap
 
+        # The taps sit on the channel's whole pipeline, which every session of
+        # every room on the channel goes through: each takes its session's
+        # media only, or a room would record another room's call.
         def _inbound_tap(sess: VoiceSession, frame: Any) -> None:
+            if sess.id != session.id:
+                return
             data = frame.data
             n_samples = len(data) // 2
 
@@ -123,6 +128,8 @@ class RecordingMixin:
             mgr.on_data(room_id, track, in_arr.tobytes(), time.monotonic() * 1000)
 
         def _outbound_tap(sess: VoiceSession, data: bytes, sample_rate: int) -> None:
+            if sess.id != session.id:
+                return
             samples = array.array("h", data)
             with buf_lock:
                 outbound_buf.extend(samples)
@@ -137,15 +144,20 @@ class RecordingMixin:
         self,
         room_id: str,
         track: Any,
+        session_id: str,
     ) -> Any:
         """Build a video recording tap closure for the given room and track.
 
         The returned callable updates *track* metadata from the frame
         (codec, dimensions) and feeds data to the room recorder manager.
+        It takes the frames of session *session_id* only: the tap sits on a
+        channel or a backend every session goes through.
         """
         mgr = self._room_recorder_mgr
 
         def _video_tap(sess: Any, frame: Any) -> None:
+            if getattr(sess, "id", None) != session_id:
+                return
             if not track.codec and hasattr(frame, "codec"):
                 track.codec = frame.codec
             # Only copy dimensions from raw (uncompressed) frames —
@@ -182,7 +194,7 @@ class RecordingMixin:
 
         track = self._make_video_track(session.id, channel_id, session.participant_id)
         self._room_recorder_mgr.on_track_added(room_id, track)
-        channel.add_media_tap(self._make_video_recording_tap(room_id, track))
+        channel.add_media_tap(self._make_video_recording_tap(room_id, track, session.id))
 
     def _wire_backend_video_recording(
         self,
@@ -202,7 +214,7 @@ class RecordingMixin:
 
         track = self._make_video_track(session.id, channel_id, session.participant_id)
         self._room_recorder_mgr.on_track_added(room_id, track)
-        backend.add_video_tap(self._make_video_recording_tap(room_id, track))
+        backend.add_video_tap(self._make_video_recording_tap(room_id, track, session.id))
 
     def _wire_av_video_recording(
         self,
@@ -224,4 +236,4 @@ class RecordingMixin:
 
         track = self._make_video_track(session.id, channel_id, session.participant_id)
         self._room_recorder_mgr.on_track_added(room_id, track)
-        channel.add_video_media_tap(self._make_video_recording_tap(room_id, track))
+        channel.add_video_media_tap(self._make_video_recording_tap(room_id, track, session.id))
