@@ -753,9 +753,9 @@ class VoiceTTSMixin:
         A response waits for the spoken playback under way to have been sent
         (RFC §12.2): the agent's words are cut by the person, never by its own
         next response, such as a background task's result relayed as it
-        finishes a sentence; a spoken playback sent whole that only drains its
-        echo, it takes over. ``say()`` cuts the playback under way, as before,
-        and a response cuts a ``play()``.
+        finishes a sentence. ``say()`` and ``play()`` cut the playback under
+        way, and a response cuts a ``play()``. A playback sent whole that only
+        drains its echo is taken over by any of them, never cut: it was heard.
 
         The session is *playback*'s from the check that clears it, under one
         lock: of several waiting, one takes it and the others wait on that one.
@@ -773,7 +773,7 @@ class VoiceTTSMixin:
         if existing is None:
             return
         self._last_tts_ended_at[session.id] = time.monotonic()
-        if waits_on is not None:
+        if drained:
             # Sent whole, only its echo is draining: this one takes over
             # without cancelling it or the audio still leaving the speaker.
             return

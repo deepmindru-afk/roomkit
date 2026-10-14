@@ -240,10 +240,7 @@ async def test_say_while_a_response_waits_plays_before_it_never_with_it() -> Non
 
 async def test_a_response_cuts_a_play_under_way() -> None:
     """``play()`` is the application's audio, not the agent's words: a response
-    cuts it, as before, even after a spoken playback left its event set.
-
-    The play takes over the response draining its echo as ``say()`` does,
-    reporting it cut."""
+    cuts it, as before, even after a spoken playback left its event set."""
     backend = _PacedBackend()
     kit, channel, session, cancelled = await _room(_ChunkTTS(0.1), backend)
     await _respond(channel, session, "Hello.")
@@ -254,10 +251,7 @@ async def test_a_response_cuts_a_play_under_way() -> None:
     await kit.close()
 
     assert backend.heard() == ["Hello.", "Your answer."]
-    assert [(event.reason, event.text) for event in cancelled] == [
-        ("new_tts", "Hello."),
-        ("new_tts", "Hold music"),
-    ]
+    assert [(event.reason, event.text) for event in cancelled] == [("new_tts", "Hold music")]
 
 
 async def test_a_cut_playbacks_drain_leaves_the_next_one_playing() -> None:
@@ -355,6 +349,24 @@ async def test_a_play_cuts_the_playback_under_way() -> None:
 
     assert backend.heard() == ["Hold music"]
     assert [(event.reason, event.text) for event in cancelled] == [("new_tts", "A long answer.")]
+
+
+@pytest.mark.parametrize("call", ["say", "play"])
+async def test_a_response_draining_its_echo_is_taken_over_not_cut(call: str) -> None:
+    """A response sent whole, only its echo left to drain, was heard: what the
+    application plays next takes the session over without cancelling it or
+    flushing the audio still leaving the transport."""
+    backend = _PacedBackend()
+    kit, channel, session, cancelled = await _room(_ChunkTTS(0.1), backend)
+    await _respond(channel, session, "Please hold.")
+    if call == "say":
+        await channel.say(session, "One moment.")
+    else:
+        await channel.play(session, _wav(0.2), text="Hold music")
+    await kit.close()
+
+    assert backend._cuts.get(session.id, 0) == 0  # noqa: SLF001
+    assert cancelled == []
 
 
 async def test_a_cut_play_reports_what_was_heard_of_it() -> None:
