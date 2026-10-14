@@ -16,6 +16,8 @@ import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
+from roomkit._text import identifier
+
 EVERYONE = "all"
 
 NAME_LIMIT = 32
@@ -47,12 +49,16 @@ def name_key(name: str) -> str:
 def is_handle(value: object) -> bool:
     """Whether *value* can name an agent: a name's characters, as a message
     names it (NFC), at most :data:`NAME_LIMIT` of them, no final ``.`` (a
-    name drops it) and not ``all``, which names every agent."""
+    name drops it) and not ``all``, which names every agent. A transcript
+    labels the agent's turns with it unchanged (``@`` and its
+    :func:`~roomkit._text.identifier`), so a handle that would change there
+    (``dev-``, ``a--b``) is none."""
     return (
         isinstance(value, str)
         and len(value) <= NAME_LIMIT
         and _HANDLE.fullmatch(value) is not None
         and unicodedata.normalize("NFC", value) == value
+        and identifier(value, "") == value
         and not value.endswith(".")
         and value.casefold() != EVERYONE
     )

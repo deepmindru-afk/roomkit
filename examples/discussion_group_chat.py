@@ -77,7 +77,9 @@ async def until_quiet(kit: RoomKit) -> None:
         quiet = quiet + 1 if queue.speaking is None and idle else 0
 
 
-async def main() -> None:
+def incident_team() -> list[Agent]:
+    """The investigator, dev and sre, keyed by record id as an application
+    keys them, each with the scripted answers of the incident."""
     investigator = Agent(
         "agent:2b7d9c41-5e0a-4f3b-9d6e-1a8c7f20e5b3",
         provider=scripted(
@@ -109,17 +111,23 @@ async def main() -> None:
         role="Site reliability engineer",
         description="Runs production changes",
     )
+    return [investigator, dev, sre]
 
+
+def named(handles: dict[str, str], channel_ids: Sequence[str]) -> str:
+    """Agents as the room addresses them: ``@`` and each one's handle."""
+    return ",".join(f"@{handles.get(c, c)}" for c in channel_ids) or "-"
+
+
+async def main() -> None:
+    team = incident_team()
     discussion = Discussion(
-        agents=[investigator, dev, sre],
+        agents=team,
         people=["oncall"],
-        everyone=[investigator.channel_id, dev.channel_id, sre.channel_id],
+        everyone=[agent.channel_id for agent in team],
     )
     # Each agent's handle, by channel id: Investigator, Dev, SRE.
     handles = discussion.handles()
-
-    def named(channel_ids: Sequence[str]) -> str:
-        return ",".join(f"@{handles.get(c, c)}" for c in channel_ids) or "-"
 
     kit = RoomKit()
 
@@ -130,9 +138,9 @@ async def main() -> None:
         logger.info(
             "  [queue] %s %s | speaking=%s next=%s waiting=%s",
             event.change,
-            named(event.channel_ids),
-            named(speaking),
-            named(queue.queue),
+            named(handles, event.channel_ids),
+            named(handles, speaking),
+            named(handles, queue.queue),
             queue.waiting,
         )
 
@@ -140,7 +148,8 @@ async def main() -> None:
 
     async def on_receive(_connection: str, event: RoomEvent) -> None:
         if event.type == EventType.MESSAGE and event.source.channel_id != "oncall":
-            logger.info("%s: %s", named([event.source.channel_id]), event.content.body)  # type: ignore[union-attr]
+            author = named(handles, [event.source.channel_id])
+            logger.info("%s: %s", author, event.content.body)  # type: ignore[union-attr]
 
     oncall.register_connection("laptop", on_receive, room_id=ROOM)
     kit.register_channel(oncall)

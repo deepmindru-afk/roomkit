@@ -59,15 +59,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handle (`DispatchCandidate.handle`, new); the queue, `addressed_to`,
   `SpeakQueue` and every hook keep channel ids. `Discussion.handles()`
   returns them; they are stored with the room, so a process that only
-  follows the discussion reads them too, and a room stored by an earlier
-  version keeps its channel ids. Refused at construction: an agent with no
-  handle (an `agent:<uuid>` id and no name), a handle that cannot name an
-  agent (letters, digits, `_ . -`, at most 32, no final `.`, not `all`), and
-  two agents whose handles read alike ignoring case, two channel ids that
-  differ only in case included. Example: `examples/discussion_group_chat.py`.
+  follows the discussion reads them too, and a room stored without them
+  keeps its channel ids. Background task texts (the worker's brief,
+  the tool's answer, the relayed result, the tasks' block of the notes) name
+  such an agent by its handle too. Example:
+  `examples/discussion_group_chat.py`.
 
 ### Changed
 
+- **BREAKING — a `Discussion` refuses, at construction, an agent no name can
+  address** (RMK-710). A channel id serves as the agent's handle only when
+  it is one: letters, digits, `_ . -`, at most 32, no final `.` nor leading,
+  trailing or doubled `-`, not `all`. Otherwise the agent's `name` is kept to
+  a name's characters, and with neither the construction raises
+  `ValueError` where it used to build: `AIChannel("ai:support")` and
+  `team/dev`, which no message could name (`@ai`, `@team`), and a
+  36-character id or an agent whose id is `all`, each with no `name`. Two
+  agents whose handles read alike ignoring case (channel ids `Dev` and `dev`)
+  are refused too. Migration: give the agent a `name`, or pass
+  `Discussion(handles={channel_id: "Support"})`.
 - What an image an author sent becomes in the model's input (RMK-763, RFC
   §6.4). A turn sends the newest four author images, history and input
   together (`AIChannel(max_author_images=...)`, `None` for all), inline ones

@@ -26,7 +26,7 @@ from roomkit.orchestration.strategies.discussion import (
 )
 from roomkit.orchestration.strategies.discussion._config import CONFIG_KEY, DiscussionConfig
 from roomkit.orchestration.strategies.discussion._room import DiscussionRoom
-from roomkit.orchestration.strategies.discussion.dispatch.classifier import question
+from roomkit.orchestration.strategies.discussion.dispatch.classifier import _member, question
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
@@ -42,24 +42,24 @@ from tests.orchestration.test_strategy_discussion import (
 from tests.test_framework import SimpleChannel
 
 JEV = "agent:3f2a1b2c-0d4e-4f5a-8b6c-7d8e9f0a1b2c"
-JURISTE = "agent:9b1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e"
+COUNSEL = "agent:9b1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e"
 
 
-def _agents(jev: MockAIProvider, juriste: MockAIProvider) -> list[Agent]:
+def _agents(jev: MockAIProvider, counsel: MockAIProvider) -> list[Agent]:
     return [
         Agent(JEV, provider=jev, name="Jev", description="reads the contract"),
-        Agent(JURISTE, provider=juriste, name="Juriste", description="checks the law"),
+        Agent(COUNSEL, provider=counsel, name="Counsel", description="checks the law"),
     ]
 
 
-async def _luge_room(kit: RoomKit, strategy: Discussion) -> None:
+async def _keyed_room(kit: RoomKit, strategy: Discussion) -> None:
     kit.register_channel(SimpleChannel("ops"))
     await kit.create_room(room_id="r1", orchestration=strategy)
     await kit.attach_channel("r1", "ops")
 
 
 async def _answers(kit: RoomKit) -> list[RoomEvent]:
-    return [e for e in await _timeline(kit) if e.source.channel_id in (JEV, JURISTE)]
+    return [e for e in await _timeline(kit) if e.source.channel_id in (JEV, COUNSEL)]
 
 
 # -- Which handle an agent has ---------------------------------------------------
@@ -112,7 +112,7 @@ def test_an_agent_without_a_handle_or_two_alike_are_refused_at_construction(
 
 
 def test_a_configuration_stored_without_handles_addresses_agents_by_channel_id() -> None:
-    """A room an earlier version stored keeps working as it did."""
+    """A room stored without handles reads names by channel id."""
     config = DiscussionConfig.stored({CONFIG_KEY: {"agents": ["a", "b"], "max_depth": 5}})
     assert config is not None and config.handles is None
     room = DiscussionRoom.following(RoomKit(), "r1", config)
@@ -124,38 +124,38 @@ def test_a_configuration_stored_without_handles_addresses_agents_by_channel_id()
 
 
 async def test_an_agent_naming_another_by_its_handle_queues_it() -> None:
-    jev = _provider("Clause 4 caps the liability. @juriste is that cap lawful?")
-    juriste = _provider("Lawful, within the statutory floor.")
+    jev = _provider("Clause 4 caps the liability. @counsel is that cap lawful?")
+    counsel = _provider("Lawful, within the statutory floor.")
     kit = RoomKit()
-    await _luge_room(kit, Discussion(_agents(jev, juriste), everyone=[JEV]))
+    await _keyed_room(kit, Discussion(_agents(jev, counsel), everyone=[JEV]))
 
     await _say(kit, "@Jev what does clause 4 say?")
     await _settle(kit)
 
     asked, answered = await _answers(kit)
-    assert (asked.source.channel_id, answered.source.channel_id) == (JEV, JURISTE)
+    assert (asked.source.channel_id, answered.source.channel_id) == (JEV, COUNSEL)
     # The address keeps channel ids.
-    assert asked.addressed_to == [JURISTE]
-    assert (len(jev.calls), len(juriste.calls)) == (1, 1)
+    assert asked.addressed_to == [COUNSEL]
+    assert (len(jev.calls), len(counsel.calls)) == (1, 1)
     await kit.close()
 
 
 async def test_notes_and_the_transcript_present_agents_by_their_handles() -> None:
-    jev = _provider("Clause 4 caps the liability. @Juriste is that cap lawful?")
-    juriste = _provider("Lawful.")
+    jev = _provider("Clause 4 caps the liability. @Counsel is that cap lawful?")
+    counsel = _provider("Lawful.")
     kit = RoomKit()
-    await _luge_room(kit, Discussion(_agents(jev, juriste), everyone=[JEV]))
+    await _keyed_room(kit, Discussion(_agents(jev, counsel), everyone=[JEV]))
 
     await _say(kit, "@Jev what does clause 4 say?")
     await _settle(kit)
 
-    texts = _texts(juriste)
+    texts = _texts(counsel)
     notes = next(t for t in texts if NOTES in t)
-    assert "You are @Juriste," in notes
+    assert "You are @Counsel," in notes
     assert "- @Jev: Jev" in notes
     assert "the message from @Jev" in notes and "asked by @Jev" in notes
     assert "as in @Jev" in notes
-    # Jev's turn, in the conversation Juriste reads, carries Jev's handle.
+    # Jev's turn, in the conversation Counsel reads, carries Jev's handle.
     assert any('@Jev: "Clause 4 caps the liability.' in t for t in texts)
     # No channel id anywhere: neither "agent:3f2a…" nor the transcript's "agent-3f2a…".
     assert not any("3f2a" in t or "9b1c" in t for t in texts)
@@ -163,9 +163,9 @@ async def test_notes_and_the_transcript_present_agents_by_their_handles() -> Non
 
 
 async def test_a_person_named_like_a_handle_is_addressed_as_the_agent() -> None:
-    jev, juriste = _provider("Jev here"), _provider("Juriste here")
+    jev, counsel = _provider("Jev here"), _provider("Counsel here")
     kit = RoomKit()
-    await _luge_room(kit, Discussion(_agents(jev, juriste), people=["Jev", "ops"]))
+    await _keyed_room(kit, Discussion(_agents(jev, counsel), people=["Jev", "ops"]))
 
     await _say(kit, "@jev please")
     await _settle(kit)
@@ -175,11 +175,11 @@ async def test_a_person_named_like_a_handle_is_addressed_as_the_agent() -> None:
 
 
 async def test_the_dispatch_policy_reads_agents_by_their_handles() -> None:
-    policy = MockDispatchPolicy([[JURISTE], [JEV]])
-    jev = _provider("Clause 4 caps it. @Juriste lawful?", "ok")
-    juriste = _provider("Lawful.")
+    policy = MockDispatchPolicy([[COUNSEL], [JEV]])
+    jev = _provider("Clause 4 caps it. @Counsel lawful?", "ok")
+    counsel = _provider("Lawful.")
     kit = RoomKit()
-    await _luge_room(kit, Discussion(_agents(jev, juriste), dispatch=policy))
+    await _keyed_room(kit, Discussion(_agents(jev, counsel), dispatch=policy))
 
     await _say(kit, "@Jev clause 4?")
     await _settle(kit)
@@ -189,27 +189,27 @@ async def test_the_dispatch_policy_reads_agents_by_their_handles() -> None:
     (turn,) = policy.turns
     assert [(c.channel_id, c.handle) for c in turn.candidates] == [
         (JEV, "Jev"),
-        (JURISTE, "Juriste"),
+        (COUNSEL, "Counsel"),
     ]
     by_agent = {e.source.channel_id: e.id for e in turn.recent}
     assert turn.speakers[by_agent[JEV]] == "@Jev"
-    assert turn.speakers[by_agent[JURISTE]] == "@Juriste"
+    assert turn.speakers[by_agent[COUNSEL]] == "@Counsel"
     await kit.close()
 
 
 def test_the_classifier_is_asked_about_each_candidate_by_its_handle() -> None:
-    candidate = DispatchCandidate(channel_id=JURISTE, name="Juriste", handle="Juriste")
-    assert question(candidate).instructions.startswith("Should @Juriste (Juriste) take")
-    # A candidate with no handle is its channel id, as before.
+    candidate = DispatchCandidate(channel_id=COUNSEL, name="Counsel", handle="Counsel")
+    assert question(candidate).instructions.startswith("Should @Counsel (Counsel) take")
+    # A candidate with no handle is presented by its channel id.
     unnamed = question(DispatchCandidate(channel_id="sre"))
     assert unnamed.instructions.startswith("Should @sre take")
 
 
 async def test_a_process_that_follows_the_discussion_reads_handles() -> None:
     store, locks = InMemoryStore(), InMemoryLockManager()
-    jev, juriste = _provider("Jev here"), _provider("Juriste here")
+    jev, counsel = _provider("Jev here"), _provider("Counsel here")
     host = RoomKit(store=store, lock_manager=locks)
-    await _luge_room(host, Discussion(_agents(jev, juriste), everyone=[JEV]))
+    await _keyed_room(host, Discussion(_agents(jev, counsel), everyone=[JEV]))
     follower = RoomKit(store=store, lock_manager=locks)
     follower.register_channel(SimpleChannel("ops"))
 
@@ -217,14 +217,14 @@ async def test_a_process_that_follows_the_discussion_reads_handles() -> None:
         InboundMessage(
             channel_id="ops",
             sender_id="oncall",
-            content=TextContent(body="@Juriste is clause 4 lawful?"),
+            content=TextContent(body="@Counsel is clause 4 lawful?"),
         )
     )
     await _settle(host)
 
     stored = await store.get_event(result.event.id)
-    assert stored is not None and stored.addressed_to == [JURISTE]
-    assert (len(jev.calls), len(juriste.calls)) == (0, 1)
+    assert stored is not None and stored.addressed_to == [COUNSEL]
+    assert (len(jev.calls), len(counsel.calls)) == (0, 1)
     await follower.close()
     await host.close()
 
@@ -293,4 +293,23 @@ async def test_a_background_task_names_its_agent_by_handle() -> None:
     assert any("its result comes back to Comms" in t for t in told)
     assert "[Background task from Comms completed." in told[-1]
     assert not any("7c1e" in t for t in told)
+    await kit.close()
+
+
+def test_the_classifier_team_lists_each_candidate_by_its_handle() -> None:
+    candidate = DispatchCandidate(channel_id=COUNSEL, name="Counsel", handle="Counsel")
+    member = _member(candidate, waits=False)
+    assert member == {"agent": "@Counsel", "name": "Counsel"}
+
+
+async def test_an_agent_naming_a_person_records_the_ask_under_its_channel_id() -> None:
+    jev = _provider("@ops may I quote clause 4 in full?")
+    kit = RoomKit()
+    await _keyed_room(kit, Discussion(_agents(jev, _provider()), everyone=[JEV]))
+
+    await _say(kit, "@Jev what does clause 4 say?")
+    await _settle(kit)
+
+    queue = kit.speak_queue("r1")
+    assert queue is not None and queue.asked == ((JEV, "@ops"),) and queue.waiting
     await kit.close()

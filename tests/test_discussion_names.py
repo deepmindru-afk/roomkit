@@ -101,20 +101,20 @@ def test_only_one_final_period_is_dropped() -> None:
     assert read_names("thanks @dev..", {"dev": "dev"}).agents == ()
 
 
-LUGE = {"Jev": "agent:3f2a", "Juriste": "agent:9b1c"}
-"""Agents whose channel ids cannot be names, addressed by their handles."""
+KEYED = {"Jev": "agent:3f2a", "Counsel": "agent:9b1c"}
+"""Agents keyed by record id, which cannot be a name, addressed by their handles."""
 
 
 def test_a_handle_names_its_agent_by_channel_id_and_the_channel_id_names_nobody() -> None:
-    names = read_names("@juriste, check clause 4 with @Jev", LUGE, speaker="agent:3f2a")
+    names = read_names("@counsel, check clause 4 with @Jev", KEYED, speaker="agent:3f2a")
     assert names == Names(("agent:9b1c",))
     # The channel id is no name: "@agent:9b1c" reads as "@agent".
-    assert read_names("@agent:9b1c over to you", LUGE) == Names()
-    assert read_names("@all heads up", LUGE, speaker="agent:9b1c") == Names(("agent:3f2a",))
+    assert read_names("@agent:9b1c over to you", KEYED) == Names()
+    assert read_names("@all heads up", KEYED, speaker="agent:9b1c") == Names(("agent:3f2a",))
 
 
 def test_a_person_named_like_a_handle_is_the_agents_name() -> None:
-    names = read_names("@Jev and @Alice", LUGE, people=["Jev", "Alice"])
+    names = read_names("@Jev and @Alice", KEYED, people=["Jev", "Alice"])
     assert names == Names(agents=("agent:3f2a",), people=("Alice",))
 
 
@@ -125,7 +125,22 @@ def test_a_handle_is_a_name(value: str) -> None:
 
 @pytest.mark.parametrize(
     "value",
-    ["", "agent:3f2a", "two words", "dev.", "all", "ALL", "x" * (NAME_LIMIT + 1), "dev\n", 3],
+    [
+        "",
+        "agent:3f2a",
+        "two words",
+        "dev.",
+        "all",
+        "ALL",
+        "x" * (NAME_LIMIT + 1),
+        "dev\n",
+        3,
+        # A transcript would label these otherwise: "@dev", "@dev", "@a-b", "@dev".
+        "dev-",
+        "-dev",
+        "a--b",
+        "dev\u2475",
+    ],
 )
 def test_what_cannot_name_an_agent_is_no_handle(value: object) -> None:
     assert not is_handle(value)

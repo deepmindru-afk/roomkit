@@ -27,7 +27,7 @@ class DiscussionConfig(BaseModel):
     agents: list[str]
     handles: dict[str, str] | None = None
     """The name each agent is addressed by, by channel id. None (a
-    configuration an earlier version stored): each agent's channel id."""
+    configuration stored without handles): each agent's channel id."""
     people: list[str] | None = None
     addressed_only: bool = False
     everyone: list[str] | None = None
