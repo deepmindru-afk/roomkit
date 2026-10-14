@@ -92,6 +92,8 @@ class TTSHost(Protocol):
         _schedule: Schedule a coroutine as a tracked background task.
         _fire_audio_level_hook: Fire ON_OUTPUT_AUDIO_LEVEL hook (VoiceHooksMixin).
         interrupt: Cancel in-progress TTS playback (VoiceChannel).
+        _cut_playback: Cut a playback already taken off its session (VoiceChannel).
+        _was_sent: Whether send_audio() returned for a playback (VoiceChannel).
     """
 
     channel_id: str
@@ -119,6 +121,8 @@ class TTSHost(Protocol):
     _fire_audio_level_hook: Any  # VoiceHooksMixin._fire_audio_level_hook
     _fire_level_hook: Any  # VoiceChannel._fire_level_hook
     interrupt: Any  # VoiceChannel.interrupt
+    _cut_playback: Any  # VoiceChannel._cut_playback
+    _was_sent: Any  # VoiceChannel._was_sent
 
 
 class VoiceTTSMixin:
@@ -155,6 +159,8 @@ class VoiceTTSMixin:
     _fire_audio_level_hook: Any  # see TTSHost — VoiceHooksMixin._fire_audio_level_hook
     _fire_level_hook: Any  # see TTSHost — VoiceChannel._fire_level_hook
     interrupt: Any  # see TTSHost — VoiceChannel.interrupt
+    _cut_playback: Any  # see TTSHost — VoiceChannel._cut_playback
+    _was_sent: Any  # see TTSHost — VoiceChannel._was_sent
     _flush_queued_speech: Any  # see TTSHost — VoiceChannel._flush_queued_speech
 
     def _session_output_backend(self, session: VoiceSession) -> VoiceBackend:
@@ -319,8 +325,8 @@ class VoiceTTSMixin:
             total_out_bytes / total_in_bytes if total_in_bytes else 0,
         )
 
-    def _playback_sent(self, session_id: str) -> None:
-        """End a playback whose audio ``send_audio()`` has delivered.
+    def _playback_sent(self, session_id: str, playback: TTSPlaybackState) -> None:
+        """End *playback*, whose audio ``send_audio()`` has delivered.
 
         The room may still carry residual echo.  How it is kept out of the STT
         depends on whether something cancels it:
@@ -336,20 +342,21 @@ class VoiceTTSMixin:
           alive for ``_PLAYBACK_DRAIN_S`` so the echo transcribed in that
           window is discarded — along with any speech, which cannot be told
           apart from it.
+
+        A playback already cut, or taken over, ends nothing: the one that
+        followed it is not its to end.
         """
         pipeline_aec = self._pipeline is not None and self._pipeline.runs_aec
         backend_aec = (
             self._backend is not None and VoiceCapability.NATIVE_AEC in self._backend.capabilities
         )
         if not pipeline_aec and not backend_aec:
-            with self._state_lock:
-                sent = self._playing_sessions.get(session_id)
             self._schedule(
-                self._finish_playback(session_id, sent),
+                self._finish_playback(session_id, playback),
                 name=f"finish_playback:{session_id}",
             )
             return
-        self._end_playback(session_id, drain_s=0.0)
+        self._end_playback(session_id, drain_s=0.0, playback=playback)
         if pipeline_aec:
             self._schedule(
                 self._bypass_aec_after_echo_tail(session_id),
@@ -358,11 +365,11 @@ class VoiceTTSMixin:
         # The bot has finished — anything the DISABLED strategy queued while it
         # spoke gets its turn now (RFC §12.6).
         self._schedule(
-            self._flush_queued_speech(session_id),
+            self._flush_if_idle(session_id),
             name=f"flush_queued_speech:{session_id}",
         )
 
-    async def _finish_playback(self, session_id: str, playback: TTSPlaybackState | None) -> None:
+    async def _finish_playback(self, session_id: str, playback: TTSPlaybackState) -> None:
         """Clear *playback* after the echo-decay window (no AEC).
 
         If ``interrupt()`` fires during the delay, it pops
@@ -373,27 +380,34 @@ class VoiceTTSMixin:
         self._end_playback(session_id, drain_s=_PLAYBACK_DRAIN_S, playback=playback)
         # The bot has finished — anything the DISABLED strategy queued while it
         # spoke gets its turn now (RFC §12.6).
+        await self._flush_if_idle(session_id)
+
+    async def _flush_if_idle(self, session_id: str) -> None:
+        """Hand the speech held during playback on, unless a playback took the
+        session over: the bot is still speaking, and that playback's end hands
+        it on."""
+        with self._state_lock:
+            if session_id in self._playing_sessions:
+                return
         await self._flush_queued_speech(session_id)
 
     def _end_playback(
-        self, session_id: str, *, drain_s: float, playback: TTSPlaybackState | None = None
+        self, session_id: str, *, drain_s: float, playback: TTSPlaybackState
     ) -> None:
-        """Drop the playback state and stamp when the agent stopped speaking.
+        """Drop *playback* and stamp when the agent stopped speaking.
 
-        With *playback*, only that one: a later playback is not its to end.
+        Only that one: a later playback is not its to end.
         """
         with self._state_lock:
-            current = self._playing_sessions.get(session_id)
-            if current is None or (playback is not None and current is not playback):
+            if self._playing_sessions.get(session_id) is not playback:
                 return
             del self._playing_sessions[session_id]
-        if current:
-            self._last_tts_ended_at[session_id] = time.monotonic()
-            logger.debug(
-                "Playback drain complete for session %s (delay=%.1fs)",
-                session_id,
-                drain_s,
-            )
+        self._last_tts_ended_at[session_id] = time.monotonic()
+        logger.debug(
+            "Playback drain complete for session %s (delay=%.1fs)",
+            session_id,
+            drain_s,
+        )
 
     async def _bypass_aec_after_echo_tail(self, session_id: str) -> None:
         """Bypass the AEC once the echo tail has decayed, unless a new playback started."""
@@ -470,6 +484,8 @@ class VoiceTTSMixin:
         fan_out = StreamFanOut(sentence_source, len(target_sessions))
         producer = asyncio.create_task(fan_out.run(), name=f"tts_fan_out:{event.id}")
         voice = self._resolve_voice(event.source.channel_id)
+        # Each session's playback of this response, by session id.
+        playbacks: dict[str, TTSPlaybackState] = {}
         try:
             results = await asyncio.gather(
                 *(
@@ -483,6 +499,7 @@ class VoiceTTSMixin:
                         accumulated=text.accumulated,
                         speaker_id=event.source.channel_id,
                         responds_to=event.responds_to,
+                        playbacks=playbacks,
                     )
                     for session, branch in zip(target_sessions, fan_out.branches, strict=True)
                 ),
@@ -512,7 +529,9 @@ class VoiceTTSMixin:
         delivered = _served_sessions(target_sessions, results)
 
         full_text = self._streamed_text(text.text(), gate, budget)
-        await self._close_streamed_response(delivered, full_text, room_id, context, _vs_parent)
+        await self._close_streamed_response(
+            delivered, playbacks, full_text, room_id, context, _vs_parent
+        )
         if text.failure is not None:
             # The response failed: what it produced was spoken, the failure is the turn's.
             raise text.failure
@@ -582,6 +601,7 @@ class VoiceTTSMixin:
     async def _close_streamed_response(
         self,
         delivered: list[VoiceSession],
+        playbacks: dict[str, TTSPlaybackState],
         full_text: str,
         room_id: str,
         context: RoomContext,
@@ -591,25 +611,20 @@ class VoiceTTSMixin:
 
         Each gets the whole text as its playback and final transcript, and
         AFTER_TTS reports what was sent; with no such session, nothing was.
+        *playbacks* are this response's, by session.
         """
-        from .voice import TTSPlaybackState
-
         if not delivered:
             return
 
-        # Replace the relayed prefix with the whole streamed text
+        # Replace the relayed prefix with the whole streamed text, on the
+        # playback itself: its drain ends it by identity, and a response that
+        # took the session over since is not this one's to rename.
         for session in delivered:
+            playback = playbacks.get(session.id)
             with self._state_lock:
-                previous = self._playing_sessions.get(session.id)
-                if previous is not None:
+                if playback is not None and self._playing_sessions.get(session.id) is playback:
                     # A barge-in that claimed the prefix owns the whole text.
-                    self._playing_sessions[session.id] = TTSPlaybackState(
-                        session_id=session.id,
-                        text=full_text or "(empty)",
-                        barge_in_claimed=previous.barge_in_claimed,
-                        answer_channel_id=previous.answer_channel_id,
-                        answer_responds_to=previous.answer_responds_to,
-                    )
+                    playback.text = full_text or "(empty)"
         # Only a session that was served gets the final transcript: showing a
         # response the user never heard would contradict the audio.
         if full_text:
@@ -692,6 +707,7 @@ class VoiceTTSMixin:
         accumulated: list[str],
         speaker_id: str,
         responds_to: str | None = None,
+        playbacks: dict[str, TTSPlaybackState] | None = None,
     ) -> bool:
         """Play one session's copy of a streamed response through TTS.
 
@@ -715,43 +731,93 @@ class VoiceTTSMixin:
                 accumulated=accumulated,
                 speaker_id=speaker_id,
                 responds_to=responds_to,
+                playbacks=playbacks,
             )
         finally:
             sentences.close()
         return True
 
-    async def _make_way(self, session: VoiceSession, *, response: bool) -> None:
-        """Clear *session* for a new playback, so no two overlap.
+    async def _make_way(
+        self, session: VoiceSession, playback: TTSPlaybackState, *, response: bool
+    ) -> None:
+        """Give *session* to *playback*, so no two playbacks overlap.
 
-        A response waits for the one under way to have been sent (RFC §12.2):
-        the agent's words are cut by the person, never by its own next
-        response, such as a background task's result relayed as it finishes
-        a sentence; a playback sent whole that only drains its echo, it takes
-        over. ``say()`` cuts the playback under way, as before.
+        A response waits for the spoken playback under way to have been sent
+        (RFC §12.2): the agent's words are cut by the person, never by its own
+        next response, such as a background task's result relayed as it
+        finishes a sentence; a spoken playback sent whole that only drains its
+        echo, it takes over. ``say()`` cuts the playback under way, as before,
+        and a response cuts a ``play()``.
+
+        The session is *playback*'s from the check that clears it, under one
+        lock: of several waiting, one takes it and the others wait on that one.
         """
         while True:
             with self._state_lock:
                 existing = self._playing_sessions.get(session.id)
-                sent = self._playback_done_events.get(session.id)
-            if existing is None:
-                return
-            if response and sent is not None:
-                if not sent.is_set():
-                    logger.info(
-                        "Response waits for the playback under way on session %s", session.id
-                    )
-                    await sent.wait()
-                    continue  # another response may have taken the floor first
-                # Sent whole, only its echo is draining: this one takes over
-                # without cancelling it or the audio still leaving the speaker.
-                self._end_playback(session.id, drain_s=0.0, playback=existing)
-                return
-            logger.info(
-                "Cancelling previous TTS for session %s before starting new one",
-                session.id,
-            )
-            await self.interrupt(session, reason="new_tts")
+                waits_on = existing.sent if response and existing is not None else None
+                if waits_on is None or waits_on.is_set():
+                    drained = existing is not None and self._was_sent(session.id, existing)
+                    self._claim(session.id, playback)
+                    break
+            logger.info("Response waits for the playback under way on session %s", session.id)
+            await waits_on.wait()
+        if existing is None:
             return
+        self._last_tts_ended_at[session.id] = time.monotonic()
+        if waits_on is not None:
+            # Sent whole, only its echo is draining: this one takes over
+            # without cancelling it or the audio still leaving the speaker.
+            return
+        logger.info(
+            "Cancelling previous TTS for session %s before starting new one",
+            session.id,
+        )
+        try:
+            await self._cut_playback(session, existing, reason="new_tts", drained=drained)
+        except BaseException:
+            # *playback* never starts: the session is not left to it.
+            self._mark_sent(session.id, playback)
+            raise
+
+    def _claim(self, session_id: str, playback: TTSPlaybackState) -> None:
+        """Make *playback* the session's, under ``_state_lock``.
+
+        Its done event is cleared, so ``wait_playback_done()`` blocks until
+        its ``send_audio()`` returns.
+        """
+        self._playing_sessions[session_id] = playback
+        done_ev = self._playback_done_events.get(session_id)
+        if done_ev is None:
+            self._playback_done_events[session_id] = asyncio.Event()
+        else:
+            done_ev.clear()
+
+    def _release_waiters(self, session_id: str) -> None:
+        """Let go of what waits for the session's playback: the session is
+        going, and a ``send_audio()`` into it may never return."""
+        with self._state_lock:
+            playback = self._playing_sessions.get(session_id)
+            done_ev = self._playback_done_events.get(session_id)
+        if playback is not None and playback.sent is not None:
+            playback.sent.set()
+        if done_ev is not None:
+            done_ev.set()
+
+    def _mark_sent(self, session_id: str, playback: TTSPlaybackState) -> None:
+        """Signal that ``send_audio()`` returned for *playback*, then end it.
+
+        The session's done event reports the playback under way: one that cut
+        or took over this one is not sent yet.
+        """
+        if playback.sent is not None:
+            playback.sent.set()
+        with self._state_lock:
+            current = self._playing_sessions.get(session_id)
+            done_ev = self._playback_done_events.get(session_id)
+        if done_ev is not None and (current is None or current is playback):
+            done_ev.set()
+        self._playback_sent(session_id, playback)
 
     async def _play_branch(
         self,
@@ -767,27 +833,58 @@ class VoiceTTSMixin:
         accumulated: list[str],
         speaker_id: str,
         responds_to: str | None = None,
+        playbacks: dict[str, TTSPlaybackState] | None = None,
     ) -> None:
-        """Interrupt, play and drain one session's streamed response."""
+        """Wait for the session, then play and drain one session's streamed response."""
         from .voice import TTSPlaybackState
-
-        await self._make_way(session, response=True)
 
         playback = TTSPlaybackState(
             session_id=session.id,
             text="",
             answer_channel_id=speaker_id,
             answer_responds_to=responds_to,
+            sent=asyncio.Event(),
         )
-        with self._state_lock:
-            self._playing_sessions[session.id] = playback
-            # Clear done event so wait_playback_done() blocks until send_audio returns
-            done_ev = self._playback_done_events.get(session.id)
-            if done_ev is None:
-                done_ev = asyncio.Event()
-                self._playback_done_events[session.id] = done_ev
-            else:
-                done_ev.clear()
+        await self._make_way(session, playback, response=True)
+        try:
+            await self._stream_claimed(
+                session,
+                playback,
+                sentences,
+                tts=tts,
+                backend=backend,
+                voice=voice,
+                room_id=room_id,
+                tts_name=tts_name,
+                telemetry=telemetry,
+                accumulated=accumulated,
+                speaker_id=speaker_id,
+                playbacks=playbacks,
+            )
+        finally:
+            # The session is this playback's until here: however it ended, it
+            # is marked sent, or every response after it waits for good.
+            self._mark_sent(session.id, playback)
+
+    async def _stream_claimed(
+        self,
+        session: VoiceSession,
+        playback: TTSPlaybackState,
+        sentences: StreamBranch[str],
+        *,
+        tts: TTSProvider,
+        backend: VoiceBackend,
+        voice: str | None,
+        room_id: str,
+        tts_name: str,
+        telemetry: TelemetryProvider | None,
+        accumulated: list[str],
+        speaker_id: str,
+        playbacks: dict[str, TTSPlaybackState] | None,
+    ) -> None:
+        """Play and drain one session's streamed response, the session already its."""
+        if playbacks is not None:
+            playbacks[session.id] = playback
         # Activate AEC so echo cancellation runs during playback
         if self._pipeline is not None and self._pipeline._config.aec is not None:
             self._pipeline.set_aec_active(session.id, True)
@@ -867,12 +964,6 @@ class VoiceTTSMixin:
                 time.monotonic() - t0,
             )
             self._debug_frame_count = 0  # reset RMS debug counter
-            # Signal that send_audio() has returned so
-            # wait_playback_done() can unblock immediately.
-            done_ev = self._playback_done_events.get(session.id)
-            if done_ev is not None:
-                done_ev.set()
-            self._playback_sent(session.id)
 
     async def _send_tts(
         self,
@@ -936,25 +1027,44 @@ class VoiceTTSMixin:
 
         tts_name = self._tts.name  # capture before async yields (may become None)
 
-        await self._make_way(session, response=response)
-
-        await self._session_output_backend(session).send_transcription(session, text, "assistant")
-
         playback = TTSPlaybackState(
             session_id=session.id,
             text=text,
             answer_channel_id=speaker_id if response else None,
             answer_responds_to=responds_to if response else None,
+            sent=asyncio.Event(),
         )
-        with self._state_lock:
-            self._playing_sessions[session.id] = playback
-            # Clear done event so wait_playback_done() blocks until send_audio returns
-            done_ev = self._playback_done_events.get(session.id)
-            if done_ev is None:
-                done_ev = asyncio.Event()
-                self._playback_done_events[session.id] = done_ev
-            else:
-                done_ev.clear()
+        await self._make_way(session, playback, response=response)
+        try:
+            await self._speak_claimed(
+                session,
+                playback,
+                text,
+                voice=voice,
+                speaker_id=speaker_id,
+                response=response,
+                tts_name=tts_name,
+            )
+        finally:
+            # The session is this playback's until here: however it ended, it
+            # is marked sent, or every response after it waits for good.
+            self._mark_sent(session.id, playback)
+
+    async def _speak_claimed(
+        self,
+        session: VoiceSession,
+        playback: TTSPlaybackState,
+        text: str,
+        *,
+        voice: str | None,
+        speaker_id: str | None,
+        response: bool,
+        tts_name: str,
+    ) -> None:
+        """Synthesize *text* and send it on *session*, already *playback*'s."""
+        tts = self._tts
+        if tts is None:
+            raise RuntimeError("TTS provider not configured")
         # Activate AEC so echo cancellation runs during playback
         if self._pipeline is not None and self._pipeline._config.aec is not None:
             self._pipeline.set_aec_active(session.id, True)
@@ -992,7 +1102,10 @@ class VoiceTTSMixin:
         t0 = time.monotonic()
         tts_stream: AsyncIterator[AudioChunk] | None = None
         try:
-            tts_stream = self._tts.synthesize_stream(text, voice=voice, **context_kwargs)
+            await self._session_output_backend(session).send_transcription(
+                session, text, "assistant"
+            )
+            tts_stream = tts.synthesize_stream(text, voice=voice, **context_kwargs)
             gate = partial(self._unheard_turns.wait_to_play, session.id) if response else None
             audio_stream = _observe_audio(playback, recorder, tts_stream, gate=gate)
             if self._pipeline is not None or getattr(self, "_outbound_audio_taps", []):
@@ -1018,12 +1131,6 @@ class VoiceTTSMixin:
                     unit="ms",
                     attributes={Attr.PROVIDER: tts_name},
                 )
-            # Signal that send_audio() has returned so
-            # wait_playback_done() can unblock immediately.
-            done_ev = self._playback_done_events.get(session.id)
-            if done_ev is not None:
-                done_ev.set()
-            self._playback_sent(session.id)
 
     async def _deliver_voice(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
@@ -1267,7 +1374,10 @@ class VoiceTTSMixin:
 
         playback = TTSPlaybackState(session_id=session.id, text=text or "(audio)")
         with self._state_lock:
-            self._playing_sessions[session.id] = playback
+            # Claimed as a response's playback is: the session's done event
+            # says it plays until send_audio() returns, so a barge-in and a
+            # cut read it as playing, not as an earlier playback's drain.
+            self._claim(session.id, playback)
 
         try:
             # Wrap PCM as an AudioChunk stream so the outbound pipeline can
@@ -1290,7 +1400,7 @@ class VoiceTTSMixin:
             # guard reads (a cut one was counted at the cut).
             self._count_played(playback, len(pcm_data) * 1000 // (2 * sample_rate))
         finally:
-            self._playback_sent(session.id)
+            self._mark_sent(session.id, playback)
 
 
 def _observe_audio(

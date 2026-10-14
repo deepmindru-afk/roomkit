@@ -186,6 +186,10 @@ class TTSPlaybackState:
     counted: bool = False
     """Whether what was heard of it joined its session's played total, which
     the echo guard reads (``InterruptionConfig.echo_guard_ms``)."""
+    sent: asyncio.Event | None = None
+    """Set once ``send_audio()`` returned for a spoken playback (``say()``, a
+    response): a response waits on it rather than cut that playback (RFC
+    §12.2). ``None`` for ``play()``, which a response cuts."""
 
     @property
     def position_ms(self) -> int:
@@ -1402,6 +1406,7 @@ class VoiceChannel(
         self._pending_audio.pop(session.id, None)
         self._cancel_turn_wait(session.id)
         self._unheard_turns.release(session.id)
+        self._release_waiters(session.id)
         self._last_tts_ended_at.pop(session.id, None)
         # Clear the session's STT language and what the lock knew about it
         with self._state_lock:
@@ -2012,15 +2017,33 @@ class VoiceChannel(
         """Interrupt ongoing TTS playback for a session."""
         with self._state_lock:
             playback = self._playing_sessions.pop(session.id, None)
+            drained = self._was_sent(session.id, playback) if playback else False
         if not playback:
             return False
+        await self._cut_playback(session, playback, reason=reason, drained=drained)
+        return True
 
+    def _was_sent(self, session_id: str, playback: TTSPlaybackState) -> bool:
+        """Whether ``send_audio()`` already returned for *playback*: the
+        utterance went out whole and only its echo-decay window is left."""
+        if playback.sent is not None:
+            return playback.sent.is_set()
+        done_ev = self._playback_done_events.get(session_id)
+        return done_ev is not None and done_ev.is_set()
+
+    async def _cut_playback(
+        self,
+        session: VoiceSession,
+        playback: TTSPlaybackState,
+        *,
+        reason: str,
+        drained: bool,
+    ) -> None:
+        """Cut *playback*, already taken off the session, and report it.
+
+        A *drained* playback went out whole: nothing of it is cut off.
+        """
         self._last_tts_ended_at[session.id] = time.monotonic()
-        # send_audio() already returned: the utterance went out whole and only
-        # the echo-decay window was left, so nothing is cut off here.
-        done_ev = self._playback_done_events.get(session.id)
-        drained = done_ev is not None and done_ev.is_set()
-
         config = self._interruption_handler.config
         # ``flush_partial_tts`` decides what happens to audio already handed to
         # the backend (RFC §12.3.13 step 1). Left true, the buffer is dropped
@@ -2075,7 +2098,6 @@ class VoiceChannel(
             reason,
             playback.played_ms,
         )
-        return True
 
     async def interrupt_all(self, room_id: str, *, reason: str = "task_delivery") -> int:
         """Interrupt all active TTS playback in a room.
@@ -2260,6 +2282,8 @@ class VoiceChannel(
         self._extra_backends.clear()
         self._session_backends.clear()
         self._session_bindings.clear()
+        for session_id in list(self._playing_sessions):
+            self._release_waiters(session_id)
         self._playing_sessions.clear()
         self._batch_audio_buffers.clear()
         self._batch_audio_sample_rate.clear()

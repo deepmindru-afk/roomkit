@@ -91,7 +91,8 @@ class DeliveryStrategy(ABC):
 
 
 class Immediate(DeliveryStrategy):
-    """Send now. May interrupt ongoing TTS playback."""
+    """Send now. On a voice session, it plays once the playback under way has
+    been sent whole: a response never cuts the agent off (RFC §12.2)."""
 
     async def deliver(self, ctx: DeliveryContext) -> DeliveryOutcome:
         channel_id, refusal = await prepare_delivery(ctx)

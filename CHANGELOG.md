@@ -48,6 +48,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   followed insertion order in the in-memory and SQLite stores, and
   PostgresStore left rooms created at the same instant in no set order, so
   a page boundary fell on different rooms.
+- A voice response no longer cuts the agent off, which 0.101.0 brought in
+  without saying it changed a contract (RMK-704, RMK-735, RFC §12.2): every
+  text the voice channel speaks as a response, an AI reply or a delivery,
+  `Immediate` included, which used to cut the playback under way, waits
+  until that playback has been sent whole, and `ON_TTS_CANCELLED` with
+  reason `new_tts` no longer fires when a response reaches the agent's
+  words. `say()` still cuts the playback under way, and the responses
+  waiting play after it; a response cuts audio played with `play()`.
+  Migration: to have a delivery cut the agent off, call
+  `VoiceChannel.interrupt(session)` or `interrupt_all(room_id)` before it.
 
 ### Deprecated
 
@@ -154,6 +164,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SherpaOnnxTTSConfig.sample_rate`. A config left at its 22,050 Hz default
   streamed a 24 kHz Kokoro or a 44.1 kHz Piper voice (`fr_FR-tom-medium`)
   slowed down and lowered.
+- The voice response queue of 0.101.0 holds (RMK-735, RFC §12.2). Without
+  an echo canceller, a session stayed "playing" for good after a streamed
+  response, so every later final was discarded as its echo: the agent
+  stopped hearing anyone. Responses waiting behind one playback all played
+  at once when it was sent; they now take the session one at a time. A
+  `say()` sent while a response waited played over it, and a response
+  played over audio from `play()`; the `say()` now plays first, then the
+  response, and a response cuts a `play()`. The drain of a playback cut
+  short no longer ends the playback that followed it, nor hands on the
+  speech the `DISABLED` strategy held while a response that took over
+  plays. A playback that fails before its audio, and the playback of a
+  session unbound or a channel closed, no longer hold the responses after
+  them waiting for good. A `play()` under way reads as playing: waiting
+  for playback waits for it, and cutting it is a cut.
 
 ## [0.101.0] — 2026-10-13
 
