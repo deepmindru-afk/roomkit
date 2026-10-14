@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import struct
+import threading
+import time
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -445,6 +448,103 @@ class TestSherpaOnnxTTSProvider:
         chunks = [chunk async for chunk in provider.synthesize_stream("Bonjour.")]
 
         assert {chunk.sample_rate for chunk in chunks} == {24000}
+
+    @staticmethod
+    def _generate(text: str, sid: int = 0, speed: float = 1.0, callback: Any = None) -> Any:
+        """A generate() serving both synthesize() and synthesize_stream()."""
+        if callback is not None:
+            callback([0.1], 1.0)
+        return SimpleNamespace(samples=[0.1], sample_rate=22050)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_synthesis_reaches_the_stream_reader(self) -> None:
+        # The worker died without its end marker: the reader waited for good.
+        sherpa = _mock_sherpa_module()
+        tts_mock = MagicMock(sample_rate=22050)
+        tts_mock.generate.side_effect = RuntimeError("invalid sid")
+        sherpa.OfflineTts.return_value = tts_mock
+        provider = self._make_provider(sherpa, model="model.onnx", tokens="tokens.txt")
+
+        async def read_all() -> list[AudioChunk]:
+            return [chunk async for chunk in provider.synthesize_stream("Hello.")]
+
+        reader = asyncio.ensure_future(read_all())
+        done, _ = await asyncio.wait({reader}, timeout=1.0)
+        try:
+            assert reader in done
+            with pytest.raises(RuntimeError, match="invalid sid"):
+                reader.result()
+        finally:
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_closing_the_stream_stops_the_synthesis(self) -> None:
+        # A barge-in closes the stream: the synthesis stops at the sentence
+        # under way rather than running through the whole text first.
+        sherpa = _mock_sherpa_module()
+        tts_mock = MagicMock(sample_rate=22050)
+        answers: list[int] = []
+
+        def generate(text: str, sid: int = 0, speed: float = 1.0, callback: Any = None) -> None:
+            for _ in range(50):
+                time.sleep(0.01)
+                answers.append(callback([0.1], 0.5))
+                if answers[-1] == 0:
+                    return
+
+        tts_mock.generate.side_effect = generate
+        sherpa.OfflineTts.return_value = tts_mock
+        provider = self._make_provider(sherpa, model="model.onnx", tokens="tokens.txt")
+        text = " ".join(f"This is sentence {i}, long enough to stand alone." for i in range(3))
+
+        stream = provider.synthesize_stream(text)
+        await anext(stream)
+        await stream.aclose()
+
+        assert answers[-1] == 0
+        assert tts_mock.generate.call_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call", ["synthesize", "synthesize_stream"])
+    async def test_the_model_loads_off_the_event_loop(self, call: str) -> None:
+        # Read on the loop, a model file (Kokoro: ~126 MB) stalls every session.
+        sherpa = _mock_sherpa_module()
+        tts_mock = MagicMock(sample_rate=22050)
+        tts_mock.generate.side_effect = self._generate
+        loaded_on: list[int] = []
+
+        def load(_config: Any) -> MagicMock:
+            loaded_on.append(threading.get_ident())
+            return tts_mock
+
+        sherpa.OfflineTts.side_effect = load
+        provider = self._make_provider(sherpa, model="model.onnx", tokens="tokens.txt")
+
+        if call == "synthesize":
+            await provider.synthesize("Hello.")
+        else:
+            _ = [chunk async for chunk in provider.synthesize_stream("Hello.")]
+
+        assert len(loaded_on) == 1
+        assert loaded_on[0] != threading.get_ident()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_first_calls_load_the_model_once(self) -> None:
+        sherpa = _mock_sherpa_module()
+        tts_mock = MagicMock(sample_rate=22050)
+        tts_mock.generate.side_effect = self._generate
+
+        def load(_config: Any) -> MagicMock:
+            time.sleep(0.05)
+            return tts_mock
+
+        sherpa.OfflineTts.side_effect = load
+        provider = self._make_provider(sherpa, model="model.onnx", tokens="tokens.txt")
+
+        await asyncio.gather(provider.synthesize("Hello."), provider.synthesize("Hi."))
+
+        assert sherpa.OfflineTts.call_count == 1
 
     def test_vits_is_the_default_model_type(self) -> None:
         sherpa = _mock_sherpa_module()

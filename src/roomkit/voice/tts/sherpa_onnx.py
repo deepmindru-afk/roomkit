@@ -7,6 +7,7 @@ import base64
 import logging
 import re
 import struct
+import threading
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -162,6 +163,8 @@ class SherpaOnnxTTSProvider(TTSProvider):
         self._config = config
         self._sherpa = __import__("sherpa_onnx")
         self._tts: Any = None
+        # Two first calls at once must not each load the model.
+        self._load_lock = threading.Lock()
 
     @property
     def name(self) -> str:
@@ -172,33 +175,49 @@ class SherpaOnnxTTSProvider(TTSProvider):
         return str(self._config.speaker_id)
 
     def _get_tts(self) -> Any:
-        """Lazily create the OfflineTts engine."""
-        if self._tts is None:
-            cfg = self._config
-            logger.info(
-                "Loading TTS model: type=%s, model=%s, tokens=%s, data_dir=%s, "
-                "lexicon=%s, provider=%s, num_threads=%d",
-                cfg.model_type,
-                cfg.model,
-                cfg.tokens,
-                cfg.data_dir,
-                cfg.lexicon,
-                cfg.provider,
-                cfg.num_threads,
-            )
-            model_config = self._sherpa.OfflineTtsModelConfig(
-                **self._model_kwargs(),
-                num_threads=cfg.num_threads,
-                provider=cfg.provider,
-            )
-            tts_config = self._sherpa.OfflineTtsConfig(model=model_config)
-            self._tts = self._sherpa.OfflineTts(tts_config)
-            logger.info(
-                "TTS model loaded: sample_rate=%d, num_speakers=%d",
-                self._tts.sample_rate,
-                self._tts.num_speakers,
-            )
+        """Lazily create the OfflineTts engine, once. Blocking: call it off the loop."""
+        with self._load_lock:
+            if self._tts is None:
+                self._tts = self._load_tts()
         return self._tts
+
+    async def _tts_engine(self) -> Any:
+        """The engine, loaded in a worker thread on first use.
+
+        Loading reads the model from disk (Kokoro is ~126 MB): on the event
+        loop it would stall every session until it is done.
+        """
+        if self._tts is not None:
+            return self._tts
+        return await asyncio.to_thread(self._get_tts)
+
+    def _load_tts(self) -> Any:
+        """Create the OfflineTts engine from the config."""
+        cfg = self._config
+        logger.info(
+            "Loading TTS model: type=%s, model=%s, tokens=%s, data_dir=%s, "
+            "lexicon=%s, provider=%s, num_threads=%d",
+            cfg.model_type,
+            cfg.model,
+            cfg.tokens,
+            cfg.data_dir,
+            cfg.lexicon,
+            cfg.provider,
+            cfg.num_threads,
+        )
+        model_config = self._sherpa.OfflineTtsModelConfig(
+            **self._model_kwargs(),
+            num_threads=cfg.num_threads,
+            provider=cfg.provider,
+        )
+        tts_config = self._sherpa.OfflineTtsConfig(model=model_config)
+        tts = self._sherpa.OfflineTts(tts_config)
+        logger.info(
+            "TTS model loaded: sample_rate=%d, num_speakers=%d",
+            tts.sample_rate,
+            tts.num_speakers,
+        )
+        return tts
 
     def _model_kwargs(self) -> dict[str, Any]:
         """The model's own section of sherpa-onnx's ``OfflineTtsModelConfig``."""
@@ -223,7 +242,7 @@ class SherpaOnnxTTSProvider(TTSProvider):
 
     async def warmup(self) -> None:
         """Pre-load the TTS model (CUDA init can be slow)."""
-        await asyncio.to_thread(self._get_tts)
+        await self._tts_engine()
 
     async def synthesize(self, text: str, *, voice: str | None = None) -> AudioContent:
         """Synthesize text to audio.
@@ -237,7 +256,7 @@ class SherpaOnnxTTSProvider(TTSProvider):
         """
         from roomkit.models.event import AudioContent as AudioContentModel
 
-        tts = self._get_tts()
+        tts = await self._tts_engine()
         sid = int(voice) if voice is not None else self._config.speaker_id
         speed = self._config.speed
         chunks = _split_text(text)
@@ -288,8 +307,11 @@ class SherpaOnnxTTSProvider(TTSProvider):
 
         Yields:
             AudioChunk with PCM S16LE audio data.
+
+        Closing the stream early (a barge-in) stops the synthesis at the
+        sentence under way; a synthesis error is raised to the reader.
         """
-        tts = self._get_tts()
+        tts = await self._tts_engine()
         sid = int(voice) if voice is not None else self._config.speaker_id
         speed = self._config.speed
         # The rate the model speaks at, which config.sample_rate may not match
@@ -299,9 +321,13 @@ class SherpaOnnxTTSProvider(TTSProvider):
 
         queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue()
         loop = asyncio.get_running_loop()
+        # Set once the reader is gone: nothing more is synthesized for it.
+        stopped = threading.Event()
 
         def _callback(samples: list[float], progress: float) -> int:
             """Called by sherpa-onnx from the executor thread."""
+            if stopped.is_set():
+                return 0  # sherpa-onnx: 0 stops the generation, 1 goes on
             pcm = _float32_to_pcm_s16le(samples)
             chunk = AudioChunk(
                 data=pcm,
@@ -313,11 +339,17 @@ class SherpaOnnxTTSProvider(TTSProvider):
             return 1  # continue generation
 
         def _run() -> None:
-            for tc in text_chunks:
-                tts.generate(tc, sid=sid, speed=speed, callback=_callback)
-            loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+            try:
+                for tc in text_chunks:
+                    if stopped.is_set():
+                        return
+                    tts.generate(tc, sid=sid, speed=speed, callback=_callback)
+            finally:
+                # Also on a failed generate(): the reader wakes, and the
+                # error reaches it through ``await task``.
+                loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
 
-        task = asyncio.get_running_loop().run_in_executor(None, _run)
+        task = loop.run_in_executor(None, _run)
 
         try:
             while True:
@@ -326,6 +358,7 @@ class SherpaOnnxTTSProvider(TTSProvider):
                     break
                 yield item
         finally:
+            stopped.set()
             await task
 
         # Yield final marker
