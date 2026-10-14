@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ConferenceChannel.info` is a property, like every channel's `info`
   (RFC §6.1, RMK-724): code reading `channel.info` on any channel gets the
   map, where a conference handed it a bound method.
+- `InMemoryDeliveryBackend.get_dead_letter_items()` returns the most
+  recently dead-lettered items first, as `RedisDeliveryBackend` does
+  (RMK-725): with a `limit`, both now return the same items. The ABC states
+  the order.
 
 ### Deprecated
 

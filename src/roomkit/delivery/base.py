@@ -123,7 +123,8 @@ class DeliveryBackend(ABC):
 
     @abstractmethod
     async def get_dead_letter_items(self, limit: int = 50) -> list[DeliveryItem]:
-        """Return items in the dead-letter queue."""
+        """Return up to *limit* items of the dead-letter queue, the most
+        recently dead-lettered first."""
 
     # -- Lifecycle (optional overrides) -----------------------------------
 

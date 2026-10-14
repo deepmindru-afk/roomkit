@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
+from itertools import islice
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -175,7 +176,7 @@ class InMemoryDeliveryBackend(DeliveryBackend):
         return self._queue.qsize() + len(self._delayed)
 
     async def get_dead_letter_items(self, limit: int = 50) -> list[DeliveryItem]:
-        return list(self._dead_letter)[:limit]
+        return list(islice(reversed(self._dead_letter), limit))
 
     # -- Lifecycle --------------------------------------------------------
 
