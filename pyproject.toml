@@ -321,9 +321,49 @@ python-version = "3.12"
 # restyled to roomkit conventions — excluded from type checking like ruff.
 exclude = ["src/roomkit/webrtc/"]
 
+[tool.ty.analysis]
+# Optional dependencies not installed in the dev environment. Only these may
+# stay unresolved: an import of roomkit's own modules, or of a dependency the
+# dev environment has, still has to resolve. A new optional dependency is
+# added here by name.
+allowed-unresolved-imports = [
+    "aec_audio_processing.**",
+    "aic_sdk.**",
+    "aioquic.**",
+    "aiortc.**",
+    "aiortp.**",
+    "aiosipua.**",
+    "anam.**",
+    "av.**",
+    "cv2.**",
+    "deepgram.**",
+    "fastapi.**",
+    "julius.**",
+    "mediapipe.**",
+    "mss.**",
+    "musetalk.**",
+    "neutts.**",
+    "onnxruntime.**",
+    "perth.**",
+    "pocket_tts.**",
+    "pyautogui.**",
+    "pyroscope.**",
+    "qwen_asr.**",
+    "qwen_tts.**",
+    "redis.**",
+    "sherpa_onnx.**",
+    "sounddevice.**",
+    "soundfile.**",
+    "soxr.**",
+    "sphn.**",
+    "tiktoken.**",
+    "torch.**",
+    "transformers.**",
+    "ultralytics.**",
+    "vui.**",
+]
+
 [tool.ty.rules]
-# Optional dependencies not installed in the dev environment
-"unresolved-import" = "ignore"
 # ABC stubs with `...` body and non-None return type are fine
 "empty-body" = "ignore"
 
