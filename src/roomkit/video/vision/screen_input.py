@@ -261,7 +261,7 @@ def _get_scale_factor() -> tuple[float, float]:
                 import ctypes
 
                 ctypes.windll.shcore.SetProcessDpiAwareness(2)  # ty: ignore[unresolved-attribute]
-            except Exception:  # nosec B110 — best-effort DPI awareness
+            except Exception:  # nosec B110  # best-effort DPI awareness
                 pass
             _dpi_initialized = True
         return 1.0, 1.0

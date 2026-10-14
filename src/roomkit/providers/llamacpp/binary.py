@@ -15,7 +15,7 @@ import os
 import platform
 import re
 import shutil
-import subprocess  # nosec B404 - fixed argument list, no shell
+import subprocess  # nosec B404  # fixed argument list, no shell
 import tarfile
 import tempfile
 import zipfile
@@ -86,7 +86,7 @@ def cuda_driver_major() -> int | None:
     if smi is None:
         return None
     try:
-        out = subprocess.run(  # nosec B603 - fixed argument list
+        out = subprocess.run(  # nosec B603  # fixed argument list
             [smi], capture_output=True, text=True, timeout=10, check=False
         ).stdout
     except (OSError, subprocess.SubprocessError) as exc:
@@ -169,10 +169,10 @@ def _extract(archive: Path, dest: Path) -> None:
                 resolved = (dest / member).resolve()
                 if not resolved.is_relative_to(dest.resolve()):
                     raise _error(f"{archive.name}: member {member!r} escapes the archive")
-            zf.extractall(dest)  # nosec B202 - every member path checked above
+            zf.extractall(dest)  # nosec B202  # every member path checked above
     else:
         with tarfile.open(archive) as tf:
-            tf.extractall(dest, filter="data")  # nosec B202 - "data" filter refuses escapes
+            tf.extractall(dest, filter="data")  # nosec B202  # "data" filter refuses escapes
 
 
 def _locate(root: Path) -> LlamaBinary:

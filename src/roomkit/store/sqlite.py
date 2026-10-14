@@ -730,7 +730,7 @@ class SQLiteStore(ConversationStore):
                 "event_sequences",
                 "events_fts",
             ):
-                conn.execute(f"DELETE FROM {table} WHERE room_id = ?", (room_id,))  # nosec B608 — fragments are internal, values parameterised
+                conn.execute(f"DELETE FROM {table} WHERE room_id = ?", (room_id,))  # nosec B608  # fragments are internal, values parameterised
         return existed
 
     async def list_rooms(self, offset: int = 0, limit: int = 50) -> list[Room]:
@@ -771,7 +771,7 @@ class SQLiteStore(ConversationStore):
             where.append("status = ?")
             params.append(status)
         rows = self._db().execute(
-            f"SELECT * FROM rooms WHERE {' AND '.join(where)} ORDER BY rowid",  # nosec B608 — fragments are internal, values parameterised
+            f"SELECT * FROM rooms WHERE {' AND '.join(where)} ORDER BY rowid",  # nosec B608  # fragments are internal, values parameterised
             params,
         )
         results = [self._row_to_room(r) for r in rows]
@@ -812,7 +812,7 @@ class SQLiteStore(ConversationStore):
         row = (
             self._db()
             .execute(
-                f"SELECT * FROM rooms WHERE {' AND '.join(where)}"  # nosec B608 — fragments are internal, values parameterised
+                f"SELECT * FROM rooms WHERE {' AND '.join(where)}"  # nosec B608  # fragments are internal, values parameterised
                 " ORDER BY created_ts DESC LIMIT 1",
                 params,
             )
@@ -844,7 +844,7 @@ class SQLiteStore(ConversationStore):
             .execute(
                 f"""SELECT r.id FROM bindings b JOIN rooms r ON r.id = b.room_id
                     WHERE {" AND ".join(where)}
-                    ORDER BY r.created_ts DESC, r.id DESC LIMIT 1""",  # nosec B608 — fragments are internal, values parameterised
+                    ORDER BY r.created_ts DESC, r.id DESC LIMIT 1""",  # nosec B608  # fragments are internal, values parameterised
                 params,
             )
             .fetchone()
@@ -869,7 +869,7 @@ class SQLiteStore(ConversationStore):
             .execute(
                 f"""SELECT r.id FROM participants p JOIN rooms r ON r.id = p.room_id
                     WHERE {" AND ".join(where)}
-                    ORDER BY r.created_ts DESC, r.id DESC LIMIT 1""",  # nosec B608 — fragments are internal, values parameterised
+                    ORDER BY r.created_ts DESC, r.id DESC LIMIT 1""",  # nosec B608  # fragments are internal, values parameterised
                 params,
             )
             .fetchone()
@@ -893,7 +893,7 @@ class SQLiteStore(ConversationStore):
         rows = self._db().execute(
             f"""SELECT r.id FROM bindings b JOIN rooms r ON r.id = b.room_id
                 WHERE {" AND ".join(where)}
-                ORDER BY r.created_ts, r.id LIMIT ?""",  # nosec B608 — fragments are internal, values parameterised
+                ORDER BY r.created_ts, r.id LIMIT ?""",  # nosec B608  # fragments are internal, values parameterised
             params,
         )
         return [row[0] for row in rows]
@@ -948,7 +948,7 @@ class SQLiteStore(ConversationStore):
                 deleted.extend(row[0] for row in rows)
             marks = ",".join("?" for _ in deleted)
             keys = conn.execute(
-                f"SELECT idempotency_key FROM events WHERE id IN ({marks})"  # nosec B608 — fragments are internal, values parameterised
+                f"SELECT idempotency_key FROM events WHERE id IN ({marks})"  # nosec B608  # fragments are internal, values parameterised
                 " AND idempotency_key IS NOT NULL",
                 deleted,
             ).fetchall()
@@ -956,8 +956,8 @@ class SQLiteStore(ConversationStore):
                 conn.execute(
                     "DELETE FROM idempotency WHERE room_id = ? AND key = ?", (room_id, key)
                 )
-            conn.execute(f"DELETE FROM events WHERE id IN ({marks})", deleted)  # nosec B608 — fragments are internal, values parameterised
-            conn.execute(f"DELETE FROM events_fts WHERE event_id IN ({marks})", deleted)  # nosec B608 — fragments are internal, values parameterised
+            conn.execute(f"DELETE FROM events WHERE id IN ({marks})", deleted)  # nosec B608  # fragments are internal, values parameterised
+            conn.execute(f"DELETE FROM events_fts WHERE event_id IN ({marks})", deleted)  # nosec B608  # fragments are internal, values parameterised
         return deleted
 
     async def list_events(
@@ -1010,7 +1010,7 @@ class SQLiteStore(ConversationStore):
         )
         self._apply_event_filter_sql(ef, where, params, visibility=visibility)
 
-        base = f"SELECT data FROM events WHERE {' AND '.join(where)}"  # nosec B608 — fragments are internal, values parameterised
+        base = f"SELECT data FROM events WHERE {' AND '.join(where)}"  # nosec B608  # fragments are internal, values parameterised
         if before_index is not None or (
             before_index is None and after_index is None and newest_first
         ):
@@ -1108,7 +1108,7 @@ class SQLiteStore(ConversationStore):
             f"""SELECT parent_event_id, COUNT(*), MAX(created_ts) FROM events
                 WHERE room_id = ? AND parent_event_id IN ({marks})
                   AND json_extract(data, '$.status') IS NOT ?
-                GROUP BY parent_event_id""",  # nosec B608 — fragments are internal, values parameterised
+                GROUP BY parent_event_id""",  # nosec B608  # fragments are internal, values parameterised
             [room_id, *root_event_ids, EventStatus.BLOCKED.value],
         )
         return {
@@ -1155,7 +1155,7 @@ class SQLiteStore(ConversationStore):
             # The conditions of a ``list_events`` page under this filter, and
             # no page (RFC §14.1).
             self._apply_event_filter_sql(ef, where, params, visibility=ef.visibility)
-        query = f"SELECT COUNT(*) FROM events WHERE {' AND '.join(where)}"  # nosec B608 — fragments are internal, values parameterised
+        query = f"SELECT COUNT(*) FROM events WHERE {' AND '.join(where)}"  # nosec B608  # fragments are internal, values parameterised
         return self._db().execute(query, params).fetchone()[0]
 
     async def add_event_auto_index(self, room_id: str, event: RoomEvent) -> RoomEvent:
@@ -1235,7 +1235,7 @@ class SQLiteStore(ConversationStore):
         params.append(limit)
         rows = self._db().execute(
             f"""SELECT e.data FROM events_fts JOIN events e ON e.id = events_fts.event_id
-                WHERE {" AND ".join(where)} ORDER BY events_fts.rank LIMIT ?""",  # nosec B608 — fragments are internal, values parameterised
+                WHERE {" AND ".join(where)} ORDER BY events_fts.rank LIMIT ?""",  # nosec B608  # fragments are internal, values parameterised
             params,
         )
         return [_load_event(r[0]) for r in rows]
@@ -1646,7 +1646,7 @@ class SQLiteStore(ConversationStore):
             where.append("status = ?")
             params.append(str(status))
         rows = self._db().execute(
-            f"SELECT data FROM tasks WHERE {' AND '.join(where)} ORDER BY rowid",  # nosec B608 — fragments are internal, values parameterised
+            f"SELECT data FROM tasks WHERE {' AND '.join(where)} ORDER BY rowid",  # nosec B608  # fragments are internal, values parameterised
             params,
         )
         return [Task.model_validate_json(r[0]) for r in rows]

@@ -96,7 +96,7 @@ def _resolve_model(model_path: str, model_type: str) -> str:
 
     logger.info("Downloading MediaPipe %s model to %s ...", model_type, cached)
     try:
-        urllib.request.urlretrieve(url, cached)  # nosec B310 — fixed Google Storage URL
+        urllib.request.urlretrieve(url, cached)  # nosec B310  # fixed Google Storage URL
     except Exception:
         cached.unlink(missing_ok=True)
         raise

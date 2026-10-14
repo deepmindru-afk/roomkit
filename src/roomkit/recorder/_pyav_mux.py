@@ -263,7 +263,7 @@ def probe_encoded_dimensions(
                         frame.height,
                     )
                     return (frame.width, frame.height)
-            except Exception:  # nosec B112 — probe is best-effort
+            except Exception:  # nosec B112  # probe is best-effort
                 continue
         # Flush decoder — H.264 may buffer frames
         try:
@@ -275,7 +275,7 @@ def probe_encoded_dimensions(
                     frame.height,
                 )
                 return (frame.width, frame.height)
-        except Exception:  # nosec B110 — probe is best-effort
+        except Exception:  # nosec B110  # probe is best-effort
             pass
         logger.debug(
             "Could not probe dimensions for %s after %d frames",

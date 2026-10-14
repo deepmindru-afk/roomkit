@@ -78,7 +78,7 @@ class MockAvatarProvider(AvatarProvider):
             img = Image.open(io.BytesIO(reference_image)).convert("RGB")
             img = img.resize((width, height))
             self._ref_frame_data = np.array(img).tobytes()
-        except Exception:  # nosec B110 — fall back to solid color
+        except Exception:  # nosec B110  # fall back to solid color
             pass
 
     def feed_audio(

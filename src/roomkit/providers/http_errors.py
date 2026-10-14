@@ -111,6 +111,6 @@ def _handle_400(
             body = exc.response.json()
             error, metadata = parse_400(body)
             return result_cls(success=False, error=error, metadata=metadata)
-        except Exception:  # nosec B110 — best-effort body parsing
+        except Exception:  # nosec B110  # best-effort body parsing
             pass
     return result_cls(success=False, error="invalid_request")

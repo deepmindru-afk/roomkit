@@ -57,7 +57,7 @@ class BotFrameworkTeamsProvider(TeamsProvider):
                 cert_kwargs["public_certificate"] = config.certificate_public
 
             credentials = CertificateAppCredentials(**cert_kwargs)
-            settings = BotFrameworkAdapterSettings(  # nosec B106 — empty password intentional: cert auth used
+            settings = BotFrameworkAdapterSettings(  # nosec B106  # empty password intentional: cert auth used
                 app_id=config.app_id,
                 app_password="",
                 app_credentials=credentials,
@@ -446,7 +446,7 @@ class BotFrameworkTeamsProvider(TeamsProvider):
                 issuer = claims.get("iss", "")
                 if issuer in allowed_issuers:
                     return True
-            except Exception:  # nosec B112 — intentional: try next OpenID endpoint
+            except Exception:  # nosec B112  # intentional: try next OpenID endpoint
                 continue
 
         return False
