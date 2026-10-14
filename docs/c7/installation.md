@@ -42,6 +42,7 @@ pip install roomkit[sherpa-onnx]  # SherpaOnnx TTS (local, offline)
 pip install roomkit[gradium]      # Gradium TTS
 pip install roomkit[qwen-tts]     # Qwen3 TTS
 pip install roomkit[neutts]       # NeuTTS
+pip install roomkit[fish-audio]   # Fish Audio TTS (Drama 3, S2)
 ```
 
 ### Voice — Backends

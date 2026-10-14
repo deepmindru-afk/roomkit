@@ -148,7 +148,7 @@ src/roomkit/
 │   ├── audio_frame.py       # AudioFrame dataclass (inbound audio)
 │   ├── events.py            # BargeInEvent, VADSilenceEvent, SpeakerChangeEvent, etc.
 │   ├── stt/                 # Speech-to-text: DeepgramSTT, SherpaOnnxSTT, GradiumSTT, MockSTT
-│   ├── tts/                 # Text-to-speech: ElevenLabsTTS, SherpaOnnxTTS, QwenTTS, GradiumTTS, MockTTS
+│   ├── tts/                 # Text-to-speech: ElevenLabsTTS, SherpaOnnxTTS, QwenTTS, GradiumTTS, FishAudioTTS, MockTTS
 │   ├── interruption.py      # InterruptionHandler, InterruptionConfig, 4 strategies
 │   ├── pipeline/            # Audio processing pipeline (10 provider ABCs)
 │   │   ├── engine.py        # AudioPipeline orchestrator (inbound + outbound)

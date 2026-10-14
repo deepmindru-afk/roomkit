@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Fish Audio text-to-speech, Drama 3 by default (RMK-762,
+  `pip install roomkit[fish-audio]`). `FishAudioTTSProvider` speaks
+  `drama-3`, `s2.1-pro`, `s2.1-pro-free` and `s2-pro` over REST as streamed
+  PCM and over Fish's streaming-input WebSocket (msgpack, one flush per
+  sentence), voices a dialogue of up to four speakers in one render (a
+  turn's `style` becomes a direction), and lists the account's voices then
+  the public catalog. `FishAudioTTSConfig.expressive` performs the directions
+  written in the text (`[calm]`, `[sigh]`, `<whisper>…</whisper>`); off, the
+  text is spoken as written, brackets read as parentheses and markup read
+  out. In both modes a control token in a text (`<|speaker:1|>`,
+  `<|phoneme_start|>`) becomes a space, invisible characters and look-alike
+  marks included: a forged speaker token in a quoted line switched the voice
+  on every take. A text with no word to say is never sent, as a lone
+  `[Calling a tool now]` made both model families invent up to 47 s of
+  speech; on a stream it goes with the next sentence. An unknown model name
+  is refused: the API would render it with s2.1-pro, and bill it so, without
+  saying. Measured on the live service (2026-10-14): Drama 3's first audio
+  arrives after 0.22 to 0.25 s over REST and over the socket (s2.1-pro 0.26
+  to 0.31 s); Drama 3 costs 10 $ per million UTF-8 bytes against 15 $ for
+  s2.1-pro, and speaks 40 to 60 % slower on the same text
+  (`FishAudioTTSConfig.speed` compensates). Drama 3 is in preview: takes
+  vary, a dialogue's change of voice included. Example:
+  `examples/voice_fish_audio.py`.
+
 ### Fixed
 
 - A model file of the other family no longer ends the process (RMK-759): given

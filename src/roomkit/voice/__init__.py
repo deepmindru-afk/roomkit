@@ -555,6 +555,20 @@ def get_azure_speech_tts_config() -> type:
     return AzureSpeechTTSConfig
 
 
+def get_fish_audio_tts_provider() -> type:
+    """Get FishAudioTTSProvider class, Drama 3 and the S2 family (requires msgpack)."""
+    from roomkit.voice.tts.fish_audio import FishAudioTTSProvider
+
+    return FishAudioTTSProvider
+
+
+def get_fish_audio_tts_config() -> type:
+    """Get FishAudioTTSConfig class."""
+    from roomkit.voice.tts.fish_audio import FishAudioTTSConfig
+
+    return FishAudioTTSConfig
+
+
 def get_pocket_tts_provider() -> type:
     """Get PocketTTSProvider class (requires pocket-tts)."""
     from roomkit.voice.tts.pocket import PocketTTSProvider

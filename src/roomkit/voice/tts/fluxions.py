@@ -22,7 +22,7 @@ import httpx
 
 from roomkit.providers.utils import http_timeout
 from roomkit.voice.base import AudioChunk
-from roomkit.voice.tts.audio_utils import collect_wav_content
+from roomkit.voice.tts.audio_utils import collect_wav_content, whole_samples
 from roomkit.voice.tts.base import TTSProvider
 from roomkit.voice.voices import VoiceInfo, filter_voices
 
@@ -190,7 +190,7 @@ class FluxionsTTSProvider(TTSProvider):
         carry = b""
         async with self._render(text, voice) as response:
             async for chunk in response.aiter_bytes():
-                data, carry = _whole_samples(carry + chunk)
+                data, carry = whole_samples(carry + chunk)
                 if data:
                     yield AudioChunk(data=data, sample_rate=SAMPLE_RATE)
         yield AudioChunk(data=b"", sample_rate=SAMPLE_RATE, is_final=True)
@@ -205,9 +205,3 @@ class FluxionsTTSProvider(TTSProvider):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
-
-
-def _whole_samples(data: bytes) -> tuple[bytes, bytes]:
-    """Split *data* into whole 16-bit samples and the odd byte left over, if any."""
-    cut = len(data) - len(data) % 2
-    return data[:cut], data[cut:]

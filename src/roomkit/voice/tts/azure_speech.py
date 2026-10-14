@@ -27,7 +27,7 @@ import httpx
 from roomkit.providers.ai.base import ProviderError
 from roomkit.providers.utils import http_timeout
 from roomkit.voice.base import AudioChunk
-from roomkit.voice.tts.audio_utils import collect_wav_content
+from roomkit.voice.tts.audio_utils import collect_wav_content, whole_samples
 from roomkit.voice.tts.base import TTSProvider
 
 if TYPE_CHECKING:
@@ -239,7 +239,7 @@ class AzureSpeechTTSProvider(TTSProvider):
             carry = b""
             async with self._render(ssml) as response:
                 async for data in response.aiter_bytes():
-                    pcm, carry = _whole_samples(carry + data)
+                    pcm, carry = whole_samples(carry + data)
                     if pcm:
                         yield AudioChunk(data=pcm, sample_rate=rate)
         yield AudioChunk(data=b"", sample_rate=rate, is_final=True)
@@ -274,9 +274,3 @@ class AzureSpeechTTSProvider(TTSProvider):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
-
-
-def _whole_samples(data: bytes) -> tuple[bytes, bytes]:
-    """Split *data* into whole 16-bit samples and the odd byte left over, if any."""
-    cut = len(data) - len(data) % 2
-    return data[:cut], data[cut:]

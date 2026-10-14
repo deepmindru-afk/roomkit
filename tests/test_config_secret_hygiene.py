@@ -23,6 +23,7 @@ from roomkit.voice.pipeline.denoiser.aicoustics import AICousticsDenoiserConfig
 from roomkit.voice.stt.deepgram import DeepgramConfig
 from roomkit.voice.stt.gradium import GradiumSTTConfig
 from roomkit.voice.tts.elevenlabs import ElevenLabsConfig
+from roomkit.voice.tts.fish_audio import FishAudioTTSConfig
 from roomkit.voice.tts.gemini import GeminiTTSConfig
 from roomkit.voice.tts.gradium import GradiumTTSConfig
 from roomkit.voice.tts.grok import GrokTTSConfig
@@ -39,6 +40,7 @@ _CANARY = "s3cr3t-canary-value"
         pytest.param(lambda: GrokTTSConfig(api_key=_CANARY), id="grok-tts"),
         pytest.param(lambda: GeminiTTSConfig(api_key=_CANARY), id="gemini-tts"),
         pytest.param(lambda: GradiumTTSConfig(api_key=_CANARY), id="gradium-tts"),
+        pytest.param(lambda: FishAudioTTSConfig(api_key=_CANARY), id="fish-audio-tts"),
         pytest.param(lambda: OpenAIVisionConfig(api_key=_CANARY), id="openai-vision"),
         pytest.param(lambda: GeminiVisionConfig(api_key=_CANARY), id="gemini-vision"),
         pytest.param(lambda: AICousticsDenoiserConfig(license_key=_CANARY), id="aicoustics"),

@@ -52,6 +52,16 @@ async def collect_wav_content(
     )
 
 
+def whole_samples(data: bytes) -> tuple[bytes, bytes]:
+    """Split *data* into whole 16-bit samples and the odd byte left over, if any.
+
+    A vendor that streams raw PCM over HTTP can cut a sample between two
+    reads; the odd byte is carried into the next read.
+    """
+    cut = len(data) - len(data) % 2
+    return data[:cut], data[cut:]
+
+
 def streamed_format(output_format: str) -> str:
     """The format a streamed request asks for: raw ``pcm`` in place of ``wav``.
 
