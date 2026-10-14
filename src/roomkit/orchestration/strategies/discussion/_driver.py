@@ -307,7 +307,7 @@ class TurnDriver:
         room = self._room
         others = [
             AgentLine(
-                handle=room.handles[agent_id],
+                handle=room.handle(agent_id),
                 name=getattr(agent, "name", None),
                 role=getattr(agent, "role", None),
                 description=getattr(agent, "description", None),
@@ -323,7 +323,7 @@ class TurnDriver:
             else TurnKind.ANSWER
         )
         return turn_notes(
-            room.handles[entry.agent],
+            room.handle(entry.agent),
             others,
             room.people(context),
             kind=kind,

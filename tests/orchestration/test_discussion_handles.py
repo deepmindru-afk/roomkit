@@ -9,6 +9,7 @@ the dispatch policy present agents by their handles; the queue and
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -26,6 +27,7 @@ from roomkit.orchestration.strategies.discussion import (
 from roomkit.orchestration.strategies.discussion._config import CONFIG_KEY, DiscussionConfig
 from roomkit.orchestration.strategies.discussion._room import DiscussionRoom
 from roomkit.orchestration.strategies.discussion.dispatch.classifier import question
+from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
 from tests.orchestration.test_strategy_discussion import (
@@ -224,3 +226,47 @@ async def test_a_process_that_follows_the_discussion_reads_handles() -> None:
     assert (len(jev.calls), len(juriste.calls)) == (0, 1)
     await follower.close()
     await host.close()
+
+
+async def _until_speaking(kit: RoomKit, agent: str) -> None:
+    async with asyncio.timeout(5):
+        while (queue := kit.speak_queue("r1")) is None or queue.speaking != agent:
+            await asyncio.sleep(0.01)
+
+
+class _Holding(MockAIProvider):
+    """A model whose turn runs until the process stops."""
+
+    async def generate(self, context: Any) -> AIResponse:
+        self.calls.append(context)
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+async def test_a_stored_turn_of_an_agent_no_longer_held_does_not_stall_the_discussion() -> None:
+    """The queue outlives the process (rule 16): a reinstalled discussion
+    without that agent drops its turn and goes on."""
+    store, locks = InMemoryStore(), InMemoryLockManager()
+    first = RoomKit(store=store, lock_manager=locks)
+    first.register_channel(SimpleChannel("ops"))
+    team = [AIChannel("a", provider=_Holding()), AIChannel("b", provider=_provider("b"))]
+    await first.create_room(room_id="r1", orchestration=Discussion(team))
+    await first.attach_channel("r1", "ops")
+    await _say(first, "@a @b status?")
+    await _until_speaking(first, "a")
+    await first.close()
+
+    second = RoomKit(store=store, lock_manager=locks)
+    second.register_channel(SimpleChannel("ops"))
+    a = _provider("a answers")
+    await second.detach_channel("r1", "b")
+    await Discussion([AIChannel("a", provider=a), AIChannel("c", provider=_provider())]).install(
+        second, "r1"
+    )
+    await _say(second, "@a are you there?")
+    await _settle(second)
+
+    assert len(a.calls) == 1
+    queue = second.speak_queue("r1")
+    assert queue is not None and "b" not in queue.queue
+    await second.close()

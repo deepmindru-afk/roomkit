@@ -181,9 +181,14 @@ class DiscussionRoom:
         self.drop_instructions(mine)
         await self._finish_announcing()
 
+    def handle(self, agent_id: str) -> str:
+        """The name *agent_id* is addressed by: its handle, else its channel
+        id (a stored turn of an agent the discussion no longer holds)."""
+        return self.handles.get(agent_id, agent_id)
+
     def label(self, agent_id: str) -> str:
         """An agent as a model reads it named: ``@`` and its handle."""
-        return f"@{self.handles.get(agent_id, agent_id)}"
+        return f"@{self.handle(agent_id)}"
 
     def silence_for(self, channel_id: str) -> SilentToken | None:
         return self.silent if channel_id in self.agents else None
