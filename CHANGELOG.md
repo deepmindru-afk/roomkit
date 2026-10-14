@@ -7,13 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.103.0] — 2026-10-14
+
 ### Added
 
 - `RealtimeAVBridge(on_video_detection=...)` receives what the filters of its
   `video_pipeline` detect: each `VideoDetectionEvent`, its `session` set to the
   call it was seen on. The callback may be async; a failure is logged and the
-  video goes on. Without it the detections are drained and dropped, as since
-  RMK-754 (RMK-757). Example: `examples/realtime_av_bridge_detections.py`.
+  video goes on. Without it the detections are drained and dropped (RMK-757).
+  Example: `examples/realtime_av_bridge_detections.py`.
 - DPDFNet denoises through `SherpaOnnxDenoiserProvider`:
   `SherpaOnnxDenoiserConfig(model_type="dpdfnet", model="dpdfnet2.onnx")`
   loads the DPDFNet models of sherpa-onnx's `speech-enhancement-models`
@@ -35,20 +37,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tail still comes out. `model_type` defaults to `"gtcrn"`, so existing configs are
   unchanged; an unknown type, DPDFNet without `model`, or DPDFNet with
   `context_frames` is refused when the config is built. Example:
-  `examples/dpdfnet_denoiser.py`; the examples' `DENOISE=dpdfnet` uses it.
+  `examples/dpdfnet_denoiser.py`; `DENOISE=dpdfnet` selects it in the other
+  examples, which pass their audio through with a warning when they run at
+  another rate than the model's.
+
+### Changed
+
+- **`play()` reports the playback it cuts, and `say()` and `play()` take over a
+  response that only drains its echo instead of cancelling it** (RFC §12.2,
+  RMK-747). `play()` used to start under whatever was playing; it now cuts a
+  playback still being sent, as `say()` does, and `ON_TTS_CANCELLED` (reason
+  `new_tts`) fires for it. A response sent whole whose echo is still draining
+  (no AEC) was heard in full, yet `say()` fired `ON_TTS_CANCELLED` for it and
+  flushed the audio still leaving the transport; it is now taken over as a
+  response takes it over, with no event and no flush. A hook counting
+  `ON_TTS_CANCELLED` sees one more for a `play()` over speech, and none for a
+  `say()` after a finished response. A response still cuts a `play()`.
 
 ### Fixed
 
-- `VoiceChannel.play()` cuts the playback under way, as `say()` does: a
-  response or a `say()` playing when it was called kept streaming under the
-  WAV, unreported. The playback cut fires `ON_TTS_CANCELLED` (reason
-  `new_tts`), and a response still cuts a `play()` (RFC §12.2). The WAV's audio
-  is now measured as it goes out: a `play()` cut short reports the audio heard
-  of it, and counts it toward the session's played total the echo guard reads,
-  where it counted 0 ms. A response sent whole whose echo is still draining (no
-  AEC) is taken over by `say()` and `play()` as by a response, no longer cut:
-  `say()` reported such a response cancelled and flushed the tail still leaving
-  the transport (RMK-747).
+- `VoiceChannel.play()` no longer plays over the playback under way: a response
+  or a `say()` playing when it was called kept streaming under the WAV,
+  unreported. The WAV's audio is now measured as it goes out: a `play()` cut
+  short reports the audio heard of it, and counts it toward the session's
+  played total the echo guard reads, where it counted 0 ms (RMK-747).
 - A session served by a backend added with `VoiceChannel.add_backend()` gets
   everything addressed to it through that backend (RFC §12.7.3). A response
   delivered to the room never reached it (its sessions were looked up on the
@@ -83,9 +95,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   has passed. `dequeue()` queued the due retries once, then waited the whole
   timeout on new work, so a retry falling due meanwhile waited it out too: up
   to 2 s under the backend's own worker (`start()`), 5 s at the default
-  `poll_timeout`, for a `retry_delay` of 0.2 or 1 s. The
-  wait now ends when the next retry is due, by the Redis server's clock, and
-  that call returns it (RMK-751).
+  `poll_timeout`, for a `retry_delay` of 0.2 or 1 s. The wait now ends when
+  the next retry is due, by the Redis server's clock, and that call returns it
+  (RMK-751).
 - `find_latest_room` returns the same room in every store when several were
   created at the same instant: the one with the highest id, as
   `find_room_id_by_binding` and `find_room_id_by_participant` already did.
@@ -98,6 +110,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   beside one with a time zone: rooms are ranked by timestamp, as `list_rooms`
   already did. `list_events` filters by `after_time` and `before_time`, and a
   thread summary dates its last reply, the same way (RMK-756).
+
+### Security
+
+- **A room's recording no longer receives the media of other rooms' sessions**
+  (RMK-758). The audio and video recording taps sit on the channel's whole
+  pipeline, or on a combined A/V backend's whole video facet, which every
+  session of every room on that channel goes through, and they ignored the
+  session a frame came from: with one `VoiceChannel` serving two recorded
+  rooms, a call in one room was recorded in the other too, and within one room
+  every session's audio, and the speech sent to it, went into every other
+  session's track. Each tap now takes its own session's frames only.
+  Recordings made with several sessions on one channel before this release may
+  hold other sessions' media.
 
 ## [0.102.0] — 2026-10-14
 
@@ -14747,7 +14772,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.102.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.103.0...HEAD
+[0.103.0]: https://github.com/roomkit-live/roomkit/compare/v0.102.0...v0.103.0
 [0.102.0]: https://github.com/roomkit-live/roomkit/compare/v0.101.0...v0.102.0
 [0.101.0]: https://github.com/roomkit-live/roomkit/compare/v0.100.0...v0.101.0
 [0.100.0]: https://github.com/roomkit-live/roomkit/compare/v0.99.0...v0.100.0
