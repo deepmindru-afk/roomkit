@@ -1058,7 +1058,15 @@ class VoiceSTTMixin:
                                 # Skip barge-in during drain period (send_audio
                                 # returned, waiting for echo decay).
                                 drain_ev = self._playback_done_events.get(session.id)
-                                if playback and not (drain_ev is not None and drain_ev.is_set()):
+                                draining = drain_ev is not None and drain_ev.is_set()
+                                # Words taken for a response's echo decide no
+                                # barge-in on any response, as on the energy
+                                # path (RFC §12.3.13).
+                                if (
+                                    playback
+                                    and not draining
+                                    and not self._echoes_burst(session.id, result.text)
+                                ):
                                     # The partial is what SEMANTIC classifies —
                                     # a detector given "" cannot tell "uh-huh"
                                     # from "wait, stop".

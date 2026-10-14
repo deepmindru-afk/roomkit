@@ -178,6 +178,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session unbound or a channel closed, no longer hold the responses after
   them waiting for good. A `play()` under way reads as playing: waiting
   for playback waits for it, and cutting it is a cut.
+- A later partial of an utterance taken for a response's echo no longer
+  cuts the response that followed it (RMK-703, RMK-736, RFC §12.3.13).
+  0.101.0 kept such words from deciding a barge-in on the energy path only;
+  with responses now played one after the other, the STT's late partials of
+  the first response's echo ("Je lance ça") landed on the second and cut
+  it.
 
 ## [0.101.0] — 2026-10-13
 

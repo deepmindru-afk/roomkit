@@ -574,6 +574,70 @@ class _ScriptedDiarizingSTT(STTProvider):
             yield await self.results.get()
 
 
+async def test_a_later_partial_of_an_echo_cuts_no_later_response() -> None:
+    """The STT's next partial of an utterance taken for a response's echo,
+    still that response's words, is judged against nothing: the next response,
+    which took the session over, does not say them (RMK-703, partial path)."""
+    from datetime import UTC, datetime
+
+    from roomkit.models.channel import ChannelBinding
+    from roomkit.models.enums import ChannelType
+
+    stt = _ScriptedDiarizingSTT()
+    backend = MockVoiceBackend()
+    channel = VoiceChannel(
+        "voice-1",
+        stt=stt,
+        backend=backend,
+        pipeline=AudioPipelineConfig(),
+        interruption=InterruptionConfig(
+            strategy=InterruptionStrategy.SEMANTIC,
+            backchannel_detector=PhraseBackchannelDetector(),
+        ),
+    )
+    kit = RoomKit(voice=backend)
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "voice-1")
+    session = await kit.connect_voice("r1", "user-1", "voice-1")
+    channel.bind_session(
+        session,
+        "r1",
+        ChannelBinding(room_id="r1", channel_id="voice-1", channel_type=ChannelType.VOICE),
+    )
+    cuts: list[object] = []
+
+    @kit.hook(HookTrigger.ON_BARGE_IN, HookExecution.ASYNC)
+    async def on_barge_in(event: object, context: object) -> None:
+        cuts.append(event)
+
+    await backend.simulate_audio_received(session, _SILENT_CHUNK)
+    playing = channel._playing_sessions  # noqa: SLF001
+    playing[session.id] = TTSPlaybackState(
+        session_id=session.id,
+        text="I'm starting that in the background.",
+        started_at=datetime.now(UTC),
+    )
+    await stt.results.put(TranscriptionResult(text="", is_speech_start=True))
+    await stt.results.put(TranscriptionResult(text="I'm", is_final=False))
+    await asyncio.sleep(0.1)
+    assert channel._echo_bursts.get(session.id)  # noqa: SLF001 — taken for the echo
+
+    # Sent whole, the next response takes the session over.
+    channel._last_tts_ended_at[session.id] = time.monotonic()  # noqa: SLF001
+    playing[session.id] = TTSPlaybackState(
+        session_id=session.id,
+        text="Here are the campaigns: The Dragon's Treasure.",
+        started_at=datetime.now(UTC),
+    )
+    await stt.results.put(TranscriptionResult(text="I'm starting that", is_final=False))
+    await asyncio.sleep(0.2)
+    await channel.close()
+    await kit.close()
+
+    assert cuts == []
+
+
 async def _voices_over_a_response(
     utterances: list[tuple[str, str, bool]],
 ) -> tuple[list[tuple[str, str]], list[object]]:
