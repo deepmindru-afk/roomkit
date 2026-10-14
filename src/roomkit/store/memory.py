@@ -218,14 +218,8 @@ class InMemoryStore(ConversationStore):
         return True
 
     def _rooms_in_order(self) -> list[Room]:
-        """Rooms in the order every store pages them: created_at, then id.
-
-        Compared as timestamps, as SQLite stores them: a naive created_at
-        beside an aware one would make the datetimes themselves refuse.
-        """
-        return sorted(
-            self._rooms.values(), key=lambda room: (room.created_at.timestamp(), room.id)
-        )
+        """Rooms in the order every store pages them: created_at, then id."""
+        return sorted(self._rooms.values(), key=_recency)
 
     async def list_rooms(self, offset: int = 0, limit: int = 50) -> list[Room]:
         rooms = self._rooms_in_order()
@@ -281,7 +275,7 @@ class InMemoryStore(ConversationStore):
                         break
                 if not found:
                     continue
-            if best is None or (room.created_at, room.id) > (best.created_at, best.id):
+            if best is None or _recency(room) > _recency(best):
                 best = room
         return best.model_copy(deep=True) if best is not None else None
 
@@ -296,7 +290,7 @@ class InMemoryStore(ConversationStore):
     ) -> str | None:
         # The participant index holds every room a binding names the
         # participant in, so this reads a handful of rooms, not all of them.
-        best: tuple[Any, str] | None = None
+        best: tuple[float, str] | None = None
         for room_id in self._participant_room_index.get(participant_id, ()):
             room = self._rooms.get(room_id)
             binding = self._bindings.get(room_id, {}).get(channel_id)
@@ -304,22 +298,22 @@ class InMemoryStore(ConversationStore):
                 continue
             if status is not None and room.status.value != status:
                 continue
-            if best is None or (room.created_at, room.id) > best:
-                best = (room.created_at, room.id)
+            if best is None or _recency(room) > best:
+                best = _recency(room)
         return best[1] if best is not None else None
 
     async def find_room_id_by_participant(
         self, participant_id: str, status: str | None = None
     ) -> str | None:
-        best: tuple[Any, str] | None = None
+        best: tuple[float, str] | None = None
         for room_id in self._participant_room_index.get(participant_id, ()):
             room = self._rooms.get(room_id)
             if room is None or participant_id not in self._participants.get(room_id, {}):
                 continue
             if status is not None and room.status.value != status:
                 continue
-            if best is None or (room.created_at, room.id) > best:
-                best = (room.created_at, room.id)
+            if best is None or _recency(room) > best:
+                best = _recency(room)
         return best[1] if best is not None else None
 
     async def find_room_ids_by_channel(
@@ -329,7 +323,7 @@ class InMemoryStore(ConversationStore):
         # tie-breaker: dict insertion order would be an accident of how the
         # process happened to load, and the answer has to be the same one the
         # SQL store gives (RFC §10.4).
-        matched: list[tuple[Any, str]] = []
+        matched: list[tuple[float, str]] = []
         for room_id, bindings in self._bindings.items():
             if channel_id not in bindings:
                 continue
@@ -338,7 +332,7 @@ class InMemoryStore(ConversationStore):
                 continue
             if status is not None and room.status.value != status:
                 continue
-            matched.append((room.created_at, room_id))
+            matched.append(_recency(room))
         matched.sort()
         return [room_id for _created_at, room_id in matched[:limit]]
 
@@ -765,3 +759,12 @@ class InMemoryStore(ConversationStore):
             for oid in obs_ids
             if oid in self._observations
         ]
+
+
+def _recency(room: Room) -> tuple[float, str]:
+    """A room's place in creation order: created_at, then id.
+
+    Compared as timestamps, as SQLite stores them: a naive created_at beside
+    an aware one would make the datetimes themselves refuse.
+    """
+    return room.created_at.timestamp(), room.id

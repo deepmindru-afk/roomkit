@@ -12,7 +12,8 @@ from uuid import uuid4
 import pytest
 
 from roomkit.core.exceptions import RoomNotFoundError
-from roomkit.models.enums import RoomStatus
+from roomkit.models.channel import ChannelBinding
+from roomkit.models.enums import ChannelType, RoomStatus
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.store.base import ConversationStore
@@ -168,6 +169,27 @@ async def test_rooms_created_with_and_without_a_time_zone_still_page() -> None:
     await store.create_room(Room(id="naive", created_at=datetime(2026, 1, 1, 12)))
 
     assert {room.id for room in await store.list_rooms()} == {"aware", "naive"}
+
+
+async def test_rooms_created_with_and_without_a_time_zone_are_found() -> None:
+    """The finders that rank rooms by creation read a naive created_at beside
+    an aware one as list_rooms does, by timestamp, instead of raising."""
+    store = InMemoryStore()
+    rooms = [("aware", datetime(2026, 1, 1, 12, tzinfo=UTC)), ("naive", datetime(2026, 1, 2, 12))]
+    for room_id, at in rooms:
+        await store.create_room(Room(id=room_id, created_at=at))
+        await store.add_participant(Participant(id="p", room_id=room_id, channel_id="sms"))
+        await store.add_binding(
+            ChannelBinding(
+                room_id=room_id, channel_id="sms", channel_type=ChannelType.SMS, participant_id="p"
+            )
+        )
+
+    latest = await store.find_latest_room("p")
+    assert latest is not None and latest.id == "naive"
+    assert await store.find_room_id_by_participant("p") == "naive"
+    assert await store.find_room_id_by_binding("sms", "p") == "naive"
+    assert await store.find_room_ids_by_channel("sms") == ["aware", "naive"]
 
 
 async def _room_with_events(store: ConversationStore, *indexes: int) -> tuple[str, list[str]]:
