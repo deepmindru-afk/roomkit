@@ -29,16 +29,8 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from roomkit.video._annexb import nal_units
-from roomkit.video.backends.base import VideoBackend
-from roomkit.video.base import (
-    VideoCapability,
-    VideoChunk,
-    VideoDisconnectCallback,
-    VideoReceivedCallback,
-    VideoSession,
-    VideoSessionReadyCallback,
-    VideoSessionState,
-)
+from roomkit.video.backends.av import AudioVideoBackend, CallVideoBackend
+from roomkit.video.base import VideoChunk, VideoSession, VideoSessionState
 from roomkit.video.video_frame import VideoFrame
 from roomkit.voice.backends.rtp import RTPVoiceBackend
 from roomkit.voice.base import VoiceSession
@@ -46,11 +38,12 @@ from roomkit.voice.base import VoiceSession
 logger = logging.getLogger("roomkit.video.rtp")
 
 
-class RTPVideoBackend(RTPVoiceBackend, VideoBackend):
+class RTPVideoBackend(RTPVoiceBackend, AudioVideoBackend):
     """RTP backend for combined audio + video transport.
 
-    Extends :class:`RTPVoiceBackend` with a parallel video RTP path.
-    Audio-only users should use :class:`RTPVoiceBackend` directly.
+    Extends :class:`RTPVoiceBackend` with a parallel video RTP path, served
+    by :attr:`video`. Audio-only users should use :class:`RTPVoiceBackend`
+    directly.
 
     Args:
         video_local_addr: ``(host, port)`` to bind video RTP.
@@ -81,22 +74,18 @@ class RTPVideoBackend(RTPVoiceBackend, VideoBackend):
         self._video_port_allocator = video_port_allocator
 
         # Video session tracking
-        self._video_sessions: dict[str, VideoSession] = {}
         self._video_rtp_sessions: dict[str, Any] = {}
-        self._video_received_callback: VideoReceivedCallback | None = None
-        self._video_taps: list[VideoReceivedCallback] = []
-        self._video_session_ready_callbacks: list[VideoSessionReadyCallback] = []
-        self._video_disconnect_callbacks: list[VideoDisconnectCallback] = []
         self._frame_sequences: dict[str, int] = {}
+        self._video = _RTPVideo(self)
 
     @property
     def name(self) -> str:
         return "RTP-AV"
 
     @property
-    def video_capabilities(self) -> VideoCapability:
-        """Video-specific capabilities."""
-        return VideoCapability.NONE
+    def video(self) -> _RTPVideo:
+        """The video of each call, over its parallel video RTP session."""
+        return self._video
 
     # -------------------------------------------------------------------------
     # Session lifecycle
@@ -147,7 +136,6 @@ class RTPVideoBackend(RTPVoiceBackend, VideoBackend):
             },
         )
 
-        self._video_sessions[voice_session.id] = video_session
         self._video_rtp_sessions[voice_session.id] = video_rtp
         self._frame_sequences[voice_session.id] = 0
 
@@ -160,8 +148,8 @@ class RTPVideoBackend(RTPVoiceBackend, VideoBackend):
             self._video_payload_type,
         )
 
-        for cb in self._video_session_ready_callbacks:
-            cb(video_session)
+        # Its RTP socket is ready, as the audio's was in the parent's connect().
+        self._video._started(video_session)
 
         return voice_session
 
@@ -172,23 +160,19 @@ class RTPVideoBackend(RTPVoiceBackend, VideoBackend):
         if video_rtp is not None:
             await video_rtp.close()
 
-        video_session = self._video_sessions.pop(sid, None)
         self._frame_sequences.pop(sid, None)
-
-        if video_session is not None:
-            video_session.state = VideoSessionState.ENDED
-            for cb in self._video_disconnect_callbacks:
-                cb(video_session)
+        self._video._ended(sid)
 
         await super().disconnect(session)
 
     async def close(self) -> None:
+        # Ending each call (disconnect()) ends its video, reported.
+        await super().close()
         for video_rtp in self._video_rtp_sessions.values():
             await video_rtp.close()
         self._video_rtp_sessions.clear()
-        self._video_sessions.clear()
+        self._video._forget()
         self._frame_sequences.clear()
-        await super().close()
 
     # -------------------------------------------------------------------------
     # Inbound video
@@ -198,10 +182,7 @@ class RTPVideoBackend(RTPVoiceBackend, VideoBackend):
         """Create an ``on_frame`` callback bound to *session_id*."""
 
         def _on_frame(nal_data: bytes, timestamp: int, is_keyframe: bool) -> None:
-            if self._video_received_callback is None and not self._video_taps:
-                return
-            video_session = self._video_sessions.get(session_id)
-            if video_session is None:
+            if not self._video._has_consumers() or self._video.get_session(session_id) is None:
                 return
             seq = self._frame_sequences.get(session_id, 0)
             self._frame_sequences[session_id] = seq + 1
@@ -212,23 +193,22 @@ class RTPVideoBackend(RTPVoiceBackend, VideoBackend):
                 keyframe=is_keyframe,
                 sequence=seq,
             )
-            if self._video_received_callback is not None:
-                self._video_received_callback(video_session, frame)
-            for tap in self._video_taps:
-                tap(video_session, frame)
+            self._video._deliver(session_id, frame)
 
         return _on_frame
 
-    # -------------------------------------------------------------------------
-    # Outbound video
-    # -------------------------------------------------------------------------
+
+class _RTPVideo(CallVideoBackend):
+    """The video of an :class:`RTPVideoBackend`'s calls, over their video RTP."""
+
+    _owner: RTPVideoBackend
 
     async def send_video(
         self,
         session: VideoSession,
         video: bytes | AsyncIterator[VideoChunk],
     ) -> None:
-        video_rtp = self._video_rtp_sessions.get(session.id)
+        video_rtp = self._owner._video_rtp_sessions.get(session.id)
         if video_rtp is None:
             logger.warning("send_video: no video session for %s", session.id)
             return
@@ -247,7 +227,7 @@ class RTPVideoBackend(RTPVoiceBackend, VideoBackend):
         Schedules ``send_frame()`` on the event loop via
         ``call_soon_threadsafe`` to avoid cross-thread corruption.
         """
-        video_rtp = self._video_rtp_sessions.get(session.id)
+        video_rtp = self._owner._video_rtp_sessions.get(session.id)
         if video_rtp is None:
             return
         ts = int((frame.timestamp_ms or 0) * 90)  # ms → 90kHz RTP clock
@@ -261,32 +241,3 @@ class RTPVideoBackend(RTPVoiceBackend, VideoBackend):
         except RuntimeError:
             pass
         video_rtp.send_frame(data, ts, is_key)
-
-    # -------------------------------------------------------------------------
-    # Callbacks
-    # -------------------------------------------------------------------------
-
-    def on_video_received(self, callback: VideoReceivedCallback) -> None:
-        self._video_received_callback = callback
-
-    def add_video_tap(self, callback: VideoReceivedCallback) -> None:
-        self._video_taps.append(callback)
-
-    def on_session_ready(self, callback: VideoSessionReadyCallback) -> None:
-        """Register callback for video session ready events."""
-        self._video_session_ready_callbacks.append(callback)
-
-    def on_client_disconnected(self, callback: VideoDisconnectCallback) -> None:
-        self._video_disconnect_callbacks.append(callback)
-
-    # -------------------------------------------------------------------------
-    # Session queries
-    # -------------------------------------------------------------------------
-
-    def get_video_session(self, session_id: str) -> VideoSession | None:
-        """Get the video session for a given session ID."""
-        return self._video_sessions.get(session_id)
-
-    def list_video_sessions(self, room_id: str) -> list[VideoSession]:
-        """List active video sessions in a room."""
-        return [s for s in self._video_sessions.values() if s.room_id == room_id]

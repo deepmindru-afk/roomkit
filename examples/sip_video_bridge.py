@@ -174,8 +174,8 @@ async def main() -> None:
             "bridged!" if audio_count >= 2 else "waiting for second caller",
         )
 
-    # on_call_disconnected fires on every BYE; SIPVideoBackend.on_client_disconnected
-    # only reports the end of a call's video session.
+    # on_call_disconnected fires on every BYE, with or without video; the end
+    # of a call's video alone is backend.video.on_client_disconnected.
     def on_call_ended(session: VoiceSession) -> None:
         sid = session.id
         callers.pop(sid, None)

@@ -2,8 +2,9 @@
 
 Extends :class:`FastRTCVoiceBackend` with video transport. Each
 :meth:`connect` call creates both a voice session and a video session
-(shared session ID). Video frames flow through FastRTC's ``Stream``
-with ``modality="audio-video"``.
+(shared session ID), the video served by the backend's ``video`` facet.
+Video frames flow through FastRTC's ``Stream`` with
+``modality="audio-video"``.
 
 Requires the ``fastrtc`` optional dependency::
 
@@ -31,16 +32,8 @@ import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from roomkit.video.backends.base import VideoBackend
-from roomkit.video.base import (
-    VideoCapability,
-    VideoChunk,
-    VideoDisconnectCallback,
-    VideoReceivedCallback,
-    VideoSession,
-    VideoSessionReadyCallback,
-    VideoSessionState,
-)
+from roomkit.video.backends.av import AudioVideoBackend, CallVideoBackend
+from roomkit.video.base import VideoChunk, VideoSession, VideoSessionState
 from roomkit.video.video_frame import VideoFrame
 from roomkit.voice.auth import AuthCallback
 from roomkit.voice.backends.fastrtc import FastRTCVoiceBackend
@@ -55,11 +48,13 @@ logger = logging.getLogger("roomkit.video.fastrtc")
 __all__ = ["FastRTCVideoBackend", "mount_fastrtc_av"]
 
 
-class FastRTCVideoBackend(FastRTCVoiceBackend, VideoBackend):
+class FastRTCVideoBackend(FastRTCVoiceBackend, AudioVideoBackend):
     """FastRTC backend for combined audio + video WebRTC transport.
 
-    Extends :class:`FastRTCVoiceBackend` with a parallel video path.
-    Audio-only users should use :class:`FastRTCVoiceBackend` directly.
+    Extends :class:`FastRTCVoiceBackend` with a parallel video path, served
+    by :attr:`video`. A session's video is live once its WebRTC connection
+    is, with its audio. Audio-only users should use
+    :class:`FastRTCVoiceBackend` directly.
 
     Args:
         video_width: Default video frame width.
@@ -85,12 +80,8 @@ class FastRTCVideoBackend(FastRTCVoiceBackend, VideoBackend):
         self._video_queue_maxsize = video_queue_maxsize
 
         # Video session tracking
-        self._video_sessions: dict[str, VideoSession] = {}
-        self._video_received_callback: VideoReceivedCallback | None = None
-        self._video_taps: list[VideoReceivedCallback] = []
-        self._video_session_ready_callbacks: list[VideoSessionReadyCallback] = []
-        self._video_disconnect_callbacks: list[VideoDisconnectCallback] = []
         self._frame_sequences: dict[str, int] = {}
+        self._video = _FastRTCVideo(self)
 
         # Outbound video emit queues: webrtc_id -> asyncio.Queue
         self._video_emit_queues: dict[str, asyncio.Queue[Any | None]] = {}
@@ -100,9 +91,9 @@ class FastRTCVideoBackend(FastRTCVoiceBackend, VideoBackend):
         return "FastRTC-AV"
 
     @property
-    def video_capabilities(self) -> VideoCapability:
-        """Video-specific capabilities."""
-        return VideoCapability.NONE
+    def video(self) -> _FastRTCVideo:
+        """The video of each session, carried by its WebRTC connection."""
+        return self._video
 
     # -------------------------------------------------------------------------
     # Session lifecycle
@@ -134,7 +125,8 @@ class FastRTCVideoBackend(FastRTCVoiceBackend, VideoBackend):
                 "backend": "fastrtc-av",
             },
         )
-        self._video_sessions[voice_session.id] = video_session
+        # Live once its WebRTC connection is (_register_webrtc), not yet.
+        self._video._add(video_session)
         self._frame_sequences[voice_session.id] = 0
 
         logger.info(
@@ -144,16 +136,12 @@ class FastRTCVideoBackend(FastRTCVoiceBackend, VideoBackend):
             participant_id,
         )
 
-        for cb in self._video_session_ready_callbacks:
-            cb(video_session)
-
         return voice_session
 
     async def disconnect(self, session: VoiceSession) -> None:
         sid = session.id
 
         # Clean up video state
-        video_session = self._video_sessions.pop(sid, None)
         self._frame_sequences.pop(sid, None)
 
         # Clean up video emit queue
@@ -161,19 +149,17 @@ class FastRTCVideoBackend(FastRTCVoiceBackend, VideoBackend):
         if ws_id:
             self._video_emit_queues.pop(ws_id, None)
 
-        if video_session is not None:
-            video_session.state = VideoSessionState.ENDED
-            for cb in self._video_disconnect_callbacks:
-                cb(video_session)
+        self._video._ended(sid)
 
         # Audio cleanup via parent
         await super().disconnect(session)
 
     async def close(self) -> None:
-        self._video_sessions.clear()
+        # Ending each session (disconnect()) ends its video, reported.
+        await super().close()
+        self._video._forget()
         self._frame_sequences.clear()
         self._video_emit_queues.clear()
-        await super().close()
 
     # -------------------------------------------------------------------------
     # Inbound video
@@ -190,15 +176,11 @@ class FastRTCVideoBackend(FastRTCVoiceBackend, VideoBackend):
 
         Converts numpy HWC array to VideoFrame and fires callbacks.
         """
-        if self._video_received_callback is None and not self._video_taps:
+        if not self._video._has_consumers():
             return
 
         session = self._find_session_by_websocket_id(websocket_id)
-        if session is None:
-            return
-
-        video_session = self._video_sessions.get(session.id)
-        if video_session is None:
+        if session is None or self._video.get_session(session.id) is None:
             return
 
         # Convert numpy HWC (RGB) array to raw bytes
@@ -217,14 +199,27 @@ class FastRTCVideoBackend(FastRTCVoiceBackend, VideoBackend):
             sequence=seq,
         )
 
-        if self._video_received_callback is not None:
-            self._video_received_callback(video_session, frame)
-        for tap in self._video_taps:
-            tap(video_session, frame)
+        self._video._deliver(session.id, frame)
 
     # -------------------------------------------------------------------------
-    # Outbound video
+    # WebRTC registration override (creates video emit queue too)
     # -------------------------------------------------------------------------
+
+    def _register_webrtc(self, webrtc_id: str, session_id: str) -> None:
+        """Register a WebRTC session and create audio + video emit queues.
+
+        The connection carries both tracks: the session's video is live now,
+        right after its audio (reported by the parent).
+        """
+        self._video_emit_queues[webrtc_id] = asyncio.Queue(maxsize=self._video_queue_maxsize)
+        super()._register_webrtc(webrtc_id, session_id)
+        self._video._ready(session_id)
+
+
+class _FastRTCVideo(CallVideoBackend):
+    """The video of a :class:`FastRTCVideoBackend`'s sessions, on their WebRTC."""
+
+    _owner: FastRTCVideoBackend
 
     async def send_video(
         self,
@@ -237,7 +232,7 @@ class FastRTCVideoBackend(FastRTCVoiceBackend, VideoBackend):
         ``video_emit()`` method. WebSocket video is not currently
         supported (use WebSocketVideoBackend instead).
         """
-        voice_session = self._sessions.get(session.id)
+        voice_session = self._owner._sessions.get(session.id)
         if voice_session is None:
             logger.warning("send_video: no voice session for %s", session.id)
             return
@@ -247,7 +242,7 @@ class FastRTCVideoBackend(FastRTCVoiceBackend, VideoBackend):
             logger.warning("send_video: no websocket_id for session %s", session.id)
             return
 
-        queue = self._video_emit_queues.get(ws_id)
+        queue = self._owner._video_emit_queues.get(ws_id)
         if queue is None:
             logger.warning("send_video: no video emit queue for %s", session.id)
             return
@@ -257,7 +252,7 @@ class FastRTCVideoBackend(FastRTCVoiceBackend, VideoBackend):
         if isinstance(video, bytes):
             # Store as numpy array with default dimensions
             arr = _np.frombuffer(video, dtype=_np.uint8)
-            arr = arr.reshape((self._video_height, self._video_width, 3))
+            arr = arr.reshape((self._owner._video_height, self._owner._video_width, 3))
             self._enqueue_video_frame(queue, arr)
         else:
             async for chunk in video:
@@ -274,42 +269,6 @@ class FastRTCVideoBackend(FastRTCVoiceBackend, VideoBackend):
             with contextlib.suppress(asyncio.QueueEmpty):
                 queue.get_nowait()
         queue.put_nowait(data)
-
-    # -------------------------------------------------------------------------
-    # Callbacks
-    # -------------------------------------------------------------------------
-
-    def on_video_received(self, callback: VideoReceivedCallback) -> None:
-        self._video_received_callback = callback
-
-    def add_video_tap(self, callback: VideoReceivedCallback) -> None:
-        self._video_taps.append(callback)
-
-    def on_session_ready(self, callback: VideoSessionReadyCallback) -> None:
-        """Register callback for video session ready events."""
-        self._video_session_ready_callbacks.append(callback)
-
-    def on_client_disconnected(self, callback: VideoDisconnectCallback) -> None:
-        self._video_disconnect_callbacks.append(callback)
-
-    # -------------------------------------------------------------------------
-    # Session queries
-    # -------------------------------------------------------------------------
-
-    def get_video_session(self, session_id: str) -> VideoSession | None:
-        return self._video_sessions.get(session_id)
-
-    def list_video_sessions(self, room_id: str) -> list[VideoSession]:
-        return [s for s in self._video_sessions.values() if s.room_id == room_id]
-
-    # -------------------------------------------------------------------------
-    # WebRTC registration override (creates video emit queue too)
-    # -------------------------------------------------------------------------
-
-    def _register_webrtc(self, webrtc_id: str, session_id: str) -> None:
-        """Register a WebRTC session and create audio + video emit queues."""
-        super()._register_webrtc(webrtc_id, session_id)
-        self._video_emit_queues[webrtc_id] = asyncio.Queue(maxsize=self._video_queue_maxsize)
 
 
 def mount_fastrtc_av(
@@ -379,9 +338,8 @@ def mount_fastrtc_av(
                                 await result
                         except Exception:
                             logger.exception("Client disconnected callback error")
-                    # disconnect() fires _video_disconnect_callbacks — no
-                    # need to fire them here (would double-fire VoiceChannel's
-                    # unbind_session).
+                    # disconnect() ends the session's video and reports it
+                    # to the video facet's listeners.
                     await backend.disconnect(session)
 
         async def start_up(self) -> None:

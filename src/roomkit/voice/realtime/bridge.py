@@ -2,8 +2,9 @@
 
 Wires bidirectional audio and outbound avatar video between any
 :class:`RealtimeAudioVideoProvider` and any :class:`VoiceBackend`,
-with optional video encoding for backends that also implement
-:class:`VideoBackend`.
+with optional video encoding for an :class:`AudioVideoBackend`'s calls.
+The bridge follows the call: the backend's ``on_client_disconnected``
+ends it, with or without video.
 
 Audio path:
     Backend audio in → ``provider.send_audio()``

@@ -69,7 +69,7 @@ class TestRTPVideoBackendConnect:
     async def test_connect_stores_video_session(self, backend):
         session = await backend.connect("room-1", "user-1", "voice-1")
 
-        video_session = backend.get_video_session(session.id)
+        video_session = backend.video.get_session(session.id)
         assert video_session is not None
         assert video_session.id == session.id
         assert video_session.room_id == "room-1"
@@ -123,11 +123,21 @@ class TestRTPVideoBackendDisconnect:
 
         video_rtp.close.assert_awaited_once()
         audio_rtp.close.assert_awaited_once()
-        assert backend.get_video_session(session.id) is None
+        assert backend.video.get_session(session.id) is None
 
-    async def test_disconnect_fires_video_callbacks(self, backend):
+    async def test_close_ends_each_calls_video(self, backend):
+        ended: list[VideoSession] = []
+        backend.video.on_client_disconnected(lambda s: ended.append(s))
+        session = await backend.connect("room-1", "user-1", "voice-1")
+
+        await backend.close()
+
+        assert [s.id for s in ended] == [session.id]
+        assert backend.video.get_session(session.id) is None
+
+    async def test_disconnect_ends_the_calls_video(self, backend):
         disconnected: list[VideoSession] = []
-        backend.on_client_disconnected(lambda s: disconnected.append(s))
+        backend.video.on_client_disconnected(lambda s: disconnected.append(s))
 
         session = await backend.connect("room-1", "user-1", "voice-1")
         await backend.disconnect(session)
@@ -139,7 +149,7 @@ class TestRTPVideoBackendDisconnect:
 class TestRTPVideoBackendInbound:
     async def test_inbound_video_callback(self, backend, mock_aiortp):
         received: list[VideoFrame] = []
-        backend.on_video_received(lambda _s, frame: received.append(frame))
+        backend.video.on_video_received(lambda _s, frame: received.append(frame))
 
         await backend.connect("room-1", "user-1", "voice-1")
 
@@ -159,7 +169,7 @@ class TestRTPVideoBackendInbound:
 
     async def test_inbound_sequence_increments(self, backend, mock_aiortp):
         received: list[VideoFrame] = []
-        backend.on_video_received(lambda _s, frame: received.append(frame))
+        backend.video.on_video_received(lambda _s, frame: received.append(frame))
 
         await backend.connect("room-1", "user-1", "voice-1")
 
@@ -185,8 +195,8 @@ class TestRTPVideoBackendVideoTap:
         """Video taps receive frames alongside the primary callback."""
         received_primary: list[VideoFrame] = []
         received_tap: list[VideoFrame] = []
-        backend.on_video_received(lambda _s, f: received_primary.append(f))
-        backend.add_video_tap(lambda _s, f: received_tap.append(f))
+        backend.video.on_video_received(lambda _s, f: received_primary.append(f))
+        backend.video.add_video_tap(lambda _s, f: received_tap.append(f))
 
         await backend.connect("room-1", "user-1", "voice-1")
 
@@ -200,7 +210,7 @@ class TestRTPVideoBackendVideoTap:
     async def test_tap_works_without_primary_callback(self, backend, mock_aiortp):
         """Video taps fire even when no primary callback is set."""
         received_tap: list[VideoFrame] = []
-        backend.add_video_tap(lambda _s, f: received_tap.append(f))
+        backend.video.add_video_tap(lambda _s, f: received_tap.append(f))
 
         await backend.connect("room-1", "user-1", "voice-1")
 
@@ -219,8 +229,8 @@ class TestRTPVideoBackendVideoTap:
 
             return tap
 
-        backend.add_video_tap(make_tap(0))
-        backend.add_video_tap(make_tap(1))
+        backend.video.add_video_tap(make_tap(0))
+        backend.video.add_video_tap(make_tap(1))
 
         await backend.connect("room-1", "user-1", "voice-1")
 
@@ -234,16 +244,16 @@ class TestRTPVideoBackendVideoTap:
 class TestRTPVideoBackendOutbound:
     async def test_send_video_bytes(self, backend, mock_aiortp):
         session = await backend.connect("room-1", "user-1", "voice-1")
-        video_session = backend.get_video_session(session.id)
+        video_session = backend.video.get_session(session.id)
 
         video_rtp = mock_aiortp.VideoRTPSession.create.return_value
-        await backend.send_video(video_session, b"\x65\x00\x01\x02")
+        await backend.video.send_video(video_session, b"\x65\x00\x01\x02")
 
         video_rtp.send_frame.assert_called_once_with([b"\x65\x00\x01\x02"], 0)
 
     async def test_send_video_chunks(self, backend, mock_aiortp):
         session = await backend.connect("room-1", "user-1", "voice-1")
-        video_session = backend.get_video_session(session.id)
+        video_session = backend.video.get_session(session.id)
 
         video_rtp = mock_aiortp.VideoRTPSession.create.return_value
 
@@ -251,12 +261,12 @@ class TestRTPVideoBackendOutbound:
             yield VideoChunk(data=b"\x65\x00", keyframe=True, timestamp_ms=0)
             yield VideoChunk(data=b"\x41\x00", keyframe=False, timestamp_ms=33)
 
-        await backend.send_video(video_session, chunk_iter())
+        await backend.video.send_video(video_session, chunk_iter())
         assert video_rtp.send_frame.call_count == 2
 
     async def test_send_video_no_session(self, backend):
         dummy = VideoSession(id="nonexistent", room_id="r", participant_id="p", channel_id="c")
-        await backend.send_video(dummy, b"\x00")  # no error
+        await backend.video.send_video(dummy, b"\x00")  # no error
 
 
 class TestRTPVideoBackendProperties:
@@ -267,9 +277,9 @@ class TestRTPVideoBackendProperties:
         await backend.connect("room-1", "user-1", "voice-1")
         await backend.connect("room-2", "user-2", "voice-2")
 
-        assert len(backend.list_video_sessions("room-1")) == 1
-        assert len(backend.list_video_sessions("room-2")) == 1
-        assert len(backend.list_video_sessions("room-3")) == 0
+        assert len(backend.video.list_sessions("room-1")) == 1
+        assert len(backend.video.list_sessions("room-2")) == 1
+        assert len(backend.video.list_sessions("room-3")) == 0
 
     async def test_close_cleans_all(self, backend, mock_aiortp):
         await backend.connect("room-1", "user-1", "voice-1")
@@ -277,8 +287,8 @@ class TestRTPVideoBackendProperties:
 
         await backend.close()
 
-        assert len(backend.list_video_sessions("room-1")) == 0
-        assert len(backend.list_video_sessions("room-2")) == 0
+        assert len(backend.video.list_sessions("room-1")) == 0
+        assert len(backend.video.list_sessions("room-2")) == 0
 
     async def test_session_ready_callback(self, backend):
         ready: list[VideoSession] = []
@@ -295,7 +305,7 @@ class TestRTPVideoBackendSendsWholeFrames:
 
     async def test_an_annex_b_chunk_is_one_frame_of_several_nal_units(self, backend, mock_aiortp):
         session = await backend.connect("room-1", "user-1", "voice-1")
-        video_session = backend.get_video_session(session.id)
+        video_session = backend.video.get_session(session.id)
         video_rtp = mock_aiortp.VideoRTPSession.create.return_value
 
         async def frames():
@@ -305,7 +315,7 @@ class TestRTPVideoBackendSendsWholeFrames:
                 timestamp_ms=33,
             )
 
-        await backend.send_video(video_session, frames())
+        await backend.video.send_video(video_session, frames())
 
         video_rtp.send_frame.assert_called_once_with([b"\x41\x9a", b"\x41\x9b"], 2970, False)
 

@@ -19,7 +19,7 @@ class TestFastRTCVideoBackendLifecycle:
         assert backend.get_session(session.id) is not None
 
         # Video session exists with same ID
-        video_session = backend.get_video_session(session.id)
+        video_session = backend.video.get_session(session.id)
         assert video_session is not None
         assert video_session.id == session.id
         assert video_session.room_id == "room-1"
@@ -32,7 +32,7 @@ class TestFastRTCVideoBackendLifecycle:
         await backend.disconnect(session)
 
         assert backend.get_session(session.id) is None
-        assert backend.get_video_session(session.id) is None
+        assert backend.video.get_session(session.id) is None
 
     async def test_close_clears_all(self):
         backend = FastRTCVideoBackend()
@@ -42,9 +42,9 @@ class TestFastRTCVideoBackendLifecycle:
         await backend.close()
 
         assert backend.get_session(s1.id) is None
-        assert backend.get_video_session(s1.id) is None
+        assert backend.video.get_session(s1.id) is None
         assert backend.get_session(s2.id) is None
-        assert backend.get_video_session(s2.id) is None
+        assert backend.video.get_session(s2.id) is None
 
     async def test_list_video_sessions(self):
         backend = FastRTCVideoBackend()
@@ -52,10 +52,10 @@ class TestFastRTCVideoBackendLifecycle:
         await backend.connect("room-1", "user-2", "voice")
         await backend.connect("room-2", "user-3", "voice")
 
-        room1 = backend.list_video_sessions("room-1")
+        room1 = backend.video.list_sessions("room-1")
         assert len(room1) == 2
 
-        room2 = backend.list_video_sessions("room-2")
+        room2 = backend.video.list_sessions("room-2")
         assert len(room2) == 1
 
     async def test_name_property(self):
@@ -72,7 +72,7 @@ class TestFastRTCVideoBackendCallbacks:
         backend._register_webrtc("test-ws-id", session.id)
 
         received = []
-        backend.on_video_received(lambda s, f: received.append((s, f)))
+        backend.video.on_video_received(lambda s, f: received.append((s, f)))
 
         # Simulate video frame
         video_data = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -92,7 +92,7 @@ class TestFastRTCVideoBackendCallbacks:
         backend._register_webrtc("test-ws-id", session.id)
 
         tapped = []
-        backend.add_video_tap(lambda s, f: tapped.append((s, f)))
+        backend.video.add_video_tap(lambda s, f: tapped.append((s, f)))
 
         video_data = np.zeros((480, 640, 3), dtype=np.uint8)
         backend._handle_video_frame("test-ws-id", video_data, 640, 480)
@@ -105,7 +105,7 @@ class TestFastRTCVideoBackendCallbacks:
         backend._register_webrtc("test-ws-id", session.id)
 
         received = []
-        backend.on_video_received(lambda s, f: received.append(f))
+        backend.video.on_video_received(lambda s, f: received.append(f))
 
         video_data = np.zeros((480, 640, 3), dtype=np.uint8)
         for _ in range(3):
@@ -125,20 +125,35 @@ class TestFastRTCVideoBackendCallbacks:
         video_data = np.zeros((480, 640, 3), dtype=np.uint8)
         backend._handle_video_frame("test-ws-id", video_data, 640, 480)
 
-    async def test_session_ready_callback_on_connect(self):
+    async def test_audio_then_video_are_live_once_the_webrtc_connection_is(self):
         backend = FastRTCVideoBackend()
-        ready_sessions = []
-        backend.on_session_ready(lambda s: ready_sessions.append(s))
+        live: list[tuple[str, object]] = []
+        backend.on_session_ready(lambda s: live.append(("call", s)))
+        backend.video.on_session_ready(lambda s: live.append(("video", s)))
 
-        await backend.connect("room-1", "user-1", "voice")
+        session = await backend.connect("room-1", "user-1", "voice")
+        assert live == []  # created, not connected yet
 
-        assert len(ready_sessions) == 1
-        assert ready_sessions[0].room_id == "room-1"
+        backend._register_webrtc("rtc-1", session.id)
+
+        assert [kind for kind, _ in live] == ["call", "video"]
+        assert live[0][1] is session
+        assert live[1][1] is backend.video.get_session(session.id)
+
+    async def test_close_ends_each_sessions_video(self):
+        backend = FastRTCVideoBackend()
+        ended = []
+        backend.video.on_client_disconnected(lambda s: ended.append(s))
+        session = await backend.connect("room-1", "user-1", "voice")
+
+        await backend.close()
+
+        assert [s.id for s in ended] == [session.id]
 
     async def test_disconnect_callback(self):
         backend = FastRTCVideoBackend()
         disconnected = []
-        backend.on_client_disconnected(lambda s: disconnected.append(s))
+        backend.video.on_client_disconnected(lambda s: disconnected.append(s))
 
         session = await backend.connect("room-1", "user-1", "voice")
         await backend.disconnect(session)
@@ -173,11 +188,11 @@ class TestFastRTCVideoBackendWebRTC:
         session = await backend.connect("room-1", "user-1", "voice")
         backend._register_webrtc("webrtc-id-1", session.id)
 
-        video_session = backend.get_video_session(session.id)
+        video_session = backend.video.get_session(session.id)
         assert video_session is not None
 
         # 4x2 RGB = 24 bytes
-        await backend.send_video(video_session, b"\x00" * 24)
+        await backend.video.send_video(video_session, b"\x00" * 24)
 
         queue = backend._video_emit_queues["webrtc-id-1"]
         assert not queue.empty()

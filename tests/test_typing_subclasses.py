@@ -21,15 +21,6 @@ from pathlib import Path
 
 import roomkit
 
-# Known incompatible, and not by annotation: each is a VoiceBackend and a
-# VideoBackend at once, and the two ABCs disagree on ``accept``,
-# ``capabilities``, ``get_session``, ``list_sessions`` and ``connect``.
-_BASES_THAT_DISAGREE = {
-    "roomkit.video.backends.fastrtc.FastRTCVideoBackend",
-    "roomkit.video.backends.rtp.RTPVideoBackend",
-    "roomkit.video.backends.sip.SIPVideoBackend",
-}
-
 
 def _public_classes_with_several_bases() -> dict[str, str]:
     """``{qualified name: module}`` for every such class a public module defines.
@@ -66,7 +57,9 @@ def test_a_two_base_subclass_of_each_public_class_passes_mypy(tmp_path: Path) ->
         "roomkit.providers.gemini.realtime.GeminiLiveProvider",
     ):
         assert expected in classes
-    checked = sorted(set(classes) - _BASES_THAT_DISAGREE)
+    # No exception: a class whose bases disagree is a design to fix, as the
+    # combined A/V backends were (RFC §12.8.3).
+    checked = sorted(classes)
     lines = ["from __future__ import annotations"]
     for index, qualified in enumerate(checked):
         name = qualified.rsplit(".", 1)[1]

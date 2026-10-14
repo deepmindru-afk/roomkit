@@ -15,7 +15,7 @@ from roomkit.channels._video_resources import _VideoResources
 from roomkit.channels.voice import VoiceChannel
 from roomkit.models.channel import ChannelCapabilities
 from roomkit.models.enums import ChannelMediaType, ChannelType, HookTrigger
-from roomkit.video.backends.base import VideoBackend
+from roomkit.video.backends.av import AudioVideoBackend
 from roomkit.video.bridge import VideoBridge, VideoBridgeConfig
 
 if TYPE_CHECKING:
@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from roomkit.models.channel import ChannelBinding
     from roomkit.recorder.base import ChannelRecordingConfig
     from roomkit.video.avatar.base import AvatarProvider
+    from roomkit.video.backends.base import VideoBackend
     from roomkit.video.base import VideoSession
     from roomkit.video.pipeline.config import VideoPipelineConfig
     from roomkit.video.pipeline.encoder.base import VideoEncoderProvider
@@ -42,13 +43,16 @@ class AudioVideoChannel(VideoHooksMixin, VoiceChannel):
     """Combined audio+video channel for A/V backends.
 
     Extends :class:`VoiceChannel` with video capabilities from
-    :class:`VideoHooksMixin`.  Use this with combined A/V backends
+    :class:`VideoHooksMixin`.  Use this with an :class:`AudioVideoBackend`
     like :class:`SIPVideoBackend` or :class:`RTPVideoBackend` that
-    produce both audio and video through a single transport.
+    produces both audio and video through a single transport.
 
     Audio flows through the normal voice pipeline (STT/TTS/VAD).
-    Video frames are delivered to registered taps and optionally
-    analysed by a :class:`VisionProvider`.
+    Video frames, from the backend's ``video`` facet, are delivered to
+    registered taps and optionally analysed by a :class:`VisionProvider`.
+    A call reports ``ON_SESSION_STARTED``; its video, when it has some,
+    ``ON_VIDEO_SESSION_STARTED`` and ``ON_VIDEO_SESSION_ENDED``, each once
+    (RFC §12.8.3).
     """
 
     channel_type = ChannelType.AUDIO_VIDEO
@@ -86,9 +90,11 @@ class AudioVideoChannel(VideoHooksMixin, VoiceChannel):
         self._last_vision_ts: dict[str, float] = {}
         self._room_vision: dict[str, tuple[float, str, VisionResult]] = {}
         self._video_media_taps: list[Callable[[VideoSession, VideoFrame], None]] = []
-        # Dual-signal: track sessions where backend signalled video ready
-        # before bind_session completed
+        # Dual-signal: sessions whose video was reported live before
+        # bind_session, and those whose video start was reported (so its end
+        # is reported once, and only after it).
         self._session_ready_pending_video: set[str] = set()
+        self._video_reported: set[str] = set()
 
         # Video pipeline (decoder, resizer, vision)
         self._video_resources = _VideoResources(video_pipeline, vision)
@@ -123,9 +129,14 @@ class AudioVideoChannel(VideoHooksMixin, VoiceChannel):
         else:
             self._video_bridge = None
 
-        # Wire video callbacks from the combined A/V backend
-        if isinstance(backend, VideoBackend):
-            backend.on_video_received(self._on_video_received)
+        # Wire the video of the backend's calls
+        self._video_backend: VideoBackend | None = (
+            backend.video if isinstance(backend, AudioVideoBackend) else None
+        )
+        if self._video_backend is not None:
+            self._video_backend.on_video_received(self._on_video_received)
+            self._video_backend.on_session_ready(self._on_video_session_ready)
+            self._video_backend.on_client_disconnected(self._on_video_session_ended)
 
     # -- Video tap API ---------------------------------------------------------
 
@@ -227,32 +238,71 @@ class AudioVideoChannel(VideoHooksMixin, VoiceChannel):
             return
 
         # Register video session with video bridge
-        if self._video_bridge is not None:
-            video_backend = self._backend if isinstance(self._backend, VideoBackend) else None
-            if video_backend is not None:
-                self._video_bridge.add_session(video_session, room_id, video_backend)
-                # Enable passthrough so the bridge forwards all frames
-                # without blocking on keyframe availability — the remote
-                # decoder handles its own recovery via RTCP.
-                video_backend.set_video_passthrough(session.id, True)
+        if self._video_bridge is not None and self._video_backend is not None:
+            self._video_bridge.add_session(video_session, room_id, self._video_backend)
+            # Enable passthrough so the bridge forwards all frames
+            # without blocking on keyframe availability — the remote
+            # decoder handles its own recovery via RTCP.
+            self._video_backend.set_video_passthrough(session.id, True)
 
         # Start avatar idle frame loop (shows reference image when not speaking)
         self._start_avatar_idle_loop(session)
 
-        was_ready_pending = session.id in self._session_ready_pending_video
-        self._session_ready_pending_video.discard(session.id)
+        with self._state_lock:
+            was_ready_pending = session.id in self._session_ready_pending_video
+            self._session_ready_pending_video.discard(session.id)
+        if was_ready_pending:
+            self._report_video_started(video_session, room_id)
 
+    def _on_video_session_ready(self, video_session: VideoSession) -> None:
+        """The backend reports a call's video live: report it once bound."""
+        with self._state_lock:
+            binding_info = self._session_bindings.get(video_session.id)
+            if binding_info is None:
+                self._session_ready_pending_video.add(video_session.id)
+        if binding_info is not None:
+            self._report_video_started(video_session, binding_info[0])
+
+    def _on_video_session_ended(self, video_session: VideoSession) -> None:
+        """The backend reports a call's video ended (its call ended)."""
+        with self._state_lock:
+            self._session_ready_pending_video.discard(video_session.id)
+            binding_info = self._session_bindings.get(video_session.id)
+        if binding_info is not None:
+            self._report_video_ended(video_session, binding_info[0])
+
+    def _report_video_started(self, video_session: VideoSession, room_id: str) -> None:
+        with self._state_lock:
+            if video_session.id in self._video_reported:
+                return
+            self._video_reported.add(video_session.id)
         if self._framework:
             self._schedule(
                 self._emit_session_event("video_session_started", video_session, room_id),
-                name=f"video_session_started:{session.id}",
+                name=f"video_session_started:{video_session.id}",
             )
-        if was_ready_pending and self._framework:
             self._schedule(
                 self._fire_session_hook(
                     HookTrigger.ON_VIDEO_SESSION_STARTED, video_session, room_id
                 ),
-                name=f"video_session_hook:{session.id}",
+                name=f"video_session_hook:{video_session.id}",
+            )
+
+    def _report_video_ended(self, video_session: VideoSession, room_id: str) -> None:
+        with self._state_lock:
+            if video_session.id not in self._video_reported:
+                return
+            self._video_reported.discard(video_session.id)
+        if self._framework:
+            self._schedule(
+                self._emit_session_event("video_session_ended", video_session, room_id),
+                name=f"video_session_ended:{video_session.id}",
+            )
+            self._schedule(
+                self._fire_session_hook(
+                    HookTrigger.ON_VIDEO_SESSION_ENDED, video_session, room_id
+                ),
+                name=f"video_session_ended_hook:{video_session.id}",
             )
 
     def unbind_session(self, session: VoiceSession) -> None:
@@ -262,34 +312,18 @@ class AudioVideoChannel(VideoHooksMixin, VoiceChannel):
         q = self._avatar_queues.pop(session.id, None)
         if q is not None:
             q.put(None)
-        self._session_ready_pending_video.discard(session.id)
+        with self._state_lock:
+            self._session_ready_pending_video.discard(session.id)
         # Unregister from video bridge
         if self._video_bridge is not None:
             self._video_bridge.remove_session(session.id)
         binding_info = self._session_bindings.get(session.id)
 
-        # The disconnect callback from combined A/V backends passes a
-        # VideoSession directly (the backend pops it from its internal
-        # map before firing callbacks, so _get_video_session would miss it).
-        from roomkit.video.base import VideoSession as _VideoSession
-
-        if isinstance(session, _VideoSession):
-            video_session = session
-        else:
-            video_session = self._get_video_session(session.id)
+        # A call unbound while its video is still live (the channel ends it):
+        # its video ends here. One its backend already ended was reported then.
+        video_session = self._get_video_session(session.id)
         if video_session is not None and binding_info is not None:
-            room_id = binding_info[0]
-            if self._framework:
-                self._schedule(
-                    self._emit_session_event("video_session_ended", video_session, room_id),
-                    name=f"video_session_ended:{session.id}",
-                )
-                self._schedule(
-                    self._fire_session_hook(
-                        HookTrigger.ON_VIDEO_SESSION_ENDED, video_session, room_id
-                    ),
-                    name=f"video_session_ended_hook:{session.id}",
-                )
+            self._report_video_ended(video_session, binding_info[0])
 
         if self._video_pipeline is not None:
             self._video_pipeline.reset(session.id)
@@ -318,6 +352,7 @@ class AudioVideoChannel(VideoHooksMixin, VoiceChannel):
         self._room_vision.clear()
         self._video_media_taps.clear()
         self._session_ready_pending_video.clear()
+        self._video_reported.clear()
         if self._video_bridge is not None:
             self._video_bridge.close()
         await super().close()
@@ -549,10 +584,10 @@ class AudioVideoChannel(VideoHooksMixin, VoiceChannel):
     # -- Video session lookup --------------------------------------------------
 
     def _get_video_session(self, session_id: str) -> VideoSession | None:
-        """Look up the VideoSession from the combined backend."""
-        if isinstance(self._backend, VideoBackend):
-            return self._backend.get_video_session(session_id)
-        return None
+        """Look up the call's VideoSession from the backend's video facet."""
+        if self._video_backend is None:
+            return None
+        return self._video_backend.get_session(session_id)
 
     # -- Public helpers --------------------------------------------------------
 

@@ -172,11 +172,10 @@ class VideoBackend(ABC):
         return None
 
     def get_video_session(self, session_id: str) -> VideoSession | None:
-        """Get a video session by ID.
+        """Get a video session by ID: an alias for :meth:`get_session`.
 
-        Alias for :meth:`get_session` that avoids return-type conflicts
-        in combined A/V backends where the voice parent also defines
-        ``get_session`` with a ``VoiceSession`` return type.
+        A combined A/V backend is not a ``VideoBackend``: its calls' video
+        is its ``video`` facet (``backend.video.get_session()``).
         """
         return self.get_session(session_id)
 

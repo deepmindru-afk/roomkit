@@ -175,7 +175,7 @@ class TestSIPVideoBackendInbound:
         call = _FakeCall(sdp_offer=av_offer)
         await backend._handle_invite(call)
 
-        video_session = backend.get_video_session("session-1")
+        video_session = backend.video.get_session("session-1")
         assert video_session is not None
         assert video_session.state == VideoSessionState.ACTIVE
 
@@ -213,7 +213,7 @@ class TestSIPVideoBackendInbound:
         mock_rtp_bridge.CallSession.return_value.start.assert_awaited_once()
 
         # No video session
-        assert backend.get_video_session("session-1") is None
+        assert backend.video.get_session("session-1") is None
 
 
 class TestSIPVideoBackendInviteAuthorization:
@@ -271,7 +271,7 @@ class TestSIPVideoBackendVideoCallbacks:
         self, backend, mock_rtp_bridge, mock_video_bridge, av_offer
     ):
         received: list[VideoFrame] = []
-        backend.on_video_received(lambda _s, f: received.append(f))
+        backend.video.on_video_received(lambda _s, f: received.append(f))
 
         call = _FakeCall(sdp_offer=av_offer)
         await backend._handle_invite(call)
@@ -292,7 +292,7 @@ class TestSIPVideoBackendVideoCallbacks:
         self, backend, mock_rtp_bridge, mock_video_bridge, av_offer
     ):
         disconnected: list[VideoSession] = []
-        backend.on_client_disconnected(lambda s: disconnected.append(s))
+        backend.video.on_client_disconnected(lambda s: disconnected.append(s))
 
         call = _FakeCall(sdp_offer=av_offer)
         await backend._handle_invite(call)
@@ -312,15 +312,15 @@ class TestSIPVideoBackendSendVideo:
         call = _FakeCall(sdp_offer=av_offer)
         await backend._handle_invite(call)
 
-        video_session = backend.get_video_session("session-1")
+        video_session = backend.video.get_session("session-1")
         video_cs = mock_video_bridge.VideoCallSession.return_value
 
-        await backend.send_video(video_session, b"\x65\x00\x01")
+        await backend.video.send_video(video_session, b"\x65\x00\x01")
         video_cs.send_frame.assert_called_once_with([b"\x65\x00\x01"], 0)
 
     async def test_send_video_no_session(self, backend):
         dummy = VideoSession(id="nonexistent", room_id="r", participant_id="p", channel_id="c")
-        await backend.send_video(dummy, b"\x00")  # no error
+        await backend.video.send_video(dummy, b"\x00")  # no error
 
 
 class TestSIPVideoBackendProperties:
@@ -331,7 +331,7 @@ class TestSIPVideoBackendProperties:
         call = _FakeCall(sdp_offer=av_offer)
         await backend._handle_invite(call)
 
-        sessions = backend.list_video_sessions("room-1")
+        sessions = backend.video.list_sessions("room-1")
         assert len(sessions) == 1
 
     async def test_disconnect_closes_video(
@@ -358,8 +358,8 @@ class TestSIPVideoBackendVideoTap:
         """Video taps receive frames alongside the primary callback."""
         received_primary: list[VideoFrame] = []
         received_tap: list[VideoFrame] = []
-        backend.on_video_received(lambda _s, f: received_primary.append(f))
-        backend.add_video_tap(lambda _s, f: received_tap.append(f))
+        backend.video.on_video_received(lambda _s, f: received_primary.append(f))
+        backend.video.add_video_tap(lambda _s, f: received_tap.append(f))
 
         call = _FakeCall(sdp_offer=av_offer)
         await backend._handle_invite(call)
@@ -376,7 +376,7 @@ class TestSIPVideoBackendVideoTap:
     ):
         """Video taps fire even when no primary callback is set."""
         received_tap: list[VideoFrame] = []
-        backend.add_video_tap(lambda _s, f: received_tap.append(f))
+        backend.video.add_video_tap(lambda _s, f: received_tap.append(f))
 
         call = _FakeCall(sdp_offer=av_offer)
         await backend._handle_invite(call)
@@ -396,8 +396,8 @@ class TestSIPVideoBackendVideoTap:
 
             return tap
 
-        backend.add_video_tap(make_tap(0))
-        backend.add_video_tap(make_tap(1))
+        backend.video.add_video_tap(make_tap(0))
+        backend.video.add_video_tap(make_tap(1))
 
         call = _FakeCall(sdp_offer=av_offer)
         await backend._handle_invite(call)
@@ -469,7 +469,7 @@ class TestSIPVideoBackendSendsWholeFrames:
         self, backend, mock_video_bridge, av_offer
     ):
         await backend._handle_invite(_FakeCall(sdp_offer=av_offer))
-        video_session = backend.get_video_session("session-1")
+        video_session = backend.video.get_session("session-1")
         video_cs = mock_video_bridge.VideoCallSession.return_value
 
         async def frames():
@@ -479,7 +479,7 @@ class TestSIPVideoBackendSendsWholeFrames:
                 timestamp_ms=0,
             )
 
-        await backend.send_video(video_session, frames())
+        await backend.video.send_video(video_session, frames())
 
         video_cs.send_frame.assert_called_once_with(
             [b"\x67\x42", b"\x68\xce", b"\x65\x88"], 0, True

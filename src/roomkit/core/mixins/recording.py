@@ -193,8 +193,9 @@ class RecordingMixin:
     ) -> None:
         """Wire room-level video recording tap directly on a VideoBackend.
 
-        Used for combined A/V backends (e.g. SIPVideoBackend) where
-        video frames come from the backend rather than a VideoChannel.
+        Used for combined A/V backends (e.g. SIPVideoBackend), with their
+        ``video`` facet, where video frames come from the backend rather
+        than a VideoChannel.
         """
         if not self._room_recorder_mgr.has_recorders(room_id):
             return

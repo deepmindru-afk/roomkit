@@ -49,17 +49,20 @@ class TestAVChannelFastRTC:
 
         await kit.close()
 
-    async def test_backend_isinstance_video_backend(self):
-        """AudioVideoChannel checks isinstance(backend, VideoBackend)."""
+    async def test_backend_is_a_voice_backend_whose_video_is_a_facet(self):
+        """AudioVideoChannel reads the video of an AudioVideoBackend's calls."""
+        from roomkit.video.backends.av import AudioVideoBackend
         from roomkit.video.backends.base import VideoBackend
 
         backend = FastRTCVideoBackend()
-        assert isinstance(backend, VideoBackend)
+        assert isinstance(backend, AudioVideoBackend)
+        assert not isinstance(backend, VideoBackend)
+        assert isinstance(backend.video, VideoBackend)
 
     async def test_video_session_accessible(self):
         backend = FastRTCVideoBackend()
         session = await backend.connect("room-1", "user-1", "av")
 
-        video_session = backend.get_video_session(session.id)
+        video_session = backend.video.get_session(session.id)
         assert video_session is not None
         assert video_session.id == session.id

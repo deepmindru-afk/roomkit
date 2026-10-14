@@ -23,12 +23,12 @@ from roomkit.voice.tts.mock import MockTTSProvider
 
 
 def _make_av_backend() -> MagicMock:
-    """Build a mock that quacks like a combined A/V backend."""
-    from roomkit.video.backends.base import VideoBackend
-    from roomkit.voice.backends.base import VoiceBackend
+    """Build a mock that quacks like a combined A/V backend: a voice backend
+    whose calls' video is its ``video`` facet."""
+    from roomkit.video.backends.av import AudioVideoBackend
 
     backend = MagicMock()
-    backend.__class__ = type("MockAVBackend", (VoiceBackend, VideoBackend), {})
+    backend.__class__ = type("MockAVBackend", (AudioVideoBackend,), {})
     backend.name = "mock-av"
     backend.auto_connect = False
     backend.capabilities = MagicMock(return_value=0)
@@ -46,11 +46,12 @@ def _make_av_backend() -> MagicMock:
     def add_video_tap(cb):
         backend._video_taps.append(cb)
 
-    backend.on_video_received = on_video_received
-    backend.add_video_tap = add_video_tap
+    backend.video.on_video_received = on_video_received
+    backend.video.add_video_tap = add_video_tap
 
-    # Default: no video session
+    # Default: no call, no video session
     backend.get_session.return_value = None
+    backend.video.get_session.return_value = None
     return backend
 
 
@@ -242,7 +243,7 @@ class TestAVRecordingWiring:
 
         backend = _make_av_backend()
         video_session = _make_video_session()
-        backend.get_session.return_value = video_session
+        backend.video.get_session.return_value = video_session
 
         av = AudioVideoChannel(
             "voice",

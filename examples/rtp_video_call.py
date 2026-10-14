@@ -127,7 +127,7 @@ async def main() -> None:
     session = await backend.connect(room_id, "remote-user", "voice")
     await kit.join(room_id, "voice", session=session)
 
-    _ = backend.get_video_session(session.id)
+    _ = backend.video.get_session(session.id)
     logger.info(
         "RTP A/V session active: audio=%s:%d, video=%s:%d",
         "0.0.0.0",

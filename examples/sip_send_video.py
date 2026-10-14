@@ -5,7 +5,7 @@ Answers incoming SIP calls and sends the caller a moving H.264 test pattern
 across the picture), so you can see the outbound video path work live:
 
     numpy RGB frame -> PyAVVideoEncoder (H.264 NAL units)
-        -> SIPVideoBackend.send_video() -> RTP -> caller
+        -> SIPVideoBackend.video.send_video() -> RTP -> caller
 
 Each call gets its own encoder: an H.264 stream is stateful, so callers
 cannot share one. The caller's audio and video are ignored and no audio
@@ -123,13 +123,13 @@ async def main() -> None:
 
     def on_call(session: VoiceSession) -> None:
         caller = session.metadata.get("caller", "unknown")
-        video_session = backend.get_video_session(session.id)
+        video_session = backend.video.get_session(session.id)
         if video_session is None:
             logger.info("Call from %s offers no H.264 video: nothing to send", caller)
             return
         logger.info("Call %s from %s: sending the test pattern", session.id[:8], caller)
         task = asyncio.create_task(
-            backend.send_video(video_session, test_pattern_chunks(video_session))
+            backend.video.send_video(video_session, test_pattern_chunks(video_session))
         )
         senders.add(task)
         task.add_done_callback(senders.discard)

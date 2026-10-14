@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `SIPVideoBackend`, `RTPVideoBackend` and `FastRTCVideoBackend` are
+  `AudioVideoBackend`s: voice backends whose calls' video is served by
+  their `video` facet, a `VideoBackend` whose sessions carry the call's id
+  (RFC §12.8.3, RMK-723). Their own `on_session_ready` and
+  `on_client_disconnected` report every call; `backend.video.on_session_ready`
+  and `backend.video.on_client_disconnected` report its video. They are no
+  longer `VideoBackend`s: hand `backend.video` to whatever takes one
+  (`VideoChannel("cam", backend=backend.video)`). A custom combined backend
+  subclasses `AudioVideoBackend` (and `CallVideoBackend` for its video) to
+  work with `AudioVideoChannel`. New in `roomkit.video`:
+  `AudioVideoBackend`, `CallVideoBackend`.
+
+### Deprecated
+
+- The video methods of the A/V backends moved to their `video` facet
+  (RMK-723): `get_video_session()` → `video.get_session()`,
+  `list_video_sessions()` → `video.list_sessions()`, `video_capabilities` →
+  `video.capabilities`, and `on_video_received()`, `add_video_tap()`,
+  `send_video()`, `send_video_sync()`, `request_keyframe()`,
+  `set_video_passthrough()` under the same names. The old ones still work
+  and warn.
+
 ### Fixed
 
 - `PostgresKnowledgeSource` indexes and searches in the language it is
@@ -60,6 +84,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attempts, it now means four. Retries waiting when a process goes back to
   an earlier version stay in the delayed set, which that version does not
   read.
+- A call on `SIPVideoBackend` reports itself to its channel, with or without
+  video (RMK-723). The A/V backends were a `VoiceBackend` and a `VideoBackend`
+  at once, two interfaces whose `on_session_ready` and
+  `on_client_disconnected` share names and differ in meaning; the backends
+  answered the video one. `ON_SESSION_STARTED` never fired for a call on
+  `SIPVideoBackend`, an audio-only call's BYE left its channel bound (its
+  pipeline and STT alive) and `RealtimeAVBridge` holding the call, and
+  `ON_VIDEO_SESSION_STARTED` never fired on any of the three A/V backends.
+  A call now reports `ON_SESSION_STARTED` once, and its video, when it has
+  some, `ON_VIDEO_SESSION_STARTED` and `ON_VIDEO_SESSION_ENDED` once each.
+  On `FastRTCVideoBackend`, a session's audio and video are reported live
+  when its WebRTC connection is, not when the session is created; a session
+  over WebSocket, which carries no video, reports no video.
 
 ## [0.101.0] — 2026-10-13
 

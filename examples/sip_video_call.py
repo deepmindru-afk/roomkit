@@ -168,9 +168,8 @@ async def main() -> None:
 
     backend.on_call(on_call)
 
-    # on_call_disconnected fires on every BYE; SIPVideoBackend.on_client_disconnected
-    # only reports the end of a call's video session, so an audio-only call would
-    # never close its room.
+    # on_call_disconnected fires on every BYE, with or without video, so an
+    # audio-only call closes its room too.
     def on_call_ended(session: VoiceSession) -> None:
         """Close the room (and finalize any recording) when the SIP call ends."""
         logger.info("Call ended: session=%s, video_frames=%d", session.id, frame_count)

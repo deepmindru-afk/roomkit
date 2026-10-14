@@ -21,14 +21,13 @@ from roomkit.voice.tts.mock import MockTTSProvider
 
 
 def _make_mock_sip_video_backend() -> MagicMock:
-    """Build a mock that quacks like SIPVideoBackend."""
-    from roomkit.video.backends.base import VideoBackend
-    from roomkit.voice.backends.base import VoiceBackend
+    """Build a mock that quacks like SIPVideoBackend: a voice backend whose
+    calls' video is its ``video`` facet."""
+    from roomkit.video.backends.av import AudioVideoBackend
 
     # No spec so we can add arbitrary attributes
     backend = MagicMock()
-    # Make isinstance checks work for both VoiceBackend and VideoBackend
-    backend.__class__ = type("MockSIPVideoBackend", (VoiceBackend, VideoBackend), {})
+    backend.__class__ = type("MockSIPVideoBackend", (AudioVideoBackend,), {})
     backend.name = "SIP-AV"
     backend.auto_connect = False
     backend._video_taps = []
@@ -40,12 +39,12 @@ def _make_mock_sip_video_backend() -> MagicMock:
         channel_id="voice",
         state=VideoSessionState.ACTIVE,
     )
-    backend.get_video_session.return_value = video_session
+    backend.video.get_session.return_value = video_session
 
     def add_video_tap(cb):
         backend._video_taps.append(cb)
 
-    backend.add_video_tap = add_video_tap
+    backend.video.add_video_tap = add_video_tap
     return backend
 
 

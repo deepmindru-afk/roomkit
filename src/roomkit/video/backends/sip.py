@@ -2,8 +2,8 @@
 
 Extends :class:`SIPVoiceBackend` with video transport.  When a SIP
 INVITE contains an ``m=video`` line the backend negotiates both audio
-and video codecs, creates parallel RTP sessions, and delivers video
-frames via :meth:`on_video_received`.
+and video codecs, creates parallel RTP sessions, and serves the call's
+video through its ``video`` facet (RFC §12.8.3).
 
 Requires ``aiosipua[rtp]``::
 
@@ -27,15 +27,8 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from roomkit.video._annexb import nal_units
-from roomkit.video.backends.base import VideoBackend
-from roomkit.video.base import (
-    VideoChunk,
-    VideoDisconnectCallback,
-    VideoReceivedCallback,
-    VideoSession,
-    VideoSessionReadyCallback,
-    VideoSessionState,
-)
+from roomkit.video.backends.av import AudioVideoBackend, CallVideoBackend
+from roomkit.video.base import VideoChunk, VideoSession, VideoSessionState
 from roomkit.video.video_frame import VideoFrame
 from roomkit.voice.backends._sip_types import SIPSessionState as _SIPSessionState
 from roomkit.voice.backends._sip_types import is_usable_rtp_address
@@ -71,12 +64,13 @@ def _import_video_bridge() -> Any:
         ) from exc
 
 
-class SIPVideoBackend(SIPVoiceBackend, VideoBackend):
+class SIPVideoBackend(SIPVoiceBackend, AudioVideoBackend):
     """SIP backend with audio + video support.
 
     Audio-only calls (no ``m=video`` in INVITE) are handled by the
     parent :class:`SIPVoiceBackend`.  Calls with video get parallel
-    audio and video RTP sessions.
+    audio and video RTP sessions; their video is served by :attr:`video`.
+    ``on_session_ready`` and ``on_client_disconnected`` report every call.
 
     Args:
         supported_video_codecs: Video codec names to accept
@@ -97,15 +91,9 @@ class SIPVideoBackend(SIPVoiceBackend, VideoBackend):
         # Video state (keyed by voice session ID)
         self._video_call_sessions: dict[str, Any] = {}
         self._combined_answers: dict[str, Any] = {}
-        self._video_sessions: dict[str, VideoSession] = {}
         self._video_rtp_ports: dict[str, int] = {}
         self._frame_sequences: dict[str, int] = {}
-
-        # Video callbacks
-        self._video_received_callback: VideoReceivedCallback | None = None
-        self._video_taps: list[VideoReceivedCallback] = []
-        self._video_session_ready_callbacks: list[VideoSessionReadyCallback] = []
-        self._video_disconnect_callbacks: list[VideoDisconnectCallback] = []
+        self._video = _SIPVideo(self)
 
         # Event loop reference (set during start())
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -113,6 +101,11 @@ class SIPVideoBackend(SIPVoiceBackend, VideoBackend):
     @property
     def name(self) -> str:
         return "SIP-AV"
+
+    @property
+    def video(self) -> _SIPVideo:
+        """The video of the calls that negotiated it."""
+        return self._video
 
     async def start(self) -> None:
         """Start SIP listener and capture the event loop reference."""
@@ -329,7 +322,7 @@ class SIPVideoBackend(SIPVoiceBackend, VideoBackend):
                     "video_codec": video_codec,
                 },
             )
-            self._video_sessions[session.id] = video_session
+            self._video._add(video_session)
             video_call_session.on_frame = self._make_video_handler(
                 session.id,
                 video_codec,
@@ -364,6 +357,8 @@ class SIPVideoBackend(SIPVoiceBackend, VideoBackend):
             self._on_call_callback(session)
         for cb in self._session_ready_callbacks:
             cb(session)
+        # The video path is live with the audio: both RTP sessions started.
+        self._video._ready(session.id)
 
     # -------------------------------------------------------------------------
     # re-INVITE override
@@ -434,12 +429,7 @@ class SIPVideoBackend(SIPVoiceBackend, VideoBackend):
         if video_rtp_port is not None:
             self._release_rtp_port(video_rtp_port)
 
-        video_session = self._video_sessions.pop(session_id, None)
-        if video_session is not None:
-            video_session.state = VideoSessionState.ENDED
-            for cb in self._video_disconnect_callbacks:
-                cb(video_session)
-
+        self._video._ended(session_id)
         self._combined_answers.pop(session_id, None)
         frame_count = self._frame_sequences.pop(session_id, None)
         if frame_count is not None and frame_count == 0:
@@ -449,9 +439,6 @@ class SIPVideoBackend(SIPVoiceBackend, VideoBackend):
             )
 
         super()._cleanup_session(session_id)
-
-    async def disconnect(self, session: VoiceSession) -> None:
-        await super().disconnect(session)
 
     # -------------------------------------------------------------------------
     # Inbound video
@@ -475,10 +462,7 @@ class SIPVideoBackend(SIPVoiceBackend, VideoBackend):
                     len(nal_data),
                     is_keyframe,
                 )
-            if self._video_received_callback is None and not self._video_taps:
-                return
-            video_session = self._video_sessions.get(session_id)
-            if video_session is None:
+            if not self._video._has_consumers() or self._video.get_session(session_id) is None:
                 return
             seq = self._frame_sequences.get(session_id, 0)
             self._frame_sequences[session_id] = seq + 1
@@ -490,10 +474,7 @@ class SIPVideoBackend(SIPVoiceBackend, VideoBackend):
                 sequence=seq,
             )
             try:
-                if self._video_received_callback is not None:
-                    self._video_received_callback(video_session, frame)
-                for tap in self._video_taps:
-                    tap(video_session, frame)
+                self._video._deliver(session_id, frame)
             except Exception:
                 logger.exception(
                     "Error in video callback: session=%s, seq=%d",
@@ -503,16 +484,18 @@ class SIPVideoBackend(SIPVoiceBackend, VideoBackend):
 
         return _on_frame
 
-    # -------------------------------------------------------------------------
-    # Outbound video
-    # -------------------------------------------------------------------------
+
+class _SIPVideo(CallVideoBackend):
+    """The video of a :class:`SIPVideoBackend`'s calls, over their video RTP."""
+
+    _owner: SIPVideoBackend
 
     async def send_video(
         self,
         session: VideoSession,
         video: bytes | AsyncIterator[VideoChunk],
     ) -> None:
-        vcs = self._video_call_sessions.get(session.id)
+        vcs = self._owner._video_call_sessions.get(session.id)
         if vcs is None:
             logger.warning("send_video: no video session for %s", session.id)
             return
@@ -537,14 +520,14 @@ class SIPVideoBackend(SIPVoiceBackend, VideoBackend):
         process between inbound and outbound video, preventing event
         loop starvation at high frame rates.
         """
-        vcs = self._video_call_sessions.get(session.id)
+        vcs = self._owner._video_call_sessions.get(session.id)
         if vcs is None:
             logger.debug("send_video_sync: no VCS for session %s", session.id[:8])
             return
         ts = int((frame.timestamp_ms or 0) * 90)  # ms → 90kHz RTP clock
         data = [frame.data]
         is_key = frame.keyframe
-        loop = self._loop
+        loop = self._owner._loop
         if loop is not None and loop.is_running():
             loop.call_soon(vcs.send_frame, data, ts, is_key)
         else:
@@ -562,7 +545,7 @@ class SIPVideoBackend(SIPVoiceBackend, VideoBackend):
         Requests the remote encoder to produce a keyframe so a new
         bridge participant's decoder can start immediately.
         """
-        vcs = self._video_call_sessions.get(session.id)
+        vcs = self._owner._video_call_sessions.get(session.id)
         if vcs is None:
             return
         try:
@@ -577,7 +560,7 @@ class SIPVideoBackend(SIPVoiceBackend, VideoBackend):
         In passthrough mode the awaiting-keyframe gate is disabled so
         every assembled frame is delivered regardless of keyframe status.
         """
-        vcs = self._video_call_sessions.get(session_id)
+        vcs = self._owner._video_call_sessions.get(session_id)
         if vcs is None:
             return
         rtp_session = getattr(vcs, "video_session", None) or getattr(vcs, "_session", None)
@@ -588,25 +571,3 @@ class SIPVideoBackend(SIPVoiceBackend, VideoBackend):
                 "enabled" if enabled else "disabled",
                 session_id[:8],
             )
-
-    # -------------------------------------------------------------------------
-    # Callbacks
-    # -------------------------------------------------------------------------
-
-    def on_video_received(self, callback: VideoReceivedCallback) -> None:
-        self._video_received_callback = callback
-
-    def add_video_tap(self, callback: VideoReceivedCallback) -> None:
-        self._video_taps.append(callback)
-
-    def on_session_ready(self, callback: VideoSessionReadyCallback) -> None:
-        self._video_session_ready_callbacks.append(callback)
-
-    def on_client_disconnected(self, callback: VideoDisconnectCallback) -> None:
-        self._video_disconnect_callbacks.append(callback)
-
-    def get_video_session(self, session_id: str) -> VideoSession | None:
-        return self._video_sessions.get(session_id)
-
-    def list_video_sessions(self, room_id: str) -> list[VideoSession]:
-        return [s for s in self._video_sessions.values() if s.room_id == room_id]

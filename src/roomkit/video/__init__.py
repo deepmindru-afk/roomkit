@@ -11,6 +11,7 @@ from roomkit.video.backends import (
     get_sip_video_backend,
     get_websocket_video_backend,
 )
+from roomkit.video.backends.av import AudioVideoBackend, CallVideoBackend
 from roomkit.video.backends.base import VideoBackend
 from roomkit.video.backends.mock import MockVideoBackend, MockVideoCall
 from roomkit.video.base import (
@@ -62,6 +63,8 @@ from roomkit.video.vision.webcam_tool import (
 
 __all__ = [
     # Base types
+    "AudioVideoBackend",
+    "CallVideoBackend",
     "VideoBackend",
     "VideoCapability",
     "VideoChunk",

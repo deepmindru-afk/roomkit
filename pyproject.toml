@@ -368,13 +368,12 @@ allowed-unresolved-imports = [
 "empty-body" = "ignore"
 
 [[tool.ty.overrides]]
-# Realtime provider/transport and video backend implementations intentionally
-# override ABC callback signatures (provider-specific args, or the sync
-# override of FastRTC's async send_message in the voice realtime transport).
+# Realtime provider/transport implementations intentionally override ABC
+# callback signatures (provider-specific args, or the sync override of
+# FastRTC's async send_message in the voice realtime transport).
 include = [
     "src/roomkit/providers/*/realtime.py",
     "src/roomkit/providers/*/*/realtime.py",
-    "src/roomkit/video/backends/*.py",
     "src/roomkit/voice/realtime/*.py",
 ]
 [tool.ty.overrides.rules]

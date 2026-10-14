@@ -275,8 +275,7 @@ async def main() -> None:
     backend.on_call(on_call)
 
     # --- Disconnect handler -----------------------------------------------------
-    # on_call_disconnected fires on every BYE; SIPVideoBackend.on_client_disconnected
-    # only reports the end of a call's video session.
+    # on_call_disconnected fires on every BYE, with or without video.
     def on_call_ended(session: VoiceSession) -> None:
         logger.info("Call ended: session=%s", session.id[:8])
         asyncio.create_task(kit.close_room(session.room_id))
