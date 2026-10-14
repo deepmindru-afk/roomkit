@@ -853,7 +853,7 @@ class SQLiteStore(ConversationStore):
             self._db()
             .execute(
                 f"SELECT * FROM rooms WHERE {' AND '.join(where)}"  # nosec B608  # fragments are internal, values parameterised
-                " ORDER BY created_ts DESC LIMIT 1",
+                " ORDER BY created_ts DESC, id DESC LIMIT 1",
                 params,
             )
             .fetchone()

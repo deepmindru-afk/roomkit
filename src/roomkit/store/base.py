@@ -258,7 +258,11 @@ class ConversationStore(ABC):
         channel_type: str | None = None,
         status: str | None = None,
     ) -> Room | None:
-        """Find the most recent room for a participant."""
+        """Find the most recent room for a participant.
+
+        The most recent is the last created; of rooms created at the same
+        instant, the one of highest id, in every store.
+        """
         ...
 
     @abstractmethod

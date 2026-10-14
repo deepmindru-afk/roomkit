@@ -811,7 +811,7 @@ class PostgresStore(ConversationStore):
             params.append(status_val)
             idx += 1
 
-        base += " ORDER BY r.created_at DESC LIMIT 1"
+        base += " ORDER BY r.created_at DESC, r.id DESC LIMIT 1"
 
         async with self._acquire() as conn:
             row = await conn.fetchrow(base, *params)

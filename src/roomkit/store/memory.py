@@ -281,7 +281,7 @@ class InMemoryStore(ConversationStore):
                         break
                 if not found:
                     continue
-            if best is None or room.created_at > best.created_at:
+            if best is None or (room.created_at, room.id) > (best.created_at, best.id):
                 best = room
         return best.model_copy(deep=True) if best is not None else None
 

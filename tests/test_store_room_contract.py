@@ -1,5 +1,5 @@
 """Room contracts shared by all conversation stores: ``update_room``, the
-order of room pages, and the read markers (a channel's read high-water mark
+order of room pages and of the latest room, and the read markers (a channel's read high-water mark
 is an event ``index``)."""
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import pytest
 
 from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.models.enums import RoomStatus
+from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
@@ -133,6 +134,30 @@ async def test_a_page_of_rooms_is_the_same_in_every_store(
         assert listed == [a, b, d, c, e]
     finally:
         for room_id in ids:
+            await contract_store.delete_room(room_id)
+
+
+async def test_the_latest_room_breaks_a_tie_by_id_in_every_store(
+    contract_store: ConversationStore,
+) -> None:
+    """Rooms created at the same instant: the latest is the one of highest
+    id, whatever order they were stored in, as find_rooms orders them. A room
+    of a higher id created earlier is not the latest."""
+    org = uuid4().hex
+    created = datetime(2026, 1, 1, tzinfo=UTC)
+    tied = [f"{org}-{name}" for name in "abcdef"]
+    earlier = f"{org}-z"
+    for room_id, at in [*((rid, created) for rid in tied), (earlier, created - timedelta(1))]:
+        await contract_store.create_room(Room(id=room_id, created_at=at))
+        await contract_store.add_participant(
+            Participant(id=f"p-{org}", room_id=room_id, channel_id="sms")
+        )
+    try:
+        latest = await contract_store.find_latest_room(f"p-{org}")
+
+        assert latest is not None and latest.id == tied[-1]
+    finally:
+        for room_id in [*tied, earlier]:
             await contract_store.delete_room(room_id)
 
 
