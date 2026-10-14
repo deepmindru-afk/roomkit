@@ -45,23 +45,23 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_room ON knowledge_documents(room_id);
 
 _INSERT = """
 INSERT INTO knowledge_documents (id, content, room_id, source, metadata, tsv)
-VALUES ($1, $2, $3, $4, $5::text::jsonb, to_tsvector('english', $2))
+VALUES ($1, $2, $3, $4, $5::text::jsonb, to_tsvector($6::regconfig, $2))
 ON CONFLICT (id) DO UPDATE
     SET content = EXCLUDED.content,
         metadata = EXCLUDED.metadata,
-        tsv = to_tsvector('english', EXCLUDED.content);
+        tsv = to_tsvector($6::regconfig, EXCLUDED.content);
 """
 
 _SEARCH = """
 SELECT content, source, metadata::text AS metadata,
        ts_rank_cd(tsv, query) AS score
-FROM knowledge_documents, plainto_tsquery('english', $1) query
+FROM knowledge_documents, plainto_tsquery($2::regconfig, $1) query
 WHERE tsv @@ query {room_filter}
 ORDER BY score DESC
-LIMIT $2;
+LIMIT $3;
 """
 
-_SEARCH_ROOM = _SEARCH.format(room_filter="AND room_id = $3")
+_SEARCH_ROOM = _SEARCH.format(room_filter="AND room_id = $4")
 _SEARCH_ALL = _SEARCH.format(room_filter="")
 
 
@@ -77,7 +77,11 @@ class PostgresKnowledgeSource(KnowledgeSource):
         dsn: PostgreSQL connection string.
         pool: Optional pre-created asyncpg pool (shared with PostgresStore).
         source_name: Human-readable source identifier included in results.
-        language: PostgreSQL text search configuration (default ``english``).
+        language: PostgreSQL text search configuration (default ``english``),
+            used to index and to search: ``french`` finds "chevaux" when
+            asked for "cheval". :meth:`init` refuses a configuration the
+            database does not have. A document keeps the configuration it
+            was indexed with until it is indexed again.
     """
 
     def __init__(
@@ -116,6 +120,17 @@ class PostgresKnowledgeSource(KnowledgeSource):
             )
         async with self._acquire() as conn:
             await conn.execute(_SCHEMA)
+            known = await self._language_known(conn)
+        if not known:
+            await self.close()  # the pool it owns, if any
+            raise ValueError(f"PostgreSQL has no text search configuration {self._language!r}")
+
+    async def _language_known(self, conn: Any) -> bool:
+        try:
+            await conn.fetchval("SELECT $1::regconfig::text", self._language)
+        except self._asyncpg.UndefinedObjectError:
+            return False
+        return True
 
     async def search(
         self,
@@ -128,9 +143,9 @@ class PostgresKnowledgeSource(KnowledgeSource):
         pool = self._ensure_pool()
         async with pool.acquire(timeout=self._acquire_timeout) as conn:
             if room_id:
-                rows = await conn.fetch(_SEARCH_ROOM, query, limit, room_id)
+                rows = await conn.fetch(_SEARCH_ROOM, query, self._language, limit, room_id)
             else:
-                rows = await conn.fetch(_SEARCH_ALL, query, limit)
+                rows = await conn.fetch(_SEARCH_ALL, query, self._language, limit)
         return [
             KnowledgeResult(
                 content=row["content"],
@@ -158,7 +173,9 @@ class PostgresKnowledgeSource(KnowledgeSource):
 
         pool = self._ensure_pool()
         async with pool.acquire(timeout=self._acquire_timeout) as conn:
-            await conn.execute(_INSERT, doc_id, content, room_id, source, json.dumps(meta))
+            await conn.execute(
+                _INSERT, doc_id, content, room_id, source, json.dumps(meta), self._language
+            )
 
     async def close(self) -> None:
         """Release the connection pool if we own it."""

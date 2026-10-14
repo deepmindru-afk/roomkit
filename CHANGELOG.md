@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `PostgresKnowledgeSource` indexes and searches in the language it is
+  given (RMK-718). `language="french"` was stored and never read: both
+  queries named `'english'`, so a French corpus was stemmed as English and
+  a search for "cheval" missed a document about "chevaux". The language
+  now reaches `to_tsvector` and `plainto_tsquery` as a parameter, and
+  `init()` refuses one the database has no text search configuration for.
+  A document keeps the language it was indexed with until it is indexed
+  again: after changing it, index the corpus anew.
+
 ## [0.101.0] — 2026-10-13
 
 ### Added

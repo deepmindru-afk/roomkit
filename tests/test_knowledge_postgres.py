@@ -60,3 +60,45 @@ async def test_index_search_round_trip_on_real_pools(pool_kind: str) -> None:
             await store.close()
         elif pool is not None:
             await pool.close()
+
+
+async def test_index_and_search_use_the_configured_language() -> None:
+    conn, pool = AsyncMock(), MagicMock()
+    pool.acquire.return_value.__aenter__.return_value = conn
+    conn.fetch.return_value = []
+    source = PostgresKnowledgeSource(pool=pool, language="french")
+
+    await source.index("Les chevaux mangent", {"id": "doc-1"})
+    await source.search("cheval", room_id="room-1", limit=3)
+
+    assert conn.execute.await_args.args[-1] == "french"
+    assert "$6::regconfig" in conn.execute.await_args.args[0]
+    assert conn.fetch.await_args.args[1:] == ("cheval", "french", 3, "room-1")
+    assert "plainto_tsquery($2::regconfig, $1)" in conn.fetch.await_args.args[0]
+
+
+@pytest.mark.skipif(not os.environ.get("POSTGRES_DSN"), reason="POSTGRES_DSN not set")
+@pytest.mark.parametrize(("language", "found"), [("french", True), ("english", False)])
+async def test_the_configured_language_stems_on_a_real_database(
+    language: str, found: bool
+) -> None:
+    source = PostgresKnowledgeSource(dsn=os.environ["POSTGRES_DSN"], language=language)
+    await source.init(min_size=1, max_size=2)
+    metadata = {"id": uuid4().hex, "room_id": uuid4().hex}
+    try:
+        await source.index("Les chevaux mangent dans le pré", metadata)
+        results = await source.search("cheval", room_id=metadata["room_id"])
+        assert bool(results) is found
+    finally:
+        async with source._pool.acquire() as conn:
+            await conn.execute("DELETE FROM knowledge_documents WHERE id=$1", metadata["id"])
+        await source.close()
+
+
+@pytest.mark.skipif(not os.environ.get("POSTGRES_DSN"), reason="POSTGRES_DSN not set")
+async def test_init_refuses_a_language_the_database_lacks() -> None:
+    source = PostgresKnowledgeSource(dsn=os.environ["POSTGRES_DSN"], language="klingon")
+    with pytest.raises(ValueError, match="klingon"):
+        await source.init(min_size=1, max_size=2)
+    # The pool it created is closed with the refusal.
+    assert source._pool is None
