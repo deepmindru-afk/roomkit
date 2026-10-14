@@ -31,6 +31,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   given; on a stale copy it returned that copy's delivery cursor, though the
   stored one, never written by this call, had moved on. It now raises
   `RoomNotFoundError`, and the room it returns carries the stored cursor.
+- Read markers mean the same in every store: a channel's marker is the
+  highest read event `index`, and it never moves back (RMK-721). Marking an
+  empty room read on `PostgresStore` set a marker at 0, so the room's first
+  event, index 0, arrived already read; an empty room now gets no marker.
+  `PostgresStore.mark_read` took an event of another room; it now marks
+  nothing. The in-memory and SQLite stores kept a position, not an index:
+  the marker shifted when an earlier event was deleted and was wrong when
+  events were written out of index order, and an older event marked read
+  moved it back. SQLite files go to schema 6, `read_markers` holding the
+  event index; a marker on an event that no longer exists is dropped, which
+  reads as before (all unread). On `PostgresStore`, marking a missing room
+  read now does nothing instead of raising a foreign-key violation, as the
+  other stores do; a marker an earlier version set at 0 on an empty room
+  cannot be told from a read of event 0, and stays.
 
 ## [0.101.0] — 2026-10-13
 

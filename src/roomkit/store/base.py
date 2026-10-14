@@ -816,17 +816,30 @@ class ConversationStore(ABC):
 
     @abstractmethod
     async def mark_read(self, room_id: str, channel_id: str, event_id: str) -> None:
-        """Mark an event as read for a channel."""
+        """Mark an event as read for a channel.
+
+        The channel's marker is a high-water mark on event ``index``: it moves
+        to the event's index when that is higher, never back. An event that
+        is not in *room_id* (another room's, or none) marks nothing.
+        """
         ...
 
     @abstractmethod
     async def mark_all_read(self, room_id: str, channel_id: str) -> None:
-        """Mark all events as read for a channel."""
+        """Mark all events as read for a channel.
+
+        Moves the marker to the room's highest event index, never back. A room
+        with no event gets no marker: its first event, index 0, arrives unread.
+        """
         ...
 
     @abstractmethod
     async def get_unread_count(self, room_id: str, channel_id: str) -> int:
-        """Return the number of unread events for a channel in a room."""
+        """Return the number of unread events for a channel in a room.
+
+        The events whose ``index`` is above the channel's marker; every event
+        when the channel has none.
+        """
         ...
 
     @abstractmethod

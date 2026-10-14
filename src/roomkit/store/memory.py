@@ -35,7 +35,8 @@ class InMemoryStore(ConversationStore):
         self._participants: dict[str, dict[str, Participant]] = {}
         # room -> idempotency key -> the event id it committed (RFC §13.4)
         self._idempotency: dict[str, dict[str, str]] = {}
-        self._read_markers: dict[str, dict[str, str]] = {}
+        # room -> channel -> the highest read event index (a high-water mark)
+        self._read_markers: dict[str, dict[str, int]] = {}
         self._identities: dict[str, Identity] = {}
         # (channel_type, address, organization_id) — the empty string is
         # the unscoped tenant, so every key has the same shape (RFC §17.2).
@@ -602,34 +603,36 @@ class InMemoryStore(ConversationStore):
 
     # Read tracking
 
+    def _room_indexes(self, room_id: str) -> list[int]:
+        return [
+            self._events[eid].index
+            for eid in self._room_events.get(room_id, [])
+            if eid in self._events
+        ]
+
+    def _raise_read_marker(self, room_id: str, channel_id: str, index: int) -> None:
+        markers = self._read_markers.setdefault(room_id, {})
+        markers[channel_id] = max(index, markers.get(channel_id, index))
+
     async def mark_read(self, room_id: str, channel_id: str, event_id: str) -> None:
-        self._read_markers.setdefault(room_id, {})[channel_id] = event_id
+        event = self._events.get(event_id)
+        if event is not None and event.room_id == room_id:
+            self._raise_read_marker(room_id, channel_id, event.index)
 
     async def mark_all_read(self, room_id: str, channel_id: str) -> None:
-        event_ids = self._room_events.get(room_id, [])
-        if event_ids:
-            self._read_markers.setdefault(room_id, {})[channel_id] = event_ids[-1]
+        indexes = self._room_indexes(room_id)
+        if indexes:
+            self._raise_read_marker(room_id, channel_id, max(indexes))
 
     async def get_unread_count(self, room_id: str, channel_id: str) -> int:
-        event_ids = self._room_events.get(room_id, [])
+        indexes = self._room_indexes(room_id)
         last_read = self._read_markers.get(room_id, {}).get(channel_id)
         if last_read is None:
-            return len(event_ids)
-        try:
-            idx = event_ids.index(last_read)
-            return len(event_ids) - idx - 1
-        except ValueError:
-            return len(event_ids)
+            return len(indexes)
+        return sum(1 for index in indexes if index > last_read)
 
     async def list_read_markers(self, room_id: str) -> dict[str, int]:
-        event_ids = self._room_events.get(room_id, [])
-        markers: dict[str, int] = {}
-        for channel_id, event_id in self._read_markers.get(room_id, {}).items():
-            try:
-                markers[channel_id] = event_ids.index(event_id)
-            except ValueError:
-                continue
-        return markers
+        return dict(self._read_markers.get(room_id, {}))
 
     # Identity operations
 

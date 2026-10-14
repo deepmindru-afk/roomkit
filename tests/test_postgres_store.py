@@ -1147,10 +1147,12 @@ class TestPostgresStore:
     async def test_mark_all_read_no_events(self) -> None:
         store, mock_conn = _make_store_with_pool()
         await store.mark_all_read("room-1", "ch-1")
-        # Single execute with COALESCE handles the empty case
+        # An empty room inserts no row: a marker at 0 would read its first
+        # event, index 0, before it arrives.
         assert mock_conn.execute.await_count >= 1
         call_args = mock_conn.execute.call_args
-        assert "COALESCE" in call_args[0][0]
+        assert "HAVING MAX(index) IS NOT NULL" in call_args[0][0]
+        assert "COALESCE" not in call_args[0][0]
 
     async def test_get_unread_count_no_marker(self) -> None:
         store, mock_conn = _make_store_with_pool()

@@ -45,7 +45,7 @@ from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import ConversationStore
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS rooms(
@@ -140,7 +140,7 @@ CREATE INDEX IF NOT EXISTS idx_observations_room ON observations(room_id);
 CREATE TABLE IF NOT EXISTS read_markers(
     room_id TEXT NOT NULL,
     channel_id TEXT NOT NULL,
-    event_id TEXT NOT NULL,
+    event_index INTEGER NOT NULL,
     PRIMARY KEY(room_id, channel_id)
 );
 CREATE TABLE IF NOT EXISTS voice_deliveries(
@@ -330,12 +330,54 @@ def _migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
     """Identity verification (RFC §11.7): two new tables, nothing to backfill."""
     try:
         conn.executescript(f"BEGIN IMMEDIATE;\n{_SCHEMA}")
-        conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+        conn.execute("PRAGMA user_version=5")
         conn.execute("COMMIT")
     except BaseException:
         if conn.in_transaction:
             conn.execute("ROLLBACK")
         raise
+
+
+def _migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
+    """A read marker holds the read event's ``index``, a high-water mark, not
+    its id: an id's position shifted when an earlier event was deleted, and
+    write order is not index order. The table is rebuilt; a marker whose
+    event no longer exists is dropped, which reads as before (all unread)."""
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(read_markers)")}
+        if "event_index" not in columns:
+            conn.execute("ALTER TABLE read_markers RENAME TO read_markers_v5")
+            conn.execute(
+                """CREATE TABLE read_markers(
+                    room_id TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    event_index INTEGER NOT NULL,
+                    PRIMARY KEY(room_id, channel_id)
+                )"""
+            )
+            conn.execute(
+                """INSERT INTO read_markers(room_id, channel_id, event_index)
+                   SELECT rm.room_id, rm.channel_id, e.idx FROM read_markers_v5 rm
+                   JOIN events e ON e.id = rm.event_id AND e.room_id = rm.room_id"""
+            )
+            conn.execute("DROP TABLE read_markers_v5")
+        conn.execute("PRAGMA user_version=6")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
+_MIGRATIONS = {
+    1: _migrate_v1_to_v2,
+    2: _migrate_v2_to_v3,
+    3: _migrate_v3_to_v4,
+    4: _migrate_v4_to_v5,
+    5: _migrate_v5_to_v6,
+}
+"""Each step takes a file from its version to the next."""
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -347,20 +389,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
     if version == 0:
         _create_schema(conn)
-    elif version == 1:
-        _migrate_v1_to_v2(conn)
-        _migrate_v2_to_v3(conn)
-        _migrate_v3_to_v4(conn)
-        _migrate_v4_to_v5(conn)
-    elif version == 2:
-        _migrate_v2_to_v3(conn)
-        _migrate_v3_to_v4(conn)
-        _migrate_v4_to_v5(conn)
-    elif version == 3:
-        _migrate_v3_to_v4(conn)
-        _migrate_v4_to_v5(conn)
-    elif version == 4:
-        _migrate_v4_to_v5(conn)
+    elif version in _MIGRATIONS:
+        for step in range(version, _SCHEMA_VERSION):
+            _MIGRATIONS[step](conn)
     elif version == _SCHEMA_VERSION:
         # Additive repair for a partially initialized file. The version is
         # never rewritten, and all statements are idempotent.
@@ -1356,25 +1387,29 @@ class SQLiteStore(ConversationStore):
         await self._run(self._x_mark_read, room_id, channel_id, event_id)
 
     def _x_mark_read(self, room_id: str, channel_id: str, event_id: str) -> None:
+        # An event of another room, or none, marks nothing; a marker is a
+        # high-water mark, it never moves back.
         self._db().execute(
-            """INSERT INTO read_markers(room_id, channel_id, event_id) VALUES(?, ?, ?)
-               ON CONFLICT(room_id, channel_id) DO UPDATE SET event_id=excluded.event_id""",
-            (room_id, channel_id, event_id),
+            """INSERT INTO read_markers(room_id, channel_id, event_index)
+               SELECT ?, ?, idx FROM events WHERE id = ? AND room_id = ?
+               ON CONFLICT(room_id, channel_id) DO UPDATE
+               SET event_index = MAX(read_markers.event_index, excluded.event_index)""",
+            (room_id, channel_id, event_id, room_id),
         )
 
     async def mark_all_read(self, room_id: str, channel_id: str) -> None:
         await self._run(self._x_mark_all_read, room_id, channel_id)
 
     def _x_mark_all_read(self, room_id: str, channel_id: str) -> None:
-        row = (
-            self._db()
-            .execute(
-                "SELECT id FROM events WHERE room_id = ? ORDER BY rowid DESC LIMIT 1", (room_id,)
-            )
-            .fetchone()
+        # An empty room gets no marker: it makes no group, so no row. (HAVING
+        # without GROUP BY needs SQLite 3.39, newer than some systems ship.)
+        self._db().execute(
+            """INSERT INTO read_markers(room_id, channel_id, event_index)
+               SELECT ?, ?, MAX(idx) FROM events WHERE room_id = ? GROUP BY room_id
+               ON CONFLICT(room_id, channel_id) DO UPDATE
+               SET event_index = MAX(read_markers.event_index, excluded.event_index)""",
+            (room_id, channel_id, room_id),
         )
-        if row is not None:
-            self._x_mark_read(room_id, channel_id, row[0])
 
     async def get_unread_count(self, room_id: str, channel_id: str) -> int:
         return await self._run(self._x_get_unread_count, room_id, channel_id)
@@ -1385,18 +1420,13 @@ class SQLiteStore(ConversationStore):
             "SELECT COUNT(*) FROM events WHERE room_id = ?", (room_id,)
         ).fetchone()[0]
         marker = conn.execute(
-            "SELECT event_id FROM read_markers WHERE room_id = ? AND channel_id = ?",
+            "SELECT event_index FROM read_markers WHERE room_id = ? AND channel_id = ?",
             (room_id, channel_id),
         ).fetchone()
         if marker is None:
             return total
-        anchor = conn.execute(
-            "SELECT rowid FROM events WHERE id = ? AND room_id = ?", (marker[0], room_id)
-        ).fetchone()
-        if anchor is None:
-            return total
         return conn.execute(
-            "SELECT COUNT(*) FROM events WHERE room_id = ? AND rowid > ?", (room_id, anchor[0])
+            "SELECT COUNT(*) FROM events WHERE room_id = ? AND idx > ?", (room_id, marker[0])
         ).fetchone()[0]
 
     async def list_read_markers(self, room_id: str) -> dict[str, int]:
@@ -1405,14 +1435,9 @@ class SQLiteStore(ConversationStore):
     def _x_list_read_markers(self, room_id: str) -> dict[str, int]:
         conn = self._db()
         rows = conn.execute(
-            """SELECT rm.channel_id,
-                      (SELECT COUNT(*) FROM events prior
-                       WHERE prior.room_id = rm.room_id AND prior.rowid < e.rowid)
-               FROM read_markers rm JOIN events e ON e.id = rm.event_id AND e.room_id = rm.room_id
-               WHERE rm.room_id = ?""",
-            (room_id,),
+            "SELECT channel_id, event_index FROM read_markers WHERE room_id = ?", (room_id,)
         )
-        return {channel_id: position for channel_id, position in rows}
+        return {channel_id: index for channel_id, index in rows}
 
     # -- Identity operations -----------------------------------------------
 

@@ -167,6 +167,49 @@ class TestPersistence:
         finally:
             conn.close()
 
+    async def test_a_v5_file_keeps_its_read_markers_as_event_indexes(self, tmp_path) -> None:
+        """v5 kept the read event's id; v6 keeps its index. A marker on an
+        event that is gone is dropped: it read as all unread, and still does."""
+        path = tmp_path / "v5.db"
+        store = SQLiteStore(path)
+        await store.create_room(Room(id="r1"))
+        events = [
+            await store.add_event(make_event(room_id="r1", index=i, body=str(i))) for i in range(3)
+        ]
+        await store.close()
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            DROP TABLE read_markers;
+            CREATE TABLE read_markers(
+                room_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                PRIMARY KEY(room_id, channel_id)
+            );
+            PRAGMA user_version=5;
+            """
+        )
+        conn.executemany(
+            "INSERT INTO read_markers(room_id, channel_id, event_id) VALUES(?, ?, ?)",
+            [("r1", "sms", events[1].id), ("r1", "email", "gone")],
+        )
+        conn.commit()
+        conn.close()
+
+        store = SQLiteStore(path)
+        try:
+            assert await store.list_read_markers("r1") == {"sms": 1}
+            assert await store.get_unread_count("r1", "sms") == 1
+            assert await store.get_unread_count("r1", "email") == 3
+        finally:
+            await store.close()
+        conn = sqlite3.connect(path)
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION
+        finally:
+            conn.close()
+
     async def test_two_connections_allocate_one_monotonic_sequence(self, tmp_path) -> None:
         path = tmp_path / "shared.db"
         first = SQLiteStore(path)

@@ -350,7 +350,7 @@ class TestReadMarkerAggregation:
         await kit.create_room(room_id="r1")
         events = []
         for i in range(3):
-            e = make_event(room_id="r1", body=f"m{i}")
+            e = make_event(room_id="r1", body=f"m{i}", index=i)
             await kit.store.add_event(e)
             events.append(e)
         # u1 read up to the last message, u2 only the first

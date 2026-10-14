@@ -398,7 +398,7 @@ async def test_a_v4_sqlite_file_gains_the_verification_tables(tmp_path) -> None:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     finally:
         conn.close()
-    assert version == _SCHEMA_VERSION == 5
+    assert version == _SCHEMA_VERSION
     assert verified.status == VerificationStatus.VERIFIED
     assert kept is not None
 

@@ -1414,31 +1414,29 @@ class PostgresStore(ConversationStore):
     # ── Read tracking ────────────────────────────────────────────
 
     async def mark_read(self, room_id: str, channel_id: str, event_id: str) -> None:
-        async with self._acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT index FROM events WHERE id = $1",
-                event_id,
-            )
-            if row is not None:
-                await conn.execute(
-                    "INSERT INTO read_markers (room_id, channel_id, event_index)"
-                    " VALUES ($1, $2, $3)"
-                    " ON CONFLICT (room_id, channel_id)"
-                    " DO UPDATE SET event_index = GREATEST(read_markers.event_index, $3)",
-                    room_id,
-                    channel_id,
-                    row["index"],
-                )
-
-    async def mark_all_read(self, room_id: str, channel_id: str) -> None:
+        # An event of another room, or none, marks nothing; a marker is a
+        # high-water mark, it never moves back.
         async with self._acquire() as conn:
             await conn.execute(
                 "INSERT INTO read_markers (room_id, channel_id, event_index)"
-                " VALUES ($1, $2, COALESCE("
-                "   (SELECT MAX(index) FROM events WHERE room_id = $1), 0))"
-                " ON CONFLICT (room_id, channel_id)"
-                " DO UPDATE SET event_index = COALESCE("
-                "   (SELECT MAX(index) FROM events WHERE room_id = $1), 0)",
+                " SELECT $1, $2, index FROM events WHERE id = $3 AND room_id = $1"
+                " ON CONFLICT (room_id, channel_id) DO UPDATE"
+                " SET event_index = GREATEST(read_markers.event_index, EXCLUDED.event_index)",
+                room_id,
+                channel_id,
+                event_id,
+            )
+
+    async def mark_all_read(self, room_id: str, channel_id: str) -> None:
+        # An empty room gets no marker: a marker at 0 would read its first
+        # event, index 0, before it arrives.
+        async with self._acquire() as conn:
+            await conn.execute(
+                "INSERT INTO read_markers (room_id, channel_id, event_index)"
+                " SELECT $1, $2, MAX(index) FROM events WHERE room_id = $1"
+                " HAVING MAX(index) IS NOT NULL"
+                " ON CONFLICT (room_id, channel_id) DO UPDATE"
+                " SET event_index = GREATEST(read_markers.event_index, EXCLUDED.event_index)",
                 room_id,
                 channel_id,
             )
