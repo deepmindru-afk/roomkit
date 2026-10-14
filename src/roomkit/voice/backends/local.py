@@ -32,10 +32,12 @@ import asyncio
 import contextlib
 import logging
 import threading
+import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.task_utils import await_interruptible
+from roomkit.voice._device_clock import CAPTURED_AT, capture_metadata
 from roomkit.voice._sounddevice import import_sounddevice
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends._local_speaker import MAX_BUFFER_SECONDS, LocalSpeaker
@@ -69,6 +71,15 @@ if TYPE_CHECKING:
     from roomkit.voice.pipeline.aec.base import AECProvider
 
 logger = logging.getLogger("roomkit.voice.local")
+
+_WEBRTC_MAX_DELAY_MS = 500
+"""WebRTC clamps a stream delay at 500 ms."""
+
+_AEC_DELAY_STEP_MS = 10
+"""A change of the clocks' delay below this is jitter: AEC3 is not told again."""
+
+_MAX_CAPTURE_AGE_S = 0.5
+"""A frame captured longer ago comes from a backlog, not the device."""
 
 _DEFAULT_INPUT_SAMPLE_RATE = 16000
 _DEFAULT_CHANNELS = 1
@@ -267,6 +278,12 @@ class LocalAudioBackend(VoiceBackend):
         # The capture side's latency, once known: with the speaker's, it seeds
         # an unset WebRTC delay (_configure_aec_delay).
         self._input_latency_ms: float | None = None
+        # An unset WebRTC delay then follows the devices' clocks, as browsers
+        # do (_follow_aec_delay): the speaker's playout delay, updated every
+        # block, and the delay last given to the AEC.
+        self._aec_delay_follows_clocks = getattr(aec, "stream_delay_ms", None) == 0
+        self._playout_delay: float | None = None
+        self._aec_clock_delay_ms: int | None = None
         # Debug taps of this transport's AEC (RFC §12.3.15): the reference fed
         # since the last captured frame, by stream, for ``aec_reference``.
         self._aec_tap_callbacks: list[AECTapCallback] = []
@@ -425,6 +442,8 @@ class LocalAudioBackend(VoiceBackend):
             reference: AudioFrame | None = None
             if aec_ref is not None and self._aec_tap_callbacks:
                 reference = self._take_tap_reference(session.id, frame)
+            if aec_ref is not None:
+                self._follow_aec_delay(frame)
             processed = aec_ref.process(frame, session.id) if aec_ref is not None else frame
 
             # Explicit mute via set_input_muted()
@@ -542,6 +561,7 @@ class LocalAudioBackend(VoiceBackend):
                     sample_rate=input_sample_rate,
                     channels=channels,
                     sample_width=2,
+                    metadata=capture_metadata(time_info),
                 )
             )
 
@@ -930,6 +950,8 @@ class LocalAudioBackend(VoiceBackend):
         """What a played block means past the device (speaker thread): the
         AEC's reference, played-audio listeners, the playing state and the
         drained wait."""
+        if block.playout_delay is not None:
+            self._playout_delay = block.playout_delay
         stream = self._speaker_owner()
         if stream is None:
             return
@@ -1029,6 +1051,8 @@ class LocalAudioBackend(VoiceBackend):
         """
         if self._aec is None or self._input_latency_ms is None or not self._speaker.is_open:
             return
+        if self._aec_clock_delay_ms is not None:
+            return  # the devices' clocks gave it already
 
         setter = getattr(self._aec, "set_stream_delay_ms", None)
         configured_delay = getattr(self._aec, "stream_delay_ms", None)
@@ -1039,10 +1063,12 @@ class LocalAudioBackend(VoiceBackend):
         if output_latency_ms <= 0:
             return  # the speaker reports none: nothing to seed from
 
-        # WebRTC clamps reported stream delay at 500 ms. The acoustic travel
-        # time for a local device is negligible next to PortAudio buffering,
-        # whose input + output latency is the relevant render/capture offset.
-        delay_ms = min(500, max(0, round(self._input_latency_ms + output_latency_ms)))
+        # WebRTC clamps reported stream delay at 500 ms. A first guess only:
+        # the devices' clocks replace it from the first captured frame where
+        # the host API reports them (_follow_aec_delay).
+        delay_ms = min(
+            _WEBRTC_MAX_DELAY_MS, max(0, round(self._input_latency_ms + output_latency_ms))
+        )
         if delay_ms == 0:
             return
 
@@ -1058,6 +1084,40 @@ class LocalAudioBackend(VoiceBackend):
             output_latency_ms,
             delay_ms,
         )
+
+    def _follow_aec_delay(self, frame: AudioFrame) -> None:
+        """Give an unset WebRTC AEC its render-to-capture delay from the devices'
+        clocks, as browsers and LiveKit's console do on every captured block:
+        how long until the reference fed last is played, plus how long ago this
+        frame was captured (capture thread).
+
+        The seed from PortAudio's nominal latencies (``_configure_aec_delay``)
+        can be far off: on a MacBook it read 296 ms where the clocks give
+        42 ms, and AEC3 told a delay longer than the real one lets the start of
+        an answer through (-39 dB left of a -32 dB echo; -64 dB once told the
+        clocks' figure). A delay told a little short costs nothing: AEC3 finds
+        the rest itself. A frame replayed from a shared source's backlog is no
+        measure of the delay.
+        """
+        if not self._aec_delay_follows_clocks:
+            return
+        playout = self._playout_delay
+        captured_at = frame.metadata.get(CAPTURED_AT)
+        if playout is None or captured_at is None:
+            return
+        capture = time.monotonic() - captured_at
+        if not 0 <= capture < _MAX_CAPTURE_AGE_S:
+            return
+        delay_ms = min(_WEBRTC_MAX_DELAY_MS, round((playout + capture) * 1000))
+        last = self._aec_clock_delay_ms
+        if last is not None and abs(delay_ms - last) < _AEC_DELAY_STEP_MS:
+            return
+        self._aec_clock_delay_ms = delay_ms
+        try:
+            self._aec.set_stream_delay_ms(delay_ms)  # ty: ignore[unresolved-attribute]
+        except Exception:
+            logger.warning("AEC delay from the device clocks failed", exc_info=True)
+            self._aec_delay_follows_clocks = False
 
     def _capture_paused(self, stream: str) -> bool:
         """Whether captured frames are dropped (muted, gated, half-duplex):

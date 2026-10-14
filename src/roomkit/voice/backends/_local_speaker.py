@@ -22,6 +22,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from roomkit.voice._device_clock import playout_delay
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -42,6 +44,8 @@ class SpeakerBlock:
             response that had no audio completed.
         flushed: The queue was flushed (a cut) since the previous block.
         queued: Audio is still queued after this block.
+        playout_delay: Seconds until the device plays the block's first sample,
+            from its own clock, when the host API reports it.
     """
 
     data: bytes
@@ -49,6 +53,7 @@ class SpeakerBlock:
     drained: bool
     flushed: bool
     queued: bool
+    playout_delay: float | None = None
 
 
 class LocalSpeaker:
@@ -301,7 +306,11 @@ class LocalSpeaker:
                 "Speaker underrun #%d — buffer starved mid-response, re-priming",
                 underrun_no,
             )
-        self._on_block(SpeakerBlock(bytes(outdata), written, drained, flushed, queued))
+        self._on_block(
+            SpeakerBlock(
+                bytes(outdata), written, drained, flushed, queued, playout_delay(time_info)
+            )
+        )
 
     def _fill(self, outdata: Any, needed: int) -> tuple[int, bool, int]:
         """Copy queued audio into *outdata* (lock held).

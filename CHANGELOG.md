@@ -22,6 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The local backend's echo canceller is told the delay the devices' clocks
+  give, as browsers and LiveKit's console tell it (RMK-709). WebRTC's AEC3 was
+  given PortAudio's nominal stream latencies once, added up: 296 ms on a
+  MacBook, the input's alone 243 ms. Told a delay longer than the real one, it
+  let the start of an answer through: the agent's "Salut" left at -39 dB of a
+  -32 dB echo. `LocalAudioBackend` now gives an unset delay, on every captured
+  frame, how long until the reference fed last is played plus how long ago the
+  frame was captured, from PortAudio's callback timestamps
+  (`outputBufferDacTime`, `inputBufferAdcTime`): 42 ms on that MacBook, and
+  the start of the first answer at -64 dB. A delay set explicitly is left
+  alone; a host API that reports no clock keeps the latencies' seed.
 - An agent no longer takes back an answer because the tool-usage digest
   shows too little of the result it came from (RMK-707). Each turn replays the
   three latest results cut at 6,000 characters; a light's state stood past the

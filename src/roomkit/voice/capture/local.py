@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from roomkit.voice._device_clock import capture_metadata
 from roomkit.voice._sounddevice import import_sounddevice
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.capture.base import DEFAULT_BACKLOG_SECONDS, AudioCaptureSource
@@ -121,5 +122,6 @@ class LocalMicSource(AudioCaptureSource):
                 sample_rate=self._sample_rate,
                 channels=self._channels,
                 sample_width=2,
+                metadata=capture_metadata(time_info),
             )
         )
