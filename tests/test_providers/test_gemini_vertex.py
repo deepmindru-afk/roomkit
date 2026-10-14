@@ -103,8 +103,7 @@ class TestGeminiVertexProvider:
             from roomkit.providers.gemini.vertex import GeminiVertexProvider
 
             provider = GeminiVertexProvider(_vconfig(model="gemini-3.5-flash"))
-            # Subclasses GeminiAIProvider — name-based so it survives the
-            # importlib.reload other Gemini tests do to the parent module.
+            # Subclasses GeminiAIProvider.
             assert "GeminiAIProvider" in {c.__name__ for c in type(provider).__mro__}
             # Inherited behaviour works unchanged.
             assert provider.model_name == "gemini-3.5-flash"

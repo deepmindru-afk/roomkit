@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import struct
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -11,6 +10,7 @@ import numpy as np
 import pytest
 
 from roomkit.voice.audio_frame import AudioFrame
+from tests.private_module import load_private_copy
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -46,17 +46,12 @@ def _make_provider(
 ) -> Any:
     """Create a SherpaOnnxDenoiserProvider with mocked sherpa_onnx."""
     sherpa_mock.OfflineSpeechDenoiser.return_value = denoiser_mock
-    with patch.dict("sys.modules", {"sherpa_onnx": sherpa_mock}):
-        import roomkit.voice.pipeline.denoiser.sherpa_onnx as dn_mod
+    fakes = {"sherpa_onnx": sherpa_mock}
+    with patch.dict("sys.modules", fakes):
+        dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
 
-        importlib.reload(dn_mod)
-        from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-            SherpaOnnxDenoiserConfig,
-            SherpaOnnxDenoiserProvider,
-        )
-
-        cfg = SherpaOnnxDenoiserConfig(**config_kwargs)
-        provider = SherpaOnnxDenoiserProvider(cfg)
+        cfg = dn_mod.SherpaOnnxDenoiserConfig(**config_kwargs)
+        provider = dn_mod.SherpaOnnxDenoiserProvider(cfg)
         provider._sherpa = sherpa_mock
         return provider
 
@@ -275,15 +270,11 @@ class TestLazyInit:
 
 class TestConfig:
     def test_context_frames_default_is_3(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": _mock_sherpa_module()}):
-            import roomkit.voice.pipeline.denoiser.sherpa_onnx as dn_mod
+        fakes = {"sherpa_onnx": _mock_sherpa_module()}
+        with patch.dict("sys.modules", fakes):
+            dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
 
-            importlib.reload(dn_mod)
-            from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-                SherpaOnnxDenoiserConfig,
-            )
-
-            assert SherpaOnnxDenoiserConfig().context_frames == 3
+            assert dn_mod.SherpaOnnxDenoiserConfig().context_frames == 3
 
     @pytest.mark.parametrize(
         ("kwargs", "match"),
@@ -408,18 +399,12 @@ class TestFormatValidation:
 
 class TestImportError:
     def test_import_error_when_sherpa_not_installed(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": None}):
-            import roomkit.voice.pipeline.denoiser.sherpa_onnx as dn_mod
-
-            importlib.reload(dn_mod)
-
-            from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-                SherpaOnnxDenoiserConfig,
-                SherpaOnnxDenoiserProvider,
-            )
+        fakes = {"sherpa_onnx": None}
+        with patch.dict("sys.modules", fakes):
+            dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
 
             with pytest.raises(ImportError, match="sherpa-onnx is required"):
-                SherpaOnnxDenoiserProvider(SherpaOnnxDenoiserConfig())
+                dn_mod.SherpaOnnxDenoiserProvider(dn_mod.SherpaOnnxDenoiserConfig())
 
 
 # ---------------------------------------------------------------------------
@@ -429,75 +414,54 @@ class TestImportError:
 
 class TestPcmConversion:
     def test_s16le_to_float32_silence(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": _mock_sherpa_module()}):
-            import roomkit.voice.pipeline.denoiser.sherpa_onnx as dn_mod
-
-            importlib.reload(dn_mod)
-            from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-                _pcm_s16le_to_float32,
-            )
+        fakes = {"sherpa_onnx": _mock_sherpa_module()}
+        with patch.dict("sys.modules", fakes):
+            dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
 
             pcm = struct.pack("<1h", 0)
-            result = _pcm_s16le_to_float32(pcm)
+            result = dn_mod._pcm_s16le_to_float32(pcm)
             assert isinstance(result, np.ndarray)
             assert result.dtype == np.float32
             assert len(result) == 1
             assert abs(result[0]) < 1e-6
 
     def test_s16le_to_float32_max(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": _mock_sherpa_module()}):
-            import roomkit.voice.pipeline.denoiser.sherpa_onnx as dn_mod
-
-            importlib.reload(dn_mod)
-            from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-                _pcm_s16le_to_float32,
-            )
+        fakes = {"sherpa_onnx": _mock_sherpa_module()}
+        with patch.dict("sys.modules", fakes):
+            dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
 
             pcm = struct.pack("<1h", 32767)
-            result = _pcm_s16le_to_float32(pcm)
+            result = dn_mod._pcm_s16le_to_float32(pcm)
             assert abs(result[0] - 1.0) < 0.001
 
     def test_s16le_to_float32_min(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": _mock_sherpa_module()}):
-            import roomkit.voice.pipeline.denoiser.sherpa_onnx as dn_mod
-
-            importlib.reload(dn_mod)
-            from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-                _pcm_s16le_to_float32,
-            )
+        fakes = {"sherpa_onnx": _mock_sherpa_module()}
+        with patch.dict("sys.modules", fakes):
+            dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
 
             pcm = struct.pack("<1h", -32768)
-            result = _pcm_s16le_to_float32(pcm)
+            result = dn_mod._pcm_s16le_to_float32(pcm)
             assert abs(result[0] - (-1.0)) < 0.001
 
     def test_float32_to_s16le_roundtrip(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": _mock_sherpa_module()}):
-            import roomkit.voice.pipeline.denoiser.sherpa_onnx as dn_mod
-
-            importlib.reload(dn_mod)
-            from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-                _float32_to_pcm_s16le,
-                _pcm_s16le_to_float32,
-            )
+        fakes = {"sherpa_onnx": _mock_sherpa_module()}
+        with patch.dict("sys.modules", fakes):
+            dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
 
             original = struct.pack("<4h", 0, 1000, -1000, 32767)
-            floats = _pcm_s16le_to_float32(original)
-            back = _float32_to_pcm_s16le(floats)
+            floats = dn_mod._pcm_s16le_to_float32(original)
+            back = dn_mod._float32_to_pcm_s16le(floats)
             restored = struct.unpack("<4h", back)
             expected = struct.unpack("<4h", original)
             for a, b in zip(restored, expected, strict=True):
                 assert abs(a - b) <= 1  # Allow ±1 rounding
 
     def test_float32_to_s16le_clamps(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": _mock_sherpa_module()}):
-            import roomkit.voice.pipeline.denoiser.sherpa_onnx as dn_mod
+        fakes = {"sherpa_onnx": _mock_sherpa_module()}
+        with patch.dict("sys.modules", fakes):
+            dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
 
-            importlib.reload(dn_mod)
-            from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-                _float32_to_pcm_s16le,
-            )
-
-            out = _float32_to_pcm_s16le([2.0, -2.0])
+            out = dn_mod._float32_to_pcm_s16le([2.0, -2.0])
             samples = struct.unpack("<2h", out)
             assert samples[0] == 32767
             assert samples[1] == -32767
@@ -565,55 +529,39 @@ class TestResampleLinear:
     """Unit tests for _resample_linear helper."""
 
     def test_same_rate_passthrough(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": _mock_sherpa_module()}):
-            import roomkit.voice.pipeline.denoiser.sherpa_onnx as dn_mod
-
-            importlib.reload(dn_mod)
-            from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-                _resample_linear,
-            )
+        fakes = {"sherpa_onnx": _mock_sherpa_module()}
+        with patch.dict("sys.modules", fakes):
+            dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
 
             arr = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-            result = _resample_linear(arr, 16000, 16000)
+            result = dn_mod._resample_linear(arr, 16000, 16000)
             np.testing.assert_array_equal(result, arr)
 
     def test_downsample_length(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": _mock_sherpa_module()}):
-            import roomkit.voice.pipeline.denoiser.sherpa_onnx as dn_mod
-
-            importlib.reload(dn_mod)
-            from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-                _resample_linear,
-            )
+        fakes = {"sherpa_onnx": _mock_sherpa_module()}
+        with patch.dict("sys.modules", fakes):
+            dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
 
             # 240 samples at 24kHz -> 160 at 16kHz
             arr = np.zeros(240, dtype=np.float32)
-            result = _resample_linear(arr, 24000, 16000)
+            result = dn_mod._resample_linear(arr, 24000, 16000)
             assert len(result) == 160
 
     def test_upsample_length(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": _mock_sherpa_module()}):
-            import roomkit.voice.pipeline.denoiser.sherpa_onnx as dn_mod
-
-            importlib.reload(dn_mod)
-            from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-                _resample_linear,
-            )
+        fakes = {"sherpa_onnx": _mock_sherpa_module()}
+        with patch.dict("sys.modules", fakes):
+            dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
 
             # 160 samples at 16kHz -> 240 at 24kHz
             arr = np.zeros(160, dtype=np.float32)
-            result = _resample_linear(arr, 16000, 24000)
+            result = dn_mod._resample_linear(arr, 16000, 24000)
             assert len(result) == 240
 
     def test_empty_array(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": _mock_sherpa_module()}):
-            import roomkit.voice.pipeline.denoiser.sherpa_onnx as dn_mod
-
-            importlib.reload(dn_mod)
-            from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-                _resample_linear,
-            )
+        fakes = {"sherpa_onnx": _mock_sherpa_module()}
+        with patch.dict("sys.modules", fakes):
+            dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
 
             arr = np.array([], dtype=np.float32)
-            result = _resample_linear(arr, 16000, 24000)
+            result = dn_mod._resample_linear(arr, 16000, 24000)
             assert len(result) == 0

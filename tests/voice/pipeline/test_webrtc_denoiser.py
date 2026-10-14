@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -12,6 +11,7 @@ from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.pipeline.denoiser import (
     WebRTCNoiseSuppressorProvider as ExportedWebRTCNoiseSuppressorProvider,
 )
+from tests.private_module import load_private_copy
 
 
 def _mock_module() -> tuple[SimpleNamespace, MagicMock]:
@@ -28,10 +28,9 @@ def _mock_module() -> tuple[SimpleNamespace, MagicMock]:
 
 
 def _provider(module: SimpleNamespace, **kwargs: object):
-    with patch.dict(sys.modules, {"aec_audio_processing": module}):
-        import roomkit.voice.pipeline.denoiser.webrtc as webrtc_mod
-
-        importlib.reload(webrtc_mod)
+    fakes = {"aec_audio_processing": module}
+    with patch.dict(sys.modules, fakes):
+        webrtc_mod = load_private_copy("roomkit.voice.pipeline.denoiser.webrtc", fakes)
         return webrtc_mod.WebRTCNoiseSuppressorProvider(**kwargs)
 
 

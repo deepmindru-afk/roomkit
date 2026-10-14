@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from roomkit.providers.ai.base import AIContext, AIMessage, AITool, ProviderError
 from roomkit.providers.azure.config import AzureAIConfig
+from tests.private_module import load_private_copy
 
 
 class _FakeAPIStatusError(Exception):
@@ -269,12 +270,9 @@ class TestAzureAIProvider:
             assert result.tool_calls[0].arguments == {"query": "cats"}
 
     def test_lazy_import_error(self) -> None:
-        with patch.dict("sys.modules", {"openai": None}):
-            import importlib
-
-            import roomkit.providers.azure.ai as mod
-
-            importlib.reload(mod)
+        missing = {"openai": None}
+        with patch.dict("sys.modules", missing):
+            mod = load_private_copy("roomkit.providers.azure.ai", missing)
 
             with pytest.raises(ImportError, match="openai is required"):
                 mod.AzureAIProvider(_config())

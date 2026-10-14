@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from tests.private_module import load_private_copy
 
 
 def _build_mock_cv2() -> MagicMock:
@@ -59,10 +60,9 @@ def _build_mock_numpy() -> MagicMock:
 
 class TestVideoEffectTransform:
     def _reload_module(self, mock_cv2: MagicMock, mock_np: MagicMock) -> SimpleNamespace:
-        with patch.dict(sys.modules, {"cv2": mock_cv2, "numpy": mock_np}):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.video.pipeline.transform.effects")
-            importlib.reload(mod)
+        fakes = {"cv2": mock_cv2, "numpy": mock_np}
+        with patch.dict(sys.modules, fakes):
+            mod = load_private_copy("roomkit.video.pipeline.transform.effects", fakes)
             return mod  # type: ignore[return-value]
 
     def test_constructor_valid_effects(self) -> None:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import logging
 import struct
 from typing import Any
@@ -10,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.pipeline.vad.energy import EnergyVADProvider
+from tests.private_module import load_private_copy
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -49,17 +49,12 @@ def _make_sherpa_provider(
 ) -> Any:
     """Create a SherpaOnnxVADProvider with mocked sherpa_onnx."""
     sherpa_mock.VoiceActivityDetector.return_value = detector_mock
-    with patch.dict("sys.modules", {"sherpa_onnx": sherpa_mock}):
-        import roomkit.voice.pipeline.vad.sherpa_onnx as vad_mod
+    fakes = {"sherpa_onnx": sherpa_mock}
+    with patch.dict("sys.modules", fakes):
+        vad_mod = load_private_copy("roomkit.voice.pipeline.vad.sherpa_onnx", fakes)
 
-        importlib.reload(vad_mod)
-        from roomkit.voice.pipeline.vad.sherpa_onnx import (
-            SherpaOnnxVADConfig,
-            SherpaOnnxVADProvider,
-        )
-
-        cfg = SherpaOnnxVADConfig(**config_kwargs)
-        provider = SherpaOnnxVADProvider(cfg)
+        cfg = vad_mod.SherpaOnnxVADConfig(**config_kwargs)
+        provider = vad_mod.SherpaOnnxVADProvider(cfg)
         provider._sherpa = sherpa_mock
         return provider
 

@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from roomkit.providers.ai.base import AIContext, AIMessage, AITool, ModelInfo, ProviderError
 from roomkit.providers.openrouter.config import OpenRouterConfig
+from tests.private_module import load_private_copy
 
 
 class _FakeAPIStatusError(Exception):
@@ -227,12 +228,9 @@ class TestOpenRouterAIProvider:
             assert kwargs["default_headers"] == {"X-Title": "My App", "X-Proxy": "v1"}
 
     def test_lazy_import_error(self) -> None:
-        with patch.dict("sys.modules", {"openai": None}):
-            import importlib
-
-            import roomkit.providers.openrouter.ai as mod
-
-            importlib.reload(mod)
+        missing = {"openai": None}
+        with patch.dict("sys.modules", missing):
+            mod = load_private_copy("roomkit.providers.openrouter.ai", missing)
 
             with pytest.raises(ImportError, match="openai is required"):
                 mod.OpenRouterAIProvider(_config())

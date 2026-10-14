@@ -26,6 +26,7 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.ollama.config import OllamaConfig
+from tests.private_module import load_private_copy
 
 
 class _FakeResponseError(Exception):
@@ -810,13 +811,9 @@ class TestOllamaConfig:
 class TestOllamaLazyImport:
     def test_import_error_message(self) -> None:
         # Force the import inside __init__ to fail by patching sys.modules.
-        with patch.dict("sys.modules", {"ollama": None}):
-            # Need to reimport to trigger the lazy import inside __init__.
-            import importlib
-
-            import roomkit.providers.ollama.ai as mod
-
-            importlib.reload(mod)
+        missing = {"ollama": None}
+        with patch.dict("sys.modules", missing):
+            mod = load_private_copy("roomkit.providers.ollama.ai", missing)
             with pytest.raises(ImportError, match="pip install roomkit\\[ollama\\]"):
                 mod.OllamaAIProvider(_config())
 

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import importlib
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from roomkit.voice.base import AudioChunk
+from tests.private_module import load_private_copy
 
 
 def _mock_deepgram_module() -> MagicMock:
@@ -21,14 +21,12 @@ def _mock_deepgram_module() -> MagicMock:
 
 def _make_provider(dg_mock: MagicMock, **config_kwargs: Any) -> Any:
     """Build a DeepgramSTTProvider with mocked deepgram dependency."""
-    with patch.dict("sys.modules", {"deepgram": dg_mock}):
-        import roomkit.voice.stt.deepgram as stt_mod
+    fakes = {"deepgram": dg_mock}
+    with patch.dict("sys.modules", fakes):
+        stt_mod = load_private_copy("roomkit.voice.stt.deepgram", fakes)
 
-        importlib.reload(stt_mod)
-        from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
-
-        cfg = DeepgramConfig(**config_kwargs)
-        return DeepgramSTTProvider(cfg)
+        cfg = stt_mod.DeepgramConfig(**config_kwargs)
+        return stt_mod.DeepgramSTTProvider(cfg)
 
 
 class TestDeepgramSTTProvider:

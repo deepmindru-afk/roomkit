@@ -22,6 +22,7 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.mistral.config import MistralConfig
+from tests.private_module import load_private_copy
 
 
 class _FakeStream:
@@ -406,12 +407,9 @@ class TestMistralAIProvider:
     def test_lazy_import_error(self) -> None:
         # Simulate mistralai not installed: null both the package and its v2
         # `client` submodule (the provider imports `from mistralai.client`).
-        with patch.dict("sys.modules", {"mistralai": None, "mistralai.client": None}):
-            import importlib
-
-            import roomkit.providers.mistral.ai as mod
-
-            importlib.reload(mod)
+        missing = {"mistralai": None, "mistralai.client": None}
+        with patch.dict("sys.modules", missing):
+            mod = load_private_copy("roomkit.providers.mistral.ai", missing)
 
             with pytest.raises(ImportError, match="mistralai is required"):
                 mod.MistralAIProvider(_config())

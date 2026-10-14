@@ -27,6 +27,7 @@ from roomkit.providers.anthropic.config import AnthropicConfig
 from roomkit.providers.anthropic.models import MODELS as ANTHROPIC_MODELS
 from roomkit.providers.anthropic.request import build_kwargs, format_content
 from roomkit.providers.anthropic.stream_events import done_event
+from tests.private_module import load_private_copy
 
 
 class _FakeAPIStatusError(Exception):
@@ -533,13 +534,9 @@ class TestAnthropicAIProvider:
             assert exc_info.value.status_code is None
 
     def test_lazy_import_error(self) -> None:
-        with patch.dict("sys.modules", {"anthropic": None}):
-            # Force re-import so the lazy import runs against the patched modules
-            import importlib
-
-            import roomkit.providers.anthropic.ai as mod
-
-            importlib.reload(mod)
+        missing = {"anthropic": None}
+        with patch.dict("sys.modules", missing):
+            mod = load_private_copy("roomkit.providers.anthropic.ai", missing)
 
             with pytest.raises(ImportError, match="anthropic is required"):
                 mod.AnthropicAIProvider(_config())

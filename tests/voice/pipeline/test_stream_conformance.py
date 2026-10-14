@@ -44,6 +44,7 @@ from roomkit.voice.pipeline.resampler.sinc import SincResamplerProvider
 from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
 from roomkit.voice.pipeline.vad.energy import EnergyVADProvider
 from roomkit.voice.pipeline.vad.mock import MockVADProvider
+from tests.private_module import load_private_copy
 from tests.voice.pipeline.stream_conformance import assert_stage_keeps_state_per_stream
 
 # ---------------------------------------------------------------------------
@@ -119,10 +120,7 @@ def _make_rnnoise():
         patch("ctypes.util.find_library", return_value="/fake/librnnoise.so"),
         patch("ctypes.CDLL", return_value=lib),
     ):
-        import roomkit.voice.pipeline.denoiser.rnnoise as mod
-
-        mod._lib = None
-        importlib.reload(mod)
+        mod = load_private_copy("roomkit.voice.pipeline.denoiser.rnnoise", {})
         return mod.RNNoiseDenoiserProvider(sample_rate=16000)
 
 
@@ -159,10 +157,7 @@ def _make_speex():
         patch("ctypes.util.find_library", return_value="/fake/libspeexdsp.so"),
         patch("ctypes.CDLL", return_value=lib),
     ):
-        import roomkit.voice.pipeline.aec.speex as mod
-
-        mod._lib = None
-        importlib.reload(mod)
+        mod = load_private_copy("roomkit.voice.pipeline.aec.speex", {})
         return mod.SpeexAECProvider()
 
 
@@ -189,10 +184,9 @@ class _FakeAudioProcessor:
 
 def _make_webrtc():
     mod = SimpleNamespace(AudioProcessor=_FakeAudioProcessor)
-    with patch.dict(sys.modules, {"aec_audio_processing": mod}):
-        import roomkit.voice.pipeline.aec.webrtc as webrtc_mod
-
-        importlib.reload(webrtc_mod)
+    fakes = {"aec_audio_processing": mod}
+    with patch.dict(sys.modules, fakes):
+        webrtc_mod = load_private_copy("roomkit.voice.pipeline.aec.webrtc", fakes)
         provider = webrtc_mod.WebRTCAECProvider()
         provider.set_active(True)  # bypass is on until playback starts
         return provider
@@ -200,10 +194,9 @@ def _make_webrtc():
 
 def _make_webrtc_denoiser():
     mod = SimpleNamespace(AudioProcessor=_FakeAudioProcessor)
-    with patch.dict(sys.modules, {"aec_audio_processing": mod}):
-        import roomkit.voice.pipeline.denoiser.webrtc as webrtc_mod
-
-        importlib.reload(webrtc_mod)
+    fakes = {"aec_audio_processing": mod}
+    with patch.dict(sys.modules, fakes):
+        webrtc_mod = load_private_copy("roomkit.voice.pipeline.denoiser.webrtc", fakes)
         return webrtc_mod.WebRTCNoiseSuppressorProvider()
 
 
@@ -241,10 +234,9 @@ def _make_sherpa_vad():
         ),
         VoiceActivityDetector=_FakeSherpaVAD,
     )
-    with patch.dict(sys.modules, {"sherpa_onnx": mod}):
-        import roomkit.voice.pipeline.vad.sherpa_onnx as vad_mod
-
-        importlib.reload(vad_mod)
+    fakes = {"sherpa_onnx": mod}
+    with patch.dict(sys.modules, fakes):
+        vad_mod = load_private_copy("roomkit.voice.pipeline.vad.sherpa_onnx", fakes)
         return vad_mod.SherpaOnnxVADProvider(
             vad_mod.SherpaOnnxVADConfig(model="/fake.onnx", min_speech_duration_ms=0)
         )
@@ -271,10 +263,9 @@ def _make_sherpa_denoiser():
         OfflineSpeechDenoiserConfig=MagicMock(),
         OfflineSpeechDenoiser=_FakeSherpaDenoiser,
     )
-    with patch.dict(sys.modules, {"sherpa_onnx": mod}):
-        import roomkit.voice.pipeline.denoiser.sherpa_onnx as dn_mod
-
-        importlib.reload(dn_mod)
+    fakes = {"sherpa_onnx": mod}
+    with patch.dict(sys.modules, fakes):
+        dn_mod = load_private_copy("roomkit.voice.pipeline.denoiser.sherpa_onnx", fakes)
         return dn_mod.SherpaOnnxDenoiserProvider(
             dn_mod.SherpaOnnxDenoiserConfig(model="/fake.onnx", silence_threshold=0)
         )
@@ -301,10 +292,9 @@ def _make_aicoustics():
         ),
         Processor=_FakeQuailProcessor,
     )
-    with patch.dict(sys.modules, {"aic_sdk": mod}):
-        import roomkit.voice.pipeline.denoiser.aicoustics as aic_mod
-
-        importlib.reload(aic_mod)
+    fakes = {"aic_sdk": mod}
+    with patch.dict(sys.modules, fakes):
+        aic_mod = load_private_copy("roomkit.voice.pipeline.denoiser.aicoustics", fakes)
         return aic_mod.AICousticsDenoiserProvider()
 
 
@@ -329,10 +319,9 @@ def _make_sherpa_diarization():
         SpeakerEmbeddingExtractor=MagicMock(return_value=extractor),
         SpeakerEmbeddingManager=MagicMock(return_value=manager),
     )
-    with patch.dict(sys.modules, {"sherpa_onnx": mod}):
-        import roomkit.voice.pipeline.diarization.sherpa_onnx as diar_mod
-
-        importlib.reload(diar_mod)
+    fakes = {"sherpa_onnx": mod}
+    with patch.dict(sys.modules, fakes):
+        diar_mod = load_private_copy("roomkit.voice.pipeline.diarization.sherpa_onnx", fakes)
         return diar_mod.SherpaOnnxDiarizationProvider(
             diar_mod.SherpaOnnxDiarizationConfig(model="/fake.onnx", min_speech_ms=500)
         )

@@ -23,6 +23,7 @@ from roomkit.providers.ai.base import (
 from roomkit.providers.ai.openai_dialect import ThinkTagParser, extract_think_tags
 from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.openai.config import OpenAIConfig
+from tests.private_module import load_private_copy
 
 
 class _FakeAPIStatusError(Exception):
@@ -475,12 +476,9 @@ class TestOpenAIAIProvider:
             assert exc_info.value.status_code is None
 
     def test_lazy_import_error(self) -> None:
-        with patch.dict("sys.modules", {"openai": None}):
-            import importlib
-
-            import roomkit.providers.openai.ai as mod
-
-            importlib.reload(mod)
+        missing = {"openai": None}
+        with patch.dict("sys.modules", missing):
+            mod = load_private_copy("roomkit.providers.openai.ai", missing)
 
             with pytest.raises(ImportError, match="openai is required"):
                 mod.OpenAIAIProvider(_config())

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import sys
 from unittest.mock import MagicMock, patch
 
 from roomkit.video.pipeline.overlay.base import Overlay
+from tests.private_module import load_private_copy
 
 
 def _build_mock_pillow() -> tuple[MagicMock, MagicMock, MagicMock]:
@@ -47,19 +47,15 @@ def _make_renderer():
     pil_mock.ImageDraw = draw_mod
     pil_mock.ImageFont = font_mod
 
-    with patch.dict(
-        sys.modules,
-        {
-            "PIL": pil_mock,
-            "PIL.Image": image_mod,
-            "PIL.ImageDraw": draw_mod,
-            "PIL.ImageFont": font_mod,
-            "numpy": mock_np,
-        },
-    ):
-        importlib.invalidate_caches()
-        mod = importlib.import_module("roomkit.video.pipeline.overlay.rich")
-        importlib.reload(mod)
+    fakes = {
+        "PIL": pil_mock,
+        "PIL.Image": image_mod,
+        "PIL.ImageDraw": draw_mod,
+        "PIL.ImageFont": font_mod,
+        "numpy": mock_np,
+    }
+    with patch.dict(sys.modules, fakes):
+        mod = load_private_copy("roomkit.video.pipeline.overlay.rich", fakes)
         renderer = mod.RichOverlayRenderer()
 
     return renderer, image_mod, draw_mod, mock_np
@@ -135,19 +131,10 @@ class TestImportError:
     def test_helpful_message(self) -> None:
         import pytest
 
+        missing = {"PIL": None, "PIL.Image": None, "PIL.ImageDraw": None, "PIL.ImageFont": None}
         with (
-            patch.dict(
-                sys.modules,
-                {
-                    "PIL": None,
-                    "PIL.Image": None,
-                    "PIL.ImageDraw": None,
-                    "PIL.ImageFont": None,
-                },
-            ),
+            patch.dict(sys.modules, missing),
             pytest.raises(ImportError, match="pip install roomkit"),
         ):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.video.pipeline.overlay.rich")
-            importlib.reload(mod)
+            mod = load_private_copy("roomkit.video.pipeline.overlay.rich", missing)
             mod.RichOverlayRenderer()

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from roomkit.voice.base import VoiceSession
+from tests.private_module import load_private_copy
 
 
 def _make_session(sid: str = "s1") -> VoiceSession:
@@ -26,9 +26,7 @@ def _load_module():
     )
     mods = {"websockets": fake_ws}
     with patch.dict(sys.modules, mods):
-        import roomkit.voice.realtime.ws_transport as mod
-
-        importlib.reload(mod)
+        mod = load_private_copy("roomkit.voice.realtime.ws_transport", mods)
         return mod
 
 
@@ -124,10 +122,8 @@ class _ClosedSocket:
 
 
 def _real_module():
-    """The transport module loaded with the real websockets package."""
-    import roomkit.voice.realtime.ws_transport as mod
-
-    return importlib.reload(mod)
+    """A copy of the transport module loaded with the real websockets package."""
+    return load_private_copy("roomkit.voice.realtime.ws_transport", {})
 
 
 class TestSendingToAClosedConnection:

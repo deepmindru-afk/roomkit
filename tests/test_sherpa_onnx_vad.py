@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import struct
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -11,6 +10,7 @@ import pytest
 
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.pipeline.vad.base import VADConfig, VADEventType
+from tests.private_module import load_private_copy
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -51,17 +51,12 @@ def _make_provider(
 ) -> Any:
     """Create a SherpaOnnxVADProvider with mocked sherpa_onnx."""
     sherpa_mock.VoiceActivityDetector.return_value = detector_mock
-    with patch.dict("sys.modules", {"sherpa_onnx": sherpa_mock}):
-        import roomkit.voice.pipeline.vad.sherpa_onnx as vad_mod
+    fakes = {"sherpa_onnx": sherpa_mock}
+    with patch.dict("sys.modules", fakes):
+        vad_mod = load_private_copy("roomkit.voice.pipeline.vad.sherpa_onnx", fakes)
 
-        importlib.reload(vad_mod)
-        from roomkit.voice.pipeline.vad.sherpa_onnx import (
-            SherpaOnnxVADConfig,
-            SherpaOnnxVADProvider,
-        )
-
-        cfg = SherpaOnnxVADConfig(**config_kwargs)
-        provider = SherpaOnnxVADProvider(cfg)
+        cfg = vad_mod.SherpaOnnxVADConfig(**config_kwargs)
+        provider = vad_mod.SherpaOnnxVADProvider(cfg)
         provider._sherpa = sherpa_mock
         return provider
 
@@ -593,18 +588,12 @@ class TestModelType:
 
 class TestImportError:
     def test_import_error_when_sherpa_not_installed(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": None}):
-            import roomkit.voice.pipeline.vad.sherpa_onnx as vad_mod
-
-            importlib.reload(vad_mod)
-
-            from roomkit.voice.pipeline.vad.sherpa_onnx import (
-                SherpaOnnxVADConfig,
-                SherpaOnnxVADProvider,
-            )
+        fakes = {"sherpa_onnx": None}
+        with patch.dict("sys.modules", fakes):
+            vad_mod = load_private_copy("roomkit.voice.pipeline.vad.sherpa_onnx", fakes)
 
             with pytest.raises(ImportError, match="sherpa-onnx is required"):
-                SherpaOnnxVADProvider(SherpaOnnxVADConfig())
+                vad_mod.SherpaOnnxVADProvider(vad_mod.SherpaOnnxVADConfig())
 
 
 # ---------------------------------------------------------------------------
@@ -614,37 +603,31 @@ class TestImportError:
 
 class TestPcmConversion:
     def test_silence(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": _mock_sherpa_module()}):
-            import roomkit.voice.pipeline.vad.sherpa_onnx as vad_mod
-
-            importlib.reload(vad_mod)
-            from roomkit.voice.pipeline.vad.sherpa_onnx import _pcm_s16le_to_float32
+        fakes = {"sherpa_onnx": _mock_sherpa_module()}
+        with patch.dict("sys.modules", fakes):
+            vad_mod = load_private_copy("roomkit.voice.pipeline.vad.sherpa_onnx", fakes)
 
             pcm = struct.pack("<1h", 0)
-            result = _pcm_s16le_to_float32(pcm)
+            result = vad_mod._pcm_s16le_to_float32(pcm)
             assert len(result) == 1
             assert abs(result[0]) < 1e-6
 
     def test_max_positive(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": _mock_sherpa_module()}):
-            import roomkit.voice.pipeline.vad.sherpa_onnx as vad_mod
-
-            importlib.reload(vad_mod)
-            from roomkit.voice.pipeline.vad.sherpa_onnx import _pcm_s16le_to_float32
+        fakes = {"sherpa_onnx": _mock_sherpa_module()}
+        with patch.dict("sys.modules", fakes):
+            vad_mod = load_private_copy("roomkit.voice.pipeline.vad.sherpa_onnx", fakes)
 
             pcm = struct.pack("<1h", 32767)
-            result = _pcm_s16le_to_float32(pcm)
+            result = vad_mod._pcm_s16le_to_float32(pcm)
             assert abs(result[0] - 1.0) < 0.001
 
     def test_max_negative(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": _mock_sherpa_module()}):
-            import roomkit.voice.pipeline.vad.sherpa_onnx as vad_mod
-
-            importlib.reload(vad_mod)
-            from roomkit.voice.pipeline.vad.sherpa_onnx import _pcm_s16le_to_float32
+        fakes = {"sherpa_onnx": _mock_sherpa_module()}
+        with patch.dict("sys.modules", fakes):
+            vad_mod = load_private_copy("roomkit.voice.pipeline.vad.sherpa_onnx", fakes)
 
             pcm = struct.pack("<1h", -32768)
-            result = _pcm_s16le_to_float32(pcm)
+            result = vad_mod._pcm_s16le_to_float32(pcm)
             assert abs(result[0] - (-1.0)) < 0.001
 
 

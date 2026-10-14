@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import importlib
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import MagicMock, patch
+
+from tests.private_module import load_private_copy
 
 
 def _mock_elevenlabs_module() -> MagicMock:
@@ -21,20 +22,12 @@ def _mock_elevenlabs_module() -> MagicMock:
 
 def _make_provider(el_mock: MagicMock, **config_kwargs: Any) -> Any:
     """Build an ElevenLabsTTSProvider with mocked elevenlabs dependency."""
-    with patch.dict(
-        "sys.modules",
-        {
-            "elevenlabs": el_mock,
-            "elevenlabs.client": el_mock.client,
-        },
-    ):
-        import roomkit.voice.tts.elevenlabs as tts_mod
+    fakes = {"elevenlabs": el_mock, "elevenlabs.client": el_mock.client}
+    with patch.dict("sys.modules", fakes):
+        tts_mod = load_private_copy("roomkit.voice.tts.elevenlabs", fakes)
 
-        importlib.reload(tts_mod)
-        from roomkit.voice.tts.elevenlabs import ElevenLabsConfig, ElevenLabsTTSProvider
-
-        cfg = ElevenLabsConfig(**config_kwargs)
-        return ElevenLabsTTSProvider(cfg)
+        cfg = tts_mod.ElevenLabsConfig(**config_kwargs)
+        return tts_mod.ElevenLabsTTSProvider(cfg)
 
 
 class TestElevenLabsTTSProvider:

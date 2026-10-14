@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,6 +9,7 @@ import pytest
 
 from roomkit.delivery._redis_scripts import PROMOTE
 from roomkit.delivery.base import DeliveryItem, DeliveryItemStatus
+from tests.private_module import load_private_copy
 
 # -- Mock Redis -----------------------------------------------------------
 
@@ -48,10 +48,9 @@ def _make_backend(client: AsyncMock | None = None):
     mock_mod = _build_mock_redis_module()
     mock_client = client or _build_mock_client()
 
-    with patch.dict(sys.modules, {"redis": MagicMock(), "redis.asyncio": mock_mod}):
-        importlib.invalidate_caches()
-        mod = importlib.import_module("roomkit.delivery.redis")
-        importlib.reload(mod)
+    fakes = {"redis": MagicMock(), "redis.asyncio": mock_mod}
+    with patch.dict(sys.modules, fakes):
+        mod = load_private_copy("roomkit.delivery.redis", fakes)
         backend = mod.RedisDeliveryBackend(client=mock_client)
 
     return backend, mock_client
@@ -357,13 +356,9 @@ class TestLifecycle:
         client = _build_mock_client()
         mock_mod = _build_mock_redis_module()
 
-        with patch.dict(
-            sys.modules,
-            {"redis": MagicMock(), "redis.asyncio": mock_mod},
-        ):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.delivery.redis")
-            importlib.reload(mod)
+        fakes = {"redis": MagicMock(), "redis.asyncio": mock_mod}
+        with patch.dict(sys.modules, fakes):
+            mod = load_private_copy("roomkit.delivery.redis", fakes)
             # No client injected → backend owns the connection
             backend = mod.RedisDeliveryBackend(url="redis://localhost")
 
@@ -381,13 +376,12 @@ class TestLifecycle:
 
 class TestImportError:
     def test_helpful_message(self) -> None:
+        missing = {"redis": None, "redis.asyncio": None}
         with (
-            patch.dict(sys.modules, {"redis": None, "redis.asyncio": None}),
+            patch.dict(sys.modules, missing),
             pytest.raises(ImportError, match="pip install roomkit\\[redis\\]"),
         ):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.delivery.redis")
-            importlib.reload(mod)
+            mod = load_private_copy("roomkit.delivery.redis", missing)
             mod.RedisDeliveryBackend()
 
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
+from tests.private_module import load_private_copy
 from tests.redis_fakes import FakePubSub
 
 # -- Fake Redis -----------------------------------------------------------
@@ -33,10 +33,9 @@ def _make_backend(**kwargs):
     mock_mod = MagicMock()
     mock_mod.from_url = MagicMock(return_value=client)
 
-    with patch.dict(sys.modules, {"redis": MagicMock(), "redis.asyncio": mock_mod}):
-        importlib.invalidate_caches()
-        mod = importlib.import_module("roomkit.realtime.redis")
-        importlib.reload(mod)
+    fakes = {"redis": MagicMock(), "redis.asyncio": mock_mod}
+    with patch.dict(sys.modules, fakes):
+        mod = load_private_copy("roomkit.realtime.redis", fakes)
         backend = mod.RedisRealtimeBackend(client=client, **kwargs)
 
     return backend, client, pubsub
@@ -204,9 +203,10 @@ class TestSubscribe:
     async def test_confirmation_timeout_warns_but_returns(self, monkeypatch) -> None:
         backend, _client, pubsub = _make_backend()
         pubsub.confirm_subscribes = False
-        monkeypatch.setattr(
-            sys.modules["roomkit.realtime.redis"], "_SUBSCRIBE_CONFIRM_TIMEOUT", 0.05
-        )
+        # The backend's class comes from a private copy of the module: the
+        # timeout is read from that copy's globals.
+        module_globals = type(backend).subscribe.__globals__
+        monkeypatch.setitem(module_globals, "_SUBSCRIBE_CONFIRM_TIMEOUT", 0.05)
 
         sub_id = await backend.subscribe("room:r1", AsyncMock())
         assert sub_id
@@ -281,11 +281,10 @@ class TestClose:
 
 class TestImportError:
     def test_helpful_message(self) -> None:
+        missing = {"redis": None, "redis.asyncio": None}
         with (
-            patch.dict(sys.modules, {"redis": None, "redis.asyncio": None}),
+            patch.dict(sys.modules, missing),
             pytest.raises(ImportError, match="pip install roomkit\\[redis\\]"),
         ):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.realtime.redis")
-            importlib.reload(mod)
+            mod = load_private_copy("roomkit.realtime.redis", missing)
             mod.RedisRealtimeBackend()

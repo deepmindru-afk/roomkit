@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from roomkit.voice.pipeline.turn.base import TurnContext
+from tests.private_module import load_private_copy
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -37,17 +37,13 @@ def _make_mock_transformers():
 
 
 def _make_provider(ort_mod, tr_mod=None, **config_kwargs):
-    """Reload module and construct SmartTurnDetector with deps mocked."""
+    """Construct SmartTurnDetector from a private module copy, deps mocked."""
     if tr_mod is None:
         tr_mod = _make_mock_transformers()
 
-    with patch.dict(
-        sys.modules,
-        {"onnxruntime": ort_mod, "transformers": tr_mod},
-    ):
-        import roomkit.voice.pipeline.turn.smart_turn as st_mod
-
-        importlib.reload(st_mod)
+    fakes = {"onnxruntime": ort_mod, "transformers": tr_mod}
+    with patch.dict(sys.modules, fakes):
+        st_mod = load_private_copy("roomkit.voice.pipeline.turn.smart_turn", fakes)
         config = st_mod.SmartTurnConfig(
             model_path=config_kwargs.pop("model_path", "/fake/model.onnx"),
             **config_kwargs,

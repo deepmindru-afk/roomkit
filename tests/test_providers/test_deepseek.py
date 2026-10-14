@@ -22,6 +22,7 @@ from roomkit.providers.ai.base import (
 from roomkit.providers.ai.chat_request import ChatDialect, chat_messages
 from roomkit.providers.deepseek.ai import DEEPSEEK_CHAT
 from roomkit.providers.deepseek.config import DeepSeekConfig
+from tests.private_module import load_private_copy
 
 
 class _FakeAPIStatusError(Exception):
@@ -204,12 +205,9 @@ class TestDeepSeekAIProvider:
             assert "max_completion_tokens" not in call_kwargs
 
     def test_lazy_import_error(self) -> None:
-        with patch.dict("sys.modules", {"openai": None}):
-            import importlib
-
-            import roomkit.providers.deepseek.ai as mod
-
-            importlib.reload(mod)
+        missing = {"openai": None}
+        with patch.dict("sys.modules", missing):
+            mod = load_private_copy("roomkit.providers.deepseek.ai", missing)
 
             # The hint names the extra the caller actually chose, not the
             # inherited `openai` one that installs the same package.

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -10,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from roomkit.providers.ai.base import AITool
+from tests.private_module import load_private_copy
 
 
 def _build_mock_mcp() -> MagicMock:
@@ -77,19 +77,15 @@ class TestMCPToolProvider:
 
     async def test_context_manager_discovers_tools(self) -> None:
         mock_mcp, mock_streamable, mock_sse = _build_mock_mcp()
-        with patch.dict(
-            sys.modules,
-            {
-                "mcp": mock_mcp,
-                "mcp.client": MagicMock(),
-                "mcp.client.streamable_http": mock_streamable,
-                "mcp.client.sse": mock_sse,
-                "mcp.types": MagicMock(),
-            },
-        ):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.tools.mcp")
-            importlib.reload(mod)
+        fakes = {
+            "mcp": mock_mcp,
+            "mcp.client": MagicMock(),
+            "mcp.client.streamable_http": mock_streamable,
+            "mcp.client.sse": mock_sse,
+            "mcp.types": MagicMock(),
+        }
+        with patch.dict(sys.modules, fakes):
+            mod = load_private_copy("roomkit.tools.mcp", fakes)
 
             provider = mod.MCPToolProvider("http://localhost:8000/mcp")
             async with provider as p:
@@ -100,19 +96,15 @@ class TestMCPToolProvider:
 
     async def test_tool_filter(self) -> None:
         mock_mcp, mock_streamable, mock_sse = _build_mock_mcp()
-        with patch.dict(
-            sys.modules,
-            {
-                "mcp": mock_mcp,
-                "mcp.client": MagicMock(),
-                "mcp.client.streamable_http": mock_streamable,
-                "mcp.client.sse": mock_sse,
-                "mcp.types": MagicMock(),
-            },
-        ):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.tools.mcp")
-            importlib.reload(mod)
+        fakes = {
+            "mcp": mock_mcp,
+            "mcp.client": MagicMock(),
+            "mcp.client.streamable_http": mock_streamable,
+            "mcp.client.sse": mock_sse,
+            "mcp.types": MagicMock(),
+        }
+        with patch.dict(sys.modules, fakes):
+            mod = load_private_copy("roomkit.tools.mcp", fakes)
 
             # Filter excludes all tools
             provider = mod.MCPToolProvider(

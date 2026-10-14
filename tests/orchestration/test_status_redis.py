@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import sys
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from roomkit.orchestration.status_bus import StatusEntry, StatusLevel
+from tests.private_module import load_private_copy
 from tests.redis_fakes import FakePubSub
 
 # -- Fake Redis -----------------------------------------------------------
@@ -55,10 +55,9 @@ def _make_backend(**kwargs):
     mock_mod = MagicMock()
     mock_mod.from_url = MagicMock(return_value=client)
 
-    with patch.dict(sys.modules, {"redis": MagicMock(), "redis.asyncio": mock_mod}):
-        importlib.invalidate_caches()
-        mod = importlib.import_module("roomkit.orchestration.status_redis")
-        importlib.reload(mod)
+    fakes = {"redis": MagicMock(), "redis.asyncio": mock_mod}
+    with patch.dict(sys.modules, fakes):
+        mod = load_private_copy("roomkit.orchestration.status_redis", fakes)
         backend = mod.RedisStatusBackend(client=client, **kwargs)
 
     return backend, client, pubsub, pipeline
@@ -306,11 +305,10 @@ class TestClose:
 
 class TestImportError:
     def test_helpful_message(self) -> None:
+        missing = {"redis": None, "redis.asyncio": None}
         with (
-            patch.dict(sys.modules, {"redis": None, "redis.asyncio": None}),
+            patch.dict(sys.modules, missing),
             pytest.raises(ImportError, match="pip install roomkit\\[redis\\]"),
         ):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.orchestration.status_redis")
-            importlib.reload(mod)
+            mod = load_private_copy("roomkit.orchestration.status_redis", missing)
             mod.RedisStatusBackend()

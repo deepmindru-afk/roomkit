@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import struct
 import threading
 import time
@@ -14,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from roomkit.voice.base import AudioChunk, TranscriptionResult
+from tests.private_module import load_private_copy
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -39,14 +39,12 @@ def _mock_sherpa_module() -> MagicMock:
 
 class TestSherpaOnnxSTTProvider:
     def _make_provider(self, sherpa_mock: MagicMock, **config_kwargs: Any) -> Any:
-        with patch.dict("sys.modules", {"sherpa_onnx": sherpa_mock}):
-            import roomkit.voice.stt.sherpa_onnx as stt_mod
+        fakes = {"sherpa_onnx": sherpa_mock}
+        with patch.dict("sys.modules", fakes):
+            stt_mod = load_private_copy("roomkit.voice.stt.sherpa_onnx", fakes)
 
-            importlib.reload(stt_mod)
-            from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
-
-            cfg = SherpaOnnxSTTConfig(**config_kwargs)
-            provider = SherpaOnnxSTTProvider(cfg)
+            cfg = stt_mod.SherpaOnnxSTTConfig(**config_kwargs)
+            provider = stt_mod.SherpaOnnxSTTProvider(cfg)
             # Replace the internal sherpa reference with our mock
             provider._sherpa = sherpa_mock
             return provider
@@ -318,15 +316,12 @@ class TestSherpaOnnxSTTProvider:
             await provider.transcribe(audio_content)
 
     def test_import_error(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": None}):
-            import roomkit.voice.stt.sherpa_onnx as stt_mod
-
-            importlib.reload(stt_mod)
-
-            from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
+        fakes = {"sherpa_onnx": None}
+        with patch.dict("sys.modules", fakes):
+            stt_mod = load_private_copy("roomkit.voice.stt.sherpa_onnx", fakes)
 
             with pytest.raises(ImportError, match="sherpa-onnx is required"):
-                SherpaOnnxSTTProvider(SherpaOnnxSTTConfig())
+                stt_mod.SherpaOnnxSTTProvider(stt_mod.SherpaOnnxSTTConfig())
 
     @staticmethod
     def _recognizer() -> MagicMock:
@@ -391,14 +386,12 @@ class TestSherpaOnnxSTTProvider:
 
 class TestSherpaOnnxTTSProvider:
     def _make_provider(self, sherpa_mock: MagicMock, **config_kwargs: Any) -> Any:
-        with patch.dict("sys.modules", {"sherpa_onnx": sherpa_mock}):
-            import roomkit.voice.tts.sherpa_onnx as tts_mod
+        fakes = {"sherpa_onnx": sherpa_mock}
+        with patch.dict("sys.modules", fakes):
+            tts_mod = load_private_copy("roomkit.voice.tts.sherpa_onnx", fakes)
 
-            importlib.reload(tts_mod)
-            from roomkit.voice.tts.sherpa_onnx import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
-
-            cfg = SherpaOnnxTTSConfig(**config_kwargs)
-            provider = SherpaOnnxTTSProvider(cfg)
+            cfg = tts_mod.SherpaOnnxTTSConfig(**config_kwargs)
+            provider = tts_mod.SherpaOnnxTTSProvider(cfg)
             provider._sherpa = sherpa_mock
             return provider
 
@@ -677,15 +670,12 @@ class TestSherpaOnnxTTSProvider:
         assert wav[-len(pcm) :] == pcm
 
     def test_import_error(self) -> None:
-        with patch.dict("sys.modules", {"sherpa_onnx": None}):
-            import roomkit.voice.tts.sherpa_onnx as tts_mod
-
-            importlib.reload(tts_mod)
-
-            from roomkit.voice.tts.sherpa_onnx import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
+        fakes = {"sherpa_onnx": None}
+        with patch.dict("sys.modules", fakes):
+            tts_mod = load_private_copy("roomkit.voice.tts.sherpa_onnx", fakes)
 
             with pytest.raises(ImportError, match="sherpa-onnx is required"):
-                SherpaOnnxTTSProvider(SherpaOnnxTTSConfig())
+                tts_mod.SherpaOnnxTTSProvider(tts_mod.SherpaOnnxTTSConfig())
 
 
 # ---------------------------------------------------------------------------

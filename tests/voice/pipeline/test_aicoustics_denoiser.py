@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -10,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from roomkit.voice.audio_frame import AudioFrame
+from tests.private_module import load_private_copy
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -36,10 +36,9 @@ def _make_mock_aic_sdk():
 
 def _make_provider(mock_mod, config=None):
     """Reload module and construct AICousticsDenoiserProvider with aic_sdk mocked."""
-    with patch.dict(sys.modules, {"aic_sdk": mock_mod}):
-        import roomkit.voice.pipeline.denoiser.aicoustics as aic_mod
-
-        importlib.reload(aic_mod)
+    fakes = {"aic_sdk": mock_mod}
+    with patch.dict(sys.modules, fakes):
+        aic_mod = load_private_copy("roomkit.voice.pipeline.denoiser.aicoustics", fakes)
         if config is not None:
             return aic_mod.AICousticsDenoiserProvider(config), aic_mod
         return aic_mod.AICousticsDenoiserProvider(), aic_mod
@@ -62,10 +61,9 @@ def _make_frame(n_bytes: int = 320) -> AudioFrame:
 class TestAICousticsDenoiserConfig:
     def test_defaults(self):
         mock_mod, _ = _make_mock_aic_sdk()
-        with patch.dict(sys.modules, {"aic_sdk": mock_mod}):
-            import roomkit.voice.pipeline.denoiser.aicoustics as aic_mod
-
-            importlib.reload(aic_mod)
+        fakes = {"aic_sdk": mock_mod}
+        with patch.dict(sys.modules, fakes):
+            aic_mod = load_private_copy("roomkit.voice.pipeline.denoiser.aicoustics", fakes)
             config = aic_mod.AICousticsDenoiserConfig()
 
         assert config.model == "quail-vf-2.0-l-16khz"
@@ -74,13 +72,12 @@ class TestAICousticsDenoiserConfig:
 
     def test_license_from_env(self):
         mock_mod, _ = _make_mock_aic_sdk()
+        fakes = {"aic_sdk": mock_mod}
         with (
-            patch.dict(sys.modules, {"aic_sdk": mock_mod}),
+            patch.dict(sys.modules, fakes),
             patch.dict("os.environ", {"AIC_SDK_LICENSE": "test-key"}),
         ):
-            import roomkit.voice.pipeline.denoiser.aicoustics as aic_mod
-
-            importlib.reload(aic_mod)
+            aic_mod = load_private_copy("roomkit.voice.pipeline.denoiser.aicoustics", fakes)
             config = aic_mod.AICousticsDenoiserConfig()
 
         assert config._resolved_license_key == "test-key"
@@ -96,10 +93,9 @@ class TestAICousticsDenoiserProviderConstructor:
 
     def test_import_error(self):
         """Missing aic_sdk raises ImportError."""
-        with patch.dict(sys.modules, {"aic_sdk": None}):
-            import roomkit.voice.pipeline.denoiser.aicoustics as aic_mod
-
-            importlib.reload(aic_mod)
+        fakes = {"aic_sdk": None}
+        with patch.dict(sys.modules, fakes):
+            aic_mod = load_private_copy("roomkit.voice.pipeline.denoiser.aicoustics", fakes)
             with pytest.raises((ImportError, ModuleNotFoundError)):
                 aic_mod.AICousticsDenoiserProvider()
 

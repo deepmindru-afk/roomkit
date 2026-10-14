@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -118,19 +117,12 @@ class TestVLLMConfig:
 class TestCreateVLLMProvider:
     def test_returns_openai_provider(self) -> None:
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            # Reload to pick up mocked openai
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.vllm import create_vllm_provider
 
             cfg = VLLMConfig(model="meta-llama/Llama-3-8B")
             provider = create_vllm_provider(cfg)
 
-            # An OpenAIAIProvider on the wire — asserted through inherited
-            # behaviour rather than class identity, which importlib.reload
-            # above makes meaningless.
+            # An OpenAIAIProvider on the wire, asserted through inherited behaviour.
             assert provider.supports_streaming is True
             assert provider.name == "vllm"
             assert provider._config.model == "meta-llama/Llama-3-8B"
@@ -140,10 +132,6 @@ class TestCreateVLLMProvider:
 
     def test_custom_config_propagated(self) -> None:
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.vllm import create_vllm_provider
 
             cfg = VLLMConfig(
@@ -163,10 +151,6 @@ class TestCreateVLLMProvider:
         # vLLM-tier headers/extra_body map onto the underlying OpenAIConfig
         # as default_headers/extra_body — auth proxying and guided decoding.
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.vllm import create_vllm_provider
 
             cfg = VLLMConfig(
@@ -183,10 +167,6 @@ class TestCreateVLLMProvider:
         # vLLM renders the chat template server-side, so reasoning is steered
         # through chat_template_kwargs in the request body.
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.vllm import create_vllm_provider
 
             cfg = VLLMConfig(model="m", enable_thinking=False)
@@ -198,10 +178,6 @@ class TestCreateVLLMProvider:
 
     def test_reasoning_knobs_merge_with_extra_body(self) -> None:
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.vllm import create_vllm_provider
 
             cfg = VLLMConfig(
@@ -220,10 +196,6 @@ class TestCreateVLLMProvider:
         # extra_body stays the escape hatch for templates this config does
         # not model, so an explicit entry overrides the derived one.
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.vllm import create_vllm_provider
 
             cfg = VLLMConfig(
@@ -242,10 +214,6 @@ class TestCreateVLLMProvider:
         # has no argument for, and top_p / presence_penalty are read from the
         # same body — so all five ride extra_body rather than named params.
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.vllm import create_vllm_provider
 
             cfg = VLLMConfig(model="m", top_p=0.8, top_k=20, presence_penalty=1.5)
@@ -259,10 +227,6 @@ class TestCreateVLLMProvider:
 
     def test_sampling_and_reasoning_coexist(self) -> None:
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.vllm import create_vllm_provider
 
             cfg = VLLMConfig(model="m", top_p=0.8, enable_thinking=False)
@@ -277,10 +241,6 @@ class TestCreateVLLMProvider:
         # Same rule as the template kwargs: extra_body is the escape hatch for
         # a server this config does not model, so it overrides the typed field.
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.vllm import create_vllm_provider
 
             cfg = VLLMConfig(model="m", top_p=0.8, extra_body={"top_p": 0.95})
@@ -290,10 +250,6 @@ class TestCreateVLLMProvider:
 
     def test_no_sampling_anywhere_sends_nothing(self) -> None:
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.vllm import create_vllm_provider
 
             provider = create_vllm_provider(VLLMConfig(model="m"))
@@ -303,10 +259,6 @@ class TestCreateVLLMProvider:
     def test_turn_reasoning_overrides_config(self) -> None:
         # The per-turn value is the more specific one and must reach the wire.
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.ai.base import AIContext
             from roomkit.providers.vllm import create_vllm_provider
 
@@ -324,10 +276,6 @@ class TestCreateVLLMProvider:
 
     def test_turn_without_reasoning_keeps_config(self) -> None:
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.ai.base import AIContext
             from roomkit.providers.vllm import create_vllm_provider
 
@@ -341,10 +289,6 @@ class TestCreateVLLMProvider:
         # Neither layer set anything: the body stays vanilla and the model's
         # own default applies.
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.ai.base import AIContext
             from roomkit.providers.vllm import create_vllm_provider
 
@@ -359,10 +303,6 @@ class TestCreateVLLMProvider:
         # server couples nothing to tools, and an agentic turn is exactly where
         # steering the cost matters.
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.ai.base import AIContext, AITool
             from roomkit.providers.vllm import create_vllm_provider
 
@@ -379,10 +319,6 @@ class TestCreateVLLMProvider:
     def test_config_extra_body_not_mutated(self) -> None:
         # The caller's dict must not gain the derived key.
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.vllm import create_vllm_provider
 
             original = {"guided_choice": ["yes", "no"]}
@@ -397,10 +333,6 @@ class TestCreateVLLMProvider:
         # someone else's models — and would hand out one of their context
         # windows for any id that happened to collide.
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.vllm import create_vllm_provider
 
             provider = create_vllm_provider(VLLMConfig(model="Qwen/Qwen3-VL-8B-Instruct"))
@@ -417,10 +349,6 @@ class TestCreateVLLMProvider:
         # local id matches — inheriting them reported every vLLM deployment as
         # text-only and dropped images before the wire.
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.vllm import create_vllm_provider
 
             provider = create_vllm_provider(VLLMConfig(model="Qwen/Qwen3-VL-8B-Instruct"))
@@ -429,10 +357,6 @@ class TestCreateVLLMProvider:
 
     def test_import_error_when_openai_missing(self) -> None:
         with patch.dict("sys.modules", {"openai": None}):
-            import roomkit.providers.openai.ai as ai_mod
-
-            importlib.reload(ai_mod)
-
             from roomkit.providers.vllm import create_vllm_provider
 
             cfg = VLLMConfig(model="test")

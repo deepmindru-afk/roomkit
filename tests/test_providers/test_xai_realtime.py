@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import sys
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
 from roomkit.voice.base import VoiceSession
+from tests.private_module import load_private_copy
 
 
 def _make_session(sid: str = "s1") -> VoiceSession:
@@ -21,27 +20,11 @@ def _make_session(sid: str = "s1") -> VoiceSession:
 
 
 def _load_provider():
-    """Import the provider module with websockets mocked.
-
-    We avoid ``importlib.reload()`` to prevent class-identity issues
-    with other test files that import XAIRealtimeProvider at module level.
-    Instead we patch websockets into sys.modules and do a fresh import
-    from a clean state.
-    """
+    """A private copy of the provider module with websockets mocked."""
     fake_ws = SimpleNamespace(
         connect=lambda *a, **kw: None,
     )
-    mod_key = "roomkit.providers.xai.realtime"
-    saved = sys.modules.pop(mod_key, None)
-    try:
-        with patch.dict(sys.modules, {"websockets": fake_ws}):
-            import roomkit.providers.xai.realtime as mod
-
-            return mod
-    finally:
-        # Restore original module so other tests keep their class identity
-        if saved is not None:
-            sys.modules[mod_key] = saved
+    return load_private_copy("roomkit.providers.xai.realtime", {"websockets": fake_ws})
 
 
 class TestXAIRealtimeProvider:

@@ -28,6 +28,7 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.polargrid.config import PolarGridConfig
+from tests.private_module import load_private_copy
 
 # ---------------------------------------------------------------------------
 # Fake polargrid module
@@ -1127,12 +1128,9 @@ class TestPolarGridConfig:
 
 class TestPolarGridLazyImport:
     def test_import_error_message(self) -> None:
-        with patch.dict("sys.modules", {"polargrid": None}):
-            import importlib
-
-            import roomkit.providers.polargrid.ai as mod
-
-            importlib.reload(mod)
+        missing = {"polargrid": None}
+        with patch.dict("sys.modules", missing):
+            mod = load_private_copy("roomkit.providers.polargrid.ai", missing)
             with pytest.raises(ImportError, match=r"pip install roomkit\[polargrid\]"):
                 mod.PolarGridAIProvider(_config())
 

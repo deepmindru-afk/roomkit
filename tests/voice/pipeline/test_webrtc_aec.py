@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
@@ -10,6 +9,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from roomkit.voice.audio_frame import AudioFrame
+from tests.private_module import load_private_copy
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -32,10 +32,9 @@ def _make_mock_aec_module():
 
 def _make_provider(mock_mod, **kwargs):
     """Reload module and construct WebRTCAECProvider inside active patch."""
-    with patch.dict(sys.modules, {"aec_audio_processing": mock_mod}):
-        import roomkit.voice.pipeline.aec.webrtc as webrtc_mod
-
-        importlib.reload(webrtc_mod)
+    fakes = {"aec_audio_processing": mock_mod}
+    with patch.dict(sys.modules, fakes):
+        webrtc_mod = load_private_copy("roomkit.voice.pipeline.aec.webrtc", fakes)
         return webrtc_mod.WebRTCAECProvider(**kwargs), webrtc_mod
 
 

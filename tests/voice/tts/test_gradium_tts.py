@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import importlib
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from tests.private_module import load_private_copy
 
 
 def _mock_gradium_module() -> MagicMock:
@@ -20,14 +21,12 @@ def _mock_gradium_module() -> MagicMock:
 
 def _make_provider(grad_mock: MagicMock, **config_kwargs: Any) -> Any:
     """Build a GradiumTTSProvider with mocked gradium dependency."""
-    with patch.dict("sys.modules", {"gradium": grad_mock}):
-        import roomkit.voice.tts.gradium as tts_mod
+    fakes = {"gradium": grad_mock}
+    with patch.dict("sys.modules", fakes):
+        tts_mod = load_private_copy("roomkit.voice.tts.gradium", fakes)
 
-        importlib.reload(tts_mod)
-        from roomkit.voice.tts.gradium import GradiumTTSConfig, GradiumTTSProvider
-
-        cfg = GradiumTTSConfig(**config_kwargs)
-        return GradiumTTSProvider(cfg)
+        cfg = tts_mod.GradiumTTSConfig(**config_kwargs)
+        return tts_mod.GradiumTTSProvider(cfg)
 
 
 class TestGradiumTTSProvider:

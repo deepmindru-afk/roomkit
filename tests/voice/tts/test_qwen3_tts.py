@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import importlib
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from tests.private_module import load_private_copy
 
 
 def _mock_deps() -> tuple[MagicMock, MagicMock]:
@@ -22,17 +23,15 @@ def _mock_deps() -> tuple[MagicMock, MagicMock]:
 
 def _make_provider(qwen_tts: MagicMock, torch: MagicMock, **config_kwargs: Any) -> Any:
     """Build a Qwen3TTSProvider with mocked dependencies."""
-    with patch.dict("sys.modules", {"qwen_tts": qwen_tts, "torch": torch}):
-        import roomkit.voice.tts.qwen3 as tts_mod
-
-        importlib.reload(tts_mod)
-        from roomkit.voice.tts.qwen3 import Qwen3TTSConfig, Qwen3TTSProvider, VoiceCloneConfig
+    fakes = {"qwen_tts": qwen_tts, "torch": torch}
+    with patch.dict("sys.modules", fakes):
+        tts_mod = load_private_copy("roomkit.voice.tts.qwen3", fakes)
 
         voices = config_kwargs.pop("voices", None)
-        cfg = Qwen3TTSConfig(**config_kwargs)
+        cfg = tts_mod.Qwen3TTSConfig(**config_kwargs)
         if voices is not None:
-            cfg.voices = {name: VoiceCloneConfig(**v) for name, v in voices.items()}
-        return Qwen3TTSProvider(cfg)
+            cfg.voices = {name: tts_mod.VoiceCloneConfig(**v) for name, v in voices.items()}
+        return tts_mod.Qwen3TTSProvider(cfg)
 
 
 class TestQwen3TTSProvider:
@@ -142,14 +141,12 @@ class TestQwen3TTSProvider:
 
     def test_import_error_without_qwen_tts(self) -> None:
         """Constructor should raise ImportError when qwen_tts is missing."""
-        with patch.dict("sys.modules", {"qwen_tts": None}):
-            import roomkit.voice.tts.qwen3 as tts_mod
-
-            importlib.reload(tts_mod)
-            from roomkit.voice.tts.qwen3 import Qwen3TTSConfig, Qwen3TTSProvider
+        fakes = {"qwen_tts": None}
+        with patch.dict("sys.modules", fakes):
+            tts_mod = load_private_copy("roomkit.voice.tts.qwen3", fakes)
 
             with pytest.raises(ImportError, match="qwen-tts is required"):
-                Qwen3TTSProvider(Qwen3TTSConfig())
+                tts_mod.Qwen3TTSProvider(tts_mod.Qwen3TTSConfig())
 
     async def test_close_releases_model(self) -> None:
         qwen_tts, torch = _mock_deps()

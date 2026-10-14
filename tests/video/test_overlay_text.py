@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from unittest.mock import MagicMock, patch
 
 from roomkit.video.pipeline.overlay.base import Overlay, OverlayPosition
+from tests.private_module import load_private_copy
 
 
 def _build_mock_cv2() -> MagicMock:
@@ -38,13 +38,9 @@ def _make_renderer():
     mock_cv2 = _build_mock_cv2()
     mock_np = _build_mock_numpy()
 
-    with patch.dict(
-        sys.modules,
-        {"cv2": mock_cv2, "numpy": mock_np},
-    ):
-        importlib.invalidate_caches()
-        mod = importlib.import_module("roomkit.video.pipeline.overlay.text")
-        importlib.reload(mod)
+    fakes = {"cv2": mock_cv2, "numpy": mock_np}
+    with patch.dict(sys.modules, fakes):
+        mod = load_private_copy("roomkit.video.pipeline.overlay.text", fakes)
         renderer = mod.TextOverlayRenderer()
 
     return renderer, mock_cv2, mock_np

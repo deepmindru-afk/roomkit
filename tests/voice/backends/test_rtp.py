@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -10,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from roomkit.voice.base import VoiceCapability, VoiceSessionState
+from tests.private_module import load_private_copy
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -31,11 +31,8 @@ def _make_mock_aiortp():
 
 
 def _load_module(mock_mod):
-    """Reload the rtp module with aiortp mocked. Caller must keep patch active."""
-    import roomkit.voice.backends.rtp as rtp_mod
-
-    importlib.reload(rtp_mod)
-    return rtp_mod
+    """A private copy of the rtp module with aiortp mocked. Caller must keep patch active."""
+    return load_private_copy("roomkit.voice.backends.rtp", {"aiortp": mock_mod})
 
 
 # ---------------------------------------------------------------------------

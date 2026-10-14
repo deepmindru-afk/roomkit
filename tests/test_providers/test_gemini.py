@@ -25,6 +25,7 @@ from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.ai.tool_calls import MALFORMED_CALL_NUDGE
 from roomkit.providers.gemini.config import GeminiConfig
 from roomkit.providers.gemini.request import format_content, format_messages
+from tests.private_module import load_private_copy
 from tests.tool_loop_modes import run_tool_loop
 
 
@@ -562,12 +563,9 @@ class TestGeminiAIProvider:
             assert provider.model_name == "gemini-1.5-pro"
 
     def test_lazy_import_error(self) -> None:
-        with patch.dict("sys.modules", {"google": None, "google.genai": None}):
-            import importlib
-
-            import roomkit.providers.gemini.ai as mod
-
-            importlib.reload(mod)
+        missing = {"google": None, "google.genai": None}
+        with patch.dict("sys.modules", missing):
+            mod = load_private_copy("roomkit.providers.gemini.ai", missing)
 
             with pytest.raises(ImportError, match="google-genai is required"):
                 mod.GeminiAIProvider(_config())

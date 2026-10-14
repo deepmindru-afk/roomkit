@@ -11,6 +11,7 @@ import pytest
 
 from roomkit.providers.ai.base import AIContext, AIMessage, AITool, ModelInfo, ProviderError
 from roomkit.providers.xai.config import XAIConfig
+from tests.private_module import load_private_copy
 
 
 class _FakeAPIStatusError(Exception):
@@ -187,12 +188,9 @@ class TestXAIAIProvider:
             assert "max_tokens" not in call_kwargs
 
     def test_lazy_import_error(self) -> None:
-        with patch.dict("sys.modules", {"openai": None}):
-            import importlib
-
-            import roomkit.providers.xai.ai as mod
-
-            importlib.reload(mod)
+        missing = {"openai": None}
+        with patch.dict("sys.modules", missing):
+            mod = load_private_copy("roomkit.providers.xai.ai", missing)
 
             with pytest.raises(ImportError, match=r"openai is required.*roomkit\[xai\]"):
                 mod.XAIAIProvider(_config())

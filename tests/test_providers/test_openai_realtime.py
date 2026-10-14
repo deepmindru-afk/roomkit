@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import importlib
 import json
 import sys
 from types import SimpleNamespace
@@ -14,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from roomkit.voice.base import VoiceSession, VoiceSessionState
+from tests.private_module import load_private_copy
 
 
 def _make_session(sid: str = "s1") -> VoiceSession:
@@ -32,9 +32,7 @@ def _load_provider():
     )
     mods = {"websockets": fake_ws}
     with patch.dict(sys.modules, mods):
-        import roomkit.providers.openai.realtime as mod
-
-        importlib.reload(mod)
+        mod = load_private_copy("roomkit.providers.openai.realtime", mods)
         return mod
 
 

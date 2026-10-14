@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from roomkit.voice.base import VoiceSession
+from tests.private_module import load_private_copy
 
 
 def _make_session(sid: str = "s1") -> VoiceSession:
@@ -50,9 +50,7 @@ def _load_module():
         "roomkit.webrtc.utils": fake_webrtc_utils,
     }
     with patch.dict(sys.modules, mods):
-        import roomkit.voice.realtime.fastrtc_transport as mod
-
-        importlib.reload(mod)
+        mod = load_private_copy("roomkit.voice.realtime.fastrtc_transport", mods)
         return mod
 
 

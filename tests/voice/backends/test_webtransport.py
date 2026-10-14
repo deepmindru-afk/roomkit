@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import struct
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -11,6 +10,7 @@ import pytest
 
 from roomkit.voice.auth import auth_context
 from roomkit.voice.base import VoiceCapability, VoiceSessionState
+from tests.private_module import load_private_copy
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -46,11 +46,8 @@ def _make_mock_aioquic():
 
 
 def _import_backend():
-    """Import WebTransportBackend (aioquic only needed at start(), not __init__)."""
-    import roomkit.voice.backends.webtransport as wt_mod
-
-    importlib.reload(wt_mod)
-    return wt_mod
+    """A fresh copy of the WebTransport module (aioquic only needed at start(), not __init__)."""
+    return load_private_copy("roomkit.voice.backends.webtransport", {})
 
 
 # ---------------------------------------------------------------------------

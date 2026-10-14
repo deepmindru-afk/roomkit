@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import importlib
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from tests.private_module import load_private_copy
 
 
 def _mock_deps() -> tuple[MagicMock, MagicMock]:
@@ -22,14 +23,12 @@ def _mock_deps() -> tuple[MagicMock, MagicMock]:
 
 def _make_provider(qwen_asr: MagicMock, torch: MagicMock, **config_kwargs: Any) -> Any:
     """Build a Qwen3ASRProvider with mocked dependencies."""
-    with patch.dict("sys.modules", {"qwen_asr": qwen_asr, "torch": torch}):
-        import roomkit.voice.stt.qwen3 as stt_mod
+    fakes = {"qwen_asr": qwen_asr, "torch": torch}
+    with patch.dict("sys.modules", fakes):
+        stt_mod = load_private_copy("roomkit.voice.stt.qwen3", fakes)
 
-        importlib.reload(stt_mod)
-        from roomkit.voice.stt.qwen3 import Qwen3ASRConfig, Qwen3ASRProvider
-
-        cfg = Qwen3ASRConfig(**config_kwargs)
-        return Qwen3ASRProvider(cfg)
+        cfg = stt_mod.Qwen3ASRConfig(**config_kwargs)
+        return stt_mod.Qwen3ASRProvider(cfg)
 
 
 class TestQwen3ASRProvider:
@@ -103,14 +102,12 @@ class TestQwen3ASRProvider:
 
     def test_import_error_without_qwen_asr(self) -> None:
         """Constructor should raise ImportError when qwen_asr is missing."""
-        with patch.dict("sys.modules", {"qwen_asr": None}):
-            import roomkit.voice.stt.qwen3 as stt_mod
-
-            importlib.reload(stt_mod)
-            from roomkit.voice.stt.qwen3 import Qwen3ASRConfig, Qwen3ASRProvider
+        fakes = {"qwen_asr": None}
+        with patch.dict("sys.modules", fakes):
+            stt_mod = load_private_copy("roomkit.voice.stt.qwen3", fakes)
 
             with pytest.raises(ImportError, match="qwen-asr is required"):
-                Qwen3ASRProvider(Qwen3ASRConfig())
+                stt_mod.Qwen3ASRProvider(stt_mod.Qwen3ASRConfig())
 
     async def test_close_releases_model(self) -> None:
         qwen_asr, torch = _mock_deps()

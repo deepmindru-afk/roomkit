@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -10,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from roomkit.voice.base import AudioChunk
+from tests.private_module import load_private_copy
 
 
 def _mock_gradium_module() -> MagicMock:
@@ -22,14 +22,12 @@ def _mock_gradium_module() -> MagicMock:
 
 def _make_provider(grad_mock: MagicMock, **config_kwargs: Any) -> Any:
     """Build a GradiumSTTProvider with mocked gradium dependency."""
-    with patch.dict("sys.modules", {"gradium": grad_mock}):
-        import roomkit.voice.stt.gradium as stt_mod
+    fakes = {"gradium": grad_mock}
+    with patch.dict("sys.modules", fakes):
+        stt_mod = load_private_copy("roomkit.voice.stt.gradium", fakes)
 
-        importlib.reload(stt_mod)
-        from roomkit.voice.stt.gradium import GradiumSTTConfig, GradiumSTTProvider
-
-        cfg = GradiumSTTConfig(**config_kwargs)
-        return GradiumSTTProvider(cfg)
+        cfg = stt_mod.GradiumSTTConfig(**config_kwargs)
+        return stt_mod.GradiumSTTProvider(cfg)
 
 
 class TestGradiumSTTProvider:

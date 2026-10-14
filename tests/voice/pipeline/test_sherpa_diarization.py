@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+from tests.private_module import load_private_copy
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -33,10 +34,9 @@ def _make_mock_sherpa_onnx():
 
 def _make_provider(mock_mod, **config_kwargs):
     """Reload module and construct SherpaOnnxDiarizationProvider."""
-    with patch.dict(sys.modules, {"sherpa_onnx": mock_mod}):
-        import roomkit.voice.pipeline.diarization.sherpa_onnx as diar_mod
-
-        importlib.reload(diar_mod)
+    fakes = {"sherpa_onnx": mock_mod}
+    with patch.dict(sys.modules, fakes):
+        diar_mod = load_private_copy("roomkit.voice.pipeline.diarization.sherpa_onnx", fakes)
         config = diar_mod.SherpaOnnxDiarizationConfig(
             model=config_kwargs.pop("model", "/fake/model.onnx"),
             **config_kwargs,
@@ -52,10 +52,9 @@ def _make_provider(mock_mod, **config_kwargs):
 class TestSherpaOnnxDiarizationConfig:
     def test_defaults(self):
         mock_mod, _, _ = _make_mock_sherpa_onnx()
-        with patch.dict(sys.modules, {"sherpa_onnx": mock_mod}):
-            import roomkit.voice.pipeline.diarization.sherpa_onnx as diar_mod
-
-            importlib.reload(diar_mod)
+        fakes = {"sherpa_onnx": mock_mod}
+        with patch.dict(sys.modules, fakes):
+            diar_mod = load_private_copy("roomkit.voice.pipeline.diarization.sherpa_onnx", fakes)
             config = diar_mod.SherpaOnnxDiarizationConfig(model="/fake/model.onnx")
 
         assert config.model == "/fake/model.onnx"

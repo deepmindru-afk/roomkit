@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from roomkit.providers.anam.config import AnamConfig
+from tests.private_module import load_private_copy
 
 
 def _build_mock_anam() -> MagicMock:
@@ -25,11 +25,9 @@ class TestAnamAvatarProvider:
 
     def test_constructor(self) -> None:
         mock_anam = _build_mock_anam()
-        with patch.dict(sys.modules, {"anam": mock_anam}):
-            # Reset the module-level global
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.providers.anam.avatar")
-            importlib.reload(mod)
+        fakes = {"anam": mock_anam}
+        with patch.dict(sys.modules, fakes):
+            mod = load_private_copy("roomkit.providers.anam.avatar", fakes)
 
             provider = mod.AnamAvatarProvider(self._make_config())
             assert provider.name == "anam-cloud"
@@ -39,20 +37,18 @@ class TestAnamAvatarProvider:
 
     def test_custom_fps(self) -> None:
         mock_anam = _build_mock_anam()
-        with patch.dict(sys.modules, {"anam": mock_anam}):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.providers.anam.avatar")
-            importlib.reload(mod)
+        fakes = {"anam": mock_anam}
+        with patch.dict(sys.modules, fakes):
+            mod = load_private_copy("roomkit.providers.anam.avatar", fakes)
 
             provider = mod.AnamAvatarProvider(self._make_config(), video_fps=30)
             assert provider.fps == 30
 
     def test_on_video_callback_registration(self) -> None:
         mock_anam = _build_mock_anam()
-        with patch.dict(sys.modules, {"anam": mock_anam}):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.providers.anam.avatar")
-            importlib.reload(mod)
+        fakes = {"anam": mock_anam}
+        with patch.dict(sys.modules, fakes):
+            mod = load_private_copy("roomkit.providers.anam.avatar", fakes)
 
             provider = mod.AnamAvatarProvider(self._make_config())
             cb = MagicMock()
@@ -61,10 +57,9 @@ class TestAnamAvatarProvider:
 
     async def test_stop_cleanup(self) -> None:
         mock_anam = _build_mock_anam()
-        with patch.dict(sys.modules, {"anam": mock_anam}):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.providers.anam.avatar")
-            importlib.reload(mod)
+        fakes = {"anam": mock_anam}
+        with patch.dict(sys.modules, fakes):
+            mod = load_private_copy("roomkit.providers.anam.avatar", fakes)
 
             provider = mod.AnamAvatarProvider(self._make_config())
             # Stop without starting should be safe
@@ -76,10 +71,9 @@ class TestAnamAvatarProvider:
 
     def test_feed_audio_when_not_started(self) -> None:
         mock_anam = _build_mock_anam()
-        with patch.dict(sys.modules, {"anam": mock_anam}):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.providers.anam.avatar")
-            importlib.reload(mod)
+        fakes = {"anam": mock_anam}
+        with patch.dict(sys.modules, fakes):
+            mod = load_private_copy("roomkit.providers.anam.avatar", fakes)
 
             provider = mod.AnamAvatarProvider(self._make_config())
             result = provider.feed_audio(b"\x00" * 100)

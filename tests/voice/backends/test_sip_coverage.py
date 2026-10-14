@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from roomkit.voice.backends._sip_types import CODEC_INFO, PT_G722, PT_PCMA, PT_PCMU, AudioStats
+from tests.private_module import load_private_copy
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -29,11 +29,9 @@ def _make_mock_aiosipua():
 
 
 def _get_sip_module(aiosipua_mod, rtp_bridge_mod):
-    """Reload the SIP module with mocks active. Caller must keep patch active."""
-    import roomkit.voice.backends.sip as sip_mod
-
-    importlib.reload(sip_mod)
-    return sip_mod
+    """A private copy of the SIP module with mocks active. Caller must keep patch active."""
+    fakes = {"aiosipua": aiosipua_mod, "aiosipua.rtp_bridge": rtp_bridge_mod}
+    return load_private_copy("roomkit.voice.backends.sip", fakes)
 
 
 # ---------------------------------------------------------------------------

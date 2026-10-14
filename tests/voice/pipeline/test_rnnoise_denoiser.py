@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import ctypes
-import importlib
 import struct
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from roomkit.voice.audio_frame import AudioFrame
+from tests.private_module import load_private_copy
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -33,15 +33,12 @@ def _make_mock_librnnoise():
 
 
 def _make_provider(mock_lib, **kwargs):
-    """Reload module and construct RNNoiseDenoiserProvider with librnnoise mocked."""
+    """Construct RNNoiseDenoiserProvider from a fresh module copy, librnnoise mocked."""
     with (
         patch("ctypes.util.find_library", return_value="/fake/librnnoise.so"),
         patch("ctypes.CDLL", return_value=mock_lib),
     ):
-        import roomkit.voice.pipeline.denoiser.rnnoise as rnnoise_mod
-
-        rnnoise_mod._lib = None  # reset module cache
-        importlib.reload(rnnoise_mod)
+        rnnoise_mod = load_private_copy("roomkit.voice.pipeline.denoiser.rnnoise", {})
         return rnnoise_mod.RNNoiseDenoiserProvider(**kwargs), rnnoise_mod
 
 

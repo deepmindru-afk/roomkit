@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,6 +21,7 @@ from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
 from roomkit.models.task import Observation, Task
+from tests.private_module import load_private_copy
 
 
 def _build_mock_asyncpg() -> MagicMock:
@@ -75,12 +75,16 @@ def _make_store_with_pool():
     mock_pool.acquire = _acquire
     mock_pool.close = AsyncMock()
 
-    with patch.dict(sys.modules, {"asyncpg": mock_asyncpg}):
-        importlib.invalidate_caches()
-        mod = importlib.import_module("roomkit.store.postgres")
-        importlib.reload(mod)
+    fakes = {"asyncpg": mock_asyncpg}
+    with patch.dict(sys.modules, fakes):
+        mod = load_private_copy("roomkit.store.postgres", fakes)
         store = mod.PostgresStore(pool=mock_pool)
     return store, mock_conn
+
+
+def _schema_error(store: object) -> type[Exception]:
+    """The PostgresSchemaError of the private module copy *store* comes from."""
+    return type(store).init.__globals__["PostgresSchemaError"]
 
 
 def _make_room(room_id: str = "room-1") -> Room:
@@ -260,10 +264,9 @@ def _observation_row(obs: Observation) -> dict:
 class TestPostgresStore:
     def test_constructor_with_dsn(self) -> None:
         mock_asyncpg = _build_mock_asyncpg()
-        with patch.dict(sys.modules, {"asyncpg": mock_asyncpg}):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.store.postgres")
-            importlib.reload(mod)
+        fakes = {"asyncpg": mock_asyncpg}
+        with patch.dict(sys.modules, fakes):
+            mod = load_private_copy("roomkit.store.postgres", fakes)
             store = mod.PostgresStore(dsn="postgres://localhost/test")
             assert store._dsn == "postgres://localhost/test"
             assert store._pool is None
@@ -272,10 +275,9 @@ class TestPostgresStore:
     def test_constructor_with_pool(self) -> None:
         mock_asyncpg = _build_mock_asyncpg()
         mock_pool = MagicMock()
-        with patch.dict(sys.modules, {"asyncpg": mock_asyncpg}):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.store.postgres")
-            importlib.reload(mod)
+        fakes = {"asyncpg": mock_asyncpg}
+        with patch.dict(sys.modules, fakes):
+            mod = load_private_copy("roomkit.store.postgres", fakes)
             store = mod.PostgresStore(pool=mock_pool)
             assert store._pool is mock_pool
             assert store._owns_pool is False
@@ -294,8 +296,7 @@ class TestPostgresStore:
         saved = sys.modules.pop("asyncpg", None)
         try:
             with patch.object(builtins, "__import__", side_effect=_block_asyncpg):
-                mod = importlib.import_module("roomkit.store.postgres")
-                importlib.reload(mod)
+                mod = load_private_copy("roomkit.store.postgres", {})
                 with pytest.raises(ImportError, match="asyncpg"):
                     mod.PostgresStore(dsn="postgres://localhost/test")
         finally:
@@ -305,10 +306,9 @@ class TestPostgresStore:
     async def test_close_releases_pool(self) -> None:
         mock_asyncpg = _build_mock_asyncpg()
         mock_pool = AsyncMock()
-        with patch.dict(sys.modules, {"asyncpg": mock_asyncpg}):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.store.postgres")
-            importlib.reload(mod)
+        fakes = {"asyncpg": mock_asyncpg}
+        with patch.dict(sys.modules, fakes):
+            mod = load_private_copy("roomkit.store.postgres", fakes)
             # _owns_pool=True so close() should release the pool
             store = mod.PostgresStore(dsn="postgres://localhost/test")
             store._pool = mock_pool
@@ -320,10 +320,9 @@ class TestPostgresStore:
     async def test_close_skips_external_pool(self) -> None:
         mock_asyncpg = _build_mock_asyncpg()
         mock_pool = AsyncMock()
-        with patch.dict(sys.modules, {"asyncpg": mock_asyncpg}):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.store.postgres")
-            importlib.reload(mod)
+        fakes = {"asyncpg": mock_asyncpg}
+        with patch.dict(sys.modules, fakes):
+            mod = load_private_copy("roomkit.store.postgres", fakes)
             store = mod.PostgresStore(pool=mock_pool)
             await store.close()
             # External pool should NOT be closed
@@ -331,10 +330,9 @@ class TestPostgresStore:
 
     def test_ensure_pool_raises_without_init(self) -> None:
         mock_asyncpg = _build_mock_asyncpg()
-        with patch.dict(sys.modules, {"asyncpg": mock_asyncpg}):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.store.postgres")
-            importlib.reload(mod)
+        fakes = {"asyncpg": mock_asyncpg}
+        with patch.dict(sys.modules, fakes):
+            mod = load_private_copy("roomkit.store.postgres", fakes)
             store = mod.PostgresStore(dsn="postgres://localhost/test")
             with pytest.raises(RuntimeError, match="init"):
                 store._ensure_pool()
@@ -353,10 +351,9 @@ class TestPostgresStore:
         mock_pool.acquire = _acquire
         mock_asyncpg.create_pool = AsyncMock(return_value=mock_pool)
 
-        with patch.dict(sys.modules, {"asyncpg": mock_asyncpg}):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.store.postgres")
-            importlib.reload(mod)
+        fakes = {"asyncpg": mock_asyncpg}
+        with patch.dict(sys.modules, fakes):
+            mod = load_private_copy("roomkit.store.postgres", fakes)
             store = mod.PostgresStore(dsn="postgres://localhost/test")
             await store.init(min_size=1, max_size=5)
 
@@ -428,8 +425,7 @@ class TestPostgresStore:
         """A legacy v1 schema makes init() raise rather than drop tables."""
         store, mock_conn = _make_store_with_pool()
         mock_conn.fetchval = AsyncMock(return_value=True)  # v1 detected
-        mod = sys.modules["roomkit.store.postgres"]
-        with pytest.raises(mod.PostgresSchemaError, match="v1"):
+        with pytest.raises(_schema_error(store), match="v1"):
             await store.init()
         # No DDL executed at all when v1 is detected (the advisory lock the
         # detection runs under is not DDL).
@@ -457,8 +453,7 @@ class TestPostgresStore:
     async def test_migrate_requires_confirm(self) -> None:
         store, mock_conn = _make_store_with_pool()
         mock_conn.fetchval = AsyncMock(return_value=True)
-        mod = sys.modules["roomkit.store.postgres"]
-        with pytest.raises(mod.PostgresSchemaError, match="backup"):
+        with pytest.raises(_schema_error(store), match="backup"):
             await store.migrate(dry_run=False, confirm=False)
         executed = [c.args[0] for c in mock_conn.execute.await_args_list]
         assert not any("DROP TABLE" in sql for sql in executed)
@@ -497,10 +492,9 @@ class TestPostgresStore:
         mock_pool.close = AsyncMock()
         mock_asyncpg.create_pool = AsyncMock(return_value=mock_pool)
 
-        with patch.dict(sys.modules, {"asyncpg": mock_asyncpg}):
-            importlib.invalidate_caches()
-            mod = importlib.import_module("roomkit.store.postgres")
-            importlib.reload(mod)
+        fakes = {"asyncpg": mock_asyncpg}
+        with patch.dict(sys.modules, fakes):
+            mod = load_private_copy("roomkit.store.postgres", fakes)
             async with mod.PostgresStore(dsn="postgres://localhost/test") as store:
                 assert store._pool is not None
             # After exit, pool should be closed
