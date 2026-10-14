@@ -162,6 +162,33 @@ async def test_the_latest_room_breaks_a_tie_by_id_in_every_store(
             await contract_store.delete_room(room_id)
 
 
+async def test_ids_compare_by_code_point_in_every_store(
+    contract_store: ConversationStore,
+) -> None:
+    """A tie is broken on the ids' code points, as Python and SQLite compare
+    them: "-B" before "-a", where a database collation (en_US) puts "-a"
+    first. Pages and the latest room come out the same in every store."""
+    org = uuid4().hex
+    created = datetime(2026, 1, 1, tzinfo=UTC)
+    ids = [f"{org}-a", f"{org}-B", f"{org}-Z"]
+    for room_id in ids:
+        await contract_store.create_room(Room(id=room_id, organization_id=org, created_at=created))
+        await contract_store.add_participant(
+            Participant(id=f"p-{org}", room_id=room_id, channel_id="sms")
+        )
+    try:
+        page = await contract_store.find_rooms(organization_id=org, limit=10)
+        latest = await contract_store.find_latest_room(f"p-{org}")
+        by_participant = await contract_store.find_room_id_by_participant(f"p-{org}")
+
+        assert [room.id for room in page] == [f"{org}-B", f"{org}-Z", f"{org}-a"]
+        assert latest is not None and latest.id == f"{org}-a"
+        assert by_participant == f"{org}-a"
+    finally:
+        for room_id in ids:
+            await contract_store.delete_room(room_id)
+
+
 async def test_rooms_created_with_and_without_a_time_zone_still_page() -> None:
     """A naive created_at beside an aware one is a room like any other."""
     store = InMemoryStore()

@@ -734,10 +734,12 @@ class PostgresStore(ConversationStore):
         return bool(tag == "DELETE 1")
 
     async def list_rooms(self, offset: int = 0, limit: int = 50) -> list[Room]:
+        # Room ids break ties byte by byte (COLLATE "C"), as the other stores
+        # compare them, whatever collation the database was created with.
         with self._query_span("list_rooms", "rooms"):
             async with self._acquire() as conn:
                 rows = await conn.fetch(
-                    "SELECT * FROM rooms ORDER BY created_at, id LIMIT $1 OFFSET $2",
+                    'SELECT * FROM rooms ORDER BY created_at, id COLLATE "C" LIMIT $1 OFFSET $2',
                     limit,
                     offset,
                 )
@@ -775,7 +777,7 @@ class PostgresStore(ConversationStore):
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         query = (
             f"SELECT * FROM rooms {where}"  # nosec B608
-            f" ORDER BY created_at, id LIMIT ${idx} OFFSET ${idx + 1}"
+            f' ORDER BY created_at, id COLLATE "C" LIMIT ${idx} OFFSET ${idx + 1}'
         )
         params.extend([limit, offset])
         with self._query_span("find_rooms", "rooms"):
@@ -811,7 +813,7 @@ class PostgresStore(ConversationStore):
             params.append(status_val)
             idx += 1
 
-        base += " ORDER BY r.created_at DESC, r.id DESC LIMIT 1"
+        base += ' ORDER BY r.created_at DESC, r.id COLLATE "C" DESC LIMIT 1'
 
         async with self._acquire() as conn:
             row = await conn.fetchrow(base, *params)
@@ -840,7 +842,7 @@ class PostgresStore(ConversationStore):
         if status is not None:
             query += " AND r.status = $3"
             params.append(status.value if hasattr(status, "value") else status)
-        query += " ORDER BY r.created_at DESC, b.room_id DESC LIMIT 1"
+        query += ' ORDER BY r.created_at DESC, b.room_id COLLATE "C" DESC LIMIT 1'
         async with self._acquire() as conn:
             row = await conn.fetchrow(query, *params)
         return row["room_id"] if row is not None else None
@@ -856,7 +858,7 @@ class PostgresStore(ConversationStore):
         if status is not None:
             query += " AND r.status = $2"
             params.append(status.value if hasattr(status, "value") else status)
-        query += " ORDER BY r.created_at DESC, p.room_id DESC LIMIT 1"
+        query += ' ORDER BY r.created_at DESC, p.room_id COLLATE "C" DESC LIMIT 1'
         async with self._acquire() as conn:
             row = await conn.fetchrow(query, *params)
         return row["room_id"] if row is not None else None
@@ -877,7 +879,7 @@ class PostgresStore(ConversationStore):
                 "SELECT b.room_id FROM bindings b "
                 "JOIN rooms r ON r.id = b.room_id "
                 "WHERE b.channel_id = $1 AND r.status = $2 "
-                "ORDER BY r.created_at, b.room_id LIMIT $3"
+                'ORDER BY r.created_at, b.room_id COLLATE "C" LIMIT $3'
             )
             async with self._acquire() as conn:
                 rows = await conn.fetch(query, channel_id, status_val, limit)
@@ -886,7 +888,7 @@ class PostgresStore(ConversationStore):
                 "SELECT b.room_id FROM bindings b "
                 "JOIN rooms r ON r.id = b.room_id "
                 "WHERE b.channel_id = $1 "
-                "ORDER BY r.created_at, b.room_id LIMIT $2"
+                'ORDER BY r.created_at, b.room_id COLLATE "C" LIMIT $2'
             )
             async with self._acquire() as conn:
                 rows = await conn.fetch(query, channel_id, limit)
