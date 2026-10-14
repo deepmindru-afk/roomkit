@@ -140,6 +140,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `ValueError`, as the other stores do (RMK-730), instead of letting
   asyncpg's foreign key violation through. The ABC states it.
 
+- Gemini Live sees an image injected while audio flows: `inject_image` sends it as a
+  video frame (`send_realtime_input(video=...)`) instead of `media`, the deprecated
+  `mediaChunks` that `gemini-3.8-live` drops. Asked to describe a red circle and the
+  number 42 shown that way, it answered "I can't see the picture you're referring to";
+  sent as a frame, it described both. `gemini-2.5-flash-native-audio` read the image
+  either way. Checked live on 2026-10-14. A `prompt` sent with the image still reaches
+  `gemini-3.8-live` before it has taken the frame in (it answered without the picture
+  3 times out of 3, the prompt sent before or right after the frame; one second after,
+  it saw it): ask about an image in a later turn.
 - `SherpaOnnxTTSProvider.synthesize_stream()` labels its chunks with the
   model's sample rate, as `synthesize()` already did, instead of
   `SherpaOnnxTTSConfig.sample_rate`. A config left at its 22,050 Hz default

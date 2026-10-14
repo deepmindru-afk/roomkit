@@ -949,12 +949,13 @@ class TestGeminiLiveProvider:
         )
 
         mock_live_session.send_client_content.assert_not_awaited()
-        # Two calls: one for text prompt, one for media
+        # Two calls: one for text prompt, one for the image as a video frame
         assert mock_live_session.send_realtime_input.await_count == 2
         first_call = mock_live_session.send_realtime_input.call_args_list[0][1]
         assert first_call["text"] == "Describe this"
         second_call = mock_live_session.send_realtime_input.call_args_list[1][1]
-        assert second_call["media"].mime_type == "image/png"
+        assert second_call["video"].mime_type == "image/png"
+        assert "media" not in second_call  # gemini-3.8-live drops mediaChunks
 
     async def test_send_image_before_audio_uses_client_content(self):
         mod = _load_provider()
@@ -992,10 +993,10 @@ class TestGeminiLiveProvider:
         await provider.inject_image(session, b"\x89PNG", "image/png")
 
         mock_live_session.send_client_content.assert_not_awaited()
-        # Only one call: media only (no prompt, not silent)
+        # Only one call: the image only (no prompt, not silent)
         mock_live_session.send_realtime_input.assert_awaited_once()
         call_kwargs = mock_live_session.send_realtime_input.call_args[1]
-        assert "media" in call_kwargs
+        assert set(call_kwargs) == {"video"}
 
     async def test_send_image_after_audio_silent_no_prompt(self):
         """Silent image without prompt must send a 'do not respond' instruction."""
@@ -1014,12 +1015,12 @@ class TestGeminiLiveProvider:
         await provider.inject_image(session, b"\x89PNG", "image/png", silent=True)
 
         mock_live_session.send_client_content.assert_not_awaited()
-        # Two calls: silent instruction text, then media
+        # Two calls: silent instruction text, then the image
         assert mock_live_session.send_realtime_input.await_count == 2
         first = mock_live_session.send_realtime_input.call_args_list[0][1]
         assert "do not respond" in first["text"].lower()
         second = mock_live_session.send_realtime_input.call_args_list[1][1]
-        assert "media" in second
+        assert set(second) == {"video"}
 
     async def test_send_image_after_audio_silent_with_prompt(self):
         """Silent image with prompt: prompt gets the 'do not respond' prefix."""

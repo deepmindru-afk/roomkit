@@ -323,8 +323,11 @@ class GeminiLiveInputMixin(RealtimeVoiceProvider):
             # on the realtime path).
             await state.live_session.send_realtime_input(text=f"{CONTEXT_UPDATE_MARK} image]")
 
+        # An image is a video frame: gemini-3.8-live drops one sent as `media`
+        # (the deprecated mediaChunks) and answers that it sees no picture,
+        # where gemini-2.5-flash-native-audio read both.
         await state.live_session.send_realtime_input(
-            media=types.Blob(mime_type=mime_type, data=image_data),
+            video=types.Blob(mime_type=mime_type, data=image_data),
         )
 
     async def interrupt(self, session: VoiceSession) -> None:
