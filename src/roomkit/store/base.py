@@ -218,7 +218,8 @@ class ConversationStore(ABC):
 
     @abstractmethod
     async def list_rooms(self, offset: int = 0, limit: int = 50) -> list[Room]:
-        """List rooms with pagination."""
+        """List rooms with pagination, the oldest first: by ``created_at``,
+        then by ``id``, so a page holds the same rooms in every store."""
         ...
 
     @abstractmethod
@@ -231,7 +232,14 @@ class ConversationStore(ABC):
         limit: int = 100,
         offset: int = 0,
     ) -> list[Room]:
-        """Find rooms matching the given filters."""
+        """Find rooms matching the given filters, in the order of
+        :meth:`list_rooms`.
+
+        A room matches *metadata_filter* when each of its keys holds the given
+        value. PostgresStore tests a nested value by containment (``@>``), the
+        other stores by equality: ``{"a": {"b": 1}}`` matches
+        ``{"a": {"b": 1, "c": 2}}`` on Postgres alone.
+        """
         ...
 
     @abstractmethod

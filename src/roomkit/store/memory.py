@@ -211,8 +211,18 @@ class InMemoryStore(ConversationStore):
         }
         return True
 
+    def _rooms_in_order(self) -> list[Room]:
+        """Rooms in the order every store pages them: created_at, then id.
+
+        Compared as timestamps, as SQLite stores them: a naive created_at
+        beside an aware one would make the datetimes themselves refuse.
+        """
+        return sorted(
+            self._rooms.values(), key=lambda room: (room.created_at.timestamp(), room.id)
+        )
+
     async def list_rooms(self, offset: int = 0, limit: int = 50) -> list[Room]:
-        rooms = list(self._rooms.values())
+        rooms = self._rooms_in_order()
         return [r.model_copy(deep=True) for r in rooms[offset : offset + limit]]
 
     async def find_rooms(
@@ -225,7 +235,7 @@ class InMemoryStore(ConversationStore):
         offset: int = 0,
     ) -> list[Room]:
         results: list[Room] = []
-        for room in self._rooms.values():
+        for room in self._rooms_in_order():
             if organization_id is not None and room.organization_id != organization_id:
                 continue
             if status is not None and room.status.value != status:
@@ -234,8 +244,8 @@ class InMemoryStore(ConversationStore):
                 room.metadata.get(k) == v for k, v in metadata_filter.items()
             ):
                 continue
-            results.append(room.model_copy(deep=True))
-        return results[offset : offset + limit]
+            results.append(room)
+        return [room.model_copy(deep=True) for room in results[offset : offset + limit]]
 
     async def find_latest_room(
         self,

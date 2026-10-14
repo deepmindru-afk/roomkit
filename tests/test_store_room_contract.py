@@ -1,10 +1,12 @@
-"""Room contracts shared by all conversation stores: ``update_room`` and the
-read markers (a channel's read high-water mark is an event ``index``)."""
+"""Room contracts shared by all conversation stores: ``update_room``, the
+order of room pages, and the read markers (a channel's read high-water mark
+is an event ``index``)."""
 
 from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -65,6 +67,57 @@ async def test_a_stale_copy_neither_rewinds_nor_reports_an_old_delivered_index(
         assert await contract_store.get_delivered_index(room.id) == 1
     finally:
         await contract_store.delete_room(room.id)
+
+
+async def _rooms_created_out_of_order(store: ConversationStore) -> tuple[str, list[str]]:
+    """Five rooms of one organization, stored in an order their creation
+    times contradict, two of them created at the same instant."""
+    org = uuid4().hex
+    created = datetime(2026, 1, 1, tzinfo=UTC)
+    rooms = (("c", 2, "x"), ("a", 0, "x"), ("e", 3, "y"), ("d", 1, "x"), ("b", 1, "x"))
+    for name, minutes, team in rooms:
+        await store.create_room(
+            Room(
+                id=f"{org}-{name}",
+                organization_id=org,
+                created_at=created + timedelta(minutes=minutes),
+                metadata={"team": team},
+            )
+        )
+    return org, [f"{org}-{name}" for name in "abcde"]
+
+
+async def test_a_page_of_rooms_is_the_same_in_every_store(
+    contract_store: ConversationStore,
+) -> None:
+    """Rooms come oldest first, by created_at then id, whatever order they
+    were stored in: a page boundary falls on the same room in every store."""
+    org, ids = await _rooms_created_out_of_order(contract_store)
+    a, b, c, d, e = ids
+    try:
+        page = await contract_store.find_rooms(organization_id=org, limit=2, offset=1)
+        teams = await contract_store.find_rooms(
+            organization_id=org, metadata_filter={"team": "x"}, limit=2, offset=2
+        )
+        listed = [
+            room.id for room in await contract_store.list_rooms(limit=10_000) if room.id in ids
+        ]
+
+        assert [room.id for room in page] == [b, d]
+        assert [room.id for room in teams] == [d, c]
+        assert listed == [a, b, d, c, e]
+    finally:
+        for room_id in ids:
+            await contract_store.delete_room(room_id)
+
+
+async def test_rooms_created_with_and_without_a_time_zone_still_page() -> None:
+    """A naive created_at beside an aware one is a room like any other."""
+    store = InMemoryStore()
+    await store.create_room(Room(id="aware", created_at=datetime(2026, 1, 1, 12, tzinfo=UTC)))
+    await store.create_room(Room(id="naive", created_at=datetime(2026, 1, 1, 12)))
+
+    assert {room.id for room in await store.list_rooms()} == {"aware", "naive"}
 
 
 async def _room_with_events(store: ConversationStore, *indexes: int) -> tuple[str, list[str]]:

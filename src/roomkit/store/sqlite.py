@@ -27,9 +27,10 @@ import re
 import sqlite3
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from functools import partial
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -769,7 +770,7 @@ class SQLiteStore(ConversationStore):
 
     def _x_list_rooms(self, offset: int, limit: int) -> list[Room]:
         rows = self._db().execute(
-            "SELECT * FROM rooms ORDER BY rowid LIMIT ? OFFSET ?", (limit, offset)
+            "SELECT * FROM rooms ORDER BY created_ts, id LIMIT ? OFFSET ?", (limit, offset)
         )
         return [self._row_to_room(r) for r in rows]
 
@@ -801,20 +802,20 @@ class SQLiteStore(ConversationStore):
         if status is not None:
             where.append("status = ?")
             params.append(status)
-        rows = self._db().execute(
-            f"SELECT * FROM rooms WHERE {' AND '.join(where)} ORDER BY rowid",  # nosec B608  # fragments are internal, values parameterised
-            params,
-        )
-        results = [self._row_to_room(r) for r in rows]
-        if metadata_filter:
-            # Metadata values are arbitrary JSON — compare in Python rather
-            # than fight json_extract over type affinities.
-            results = [
+        query = f"SELECT * FROM rooms WHERE {' AND '.join(where)} ORDER BY created_ts, id"  # nosec B608  # fragments are internal, values parameterised
+        if not metadata_filter:
+            rows = self._db().execute(f"{query} LIMIT ? OFFSET ?", [*params, limit, offset])
+            return [self._row_to_room(r) for r in rows]
+        # Metadata values are arbitrary JSON — compare in Python rather than
+        # fight json_extract over type affinities, reading no further than
+        # the page.
+        with closing(self._db().execute(query, params)) as rows:
+            matching = (
                 room
-                for room in results
+                for room in map(self._row_to_room, rows)
                 if all(room.metadata.get(k) == v for k, v in metadata_filter.items())
-            ]
-        return results[offset : offset + limit]
+            )
+            return list(islice(matching, offset, offset + limit))
 
     async def find_latest_room(
         self,

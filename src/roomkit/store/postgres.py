@@ -727,7 +727,7 @@ class PostgresStore(ConversationStore):
         with self._query_span("list_rooms", "rooms"):
             async with self._acquire() as conn:
                 rows = await conn.fetch(
-                    "SELECT * FROM rooms ORDER BY created_at LIMIT $1 OFFSET $2",
+                    "SELECT * FROM rooms ORDER BY created_at, id LIMIT $1 OFFSET $2",
                     limit,
                     offset,
                 )
@@ -765,7 +765,7 @@ class PostgresStore(ConversationStore):
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         query = (
             f"SELECT * FROM rooms {where}"  # nosec B608
-            f" ORDER BY created_at LIMIT ${idx} OFFSET ${idx + 1}"
+            f" ORDER BY created_at, id LIMIT ${idx} OFFSET ${idx + 1}"
         )
         params.extend([limit, offset])
         with self._query_span("find_rooms", "rooms"):

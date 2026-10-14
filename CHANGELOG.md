@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recently dead-lettered items first, as `RedisDeliveryBackend` does
   (RMK-725): with a `limit`, both now return the same items. The ABC states
   the order.
+- Room pages come in the same order from every store, the oldest first: by
+  `created_at`, then by `id` (RMK-726). `list_rooms()` and `find_rooms()`
+  followed insertion order in the in-memory and SQLite stores, and
+  PostgresStore left rooms created at the same instant in no set order, so
+  a page boundary fell on different rooms.
 
 ### Deprecated
 
@@ -106,6 +111,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   On `FastRTCVideoBackend`, a session's audio and video are reported live
   when its WebRTC connection is, not when the session is created; a session
   over WebSocket, which carries no video, reports no video.
+- `SQLiteStore.find_rooms()` pages in SQL (RMK-726): it read and decoded
+  every matching room, then cut the page in Python. With a
+  `metadata_filter` it stops reading once the page is full.
 
 ## [0.101.0] — 2026-10-13
 
