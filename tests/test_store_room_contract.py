@@ -16,6 +16,7 @@ from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import ChannelType, RoomStatus
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
+from roomkit.models.store_filter import EventFilter
 from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import SQLiteStore
@@ -217,6 +218,24 @@ async def test_rooms_created_with_and_without_a_time_zone_are_found() -> None:
     assert await store.find_room_id_by_participant("p") == "naive"
     assert await store.find_room_id_by_binding("sms", "p") == "naive"
     assert await store.find_room_ids_by_channel("sms") == ["aware", "naive"]
+
+
+async def test_events_filter_by_a_time_with_or_without_a_time_zone() -> None:
+    """A naive bound against events stamped with a time zone filters them, as
+    SQLite does, instead of raising."""
+    store = InMemoryStore()
+    await store.create_room(Room(id="r"))
+    await store.add_event(
+        make_event(room_id="r", index=0, created_at=datetime(2026, 1, 2, tzinfo=UTC))
+    )
+
+    after = await store.list_events("r", event_filter=EventFilter(after_time=datetime(2026, 1, 1)))
+    before = await store.list_events(
+        "r", event_filter=EventFilter(before_time=datetime(2026, 1, 1))
+    )
+
+    assert len(after) == 1
+    assert before == []
 
 
 async def _room_with_events(store: ConversationStore, *indexes: int) -> tuple[str, list[str]]:

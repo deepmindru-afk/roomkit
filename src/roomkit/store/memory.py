@@ -475,10 +475,14 @@ class InMemoryStore(ConversationStore):
             events = [e for e in events if e.parent_event_id == ef.parent_event_id]
         if ef.top_level_only:
             events = [e for e in events if e.parent_event_id is None]
+        # Compared as timestamps, as SQLite stores them: a naive bound against
+        # an aware created_at would make the datetimes themselves refuse.
         if ef.after_time is not None:
-            events = [e for e in events if e.created_at > ef.after_time]
+            after = ef.after_time.timestamp()
+            events = [e for e in events if e.created_at.timestamp() > after]
         if ef.before_time is not None:
-            events = [e for e in events if e.created_at < ef.before_time]
+            before = ef.before_time.timestamp()
+            events = [e for e in events if e.created_at.timestamp() < before]
         if not includes_blocked(ef):
             events = received_events(events)
         return events
@@ -501,7 +505,8 @@ class InMemoryStore(ConversationStore):
                 summary = ThreadSummary(root_event_id=event.parent_event_id)
                 summaries[event.parent_event_id] = summary
             summary.reply_count += 1
-            if summary.last_reply_at is None or event.created_at > summary.last_reply_at:
+            last = summary.last_reply_at
+            if last is None or event.created_at.timestamp() > last.timestamp():
                 summary.last_reply_at = event.created_at
         return summaries
 
