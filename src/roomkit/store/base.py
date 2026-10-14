@@ -48,6 +48,9 @@ class ConversationStore(ABC):
         Insert if absent, or replace an explicitly retryable completed attempt
         with matching content. Otherwise return the existing record unchanged.
         Ownership requires a matching attempt_id. Retain records until room deletion.
+
+        Raises ``ValueError`` when *record* carries an outcome, or when its room
+        does not exist.
         """
         raise NotImplementedError("This store does not support voice delivery reservations")
 

@@ -120,6 +120,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   store-managed like `delivered_index`, and the room returned carries the
   stored values. `timers` stays the caller's: `set_room_timers()` sets
   `last_activity_at` through it.
+- `PostgresStore.claim_voice_delivery()` refuses a room that does not exist
+  with `ValueError`, as the other stores do (RMK-730), instead of letting
+  asyncpg's foreign key violation through. The ABC states it.
 
 ## [0.101.0] — 2026-10-13
 

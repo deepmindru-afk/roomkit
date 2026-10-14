@@ -66,6 +66,14 @@ async def test_concurrent_claims_have_one_owner(stores) -> None:
     assert stored.content_hash == "same-content"
 
 
+async def test_a_claim_for_a_missing_room_is_refused_alike(stores) -> None:
+    """Every store refuses with ValueError; Postgres let its foreign key's
+    violation through."""
+    first, _second, _room = stores
+    with pytest.raises(ValueError, match="Room does not exist"):
+        await first.claim_voice_delivery(request_record(f"missing-{uuid4().hex}"))
+
+
 async def test_completion_is_idempotent_and_fences_other_owners(stores) -> None:
     first, second, room = stores
     record = await first.claim_voice_delivery(request_record(room))

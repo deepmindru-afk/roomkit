@@ -203,6 +203,14 @@ class PostgresStore(ConversationStore):
         if record.outcome is not None:
             raise ValueError("A new claim must have no outcome")
         async with self._acquire() as conn, conn.transaction():
+            # Checked, and the room held against deletion until the commit, so
+            # a missing room is the ValueError the other stores raise rather
+            # than the foreign key's violation.
+            held = await conn.fetchval(
+                "SELECT 1 FROM rooms WHERE id = $1 FOR KEY SHARE", record.room_id
+            )
+            if held is None:
+                raise ValueError("Room does not exist")
             await conn.execute(
                 "INSERT INTO voice_deliveries "
                 "(room_id, key_hash, channel_id, session_id, idempotency_key, content_hash, "
