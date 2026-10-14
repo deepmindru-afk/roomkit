@@ -170,6 +170,16 @@ class TestToolUsageMemory:
         digest = mem.render_digest("r1") or ""
         assert "do not take it back" in digest
 
+    def test_only_what_was_said_from_a_result_read_whole_stands(self) -> None:
+        """Past the eviction threshold a result reached the model as a
+        placeholder on its own turn: the digest may not tell the agent that
+        what it said came from the whole result (RMK-707)."""
+        mem = ToolUsageMemory()
+        mem.record("r1", "list_lights", {}, "x" * 9000)
+        digest = mem.render_digest("r1") or ""
+        assert "came from the whole result" not in digest
+        assert "What you said from a result you read whole stands" in digest
+
     def test_an_oversized_result_is_cut_and_says_so(self) -> None:
         mem = ToolUsageMemory()
         mem.record("r1", "dump", {}, "x" * 9000)

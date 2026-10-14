@@ -206,6 +206,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one notes section instead of opening a second after them, their labels
   are cleaned of runtime-mark copies as the digest is, and the thinker's
   transcript no longer quotes their header as the participant's words.
+- The tool digest no longer tells the agent that what it said came from a
+  whole result (RMK-707, RMK-739): with the default eviction threshold, a
+  large result reached the model as a placeholder on its own turn, and the
+  sentence vouched for a guess. It now keeps what the agent said from a
+  result it read whole.
 
 ## [0.101.0] — 2026-10-13
 
