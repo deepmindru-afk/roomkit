@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `VoiceChannel.play()` cuts the playback under way, as `say()` does: a
+  response or a `say()` playing when it was called kept streaming under the
+  WAV, unreported. The playback cut fires `ON_TTS_CANCELLED` (reason
+  `new_tts`), and a response still cuts a `play()` (RFC §12.2). The WAV's audio
+  is now measured as it goes out: a `play()` cut short reports the audio heard
+  of it, and counts it toward the session's played total the echo guard reads,
+  where it counted 0 ms.
+- A session served by a backend added with `VoiceChannel.add_backend()` gets
+  everything addressed to it through that backend (RFC §12.7.3). A response
+  delivered to the room never reached it (its sessions were looked up on the
+  primary backend only); a streamed response's audio and transcriptions,
+  `send_dtmf()` and `disconnect_session()` went out on the primary; the cut of
+  an interruption and the end of a playback read the primary's `INTERRUPTION`
+  and `NATIVE_AEC`; `interrupt_all()` and the speech held during playback
+  skipped it.
+- `SherpaOnnxTTSProvider.synthesize_stream` no longer leaves its reader waiting
+  for good when the synthesis fails (an unknown speaker id, an ONNX Runtime
+  error): the error is raised to the reader. A stream closed early (a barge-in)
+  stops the synthesis at the sentence under way instead of waiting for the
+  whole text. When `warmup()` was not called, the model is loaded in a worker
+  thread, once, instead of on the event loop by the first synthesis (Kokoro
+  reads ~126 MB).
+- `RealtimeAudioVideoChannel` fires `ON_VIDEO_DETECTION` for what its video
+  pipeline's filters detect, as `AudioVideoChannel` does; it kept each
+  session's detections without ever draining them. A session's end resets its
+  state in the pipeline, frames arriving while it ends are dropped, and
+  `close()` closes the pipeline and each vision provider once, the one given in
+  `video_pipeline` included.
+- `RedisDeliveryBackend` hands a retry to a waiting worker as soon as its delay
+  has passed. `dequeue()` queued the due retries once, then waited the whole
+  timeout on new work, so a retry falling due meanwhile waited it out too: up
+  to the worker's 5 s `poll_timeout` for a `retry_delay` of 0.2 or 1 s. The
+  wait now ends when the next retry is due, by the Redis server's clock, and
+  that call returns it.
+- `find_latest_room` returns the same room in every store when several were
+  created at the same instant: the one with the highest id, as
+  `find_room_id_by_binding` and `find_room_id_by_participant` already did.
+
 ## [0.102.0] — 2026-10-14
 
 ### Added
