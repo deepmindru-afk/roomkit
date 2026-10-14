@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `new_tts`), and a response still cuts a `play()` (RFC §12.2). The WAV's audio
   is now measured as it goes out: a `play()` cut short reports the audio heard
   of it, and counts it toward the session's played total the echo guard reads,
-  where it counted 0 ms.
+  where it counted 0 ms (RMK-747).
 - A session served by a backend added with `VoiceChannel.add_backend()` gets
   everything addressed to it through that backend (RFC §12.7.3). A response
   delivered to the room never reached it (its sessions were looked up on the
@@ -23,29 +23,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `send_dtmf()` and `disconnect_session()` went out on the primary; the cut of
   an interruption and the end of a playback read the primary's `INTERRUPTION`
   and `NATIVE_AEC`; `interrupt_all()` and the speech held during playback
-  skipped it.
+  skipped it (RMK-748).
 - `SherpaOnnxTTSProvider.synthesize_stream` no longer leaves its reader waiting
   for good when the synthesis fails (an unknown speaker id, an ONNX Runtime
   error): the error is raised to the reader. A stream closed early (a barge-in)
   stops the synthesis at the sentence under way instead of waiting for the
   whole text. When `warmup()` was not called, the model is loaded in a worker
   thread, once, instead of on the event loop by the first synthesis (Kokoro
-  reads ~126 MB).
+  reads ~126 MB) (RMK-749). `SherpaOnnxSTTProvider` loads its recognizer the
+  same way (RMK-755).
 - `RealtimeAudioVideoChannel` fires `ON_VIDEO_DETECTION` for what its video
   pipeline's filters detect, as `AudioVideoChannel` does; it kept each
   session's detections without ever draining them. A session's end resets its
   state in the pipeline, frames arriving while it ends are dropped, and
   `close()` closes the pipeline and each vision provider once, the one given in
-  `video_pipeline` included.
+  `video_pipeline` included (RMK-750).
+- `RealtimeAVBridge` drains its video filters' detections on every frame, where
+  they piled up for the whole call (it has no hook to fire them on, so they are
+  dropped), resets a call's video state when the call ends, and closes its
+  video pipeline in `close()` (RMK-754).
 - `RedisDeliveryBackend` hands a retry to a waiting worker as soon as its delay
   has passed. `dequeue()` queued the due retries once, then waited the whole
   timeout on new work, so a retry falling due meanwhile waited it out too: up
   to the worker's 5 s `poll_timeout` for a `retry_delay` of 0.2 or 1 s. The
   wait now ends when the next retry is due, by the Redis server's clock, and
-  that call returns it.
+  that call returns it (RMK-751).
 - `find_latest_room` returns the same room in every store when several were
   created at the same instant: the one with the highest id, as
-  `find_room_id_by_binding` and `find_room_id_by_participant` already did.
+  `find_room_id_by_binding` and `find_room_id_by_participant` already did
+  (RMK-752).
+- `InMemoryStore` no longer raises `TypeError` in `find_latest_room`,
+  `find_room_id_by_binding`, `find_room_id_by_participant` and
+  `find_room_ids_by_channel` when a room created with a naive `created_at` sits
+  beside one with a time zone: rooms are ranked by timestamp, as `list_rooms`
+  already did (RMK-756).
 
 ## [0.102.0] — 2026-10-14
 
