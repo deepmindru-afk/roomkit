@@ -206,6 +206,9 @@ class TestSubscribe:
         # The backend's class comes from a private copy of the module: the
         # timeout is read from that copy's globals.
         module_globals = type(backend).subscribe.__globals__
+        # setitem adds a missing key silently: a renamed constant would leave
+        # the test waiting out the real timeout instead of failing.
+        assert "_SUBSCRIBE_CONFIRM_TIMEOUT" in module_globals
         monkeypatch.setitem(module_globals, "_SUBSCRIBE_CONFIRM_TIMEOUT", 0.05)
 
         sub_id = await backend.subscribe("room:r1", AsyncMock())
