@@ -45,6 +45,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read now does nothing instead of raising a foreign-key violation, as the
   other stores do; a marker an earlier version set at 0 on an empty room
   cannot be told from a read of event 0, and stays.
+- A delivery that failed is attempted again after a delay, not at once
+  (RMK-722). `InMemoryDeliveryBackend` and `RedisDeliveryBackend` put a
+  nacked item straight back on the queue, so every retry went out within
+  milliseconds and the item was dead-lettered before a destination briefly
+  unavailable (a voice session reconnecting) could come back. A retry now
+  waits `min(retry_delay * 2 ** (n - 1), max_retry_delay)`, 1 s and 60 s by
+  default as for a binding's `RetryPolicy` (RFC §13.2), both set on the
+  backend (`retry_delay=0` retries at once). The Redis backend keeps a
+  waiting retry in a sorted set (`{stream_prefix}:delayed`) on the server's
+  clock; a worker queues it again once due, atomically. `get_queue_depth()`
+  counts waiting retries. `DeliveryItem.max_retries` now counts retries after
+  the first attempt, as `RetryPolicy.max_retries` does: 3 meant three
+  attempts, it now means four. Retries waiting when a process goes back to
+  an earlier version stay in the delayed set, which that version does not
+  read.
 
 ## [0.101.0] — 2026-10-13
 

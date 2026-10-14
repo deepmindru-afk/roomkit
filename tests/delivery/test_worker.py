@@ -10,6 +10,7 @@ from roomkit.core.hooks import SyncPipelineResult
 from roomkit.delivery.base import DeliveryItem, DeliveryItemStatus
 from roomkit.delivery.memory import InMemoryDeliveryBackend
 from roomkit.delivery.worker import execute_delivery, fire_delivery_hooks, run_worker_loop
+from roomkit.models.delivery import DeliveryOutcome
 from roomkit.models.enums import HookTrigger
 
 
@@ -163,19 +164,24 @@ class TestRunWorkerLoop:
         item = DeliveryItem(room_id="r1", content="hello")
         await backend.enqueue(item)
 
-        task = asyncio.create_task(run_worker_loop(backend, kit, "w1", poll_timeout=0.1))
-        # Give the loop time to process
-        await asyncio.sleep(0.3)
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        sent = AsyncMock(return_value=DeliveryOutcome(status="sent"))
+        with patch("roomkit.delivery.worker.execute_delivery", sent):
+            task = asyncio.create_task(run_worker_loop(backend, kit, "w1", poll_timeout=0.1))
+            # Give the loop time to process
+            await asyncio.sleep(0.3)
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
+        # Delivered once and acked: neither retried nor dead-lettered.
+        sent.assert_awaited_once()
         assert await backend.get_queue_depth() == 0
+        assert await backend.get_dead_letter_items() == []
         assert item.id not in backend._in_flight
 
     async def test_nacks_on_failure(self) -> None:
         kit = _mock_kit()
-        backend = InMemoryDeliveryBackend()
+        backend = InMemoryDeliveryBackend(retry_delay=0)
         item = DeliveryItem(room_id="r1", content="hello", max_retries=2)
         await backend.enqueue(item)
 

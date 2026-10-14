@@ -19,10 +19,12 @@ from tests.test_framework import SimpleChannel
 
 async def test_enqueue_replay_preserves_address_and_key() -> None:
     kit, _, agents = await _room("a", "b")
-    backend = InMemoryDeliveryBackend()
-    kit._delivery_backend = backend
+    backend = InMemoryDeliveryBackend(retry_delay=0)
     async with kit:
-        # The backend is not started: acceptance alone must not solicit an agent.
+        # Set after the kit started, so the backend is not started:
+        # acceptance alone must not solicit an agent, and this test is the
+        # only one dequeuing.
+        kit._delivery_backend = backend
         queued = await kit.deliver(
             "room-1",
             "external result",
@@ -49,7 +51,7 @@ async def test_enqueue_replay_preserves_address_and_key() -> None:
 
 
 async def test_worker_retries_unavailable_destination_then_delivers() -> None:
-    backend = InMemoryDeliveryBackend()
+    backend = InMemoryDeliveryBackend(retry_delay=0)
     async with RoomKit() as kit:
         await kit.create_room(room_id="r")
         item = DeliveryItem(room_id="r", content="result", channel_id="text", idempotency_key="k")
@@ -70,7 +72,7 @@ async def test_worker_retries_unavailable_destination_then_delivers() -> None:
 
 
 async def test_real_worker_dead_letters_missing_target_and_records_refusal() -> None:
-    backend = InMemoryDeliveryBackend()
+    backend = InMemoryDeliveryBackend(retry_delay=0)
     async with RoomKit(delivery_backend=backend) as kit:
         await kit.create_room(room_id="r")
         item = DeliveryItem(room_id="r", content="result", max_retries=2)
@@ -81,7 +83,8 @@ async def test_real_worker_dead_letters_missing_target_and_records_refusal() -> 
                 await asyncio.sleep(0.01)
         [dead] = await backend.get_dead_letter_items()
         assert dead.outcome.status == "unavailable"
-        assert dead.retry_count == 2
+        # Two retries after the first attempt: three attempts failed.
+        assert dead.retry_count == 3
         await backend.close()
 
         @kit.hook(HookTrigger.BEFORE_DELIVER)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -54,11 +55,27 @@ class DeliveryItem(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     retry_count: int = 0
     max_retries: int = 3
+    """Retries after the first attempt, as a binding's ``RetryPolicy`` counts
+    them (RFC §13.2): 3 means four attempts at most."""
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     status: DeliveryItemStatus = DeliveryItemStatus.PENDING
     worker_id: str | None = None
     error: str | None = None
     outcome: DeliveryOutcome | None = None
+
+
+def retry_delay(retry_count: int, base: float, maximum: float) -> float:
+    """Seconds before retry number *retry_count* (from 1), doubling from
+    *base* up to *maximum*: the formula of a binding's ``RetryPolicy`` (RFC
+    §13.2) with its exponential base of 2. The exponent stops at 64, past
+    any cap, so no retry count overflows it."""
+    return min(base * 2.0 ** min(retry_count - 1, 64), maximum)
+
+
+def check_retry_delays(base: float, maximum: float) -> None:
+    """Refuse retry delays that are negative, infinite or out of order."""
+    if not (math.isfinite(base) and math.isfinite(maximum)) or base < 0 or maximum < base:
+        raise ValueError("retry delays must be finite, with 0 <= retry_delay <= max_retry_delay")
 
 
 class DeliveryBackend(ABC):
@@ -88,7 +105,13 @@ class DeliveryBackend(ABC):
 
     @abstractmethod
     async def nack(self, item_id: str, error: str | None = None) -> None:
-        """Negative-acknowledge.  Re-enqueues or dead-letters the item."""
+        """Negative-acknowledge.  Re-enqueues or dead-letters the item.
+
+        An item with retries left is attempted again after
+        :func:`retry_delay`, not at once: a destination that is briefly
+        unreachable (a voice session reconnecting) would otherwise spend
+        every retry within milliseconds.
+        """
 
     @abstractmethod
     async def dead_letter(self, item_id: str, error: str) -> None:

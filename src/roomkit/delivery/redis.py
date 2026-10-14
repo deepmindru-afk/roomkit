@@ -25,8 +25,14 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from roomkit.core.task_utils import cancel_and_wait
-from roomkit.delivery._redis_scripts import RENEW, TRANSITION
-from roomkit.delivery.base import DeliveryBackend, DeliveryItem, DeliveryItemStatus
+from roomkit.delivery._redis_scripts import PROMOTE, RENEW, TRANSITION
+from roomkit.delivery.base import (
+    DeliveryBackend,
+    DeliveryItem,
+    DeliveryItemStatus,
+    check_retry_delays,
+    retry_delay,
+)
 from roomkit.delivery.worker import run_worker_loop
 
 if TYPE_CHECKING:
@@ -52,6 +58,11 @@ class RedisDeliveryBackend(DeliveryBackend):
         claim_idle_seconds: Reclaim abandoned work after this idle interval.
             Live workers renew their pending entries every third of this interval.
             Delivery is at-least-once; destinations should handle duplicate IDs.
+        retry_delay: Seconds before the first retry; each next one waits
+            twice as long, up to *max_retry_delay*. A retry waits in a sorted
+            set (``{stream_prefix}:delayed``) on the Redis server's clock, and
+            a worker queues it again once due. 0 retries at once.
+        max_retry_delay: Cap on the wait before a retry.
     """
 
     def __init__(
@@ -63,9 +74,14 @@ class RedisDeliveryBackend(DeliveryBackend):
         group_name: str = "roomkit-workers",
         max_dead_letter_size: int = 10_000,
         claim_idle_seconds: float = 60.0,
+        retry_delay: float = 1.0,
+        max_retry_delay: float = 60.0,
     ) -> None:
         if not math.isfinite(claim_idle_seconds) or claim_idle_seconds <= 0:
             raise ValueError("claim_idle_seconds must be finite and positive")
+        check_retry_delays(retry_delay, max_retry_delay)
+        self._retry_delay = retry_delay
+        self._max_retry_delay = max_retry_delay
         try:
             import redis.asyncio as _aioredis
         except ImportError as exc:
@@ -84,6 +100,7 @@ class RedisDeliveryBackend(DeliveryBackend):
 
         self._pending_key = f"{stream_prefix}:pending"
         self._dl_key = f"{stream_prefix}:dead_letter"
+        self._delayed_key = f"{stream_prefix}:delayed"
         self._group = group_name
         self._max_dl = max_dead_letter_size
         self._worker_id = uuid4().hex[:12]
@@ -110,6 +127,8 @@ class RedisDeliveryBackend(DeliveryBackend):
         batch_size: int = 1,
         timeout: float = 5.0,
     ) -> list[DeliveryItem]:
+        # Retries whose delay has passed go back on the stream first.
+        await self._client.eval(PROMOTE, 2, self._delayed_key, self._pending_key, batch_size)
         # Scan the PEL before reading new work, advancing the cursor even
         # when this scan finds no sufficiently idle entry.
         claimed = await self._client.xautoclaim(
@@ -174,22 +193,36 @@ class RedisDeliveryBackend(DeliveryBackend):
                 except Exception:
                     logger.warning("Failed to renew delivery %s", item_id, exc_info=True)
 
-    async def _transition(self, item_id: str, replacement: DeliveryItem | None = None) -> None:
+    async def _transition(
+        self,
+        item_id: str,
+        replacement: DeliveryItem | None = None,
+        delay_ms: int | None = None,
+    ) -> None:
+        """Settle a claimed entry: drop it (ack), or replace it on the
+        dead-letter stream, or, after *delay_ms*, on the pending stream."""
         entry_id = self._entry_ids.get(item_id)
         item = self._items.get(item_id)
         if entry_id is None or item is None:
             return
         dead = replacement is not None and replacement.status == DeliveryItemStatus.DEAD_LETTER
+        if dead:
+            target = self._dl_key
+        elif delay_ms is not None:
+            target = self._delayed_key
+        else:
+            target = self._pending_key
         await self._client.eval(
             TRANSITION,
             2,
             self._pending_key,
-            self._dl_key if dead else self._pending_key,
+            target,
             self._group,
             entry_id,
             item.worker_id,
             replacement.model_dump_json() if replacement is not None else "",
             self._max_dl if dead else 0,
+            "" if dead or delay_ms is None else delay_ms,
         )
         # A network failure leaves these intact so the transition can be retried.
         # A zero result means it was already completed or another worker owns it.
@@ -205,7 +238,7 @@ class RedisDeliveryBackend(DeliveryBackend):
         if item is None:
             return
         retry_count = item.retry_count + 1
-        dead = retry_count >= item.max_retries
+        dead = retry_count > item.max_retries
         replacement = item.model_copy(
             update={
                 "retry_count": retry_count,
@@ -214,7 +247,11 @@ class RedisDeliveryBackend(DeliveryBackend):
                 "worker_id": None,
             }
         )
-        await self._transition(item_id, replacement)
+        if dead:
+            await self._transition(item_id, replacement)
+            return
+        delay = retry_delay(retry_count, self._retry_delay, self._max_retry_delay)
+        await self._transition(item_id, replacement, delay_ms=round(delay * 1000))
 
     async def dead_letter(self, item_id: str, error: str) -> None:
         item = self._items.get(item_id)
@@ -231,8 +268,10 @@ class RedisDeliveryBackend(DeliveryBackend):
             )
 
     async def get_queue_depth(self) -> int:
-        result = await self._client.xlen(self._pending_key)
-        return int(result)
+        """Pending items, those waiting out a retry delay included."""
+        queued = await self._client.xlen(self._pending_key)
+        waiting = await self._client.zcard(self._delayed_key)
+        return int(queued) + int(waiting)
 
     async def get_dead_letter_items(self, limit: int = 50) -> list[DeliveryItem]:
         entries = await self._client.xrevrange(self._dl_key, "+", "-", count=limit)

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from roomkit.delivery.base import DeliveryItem, DeliveryItemStatus
+import asyncio
+
+import pytest
+
+from roomkit.delivery.base import DeliveryItem, DeliveryItemStatus, retry_delay
 from roomkit.delivery.memory import InMemoryDeliveryBackend
 
 
@@ -58,26 +62,30 @@ class TestAck:
 
 
 class TestNack:
-    async def test_nack_re_enqueues(self) -> None:
-        backend = InMemoryDeliveryBackend()
+    async def test_nack_re_enqueues_after_the_retry_delay(self) -> None:
+        backend = InMemoryDeliveryBackend(retry_delay=0.2)
         item = DeliveryItem(room_id="r1", content="hello", max_retries=3)
         await backend.enqueue(item)
 
         dequeued = await backend.dequeue("w1", timeout=1.0)
         await backend.nack(dequeued[0].id, error="transient failure")
 
-        # Should be back in queue
+        # Pending, but not attempted again before its delay has passed.
         assert await backend.get_queue_depth() == 1
+        assert await backend.dequeue("w1", timeout=0.05) == []
         re_dequeued = await backend.dequeue("w1", timeout=1.0)
         assert re_dequeued[0].retry_count == 1
 
-    async def test_nack_dead_letters_after_max_retries(self) -> None:
-        backend = InMemoryDeliveryBackend()
+    async def test_max_retries_counts_retries_after_the_first_attempt(self) -> None:
+        backend = InMemoryDeliveryBackend(retry_delay=0)
         item = DeliveryItem(room_id="r1", content="hello", max_retries=1)
         await backend.enqueue(item)
 
         dequeued = await backend.dequeue("w1", timeout=1.0)
-        await backend.nack(dequeued[0].id, error="permanent failure")
+        await backend.nack(dequeued[0].id, error="first failure")
+        retried = await backend.dequeue("w1", timeout=1.0)
+        assert retried[0].retry_count == 1
+        await backend.nack(retried[0].id, error="permanent failure")
 
         # Should be in dead letter, not re-enqueued
         assert await backend.get_queue_depth() == 0
@@ -165,7 +173,7 @@ class TestLifecycle:
         assert len(backend._in_flight) == 0
 
     async def test_nack_queue_full_dead_letters(self) -> None:
-        backend = InMemoryDeliveryBackend(max_queue_size=1)
+        backend = InMemoryDeliveryBackend(max_queue_size=1, retry_delay=0)
         # Fill the queue
         await backend.enqueue(DeliveryItem(room_id="r1", content="filler"))
         # Dequeue and enqueue another to keep queue full
@@ -173,8 +181,33 @@ class TestLifecycle:
         backend._in_flight[item.id] = item
 
         await backend.nack(item.id, error="transient")
+        await asyncio.sleep(0.01)  # its delay, 0, passes
 
         # Queue was full, so item should be dead-lettered
         dl = await backend.get_dead_letter_items()
         assert len(dl) == 1
         assert dl[0].error == "queue full on retry"
+
+
+class TestRetryDelay:
+    def test_each_retry_waits_twice_as_long_up_to_the_cap(self) -> None:
+        assert [retry_delay(n, 1.0, 5.0) for n in (1, 2, 3, 4)] == [1.0, 2.0, 4.0, 5.0]
+        # However many retries an item allows, the delay stays the cap.
+        assert retry_delay(5000, 1.0, 60.0) == 60.0
+
+    @pytest.mark.parametrize(("base", "cap"), [(-1.0, 5.0), (2.0, 1.0), (float("inf"), 5.0)])
+    def test_bad_delays_are_refused(self, base: float, cap: float) -> None:
+        with pytest.raises(ValueError, match="retry delays"):
+            InMemoryDeliveryBackend(retry_delay=base, max_retry_delay=cap)
+
+    async def test_close_queues_again_an_item_waiting_out_its_delay(self) -> None:
+        backend = InMemoryDeliveryBackend(retry_delay=60.0)
+        await backend.enqueue(DeliveryItem(room_id="r1", content="hello"))
+        [item] = await backend.dequeue("w1", timeout=1.0)
+        await backend.nack(item.id, error="transient")
+
+        await backend.close()
+
+        assert backend._delayed == {}
+        [queued] = await backend.dequeue("w1", timeout=0.1)
+        assert queued.id == item.id and queued.retry_count == 1

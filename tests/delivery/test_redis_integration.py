@@ -25,15 +25,20 @@ async def backends():
     redis = pytest.importorskip("redis.asyncio")
     client = redis.from_url(os.environ["REDIS_URL"])
     prefix = f"roomkit:test:{uuid4().hex}"
-    first = RedisDeliveryBackend(client=client, stream_prefix=prefix, claim_idle_seconds=0.3)
-    second = RedisDeliveryBackend(client=client, stream_prefix=prefix, claim_idle_seconds=0.3)
+    # Retries go out at once here; their delay has a test of its own.
+    first = RedisDeliveryBackend(
+        client=client, stream_prefix=prefix, claim_idle_seconds=0.3, retry_delay=0
+    )
+    second = RedisDeliveryBackend(
+        client=client, stream_prefix=prefix, claim_idle_seconds=0.3, retry_delay=0
+    )
     await client.xgroup_create(first._pending_key, first._group, id="0", mkstream=True)
     try:
         yield first, second, client
     finally:
         await first.close()
         await second.close()
-        await client.delete(first._pending_key, first._dl_key)
+        await client.delete(first._pending_key, first._dl_key, first._delayed_key)
         await client.aclose()
 
 
@@ -162,11 +167,14 @@ async def test_nack_exhaustion_moves_once_to_dead_letter(backends) -> None:
     first, second, _client = backends
     await first.enqueue(DeliveryItem(room_id="r1", content="bad", max_retries=1))
     [item] = await first.dequeue("old")
-    await first.nack(item.id, "failed")
+    await first.nack(item.id, "transient")
+    # max_retries counts retries after the first attempt: one more goes out.
+    [retried] = await second.dequeue("new", timeout=0)
+    await second.nack(retried.id, "failed")
     assert await second.get_queue_depth() == 0
     [dead] = await second.get_dead_letter_items()
     assert dead.id == item.id
-    assert dead.retry_count == 1
+    assert dead.retry_count == 2
     assert dead.error == "failed"
 
 
@@ -205,3 +213,29 @@ async def test_targets_and_outcome_survive_reclaim_and_retry(backends, target) -
     assert retry.outcome.status == "unavailable"
     assert retry.outcome.error.message == "offline"
     await first.ack(retry.id)
+
+
+async def test_a_retry_waits_out_its_delay_on_the_server_clock() -> None:
+    redis = pytest.importorskip("redis.asyncio")
+    client = redis.from_url(os.environ["REDIS_URL"])
+    prefix = f"roomkit:test:{uuid4().hex}"
+    first = RedisDeliveryBackend(client=client, stream_prefix=prefix, retry_delay=0.5)
+    second = RedisDeliveryBackend(client=client, stream_prefix=prefix, retry_delay=0.5)
+    await client.xgroup_create(first._pending_key, first._group, id="0", mkstream=True)
+    try:
+        await first.enqueue(DeliveryItem(room_id="r1", content="later"))
+        [item] = await first.dequeue("old")
+        await first.nack(item.id, "offline")
+
+        # Pending, and no worker gets it before its delay has passed.
+        assert await second.get_queue_depth() == 1
+        assert await second.dequeue("new", timeout=0) == []
+        await asyncio.sleep(0.6)
+        [retried] = await second.dequeue("new", timeout=0)
+        assert retried.id == item.id and retried.retry_count == 1
+        assert await second.dequeue("other", timeout=0) == []
+    finally:
+        await first.close()
+        await second.close()
+        await client.delete(first._pending_key, first._dl_key, first._delayed_key)
+        await client.aclose()

@@ -12,7 +12,13 @@ from collections import deque
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from roomkit.delivery.base import DeliveryBackend, DeliveryItem, DeliveryItemStatus
+from roomkit.delivery.base import (
+    DeliveryBackend,
+    DeliveryItem,
+    DeliveryItemStatus,
+    check_retry_delays,
+    retry_delay,
+)
 from roomkit.delivery.worker import run_worker_loop
 
 if TYPE_CHECKING:
@@ -24,15 +30,30 @@ logger = logging.getLogger("roomkit.delivery.memory")
 class InMemoryDeliveryBackend(DeliveryBackend):
     """Asyncio-queue-based delivery backend (single process, no persistence).
 
-    Items flow through ``_queue`` → ``_in_flight`` → acked/dead-lettered.
-    A background worker task drains the queue and executes deliveries.
+    Items flow through ``_queue`` → ``_in_flight`` → acked/dead-lettered;
+    a nacked item with retries left waits in ``_delayed`` before it is queued
+    again. A background worker task drains the queue and executes deliveries.
+
+    Args:
+        max_queue_size: Bound on the queue.
+        max_dead_letter_size: Bound on the dead-letter queue (oldest dropped).
+        retry_delay: Seconds before the first retry; each next one waits
+            twice as long, up to *max_retry_delay*. 0 retries at once.
+        max_retry_delay: Cap on the wait before a retry.
     """
 
     def __init__(
         self,
         max_queue_size: int = 1000,
         max_dead_letter_size: int = 1000,
+        *,
+        retry_delay: float = 1.0,
+        max_retry_delay: float = 60.0,
     ) -> None:
+        check_retry_delays(retry_delay, max_retry_delay)
+        self._retry_delay = retry_delay
+        self._max_retry_delay = max_retry_delay
+        self._delayed: dict[str, tuple[DeliveryItem, asyncio.TimerHandle]] = {}
         self._queue: asyncio.Queue[DeliveryItem] = asyncio.Queue(
             maxsize=max_queue_size,
         )
@@ -103,32 +124,43 @@ class InMemoryDeliveryBackend(DeliveryBackend):
         item.retry_count += 1
         item.error = error
 
-        if item.retry_count >= item.max_retries:
+        if item.retry_count > item.max_retries:
             item.status = DeliveryItemStatus.DEAD_LETTER
             item.error = error or "max retries exceeded"
             self._dead_letter.append(item)
             logger.warning(
                 "Dead-lettered %s after %d retries: %s",
                 item_id,
-                item.retry_count,
+                item.max_retries,
                 error,
             )
-        else:
-            item.status = DeliveryItemStatus.PENDING
-            try:
-                self._queue.put_nowait(item)
-            except asyncio.QueueFull:
-                item.status = DeliveryItemStatus.DEAD_LETTER
-                item.error = "queue full on retry"
-                self._dead_letter.append(item)
-                logger.warning("Dead-lettered %s — queue full on retry", item_id)
-            else:
-                logger.debug(
-                    "Re-enqueued %s (attempt %d/%d)",
-                    item_id,
-                    item.retry_count,
-                    item.max_retries,
-                )
+            return
+        item.status = DeliveryItemStatus.PENDING
+        item.worker_id = None
+        delay = retry_delay(item.retry_count, self._retry_delay, self._max_retry_delay)
+        handle = asyncio.get_running_loop().call_later(delay, self._requeue, item_id)
+        self._delayed[item_id] = (item, handle)
+        logger.debug(
+            "Retrying %s in %.1fs (retry %d/%d)",
+            item_id,
+            delay,
+            item.retry_count,
+            item.max_retries,
+        )
+
+    def _requeue(self, item_id: str) -> None:
+        """Queue a retried item again once its delay has passed."""
+        entry = self._delayed.pop(item_id, None)
+        if entry is None:
+            return
+        item = entry[0]
+        try:
+            self._queue.put_nowait(item)
+        except asyncio.QueueFull:
+            item.status = DeliveryItemStatus.DEAD_LETTER
+            item.error = "queue full on retry"
+            self._dead_letter.append(item)
+            logger.warning("Dead-lettered %s — queue full on retry", item_id)
 
     async def dead_letter(self, item_id: str, error: str) -> None:
         item = self._in_flight.pop(item_id, None)
@@ -139,7 +171,8 @@ class InMemoryDeliveryBackend(DeliveryBackend):
         self._dead_letter.append(item)
 
     async def get_queue_depth(self) -> int:
-        return self._queue.qsize()
+        """Pending items, those waiting out a retry delay included."""
+        return self._queue.qsize() + len(self._delayed)
 
     async def get_dead_letter_items(self, limit: int = 50) -> list[DeliveryItem]:
         return list(self._dead_letter)[:limit]
@@ -164,10 +197,15 @@ class InMemoryDeliveryBackend(DeliveryBackend):
         logger.info("In-memory delivery worker started (id=%s)", self._worker_id)
 
     async def close(self) -> None:
-        """Stop the worker loop.  In-flight items are re-enqueued."""
+        """Stop the worker loop.  In-flight items, and those waiting out a
+        retry delay, are re-enqueued."""
         await self._cancel_worker_task()
+        for _item, handle in self._delayed.values():
+            handle.cancel()
+        waiting = [item for item, _handle in self._delayed.values()]
+        self._delayed.clear()
         # Re-enqueue any in-flight items so they aren't silently lost
-        for item in self._in_flight.values():
+        for item in [*self._in_flight.values(), *waiting]:
             item.status = DeliveryItemStatus.PENDING
             item.worker_id = None
             try:

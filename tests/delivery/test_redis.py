@@ -30,6 +30,7 @@ def _build_mock_client() -> AsyncMock:
     client.xack = AsyncMock(return_value=1)
     client.xdel = AsyncMock(return_value=1)
     client.xlen = AsyncMock(return_value=0)
+    client.zcard = AsyncMock(return_value=0)
     client.xrevrange = AsyncMock(return_value=[])
     client.xgroup_create = AsyncMock()
     client.aclose = AsyncMock()
@@ -144,6 +145,7 @@ class TestAck:
         client.xreadgroup = AsyncMock(return_value=[[b"s", [(b"789-0", entry_data)]]])
 
         items = await backend.dequeue("w1")
+        client.eval.reset_mock()  # the dequeue's own call queues due retries
         await backend.ack(items[0].id)
 
         client.eval.assert_awaited_once()
@@ -155,6 +157,7 @@ class TestAck:
             "w1",
             "",
             0,
+            "",
         )
 
     async def test_cleans_up_tracking(self) -> None:
@@ -182,23 +185,29 @@ class TestNack:
         client.xreadgroup = AsyncMock(return_value=[[b"s", [(b"200-0", entry_data)]]])
 
         items = await backend.dequeue("w1")
+        client.eval.reset_mock()
         await backend.nack(items[0].id, error="transient")
 
         client.eval.assert_awaited_once()
+        # The retry waits in the delayed set, 1 s for the first one.
+        assert client.eval.call_args.args[3] == "roomkit:delivery:delayed"
+        assert client.eval.call_args.args[9] == 1000
         replacement = DeliveryItem.model_validate_json(client.eval.call_args.args[7])
         assert replacement.retry_count == 1
         assert replacement.status == DeliveryItemStatus.PENDING
 
     async def test_dead_letters_after_max_retries(self) -> None:
         backend, client = _make_backend()
-        item = _make_item(max_retries=1)
+        item = _make_item(max_retries=0)
         entry_data = {b"data": item.model_dump_json().encode()}
         client.xreadgroup = AsyncMock(return_value=[[b"s", [(b"300-0", entry_data)]]])
 
         items = await backend.dequeue("w1")
+        client.eval.reset_mock()
         await backend.nack(items[0].id, error="permanent")
 
         client.eval.assert_awaited_once()
+        assert client.eval.call_args.args[9] == ""
         assert client.eval.call_args.args[3] == "roomkit:delivery:dead_letter"
         replacement = DeliveryItem.model_validate_json(client.eval.call_args.args[7])
         assert replacement.status == DeliveryItemStatus.DEAD_LETTER
@@ -212,6 +221,7 @@ class TestDeadLetter:
         client.xreadgroup = AsyncMock(return_value=[[b"s", [(b"400-0", entry_data)]]])
 
         items = await backend.dequeue("w1")
+        client.eval.reset_mock()
         await backend.dead_letter(items[0].id, "fatal error")
 
         client.eval.assert_awaited_once()
@@ -238,9 +248,12 @@ class TestGetQueueDepth:
     async def test_calls_xlen(self) -> None:
         backend, client = _make_backend()
         client.xlen = AsyncMock(return_value=42)
+        client.zcard = AsyncMock(return_value=3)
         depth = await backend.get_queue_depth()
-        assert depth == 42
+        # Retries waiting out their delay are pending too.
+        assert depth == 45
         client.xlen.assert_called_once_with("roomkit:delivery:pending")
+        client.zcard.assert_called_once_with("roomkit:delivery:delayed")
 
 
 class TestGetDeadLetterItems:
