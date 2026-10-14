@@ -53,7 +53,11 @@ from roomkit.channels._turn_notes import (
 from roomkit.channels._user_text import with_leading_text
 from roomkit.core.visibility import visible_events
 from roomkit.memory.base import MemoryResult
-from roomkit.memory.token_estimator import estimate_tokens, estimate_tool_tokens
+from roomkit.memory.token_estimator import (
+    estimate_message_tokens,
+    estimate_tokens,
+    estimate_tool_tokens,
+)
 from roomkit.models.channel import ChannelCapabilities
 from roomkit.models.delivery import SUPERSEDED
 from roomkit.models.enums import ChannelCategory, ChannelMediaType, EventType
@@ -306,12 +310,23 @@ class AIContextMixin(_AIChannelContract):
             own_notes, speakers=attribute_speakers, retrieved=memory_result.notes
         )
         messages = with_turn_notes(messages, notes)
-        if not standalone and self._provider.supports_vision:
-            # The latest images the room's tools returned, after the notes:
-            # the digest only says what they showed in their tool's words.
-            images = self._tool_usage.render_images(loop_ctx.room_id)
-            messages = with_turn_images(messages, images)
-        return messages
+        # The latest images the room's tools returned, after the notes: the
+        # digest only says what they showed in their tool's words.
+        return with_turn_images(messages, self._turn_images(loop_ctx))
+
+    def _turn_images(self, loop_ctx: _ToolLoopContext) -> list[AITextPart | AIImagePart]:
+        """The images this channel's tool calls in the room returned that ride
+        the turn's input, their labels quoting the calls with each copy of a
+        runtime mark replaced (RFC §6.4); none for a standalone turn or a
+        model that does not see."""
+        if loop_ctx.standalone or not self._provider.supports_vision:
+            return []
+        return [
+            AITextPart(text=without_mark_copies(part.text))
+            if isinstance(part, AITextPart)
+            else part
+            for part in self._tool_usage.render_images(loop_ctx.room_id)
+        ]
 
     def _turn_base_tools(
         self, turn: AIChannelTurnConfig | None, binding: ChannelBinding
@@ -771,15 +786,18 @@ class AIContextMixin(_AIChannelContract):
         round 0 will send it, before the memory reads the room (RFC §20): the
         system prompt, the tools declared (Tool Search's collapse and the
         re-read tool included), the channel's notes with room for the speaker
-        attribution the history may call for, and the reply budget."""
+        attribution the history may call for, the images the input replays,
+        and the reply budget."""
         declared = self._eviction.with_reread_tool(
             self._apply_tool_filters(list(loop_ctx.all_context_tools or []))
         )
         notes = self._turn_notes(own_notes, speakers=True, retrieved=[]) or ""
+        images = self._turn_images(loop_ctx)
         loop_ctx.turn_footprint = TurnFootprint(
             input_tokens=estimate_tokens(system_prompt or "")
             + sum(estimate_tool_tokens(tool) for tool in declared)
-            + estimate_tokens(notes),
+            + estimate_tokens(notes)
+            + (estimate_message_tokens(AIMessage(role="user", content=images)) if images else 0),
             reply_tokens=max_tokens or 0,
         )
 

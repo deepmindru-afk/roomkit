@@ -15,7 +15,7 @@ from typing import Any
 from roomkit._lookalike import reads_as
 from roomkit._text import json_line, quoted
 from roomkit.channels._speaker import SPEAKER_KEY, said_by
-from roomkit.channels._turn_notes import split_turn_notes
+from roomkit.channels._turn_notes import split_turn_notes, without_turn_images
 from roomkit.channels._user_text import split_leading_text
 from roomkit.providers.ai.base import AIContext, AIMessage, AIProvider, ProviderError
 from roomkit.speaking.thought import MAX_WANT_TO_SAY, Thought
@@ -156,15 +156,15 @@ def thinker_input(previous: Thought, messages: list[AIMessage]) -> str:
 def transcript_line(message: AIMessage) -> str:
     """One message as a line of the conversation, its words quoted (RFC §6.4)
     after who said them: ``You:`` for the agent's own, the speaker's name the
-    context gave a user message when several people talk; tool traffic and the
-    turn notes left out."""
+    context gave a user message when several people talk; tool traffic, the
+    turn notes and the images the runtime replays left out."""
     if message.role == "tool":
         return ""
     if isinstance(message.content, str):
         text = split_turn_notes(message.content)[0]
     else:
         # The notes ride a text part of their own when the input has images.
-        texts = (getattr(part, "text", "") for part in message.content)
+        texts = (getattr(part, "text", "") for part in without_turn_images(message.content))
         # A line per part, so each part's line labels are seen as such.
         text = "\n".join(split_turn_notes(part_text)[0] for part_text in texts)
     text = text.strip()

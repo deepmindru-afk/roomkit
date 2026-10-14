@@ -193,6 +193,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   more of its words in their order ("the kitchen lamp" to "the kitchen lamp
   or the living room lamp?") cuts it and is not heard, so the agent stops
   and says nothing; what they say next while nothing plays is heard.
+- An image a tool returned no longer blocks a room (RMK-708, RMK-738, RFC
+  §6.4). 0.101.0 replayed any image, so one the provider refuses (a link
+  that expired, an SVG, an oversized screenshot) came back on every later
+  turn and failed it. Only an image every vision provider takes is replayed
+  now: inline (a `data:` URI), PNG, JPEG, GIF or WebP, up to 2 MB, from a
+  live result, never one rebuilt from the store (the in-memory store handed
+  seeded images back); and a turn that replayed them and fails on a provider
+  error not retried replays none of the room's images after it. The images replayed are the
+  agent's own tool calls' in the room. They count in what the turn measures
+  before its history (RFC §20), a hook's `add_turn_note` joins the turn's
+  one notes section instead of opening a second after them, their labels
+  are cleaned of runtime-mark copies as the digest is, and the thinker's
+  transcript no longer quotes their header as the participant's words.
 
 ## [0.101.0] — 2026-10-13
 
