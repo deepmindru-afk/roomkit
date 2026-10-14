@@ -22,7 +22,7 @@ import contextlib
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import SecretStr
 
@@ -469,7 +469,7 @@ class DeepgramAgentProvider(RealtimeVoiceProvider):
     # Maps each server event type to the handler method that processes it.
     # Acknowledgements (Welcome, SettingsApplied, *Updated) and telemetry
     # (LatencyReport, History) have no handler and fall through to a debug line.
-    _EVENT_HANDLERS: dict[str, str] = {
+    _EVENT_HANDLERS: ClassVar[dict[str, str]] = {
         "ConversationText": "_on_conversation_text",
         "UserStartedSpeaking": "_on_user_started_speaking",
         "AgentStartedSpeaking": "_on_agent_started_speaking",

@@ -16,7 +16,7 @@ import base64
 import json
 import logging
 from abc import abstractmethod
-from typing import Any
+from typing import Any, ClassVar
 
 from roomkit.providers.ai.tool_calls import realtime_call_arguments
 from roomkit.providers.openai.response_calls import PendingResponse
@@ -124,7 +124,7 @@ class OpenAIRealtimeEventHandlersMixin(RealtimeVoiceProvider):
             )
 
     # Maps each server event type to the handler method that processes it.
-    _EVENT_HANDLERS: dict[str, str] = {
+    _EVENT_HANDLERS: ClassVar[dict[str, str]] = {
         _EVT_SPEECH_STARTED: "_on_speech_started",
         _EVT_SPEECH_STOPPED: "_on_speech_stopped",
         _EVT_AUDIO_DELTA: "_on_audio_delta",

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 from roomkit.providers.ai.tool_calls import realtime_call_arguments
 from roomkit.providers.openai.live_config import (
@@ -47,7 +47,7 @@ class OpenAILiveHostedDelegationMixin(RealtimeVoiceProvider):
     _delegation: HostedReasoning | IntegratorReasoning
 
     # Nested Responses event type → handler. The three terminal types share one.
-    _RESPONSE_HANDLERS: dict[str, str] = {
+    _RESPONSE_HANDLERS: ClassVar[dict[str, str]] = {
         "response.created": "_on_backend_response_created",
         "response.output_item.done": "_on_backend_output_item_done",
         "response.completed": "_on_backend_response_finished",

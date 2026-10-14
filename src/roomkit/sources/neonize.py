@@ -10,7 +10,7 @@ import asyncio
 import base64
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.event import (
@@ -288,7 +288,7 @@ class WhatsAppPersonalSourceProvider(BaseSourceProvider):
     """
 
     # Platform type names that map to neonize DeviceProps enum values.
-    PLATFORMS: dict[str, int] = {
+    PLATFORMS: ClassVar[dict[str, int]] = {
         "chrome": 1,
         "firefox": 2,
         "safari": 5,
@@ -297,7 +297,7 @@ class WhatsAppPersonalSourceProvider(BaseSourceProvider):
     }
 
     # Receipt type codes from neonize protobuf → human-readable labels.
-    RECEIPT_TYPES: dict[int, str] = {
+    RECEIPT_TYPES: ClassVar[dict[int, str]] = {
         1: "delivered",
         2: "sender",
         3: "retry",

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 from roomkit.providers.openai.live_config import _LOG_TAG, _LiveSession
 from roomkit.providers.openai.live_events import (
@@ -49,7 +49,7 @@ class OpenAILiveEventHandlersMixin(RealtimeVoiceProvider):
     _states: dict[str, _LiveSession]
     _model: str
 
-    _EVENT_HANDLERS: dict[str, str] = {
+    _EVENT_HANDLERS: ClassVar[dict[str, str]] = {
         EVT_SESSION_STARTED: "_on_session_started",
         EVT_SESSION_UPDATED: "_on_session_updated",
         EVT_SESSION_CLOSED: "_on_session_closed",

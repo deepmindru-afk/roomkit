@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from uuid import uuid4
 
 from roomkit.models.delivery import ProviderResult
@@ -97,7 +97,7 @@ class _FakeActivity:
 class _Bag:
     """Attribute access over a dict for snake/camel field equivalence."""
 
-    _ALIASES = {
+    _ALIASES: ClassVar[dict[str, str]] = {
         "aad_object_id": "aadObjectId",
         "user_principal_name": "userPrincipalName",
     }

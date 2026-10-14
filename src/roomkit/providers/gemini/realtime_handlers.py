@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Coroutine
-from typing import Any
+from typing import Any, ClassVar
 
 from roomkit.providers.ai.tool_calls import MALFORMED_CALL_NUDGE, is_malformed_call
 from roomkit.providers.gemini.realtime_state import _GeminiSessionState, _GoAwayError
@@ -121,7 +121,7 @@ class GeminiLiveEventHandlersMixin(RealtimeVoiceProvider):
     # Ordered dispatch table for server response handling.  Each entry is
     # (response_attribute, handler_method).  Order matters: go_away is
     # processed LAST so all data in the message is handled first.
-    _RESPONSE_HANDLERS: list[tuple[str, str]] = [
+    _RESPONSE_HANDLERS: ClassVar[list[tuple[str, str]]] = [
         ("session_resumption_update", "_on_session_resumption"),
         ("voice_activity", "_on_voice_activity"),
         ("server_content", "_on_server_content"),
