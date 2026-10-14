@@ -7,15 +7,17 @@ tool definition, handler class, and ``setup_delegation()`` wiring.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import orchestration_tool
 from roomkit.orchestration._call_room import in_call_room
 from roomkit.providers.ai.base import AITool
 from roomkit.tasks.cache import CompletedTaskCache
-from roomkit.tasks.models import TaskStatus
+from roomkit.tasks.models import DelegatedTask, TaskStatus
 
 if TYPE_CHECKING:
     from roomkit.channels.ai import AIChannel
@@ -148,13 +150,24 @@ class DelegateHandler:
             kit._delivery_strategy = delivery_strategy
         self._cache = cache
         self._serialize_per_room = serialize_per_room
+        # A room's lock, and how many delegations hold it or wait for it: the
+        # last one out drops it, so a room no longer delegating keeps nothing.
         self._room_locks: dict[str, asyncio.Lock] = {}
+        self._room_lock_users: dict[str, int] = {}
         self._background_tasks: set[asyncio.Task[Any]] = set()
 
-    def _get_room_lock(self, room_id: str) -> asyncio.Lock:
-        if room_id not in self._room_locks:
-            self._room_locks[room_id] = asyncio.Lock()
-        return self._room_locks[room_id]
+    @contextlib.asynccontextmanager
+    async def _room_turn(self, room_id: str) -> AsyncGenerator[None]:
+        lock = self._room_locks.setdefault(room_id, asyncio.Lock())
+        self._room_lock_users[room_id] = self._room_lock_users.get(room_id, 0) + 1
+        try:
+            async with lock:
+                yield
+        finally:
+            self._room_lock_users[room_id] -= 1
+            if not self._room_lock_users[room_id]:
+                del self._room_lock_users[room_id]
+                del self._room_locks[room_id]
 
     async def handle(
         self,
@@ -191,8 +204,7 @@ class DelegateHandler:
 
         # Gap 14: Serialize delegations per room
         if self._serialize_per_room:
-            lock = self._get_room_lock(room_id)
-            async with lock:
+            async with self._room_turn(room_id):
                 return await self._do_delegate(
                     room_id, calling_agent_id, agent_id, task_text, context, share_channels
                 )
@@ -228,24 +240,33 @@ class DelegateHandler:
 
         # Store in cache when task completes (fire-and-forget)
         if self._cache is not None:
-            cache = self._cache
-            bg_tasks = self._background_tasks
-
-            async def _cache_on_complete() -> None:
-                try:
-                    ended = await task.wait(timeout=600.0)
-                except Exception:  # nosec B110
-                    return  # timeout or error — don't cache
-                # Only a completed task answers a repeat of its call: a failed
-                # or cancelled one is run again, as a strategy's dispatch is.
-                if ended.status == TaskStatus.COMPLETED:
-                    cache.put(room_id, agent_id, task_text, result)
-
-            t = asyncio.create_task(_cache_on_complete())
-            bg_tasks.add(t)
-            t.add_done_callback(bg_tasks.discard)
+            t = asyncio.create_task(
+                self._remember_when_completed(self._cache, task, room_id, task_text, result)
+            )
+            self._background_tasks.add(t)
+            t.add_done_callback(self._background_tasks.discard)
 
         return result
+
+    @staticmethod
+    async def _remember_when_completed(
+        cache: CompletedTaskCache,
+        task: DelegatedTask,
+        room_id: str,
+        task_text: str,
+        receipt: dict[str, Any],
+    ) -> None:
+        """Cache what the task returned once it completes, so a repeat of its
+        call gets the result, as ``task_status`` gives it, not the receipt of
+        its start. Only a completed task answers a repeat: a failed or
+        cancelled one is run again, as a strategy's dispatch is."""
+        try:
+            ended = await task.wait(timeout=600.0)
+        except Exception:  # nosec B110
+            return  # timeout or error — don't cache
+        if ended.status == TaskStatus.COMPLETED:
+            answer = {**receipt, "status": str(ended.status), "result": ended.output or ""}
+            cache.put(room_id, receipt["agent_id"], task_text, answer)
 
 
 # -- Wiring -------------------------------------------------------------------

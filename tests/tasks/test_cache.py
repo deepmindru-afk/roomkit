@@ -193,3 +193,30 @@ class TestDelegateHandlerSerialization:
         assert execution_order[1] == "end:agent-a"
         assert execution_order[2] == "start:agent-b"
         assert execution_order[3] == "end:agent-b"
+        # The last delegation out drops the room's lock.
+        assert handler._room_locks == {}
+
+    async def test_a_room_that_stopped_delegating_keeps_no_lock(self) -> None:
+        async def delegate(**kwargs):
+            task = DelegatedTask(
+                id=f"t-{kwargs['room_id']}",
+                child_room_id="child",
+                parent_room_id=kwargs["room_id"],
+                agent_id=kwargs["agent_id"],
+                task=kwargs["task"],
+            )
+            task.wait = AsyncMock()
+            return task
+
+        kit = MagicMock()
+        kit.delegate = AsyncMock(side_effect=delegate)
+        handler = DelegateHandler(kit, serialize_per_room=True)
+
+        for room_id in ("room-1", "room-2", "room-3"):
+            await handler.handle(
+                room_id=room_id,
+                calling_agent_id="voice",
+                arguments={"agent": "agent-a", "task": "task a"},
+            )
+
+        assert handler._room_locks == {}

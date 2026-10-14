@@ -95,3 +95,6 @@ async def test_a_completed_task_answers_a_repeat_from_the_cache() -> None:
     await kit.close()
 
     assert second["task_id"] == first["task_id"] and second.get("from_cache") is True
+    # The repeat gets what the task returned, not the receipt of its start.
+    assert second["status"] == "completed"
+    assert second["result"] == "Found it."

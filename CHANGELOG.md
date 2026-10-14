@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `init()` refuses one the database has no text search configuration for.
   A document keeps the language it was indexed with until it is indexed
   again: after changing it, index the corpus anew.
+- A repeated `delegate_task` call answered from the cache gets what the
+  task returned (RMK-719). Once a task completed, `DelegateHandler`'s cache
+  kept the receipt of its start, `{"status": "delegated", ...}`, so the
+  same call within the TTL was told the task was delegated, with no result
+  coming any more. It now answers `"status": "completed"` with the task's
+  `result`, as `task_status` gives it. With `serialize_per_room=True`, the
+  handler also kept one lock per room it ever saw; the last delegation out of
+  a room now drops it.
 
 ## [0.101.0] — 2026-10-13
 
