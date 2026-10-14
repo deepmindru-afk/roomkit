@@ -7,9 +7,11 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from roomkit.channels._realtime_endings import cut_tasks
 from roomkit.channels._video_hooks import VideoHooksMixin
 from roomkit.channels._video_resources import _VideoResources
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+from roomkit.core.task_utils import CLOSE_WAIT_S
 from roomkit.models.channel import ChannelCapabilities
 from roomkit.models.enums import ChannelMediaType, ChannelType, HookTrigger
 from roomkit.voice.realtime.provider import RealtimeAudioVideoProvider
@@ -232,12 +234,28 @@ class RealtimeAudioVideoChannel(VideoHooksMixin, RealtimeVoiceChannel):
                 room_id,
             )
 
-        # Clean up video state
+        # Clean up video state, once no analysis is left to write it again
+        await self._cancel_vision(session.id)
         if self._video_pipeline is not None:
             self._video_pipeline.reset(session.id)
         self._last_vision_results.pop(session.id, None)
         self._forget_session_vision(session.id)
         self._last_vision_ts.pop(session.id, None)
+
+    async def _cancel_vision(self, session_id: str) -> None:
+        """Cancel the session's vision analyses still under way.
+
+        One finishing while the session ends (its provider disconnecting) would
+        put it back in the pipeline and leave its view to the room after the
+        reset (RFC §12.8.7).
+        """
+        name = f"vision:{session_id}"
+        tasks = cut_tasks(task for task in self._scheduled_tasks if task.get_name() == name)
+        if not tasks:
+            return
+        _, pending = await asyncio.wait(tasks, timeout=CLOSE_WAIT_S)
+        if pending:
+            logger.warning("Timed out cancelling vision for session %s", session_id)
 
     async def close(self) -> None:
         """End the sessions (parent), then close the video pipeline and vision.

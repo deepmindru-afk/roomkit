@@ -20,7 +20,7 @@ from roomkit.video.pipeline.engine import VideoPipeline
 from roomkit.video.pipeline.filter.censor import CensorVideoFilter
 from roomkit.video.pipeline.filter.mock_face_touch import MockFaceTouchFilter
 from roomkit.video.video_frame import VideoFrame
-from roomkit.video.vision.base import VisionResult
+from roomkit.video.vision.base import VisionProvider, VisionResult
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.mock import MockRealtimeAudioVideoProvider, MockRealtimeTransport
@@ -139,7 +139,6 @@ async def test_av_dispatches_and_drains_detection_events() -> None:
     channel._fire_video_detection_hook = hook
     try:
         channel._on_video_received(session, frame())
-        import asyncio
 
         await asyncio.gather(*channel._scheduled_tasks)
         hook.assert_awaited_once_with(session, detection, "r")
@@ -187,6 +186,58 @@ async def test_realtime_av_frame_during_session_end_leaves_no_video_state() -> N
         await channel.close()
 
 
+class _GatedVision(VisionProvider):
+    """Answers once its gate opens."""
+
+    def __init__(self) -> None:
+        self.gate = asyncio.Event()
+
+    @property
+    def name(self) -> str:
+        return "gated"
+
+    async def analyze_frame(self, frame: VideoFrame) -> VisionResult:
+        await self.gate.wait()
+        return VisionResult(description="a mug", labels=["mug"])
+
+
+async def test_realtime_av_vision_finishing_during_session_end_restores_nothing() -> None:
+    # An analysis under way when the session ends finished while the provider
+    # disconnected, after the reset: it put the session back in the pipeline
+    # and left its view behind.
+    vision = _GatedVision()
+    provider = MockRealtimeAudioVideoProvider()
+    channel = RealtimeAudioVideoChannel(
+        "rv",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        video_pipeline=VideoPipelineConfig(filters=[CensorVideoFilter({"private"})]),
+        vision=vision,
+        vision_interval_ms=0,
+    )
+    disconnect = provider.disconnect
+
+    async def release_vision_then_disconnect(session: VoiceSession) -> None:
+        vision.gate.set()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        await disconnect(session)
+
+    provider.disconnect = release_vision_then_disconnect  # type: ignore[method-assign]
+    try:
+        session = await channel.start_session("r1", "p", "ws")
+        await provider.simulate_video(session, frame())
+        await asyncio.sleep(0)
+        await channel.end_session(session)
+
+        assert session.id not in channel._video_pipeline._filter_contexts
+        assert session.id not in channel._video_pipeline._sessions
+        assert session.id not in channel._last_vision_results
+        assert channel._room_vision == {}
+    finally:
+        await channel.close()
+
+
 async def test_realtime_av_dispatches_and_drains_detection_events() -> None:
     # The provider's frames went through the filters, whose detections were
     # never drained: ON_VIDEO_DETECTION never fired and the events piled up.
@@ -213,8 +264,6 @@ async def test_realtime_av_dispatches_and_drains_detection_events() -> None:
 
 
 async def test_vision_finishing_after_unbind_does_not_restore_session_state() -> None:
-    import asyncio
-
     started, finish = asyncio.Event(), asyncio.Event()
     vision = AsyncMock()
 
