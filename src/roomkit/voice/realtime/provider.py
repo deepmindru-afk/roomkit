@@ -413,7 +413,7 @@ class RealtimeVoiceProvider(ABC):
         """
         ...
 
-    async def truncate_audio(self, session: VoiceSession, audio_end_ms: int) -> None:  # noqa: B027
+    async def truncate_audio(self, session: VoiceSession, audio_end_ms: int) -> None:
         """Synchronize provider context with the audio the user actually heard.
 
         Realtime providers that keep conversation state may generate audio
@@ -803,7 +803,7 @@ class RealtimeVoiceProvider(ABC):
             except Exception:
                 logger.exception("Error in %s callback", label)
 
-    async def start_audio_stream(self, session: VoiceSession) -> None:  # noqa: B027
+    async def start_audio_stream(self, session: VoiceSession) -> None:
         """Open the audio input path on the provider.
 
         Some providers need to be nudged into "audio is flowing" mode before
@@ -819,7 +819,7 @@ class RealtimeVoiceProvider(ABC):
 
     # -- Manual VAD activity signals --
 
-    async def send_activity_start(self, session: VoiceSession) -> None:  # noqa: B027
+    async def send_activity_start(self, session: VoiceSession) -> None:
         """Signal that user speech activity has started.
 
         Used in manual VAD mode: local VAD detects speech and the channel
@@ -829,7 +829,7 @@ class RealtimeVoiceProvider(ABC):
         Default: no-op.  Override when the provider supports manual mode.
         """
 
-    async def send_activity_end(self, session: VoiceSession) -> None:  # noqa: B027
+    async def send_activity_end(self, session: VoiceSession) -> None:
         """Signal that user speech activity has ended.
 
         Used in manual VAD mode: local VAD detects silence and the channel

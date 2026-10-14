@@ -16,7 +16,7 @@ def _get_np() -> Any:
     import roomkit without it, and the DSP hot paths must not pay a
     per-call import.
     """
-    global _np  # noqa: PLW0603
+    global _np
     if _np is None:
         import numpy
 

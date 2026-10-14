@@ -38,7 +38,7 @@ _stderr_fd_lock = threading.Lock()
 
 def _load_speexdsp() -> ctypes.CDLL:
     """Load ``libspeexdsp`` or raise :class:`ImportError`."""
-    global _lib  # noqa: PLW0603
+    global _lib
     if _lib is not None:
         return _lib
 

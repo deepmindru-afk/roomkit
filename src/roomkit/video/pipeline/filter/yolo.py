@@ -17,7 +17,7 @@ logger = logging.getLogger("roomkit.video.pipeline.filter")
 def _load_ultralytics() -> Any:
     """Lazy-load ultralytics, raising a clear error if missing."""
     try:
-        import ultralytics  # noqa: F811
+        import ultralytics
     except ImportError as exc:
         raise ImportError(
             "ultralytics is required for YOLODetectorFilter. Install with: pip install ultralytics"

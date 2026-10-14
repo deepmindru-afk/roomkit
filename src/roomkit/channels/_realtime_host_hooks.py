@@ -116,7 +116,7 @@ async def fire_text_injected(
         metadata=metadata,
     )
     try:
-        context = await framework._build_context(session.room_id)  # noqa: SLF001
+        context = await framework._build_context(session.room_id)
         await framework.hook_engine.run_async_hooks(
             session.room_id,
             HookTrigger.ON_REALTIME_TEXT_INJECTED,
@@ -145,8 +145,8 @@ async def fire_session_error(
     if framework is None or not session.room_id:
         return
     try:
-        context = await framework._build_context(session.room_id)  # noqa: SLF001
-        await framework._fire_error_hook(  # noqa: SLF001
+        context = await framework._build_context(session.room_id)
+        await framework._fire_error_hook(
             session.room_id,
             context,
             source,
@@ -175,7 +175,7 @@ async def fire_delegation(
     kind: Literal["hosted", "integrator"] = "hosted" if target == "hosted" else "integrator"
     event = RealtimeDelegationEvent(session=session, delegation_id=delegation_id, target=kind)
     try:
-        context = await framework._build_context(room_id)  # noqa: SLF001
+        context = await framework._build_context(room_id)
         await framework.hook_engine.run_async_hooks(
             room_id,
             HookTrigger.ON_REALTIME_DELEGATION,

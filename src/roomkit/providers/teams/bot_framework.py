@@ -380,7 +380,7 @@ class BotFrameworkTeamsProvider(TeamsProvider):
 
     def verify_signature(
         self,
-        payload: bytes,  # noqa: ARG002
+        payload: bytes,
         signature: str,
     ) -> bool:
         """Verify a Bot Framework JWT bearer token.

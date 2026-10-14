@@ -34,7 +34,7 @@ def check_open(kit: _Closable, what: str = "background run") -> None:
     Raises:
         RoomKitError: *kit* is closing.
     """
-    if kit._closed:  # noqa: SLF001
+    if kit._closed:
         raise RoomKitError(f"The framework is closing: no {what} starts")
 
 
@@ -54,7 +54,7 @@ def hold_task(
     logged, unless its caller *awaited* it and receives it. *context*, when
     given, is the one it runs in instead of a copy of the caller's."""
     task = start_named(work, context=context, eager=eager)
-    runs = kit._background_runs  # noqa: SLF001
+    runs = kit._background_runs
     runs.add(task)
     task.add_done_callback(runs.discard)
     if not awaited:

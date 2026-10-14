@@ -168,7 +168,7 @@ class PersonaPlexRealtimeProvider(RealtimeVoiceProvider):
         server_vad: bool = True,
         provider_config: dict[str, Any] | None = None,
     ) -> None:
-        import websockets  # noqa: F811 — lazy import
+        import websockets  # lazy import
 
         self._ensure_deps()
 
@@ -198,7 +198,7 @@ class PersonaPlexRealtimeProvider(RealtimeVoiceProvider):
             msg = "PersonaPlex server did not send handshake"
             raise ConnectionError(msg)
 
-        import sphn  # noqa: F811 — lazy import
+        import sphn  # lazy import
 
         state = _SessionState(
             session=session,

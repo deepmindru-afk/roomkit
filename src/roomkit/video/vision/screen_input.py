@@ -242,7 +242,7 @@ _dpi_initialized = False
 
 def _get_scale_factor() -> tuple[float, float]:
     """Detect DPI scale factor per OS for coordinate conversion."""
-    global _dpi_initialized  # noqa: PLW0603
+    global _dpi_initialized
 
     system = platform.system()
     if system == "Darwin":

@@ -116,7 +116,7 @@ class IntegratorReasoning:
     backend's, and the channel keeps them as its declared catalogue.
     """
 
-    def to_config(self, tools: list[dict[str, Any]]) -> dict[str, Any]:  # noqa: ARG002
+    def to_config(self, tools: list[dict[str, Any]]) -> dict[str, Any]:
         """Render the ``delegation`` block of ``session.start``."""
         return {"type": "client"}
 

@@ -190,7 +190,7 @@ class LocalSpeaker:
         try:
             stream.abort()
             stream.close()
-        except Exception:  # noqa: S110
+        except Exception:
             logger.debug("Error closing the speaker stream", exc_info=True)
 
     def _stream_finished(self, generation: int) -> None:

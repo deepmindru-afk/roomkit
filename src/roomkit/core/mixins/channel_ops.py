@@ -820,7 +820,7 @@ class ChannelOpsMixin(HelpersMixin):
         from roomkit.channels.agent import Agent as AgentChannel
         from roomkit.core.hooks import HookRegistration
 
-        assert isinstance(agent, AgentChannel)  # noqa: S101
+        assert isinstance(agent, AgentChannel)
         agent_id = agent.channel_id
         hook_name = f"_agent_auto_greet:{agent_id}"
         kit_ref = self

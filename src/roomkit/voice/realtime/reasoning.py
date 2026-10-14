@@ -325,7 +325,7 @@ class AgentReasoningBackend(ReasoningBackend):
         """The names the agent serves itself (its large-result re-read, its
         Tool Search unless ``tool_search=False``), which it answers before
         the channel's gate (RFC §12.4.1)."""
-        return frozenset(self._agent._channel_tool_names())  # noqa: SLF001
+        return frozenset(self._agent._channel_tool_names())
 
     @property
     def provider(self) -> AIProvider:

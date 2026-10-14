@@ -248,5 +248,5 @@ class WhatsAppPersonalProvider(WhatsAppProvider):
         """
         await self._source.send_reaction(chat, sender, message_id, emoji)
 
-    async def close(self) -> None:  # noqa: B027
+    async def close(self) -> None:
         """No-op — the source owns the client lifecycle."""

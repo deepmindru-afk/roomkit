@@ -1324,5 +1324,5 @@ class FirstToken:
     def seen(self) -> None:
         """Mark output reaching the stream; the first call records it."""
         if self._t0 is not None:
-            self._provider._record_ttfb(self._t0)  # noqa: SLF001
+            self._provider._record_ttfb(self._t0)
             self._t0 = None

@@ -39,7 +39,7 @@ class MockTeamsProvider(TeamsProvider):
     async def process_inbound(
         self,
         payload: dict[str, Any],
-        auth_header: str,  # noqa: ARG002 — fake provider skips JWT checks
+        auth_header: str,  # fake provider skips JWT checks
         on_turn: Callable[[TurnContext], Awaitable[None]],
     ) -> None:
         self.processed.append({"payload": payload})

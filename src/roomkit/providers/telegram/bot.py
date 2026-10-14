@@ -255,7 +255,7 @@ class TelegramBotProvider(TelegramBotAPI, TelegramProvider):
 
     def verify_signature(
         self,
-        payload: bytes,  # noqa: ARG002
+        payload: bytes,
         signature: str,
     ) -> bool:
         """Verify a Telegram webhook secret token.

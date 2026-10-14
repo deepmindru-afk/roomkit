@@ -450,7 +450,7 @@ class ConversationPipeline:
             )
             async def _block_farewell(
                 text: str,
-                ctx: RoomContext,  # noqa: ARG001
+                ctx: RoomContext,
             ) -> HookResult:
                 if ctx.room.id in _handoff_pending:
                     return HookResult.block("handoff_transition")

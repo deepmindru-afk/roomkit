@@ -78,7 +78,7 @@ def _find_rnnoise() -> str | None:
 
 def _load_rnnoise() -> ctypes.CDLL:
     """Load ``librnnoise`` or raise :class:`ImportError`."""
-    global _lib  # noqa: PLW0603
+    global _lib
     if _lib is not None:
         return _lib
 

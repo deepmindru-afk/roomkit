@@ -437,7 +437,7 @@ class ElevenLabsTTSProvider(TTSProvider):
         codec = self._config.output_format.split("_")[0]
         return _CODECS.get(codec, _CODECS["mp3"])
 
-    async def close(self) -> None:  # noqa: B027
+    async def close(self) -> None:
         """Release resources."""
         self._client = None
 

@@ -50,7 +50,7 @@ _np: Any = None
 
 
 def _get_np() -> Any:
-    global _np  # noqa: PLW0603
+    global _np
     if _np is None:
         import numpy as np
 

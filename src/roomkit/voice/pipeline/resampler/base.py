@@ -66,7 +66,7 @@ class ResamplerProvider(ABC):
         target_channels: int,
         target_width: int,
         stream: str,
-    ) -> AudioFrame | None:  # noqa: B027
+    ) -> AudioFrame | None:
         """Flush audio buffered for one stream after its end-of-stream.
 
         Subclasses that hold a pending frame (e.g. for look-ahead context)

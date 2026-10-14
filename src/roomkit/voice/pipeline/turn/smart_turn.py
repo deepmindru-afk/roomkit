@@ -211,7 +211,7 @@ class SmartTurnDetector(TurnDetector):
     # Core evaluate
     # ------------------------------------------------------------------
 
-    def evaluate(self, context: TurnContext) -> TurnDecision:  # noqa: C901
+    def evaluate(self, context: TurnContext) -> TurnDecision:
         """Evaluate turn completion from audio.
 
         Falls back gracefully when audio is unavailable or on errors.

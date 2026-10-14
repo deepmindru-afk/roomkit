@@ -209,7 +209,7 @@ class Channel(ABC):
         if self._trace_framework_handler is not None:
             _safe_invoke(self._trace_framework_handler, trace)
 
-    def resolve_trace_room(self, session_id: str | None) -> str | None:  # noqa: B027
+    def resolve_trace_room(self, session_id: str | None) -> str | None:
         """Resolve a room ID for a trace with the given session.
 
         Override in session-based channels (voice, realtime voice) to

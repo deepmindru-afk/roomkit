@@ -218,7 +218,7 @@ class SherpaOnnxVADProvider(VADProvider):
             n_samples = len(removed) // 2  # int16
             st.pre_roll_ms -= (n_samples / self._config.sample_rate) * 1000.0
 
-    def process(self, frame: AudioFrame, stream: str) -> VADEvent | None:  # noqa: C901
+    def process(self, frame: AudioFrame, stream: str) -> VADEvent | None:
         st = self._state_for(stream)
         self._ensure_detector(st)
 

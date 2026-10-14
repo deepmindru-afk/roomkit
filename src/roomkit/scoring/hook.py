@@ -60,7 +60,7 @@ class ScoringHook:
     def attach(self, kit: RoomKit) -> None:
         """Register the scoring hook on a RoomKit instance."""
         if self._store is None:
-            self._store = kit._store  # noqa: SLF001
+            self._store = kit._store
         decorator = kit.hook(
             HookTrigger.ON_AI_RESPONSE,
             execution=HookExecution.ASYNC,

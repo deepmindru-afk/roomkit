@@ -173,7 +173,7 @@ class OllamaAIProvider(AIProvider):
             async with sem:
                 try:
                     shown = await self._client.show(model=name)
-                except Exception:  # noqa: BLE001 — any probe failure → unknown caps
+                except Exception:  # any probe failure → unknown caps
                     return []
             caps = self._get_attr(shown, "capabilities", None) or []
             return [str(c) for c in caps]

@@ -261,9 +261,9 @@ def compute_digest(
     username: str, realm: str, password: str, method: str, uri: str, nonce: str
 ) -> str:
     """Compute RFC 2617 MD5 digest response for SIP authentication."""
-    ha1 = hashlib.md5(f"{username}:{realm}:{password}".encode()).hexdigest()  # nosec B324  # noqa: S324
-    ha2 = hashlib.md5(f"{method}:{uri}".encode()).hexdigest()  # nosec B324  # noqa: S324
-    return hashlib.md5(f"{ha1}:{nonce}:{ha2}".encode()).hexdigest()  # nosec B324  # noqa: S324
+    ha1 = hashlib.md5(f"{username}:{realm}:{password}".encode()).hexdigest()  # nosec B324
+    ha2 = hashlib.md5(f"{method}:{uri}".encode()).hexdigest()  # nosec B324
+    return hashlib.md5(f"{ha1}:{nonce}:{ha2}".encode()).hexdigest()  # nosec B324
 
 
 # RFC 3326 "Reason" header: ``Reason: Q.850 ;cause=N ;text="…"``.

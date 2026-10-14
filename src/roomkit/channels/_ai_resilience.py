@@ -172,7 +172,7 @@ class AIResilienceMixin(_AIChannelContract):
         """
         logger.warning("Trying fallback provider for stream.")
         fallback = self._fallback_provider
-        assert fallback is not None  # noqa: S101 — the caller checked
+        assert fallback is not None  # the caller checked
         stream = self._structured_stream(fallback, declared_for(fallback, context))
         emitted = False
         projected_composition = False

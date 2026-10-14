@@ -236,7 +236,7 @@ class GradiumSTTProvider(STTProvider):
         msg_count = 0
         speech_start_signalled = False
 
-        raw_iter = stream._stream.__aiter__()  # noqa: SLF001
+        raw_iter = stream._stream.__aiter__()
 
         try:
             while True:

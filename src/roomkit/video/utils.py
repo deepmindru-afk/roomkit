@@ -12,7 +12,7 @@ _np: Any = None
 
 
 def _ensure_deps() -> None:
-    global _cv2, _np  # noqa: PLW0603
+    global _cv2, _np
     if _cv2 is None:
         try:
             import cv2

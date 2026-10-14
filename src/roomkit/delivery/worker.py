@@ -106,14 +106,14 @@ async def fire_delivery_hooks(
     )
     if trigger == HookTrigger.AFTER_DELIVER:
         try:
-            context = await kit._build_context(item.room_id)  # noqa: SLF001
+            context = await kit._build_context(item.room_id)
             await hooks.run_async_hooks(item.room_id, trigger, event, context)
         except Exception:
             logger.warning("AFTER_DELIVER failed for item %s", item.id, exc_info=True)
         return item.content
     # This trigger is fail-open (§9.3). Only an explicit refusal blocks.
     try:
-        context = await kit._build_context(item.room_id)  # noqa: SLF001
+        context = await kit._build_context(item.room_id)
         result = await hooks.run_sync_hooks(item.room_id, trigger, event, context)
     except Exception:
         logger.warning("BEFORE_DELIVER could not run for item %s", item.id, exc_info=True)

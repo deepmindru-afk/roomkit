@@ -406,7 +406,7 @@ def _get_resampler() -> ResamplerProvider:
     Uses double-checked locking so the fast path (already initialized) is
     lock-free, while concurrent first calls are serialized.
     """
-    global _resampler_instance  # noqa: PLW0603
+    global _resampler_instance
     if _resampler_instance is not None:
         return _resampler_instance
     with _resampler_lock:

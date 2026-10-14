@@ -205,7 +205,7 @@ def _with_block(message: AIMessage, block: str) -> AIMessage | None:
         return None
     parts = list(content)
     notes = parts[at]
-    assert isinstance(notes, AITextPart)  # _notes_part  # noqa: S101
+    assert isinstance(notes, AITextPart)  # _notes_part
     parts[at] = AITextPart(text=f"{notes.text}{_PARAGRAPH}{block}")
     return message.model_copy(update={"content": parts})
 

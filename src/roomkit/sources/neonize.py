@@ -360,7 +360,7 @@ class WhatsAppPersonalSourceProvider(BaseSourceProvider):
 
     # -- lifecycle -----------------------------------------------------------
 
-    async def start(self, emit: EmitCallback) -> None:  # noqa: C901
+    async def start(self, emit: EmitCallback) -> None:
         """Connect to WhatsApp and start receiving messages."""
         if not HAS_NEONIZE:
             raise ImportError(

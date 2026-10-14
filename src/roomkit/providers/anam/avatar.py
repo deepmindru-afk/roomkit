@@ -41,7 +41,7 @@ _anam_mod: Any = None
 
 
 def _ensure_deps() -> None:
-    global _anam_mod  # noqa: PLW0603
+    global _anam_mod
     if _anam_mod is None:
         try:
             import anam

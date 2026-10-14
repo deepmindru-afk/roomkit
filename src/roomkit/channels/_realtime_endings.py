@@ -51,7 +51,7 @@ def abandon_calls(
                 session_id,
             )
             continue
-        assert call.task is not None  # interruptible  # noqa: S101
+        assert call.task is not None  # interruptible
         call.task.cancel()
         logger.info(
             "Tool call %s(%s) abandoned by the provider for session %s",

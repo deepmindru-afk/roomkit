@@ -38,7 +38,7 @@ _np: Any = None
 
 def _ensure_deps() -> None:
     """Verify required optional dependencies are importable."""
-    global _anam_mod, _np  # noqa: PLW0603
+    global _anam_mod, _np
     if _anam_mod is None:
         try:
             import anam

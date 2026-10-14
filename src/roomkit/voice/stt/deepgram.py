@@ -342,7 +342,7 @@ class DeepgramSTTProvider(STTProvider):
         fixes the language in the connection URL, so it holds for the life
         of the stream; the caller opens a new stream to change it.
         """
-        from deepgram.core.events import EventType  # noqa: N813
+        from deepgram.core.events import EventType
 
         # Read first chunk to detect sample rate
         first_chunk: AudioChunk | None = None

@@ -40,7 +40,7 @@ class NumpyResamplerProvider(ResamplerProvider):
         target_rate: int,
         target_channels: int,
         target_width: int,
-        stream: str,  # noqa: ARG002 — stateless: nothing to key
+        stream: str,  # stateless: nothing to key
     ) -> AudioFrame:
         if (
             frame.sample_rate == target_rate

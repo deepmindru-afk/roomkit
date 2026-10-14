@@ -50,7 +50,7 @@ class TwilioWhatsAppProvider(WhatsAppProvider):
     async def send(self, event: RoomEvent, to: str) -> ProviderResult:
         # The channel's telemetry reaches this provider; the Messages API
         # client records under it too.
-        self._messages._telemetry = getattr(self, "_telemetry", None)  # noqa: SLF001
+        self._messages._telemetry = getattr(self, "_telemetry", None)
         return await self._messages.send(
             event,
             _whatsapp_address(to),

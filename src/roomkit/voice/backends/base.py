@@ -317,9 +317,9 @@ class VoiceBackend(ABC):
         Args:
             callback: Function called with (session, audio_frame).
         """
-        pass  # noqa: B027
+        pass
 
-    def on_session_ready(self, callback: SessionReadyCallback) -> None:  # noqa: B027
+    def on_session_ready(self, callback: SessionReadyCallback) -> None:
         """Register callback for when a session's audio path becomes live.
 
         Fired when the transport is ready to send/receive audio for a
@@ -336,7 +336,7 @@ class VoiceBackend(ABC):
     # Barge-in support
     # -------------------------------------------------------------------------
 
-    def on_barge_in(self, callback: BargeInCallback) -> None:  # noqa: B027
+    def on_barge_in(self, callback: BargeInCallback) -> None:
         """Register callback for barge-in detection.
 
         Only called if capabilities includes BARGE_IN.
@@ -395,10 +395,10 @@ class VoiceBackend(ABC):
         """
         raise NotImplementedError(f"{self.name} does not implement accept()")
 
-    def interrupt(self, session: VoiceSession) -> None:  # noqa: B027
+    def interrupt(self, session: VoiceSession) -> None:
         """Signal interruption — flush outbound queue, stop playback."""
 
-    def set_input_muted(self, session: VoiceSession, muted: bool) -> None:  # noqa: B027
+    def set_input_muted(self, session: VoiceSession, muted: bool) -> None:
         """Mute or unmute the input (microphone) for a session.
 
         Args:
@@ -406,7 +406,7 @@ class VoiceBackend(ABC):
             muted: ``True`` to mute, ``False`` to unmute.
         """
 
-    def set_input_gated(self, session: VoiceSession, gated: bool) -> None:  # noqa: B027
+    def set_input_gated(self, session: VoiceSession, gated: bool) -> None:
         """Gate or un-gate audio input for primary speaker mode.
 
         When gated, audio is not forwarded to provider callbacks but
@@ -417,7 +417,7 @@ class VoiceBackend(ABC):
             gated: ``True`` to gate, ``False`` to un-gate.
         """
 
-    def on_client_disconnected(  # noqa: B027
+    def on_client_disconnected(
         self, callback: TransportDisconnectCallback
     ) -> Callable[[], None] | None:
         """Register callback for client disconnection.
@@ -426,16 +426,14 @@ class VoiceBackend(ABC):
             callback: Called with (session) when the client disconnects.
         """
 
-    def on_speaker_change(  # noqa: B027
-        self, callback: SpeakerChangeCallback
-    ) -> None:
+    def on_speaker_change(self, callback: SpeakerChangeCallback) -> None:
         """Register callback for speaker change events.
 
         Args:
             callback: Called with (session, diarization_result).
         """
 
-    def end_of_response(self, session: VoiceSession) -> None:  # noqa: B027
+    def end_of_response(self, session: VoiceSession) -> None:
         """Signal end of an AI response for outbound pacing."""
 
     async def wait_playback(self, session: VoiceSession) -> bool:
@@ -475,7 +473,7 @@ class VoiceBackend(ABC):
         """
         return False
 
-    def on_audio_played(self, callback: AudioPlayedCallback) -> Callable[[], None] | None:  # noqa: B027
+    def on_audio_played(self, callback: AudioPlayedCallback) -> Callable[[], None] | None:
         """Register a callback for audio frames as they are played.
 
         Called with each audio frame at the moment it is output by the
@@ -498,7 +496,7 @@ class VoiceBackend(ABC):
             callback: Function called with (session, audio_frame).
         """
 
-    def on_aec_tap(self, callback: AECTapCallback) -> Callable[[], None] | None:  # noqa: B027
+    def on_aec_tap(self, callback: AECTapCallback) -> Callable[[], None] | None:
         """Register a callback for this transport's own echo cancellation, for
         debug taps (RFC §12.3.15).
 
@@ -517,7 +515,7 @@ class VoiceBackend(ABC):
     # Protocol trace
     # -------------------------------------------------------------------------
 
-    def set_trace_emitter(  # noqa: B027
+    def set_trace_emitter(
         self,
         emitter: Callable[..., Any] | None,
     ) -> None:
@@ -544,4 +542,4 @@ class VoiceBackend(ABC):
             text: The transcribed or response text.
             role: Either "user" (transcription) or "assistant" (AI response).
         """
-        pass  # noqa: B027
+        pass

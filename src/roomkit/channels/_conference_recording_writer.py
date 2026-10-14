@@ -594,7 +594,7 @@ class TrackWriter:
 
     async def _close_when_opened(self) -> None:
         """Close a recording whose open outlasted the teardown that gave up on it."""
-        assert self._opening is not None  # noqa: S101 — only reached from _abandon_open
+        assert self._opening is not None  # only reached from _abandon_open
         try:
             handle = await asyncio.shield(self._opening)
         except Exception:
