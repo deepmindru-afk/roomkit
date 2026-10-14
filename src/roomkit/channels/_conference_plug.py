@@ -477,7 +477,7 @@ class ConferencePlugMixin:
         un-tell clients about a participant they were told of, so the
         announced leave is the one retraction every backend delivers (RFC
         12.10.4). A reveal, by contrast, does reach connected clients in
-        place. ``info()``'s ``bot_grant_update_in_place`` says beforehand
+        place. ``info``'s ``bot_grant_update_in_place`` says beforehand
         which of the two this channel's backend gives.
 
         A grant set creates no need: on a room with no session, the change

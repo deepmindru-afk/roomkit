@@ -452,7 +452,7 @@ class TestDetachDuringJoin:
         await _settle(channel)
 
         assert backend.bots == []
-        assert channel.info()["rooms"] == {}
+        assert channel.info["rooms"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -643,7 +643,7 @@ class TestDetachFromInsideALane:
         await _settle(channel)
 
         assert backend.bots == []
-        assert channel.info()["rooms"] == {}
+        assert channel.info["rooms"] == {}
 
     async def test_the_transcript_does_not_arrive_after_the_end(self) -> None:
         """The detach returns before its destructive half, so the handler
@@ -801,7 +801,7 @@ class TestReattachDuringTeardown:
         assert ended == [started[0]], "the end does not say which conference it ended"
 
     async def test_the_current_bot_is_the_one_reported(self) -> None:
-        """``info()`` answers "is this meeting being transcribed, and by whom".
+        """``info`` answers "is this meeting being transcribed, and by whom".
         Reading the leaving session first made it answer for a bot on its way
         out while a live one was sitting in the same conference — and report the
         room as detaching when it had just been attached.
@@ -825,7 +825,7 @@ class TestReattachDuringTeardown:
 
         current = channel._room(ROOM).bot
         assert current is not None
-        room_info = channel.info()["rooms"][ROOM]
+        room_info = channel.info["rooms"][ROOM]
 
         assert room_info["bot_session_id"] == current.id
         assert room_info["detaching"] is False, "a room that is attached is not detaching"
@@ -839,7 +839,7 @@ class TestReattachDuringTeardown:
         held open in ``leave()`` is still running when a re-attach brings a
         second bot in and a second detach sends it out behind the first: the
         second overwrote the first, then removed the entry on its way out, and
-        ``info()`` dropped a room with a bot still sitting in the conference.
+        ``info`` dropped a room with a bot still sitting in the conference.
         """
         backend = _SlowLeaveBackend(hold_first_only=True)
         kit, channel, _ = await _kit(backend)
@@ -859,7 +859,7 @@ class TestReattachDuringTeardown:
         await asyncio.wait_for(kit.detach_channel(ROOM, "conf"), timeout=5.0)
 
         assert backend.bots != [], "the held departure was let through after all"
-        room_info = channel.info()["rooms"].get(ROOM)
+        room_info = channel.info["rooms"].get(ROOM)
         assert room_info is not None, "the room vanished with a bot still in the conference"
         assert room_info["bot_present"] is True
         assert [bot.id for bot in backend.bots] == room_info["leaving_session_ids"]
@@ -868,7 +868,7 @@ class TestReattachDuringTeardown:
         await _settle(channel)
 
         assert backend.bots == []
-        assert channel.info()["rooms"] == {}
+        assert channel.info["rooms"] == {}
 
     async def test_a_departing_session_is_not_reported_as_the_current_bot(self) -> None:
         """``bot_session_id`` names the bot an integrator would act on. Falling
@@ -883,7 +883,7 @@ class TestReattachDuringTeardown:
 
         detaching = asyncio.create_task(kit.detach_channel(ROOM, "conf"))
         await asyncio.wait_for(backend.leaving.wait(), timeout=5.0)
-        room_info = channel.info()["rooms"][ROOM]
+        room_info = channel.info["rooms"][ROOM]
 
         assert room_info["bot_session_id"] is None
         assert room_info["leaving_session_ids"] == [leaving_id]
@@ -1713,8 +1713,8 @@ class TestDisclosureDuringTeardown:
         detaching = asyncio.create_task(kit.detach_channel(ROOM, "conf"))
         await _until(lambda: bool(channel._room(ROOM).leaving))
 
-        room_info = channel.info()["rooms"].get(ROOM)
-        assert room_info is not None, "the room vanished from info() while the bot was still in it"
+        room_info = channel.info["rooms"].get(ROOM)
+        assert room_info is not None, "the room vanished from info while the bot was still in it"
         assert room_info["bot_present"] is True
         assert room_info["detaching"] is True
         assert backend.bots != []
@@ -1722,7 +1722,7 @@ class TestDisclosureDuringTeardown:
         backend.gate.set()
         await asyncio.gather(speaking, detaching, return_exceptions=True)
 
-        assert ROOM not in channel.info()["rooms"]
+        assert ROOM not in channel.info["rooms"]
         assert backend.bots == []
 
 
@@ -2689,8 +2689,8 @@ class TestTheMediaPlaneIsBoundedToo:
         assert channels[1]._backend_closed is True
         assert isinstance(failure.value.exceptions[0], ConferenceCloseError)
         # The session the budget could not remove is still on the books, not
-        # forgotten: info() goes on reporting it.
-        assert channels[0].info()["rooms"][ROOM]["bot_present"] is True
+        # forgotten: info goes on reporting it.
+        assert channels[0].info["rooms"][ROOM]["bot_present"] is True
 
     async def test_a_leave_the_backend_refuses_is_a_failed_close(self) -> None:
         """A clean return over a bot still in a meeting was the report of the
@@ -2727,8 +2727,8 @@ class TestTheMediaPlaneIsBoundedToo:
         assert bots[ROOM] in str(failure.value)
         assert bots[OTHER] not in str(failure.value)
         assert [bot.id for bot in backend.bots] == [bots[ROOM]]
-        assert channel.info()["rooms"][ROOM]["leaving_session_ids"] == [bots[ROOM]]
-        assert OTHER not in channel.info()["rooms"]
+        assert channel.info["rooms"][ROOM]["leaving_session_ids"] == [bots[ROOM]]
+        assert OTHER not in channel.info["rooms"]
 
     async def test_a_backend_close_error_is_not_reported_as_success(self) -> None:
         _, channel, backend = await _kit()

@@ -160,10 +160,10 @@ class TestUnplug:
 
     async def test_info_follows_the_configuration_in_force(self) -> None:
         _, channel, _, _ = await realtime_kit()
-        assert channel.info()["realtime_configured"] is True
+        assert channel.info["realtime_configured"] is True
 
         await channel.unplug_realtime()
 
-        info = channel.info()
+        info = channel.info
         assert info["realtime_configured"] is False
         assert info["realtime_provider"] is None

@@ -160,9 +160,9 @@ async def main() -> None:
         if body and event.source.participant_id:
             print(f"      [{event.source.participant_id}] {body}")
 
-    # info() answers RFC §17.7's disclosure questions: is a bot in the meeting,
+    # info answers RFC §17.7's disclosure questions: is a bot in the meeting,
     # is collection active, is anything being recorded — right now.
-    info = channel.info()
+    info = channel.info
     room_info = info["rooms"][ROOM]
     print(
         f"\ndisclosure: bot_present={room_info['bot_present']}"

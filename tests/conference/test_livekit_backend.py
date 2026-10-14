@@ -668,7 +668,7 @@ class _RefusingSession:
 
 class TestLeaveFailureIsNotSwallowed:
     """RFC 12.10.4: failing to remove a session is failing to close. The
-    channel's entire departure bookkeeping — the leaving ledger, info()'s
+    channel's entire departure bookkeeping — the leaving ledger, info's
     bot_present, the close's final raise — is built on leave() telling the
     truth, so a backend that swallows a failed disconnect defeats all of it.
     """

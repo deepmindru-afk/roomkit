@@ -26,6 +26,7 @@ from roomkit import (
     MockConferenceBackend,
     RoomKit,
     TrackKind,
+    WebSocketChannel,
 )
 from roomkit.channels._conference_metadata import (
     MAX_ATTRIBUTES,
@@ -151,7 +152,29 @@ class TestChannelIdentity:
         (binding,) = await kit.list_bindings(ROOM)
 
         assert binding.capabilities.media_types == [ChannelMediaType.AUDIO]
-        assert channel.info()["vision_configured"] is False
+        assert channel.info["vision_configured"] is False
+
+    def test_info_reads_as_an_attribute_like_every_channels(self) -> None:
+        """Code reading ``info`` on any channel gets the map (RFC §6.1).
+
+        ``info`` was a method here alone, so the same loop got a bound method
+        from a conference and a map from every other channel.
+        """
+        conference = ConferenceChannel(
+            "conf", backend=MockConferenceBackend(), stt=MockSTTProvider()
+        )
+
+        for channel in (conference, WebSocketChannel("ws")):
+            assert isinstance(channel.info, dict)
+        assert conference.info["stt_configured"] is True
+
+    def test_calling_info_still_returns_the_map_and_warns(self) -> None:
+        channel = ConferenceChannel("conf", backend=MockConferenceBackend(), stt=MockSTTProvider())
+
+        with pytest.warns(DeprecationWarning, match=r"ConferenceChannel\.info\(\) is deprecated"):
+            called = channel.info()
+
+        assert called == channel.info
 
 
 class TestLifecycle:
@@ -463,14 +486,14 @@ class TestArrivalWithoutABot:
 
     async def test_a_refused_join_is_reported_as_no_bot_in_the_room(self) -> None:
         """The disclosure answer must be the true one: nothing of the framework
-        is in that conference, and `info()` is where an integrator asks.
+        is in that conference, and `info` is where an integrator asks.
         """
         _, channel, backend = await _kit_with_channel(stt=MockSTTProvider())
         backend.fail("join_as_bot")
 
         await backend.simulate_participant_joined(ROOM, "p-alice")
 
-        room_info = channel.info()["rooms"][ROOM]
+        room_info = channel.info["rooms"][ROOM]
         assert room_info["bot_present"] is False
         assert room_info["bot_session_id"] is None
         assert room_info["stt_active"] is False
@@ -691,7 +714,7 @@ class TestUnsupportedConfiguration:
             e2ee=True,
         )
 
-        assert channel.info()["e2ee"] is True
+        assert channel.info["e2ee"] is True
 
     @pytest.mark.parametrize("bound", [0, -1])
     async def test_an_unbounded_lane_queue_is_refused(self, bound: int) -> None:
@@ -719,7 +742,7 @@ class TestDisclosureSurface:
     async def test_info_names_the_bot_and_what_was_configured(self) -> None:
         _, channel, _ = await _kit_with_channel(stt=MockSTTProvider(), bot_identity="notetaker")
 
-        info = channel.info()
+        info = channel.info
 
         assert info["bot_identity"] == "notetaker"
         assert info["bot_hidden"] is False
@@ -729,26 +752,26 @@ class TestDisclosureSurface:
 
     async def test_info_reports_the_bot_arriving_and_leaving(self) -> None:
         kit, channel, backend = await _kit_with_channel(stt=MockSTTProvider())
-        assert channel.info()["rooms"][ROOM]["bot_present"] is False
+        assert channel.info["rooms"][ROOM]["bot_present"] is False
 
         await backend.simulate_participant_joined(ROOM, "p-alice")
-        assert channel.info()["rooms"][ROOM]["bot_present"] is True
+        assert channel.info["rooms"][ROOM]["bot_present"] is True
 
         await kit.detach_channel(ROOM, "conf")
-        assert ROOM not in channel.info()["rooms"]
+        assert ROOM not in channel.info["rooms"]
 
     async def test_stt_is_not_active_until_a_track_is_carried(self) -> None:
         """A configured recognizer is not a running one. Nothing is transcribed
         until there is a bot in the room and a lane carrying somebody's track.
         """
         _, channel, backend = await _kit_with_channel(stt=MockSTTProvider())
-        assert channel.info()["rooms"][ROOM]["stt_active"] is False
+        assert channel.info["rooms"][ROOM]["stt_active"] is False
 
         await backend.simulate_participant_joined(ROOM, "p-alice")
-        assert channel.info()["rooms"][ROOM]["stt_active"] is False
+        assert channel.info["rooms"][ROOM]["stt_active"] is False
 
         await backend.simulate_track_published(ROOM, "p-alice")
-        assert channel.info()["rooms"][ROOM]["stt_active"] is True
+        assert channel.info["rooms"][ROOM]["stt_active"] is True
 
     async def test_closing_the_binding_stops_reporting_stt_as_active(self) -> None:
         """A binding closed to Access.NONE stops collection in that room alone,
@@ -757,12 +780,12 @@ class TestDisclosureSurface:
         kit, channel, backend = await _kit_with_channel(stt=MockSTTProvider())
         await backend.simulate_participant_joined(ROOM, "p-alice")
         await backend.simulate_track_published(ROOM, "p-alice")
-        assert channel.info()["rooms"][ROOM]["stt_active"] is True
+        assert channel.info["rooms"][ROOM]["stt_active"] is True
 
         await kit.set_access(ROOM, "conf", Access.NONE)
         await asyncio.sleep(0)
 
-        room_info = channel.info()["rooms"][ROOM]
+        room_info = channel.info["rooms"][ROOM]
         assert room_info["collecting"] is False
         assert room_info["stt_active"] is False
 
@@ -771,12 +794,12 @@ class TestDisclosureSurface:
 
         await backend.simulate_participant_joined(ROOM, "p-alice")
 
-        assert channel.info()["rooms"][ROOM]["stt_active"] is False
+        assert channel.info["rooms"][ROOM]["stt_active"] is False
 
     async def test_info_reports_a_hidden_bot_as_hidden(self) -> None:
         _, channel, _ = await _kit_with_channel(bot_grants=ConferenceGrants.observer())
 
-        assert channel.info()["bot_hidden"] is True
+        assert channel.info["bot_hidden"] is True
 
 
 class TestHooks:
@@ -1767,7 +1790,7 @@ class TestASpontaneousBotDisconnect:
 
         await backend.simulate_bot_disconnected(bot, "signalling connection lost")
 
-        assert channel.info()["rooms"][ROOM]["bot_present"] is False
+        assert channel.info["rooms"][ROOM]["bot_present"] is False
         assert len(ended) == 1
 
     async def test_the_next_need_rejoins_lazily(self) -> None:
@@ -1831,7 +1854,7 @@ class TestASpontaneousBotDisconnect:
         await backend.simulate_bot_disconnected(first, "a very late report")
 
         assert channel._room(ROOM).bot is second
-        assert channel.info()["rooms"][ROOM]["bot_present"] is True
+        assert channel.info["rooms"][ROOM]["bot_present"] is True
 
 
 class _GatedLeaveBackend(MockConferenceBackend):
@@ -1948,7 +1971,7 @@ class TestTheReconnectSupervisor:
 
         # No arrival, no delivery, no track event — the supervisor alone.
         await _until(lambda: len(backend.bots) == 1)
-        assert channel.info()["rooms"][ROOM]["bot_present"] is True
+        assert channel.info["rooms"][ROOM]["bot_present"] is True
 
     async def test_failed_attempts_back_off_and_then_stand_down(
         self, monkeypatch: pytest.MonkeyPatch

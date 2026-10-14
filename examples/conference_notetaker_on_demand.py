@@ -16,7 +16,7 @@ Why this shape matters: mute, active-speaker and quality events exist only on
 an SFU *connection*, so the bot is the one full-fidelity observer a meeting
 can have — and §17.7's consent obligations want it present exactly when asked
 for, not from construction. The host's request is the explicit gesture; the
-plug is its implementation; ``info()`` answers the disclosure question with
+plug is its implementation; ``info`` answers the disclosure question with
 the configuration in force, not the constructor's.
 
 Run with:
@@ -71,7 +71,7 @@ async def say_something(backend: MockConferenceBackend, track: Any) -> None:
 
 def disclosure(channel: ConferenceChannel) -> str:
     """The §17.7 answer, as an integrator's consent UI would read it."""
-    room = channel.info()["rooms"][ROOM]
+    room = channel.info["rooms"][ROOM]
     return (
         f"bot_present={room['bot_present']}"
         f" stt_active={room['stt_active']}"

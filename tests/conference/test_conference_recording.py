@@ -325,7 +325,7 @@ class TestFormatChangedMidTrack:
             await backend.simulate_audio(alice, self._stereo_like(speech_frame()))
         await drain_recordings(channel)
 
-        assert channel.info()["rooms"][ROOM]["recording_dropped_frames"] == 3
+        assert channel.info["rooms"][ROOM]["recording_dropped_frames"] == 3
 
     async def test_a_track_republished_in_a_new_format_is_recorded_in_it(self) -> None:
         """Refusing is not giving up on the track: unpublishing closes the
@@ -542,13 +542,13 @@ class TestDisclosureSurface:
         running on *this* conference, not what the channel was built with.
         """
         _, channel, backend, _ = await _recording_conference()
-        assert channel.info()["recording_configured"] is True
-        assert channel.info()["rooms"][ROOM]["recording_active"] is False
+        assert channel.info["recording_configured"] is True
+        assert channel.info["rooms"][ROOM]["recording_active"] is False
 
         await backend.simulate_participant_joined(ROOM, "p-alice")
         await backend.simulate_track_published(ROOM, "p-alice")
 
-        assert channel.info()["rooms"][ROOM]["recording_active"] is True
+        assert channel.info["rooms"][ROOM]["recording_active"] is True
 
     async def test_a_closed_binding_reports_recording_stopped(self) -> None:
         kit, channel, backend, _ = await _recording_conference()
@@ -558,7 +558,7 @@ class TestDisclosureSurface:
         await kit.set_access(ROOM, "conf", Access.NONE)
         await asyncio.sleep(0)
 
-        assert channel.info()["rooms"][ROOM]["recording_active"] is False
+        assert channel.info["rooms"][ROOM]["recording_active"] is False
 
     async def test_a_channel_without_a_recorder_reports_nothing_recording(self) -> None:
         backend = MockConferenceBackend()
@@ -570,8 +570,8 @@ class TestDisclosureSurface:
         await backend.simulate_participant_joined(ROOM, "p-alice")
         await backend.simulate_track_published(ROOM, "p-alice")
 
-        assert channel.info()["recording_configured"] is False
-        assert channel.info()["rooms"][ROOM]["recording_active"] is False
+        assert channel.info["recording_configured"] is False
+        assert channel.info["rooms"][ROOM]["recording_active"] is False
 
 
 class TestRefusedConfiguration:

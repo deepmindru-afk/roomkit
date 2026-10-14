@@ -600,7 +600,7 @@ class ConferenceSessionMixin:
 
         A ``leave()`` the SFU refuses is the failure this exists for: the bot is
         still in the meeting, and until this the framework said the opposite —
-        the session was dropped from the room's books and ``info()`` reported
+        the session was dropped from the room's books and ``info`` reported
         the conference unattended. A bot listening to a meeting the framework
         calls empty is a disclosure problem (RFC 17.7) before it is an
         operational one.
@@ -641,7 +641,7 @@ class ConferenceSessionMixin:
             # cancellation must travel on — it is how the budget stops the
             # step — but the session's standing cannot travel with it: nothing
             # confirmed the bot is out, so it goes on the books first, where
-            # info() and the close's final raise will both find it.
+            # info and the close's final raise will both find it.
             room.record_leave_failure(bot, "the closing budget expired while leave() ran")
             raise
         except Exception as exc:
@@ -649,7 +649,7 @@ class ConferenceSessionMixin:
             logger.exception(
                 "Conference channel %r could not take bot session %s out of room %s. The bot "
                 "may still be in the conference, so it stays reported as present — see "
-                "info()['rooms'][%r]['leave_failed'] — and no conference_ended is announced "
+                "info['rooms'][%r]['leave_failed'] — and no conference_ended is announced "
                 "for it",
                 self.channel_id,
                 bot.id,

@@ -427,7 +427,7 @@ async def show_conference_state(kit: RoomKit, conference: ConferenceChannel, bac
     2. ``kit.store.list_participants()`` — the room ROSTER RoomKit keeps:
        role, status, identification, resolved identity. In resume mode it was
        rebuilt by the join's catch-up (RFC §12.10.3) into a store born empty.
-    3. ``conference.info()`` — the RFC §17.7 DISCLOSURE: the bot (present,
+    3. ``conference.info`` — the RFC §17.7 DISCLOSURE: the bot (present,
        session, hidden) and what is being done with the media — collection,
        STT active, recording active — at the moment you ask.
     """
@@ -437,7 +437,7 @@ async def show_conference_state(kit: RoomKit, conference: ConferenceChannel, bac
         await asyncio.sleep(0.5)
         roster = await kit.store.list_participants(ROOM_ID)
 
-    info = conference.info()
+    info = conference.info
     bot_identity = info["bot_identity"]
 
     print("\n" + "-" * 74)
@@ -460,7 +460,7 @@ async def show_conference_state(kit: RoomKit, conference: ConferenceChannel, bac
         )
         print(f"        display: {r.display_name or '-'}, joined at {r.joined_at:%H:%M:%S}")
 
-    print("\n  3) RFC §17.7 DISCLOSURE — conference.info()")
+    print("\n  3) RFC §17.7 DISCLOSURE — conference.info")
     print(
         f"    backend {info['backend']!r}, bot {bot_identity!r}"
         f" (hidden: {info['bot_hidden']}), stt {info['stt_provider'] or 'none'},"

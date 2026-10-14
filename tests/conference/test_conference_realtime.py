@@ -660,7 +660,7 @@ class TestDisclosure:
     async def test_info_reports_the_composition(self) -> None:
         _, channel, _, _ = await realtime_kit()
 
-        info = channel.info()
+        info = channel.info
 
         assert info["realtime_configured"] is True
         assert info["realtime_provider"] == "MockRealtimeProvider"
@@ -670,4 +670,4 @@ class TestDisclosure:
         _, channel, _, _ = await realtime_kit()
         await channel._realtime.ensure_session(ROOM)
 
-        assert channel.info()["rooms"][ROOM]["realtime_active"] is True
+        assert channel.info["rooms"][ROOM]["realtime_active"] is True

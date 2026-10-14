@@ -736,7 +736,7 @@ class TestATrackNothingCouldCloseStaysOutOfUse:
         """
         _, channel, _ = await self._stranded()
 
-        assert "OSError" in channel.info()["rooms"][ROOM]["bot_track_unterminated"]
+        assert "OSError" in channel.info["rooms"][ROOM]["bot_track_unterminated"]
 
     async def test_a_new_bot_session_clears_it(self) -> None:
         """What made the track unusable was an utterance open on that session.

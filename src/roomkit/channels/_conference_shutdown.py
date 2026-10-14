@@ -167,7 +167,7 @@ class ConferenceShutdownCoordinator:
             total = sum(len(sessions) for sessions in stuck.values())
             reports.append(
                 f"{total} bot session(s) could not be taken out — {details}. They remain "
-                "on the channel's books and info() reports them"
+                "on the channel's books and info reports them"
             )
         for status, label in (
             (CloseStatus.RETAINED, "resource(s) retained under operations still running"),

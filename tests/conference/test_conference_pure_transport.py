@@ -8,7 +8,7 @@ remains the room's admission gate and roster; what such a deployment gives up
 is the event bridge the bot's connection would have been (RFC §12.10.3).
 
 The mode is a contract, and this file is its name: RoomKit can run a purely
-human meeting — credentials minted, arrivals recorded, `info()` answering —
+human meeting — credentials minted, arrivals recorded, `info` answering —
 without ever putting a participant of its own in it.
 """
 
@@ -127,7 +127,7 @@ class TestNoJoinWithoutANeed:
         await backend.simulate_participant_joined(ROOM, "p-alice")
         await _join_settled(channel)
 
-        info = channel.info()
+        info = channel.info
         assert info["stt_configured"] is False
         assert info["recording_configured"] is False
         room = info["rooms"][ROOM]

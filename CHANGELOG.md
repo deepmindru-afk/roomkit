@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subclasses `AudioVideoBackend` (and `CallVideoBackend` for its video) to
   work with `AudioVideoChannel`. New in `roomkit.video`:
   `AudioVideoBackend`, `CallVideoBackend`.
+- `ConferenceChannel.info` is a property, like every channel's `info`
+  (RFC §6.1, RMK-724): code reading `channel.info` on any channel gets the
+  map, where a conference handed it a bound method.
 
 ### Deprecated
 
@@ -30,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `send_video()`, `send_video_sync()`, `request_keyframe()`,
   `set_video_passthrough()` under the same names. The old ones still work
   and warn.
+- Calling `ConferenceChannel.info()` (RMK-724): read the `info` property.
+  The call still returns the map, and warns.
 
 ### Fixed
 

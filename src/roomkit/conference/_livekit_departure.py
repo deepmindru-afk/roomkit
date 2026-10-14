@@ -108,7 +108,7 @@ class SessionDeparture:
 
         A disconnect the SDK refuses *propagates*. Swallowing it here reported
         a success to a channel whose entire departure bookkeeping — the leaving
-        ledger, ``info()``'s bot_present, the close's final raise — exists to
+        ledger, ``info``'s bot_present, the close's final raise — exists to
         never misstate whether the bot is out of the meeting (RFC 12.10.4:
         failing to remove a session is failing to close). The local teardown
         that already ran stays torn down; a retry reattempts the disconnect

@@ -335,7 +335,7 @@ async def slow_disk() -> None:
     while not recorder.threads:
         await asyncio.sleep(0.005)
 
-    dropped = channel.info()["rooms"][ROOM]["recording_dropped_frames"]
+    dropped = channel.info["rooms"][ROOM]["recording_dropped_frames"]
     print(f"   20 frames delivered in {delivered_in:.1f} ms")
     print(f"   (each one takes the recorder {recorder.seconds * 1000:.0f} ms to write)")
     print(f"   dropped so far, oldest first: {dropped}")

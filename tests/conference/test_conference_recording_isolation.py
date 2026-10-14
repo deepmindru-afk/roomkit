@@ -399,7 +399,7 @@ class TestRecordingFailuresStayWithTheRecording:
                 await backend.simulate_audio(alice, speech_frame())
             await drain_recordings(channel)
 
-        assert channel.info()["rooms"][ROOM]["recording_dropped_frames"] == 4
+        assert channel.info["rooms"][ROOM]["recording_dropped_frames"] == 4
         assert "Could not write" in caplog.text
 
     async def test_an_open_that_fails_is_not_retried_on_every_frame(self) -> None:
@@ -473,7 +473,7 @@ class TestOverload:
             for marker in range(12):
                 await backend.simulate_audio(alice, _numbered_frame(marker))
             await _until(recorder.entered.is_set)
-            dropped = channel.info()["rooms"][ROOM]["recording_dropped_frames"]
+            dropped = channel.info["rooms"][ROOM]["recording_dropped_frames"]
             gate.set()
             await drain_recordings(channel)
 
@@ -540,7 +540,7 @@ class TestFlushBeforeFinalizing:
         await backend.simulate_track_unpublished(alice.id)
 
         assert recorder.written_at_stop == [10]
-        assert channel.info()["rooms"][ROOM]["recording_dropped_frames"] == 0
+        assert channel.info["rooms"][ROOM]["recording_dropped_frames"] == 0
 
 
 class TestClosingIsBoundedToo:

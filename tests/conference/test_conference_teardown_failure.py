@@ -3,7 +3,7 @@
 The teardown used to be one happy sequence: the first exception skipped
 everything behind it, and the `finally` declared the bot gone regardless. A
 `leave()` the SFU refused therefore left the bot sitting in the meeting while
-`info()` reported the conference unattended — a disclosure problem (§17.7 wants
+`info` reported the conference unattended — a disclosure problem (§17.7 wants
 the bot's presence observable *at any time*) before it is an operational one.
 An `on_recording_stop` that raised on the first track reached even further: the
 remaining recordings stayed open and the `leave()` behind them never ran, so a
@@ -92,7 +92,7 @@ async def _with_a_bot_in_it(
 
 
 def _room_info(channel: ConferenceChannel) -> dict[str, Any]:
-    return channel.info()["rooms"][ROOM]
+    return channel.info["rooms"][ROOM]
 
 
 class TestALeaveTheSFURefuses:
@@ -114,7 +114,7 @@ class TestALeaveTheSFURefuses:
 
     async def test_the_reason_is_reported_with_it(self) -> None:
         """Present is half the answer. Nothing else says a leave was refused, so
-        `info()` carries what went wrong rather than only that something did."""
+        `info` carries what went wrong rather than only that something did."""
         _, channel, backend, bot = await _with_a_bot_in_it()
         backend.fail("leave", SFUHeldTheBotError("the SFU will not release the session"))
 
@@ -155,7 +155,7 @@ class TestALeaveTheSFURefuses:
         await channel.on_room_detached(ROOM)
 
         assert ended.sessions == [bot.id]
-        assert channel.info()["rooms"] == {}
+        assert channel.info["rooms"] == {}
 
     async def test_the_detach_itself_still_completes(self) -> None:
         """`on_room_detached` is awaited by `detach_channel` between removing the
@@ -220,7 +220,7 @@ class TestTheOtherStepsStillHappen:
         await channel.on_room_detached(ROOM)
 
         assert backend.bots == [], "a lane that would not close kept the bot in the conference"
-        assert channel.info()["rooms"] == {}
+        assert channel.info["rooms"] == {}
         assert bot.id not in channel._room(ROOM).leaving
 
 
@@ -406,7 +406,7 @@ class TestClosingTheRoomEvictsTheBot:
 
         await channel.on_room_detached(ROOM)
 
-        assert channel.info()["rooms"] == {}
+        assert channel.info["rooms"] == {}
         assert ended.sessions == [bot.id], "the end was never announced for an evicted bot"
 
     async def test_a_room_that_cannot_be_closed_either_keeps_the_session(self) -> None:
@@ -438,7 +438,7 @@ class TestClosingTheChannel:
         await channel.close()
 
         assert backend.bots == []
-        assert channel.info()["rooms"] == {}
+        assert channel.info["rooms"] == {}
         assert ended.sessions == [bot.id], "the end a detach owed the session never arrived"
 
     async def test_a_session_that_stays_stuck_is_not_forgotten(self) -> None:

@@ -78,7 +78,7 @@ class TestPlugIsAFirstNeed:
         assert len(backend.bots) == 1
         assert track.id in backend.subscriptions  # type: ignore[attr-defined]
         assert track.id in channel.active_lanes  # type: ignore[attr-defined]
-        info = channel.info()
+        info = channel.info
         assert info["stt_configured"] is True
         assert info["rooms"][ROOM]["stt_active"] is True
 
@@ -111,7 +111,7 @@ class TestPlugIsAFirstNeed:
 
         await channel.plug_stt(MockSTTProvider())
 
-        assert channel.info()["stt_configured"] is True
+        assert channel.info["stt_configured"] is True
         await kit.ensure_participant(ROOM, "conf", "p-alice")
         await channel.mint_access(ROOM, "p-alice")
         await _join_settled(channel)
@@ -126,7 +126,7 @@ class TestPlugIsAFirstNeed:
 
         assert len(backend.bots) == 1
         assert track.id in backend.subscriptions  # type: ignore[attr-defined]
-        info = channel.info()
+        info = channel.info
         assert info["recording_configured"] is True
         assert info["rooms"][ROOM]["recording_active"] is True
 
@@ -147,7 +147,7 @@ class TestPlugIsAFirstNeed:
         await channel.plug_stt(MockSTTProvider())
 
         assert track.id in channel.active_lanes  # type: ignore[attr-defined]
-        assert channel.info()["rooms"][ROOM]["stt_active"] is True
+        assert channel.info["rooms"][ROOM]["stt_active"] is True
 
 
 class TestGrantsFollowTheConfiguration:
@@ -416,7 +416,7 @@ class TestSetBotGrants:
 
         assert backend.bots == []
         assert not _calls(backend, "update_bot_grants")
-        assert channel.info()["bot_hidden"] is False
+        assert channel.info["bot_hidden"] is False
 
     async def test_the_instruction_covers_a_join_in_flight(self) -> None:
         """A lazy join reads the grants before the setter lands, and would
@@ -468,20 +468,20 @@ class TestSetBotGrants:
             backend, stt=MockSTTProvider(), bot_grants=ConferenceGrants.observer()
         )
         await _occupied(backend, channel)
-        info = channel.info()
+        info = channel.info
         assert info["bot_grant_update_in_place"] is True
         assert info["bot_hidden"] is True
         assert info["rooms"][ROOM]["bot_hidden"] is True
 
         await channel.set_bot_grants(ConferenceGrants.for_bot(listens=True))
 
-        info = channel.info()
+        info = channel.info
         assert info["bot_hidden"] is False
         assert info["rooms"][ROOM]["bot_hidden"] is False
 
         incapable = MockConferenceBackend()
         _, plain = await _channel(incapable, stt=MockSTTProvider())
-        assert plain.info()["bot_grant_update_in_place"] is False
+        assert plain.info["bot_grant_update_in_place"] is False
 
     async def test_the_change_is_announced_once(self) -> None:
         """A connected session's effective grants changed — the room can
@@ -531,7 +531,7 @@ class TestUnplugingTheLastNeed:
         assert track.id not in backend.subscriptions  # type: ignore[attr-defined]
         assert channel.active_lanes == {}
         assert ended == ["ended"]
-        info = channel.info()
+        info = channel.info
         assert info["stt_configured"] is False
         assert info["rooms"][ROOM]["bot_present"] is False
         assert info["rooms"][ROOM]["stt_active"] is False
@@ -580,7 +580,7 @@ class TestUnplugingTheLastNeed:
         assert not _calls(backend, "leave")
         assert track.id in backend.subscriptions  # type: ignore[attr-defined]
         assert channel.active_lanes == {}
-        info = channel.info()
+        info = channel.info
         assert info["stt_configured"] is False
         assert info["recording_configured"] is True
         assert info["rooms"][ROOM]["stt_active"] is False
@@ -625,7 +625,7 @@ class TestRefusals:
         with pytest.raises(ValueError, match="encrypted"):
             await channel.plug_stt(MockSTTProvider())
 
-        assert channel.info()["stt_configured"] is False
+        assert channel.info["stt_configured"] is False
 
     async def test_e2ee_refuses_a_plugged_recording(self) -> None:
         backend = MockConferenceBackend(capabilities=ConferenceCapability.E2EE)
@@ -634,7 +634,7 @@ class TestRefusals:
         with pytest.raises(ValueError, match="encrypted"):
             await channel.plug_recording(ConferenceRecordingConfig(), recorder=MockMediaRecorder())
 
-        assert channel.info()["recording_configured"] is False
+        assert channel.info["recording_configured"] is False
 
     async def test_an_occupied_slot_refuses_a_second_plug(self) -> None:
         """No silent replacement: a swap is a teardown and a rebuild, and the

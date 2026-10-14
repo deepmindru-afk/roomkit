@@ -86,4 +86,4 @@ class TestConferenceRefusesDiarizingSTT:
         channel = ConferenceChannel("conf", backend=MockConferenceBackend())
         with pytest.raises(ValueError, match="participant track"):
             await channel.plug_stt(_DiarizingSTT())
-        assert channel.info()["stt_configured"] is False
+        assert channel.info["stt_configured"] is False

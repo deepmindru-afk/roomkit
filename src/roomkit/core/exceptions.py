@@ -198,7 +198,7 @@ class ConferenceCloseError(RoomKitError):
     Raised at the very end of ``ConferenceChannel.close()``, after every step
     has run. It names sessions that could not be taken out, joins or lanes
     retained past their budget, and backend or provider shutdown calls that
-    failed. Sessions remain on the channel's books, where ``info()`` reports
+    failed. Sessions remain on the channel's books, where ``info`` reports
     them; resources still used by an abandoned task remain alive until that
     task settles. Raised rather than summarised into a log because a clean
     return would misreport potentially live conference media as released.

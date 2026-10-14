@@ -211,7 +211,7 @@ async def main() -> None:
         f"({len(held_back)} held back by orchestration)"
     )
 
-    info = channel.info()["rooms"][ROOM]
+    info = channel.info["rooms"][ROOM]
     print(
         f"disclosure: bot_present={info['bot_present']}"
         f" stt_active={info['stt_active']}"

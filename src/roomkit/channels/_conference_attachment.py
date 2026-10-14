@@ -297,7 +297,7 @@ class ConferenceAttachmentMixin:
         if bot is not None:
             # The bot is out of `_bots` but still in the conference, and RFC 17.7
             # asks for its presence to be observable *at any time*. This is what
-            # `info()` reads until `leave()` has actually happened.
+            # `info` reads until `leave()` has actually happened.
             #
             # Keyed by session, because a room can be leaving more than once: a
             # teardown held open in `leave()` is still running when a re-attach

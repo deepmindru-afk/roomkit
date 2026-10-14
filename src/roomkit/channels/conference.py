@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import warnings
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
@@ -122,6 +123,24 @@ __all__ = [
     "ConferenceTranscription",
     "UtteranceTiming",
 ]
+
+
+class _InfoMap(dict[str, Any]):
+    """The disclosure map, still answering the call it used to need.
+
+    ``info`` was a method on this channel alone, so code reading ``ch.info``
+    on every channel got a bound method here. It is a property now, like every
+    channel's; ``channel.info()`` goes on returning the map, with a warning.
+    """
+
+    def __call__(self) -> dict[str, Any]:
+        warnings.warn(
+            "ConferenceChannel.info() is deprecated: read ConferenceChannel.info, "
+            "a property like every channel's info",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self
 
 
 class ConferenceChannel(
@@ -585,6 +604,7 @@ class ConferenceChannel(
             media_types=[ChannelMediaType.AUDIO],
         )
 
+    @property
     def info(self) -> dict[str, Any]:
         """What the bot is, where it is, and what it is doing with the media.
 
@@ -601,8 +621,11 @@ class ConferenceChannel(
         being transcribed" is the question a disclosure obligation asks, and a
         channel-wide flag cannot answer it — ``stt_configured`` says only what
         the channel was built with.
+
+        Read as an attribute, like every channel's ``info``; calling it, as
+        before, still returns the map and warns.
         """
-        return {
+        info: dict[str, Any] = {
             "backend": self._backend.name,
             "bot_identity": self._bot_identity,
             "bot_hidden": self._bot_grants.hidden,
@@ -634,6 +657,7 @@ class ConferenceChannel(
                 if room.attached or room.leaving
             },
         }
+        return _InfoMap(info)
 
     def _room_info(self, room_id: str) -> dict[str, Any]:
         """What the bot is doing in one conference.

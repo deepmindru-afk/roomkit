@@ -72,7 +72,7 @@ class TestRefusedAttach:
         with pytest.raises(SFUUnreachableError):
             await kit.attach_channel(ROOM, "conf")
 
-        assert channel.info()["rooms"] == {}
+        assert channel.info["rooms"] == {}
 
     async def test_no_one_was_told_it_attached(self) -> None:
         kit, _, _ = await _kit_with_unreachable_sfu()
@@ -101,7 +101,7 @@ class TestRefusedAttach:
         await kit.attach_channel(ROOM, "conf")
 
         assert ROOM in backend.rooms
-        assert ROOM in channel.info()["rooms"]
+        assert ROOM in channel.info["rooms"]
 
 
 class TestRefusedReattach:
@@ -138,11 +138,11 @@ class TestRefusedReattach:
             await kit.attach_channel(ROOM, "conf")
 
         assert [b.channel_id for b in await kit.list_bindings(ROOM)] == ["conf"]
-        assert channel.info()["rooms"][ROOM]["bot_present"] is True
+        assert channel.info["rooms"][ROOM]["bot_present"] is True
 
         assert await kit.detach_channel(ROOM, "conf") is True
         assert backend.bots == []
-        assert channel.info()["rooms"] == {}
+        assert channel.info["rooms"] == {}
 
     async def test_the_running_conference_is_not_disturbed(self) -> None:
         """A refused attach is a no-op on the attachment it failed to replace,

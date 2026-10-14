@@ -192,7 +192,7 @@ async def main() -> None:
         if body and who != "system":
             print(f"      [{who}] {body}")
 
-    info = channel.info()
+    info = channel.info
     room_info = info["rooms"][ROOM]
     print(
         f"\ndisclosure: realtime_configured={info['realtime_configured']}"
