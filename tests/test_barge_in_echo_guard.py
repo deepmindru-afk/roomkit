@@ -552,7 +552,8 @@ class _ScriptedDiarizingSTT(STTProvider):
     """A diarizing streaming STT that says what the test hands it, when it does."""
 
     def __init__(self) -> None:
-        self.results: asyncio.Queue[TranscriptionResult] = asyncio.Queue()
+        # ``None`` closes the stream, as a provider does; the channel opens the next.
+        self.results: asyncio.Queue[TranscriptionResult | None] = asyncio.Queue()
 
     @property
     def supports_streaming(self) -> bool:
@@ -570,8 +571,8 @@ class _ScriptedDiarizingSTT(STTProvider):
     ) -> AsyncIterator[TranscriptionResult]:
         async for _ in audio_stream:
             break
-        while True:
-            yield await self.results.get()
+        while (result := await self.results.get()) is not None:
+            yield result
 
 
 async def test_a_later_partial_of_an_echo_cuts_no_later_response() -> None:
@@ -639,10 +640,11 @@ async def test_a_later_partial_of_an_echo_cuts_no_later_response() -> None:
 
 
 async def _voices_over_a_response(
-    utterances: list[tuple[str, str, bool]],
+    utterances: list[tuple[str, str, bool] | None],
 ) -> tuple[list[tuple[str, str]], list[object]]:
     """Each (voice, words, over the response) said in turn, the session past its
-    echo guard; the turns (voice, words) and barge-ins that came of them."""
+    echo guard; ``None`` for the provider closing its stream. The turns
+    (voice, words) and barge-ins that came of them."""
     from datetime import UTC, datetime
 
     from roomkit.models.channel import ChannelBinding
@@ -687,7 +689,14 @@ async def _voices_over_a_response(
 
     await backend.simulate_audio_received(session, _SILENT_CHUNK)
     playing = channel._playing_sessions  # noqa: SLF001
-    for voice, words, over in utterances:
+    for utterance in utterances:
+        if utterance is None:
+            await stt.results.put(None)
+            await asyncio.sleep(0.05)
+            await backend.simulate_audio_received(session, _SILENT_CHUNK)
+            await asyncio.sleep(0.05)
+            continue
+        voice, words, over = utterance
         if over:
             playing[session.id] = TTSPlaybackState(
                 session_id=session.id, text=_LAMP, started_at=datetime.now(UTC)
@@ -728,6 +737,21 @@ async def test_a_person_heard_alone_repeating_the_response_is_heard() -> None:
 
     assert [words for _voice, words in turns][-1] == "Eh bien, la lampe salon."
     assert len(cuts) == 1
+
+
+async def test_a_voice_heard_alone_on_a_closed_stream_is_nobody_on_the_next() -> None:
+    """Each stream numbers its voices afresh: "Speaker A" heard alone on a
+    stream the provider closed names nobody on the next, where the same label
+    over the response, in its words, is the response's echo (RFC §12.3.13)."""
+    turns, _cuts = await _voices_over_a_response(
+        [
+            ("Speaker A", "Et la lampe du salon ?", False),
+            None,
+            ("Speaker A", "Eh bien, la lampe salon.", True),
+        ]
+    )
+
+    assert [words for _voice, words in turns] == ["Et la lampe du salon ?"]
 
 
 async def test_a_new_voice_saying_its_own_words_over_a_response_is_heard() -> None:

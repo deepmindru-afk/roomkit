@@ -705,6 +705,12 @@ class VoiceSTTMixin:
         with self._state_lock:
             self._echo_bursts.pop(session_id, None)
 
+    def _forget_voices_heard_alone(self, session_id: str) -> None:
+        """A new stream numbers its voices afresh: a label heard alone on the
+        last one names nobody on this one (RFC §12.3.13)."""
+        with self._state_lock:
+            self._voices_heard_alone.pop(session_id, None)
+
     def _final_cuts_in(
         self, session: VoiceSession, playback: TTSPlaybackState, text: str, room_id: str
     ) -> bool:
@@ -931,6 +937,7 @@ class VoiceSTTMixin:
                     )
                     epoch = state.streams_opened
                     state.streams_opened += 1
+                    self._forget_voices_heard_alone(session.id)
                     barge_in_playback: Any = None
                     # The playback the utterance under way began over, if any.
                     began_over: Any = None

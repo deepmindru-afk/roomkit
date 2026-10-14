@@ -184,6 +184,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with responses now played one after the other, the STT's late partials of
   the first response's echo ("Je lance ça") landed on the second and cut
   it.
+- With an STT that tells voices apart, a voice heard alone on a stream the
+  provider closed no longer counts as a person's on the next one (RMK-706,
+  RMK-737, RFC §12.3.13): each stream numbers its voices afresh, so a label
+  carried over let the response's echo through as a turn. The rule 0.101.0
+  brought in has a cost, now written in the RFC and accepted: a person not
+  yet heard while nothing played who answers over a response with three or
+  more of its words in their order ("the kitchen lamp" to "the kitchen lamp
+  or the living room lamp?") cuts it and is not heard, so the agent stops
+  and says nothing; what they say next while nothing plays is heard.
 
 ## [0.101.0] — 2026-10-13
 
