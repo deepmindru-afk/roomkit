@@ -76,6 +76,7 @@ CONSOLE=1 uv run python examples/<example>.py
 | `realtime_voice_sip_elevenlabs.py` | SIP + ElevenLabs | SIP calls routed to ElevenLabs Conversational AI |
 | `realtime_elevenlabs_tools.py` | ElevenLabs tools | ElevenLabs Conversational AI with client-side tool calling |
 | `realtime_av_anam.py` | Avatar | Realtime audio-video with Anam AI avatar |
+| `realtime_av_bridge_detections.py` | Avatar bridge | What a `RealtimeAVBridge`'s video filters detect, handed to `on_video_detection` (mock provider, no API key) |
 | `realtime_tool_gate.py` | Tool gate | One pre-execution gate for every realtime tool call — API, spoken, and infrastructure (mock provider, no API key) |
 
 ## Video

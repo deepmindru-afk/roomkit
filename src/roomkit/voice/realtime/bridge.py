@@ -40,6 +40,7 @@ from roomkit.voice.realtime.provider import RealtimeAudioVideoProvider, Realtime
 
 if TYPE_CHECKING:
     from roomkit.video.avatar.base import AvatarProvider
+    from roomkit.video.events import VideoDetectionEvent
     from roomkit.video.pipeline.config import VideoPipelineConfig
     from roomkit.video.pipeline.encoder.base import VideoEncoderProvider
     from roomkit.video.video_frame import VideoFrame
@@ -168,6 +169,11 @@ class RealtimeAVBridge:
         on_call: Callback when a new call is connected.
         on_call_ended: Callback ``(session_id, video_frames, audio_chunks)``.
         on_transcription: Callback ``(role, text, is_final)``.
+        on_video_detection: Callback ``(event)`` for each detection a filter
+            of ``video_pipeline`` emits: a :class:`VideoDetectionEvent` whose
+            ``session`` is the call it was seen on. It may be async; a failure
+            is logged and the video goes on. Without it, detections are
+            dropped.
     """
 
     def __init__(
@@ -187,6 +193,7 @@ class RealtimeAVBridge:
         on_call: Callable[[VoiceSession], Any] | None = None,
         on_call_ended: Callable[[str, int, int], Any] | None = None,
         on_transcription: Callable[[str, str, bool], Any] | None = None,
+        on_video_detection: Callable[[VideoDetectionEvent], Any] | None = None,
     ) -> None:
         self._provider = provider
         self._backend = backend
@@ -203,6 +210,7 @@ class RealtimeAVBridge:
         self._on_call = on_call
         self._on_call_ended = on_call_ended
         self._on_transcription = on_transcription
+        self._on_video_detection = on_video_detection
 
         # Build video pipeline if configured
         if video_pipeline is not None and (
@@ -484,7 +492,7 @@ class RealtimeAVBridge:
             processed = frame
             if self._video_pipeline is not None:
                 processed = self._video_pipeline.process_inbound(_AVATAR, frame)
-                self._drop_detections(_AVATAR)
+                self._dispatch_detections(_AVATAR, state.provider_session)
                 if processed is None:
                     continue
 
@@ -503,7 +511,7 @@ class RealtimeAVBridge:
         # Run through video pipeline (resize, filters, vision) if configured
         if self._video_pipeline is not None:
             processed = self._video_pipeline.process_inbound(session.id, frame)
-            self._drop_detections(session.id)
+            self._dispatch_detections(session.id, session)
             if processed is None:
                 return
             frame = processed
@@ -517,14 +525,36 @@ class RealtimeAVBridge:
             return
         self._encode_pool.submit(self._send_encoded_video, state, frame)
 
-    def _drop_detections(self, key: str) -> None:
-        """Drain what the filters detected on a frame: the bridge has no hook
-        to fire them on, and undrained they pile up for the whole call."""
+    def _dispatch_detections(self, key: str, session: VoiceSession) -> None:
+        """Hand what the filters detected on a frame to ``on_video_detection``.
+
+        Drained on every frame, consumer or not: undrained, the detections
+        pile up for the whole call.
+        """
         if self._video_pipeline is None:
             return
         events = self._video_pipeline.drain_events(key)
-        if events:
-            logger.debug("Dropped %d video detection(s) for %s", len(events), key[:8])
+        if self._on_video_detection is None:
+            if events:
+                logger.debug("Dropped %d video detection(s) for %s", len(events), key[:8])
+            return
+        for event in events:
+            if event.data is None:
+                continue
+            event.data.session = session
+            self._notify_detection(self._on_video_detection, event.data)
+
+    def _notify_detection(
+        self, callback: Callable[[VideoDetectionEvent], Any], event: VideoDetectionEvent
+    ) -> None:
+        """Call *callback* with *event*; a failure is logged, the video goes on."""
+        try:
+            result = callback(event)
+        except Exception:
+            logger.exception("on_video_detection failed (kind=%s)", event.kind)
+            return
+        if hasattr(result, "__await__"):
+            self._safe_create_task(result)
 
     def _forget_video(self, state: _CallState) -> None:
         """Reset a call's state in the video pipeline as the call ends, and

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -91,12 +93,15 @@ def _detection() -> VideoDetectionEvent:
 
 
 async def _bridge_with_a_call(
-    frames: int,
+    frames: int, **bridge_kwargs: Any
 ) -> tuple[RealtimeAVBridge, MockRealtimeAudioVideoProvider, VoiceSession]:
     provider = MockRealtimeAudioVideoProvider()
     filters = [MockFaceTouchFilter({i: [_detection()] for i in range(frames)})]
     bridge = RealtimeAVBridge(
-        provider, MockVoiceBackend(), video_pipeline=VideoPipelineConfig(filters=filters)
+        provider,
+        MockVoiceBackend(),
+        video_pipeline=VideoPipelineConfig(filters=filters),
+        **bridge_kwargs,
     )
     session = await bridge.connect(
         VoiceSession(id="call-1", room_id="r", participant_id="p", channel_id="voice")
@@ -131,3 +136,52 @@ class TestRealtimeAVBridgeVideoPipeline:
         await bridge.close()
 
         assert bridge._video_pipeline._closed
+
+
+class TestRealtimeAVBridgeVideoDetections:
+    """``on_video_detection`` receives what the video filters detect, each
+    detection carrying the call it was seen on."""
+
+    async def test_each_detection_reaches_the_callback_with_its_call(self) -> None:
+        seen: list[VideoDetectionEvent] = []
+        bridge, _, session = await _bridge_with_a_call(frames=2, on_video_detection=seen.append)
+
+        assert [event.kind for event in seen] == ["face_touch", "face_touch"]
+        assert all(event.session is session for event in seen)
+        await bridge.close()
+
+    async def test_an_async_callback_is_awaited(self) -> None:
+        seen: list[VideoDetectionEvent] = []
+
+        async def on_detection(event: VideoDetectionEvent) -> None:
+            await asyncio.sleep(0)
+            seen.append(event)
+
+        bridge, _, _ = await _bridge_with_a_call(frames=1, on_video_detection=on_detection)
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert len(seen) == 1
+        await bridge.close()
+
+    async def test_a_failing_callback_does_not_stop_the_video(self) -> None:
+        def on_detection(event: VideoDetectionEvent) -> None:
+            raise RuntimeError("consumer down")
+
+        tap = MagicMock()
+        provider = MockRealtimeAudioVideoProvider()
+        bridge = RealtimeAVBridge(
+            provider,
+            MockVoiceBackend(),
+            video_pipeline=VideoPipelineConfig(filters=[MockFaceTouchFilter({0: [_detection()]})]),
+            on_video_detection=on_detection,
+        )
+        bridge.add_video_tap(tap)
+        session = await bridge.connect(
+            VoiceSession(id="call-1", room_id="r", participant_id="p", channel_id="voice")
+        )
+
+        await provider.simulate_video(session, _frame())
+
+        tap.assert_called_once()
+        await bridge.close()

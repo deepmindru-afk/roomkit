@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `RealtimeAVBridge(on_video_detection=...)` receives what the filters of its
+  `video_pipeline` detect: each `VideoDetectionEvent`, its `session` set to the
+  call it was seen on. The callback may be async; a failure is logged and the
+  video goes on. Without it the detections are drained and dropped, as since
+  RMK-754 (RMK-757). Example: `examples/realtime_av_bridge_detections.py`.
 - DPDFNet denoises through `SherpaOnnxDenoiserProvider`:
   `SherpaOnnxDenoiserConfig(model_type="dpdfnet", model="dpdfnet2.onnx")`
   loads the DPDFNet models of sherpa-onnx's `speech-enhancement-models`
