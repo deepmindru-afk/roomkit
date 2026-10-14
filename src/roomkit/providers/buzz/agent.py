@@ -36,8 +36,9 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from roomkit.core.framework import RoomKit
+    from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
-    from roomkit.models.hook import HookResult, RoomContext
+    from roomkit.models.hook import HookResult
     from roomkit.sources.buzz import BuzzOwnerCommandCallback, BuzzRelaySource
 
 logger = logging.getLogger("roomkit.providers.buzz.agent")
