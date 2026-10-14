@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.task_utils import cancel_and_wait, log_task_exception
+from roomkit.video.pipeline.engine import VideoPipeline
 from roomkit.voice.backends.base import VoiceBackend
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.provider import RealtimeAudioVideoProvider, RealtimeVoiceProvider
@@ -210,9 +211,7 @@ class RealtimeAVBridge:
             or video_pipeline.transforms
             or video_pipeline.filters
         ):
-            from roomkit.video.pipeline.engine import VideoPipeline
-
-            self._video_pipeline: Any = VideoPipeline(video_pipeline)
+            self._video_pipeline: VideoPipeline | None = VideoPipeline(video_pipeline)
         else:
             self._video_pipeline = None
         self._video_pipeline_config = video_pipeline
@@ -521,6 +520,8 @@ class RealtimeAVBridge:
     def _drop_detections(self, key: str) -> None:
         """Drain what the filters detected on a frame: the bridge has no hook
         to fire them on, and undrained they pile up for the whole call."""
+        if self._video_pipeline is None:
+            return
         events = self._video_pipeline.drain_events(key)
         if events:
             logger.debug("Dropped %d video detection(s) for %s", len(events), key[:8])
