@@ -9,7 +9,7 @@ AI channel as they import.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -44,13 +44,19 @@ _ENDINGS = frozenset({"completed", "failed", "cancelled"})
 """The ways a task ends the block names; any other reads ``ended``."""
 
 
-def render_tasks_note(tasks: Sequence[dict[str, Any]], *, now: datetime) -> str:
+def render_tasks_note(
+    tasks: Sequence[dict[str, Any]],
+    *,
+    now: datetime,
+    handles: Mapping[str, str] | None = None,
+) -> str:
     """*tasks*, as :func:`~roomkit.tasks.status.room_tasks` lists them, for the
-    turn's notes; ``""`` when there are none."""
+    turn's notes; ``""`` when there are none. A worker that is an agent of the
+    room's discussion is named by its handle (*handles*, by channel id)."""
     if not tasks:
         return ""
     shown = list(tasks)[-TASKS_NOTE_LIMIT:]
-    lines = [TASKS_NOTE, *(_task_line(task, now) for task in shown)]
+    lines = [TASKS_NOTE, *(_task_line(task, now, handles or {}) for task in shown)]
     if any(_running(task) for task in shown):
         lines.append(RUNNING_NOTE)
     return "\n".join(lines)
@@ -61,11 +67,13 @@ def _running(task: dict[str, Any]) -> bool:
     return task.get("status", "running") == "running"
 
 
-def _task_line(task: dict[str, Any], now: datetime) -> str:
+def _task_line(task: dict[str, Any], now: datetime, handles: Mapping[str, str]) -> str:
     """One task as the block lists it: what the worker wrote quoted, its name
     and ending carrying no text of their own (RFC §6.4)."""
     asked = task.get("task") or ""
-    line = f"- {identifier(task.get('agent'), 'worker', NAME_LIMIT)}"
+    worker = task.get("agent")
+    named = handles.get(worker, worker) if isinstance(worker, str) else worker
+    line = f"- {identifier(named, 'worker', NAME_LIMIT)}"
     line += f", asked {quoted(asked, TEXT_LIMIT)}" if asked else ""
     if not _running(task):
         ending = one_of(task.get("status"), _ENDINGS, "ended")

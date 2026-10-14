@@ -30,6 +30,7 @@ from roomkit.orchestration.strategies.discussion.dispatch.classifier import ques
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
+from tests.orchestration.test_discussion_background import _starts_task, _until_said
 from tests.orchestration.test_strategy_discussion import (
     NOTES,
     _provider,
@@ -270,3 +271,26 @@ async def test_a_stored_turn_of_an_agent_no_longer_held_does_not_stall_the_discu
     queue = second.speak_queue("r1")
     assert queue is not None and "b" not in queue.queue
     await second.close()
+
+
+async def test_a_background_task_names_its_agent_by_handle() -> None:
+    """The worker's brief, the tool's answer and the relayed result name the
+    agent as the room addresses it, never by an ``agent:<uuid>`` channel id."""
+    comms_id = "agent:7c1e0b2a-3d4f-4a5b-8c6d-9e0f1a2b3c4d"
+    comms = MockAIProvider(ai_responses=_starts_task("On it.", "Findings: 12.", "12 tickets."))
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("ops"))
+    agents = [Agent(comms_id, provider=comms, name="Comms"), Agent("sre", provider=_provider())]
+    kit.setup_background(agents[0])
+    await kit.create_room(room_id="r1", orchestration=Discussion(agents))
+    await kit.attach_channel("r1", "ops")
+
+    await _say(kit, "@comms please go through the support tickets")
+    await _until_said(kit, 2)
+
+    told = ["\n".join(str(m.content) for m in call.messages) for call in comms.calls]
+    assert any("in the background for @Comms" in t for t in told)
+    assert any("its result comes back to Comms" in t for t in told)
+    assert "[Background task from Comms completed." in told[-1]
+    assert not any("7c1e" in t for t in told)
+    await kit.close()

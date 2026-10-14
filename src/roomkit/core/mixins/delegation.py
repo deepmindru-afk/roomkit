@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from roomkit._text import bounded_text, identifier, one_line, quoted
+from roomkit.channels._discussion_turn import agent_handle
 from roomkit.channels._realtime_context import get_current_voice_session
 from roomkit.core._failure_log import log_failure
 from roomkit.core.exceptions import ChannelNotRegisteredError
@@ -254,10 +255,14 @@ def _hand_back_metadata(result: DelegatedTaskResult, task: str) -> dict[str, Any
     }
 
 
-def _delegation_result_text(result: DelegatedTaskResult, task: str = "") -> str:
+def _delegation_result_text(
+    result: DelegatedTaskResult, task: str = "", worker: str | None = None
+) -> str:
     """What the notified agent receives of a finished background delegation: its
     outcome, what was asked (*task*, so a result back after the conversation moved
-    on is said for what was asked), then the worker's output."""
+    on is said for what was asked), then the worker's output. *worker* names the
+    worker as the room addresses it (a discussion agent's handle); None, its
+    channel id."""
     # A failed task's error is an exception's message: for the logs and
     # ON_TASK_COMPLETED, never for a model (RFC §9.3).
     outcome = {TaskStatus.COMPLETED: "completed", TaskStatus.CANCELLED: "cancelled"}.get(
@@ -265,9 +270,9 @@ def _delegation_result_text(result: DelegatedTaskResult, task: str = "") -> str:
     )
     # What was asked is quoted, the worker named by an identifier (RFC §6.4).
     asked = f" Task: {quoted(task, _TASK_NAME_CHARS)}." if task.strip() else ""
-    worker = identifier(result.agent_id, "worker")
+    named = identifier(worker or result.agent_id, "worker")
     return result_text(
-        f"[Background task from {worker} {outcome}.{asked} Share the outcome with the user.]",
+        f"[Background task from {named} {outcome}.{asked} Share the outcome with the user.]",
         bounded(task_work(result) or "No output"),
     )
 
@@ -931,11 +936,13 @@ class DelegationMixin(HelpersMixin):
         if result.status == TaskStatus.COMPLETED and not result.output:
             return
         try:
+            room = await self._store.get_room(result.parent_room_id)
+            worker = agent_handle(room.metadata if room else None, result.agent_id)
             await hand_back(
                 self,  # ty: ignore[invalid-argument-type]
                 result.parent_room_id,
                 notify_channel_id,
-                _delegation_result_text(result, task),
+                _delegation_result_text(result, task, worker),
                 chain_depth,
                 session_id=session_id,
                 metadata=_hand_back_metadata(result, task),

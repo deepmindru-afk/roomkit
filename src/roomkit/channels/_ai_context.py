@@ -11,7 +11,11 @@ from roomkit.channels._ai_cuts import CUT_MARK, cut_answer_ids, cut_records
 from roomkit.channels._ai_policy import policy_check
 from roomkit.channels._author_images import AuthorImages, RefusedImages, author_images
 from roomkit.channels._dangling_recovery import patch_dangling_tool_calls
-from roomkit.channels._discussion_turn import discussion_notes, discussion_turn
+from roomkit.channels._discussion_turn import (
+    discussion_handles,
+    discussion_notes,
+    discussion_turn,
+)
 from roomkit.channels._instruction import instruction_fingerprint, is_standalone, mark_instruction
 from roomkit.channels._mark_copies import (
     compile_mark_patterns,
@@ -587,7 +591,9 @@ class AIContextMixin(_AIChannelContract):
             blocks.append(digest)
         return blocks
 
-    async def _tasks_notes(self, loop_ctx: _ToolLoopContext, *, standalone: bool) -> list[str]:
+    async def _tasks_notes(
+        self, loop_ctx: _ToolLoopContext, context: RoomContext, *, standalone: bool
+    ) -> list[str]:
         """The room's background tasks for the turn's notes (RFC §23.4), read
         from the StatusBus as the turn is built; a standalone turn reads none."""
         room_id = loop_ctx.room_id
@@ -599,7 +605,8 @@ class AIContextMixin(_AIChannelContract):
             # A remote bus that fails costs the turn its tasks' note, not the turn.
             logger.warning("Could not read room %s's tasks for its turn", room_id, exc_info=True)
             return []
-        note = render_tasks_note(tasks, now=datetime.now(UTC))
+        handles = discussion_handles(context.room.metadata)
+        note = render_tasks_note(tasks, now=datetime.now(UTC), handles=handles)
         return [note] if note else []
 
     def _vision_notes(self, context: RoomContext, *, standalone: bool) -> list[str]:
@@ -616,7 +623,7 @@ class AIContextMixin(_AIChannelContract):
         """The notes the channel adds to the turn's input: the room's plan and
         tools used, its background tasks, what its video last showed."""
         notes = self._channel_notes(loop_ctx, standalone=standalone)
-        notes += await self._tasks_notes(loop_ctx, standalone=standalone)
+        notes += await self._tasks_notes(loop_ctx, context, standalone=standalone)
         return notes + self._vision_notes(context, standalone=standalone)
 
     def _add_skills(

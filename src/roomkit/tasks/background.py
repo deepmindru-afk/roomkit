@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from roomkit._text import identifier
+from roomkit.channels._discussion_turn import agent_handle
 from roomkit.models.enums import ChannelCategory
 from roomkit.providers.ai.base import AITool
 from roomkit.tasks.posting import HAND_BACKS
@@ -68,10 +69,11 @@ class BackgroundSetup:
             raise ValueError(f"hand_back must be one of {HAND_BACKS}, not {self.hand_back!r}")
 
 
-def worker_brief(task: str, agent_id: str, hand_back: str) -> str:
+def worker_brief(task: str, agent_name: str, hand_back: str) -> str:
     """What a background task's worker is told: the task, then how to work
-    and where its findings go."""
-    agent = identifier(agent_id, "agent")
+    and where its findings go. *agent_name* is the agent the task is for, as
+    the room addresses it: its handle in a discussion, else its channel id."""
+    agent = identifier(agent_name, "agent")
     where = (
         f"posted to the conversation as it is, as @{agent}'s message, so write it for "
         "the people there"
@@ -110,11 +112,13 @@ async def start_background_task(
     if channel is None or channel.category != ChannelCategory.INTELLIGENCE or binding is None:
         raise ValueError(f"{agent_id!r} is not an agent of room {room_id!r}")
     mode = hand_back or setup.hand_back
+    room = await kit.store.get_room(room_id)
+    agent_name = agent_handle(room.metadata if room is not None else None, agent_id)
     return await kit.delegate(
         room_id,
         setup.worker or agent_id,
         task,
-        brief=worker_brief(task, agent_id, mode),
+        brief=worker_brief(task, agent_name, mode),
         notify=agent_id,
         conversation=BACKGROUND_CONVERSATION,
         hand_back=mode,
@@ -145,7 +149,8 @@ def background_tool_server(kit: RoomKit, agent_id: str) -> Any:
             started = await kit.start_task(room_id, agent_id, task)
         except ValueError as exc:
             return json.dumps({"error": str(exc)})
-        agent = identifier(agent_id, "agent")
+        called = await kit.store.get_room(room_id)
+        agent = identifier(agent_handle(called.metadata if called else None, agent_id), "agent")
         back = (
             f"its result is posted as {agent}'s message"
             if started.hand_back == "post"

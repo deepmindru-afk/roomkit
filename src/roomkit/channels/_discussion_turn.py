@@ -71,6 +71,12 @@ def discussion_notes(event: RoomEvent) -> list[str]:
     return list(_issued[turn]) if turn is not None else []
 
 
+def agent_handle(metadata: Mapping[str, Any] | None, channel_id: str) -> str:
+    """The name the discussion a room's *metadata* stores addresses
+    *channel_id* by: its handle, else the channel id itself."""
+    return discussion_handles(metadata).get(channel_id, channel_id)
+
+
 def discussion_handles(metadata: Mapping[str, Any] | None) -> dict[str, str]:
     """The handle each agent of the discussion a room's *metadata* stores is
     addressed by, by channel id: empty when the room holds no discussion, or
