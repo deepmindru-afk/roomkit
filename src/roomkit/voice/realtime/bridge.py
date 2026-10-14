@@ -93,6 +93,10 @@ def resample_pcm(pcm: bytes, from_rate: int, to_rate: int) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+# The key the shared avatar's frames go through the video pipeline under.
+_AVATAR = "avatar"
+
+
 @dataclass
 class _CallState:
     backend_session: VoiceSession
@@ -337,6 +341,7 @@ class RealtimeAVBridge:
         state = self._calls.pop(session_id, None)
         if state is None:
             return
+        self._forget_video(state)
         await self._provider.disconnect(state.provider_session)
         logger.info(
             "Bridge disconnected: %s (video=%d, audio=%d)",
@@ -347,15 +352,19 @@ class RealtimeAVBridge:
 
     async def close(self) -> None:
         """Disconnect all active calls and clean up."""
-        for sid in list(self._calls):
-            await self.disconnect(sid)
-        if self._encode_pool:
-            self._encode_pool.shutdown(wait=False)
-        if self._encoder:
-            self._encoder.close()
-        if self._avatar is not None:
-            await self._avatar.close()
-        await self._provider.close()
+        try:
+            for sid in list(self._calls):
+                await self.disconnect(sid)
+            if self._encode_pool:
+                self._encode_pool.shutdown(wait=False)
+            if self._encoder:
+                self._encoder.close()
+            if self._avatar is not None:
+                await self._avatar.close()
+            await self._provider.close()
+        finally:
+            if self._video_pipeline is not None:
+                await self._video_pipeline.aclose()
 
     # -- Backend → Provider (user audio in) ------------------------------------
 
@@ -395,6 +404,7 @@ class RealtimeAVBridge:
         if state is None:
             return
         state.closed = True
+        self._forget_video(state)
         logger.info(
             "Call ended: %s (video=%d, audio=%d)",
             sid[:8],
@@ -474,7 +484,8 @@ class RealtimeAVBridge:
 
             processed = frame
             if self._video_pipeline is not None:
-                processed = self._video_pipeline.process_inbound("avatar", frame)
+                processed = self._video_pipeline.process_inbound(_AVATAR, frame)
+                self._drop_detections(_AVATAR)
                 if processed is None:
                     continue
 
@@ -493,6 +504,7 @@ class RealtimeAVBridge:
         # Run through video pipeline (resize, filters, vision) if configured
         if self._video_pipeline is not None:
             processed = self._video_pipeline.process_inbound(session.id, frame)
+            self._drop_detections(session.id)
             if processed is None:
                 return
             frame = processed
@@ -505,6 +517,22 @@ class RealtimeAVBridge:
         if self._encoder is None or self._encode_pool is None:
             return
         self._encode_pool.submit(self._send_encoded_video, state, frame)
+
+    def _drop_detections(self, key: str) -> None:
+        """Drain what the filters detected on a frame: the bridge has no hook
+        to fire them on, and undrained they pile up for the whole call."""
+        events = self._video_pipeline.drain_events(key)
+        if events:
+            logger.debug("Dropped %d video detection(s) for %s", len(events), key[:8])
+
+    def _forget_video(self, state: _CallState) -> None:
+        """Reset a call's state in the video pipeline as the call ends, and
+        the shared avatar's once no call is left to watch it."""
+        if self._video_pipeline is None:
+            return
+        self._video_pipeline.reset(state.provider_session.id)
+        if not self._calls:
+            self._video_pipeline.reset(_AVATAR)
 
     def _send_encoded_video(self, state: _CallState, frame: Any) -> None:
         """Encode a raw frame and send via RTP (runs in thread pool).
