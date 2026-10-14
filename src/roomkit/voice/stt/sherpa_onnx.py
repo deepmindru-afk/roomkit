@@ -6,6 +6,7 @@ import asyncio
 import logging
 import math
 import struct
+import threading
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -105,6 +106,8 @@ class SherpaOnnxSTTProvider(STTProvider):
         self._sherpa = __import__("sherpa_onnx")
         self._online_recognizer: Any = None
         self._offline_recognizer: Any = None
+        # Two first calls at once must not each load the model.
+        self._load_lock = threading.Lock()
 
     @property
     def name(self) -> str:
@@ -125,61 +128,83 @@ class SherpaOnnxSTTProvider(STTProvider):
         stream.input_finished()
 
     def _get_online_recognizer(self) -> Any:
-        """Lazily create an OnlineRecognizer for streaming (transducer only)."""
-        if self._online_recognizer is None:
-            cfg = self._config
-            self._online_recognizer = self._sherpa.OnlineRecognizer.from_transducer(
-                tokens=cfg.tokens,
-                encoder=cfg.encoder,
-                decoder=cfg.decoder,
-                joiner=cfg.joiner,
-                num_threads=cfg.num_threads,
-                sample_rate=cfg.sample_rate,
-                feature_dim=80,
-                provider=cfg.provider,
-                enable_endpoint_detection=cfg.enable_endpoint_detection,
-                rule1_min_trailing_silence=cfg.rule1_min_trailing_silence,
-                rule2_min_trailing_silence=cfg.rule2_min_trailing_silence,
-                rule3_min_utterance_length=cfg.rule3_min_utterance_length,
-            )
+        """Lazily create the OnlineRecognizer, once. Blocking: call it off the loop."""
+        with self._load_lock:
+            if self._online_recognizer is None:
+                self._online_recognizer = self._load_online_recognizer()
         return self._online_recognizer
 
     def _get_offline_recognizer(self) -> Any:
-        """Lazily create an OfflineRecognizer for batch transcription."""
-        if self._offline_recognizer is None:
-            cfg = self._config
-            if cfg.mode == "whisper":
-                self._offline_recognizer = self._sherpa.OfflineRecognizer.from_whisper(
-                    encoder=cfg.encoder,
-                    decoder=cfg.decoder,
-                    tokens=cfg.tokens,
-                    language=cfg.language,
-                    task=cfg.task,
-                    num_threads=cfg.num_threads,
-                    provider=cfg.provider,
-                )
-            else:
-                kwargs: dict[str, Any] = dict(
-                    encoder=cfg.encoder,
-                    decoder=cfg.decoder,
-                    joiner=cfg.joiner,
-                    tokens=cfg.tokens,
-                    num_threads=cfg.num_threads,
-                    sample_rate=cfg.sample_rate,
-                    feature_dim=80,
-                    provider=cfg.provider,
-                )
-                if cfg.model_type:
-                    kwargs["model_type"] = cfg.model_type
-                self._offline_recognizer = self._sherpa.OfflineRecognizer.from_transducer(**kwargs)
+        """Lazily create the OfflineRecognizer, once. Blocking: call it off the loop."""
+        with self._load_lock:
+            if self._offline_recognizer is None:
+                self._offline_recognizer = self._load_offline_recognizer()
         return self._offline_recognizer
+
+    async def _online(self) -> Any:
+        """The OnlineRecognizer, loaded in a worker thread on first use: on the
+        event loop, reading the model would stall every session until done."""
+        if self._online_recognizer is not None:
+            return self._online_recognizer
+        return await asyncio.to_thread(self._get_online_recognizer)
+
+    async def _offline(self) -> Any:
+        """The OfflineRecognizer, loaded in a worker thread on first use."""
+        if self._offline_recognizer is not None:
+            return self._offline_recognizer
+        return await asyncio.to_thread(self._get_offline_recognizer)
+
+    def _load_online_recognizer(self) -> Any:
+        """Create an OnlineRecognizer for streaming (transducer only)."""
+        cfg = self._config
+        return self._sherpa.OnlineRecognizer.from_transducer(
+            tokens=cfg.tokens,
+            encoder=cfg.encoder,
+            decoder=cfg.decoder,
+            joiner=cfg.joiner,
+            num_threads=cfg.num_threads,
+            sample_rate=cfg.sample_rate,
+            feature_dim=80,
+            provider=cfg.provider,
+            enable_endpoint_detection=cfg.enable_endpoint_detection,
+            rule1_min_trailing_silence=cfg.rule1_min_trailing_silence,
+            rule2_min_trailing_silence=cfg.rule2_min_trailing_silence,
+            rule3_min_utterance_length=cfg.rule3_min_utterance_length,
+        )
+
+    def _load_offline_recognizer(self) -> Any:
+        """Create an OfflineRecognizer for batch transcription."""
+        cfg = self._config
+        if cfg.mode == "whisper":
+            return self._sherpa.OfflineRecognizer.from_whisper(
+                encoder=cfg.encoder,
+                decoder=cfg.decoder,
+                tokens=cfg.tokens,
+                language=cfg.language,
+                task=cfg.task,
+                num_threads=cfg.num_threads,
+                provider=cfg.provider,
+            )
+        kwargs: dict[str, Any] = dict(
+            encoder=cfg.encoder,
+            decoder=cfg.decoder,
+            joiner=cfg.joiner,
+            tokens=cfg.tokens,
+            num_threads=cfg.num_threads,
+            sample_rate=cfg.sample_rate,
+            feature_dim=80,
+            provider=cfg.provider,
+        )
+        if cfg.model_type:
+            kwargs["model_type"] = cfg.model_type
+        return self._sherpa.OfflineRecognizer.from_transducer(**kwargs)
 
     async def warmup(self) -> None:
         """Pre-load the recognizer model (CUDA init can be slow)."""
         if self._config.mode == "transducer" and not self._config.model_type:
-            await asyncio.to_thread(self._get_online_recognizer)
+            await self._online()
         else:
-            await asyncio.to_thread(self._get_offline_recognizer)
+            await self._offline()
         logger.info("STT model warmed up (mode=%s)", self._config.mode)
 
     async def transcribe(
@@ -209,7 +234,7 @@ class SherpaOnnxSTTProvider(STTProvider):
         sample_rate = getattr(audio, "sample_rate", self._config.sample_rate)
 
         if self._config.mode == "transducer" and not self._config.model_type:
-            recognizer = self._get_online_recognizer()
+            recognizer = await self._online()
 
             def _run() -> str:
                 stream = recognizer.create_stream()
@@ -222,7 +247,7 @@ class SherpaOnnxSTTProvider(STTProvider):
                 logger.debug("Transducer transcribe: %d decode steps", n)
                 return str(recognizer.get_result(stream)).strip()
         else:
-            recognizer = self._get_offline_recognizer()
+            recognizer = await self._offline()
 
             def _run() -> str:
                 stream = recognizer.create_stream()
@@ -267,7 +292,7 @@ class SherpaOnnxSTTProvider(STTProvider):
                 "Use transcribe() for batch recognition instead."
             )
 
-        recognizer = self._get_online_recognizer()
+        recognizer = await self._online()
         stream = recognizer.create_stream()
         last_text = ""
         sample_rate = self._config.sample_rate

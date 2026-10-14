@@ -328,6 +328,61 @@ class TestSherpaOnnxSTTProvider:
             with pytest.raises(ImportError, match="sherpa-onnx is required"):
                 SherpaOnnxSTTProvider(SherpaOnnxSTTConfig())
 
+    @staticmethod
+    def _recognizer() -> MagicMock:
+        recognizer = MagicMock()
+        recognizer.is_ready.return_value = False
+        recognizer.get_result.return_value = "hello"
+        recognizer.create_stream.return_value.result.text = "hello"
+        return recognizer
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call", ["transcribe", "transcribe_stream", "transcribe_whisper"])
+    async def test_the_model_loads_off_the_event_loop(self, call: str) -> None:
+        # Read on the loop, a recognizer's model files stall every session.
+        sherpa = _mock_sherpa_module()
+        loaded_on: list[int] = []
+        recognizer = self._recognizer()
+
+        def load(**_kwargs: Any) -> MagicMock:
+            loaded_on.append(threading.get_ident())
+            return recognizer
+
+        sherpa.OnlineRecognizer.from_transducer.side_effect = load
+        sherpa.OfflineRecognizer.from_whisper.side_effect = load
+        mode = "whisper" if call == "transcribe_whisper" else "transducer"
+        provider = self._make_provider(sherpa, mode=mode, tokens="tokens.txt")
+        audio = AudioChunk(data=_make_pcm_s16le([0.1, 0.2]), sample_rate=16000)
+
+        if call == "transcribe_stream":
+
+            async def chunks() -> Any:
+                yield audio
+
+            _ = [result async for result in provider.transcribe_stream(chunks())]
+        else:
+            await provider.transcribe(audio)
+
+        assert len(loaded_on) == 1
+        assert loaded_on[0] != threading.get_ident()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_first_calls_load_the_model_once(self) -> None:
+        sherpa = _mock_sherpa_module()
+        recognizer = self._recognizer()
+
+        def load(**_kwargs: Any) -> MagicMock:
+            time.sleep(0.05)
+            return recognizer
+
+        sherpa.OnlineRecognizer.from_transducer.side_effect = load
+        provider = self._make_provider(sherpa, mode="transducer", tokens="tokens.txt")
+        audio = AudioChunk(data=_make_pcm_s16le([0.1, 0.2]), sample_rate=16000)
+
+        await asyncio.gather(provider.transcribe(audio), provider.transcribe(audio))
+
+        assert sherpa.OnlineRecognizer.from_transducer.call_count == 1
+
 
 # ---------------------------------------------------------------------------
 # TTS tests
