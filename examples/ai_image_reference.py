@@ -95,24 +95,24 @@ def provider_for(name: str) -> AIProvider:
     return MockAIProvider(responses=["It is red.", "Square."], vision=True)
 
 
-async def main(provider_name: str) -> None:
-    storage = PrivateStorage()
-    provider = provider_for(provider_name)
+async def build_kit(storage: PrivateStorage, provider: AIProvider) -> RoomKit:
+    """A room where a person talks to an assistant whose media stay private."""
     kit = RoomKit(media_resolver=storage.resolve)
     kit.register_channel(WebSocketChannel("user"))
     kit.register_channel(AIChannel("assistant", provider=provider))
     await kit.create_room(room_id="room")
     await kit.attach_channel("room", "user")
     await kit.attach_channel("room", "assistant", category=ChannelCategory.INTELLIGENCE)
+    return kit
 
-    swatch = storage.put("room", "swatch-42", red_square_png())
-    image = MediaContent(url=swatch, mime_type="image/png", filename="swatch.png")
+
+async def converse(kit: RoomKit, image: MediaContent) -> None:
+    """A question about the image, then a follow-up that needs it again."""
+    question = "What colour is this swatch?"
+    follow_up = "And what shape is it? One word."
     turns = [
-        (
-            "What colour is this swatch?",
-            CompositeContent(parts=[TextContent(body="What colour is this swatch?"), image]),
-        ),
-        ("And what shape is it? One word.", TextContent(body="And what shape is it? One word.")),
+        (question, CompositeContent(parts=[TextContent(body=question), image])),
+        (follow_up, TextContent(body=follow_up)),
     ]
     for asked, content in turns:
         message = InboundMessage(channel_id="user", sender_id="person", content=content)
@@ -123,27 +123,44 @@ async def main(provider_name: str) -> None:
         logger.info("Asked: %s", asked)
         logger.info("Answered: %s", answer)
 
-    if isinstance(provider, MockAIProvider):
-        for turn, context in enumerate(provider.calls, 1):
-            images = [
-                part.url[:30] + "..."
-                for message in context.messages
-                if isinstance(message.content, list)
-                for part in message.content
-                if isinstance(part, AIImagePart)
-            ]
-            logger.info("Turn %d: the model received %d image(s): %s", turn, len(images), images)
 
-    stored = [e.content for e in await kit.store.list_events("room")]
+def report_images_sent(provider: MockAIProvider) -> None:
+    """What the mock model received on each turn."""
+    for turn, context in enumerate(provider.calls, 1):
+        images = [
+            part.url[:30] + "..."
+            for message in context.messages
+            if isinstance(message.content, list)
+            for part in message.content
+            if isinstance(part, AIImagePart)
+        ]
+        logger.info("Turn %d: the model received %d image(s): %s", turn, len(images), images)
+
+
+async def report_store(kit: RoomKit) -> None:
+    """What the room's store kept of the image: the reference alone."""
     urls = [
         part.url
-        for c in stored
-        if isinstance(c, CompositeContent)
-        for part in c.parts
+        for event in await kit.store.list_events("room")
+        if isinstance(event.content, CompositeContent)
+        for part in event.content.parts
         if isinstance(part, MediaContent)
     ]
     logger.info("The store keeps the reference alone: %s", urls)
-    await kit.close()
+
+
+async def main(provider_name: str) -> None:
+    storage = PrivateStorage()
+    provider = provider_for(provider_name)
+    kit = await build_kit(storage, provider)
+    try:
+        swatch = storage.put("room", "swatch-42", red_square_png())
+        await converse(kit, MediaContent(url=swatch, mime_type="image/png", filename="swatch.png"))
+        if isinstance(provider, MockAIProvider):
+            report_images_sent(provider)
+        await report_store(kit)
+    finally:
+        await kit.close()
 
 
 if __name__ == "__main__":

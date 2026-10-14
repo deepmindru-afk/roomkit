@@ -6,7 +6,7 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from roomkit._media import media_label
+from roomkit._media import content_text, media_label
 from roomkit.channels._ai_cuts import CUT_MARK, cut_answer_ids, cut_records
 from roomkit.channels._ai_policy import policy_check
 from roomkit.channels._author_images import AuthorImages, RefusedImages, author_images
@@ -981,17 +981,9 @@ class AIContextMixin(_AIChannelContract):
         its label (RFC §6.6), never its bytes; nothing for a lone media without
         a caption, which the host's describer has the word on first."""
         content = event.content
-        if isinstance(content, TextContent):
-            return content.body
-        if isinstance(content, MediaContent):
-            return media_label(content) if content.caption else ""
-        if isinstance(content, CompositeContent):
-            return "\n".join(
-                part.body if isinstance(part, TextContent) else media_label(part)
-                for part in content.parts
-                if isinstance(part, TextContent | MediaContent)
-            )
-        return ""
+        if isinstance(content, MediaContent) and not content.caption:
+            return ""
+        return content_text(content) or ""
 
 
 _NO_IMAGES = AuthorImages()

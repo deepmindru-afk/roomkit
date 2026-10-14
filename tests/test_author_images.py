@@ -11,12 +11,15 @@ mention, never a failed turn.
 from __future__ import annotations
 
 import base64
+import contextlib
 from collections.abc import Sequence
+from typing import Any
 
 import pytest
 
 from roomkit import RoomKit
 from roomkit._media import media_label
+from roomkit.channels._acp_context import acp_event_text
 from roomkit.channels._turn_notes import TURN_IMAGES_HEADER
 from roomkit.channels.ai import AIChannel
 from roomkit.core.transcoder import DefaultContentTranscoder
@@ -26,14 +29,25 @@ from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelMediaType, ChannelType
 from roomkit.models.event import (
+    AudioContent,
     CompositeContent,
     EventContent,
     MediaContent,
     RoomEvent,
     TextContent,
+    VideoContent,
 )
 from roomkit.models.room import Room
-from roomkit.providers.ai.base import AIContext, AIImagePart, AIResponse, AITextPart, ProviderError
+from roomkit.providers.ai.base import (
+    AIContext,
+    AIImagePart,
+    AIResponse,
+    AITextPart,
+    AITool,
+    AIToolCall,
+    ProviderError,
+    StreamTextDelta,
+)
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.utils import to_data_uri
 from tests.conftest import make_event
@@ -291,31 +305,6 @@ class TestMention:
         assert "[Media: contract.pdf]" in _text(context)
         assert "base64" not in _text(context)
 
-    async def test_an_image_the_provider_refused_reads_as_refused_after(self) -> None:
-        class _RefusesImages(MockAIProvider):
-            async def generate(self, context: AIContext) -> AIResponse:
-                self.calls.append(context)
-                if _images(context):
-                    raise ProviderError("400 the image could not be processed", retryable=False)
-                return AIResponse(content="ok", finish_reason="stop")
-
-        provider = _RefusesImages(vision=True)
-        channel = AIChannel("ai1", provider=provider)
-        channel._media_resolver = _Host()  # noqa: SLF001
-        photo = _event(_photo())
-        context = RoomContext(room=Room(id="r1"))
-        with pytest.raises(ProviderError):
-            await read_reply(await channel.on_event(photo, _BINDING, context))
-
-        question = _event(TextContent(body="and now?"))
-        after = RoomContext(
-            room=Room(id="r1"), bindings=[_MEMBER, _BINDING], recent_events=[photo, question]
-        )
-        await read_reply(await channel.on_event(question, _BINDING, after))
-
-        assert _images(provider.calls[-1]) == []
-        assert "[Image refused by the model's provider: “lamp.png”]" in _text(provider.calls[-1])
-
 
 class TestModelThatDoesNotSee:
     async def test_it_reads_a_mention_never_the_bytes(self, streaming: bool) -> None:
@@ -398,9 +387,204 @@ class TestReferenceURL:
             "javascript://x",
             "/etc/passwd",
             "lamp.png",
+            "C://Windows/win.ini",
+            "app-media://../../etc/passwd",
+            "app-media://photos/../../../etc/passwd",
+            "app-media://a\\b",
         ],
     )
     def test_a_url_a_transport_could_read_or_run_is_refused(self, url: str) -> None:
         # Some transports read a URL they are handed (a path, a file: URI).
         with pytest.raises(ValueError, match="reference"):
             MediaContent(url=url, mime_type="image/png")
+
+
+class _Scripted(MockAIProvider):
+    """Answers each request with the next step: a response, or an error raised."""
+
+    def __init__(self, steps: list[AIResponse | Exception], *, streaming: bool = False) -> None:
+        super().__init__(vision=True, streaming=streaming)
+        self._steps = list(steps)
+
+    async def generate(self, context: AIContext) -> AIResponse:
+        self.calls.append(context)
+        step = self._steps.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+class _BreaksMidStream(_Scripted):
+    """Streams a word of its first answer, then fails: the request was taken."""
+
+    async def _scripted_events(self, context: AIContext) -> Any:
+        if len(self.calls) > 0:
+            async for event in super()._scripted_events(context):
+                yield event
+            return
+        self.calls.append(context)
+        yield StreamTextDelta(text="Let me look")
+        raise ProviderError("400 overloaded mid-answer", retryable=False, status_code=400)
+
+
+_OK = AIResponse(content="ok", finish_reason="stop")
+_LOOKUP = AITool(name="lookup", description="Look something up", parameters={})
+
+
+async def _lookup(name: str, arguments: dict[str, Any]) -> str:
+    return "found"
+
+
+async def _turns(provider: MockAIProvider, *, tool: bool = False) -> AIContext:
+    """A photo's turn, which may fail, then a question: the context the question got."""
+    channel = AIChannel("ai1", provider=provider, tool_handler=_lookup if tool else None)
+    channel._media_resolver = _Host()  # noqa: SLF001
+    binding = _BINDING.model_copy(
+        update={"metadata": {"tools": [_LOOKUP.model_dump()]} if tool else {}}
+    )
+    photo = _event(_photo())
+    first = RoomContext(room=Room(id="r1"), bindings=[_MEMBER, binding], recent_events=[photo])
+    with contextlib.suppress(ProviderError):
+        await read_reply(await channel.on_event(photo, binding, first))
+    question = _event(TextContent(body="and now?"))
+    after = RoomContext(
+        room=Room(id="r1"), bindings=[_MEMBER, binding], recent_events=[photo, question]
+    )
+    await read_reply(await channel.on_event(question, binding, after))
+    return provider.calls[-1]
+
+
+class TestRefusal:
+    async def test_an_image_the_provider_refused_reads_as_refused_after(
+        self, streaming: bool
+    ) -> None:
+        refused = ProviderError(
+            "400 the image could not be processed", retryable=False, status_code=400
+        )
+
+        context = await _turns(_Scripted([refused, _OK], streaming=streaming))
+
+        assert _images(context) == []
+        assert "[Image refused by the model's provider: \u201clamp.png\u201d]" in _text(context)
+
+    @pytest.mark.parametrize("status", [401, 403, 404, 429])
+    async def test_an_error_that_is_not_about_the_content_refuses_nothing(
+        self, status: int
+    ) -> None:
+        # A key refused, a permission, a missing model, a rate limit.
+        error = ProviderError(f"{status} invalid x-api-key", retryable=False, status_code=status)
+
+        context = await _turns(_Scripted([error, _OK]))
+
+        assert _images(context) == [_PNG]
+
+    async def test_a_later_round_failing_refuses_nothing(self) -> None:
+        # Round 0 carried the image and was answered: the provider took it.
+        call = AIResponse(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[AIToolCall(id="c0", name="lookup", arguments={})],
+        )
+        error = ProviderError("400 bad request", retryable=False, status_code=400)
+
+        context = await _turns(_Scripted([call, error, _OK]), tool=True)
+
+        assert _images(context) == [_PNG]
+
+    async def test_a_stream_under_way_refuses_nothing(self) -> None:
+        context = await _turns(_BreaksMidStream([_OK], streaming=True))
+
+        assert _images(context) == [_PNG]
+
+
+class TestLivePath:
+    """Through the router, which transcodes what a binding cannot take."""
+
+    @staticmethod
+    async def _first_turn(provider: MockAIProvider, **channel: Any) -> AIContext:
+        kit = RoomKit()
+        kit.register_channel(SimpleChannel("user"))
+        kit.register_channel(AIChannel("ai1", provider=provider, **channel))
+        try:
+            await kit.create_room(room_id="room")
+            await kit.attach_channel("room", "user")
+            await kit.attach_channel("room", "ai1", category=ChannelCategory.INTELLIGENCE)
+            photo = MediaContent(url=_PNG, mime_type="image/png")
+            await kit.process_inbound(
+                InboundMessage(channel_id="user", sender_id="person", content=photo),
+                room_id="room",
+            )
+            return provider.calls[-1]
+        finally:
+            await kit.close()
+
+    async def test_a_live_captionless_image_goes_to_the_describer_first(self) -> None:
+        provider = MockAIProvider(responses=["ok"], vision=False)
+
+        context = await self._first_turn(
+            provider, describe_empty_event=lambda event: "[a photo the user sent]"
+        )
+
+        assert context.messages[-1].content == "[a photo the user sent]"
+
+    async def test_a_model_that_does_not_see_never_reads_the_payload(self) -> None:
+        context = await self._first_turn(MockAIProvider(responses=["ok"], vision=False))
+
+        assert context.messages[-1].content == "[Media: image/png]"
+
+    async def test_a_model_that_sees_gets_the_image(self) -> None:
+        context = await self._first_turn(MockAIProvider(responses=["ok"], vision=True))
+
+        assert _images(context) == [_PNG]
+
+
+class TestConstraints:
+    @pytest.mark.parametrize("mime_type", ["image/jpg", "image/jpeg; charset=binary", "IMAGE/PNG"])
+    async def test_a_type_spelled_another_way_still_goes_as_an_image(self, mime_type: str) -> None:
+        link = "https://cdn.example.com/lamp.jpg"
+
+        context = await _turn(_channel(), _event(_photo(link, mime_type=mime_type)))
+
+        assert _images(context) == [link]
+
+    async def test_an_empty_data_uri_reads_as_unavailable(self) -> None:
+        # A transport whose download failed hands an empty payload.
+        context = await _turn(_channel(), _event(_photo("data:image/jpeg;base64,")))
+
+        assert _images(context) == []
+        assert "[Image unavailable: \u201clamp.png\u201d]" in _text(context)
+
+    @pytest.mark.parametrize(
+        ("content", "label"),
+        [
+            (AudioContent(url="data:audio/ogg;base64,T2dnUw=="), "[Voice message: audio/ogg]"),
+            (VideoContent(url="data:video/mp4;base64,AAAA"), "[Video: video/mp4]"),
+            (
+                AudioContent(url="https://x.example/a.ogg"),
+                "[Voice message: https://x.example/a.ogg]",
+            ),
+        ],
+    )
+    async def test_a_voice_or_video_label_never_shows_a_payload(
+        self, content: EventContent, label: str
+    ) -> None:
+        text_only = ChannelBinding(
+            channel_id="sms",
+            room_id="r1",
+            channel_type=ChannelType.SMS,
+            capabilities=ChannelCapabilities(media_types=[ChannelMediaType.TEXT]),
+        )
+
+        transcoded = await DefaultContentTranscoder().transcode(content, _BINDING, text_only)
+
+        assert transcoded == TextContent(body=label)
+
+    @pytest.mark.parametrize("url", ["HTTP://cdn.example.com/a.png", "DATA:image/png;base64,AA"])
+    def test_a_scheme_in_capitals_reads_as_it_does_in_lowercase(self, url: str) -> None:
+        assert MediaContent(url=url, mime_type="image/png").url == url
+
+
+def test_an_acp_agent_reads_a_composite_with_its_media() -> None:
+    composite = CompositeContent(parts=[TextContent(body="compare with mine"), _photo()])
+
+    assert acp_event_text(_event(composite)) == "compare with mine\n[Media: lamp.png]"

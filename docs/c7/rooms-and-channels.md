@@ -260,8 +260,8 @@ ws_caps = ChannelCapabilities(
 | `TextContent` | Always passes through | — |
 | `RichContent` | RICH in media_types → pass | `TextContent(plain_text or body)` |
 | `MediaContent` | MEDIA in media_types → pass | `TextContent("[Media: {caption or filename or url}]")`, the URL only when a link, else the media type |
-| `AudioContent` | AUDIO in media_types → pass | `TextContent(transcript)` or `"[Voice message: {url}]"` |
-| `VideoContent` | VIDEO in media_types → pass | `TextContent("[Video: {url}]")` |
+| `AudioContent` | AUDIO in media_types → pass | `TextContent(transcript)` or `"[Voice message: {url}]"`, the URL only when a link, else the media type |
+| `VideoContent` | VIDEO in media_types → pass | `TextContent("[Video: {url}]")`, the URL only when a link, else the media type |
 | `LocationContent` | LOCATION in media_types → pass | `TextContent("[Location: {label} ({lat}, {lon})]")` |
 | `CompositeContent` | Recursive transcode of all parts | If all parts become text → flatten to single TextContent |
 | `TemplateContent` | TEMPLATE in media_types → pass | `TextContent(body or "[Template: {id}]")` |

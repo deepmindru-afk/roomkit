@@ -46,6 +46,7 @@ from roomkit._text import (
 )
 from roomkit.channels._acp_context import labelled_request, room_context_block, window_labels
 from roomkit.channels._ai_speaking import _people
+from roomkit.channels._author_images import _mention
 from roomkit.channels._compaction import summary_text
 from roomkit.channels._instruction import INSTRUCTION_MARKER
 from roomkit.channels._mark_copies import COPIED_MARK, without_mark_copies
@@ -73,7 +74,7 @@ from roomkit.memory._summary import SummaryLines, summary_message
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelCategory, ChannelType, EventType
-from roomkit.models.event import RoomEvent
+from roomkit.models.event import MediaContent, RoomEvent
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.orchestration._worker_run import WorkerOutcome
@@ -235,6 +236,10 @@ QUOTED: dict[str, Callable[[str], str]] = {
         [TranscriptLine("user", text)], first=True
     ),
     "served skill manifest": _served_manifest,
+    "author image mention": lambda text: _mention(
+        "Image unavailable",
+        MediaContent(url="app-media://p1", mime_type="image/png", filename=text),
+    ),
 }
 
 

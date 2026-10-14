@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from roomkit._media import media_label
+from roomkit._media import audio_label, media_label, video_label
 from roomkit.core.router import ContentTranscoder
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import ChannelMediaType
@@ -53,14 +53,12 @@ class DefaultContentTranscoder(ContentTranscoder):
         if isinstance(content, AudioContent):
             if ChannelMediaType.AUDIO in target_types:
                 return content
-            if content.transcript:
-                return TextContent(body=content.transcript)
-            return TextContent(body=f"[Voice message: {content.url}]")
+            return TextContent(body=audio_label(content))
 
         if isinstance(content, VideoContent):
             if ChannelMediaType.VIDEO in target_types:
                 return content
-            return TextContent(body=f"[Video: {content.url}]")
+            return TextContent(body=video_label(content))
 
         if isinstance(content, LocationContent):
             if ChannelMediaType.LOCATION in target_types:

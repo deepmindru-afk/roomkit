@@ -551,14 +551,16 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         itself. Either way the stream's consumer logs it, once: the loop
         raises and logs nothing.
         """
+        streamed = False
         try:
             async with aclosing(
                 round_.stream(self._generate_stream_with_retry(context))
             ) as deltas:
                 async for delta in deltas:
+                    streamed = True
                     yield delta
         except ProviderError as exc:
-            if not exc.retryable:
+            if index == 0 and not streamed and refuses_content(exc):
                 self._forget_sent_images(turn, context)
             if not interrupts_turn(exc, after_round=turn.saw_tool_call):
                 raise
@@ -569,11 +571,11 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             turn.thinking.append(round_.state.thinking)
 
     def _forget_sent_images(self, turn: _StreamTurnState, context: AIContext) -> None:
-        """Send no more the images a request a provider error not retried ended
+        """Send no more the images a request whose content the provider refused
         carried: one the provider refused would fail every later turn while it
         stays in the window (RFC §6.4). The room's replayed tool images are
         replayed no more, its authors' images read as refused; a request that
-        carried none (a key refused, a quota) changes nothing."""
+        carried none changes nothing."""
         if carries_turn_images(context.messages):
             self._tool_usage.forget_images(turn.room_id)
         images = turn.loop_ctx.author_images
@@ -745,3 +747,14 @@ def _announce(
     """
     for call, marker in zip(calls, markers, strict=True):
         loop_ctx.calls.announce(call, marker=marker)
+
+
+_NOT_CONTENT_STATUSES = frozenset({401, 403, 404, 429})
+
+
+def refuses_content(error: ProviderError) -> bool:
+    """Whether *error* may be the provider refusing what a request carried: not
+    retried, and no authentication, permission, missing model or rate limit
+    (RFC §6.4). Only the turn's first request, before anything streamed, can
+    say so: a later round, or a stream under way, shows the content was taken."""
+    return not error.retryable and error.status_code not in _NOT_CONTENT_STATUSES

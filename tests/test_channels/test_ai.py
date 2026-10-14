@@ -95,12 +95,14 @@ class TestAIChannel:
         assert caps.supports_media is True
 
     async def test_capabilities_without_vision(self) -> None:
-        """Non-vision provider excludes MEDIA."""
+        """A model that does not see still takes media: the channel reads each
+        as its label or the host's description itself, the event a turn
+        answers as the same event in its history (RFC §6.4)."""
         provider = MockAIProvider(vision=False)
         ch = AIChannel("ai1", provider=provider)
         caps = ch.capabilities()
-        assert ChannelMediaType.MEDIA not in caps.media_types
-        assert caps.supports_media is False
+        assert ChannelMediaType.MEDIA in caps.media_types
+        assert caps.supports_media is True
 
     async def test_on_event_with_image(self) -> None:
         """Vision provider receives image in context."""

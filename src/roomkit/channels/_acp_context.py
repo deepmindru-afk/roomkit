@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 
+from roomkit._media import content_text
 from roomkit._text import fence, quoted
 from roomkit.channels._acp_marks import (
     INSTRUCTIONS_MARKER,
@@ -46,7 +47,7 @@ from roomkit.channels.base import Channel
 from roomkit.core.visibility import visible_events
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import EventType
-from roomkit.models.event import RichContent, RoomEvent, TextContent
+from roomkit.models.event import RichContent, RoomEvent
 
 logger = logging.getLogger("roomkit.channels.acp")
 
@@ -79,13 +80,14 @@ def acp_event_text(event: RoomEvent) -> str:
 
 
 def _plain_text(event: RoomEvent) -> str:
-    """*event*'s content as a string, rich content by its plain text."""
+    """*event*'s content as a string: rich content by its plain text, a media
+    as its label and a composite as its parts (RFC §6.6), as the live event
+    the channel takes as text reads."""
     content = event.content
-    if isinstance(content, TextContent):
-        return content.body
     if isinstance(content, RichContent):
         return content.plain_text or content.body
-    return Channel.extract_text(event)
+    text = content_text(content)
+    return text if text is not None else Channel.extract_text(event)
 
 
 def room_context_block(

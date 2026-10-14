@@ -45,7 +45,9 @@ DEFAULT_MAX_AUTHOR_IMAGES = 4
 """The newest author images a turn sends, history and input together."""
 
 MAX_AUTHOR_IMAGE_BYTES = 5 * 1024 * 1024
-"""The size of an image every vision provider takes (Anthropic's per-image limit)."""
+"""The size of an image every vision provider takes: Anthropic's documented
+per-image limit, read on the image's bytes (Claude Haiku 5.5 took 5.4 MiB, its
+base64 7.2 MiB, on 2026-10-14)."""
 
 ImageKey = tuple[str, int]
 """An author image: the id of the event that brought it, and its part's index."""
@@ -139,8 +141,9 @@ def _decide(
 
 
 def _inline(media: MediaContent) -> AIImagePart | str:
-    """A data URI or a link as the image part sent; a data URI past the size, a mention."""
-    if is_data_uri(media.url) and _data_uri_bytes(media.url) > MAX_AUTHOR_IMAGE_BYTES:
+    """A data URI or a link as the image part sent; a data URI with no data or
+    past the size, a mention."""
+    if is_data_uri(media.url) and not 0 < _data_uri_bytes(media.url) <= MAX_AUTHOR_IMAGE_BYTES:
         return _mention(_UNAVAILABLE, media)
     return AIImagePart(url=media.url, mime_type=media.mime_type)
 

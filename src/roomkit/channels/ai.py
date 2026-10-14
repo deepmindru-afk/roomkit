@@ -550,13 +550,14 @@ class AIChannel(
         return len(self._active_loops)
 
     def capabilities(self) -> ChannelCapabilities:
-        media_types = [ChannelMediaType.TEXT, ChannelMediaType.RICH]
-        if self._provider.supports_vision:
-            media_types.append(ChannelMediaType.MEDIA)
+        """Text, rich content and media whatever the model sees: the channel
+        reads each media itself, an image for a model that sees, its label or
+        the host's description otherwise, so the event a turn answers reads as
+        the same event does in its history (RFC §6.4)."""
         return ChannelCapabilities(
-            media_types=media_types,
+            media_types=[ChannelMediaType.TEXT, ChannelMediaType.RICH, ChannelMediaType.MEDIA],
             supports_rich_text=True,
-            supports_media=self._provider.supports_vision,
+            supports_media=True,
         )
 
     async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:

@@ -885,10 +885,14 @@ go as images. Anything else takes the image's place as a short mention, never a
 failed turn: `[Media: contract.pdf]` for a document or a model without vision,
 `[Earlier image not shown: …]` past the bound, `[Image unavailable: …]` for a
 reference that does not resolve, `[Image refused by the model's provider: …]`
-for an image a provider refused on an earlier turn. A `file:`, `ftp:`,
-`javascript:` or schemeless URL is refused when the `MediaContent` is built. A
-transport channel receives the reference as it is: resolve it yourself where a
-transport needs the media.
+for an image a provider refused on an earlier turn (the turn's first request
+failed on a non-retried error that is no authentication, permission, missing
+model or rate limit). A `file:`, `ftp:`, `javascript:`, `vbscript:` or
+schemeless URL, a one-letter scheme, a `..` segment or a backslash is refused
+when the `MediaContent` is built. A transport channel receives the reference
+as it is: resolve it yourself where a transport needs the media. An AI channel
+takes media whatever its model sees, so the turn reads a live event as it reads
+the same event in its history.
 
 A captionless media alone in its event, on a provider without vision, and an
 upload a host stores with an empty body and its files in metadata, extract to

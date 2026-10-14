@@ -59,10 +59,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unavailable: …]` for a reference that does not resolve, `[Image refused by
   the model's provider: …]` after a provider error not retried on a request
   that carried it. `MediaContent` accepts a reference and still refuses
-  `file:`, `ftp:`, `javascript:`, `vbscript:` and schemeless URLs.
-- `[Media: …]` (RFC §6.6) shows the URL only when it is a link: a `data:` URI
-  or a reference reads as the media type, where a text-only channel and a
-  model without vision used to receive a whole base64 payload as text.
+  `file:`, `ftp:`, `javascript:`, `vbscript:` and schemeless URLs, and a
+  reference a path reader could follow (a one-letter scheme such as
+  `C://…`, a `..` segment, a backslash). WhatsApp personal hands neonize a
+  link or a `data:` URI's bytes and refuses a reference: neonize opens any
+  other string as a local file.
+- `[Media: …]`, `[Voice message: …]` and `[Video: …]` (RFC §6.6) show the URL
+  only when it is a link: a `data:` URI or a reference reads as the media
+  type, where a text-only channel and a model without vision used to receive
+  a whole base64 payload as text. A memory's summary and an ACP agent's
+  catch-up read a media as the same label, and a composite as its parts.
+- An `AIChannel` takes media whatever its model sees (its capabilities name
+  `MEDIA`): the router no longer transcodes a media for a model without vision,
+  the channel reads it itself, so a live captionless image goes to
+  `describe_empty_event` first, as the same event in the history does.
+- The images a turn sent, a tool's replayed or an author's, are dropped after a
+  provider error only when the turn's first request failed, before anything of
+  it streamed, on an error that is no authentication, permission, missing
+  model or rate limit (RFC §6.4). A key refused or a failure on a later round
+  dropped them for the rest of the process.
 
 ### Fixed
 
@@ -79,6 +94,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its event still goes to `describe_empty_event` first (RMK-763).
 - The token estimate counts a document as its label, not as a 1000-token
   image (RMK-763).
+- An image whose type is spelled `image/jpg`, in capitals or with parameters
+  goes as an image again, and an empty `data:` URI (a transport's failed
+  download) reads as unavailable instead of failing a turn (RMK-763).
+- A memory's summary no longer quotes a media's base64 payload or a tenant's
+  storage reference: it read the content's repr (RMK-763).
 - A model file of the other family no longer ends the process (RMK-759): given
   `gtcrn_simple.onnx` under `model_type="dpdfnet"`, or a DPDFNet file under
   GTCRN, sherpa-onnx exited with code 255 on the first frame of a call ("Expect

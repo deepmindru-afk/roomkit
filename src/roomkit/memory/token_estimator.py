@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from roomkit._media import is_vision_image, media_label
+from roomkit._media import content_text, is_vision_image, media_label
 from roomkit.models.event import (
     AudioContent,
     CompositeContent,
@@ -82,14 +82,17 @@ def extract_event_text(event: RoomEvent) -> str:
     """The text of ``event`` as the memory layer reads it.
 
     The transports' extraction (:func:`roomkit.providers.utils.extract_event_text`),
-    with one difference: content that carries no text, a media attachment, a
-    location, a tool call, is rendered with ``str()`` rather than dropped,
-    because it still costs tokens and still belongs in a summary.
+    with two differences: a media reads as its label and a composite as its
+    parts, never a ``data:`` URI or a reference (RFC §6.6); other content that
+    carries no text, a location, a tool call, is rendered with ``str()``
+    rather than dropped, because it still costs tokens and still belongs in a
+    summary.
     """
     text = _transport_text(event)
     if text or isinstance(event.content, TextContent):
         return text
-    return str(event.content)
+    labelled = content_text(event.content)
+    return labelled if labelled is not None else str(event.content)
 
 
 def estimate_event_tokens(event: RoomEvent, *, text_only: bool = False) -> int:
