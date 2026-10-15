@@ -62,8 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   follows the discussion reads them too, and a room stored without them
   keeps its channel ids. Background task texts (the worker's brief,
   the tool's answer, the relayed result, the tasks' block of the notes) name
-  such an agent by its handle too. Example:
-  `examples/discussion_group_chat.py`.
+  such an agent by its handle too, and so does `task_status` (`"agent":
+  "Comms"`; `room_task_lines` keeps the channel id for a host, RMK-765).
+  `DiscussionConsole` shows and reads agents by handle: the help, the cards,
+  the status line, the notices and `/tasks` say `@Dev`, and `/listen @Dev`,
+  `/talk`, `/task` read a name as the discussion does (RMK-764);
+  `AgentCard.channel_id` (new) keys a host's own card whose handle is not its
+  channel id. Example: `examples/discussion_group_chat.py`.
 
 ### Changed
 
@@ -110,15 +115,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `DiscussionConsole` shows and reads agents by their discussion handle
-  (RMK-764): the help, the cards, the status line, the notices, the message
-  headers, tool lines and `/tasks` say `@Dev` where they said
-  `@agent:8e41…`, and `/listen @Dev`, `/talk @Dev`, `/task @Dev …` reach
-  the agent. `AgentCard` gains `channel_id` (None: the handle is the channel
-  id, as before for a host's own cards) and `AgentCard.channel`.
-- `task_status` names a discussion's agent by its handle (`"agent": "Comms"`),
-  as the turn's notes do, where the model read `agent:7c1e…` (RMK-765). The
-  lines `room_task_lines` gives a host keep the channel id.
 - A document sent as a `MediaContent` (a PDF, `application/octet-stream`) no
   longer reaches the model as an image the provider refuses: it reads as its
   label (RMK-763).
