@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from roomkit import RoomKit
-from roomkit._media import media_label
+from roomkit._media import canonical_data_uri, media_label
 from roomkit.channels._acp_context import acp_event_text
 from roomkit.channels._turn_notes import TURN_IMAGES_HEADER
 from roomkit.channels.ai import AIChannel
@@ -48,6 +48,7 @@ from roomkit.providers.ai.base import (
     ProviderError,
     StreamTextDelta,
 )
+from roomkit.providers.ai.image_parts import image_part_base64
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.utils import to_data_uri
 from tests.conftest import make_event
@@ -467,11 +468,12 @@ class TestRefusal:
         assert _images(context) == []
         assert "[Image refused by the model's provider: \u201clamp.png\u201d]" in _text(context)
 
-    @pytest.mark.parametrize("status", [401, 403, 404, 429])
+    @pytest.mark.parametrize("status", [401, 402, 403, 404, 429])
     async def test_an_error_that_is_not_about_the_content_refuses_nothing(
         self, status: int
     ) -> None:
-        # A key refused, a permission, a missing model, a rate limit.
+        # A key refused, a bill unpaid (PolarGrid, Cerebras), a permission, a
+        # missing model, a rate limit.
         error = ProviderError(f"{status} invalid x-api-key", retryable=False, status_code=status)
 
         context = await _turns(_Scripted([error, _OK]))
@@ -547,6 +549,33 @@ class TestConstraints:
 
         assert _images(context) == [link]
 
+    @pytest.mark.parametrize(
+        ("url", "mime_type", "sent"),
+        [
+            (to_data_uri(_PNG_BYTES, "image/jpg"), "image/jpg", "image/jpeg"),
+            ("DATA:IMAGE/PNG;BASE64," + _PNG.split(",", 1)[1], "IMAGE/PNG", "image/png"),
+            (_REF, "image/jpg", "image/jpeg"),
+            (_REF, "Image/PNG; charset=binary", "image/png"),
+        ],
+    )
+    async def test_an_image_goes_with_its_type_folded(
+        self, url: str, mime_type: str, sent: str
+    ) -> None:
+        # Anthropic takes image/jpeg, never image/jpg, and sent a "DATA:" URI
+        # as a link: the first turn failed, then the image read as refused.
+        channel = _channel(resolver=_Host())
+
+        context = await _turn(channel, _event(_photo(url, mime_type=mime_type)))
+
+        [part] = [part for part in _parts(context) if isinstance(part, AIImagePart)]
+        assert part.url.startswith(f"data:{sent};base64,")
+        assert part.mime_type == sent
+        assert image_part_base64(part, provider="test")[0] == sent
+
+    def test_a_data_uri_is_spelled_as_every_vendor_reads_it(self) -> None:
+        assert canonical_data_uri("DATA:image/JPG;BASE64,AA==") == "data:image/jpeg;base64,AA=="
+        assert canonical_data_uri("data:image/png;base64,AA==") == "data:image/png;base64,AA=="
+
     async def test_an_empty_data_uri_reads_as_unavailable(self) -> None:
         # A transport whose download failed hands an empty payload.
         context = await _turn(_channel(), _event(_photo("data:image/jpeg;base64,")))
@@ -579,9 +608,21 @@ class TestConstraints:
 
         assert transcoded == TextContent(body=label)
 
-    @pytest.mark.parametrize("url", ["HTTP://cdn.example.com/a.png", "DATA:image/png;base64,AA"])
-    def test_a_scheme_in_capitals_reads_as_it_does_in_lowercase(self, url: str) -> None:
-        assert MediaContent(url=url, mime_type="image/png").url == url
+    @pytest.mark.parametrize(
+        ("url", "stored"),
+        [
+            ("HTTP://cdn.example.com/A.png", "http://cdn.example.com/A.png"),
+            ("Https://cdn.example.com/a.png", "https://cdn.example.com/a.png"),
+            ("DATA:image/png;base64,AA", "data:image/png;base64,AA"),
+            ("App-Media://Photo-1", "App-Media://Photo-1"),  # a reference is the host's
+        ],
+    )
+    def test_a_scheme_in_capitals_is_stored_as_every_reader_tests_it(
+        self, url: str, stored: str
+    ) -> None:
+        # Readers test the lower-case scheme: neonize opened "HTTP://…" as a
+        # path, and a provider sent "DATA:…" as a link to fetch.
+        assert MediaContent(url=url, mime_type="image/png").url == stored
 
 
 def test_an_acp_agent_reads_a_composite_with_its_media() -> None:

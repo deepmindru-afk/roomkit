@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from roomkit._media_url import is_data_uri, is_link, is_safe_reference
+from roomkit._media_url import is_data_uri, is_link, is_safe_reference, lowercase_scheme
 from roomkit.models.enums import (
     ChannelDirection,
     ChannelType,
@@ -63,7 +63,9 @@ class MediaContent(BaseModel):
     @field_validator("url")
     @classmethod
     def _validate_url(cls, v: str) -> str:
-        if is_link(v) or is_data_uri(v) or is_safe_reference(v):
+        if is_link(v) or is_data_uri(v):
+            return lowercase_scheme(v)
+        if is_safe_reference(v):
             return v
         raise ValueError(
             "URL must be a link (http://, https://), a data: URI, or a reference "

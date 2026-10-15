@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from roomkit.models.enums import ChannelType
@@ -143,6 +144,21 @@ class TestWhatsAppPersonalProvider:
         assert result.success is False
         assert "reference" in (result.error or "")
         source.client.send_image.assert_not_called()
+
+    async def test_a_link_in_capitals_is_never_opened_as_a_file(
+        self, _mock_jid: MagicMock
+    ) -> None:
+        # Neonize fetches only what matches ^https?:// and opens anything else
+        # as a local path: "HTTP://../../secret.txt" was read from disk and
+        # sent to the recipient.
+        source = _make_source()
+        provider = WhatsAppPersonalProvider(source)
+        event = _make_event(MediaContent(url="HTTP://../../secret.txt", mime_type="image/jpeg"))
+
+        await provider.send(event, "1234567890")
+
+        sent = source.client.send_image.call_args.args[1]
+        assert re.match(r"^https?://", sent)
 
     async def test_a_data_uri_is_sent_as_bytes(self, _mock_jid: MagicMock) -> None:
         source = _make_source()

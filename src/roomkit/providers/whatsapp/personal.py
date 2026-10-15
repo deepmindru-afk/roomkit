@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from roomkit._media import is_data_uri, is_link
+from roomkit._media import is_data_uri, is_link, lowercase_scheme
 from roomkit.models.delivery import ProviderResult
 from roomkit.models.event import (
     AudioContent,
@@ -256,11 +256,12 @@ class WhatsAppPersonalProvider(WhatsAppProvider):
 
 
 def _neonize_source(url: str) -> str | bytes:
-    """What neonize is handed for a media URL: a link as is, a ``data:`` URI's
-    bytes. Neonize opens any other string as a local file, so a reference
-    (RFC §6.4), which the application resolves itself, is refused here."""
+    """What neonize is handed for a media URL: a link with its scheme in lower
+    case, a ``data:`` URI's bytes. Neonize fetches only ``^https?://`` and
+    opens any other string as a local file, so a reference (RFC §6.4), which
+    the application resolves itself, is refused here."""
     if is_link(url):
-        return url
+        return lowercase_scheme(url)
     if is_data_uri(url):
         return parse_data_uri(url)[1]
     raise ValueError(

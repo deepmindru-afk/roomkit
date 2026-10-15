@@ -15,11 +15,13 @@ from collections.abc import Callable
 
 from roomkit._media_url import (
     VISION_IMAGE_TYPES,
+    canonical_data_uri,
     data_uri_media_type,
     is_data_uri,
     is_link,
     is_reference,
     link_or_type,
+    lowercase_scheme,
     media_type,
 )
 from roomkit.models.event import (
@@ -35,6 +37,7 @@ from roomkit.models.event import (
 __all__ = [
     "VISION_IMAGE_TYPES",
     "audio_label",
+    "canonical_data_uri",
     "content_text",
     "content_words",
     "data_uri_media_type",
@@ -42,15 +45,22 @@ __all__ = [
     "is_link",
     "is_reference",
     "is_vision_image",
+    "lowercase_scheme",
     "media_label",
     "video_label",
+    "vision_image_type",
 ]
+
+
+def vision_image_type(content: MediaContent) -> str:
+    """The type *content* is read and sent as: its ``data:`` URI's, else its
+    own, folded (``image/jpg`` and ``IMAGE/JPEG`` are ``image/jpeg``)."""
+    return data_uri_media_type(content.url) or media_type(content.mime_type)
 
 
 def is_vision_image(content: MediaContent) -> bool:
     """Whether *content* is an image of a type every vision provider takes."""
-    declared = data_uri_media_type(content.url) or media_type(content.mime_type)
-    return declared in VISION_IMAGE_TYPES
+    return vision_image_type(content) in VISION_IMAGE_TYPES
 
 
 def media_label(content: MediaContent) -> str:

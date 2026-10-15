@@ -37,6 +37,17 @@ def is_reference(url: str) -> bool:
     return not is_data_uri(url) and not is_link(url)
 
 
+def lowercase_scheme(url: str) -> str:
+    """*url* with a link's or a data URI's scheme in lower case, the spelling
+    every reader tests: neonize fetches only ``^https?://`` and opens any other
+    string as a local file, so ``HTTP://../secret`` would be read from disk. A
+    reference keeps its scheme, which is the application's to spell."""
+    if not (is_link(url) or is_data_uri(url)):
+        return url
+    scheme, rest = url.split(":", 1)
+    return f"{scheme.lower()}:{rest}"
+
+
 def is_safe_reference(url: str) -> bool:
     """Whether *url* is a reference no reader could take for something else:
     two letters of scheme at least (one reads as a Windows drive), not a scheme
@@ -54,6 +65,17 @@ def media_type(mime_type: str) -> str:
     """*mime_type* as RoomKit compares it: lowercased, parameters aside, aliases folded."""
     bare = mime_type.split(";", 1)[0].strip().lower()
     return _TYPE_ALIASES.get(bare, bare)
+
+
+def canonical_data_uri(url: str) -> str:
+    """A ``data:`` URI spelled as every vendor reads it: the scheme and the
+    parameters in lower case, the type folded as :func:`media_type` folds it.
+    ``DATA:image/JPG;BASE64,…`` goes as ``data:image/jpeg;base64,…``: Anthropic
+    refuses ``image/jpg`` and sends a ``DATA:`` URI as a link to fetch."""
+    header, comma, payload = url.partition(",")
+    kind, *params = header[len("data:") :].split(";")
+    spelled = "".join(f";{param.strip().lower()}" for param in params)
+    return f"data:{media_type(kind)}{spelled}{comma}{payload}"
 
 
 def data_uri_media_type(url: str) -> str | None:

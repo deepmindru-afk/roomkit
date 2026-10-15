@@ -26,7 +26,14 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from roomkit._media import is_data_uri, is_reference, is_vision_image, media_label
+from roomkit._media import (
+    canonical_data_uri,
+    is_data_uri,
+    is_reference,
+    is_vision_image,
+    media_label,
+    vision_image_type,
+)
 from roomkit._text import quoted
 from roomkit.models.event import CompositeContent, EventContent, MediaContent, RoomEvent
 from roomkit.providers.ai.base import AIImagePart, AITextPart
@@ -141,11 +148,14 @@ def _decide(
 
 
 def _inline(media: MediaContent) -> AIImagePart | str:
-    """A data URI or a link as the image part sent; a data URI with no data or
-    past the size, a mention."""
-    if is_data_uri(media.url) and not 0 < _data_uri_bytes(media.url) <= MAX_AUTHOR_IMAGE_BYTES:
+    """A data URI or a link as the image part sent, its type folded as it was
+    read; a data URI with no data or past the size, a mention."""
+    kind = vision_image_type(media)
+    if not is_data_uri(media.url):
+        return AIImagePart(url=media.url, mime_type=kind)
+    if not 0 < _data_uri_bytes(media.url) <= MAX_AUTHOR_IMAGE_BYTES:
         return _mention(_UNAVAILABLE, media)
-    return AIImagePart(url=media.url, mime_type=media.mime_type)
+    return AIImagePart(url=canonical_data_uri(media.url), mime_type=kind)
 
 
 def _data_uri_bytes(url: str) -> int:
@@ -167,7 +177,8 @@ async def _resolved(
         return _mention(_UNAVAILABLE, media)
     if not data or len(data) > MAX_AUTHOR_IMAGE_BYTES:
         return _mention(_UNAVAILABLE, media)
-    return AIImagePart(url=to_data_uri(data, media.mime_type), mime_type=media.mime_type)
+    kind = vision_image_type(media)
+    return AIImagePart(url=to_data_uri(data, kind), mime_type=kind)
 
 
 def _mention(kind: str, media: MediaContent) -> str:

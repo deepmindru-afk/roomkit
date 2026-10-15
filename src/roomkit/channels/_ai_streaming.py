@@ -749,12 +749,12 @@ def _announce(
         loop_ctx.calls.announce(call, marker=marker)
 
 
-_NOT_CONTENT_STATUSES = frozenset({401, 403, 404, 429})
+_NOT_CONTENT_STATUSES = frozenset({401, 402, 403, 404, 429})
 
 
 def refuses_content(error: ProviderError) -> bool:
     """Whether *error* may be the provider refusing what a request carried: not
-    retried, and no authentication, permission, missing model or rate limit
-    (RFC §6.4). Only the turn's first request, before anything streamed, can
+    retried, and no authentication, payment, permission, missing model or rate
+    limit (RFC §6.4). Only the turn's first request, before anything streamed, can
     say so: a later round, or a stream under way, shows the content was taken."""
     return not error.retryable and error.status_code not in _NOT_CONTENT_STATUSES
