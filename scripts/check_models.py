@@ -298,14 +298,6 @@ PRICE_DELIBERATE: dict[str, str] = {
     # the standard rate from OpenAI's pricing page (2026-08-05).
     "gpt-5.6-terra": "mirror quotes the Batch rate; roomkit bills the standard one",
     "gpt-5.6-luna": "mirror quotes the Batch rate; roomkit bills the standard one",
-    # Same divergence, different cause: the mirror is running a promotion on
-    # its own `openai/gpt-5.6-sol` slug — 50% off from 2026-08-18, which landed
-    # on the Batch numbers by coincidence, 60% off ($2/$10) by 2026-08-25.
-    # OpenAI's standard rate is $5/$30 with cached input at 10% and cache
-    # writes at 1.25x (model docs, 2026-08-18) — a discount the aggregator
-    # funds is not a price cut by the vendor, and the openrouter catalog carries
-    # the resold rate in its own entry.
-    "gpt-5.6-sol": "mirror runs a promo on its own slug; roomkit bills OpenAI's list rate",
     # No seller to agree with. Eighteen hosts serve this open-weights model
     # through OpenRouter between $0.42 and $1.74 per million input, and the
     # top-level quote follows whichever endpoint routing prefers: $0.435 on
@@ -336,7 +328,8 @@ PRICE_DELIBERATE: dict[str, str] = {
     "qwen3.7-max": "mirror resells at a discounted rate; catalog carries Alibaba's list price",
     "qwen3.7-plus": "mirror resells at the 20%-off promotion; catalog carries the list price",
     "qwen3.6-flash": "mirror resells at a discounted rate; catalog carries Alibaba's list price",
-    # A launch promotion, the gpt-5.6-sol shape again: the mirror quotes
+    # A launch promotion, the shape of the mirror's gpt-5.6-sol promotion
+    # (2026-08-18 to 2026-10-15, its entry dropped once it ended): the mirror quotes
     # $1.6/$4.8/$0.4 against xAI's $2/$6/$0.5 — exactly 20% off all three rates,
     # three days after the model shipped, while its own grok-4.6 slug still
     # matches the card to the cent. RoomKit's xai provider calls api.x.ai, so

@@ -18,15 +18,17 @@ capability.
 Prices are OpenRouter's own, from the same endpoint on the same date — here
 the aggregator *is* the seller, so its ``pricing`` object is the rate card,
 not a mirror of someone else's. It can differ from the upstream vendor's own
-list price, and does: ``openai/gpt-5.6-sol`` resells at $2/$10 where OpenAI
-charges $5/$30. Each is right for whoever bills.
+list price, and has: ``openai/gpt-5.6-sol`` resold at $2/$10 from 2026-08-25
+while OpenAI charged $4/$20. Each is right for whoever bills.
 
 Which slug carries a discount is the aggregator's decision, and it changes.
 ``openai/gpt-5.6-terra`` resold at $1/$6 against OpenAI's $2/$12 until
 2026-08-18 and now matches the list price, while ``openai/gpt-5.6-sol`` went
-the other way on the same day — to $2.50/$15 — and deepened to $2/$10 by
-2026-08-25. ``google/gemini-3.7-flash`` resold at $0.375/$1.875, half Google's
-synchronous rate, through 2026-08-25 and matches it as of 2026-08-29. None of
+the other way on the same day — to $2.50/$15 — deepened to $2/$10 by
+2026-08-25, and was back at the list price, $4/$20, on 2026-10-15 (its
+``:batch`` slug now quotes $2/$10). ``google/gemini-3.7-flash`` resold at
+$0.375/$1.875, half Google's synchronous rate, through 2026-08-25 and matches
+it as of 2026-08-29. None of
 that is a fact about the model, so nothing here may be inferred from a sibling
 entry — every rate is read from the endpoint, and ``make check-models`` is
 what notices when one moves.
@@ -104,11 +106,11 @@ MODELS: list[ModelInfo] = [
         context_window=1_050_000,
         supports_vision=True,
         pricing=ModelPricing(
-            input_per_million=2.0,
-            output_per_million=10.0,
-            cache_read_per_million=0.2,
-            cache_write_per_million=2.5,
-            verified=_VERIFIED,
+            input_per_million=4.0,
+            output_per_million=20.0,
+            cache_read_per_million=0.4,
+            cache_write_per_million=5.0,
+            verified=date(2026, 10, 15),
         ),
     ),
     ModelInfo(
