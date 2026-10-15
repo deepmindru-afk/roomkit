@@ -885,15 +885,17 @@ await kit.process_inbound(
 Per turn, the newest four images authors sent go to a model that sees, history
 and input together, each with its author's words (`AIChannel(max_author_images=...)`
 changes the bound, `None` removes it). Only PNG, JPEG, GIF and WebP up to 5 MB
-go as images. Anything else takes the image's place as a short mention, never a
+go as images, each under the type it was read as (`image/jpg` goes as
+`image/jpeg`). Anything else takes the image's place as a short mention, never a
 failed turn: `[Media: contract.pdf]` for a document or a model without vision,
 `[Earlier image not shown: …]` past the bound, `[Image unavailable: …]` for a
 reference that does not resolve, `[Image refused by the model's provider: …]`
 for an image a provider refused on an earlier turn (the turn's first request
-failed on a non-retried error that is no authentication, permission, missing
-model or rate limit). A `file:`, `ftp:`, `javascript:`, `vbscript:` or
+failed on a non-retried error that is no authentication, payment, permission,
+missing model or rate limit). A `file:`, `ftp:`, `javascript:`, `vbscript:` or
 schemeless URL, a one-letter scheme, a `..` segment or a backslash is refused
-when the `MediaContent` is built. A transport channel receives the reference
+when the `MediaContent` is built, and a link's or a `data:` URI's scheme is
+stored in lower case (`HTTP://…` as `http://…`). A transport channel receives the reference
 as it is: resolve it yourself where a transport needs the media. An AI channel
 takes media whatever its model sees, so the turn reads a live event as it reads
 the same event in its history.

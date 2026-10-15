@@ -19,9 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   written in the text (`[calm]`, `[sigh]`, `<whisper>…</whisper>`); off, the
   text is spoken as written, brackets read as parentheses and markup read
   out. In both modes a control token in a text (`<|speaker:1|>`,
-  `<|phoneme_start|>`) becomes a space, invisible characters and look-alike
-  marks included: a forged speaker token in a quoted line switched the voice
-  on every take. A text with no word to say is never sent, as a lone
+  `<|phoneme_start|>`) becomes a space, look-alike marks included, and so
+  does a token with anything but letters and digits between its marks, which
+  Fish drops before it reads (a zero-width space, an emoji, a format
+  character such as U+0600): a forged speaker token in a quoted line switched
+  the voice on every take. A text with no word to say is never sent, as a lone
   `[Calling a tool now]` made both model families invent up to 47 s of
   speech; on a stream it goes with the next sentence. An unknown model name
   is refused: the API would render it with s2.1-pro, and bill it so, without
@@ -68,10 +70,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the status line, the notices and `/tasks` say `@Dev`, and `/listen @Dev`,
   `/talk`, `/task` read a name as the discussion does (RMK-764);
   `AgentCard.channel_id` (new) keys a host's own card whose handle is not its
-  channel id. A `CLIChannel` with no `agent_label` shows such an agent by its
-  handle too (`Dev:`, `@dev` in console mode, its banner included) where it showed
-  `Agent:8E41…` (RMK-766); a host's `agent_label` still receives the channel
-  id. Example: `examples/discussion_group_chat.py`.
+  channel id. A `CLIChannel` with no `agent_label` shows every agent of a
+  discussion room by its handle as the discussion writes it (`Dev:`, `@dev` in
+  console mode, its banner included): such an agent showed as `Agent:8E41…`,
+  and an agent whose channel id is its handle shows that id as written
+  (`agent-researcher`) where a name was derived from it (`Researcher`)
+  (RMK-766); a host's `agent_label` still receives the channel id. Example:
+  `examples/discussion_group_chat.py`.
 
 ### Changed
 
@@ -84,23 +89,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `team/dev`, which no message could name (`@ai`, `@team`), and a
   36-character id or an agent whose id is `all`, each with no `name`. Two
   agents whose handles read alike ignoring case (channel ids `Dev` and `dev`)
-  are refused too. Migration: give the agent a `name`, or pass
-  `Discussion(handles={channel_id: "Support"})`.
-- What an image an author sent becomes in the model's input (RMK-763, RFC
-  §6.4). A turn sends the newest four author images, history and input
-  together (`AIChannel(max_author_images=...)`, `None` for all), inline ones
-  included, where every image of the history window went before; only PNG,
-  JPEG, GIF or WebP up to 5 MB go as images. Anything else reads as a short
-  mention, never a failed turn: `[Media: …]` for a document or for a model
-  that does not see, `[Earlier image not shown: …]` past the bound, `[Image
-  unavailable: …]` for a reference that does not resolve, `[Image refused by
-  the model's provider: …]` after a provider error not retried on a request
-  that carried it. `MediaContent` accepts a reference and still refuses
-  `file:`, `ftp:`, `javascript:`, `vbscript:` and schemeless URLs, and a
-  reference a path reader could follow (a one-letter scheme such as
-  `C://…`, a `..` segment, a backslash). WhatsApp personal hands neonize a
-  link or a `data:` URI's bytes and refuses a reference: neonize opens any
-  other string as a local file.
+  are refused too. Migration: pass `Discussion(handles={channel_id:
+  "Support"})`, or build the agent as an `Agent(..., name="Support")`
+  (`AIChannel` takes no `name`).
+- **BREAKING — a turn sends the newest four images its authors sent, and only
+  an image every vision provider takes** (RMK-763, RFC §6.4). Every image of
+  the history window went before. History and input together now send four
+  by default (`AIChannel(max_author_images=...)`, `None` for all), inline
+  ones included, and only PNG, JPEG, GIF or WebP up to 5 MB go as images, each
+  under the type it was read as (`image/jpg` goes as `image/jpeg`, its data
+  URI's header included): a HEIC photo, which Gemini took, and a JPEG over
+  5 MB, which OpenAI took, now read as mentions. Anything else reads as a
+  short mention, never a failed turn: `[Media: …]` for a document or for a
+  model that does not see, `[Earlier image not shown: …]` past the bound,
+  `[Image unavailable: …]` for a reference that does not resolve, `[Image
+  refused by the model's provider: …]` after a provider error not retried on
+  a request that carried it. `MediaContent` accepts a reference and still
+  refuses `file:`, `ftp:`, `javascript:`, `vbscript:` and schemeless URLs,
+  and a reference a path reader could follow (a one-letter scheme such as
+  `C://…`, a `..` segment, a backslash); it now accepts a link or a `data:`
+  URI whose scheme is in capitals and stores the scheme in lower case
+  (`HTTP://…` as `http://…`), the spelling every reader tests. WhatsApp
+  personal hands neonize a link or a `data:` URI's bytes and refuses a
+  reference: neonize fetches only a lower-case `http://` or `https://` and
+  opens any other string as a local file. Migration: `max_author_images=None`
+  sends every image again; convert HEIC, and shrink an image over 5 MB,
+  before it enters the room.
 - `[Media: …]`, `[Voice message: …]` and `[Video: …]` (RFC §6.6) show the URL
   only when it is a link: a `data:` URI or a reference reads as the media
   type, where a text-only channel and a model without vision used to receive
@@ -112,9 +126,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `describe_empty_event` first, as the same event in the history does.
 - The images a turn sent, a tool's replayed or an author's, are dropped after a
   provider error only when the turn's first request failed, before anything of
-  it streamed, on an error that is no authentication, permission, missing
-  model or rate limit (RFC §6.4). A key refused or a failure on a later round
-  dropped them for the rest of the process.
+  it streamed, on an error that is no authentication, payment (a 402),
+  permission, missing model or rate limit (RFC §6.4). A key refused, an
+  unpaid bill or a failure on a later round dropped them for the rest of the
+  process.
 
 ### Fixed
 
@@ -137,12 +152,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   asked about a `RichContent`, which now has text of its own. A memory's
   summary reads a voice message as its transcript or label, never its
   `data:` URI.
-- Tool Search keeps a called tool's schema declared after later searches,
-  including when the model's arguments were rejected. Invalid calls retain
-  the schema for the current turn, without entering the memory of executed
-  calls. Realtime sessions retain schemas for their current catalogue and
-  publish them after the result is delivered; catalogue replacement clears
-  them. Access refusals, skill gates and BEFORE_TOOL_USE remain unchanged.
+- A tool found through Tool Search stays declared once the model has called
+  it (RFC §6.4). A second `find_tools` swapped the search window and took the
+  called tool's schema off the wire with it: after `find_tools("dataset
+  rows")`, a call to `tables_query_rows` and `find_tools("kanban boards")`,
+  the next request declared `boards_list` and no longer `tables_query_rows`,
+  so the model's corrected retry, or any later call, named a tool the request
+  did not describe. A called tool now stays declared for the rest of the turn,
+  including when its arguments were refused, without entering the memory of
+  executed calls; on a provider that holds deferred tools unseen, that
+  refusal carries the tool's reference. A realtime session keeps the schemas
+  of the tools it called for its current catalogue, publishes them once the
+  result is delivered, and drops them when the catalogue is replaced; a call
+  from before a replacement cannot bring back a tool the replacement
+  withdrew. Access refusals, skill gates and `BEFORE_TOOL_USE` still apply.
+- The OpenRouter catalog prices `openai/gpt-5.6-sol` at OpenRouter's rate
+  again: $4 per million input tokens, $20 output, $0.40 cached input and $5
+  cache writes. Its $2/$10 promotion ended (read on OpenRouter's models
+  endpoint, 2026-10-15), and a cost estimate on that slug read half the bill.
 - A document sent as a `MediaContent` (a PDF, `application/octet-stream`) no
   longer reaches the model as an image the provider refuses: it reads as its
   label (RMK-763).
@@ -157,10 +184,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The token estimate counts a document as its label, not as a 1000-token
   image (RMK-763).
 - An image whose type is spelled `image/jpg`, in capitals or with parameters
-  goes as an image again, and an empty `data:` URI (a transport's failed
+  goes as an image again, sent as the type every vendor reads (`image/jpeg`,
+  `image/png`), and an empty `data:` URI (a transport's failed
   download) reads as unavailable instead of failing a turn (RMK-763).
 - A memory's summary no longer quotes a media's base64 payload or a tenant's
-  storage reference: it read the content's repr (RMK-763).
+  storage reference, alone or in a composite: it read the content's repr
+  (RMK-763). An edit whose new content is a media still does (RMK-772).
 - A model file of the other family no longer ends the process (RMK-759): given
   `gtcrn_simple.onnx` under `model_type="dpdfnet"`, or a DPDFNet file under
   GTCRN, sherpa-onnx exited with code 255 on the first frame of a call ("Expect
