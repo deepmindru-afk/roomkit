@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from roomkit.channels._discussion_turn import discussion_handles
 from roomkit.channels._speaker import turn_labels
 from roomkit.channels.acp import ACPChannel
 from roomkit.console._discussion_screen import DiscussionScreen
@@ -76,8 +77,9 @@ class DiscussionConsole:
             ``channel_id``, the name agents address them by when the room
             records no participant for them.
         cards: How the panel presents each agent. Defaults to the room's
-            intelligence bindings and each agent's identity (name, role,
-            description, model).
+            intelligence bindings, each agent's handle in the discussion
+            (RFC §19.7.5 rule 4) and its identity (name, role, description,
+            model).
         title: What the header says about the room.
         welcome: The first lines of the room pane. Defaults to the help.
         commands: The host's own slash commands, by name without the ``/``.
@@ -133,7 +135,7 @@ class DiscussionConsole:
         cards = self._cards or await self._room_cards()
         if self._tasks is None:
             setups = self._kit._background_setups
-            self._tasks = any(card.handle in setups for card in cards)
+            self._tasks = any(card.channel in setups for card in cards)
         view = DiscussionView(
             cards,
             you=self._sender_id,
@@ -235,9 +237,9 @@ class DiscussionConsole:
             since, ended = line.get("since"), line.get("ended")
             took = _seconds(since, ended or now)
             elapsed = f"{took:4.0f} s" if took is not None else "     "
-            agent = self.view.working.get(line["task_id"], line["agent"])
+            agent = self.view.label(self.view.working.get(line["task_id"], line["agent"]))
             self.view.note(
-                f"{short_task(line['task_id'])}  @{agent:<12} {line.get('status', '?'):<10}"
+                f"{short_task(line['task_id'])}  {agent:<13} {line.get('status', '?'):<10}"
                 f" {elapsed}  {str(line.get('task', ''))[:60]}"
             )
 
@@ -272,13 +274,14 @@ class DiscussionConsole:
             await self._kit.talk_again(self._room_id, agents)
 
     def _named_agents(self, text: str) -> list[str]:
-        handles = [c.handle for c in self.view.cards]
-        by_name = {h.lower(): h for h in handles}
+        """The channel ids of the agents *text* names by handle, ``@all`` every one."""
+        channels = [c.channel for c in self.view.cards]
+        by_name = {c.handle.lower(): c.channel for c in self.view.cards}
         named: list[str] = []
         for word in text.split():
             key = word.removeprefix("@").rstrip(".,").lower()
-            found = handles if key == EVERYONE else [by_name[key]] if key in by_name else []
-            named.extend(h for h in found if h not in named)
+            found = channels if key == EVERYONE else [by_name[key]] if key in by_name else []
+            named.extend(c for c in found if c not in named)
         return named
 
     def _help(self) -> str:
@@ -334,7 +337,7 @@ class DiscussionConsole:
         source = event.source.channel_id
         text = event.content.body if isinstance(event.content, TextContent) else ""
         text = text or f"[{event.content.type}]"
-        if any(card.handle == source for card in view.cards):
+        if any(card.channel == source for card in view.cards):
             # A task's result posted as the agent's message names its worker.
             meta = event.metadata or {}
             worker = meta.get("agent_id") if meta.get("task_id") else None
@@ -403,7 +406,7 @@ class DiscussionConsole:
         stream = str(getattr(message, "stream_id", ""))
         if kind == "stream_start":
             source = message.source.channel_id
-            if any(card.handle == source for card in self.view.cards):
+            if any(card.channel == source for card in self.view.cards):
                 self.view.live_start(source, stream)
         elif kind == "stream_chunk":
             self.view.live_text(message.delta, stream)
@@ -431,7 +434,10 @@ class DiscussionConsole:
             self._screen.refresh()
 
     async def _room_cards(self) -> list[AgentCard]:
-        """The room's agents, from its intelligence bindings and their identity."""
+        """The room's agents, from its intelligence bindings, their handles and
+        their identity."""
+        room = await self._kit.get_room(self._room_id)
+        handles = discussion_handles(room.metadata)
         cards = []
         for binding in await self._kit.list_bindings(self._room_id):
             if binding.category != ChannelCategory.INTELLIGENCE:
@@ -439,7 +445,8 @@ class DiscussionConsole:
             channel = self._kit.channels.get(binding.channel_id)
             cards.append(
                 AgentCard(
-                    handle=binding.channel_id,
+                    handle=handles.get(binding.channel_id, binding.channel_id),
+                    channel_id=binding.channel_id,
                     name=getattr(channel, "name", None),
                     role=getattr(channel, "role", None),
                     description=getattr(channel, "description", None),

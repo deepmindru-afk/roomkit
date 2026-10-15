@@ -110,6 +110,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `DiscussionConsole` shows and reads agents by their discussion handle
+  (RMK-764): the help, the cards, the status line, the notices, the message
+  headers, tool lines and `/tasks` say `@Dev` where they said
+  `@agent:8e41…`, and `/listen @Dev`, `/talk @Dev`, `/task @Dev …` reach
+  the agent. `AgentCard` gains `channel_id` (None: the handle is the channel
+  id, as before for a host's own cards) and `AgentCard.channel`.
 - `task_status` names a discussion's agent by its handle (`"agent": "Comms"`),
   as the turn's notes do, where the model read `agent:7c1e…` (RMK-765). The
   lines `room_task_lines` gives a host keep the channel id.

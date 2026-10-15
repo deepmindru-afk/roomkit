@@ -227,3 +227,78 @@ async def test_logs_go_to_the_file_while_the_screen_is_up(pipe: PipeInput, tmp_p
     assert "kept out of the screen" in log_file.read_text()
     assert root.handlers == before
     await kit.close()
+
+
+# -- Agents addressed by handle (RMK-764) --
+
+DEV_ID, SRE_ID = "agent:8e41f0d2", "agent:c5a3e7b1"
+"""Channel ids no message can name: the agents are addressed by handle."""
+
+HANDLED = (
+    AgentCard("Dev", role="Developer", model="m-1", channel_id=DEV_ID),
+    AgentCard("SRE", channel_id=SRE_ID),
+)
+
+
+def test_the_view_names_agents_by_handle_and_follows_them_by_channel_id() -> None:
+    view = DiscussionView(HANDLED, you="ops")
+    view.queue_changed(
+        _event(SpeakQueueChange.TURN_GIVEN, DEV_ID, speaking=DEV_ID, queue=(SRE_ID,))
+    )
+    view.agent(DEV_ID, [SRE_ID], "@sre can you check?")
+    view.tool(DEV_ID, "query_logs", {}, "ok")
+    view.queue_changed(_event(SpeakQueueChange.TURN_ENDED, DEV_ID, queue=(SRE_ID,)))
+    view.queue_changed(_event(SpeakQueueChange.TURN_GIVEN, SRE_ID, speaking=SRE_ID))
+    view.queue_changed(_event(SpeakQueueChange.TURN_ENDED, SRE_ID, asked=((SRE_ID, "ops"),)))
+    view.queue_changed(
+        _event(
+            SpeakQueueChange.LISTENING,
+            DEV_ID,
+            listening=frozenset({DEV_ID}),
+            asked=((SRE_ID, "ops"),),
+        )
+    )
+    view.task_started("task-abc123", DEV_ID, "go through the tickets")
+
+    room, panel = _room(view), _panel(view)
+    assert "@Dev · m-1 → @SRE" in room and "@Dev ⚙ query_logs" in room
+    assert "@SRE has nothing to add" in room and ">>> @SRE is asking you" in room
+    assert "listening only: @Dev" in room and "started: @Dev" in room
+    assert "@Dev  listening" in panel and "@SRE  asked @ops" in panel
+    assert view.said[DEV_ID] == 1 and view.used[DEV_ID] == 1
+    assert "agent:" not in room + panel
+
+
+def test_a_card_without_a_channel_id_is_its_handle() -> None:
+    card = AgentCard("dev")
+    assert card.channel == "dev"
+    view = DiscussionView((card,), you="ops")
+    view.queue_changed(_event(SpeakQueueChange.TURN_GIVEN, "dev", speaking="dev"))
+    assert view.status_text() == "speaking @dev"
+
+
+async def test_the_console_reads_and_shows_the_discussions_handles(pipe: PipeInput) -> None:
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("ops"))
+    dev = Agent(DEV_ID, provider=MockAIProvider(ai_responses=[]), name="Dev", role="Developer")
+    sre = Agent(SRE_ID, provider=MockAIProvider(ai_responses=[]), name="SRE")
+    await kit.create_room(room_id="r1", orchestration=Discussion([dev, sre]))
+    await kit.attach_channel("r1", "ops")
+    console = DiscussionConsole(kit, "r1", channel_id="ops")
+    running = asyncio.create_task(console.run())
+    await _until(lambda: console._view is not None)
+
+    assert [(c.handle, c.channel) for c in console.view.cards] == [
+        ("Dev", DEV_ID),
+        ("SRE", SRE_ID),
+    ]
+    assert "@Dev @SRE" in _room(console.view) and "agent:" not in _room(console.view)
+    pipe.send_text("/listen @dev\r")
+    await _until(lambda: "listening only: @Dev" in _room(console.view))
+    queue = kit.speak_queue("r1")
+    assert queue is not None and queue.listening == frozenset({DEV_ID})
+    assert "‖ @Dev  listening" in _panel(console.view)
+
+    console.exit()
+    await asyncio.wait_for(running, 5)
+    await kit.close()

@@ -44,11 +44,20 @@ class AgentCard:
     """An agent of the room as the panel presents it: its identity (RFC §19.1)."""
 
     handle: str
+    """The name the room addresses the agent by, shown as ``@handle``."""
     name: str | None = None
     role: str | None = None
     description: str | None = None
     model: str | None = None
     tools: tuple[str, ...] = ()
+    channel_id: str | None = None
+    """The agent's channel, when its handle is another name (a discussion's
+    handle, RFC §19.7.5 rule 4); None: its handle is its channel id."""
+
+    @property
+    def channel(self) -> str:
+        """The channel id the room's events, queue and tasks name the agent by."""
+        return self.channel_id or self.handle
 
 
 class DiscussionView:
@@ -68,7 +77,8 @@ class DiscussionView:
         self.lines: list[tuple[str, str]] = []
         self.said: Counter[str] = Counter()
         self.used: Counter[str] = Counter()
-        self._handles = tuple(c.handle for c in self.cards)
+        self._channels = tuple(c.channel for c in self.cards)
+        self._labels = {c.channel: f"@{c.handle}" for c in self.cards}
         self._on_change = on_change
         self._turn_said: dict[str, bool] = {}
         self._asked: set[tuple[str, str]] = set(queue.asked) if queue is not None else set()
@@ -87,7 +97,7 @@ class DiscussionView:
         (``Alice (2)`` for a second source taking Alice's name). Whether it is
         the person at the terminal is the console's to say, never a name's."""
         shown = f"@{self.you} (you)" if mine else label
-        self._add(f"{shown} → {_to(addressed)}", "class:you" if mine else "class:person")
+        self._add(f"{shown} → {self._to(addressed)}", "class:you" if mine else "class:person")
         self._body(text)
 
     def agent(
@@ -137,7 +147,10 @@ class DiscussionView:
 
     def task_started(self, task_id: str, agent: str, task: str) -> None:
         self.working[task_id] = agent
-        self.note(f"task {short_task(task_id)} started: @{agent} — {_cut(task, _TASK_PREVIEW)}")
+        self.note(
+            f"task {short_task(task_id)} started: {self.label(agent)} — "
+            f"{_cut(task, _TASK_PREVIEW)}"
+        )
 
     def task_for(self, task_id: str, agent: str) -> None:
         """The task *task_id* is *agent*'s, whatever channel does its work."""
@@ -148,12 +161,12 @@ class DiscussionView:
     def task_ended(self, task_id: str, status: str, seconds: float | None) -> None:
         agent = self.working.pop(task_id, None)
         took = f" after {seconds:.0f} s" if seconds is not None else ""
-        whose = f" (@{agent})" if agent else ""
+        whose = f" ({self.label(agent)})" if agent else ""
         self.note(f"task {short_task(task_id)} {status}{took}{whose}")
 
     def tool(self, agent: str, name: str, arguments: dict[str, Any], result: Any) -> None:
         self.used[agent] += 1
-        self._add(f"  @{agent} ⚙ {tool_line(name, arguments, result)}", "class:dim")
+        self._add(f"  {self.label(agent)} ⚙ {tool_line(name, arguments, result)}", "class:dim")
 
     def note(self, text: str) -> None:
         self._add(f"· {text}", "class:note")
@@ -167,7 +180,7 @@ class DiscussionView:
         self._notice_asked(event.queue)
         notice = _NOTICES.get(event.change)
         if notice is not None:
-            self.note(notice(", ".join(f"@{a}" for a in event.channel_ids)))
+            self.note(notice(", ".join(self.label(a) for a in event.channel_ids)))
         self._changed()
 
     def _turn_changed(self, change: SpeakQueueChange, agent: str) -> None:
@@ -178,7 +191,7 @@ class DiscussionView:
         if change == SpeakQueueChange.TURN_GIVEN:
             self._turn_said[agent] = False
         elif change == SpeakQueueChange.TURN_ENDED and self._turn_said.pop(agent, True) is False:
-            self._add(f"@{agent} has nothing to add", "class:dim")
+            self._add(f"{self.label(agent)} has nothing to add", "class:dim")
             self._add("")
 
     def _notice_asked(self, queue: SpeakQueue) -> None:
@@ -189,7 +202,7 @@ class DiscussionView:
             # A person's label may carry its @ already: one @ either way.
             name = person.removeprefix("@")
             whom = "you" if name.lower() == self.you.removeprefix("@").lower() else f"@{name}"
-            self._add(f" >>> @{agent} is asking {whom} ", "class:ask")
+            self._add(f" >>> {self.label(agent)} is asking {whom} ", "class:ask")
             self._add("")
         self._asked = asked
 
@@ -218,23 +231,28 @@ class DiscussionView:
             return "no discussion in this room"
         if queue.over:
             return "the discussion is over"
-        parts = [f"speaking @{queue.speaking}" if queue.speaking else "nobody speaking"]
+        parts = [f"speaking {self.label(queue.speaking)}" if queue.speaking else "nobody speaking"]
         if queue.queue:
-            parts.append("next " + " ".join(f"@{a}" for a in queue.queue))
+            parts.append("next " + " ".join(self.label(a) for a in queue.queue))
         if queue.waiting:
             parts.append("waiting for a person")
         return " · ".join(parts)
 
-    def agent_style(self, handle: str) -> str:
-        if handle not in self._handles:
+    def label(self, agent: str) -> str:
+        """The agent of channel *agent* as the panel names it: ``@`` and its
+        handle, its channel id when no card has it."""
+        return self._labels.get(agent, f"@{agent}")
+
+    def agent_style(self, agent: str) -> str:
+        if agent not in self._channels:
             return "class:person"
-        return f"class:agent{self._handles.index(handle) % AGENT_STYLES}"
+        return f"class:agent{self._channels.index(agent) % AGENT_STYLES}"
 
     def _card_fragments(self, card: AgentCard) -> Fragments:
-        marker, state, style = self._state(card.handle)
+        marker, state, style = self._state(card.channel)
         title = " · ".join(part for part in (card.name, card.role) if part)
         fragments: Fragments = [
-            (self.agent_style(card.handle), f"{marker} @{card.handle}"),
+            (self.agent_style(card.channel), f"{marker} @{card.handle}"),
             (style, f"  {state}\n"),
         ]
         for line, line_style in (
@@ -245,35 +263,35 @@ class DiscussionView:
         ):
             if line:
                 fragments.append((line_style, f"  {line}\n"))
-        running = sum(1 for agent in self.working.values() if agent == card.handle)
+        running = sum(1 for agent in self.working.values() if agent == card.channel)
         if running:
             fragments.append(("class:note", f"  ⧗ {_count(running, 'task')} running\n"))
-        counts = f"  {_count(self.said[card.handle], 'message')}"
-        counts += f" · {_count(self.used[card.handle], 'tool call')}\n\n"
+        counts = f"  {_count(self.said[card.channel], 'message')}"
+        counts += f" · {_count(self.used[card.channel], 'tool call')}\n\n"
         fragments.append(("class:dim", counts))
         return fragments
 
-    def _state(self, handle: str) -> tuple[str, str, str]:
+    def _state(self, channel: str) -> tuple[str, str, str]:
         queue = self.queue
         if queue is None:
             return "·", "", "class:dim"
-        if queue.speaking == handle:
+        if queue.speaking == channel:
             return "▶", "speaking", "class:speaking"
-        asked = [person for agent, person in queue.asked if agent == handle]
-        if handle in queue.listening:
+        asked = [person for agent, person in queue.asked if agent == channel]
+        if channel in queue.listening:
             return "‖", "listening", "class:held"
         if asked:
             whom = ", ".join(f"@{p.removeprefix('@')}" for p in asked)
             return "?", f"asked {whom}", "class:you"
-        if handle in queue.queue:
-            place = queue.queue.index(handle) + 1
+        if channel in queue.queue:
+            place = queue.queue.index(channel) + 1
             return "•", "next" if place == 1 else f"#{place} in line", ""
         return "·", "idle", "class:dim"
 
     # -- Lines --
 
-    def _card(self, handle: str) -> AgentCard | None:
-        return next((c for c in self.cards if c.handle == handle), None)
+    def _card(self, channel: str) -> AgentCard | None:
+        return next((c for c in self.cards if c.channel == channel), None)
 
     def _agent_header(
         self,
@@ -286,8 +304,13 @@ class DiscussionView:
         card = self._card(author)
         about = f" · {card.model}" if card is not None and card.model and by is None else ""
         work = f" · a task's result, by {identifier(by, 'worker')}" if by else ""
-        where = "writing…" if writing else f"→ {_to(addressed)}"
-        return f"@{author}{about}{work} {where}"
+        where = "writing…" if writing else f"→ {self._to(addressed)}"
+        return f"{self.label(author)}{about}{work} {where}"
+
+    def _to(self, addressed: Sequence[str] | None) -> str:
+        if addressed is None:
+            return "the room"
+        return " ".join(self.label(a) for a in addressed) or "nobody"
 
     def _body(self, text: str) -> None:
         for line in text.splitlines() or [""]:
@@ -311,12 +334,6 @@ _NOTICES: dict[SpeakQueueChange, Callable[[str], str]] = {
     SpeakQueueChange.OVER: lambda _who: "the discussion is over",
     SpeakQueueChange.INSTRUCTION_DROPPED: lambda who: f"an instruction for {who} was dropped",
 }
-
-
-def _to(addressed: Sequence[str] | None) -> str:
-    if addressed is None:
-        return "the room"
-    return " ".join(f"@{a}" for a in addressed) or "nobody"
 
 
 def tool_line(name: str, arguments: dict[str, Any], result: Any) -> str:
