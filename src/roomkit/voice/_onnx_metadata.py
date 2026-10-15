@@ -10,6 +10,7 @@ top-level field of the ``ModelProto`` protobuf, read here while the graph
 
 from __future__ import annotations
 
+import os
 from typing import BinaryIO
 
 _METADATA_PROPS = 14  # ModelProto.metadata_props: repeated StringStringEntryProto
@@ -24,6 +25,7 @@ def read_onnx_metadata(path: str) -> dict[str, str]:
     """
     metadata: dict[str, str] = {}
     with open(path, "rb") as f:
+        size = os.fstat(f.fileno()).st_size
         while (key := _next_key(f)) is not None:
             field, wire = key >> 3, key & 7
             if wire == 0:
@@ -34,11 +36,12 @@ def read_onnx_metadata(path: str) -> dict[str, str]:
                 f.seek(4, 1)
             elif wire == 2:
                 length = _read_varint(f)
+                # A corrupt length past the file's end would make the read
+                # allocate it (MemoryError) or the seek overflow.
+                if length > size - f.tell():
+                    raise ValueError(f"{path} ends inside a field")
                 if field == _METADATA_PROPS:
-                    payload = f.read(length)
-                    if len(payload) < length:
-                        raise ValueError(f"{path} ends inside its metadata")
-                    name, value = _entry(payload)
+                    name, value = _entry(f.read(length))
                     metadata[name] = value
                 else:
                     f.seek(length, 1)

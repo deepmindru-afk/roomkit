@@ -51,3 +51,15 @@ def test_a_truncated_file_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         read_onnx_metadata(str(path))
+
+
+@pytest.mark.parametrize("length", [2**40, 2**69])
+def test_a_length_past_the_end_is_refused(tmp_path: Path, length: int) -> None:
+    # A corrupt length made the read allocate it (MemoryError) or the seek
+    # overflow (OverflowError): neither is the ValueError the provider catches.
+    path = tmp_path / "model.onnx"
+    for number in (7, 14):  # a field skipped, and the metadata read
+        path.write_bytes(_varint(number << 3 | 2) + _varint(length) + b"\x00" * 16)
+
+        with pytest.raises(ValueError, match="ends inside"):
+            read_onnx_metadata(str(path))
