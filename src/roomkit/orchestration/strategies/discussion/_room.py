@@ -91,6 +91,9 @@ class DiscussionRoom:
         self.turn_rows: list[RoomEvent] = []
         """What the speaking agent committed during its turn, read at its end."""
         self.closed = False
+        self.forgotten = False
+        """Being uninstalled: the queue goes, so the end of a turn cut on the
+        way is not recorded (rule 1)."""
         self.driver: TurnDriver | None = TurnDriver(self) if strategy is not None else None
         self._last_fire: asyncio.Task[None] | None = None
         self._announcing: set[asyncio.Task[None]] = set()
@@ -254,6 +257,14 @@ class DiscussionRoom:
             config = stored.model_copy(update={"attached": sorted({*stored.attached, *agents})})
             await self.shared.store_config(config)
         self.follow(config)
+
+    async def forget(self) -> None:
+        """Leave the discussion, for every process (rule 1): the turns
+        stopped, the running one cut with its end recorded nowhere, then the
+        queue and the configuration forgotten."""
+        self.forgotten = True
+        await self.stop()
+        await self.reset()
 
     async def reset(self) -> None:
         """Forget the discussion, for every process: the queue, who listens,

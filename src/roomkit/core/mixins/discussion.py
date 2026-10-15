@@ -256,8 +256,7 @@ class DiscussionMixin(HelpersMixin):
         discussion.closed = True
         for hook in discussion.hooks():
             self._hook_engine.remove_room_hook(room_id, hook.name)
-        await discussion.stop()
-        await discussion.reset()
+        await discussion.forget()
 
     async def _uninstall_stored_discussion(self, room: Room) -> bool:
         """Uninstall the discussion *room* holds with no install of this

@@ -511,3 +511,44 @@ async def test_uninstalling_in_another_process_leaves_no_record_behind() -> None
     await a.install_strategy("r1", cluster.strategy())  # the room takes a discussion again
     assert isinstance(a.room_strategy("r1"), Discussion)
     await cluster.close()
+
+
+async def test_uninstalling_under_the_room_lock_while_a_turn_runs_returns() -> None:
+    # A host serialises its own room changes under the room's lock (RFC §19.7).
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True, delay=1.5)
+    follower = await cluster.process(install=False)
+    await _say(a, "@investigator take your time")
+
+    async def started() -> bool:
+        return "+investigator" in cluster.log
+
+    await _until(started)
+    async with asyncio.timeout(1.0), a.lock_manager.locked("r1"):
+        assert await a.uninstall_strategy("r1") is True
+
+    # Gone for every process: the room answers by its policy again.
+    assert await cluster.stored() is None
+    assert a.room_strategy("r1") is None and a.speak_queue("r1") is None
+    await _say(follower, "hello")
+    assert follower.speak_queue("r1") is None
+    await cluster.close()
+
+
+async def test_a_process_that_stops_during_a_turn_records_its_end_and_keeps_the_queue() -> None:
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True, delay=1.5)
+    await _say(a, "@investigator and @sre, what happened?")
+
+    async def started() -> bool:
+        return "+investigator" in cluster.log
+
+    await _until(started)
+    await a.close()
+
+    room = await cluster.store.get_room("r1")
+    assert room is not None
+    queue = room.metadata["_speak_queue"]
+    assert queue["last_speaker"] == "investigator"  # its end recorded
+    assert [e["agent"] for e in queue["entries"]] == ["sre"]  # the queue kept (rule 16)
+    assert await cluster.stored() is not None

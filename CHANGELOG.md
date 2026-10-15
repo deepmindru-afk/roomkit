@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `uninstall_strategy` called while the host holds the room's lock returns
+  when a discussion turn runs (RMK-778, RFC §19.7 and §19.7.5 rule 1). It
+  waited for the cut turn's end to be recorded, which waited for the lock the
+  host held: with a lock manager that times out, the room stayed locked for
+  everyone until the timeout, then the end was lost with a `TimeoutError`.
+  Uninstalling now cuts the running turn and records nothing of its end, the
+  queue being forgotten; a process that stops still records it and keeps the
+  queue.
 - A discussion is installed, changed and uninstalled from any process
   serving its room (RMK-777, RFC §19.7 and §19.7.5 rules 1 and 16). After a
   restart, or on a second worker, `install_strategy` refused the stored

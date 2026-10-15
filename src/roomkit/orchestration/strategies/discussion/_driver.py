@@ -427,7 +427,20 @@ class TurnDriver:
                 logger.warning("Watching the turn in room %s failed", room.room_id, exc_info=True)
 
     async def _ended(self, turn: _Turn) -> None:
-        """The turn has ended (rule 6): what it delivered queues whom it names."""
+        """The turn has ended (rule 6), announced once what it delivered
+        queued whom it names, but in a discussion being forgotten (rule 1)."""
+        room = self._room
+        agent = turn.entry.agent
+        # Its queue is about to go: recording the end would wait on the room
+        # lock an uninstalling host may hold, for nothing.
+        queued = [] if room.forgotten else await self._record_end(turn)
+        room.fire(SpeakQueueChange.TURN_ENDED, [agent])
+        if queued:
+            room.fire(SpeakQueueChange.QUEUED, list(dict.fromkeys(queued)))
+
+    async def _record_end(self, turn: _Turn) -> list[str]:
+        """Record the end of *turn* in the stored queue, where what it
+        delivered queues whom it names; the agents it queued."""
         room = self._room
         agent = turn.entry.agent
         queued: list[str] = []
@@ -447,9 +460,7 @@ class TurnDriver:
                         queued.extend(room.queue_turn_names(state, agent, event, context))
         except Exception:
             logger.exception("The end of %s's turn in room %s was not read", agent, room.room_id)
-        room.fire(SpeakQueueChange.TURN_ENDED, [agent])
-        if queued:
-            room.fire(SpeakQueueChange.QUEUED, list(dict.fromkeys(queued)))
+        return queued
 
     async def _abandon_orphan(self, turn: _Turn) -> None:
         """A turn handed to the lane that the driver will not run: abandoned,
