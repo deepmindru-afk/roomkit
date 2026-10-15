@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Discussion.install` called directly now claims the room as every
   built-in strategy does, so it is refused over another strategy the kit
   recorded, a discussion included: install over one with `install_strategy`.
+  A discussion stored by 0.104.0 or earlier names no attached agents:
+  uninstalling it from a process that did not install it detaches none, and a
+  0.104.0 worker storing its configuration drops the list.
 - An agent that only listens answers a person who names it (RMK-777, RFC
   §19.7.5 rule 12). Its turn was given, then cut at the first look the
   process giving it took at the queue, as if the host had just set it to

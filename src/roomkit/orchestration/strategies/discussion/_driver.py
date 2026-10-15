@@ -419,7 +419,7 @@ class TurnDriver:
                 turn.listening = agent in state.listening
                 if (set_to_listen or agent not in room.agents) and not turn.cut:
                     turn.cut = True
-                    await room.cut(agent)
+                    await room.cut(agent, "listen_only" if set_to_listen else "agent_removed")
                 if room.shared.renew_due(state):
                     async with room.editing() as editing:
                         room.shared.take(editing)

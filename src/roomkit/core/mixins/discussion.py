@@ -150,6 +150,11 @@ class DiscussionMixin(HelpersMixin):
         holds here, installed or followed: a Discussion does (RFC §19.7)."""
         return isinstance(strategy, Discussion) and room_id in self._discussions
 
+    def _runs_discussion(self, room_id: str, strategy: Orchestration) -> bool:
+        """Whether the discussion *room_id* holds here runs *strategy*."""
+        discussion = self._discussions.get(room_id)
+        return discussion is not None and discussion.strategy is strategy
+
     async def _install_discussion(self, room_id: str, discussion: Any) -> None:
         """Give *room_id* to *discussion*, or put it in place of the discussion
         the room holds, here or stored by another process (rules 1 and 16).
@@ -190,18 +195,13 @@ class DiscussionMixin(HelpersMixin):
         by, keeping the queue (rule 1): the agents that leave and an install
         attached unbound, the new ones bound, this process giving turns."""
         await held.read()
-        stored = held.shared.config or held.config
-        leaving = [a for a in stored.attached if a not in incoming.agents]
+        stored = held.shared.config
+        leaving = [a for a in stored.attached if a not in incoming.agents] if stored else []
         context = await self._prepare_discussion(room_id, incoming, leaving=leaving)
-        stayed = await self._detach_agents(room_id, leaving)
-        if stayed:
-            raise RuntimeError(f"Room {room_id} still binds {stayed}, which left its discussion")
-        started = held.driver is not None
+        await self._detach_all(room_id, leaving, "which left its discussion")
         await held.take_over(incoming)
         await self._bind_agents(room_id, held, context)
-        if not started:
-            held.driver.start()
-        held.wake()
+        held.drive()
 
     async def _prepare_discussion(
         self, room_id: str, discussion: Any, *, leaving: Sequence[str] = ()
@@ -230,6 +230,16 @@ class DiscussionMixin(HelpersMixin):
         discussion = self._discussions.get(room_id)
         if attached and discussion is not None and discussion.strategy is not None:
             await discussion.hold_attached(attached)
+
+    async def _detach_all(self, room_id: str, channel_ids: list[str], whose: str) -> None:
+        """Detach *channel_ids*, the agents a discussion lets go, from *room_id*.
+
+        Raises:
+            RuntimeError: one of them is still bound, named with *whose*.
+        """
+        stayed = await self._detach_agents(room_id, channel_ids)
+        if stayed:
+            raise RuntimeError(f"Room {room_id} still binds {stayed}, {whose}")
 
     def _stored_attached(self, room: Room) -> list[str]:
         """The agents installs of the discussion *room* stores attached to it."""
@@ -261,9 +271,7 @@ class DiscussionMixin(HelpersMixin):
         if room.id not in self._discussions:
             return False
         await self._uninstall_discussion(room.id)
-        stayed = await self._detach_agents(room.id, self._stored_attached(room))
-        if stayed:
-            raise RuntimeError(f"Room {room.id} still binds {stayed} its discussion attached")
+        await self._detach_all(room.id, self._stored_attached(room), "which its installs attached")
         return True
 
     def _follow_discussion(self, room: Room) -> None:

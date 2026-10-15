@@ -53,6 +53,8 @@ class _Installed:
     runners: list[str] = field(default_factory=list)
     attached: list[str] = field(default_factory=list)
     keys: list[str] = field(default_factory=list)
+    installing: bool = False
+    """The record claims the room while the install runs."""
 
 
 class StrategyMixin(HelpersMixin):
@@ -73,6 +75,7 @@ class StrategyMixin(HelpersMixin):
     _follow_discussion: Any  # DiscussionMixin
     _replaces_discussion: Any  # DiscussionMixin
     _hold_attached: Any  # DiscussionMixin
+    _runs_discussion: Any  # DiscussionMixin
     _stored_attached: Any  # DiscussionMixin
     _uninstall_stored_discussion: Any  # DiscussionMixin
 
@@ -191,51 +194,46 @@ class StrategyMixin(HelpersMixin):
     async def _install_strategy(
         self, room_id: str, strategy: Orchestration, *, organization_id: str | None
     ) -> None:
-        if self._replaces_discussion(room_id, strategy):
-            await self._replace_strategy(room_id, strategy, organization_id=organization_id)
-            return
-        self.claim_room_strategy(room_id, strategy)
-        if room_id in self._room_strategies:
-            raise ValueError(f"Room {room_id} holds this strategy already")
-        # Claimed before the first await: two installs at once are one too many.
-        self._room_strategies[room_id] = _Installed(strategy, organization_id)
+        replacing, held = self._claim_install(room_id, strategy, organization_id)
         # Under the room lock, what changes in the room meanwhile is the install's.
         async with self._lock_manager.locked(room_id):
             before = await self._snapshot(room_id)
             try:
-                await self._attach_agents(room_id, strategy)
+                if not replacing:
+                    # A discussion taking another's place binds its new agents
+                    # itself, once it holds the room (RFC §19.7.5 rule 1).
+                    await self._attach_agents(room_id, strategy)
                 await strategy.install(self, room_id)  # ty: ignore[invalid-argument-type]
             except BaseException:
-                await self._undo_install(room_id, strategy, organization_id, before)
+                await self._undo_install(
+                    room_id, strategy, organization_id, before, replacing, held
+                )
                 raise
-            installed, _ = await self._recorded(room_id, strategy, organization_id, before)
-            self._room_strategies[room_id] = installed
+            installed, bound = await self._recorded(room_id, strategy, organization_id, before)
+        self._room_strategies[room_id] = (
+            installed if held is None else _joined(held, installed, bound)
+        )
 
-    async def _replace_strategy(
-        self, room_id: str, strategy: Orchestration, *, organization_id: str | None
-    ) -> None:
-        """Install *strategy*, a Discussion, in place of the discussion
-        *room_id* holds (RFC §19.7.5 rule 1): the record names it and keeps
-        what each install set up in this process."""
+    def _claim_install(
+        self, room_id: str, strategy: Orchestration, organization_id: str | None
+    ) -> tuple[bool, _Installed | None]:
+        """Claim *room_id* for an install of *strategy*, before any await: two
+        installs at once are one too many. Whether it takes the place of the
+        room's discussion (RFC §19.7.5 rule 1), and that discussion's record.
+
+        Raises:
+            ValueError: the room holds another strategy, or an install runs.
+        """
         held = self._room_strategies.get(room_id)
-        # Claimed before the first await, as a first install is.
-        self._room_strategies[room_id] = _Installed(strategy, organization_id)
-        async with self._lock_manager.locked(room_id):
-            before = await self._snapshot(room_id)
-            try:
-                await strategy.install(self, room_id)  # ty: ignore[invalid-argument-type]
-            except BaseException:
-                self._restore_record(room_id, held)
-                raise
-            added, bound = await self._recorded(room_id, strategy, organization_id, before)
-        self._room_strategies[room_id] = added if held is None else _joined(held, added, bound)
-
-    def _restore_record(self, room_id: str, held: _Installed | None) -> None:
-        """Put back the record a refused replacement had claimed over."""
-        if held is None:
-            self._room_strategies.pop(room_id, None)
-        else:
-            self._room_strategies[room_id] = held
+        replacing = self._replaces_discussion(room_id, strategy)
+        if not replacing:
+            self.claim_room_strategy(room_id, strategy)
+            if held is not None:
+                raise ValueError(f"Room {room_id} holds this strategy already")
+        elif held is not None and held.installing:
+            raise ValueError(f"Room {room_id} holds a discussion another install is replacing")
+        self._room_strategies[room_id] = _Installed(strategy, organization_id, installing=True)
+        return replacing, held if replacing else None
 
     async def _recorded(
         self, room_id: str, strategy: Orchestration, organization_id: str | None, before: _Snapshot
@@ -254,10 +252,17 @@ class StrategyMixin(HelpersMixin):
         strategy: Orchestration,
         organization_id: str | None,
         before: _Snapshot,
+        replacing: bool,
+        held: _Installed | None,
     ) -> None:
         """Take back what a failed install added; the room stays claimed for
-        what could not be, so ``uninstall_strategy`` can finish it."""
-        added = _added(strategy, organization_id, before, await self._snapshot(room_id))
+        what could not be, so ``uninstall_strategy`` can finish it. A failed
+        replacement records what the discussion runs instead."""
+        after = await self._snapshot(room_id)
+        added = _added(strategy, organization_id, before, after)
+        if replacing:
+            self._settle_replacement(room_id, strategy, added, held, after.bindings)
+            return
         try:
             await self._take_back(room_id, added)
         except Exception:
@@ -265,6 +270,24 @@ class StrategyMixin(HelpersMixin):
             logger.exception("A failed install in room %s was not taken back whole", room_id)
             return
         del self._room_strategies[room_id]
+
+    def _settle_replacement(
+        self,
+        room_id: str,
+        strategy: Orchestration,
+        added: _Installed,
+        held: _Installed | None,
+        bound: set[str],
+    ) -> None:
+        """Record what a failed replacement leaves the room holding: *strategy*
+        once the discussion runs it (installing it again finishes the
+        install), else the record *held* before."""
+        if self._runs_discussion(room_id, strategy):
+            self._room_strategies[room_id] = added if held is None else _joined(held, added, bound)
+        elif held is not None:
+            self._room_strategies[room_id] = held
+        else:
+            del self._room_strategies[room_id]
 
     async def _attach_agents(self, room_id: str, strategy: Orchestration) -> None:
         bound = {b.channel_id for b in await self._store.list_bindings(room_id)}

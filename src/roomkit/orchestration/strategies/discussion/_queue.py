@@ -315,6 +315,14 @@ class SpeakQueueState(BaseModel):
             for e in self.entries
         )
 
+    def end_wait_for_nobody(self) -> bool:
+        """End the wait when no person is owed anything any more (rule 10);
+        whether it ended."""
+        ended = self.waiting and not self.owes_a_person(has_people=True)
+        if ended:
+            self.waiting = False
+        return ended
+
     def drop_instructions(self) -> list[Entry]:
         """Remove the instruction turns, whose text a stopped process held;
         the turns removed."""

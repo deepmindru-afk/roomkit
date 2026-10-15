@@ -13,11 +13,11 @@ by the stored configuration and never gives a turn.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import logging
 import sys
-from collections.abc import Awaitable, Callable, Sequence
-from contextlib import AbstractAsyncContextManager
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from roomkit._media import content_words
@@ -143,17 +143,26 @@ class DiscussionRoom:
         """The stored queue, read now, without the lock; the room routed by
         the configuration stored with it from then on."""
         state = await self.shared.read()
+        self._follow_stored()
+        return state
+
+    def _follow_stored(self) -> None:
+        """Route by the configuration the last read found stored, if any."""
         if self.shared.config is not None:
             self.follow(self.shared.config)
-        return state
 
     @property
     def state(self) -> SpeakQueueState:
         """The queue as last read or changed in this process."""
         return self.shared.state
 
-    def editing(self) -> AbstractAsyncContextManager[SpeakQueueState]:
-        return self.shared.editing()
+    @contextlib.asynccontextmanager
+    async def editing(self) -> AsyncGenerator[SpeakQueueState, None]:
+        """Change the stored queue under the room lock, the room routed by the
+        configuration stored with it (rule 16)."""
+        async with self.shared.editing() as state:
+            self._follow_stored()
+            yield state
 
     # -- Lifecycle --
 
@@ -212,22 +221,27 @@ class DiscussionRoom:
         room's, keeping the queue but for the agents it no longer holds
         (rule 1). The agents installs attached stay recorded but for those."""
         async with self.editing() as state:
-            stored = self.shared.config or self.config
-            gone = [a for a in stored.agents if a not in incoming.config.agents]
-            attached = [a for a in stored.attached if a not in gone]
+            stored = self.shared.config
+            gone = [a for a in stored.agents if a not in incoming.config.agents] if stored else []
+            attached = [a for a in stored.attached if a not in gone] if stored else []
             config = incoming.config.model_copy(update={"attached": attached})
             await self.shared.store_config(config)
             self.drop_instructions(state.drop_agents(gone), keep=state)
             # The wait may have been for an agent that left.
-            ended = state.waiting and not state.owes_a_person(has_people=True)
-            if ended:
-                state.waiting = False
+            ended = state.end_wait_for_nobody()
         self.strategy, self.own = incoming.strategy, incoming.own
         self._configure(config)
-        if self.driver is None:
-            self.driver = TurnDriver(self)
         if ended:
             self.fire(SpeakQueueChange.WAITING, [])
+
+    def drive(self) -> None:
+        """Give the turns from this process: its driver started once, a room
+        it only followed until now included."""
+        if self.driver is None:
+            self.driver = TurnDriver(self)
+            self.driver.start()
+        else:
+            self.driver.wake()
 
     async def hold_attached(self, agents: Sequence[str]) -> None:
         """Store *agents*, which an install attached to the room, with the
@@ -307,10 +321,10 @@ class DiscussionRoom:
     async def queue_instruction(self, event: RoomEvent) -> None:
         """An instruction addressed to agents: a turn of its own each, at the
         front, taking the instruction as its input (rule 7). This process
-        keeps its text; one that only follows the discussion gives no turn,
-        so it reports the instruction dropped."""
+        keeps its text; one that gives no turn (it only follows the
+        discussion, or its host installed another) reports it dropped."""
         agents = [a for a in event.addressed_to or [] if a in self.agents]
-        if self.driver is None:
+        if not self.drives:
             self.fire(SpeakQueueChange.INSTRUCTION_DROPPED, agents, event.id)
             return
         async with self.editing() as state:
@@ -329,10 +343,11 @@ class DiscussionRoom:
         """A task's result to post as its agent's message (rule 19): a turn of
         its own, at the front, that posts it without a generation; whether
         this process took it. Over or stopped, the discussion posts it once
-        no turn runs; one this process only follows takes none, and the
-        caller posts it at once."""
+        no turn runs; a process that gives no turn (it only follows the
+        discussion, or its host installed another) takes none, and the caller
+        posts it at once."""
         agent = event.source.channel_id
-        if self.driver is None or agent not in self.agents:
+        if not self.drives or agent not in self.agents:
             return False
         async with self.editing() as state:
             if state.over or self.closed:
@@ -390,7 +405,7 @@ class DiscussionRoom:
             # once it reads the queue again.
             await self.cut(speaking)
 
-    async def cut(self, agent: str) -> None:
+    async def cut(self, agent: str, reason: str = "listen_only") -> None:
         """Cut *agent*'s running turn, as a ``Cancel`` does; a turn given but
         not started yet has no loop a Cancel reaches and is abandoned."""
         # An agent the discussion no longer holds still has its channel here.
@@ -400,20 +415,18 @@ class DiscussionRoom:
             # it has none, and the turn given is abandoned below.
             reached = channel._prompting(self.room_id) and await channel.cancel(self.room_id)
         elif channel is not None:
-            reached = channel.steer(Cancel(reason="listen_only"), room_id=self.room_id)
+            reached = channel.steer(Cancel(reason=reason), room_id=self.room_id)
         else:
             reached = 0
         if not reached and self.driver is not None:
-            await self.driver.cut(agent, "listen_only")
+            await self.driver.cut(agent, reason)
 
     async def talk_again(self, channel_ids: Sequence[str]) -> None:
         async with self.editing() as state:
             agents = [a for a in channel_ids if a in state.listening]
             state.listening = [a for a in state.listening if a not in agents]
             # The wait may have been for an agent that only listened.
-            ended = state.waiting and not state.owes_a_person(has_people=True)
-            if ended:
-                state.waiting = False
+            ended = state.end_wait_for_nobody()
         if agents:
             self.fire(SpeakQueueChange.TALKING_AGAIN, agents)
         if ended:

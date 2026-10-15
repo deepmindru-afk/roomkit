@@ -443,6 +443,73 @@ async def test_removing_an_agent_the_host_bound_itself_is_refused() -> None:
     await kit.close()
 
 
+async def test_two_installs_over_a_discussion_at_once_are_one_too_many() -> None:
+    kit = RoomKit()
+    await _room(kit, {"a": _provider("a"), "b": _provider("b")})
+    load_room_context = kit.store.load_room_context
+
+    async def slow(room_id: str) -> Any:
+        await asyncio.sleep(0.01)  # the first install is still running
+        return await load_room_context(room_id)
+
+    kit.store.load_room_context = slow  # type: ignore[method-assign]
+    first = Discussion([kit.channels["a"]])  # type: ignore[list-item]
+    second = Discussion([kit.channels["a"], kit.channels["b"]])  # type: ignore[list-item]
+
+    results = await asyncio.gather(
+        kit.install_strategy("r1", first),
+        kit.install_strategy("r1", second),
+        return_exceptions=True,
+    )
+
+    assert [isinstance(r, ValueError) for r in results] == [False, True]
+    # The record names the discussion the room runs.
+    assert kit.room_strategy("r1") is first
+    assert kit._discussions["r1"].strategy is first
+    await kit.close()
+
+
+async def test_a_replacement_that_fails_once_the_discussion_runs_it_is_recorded() -> None:
+    kit = RoomKit()
+    await _room(kit, {"a": _provider("a")})
+    replaced = Discussion([kit.channels["a"], AIChannel("b", provider=_provider("b"))])  # type: ignore[list-item]
+    attach_channel = kit.attach_channel
+
+    async def failing(room_id: str, channel_id: str, **options: Any) -> Any:
+        if channel_id == "b":
+            raise RuntimeError("store down")
+        return await attach_channel(room_id, channel_id, **options)
+
+    kit.attach_channel = failing  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="store down"):
+        await kit.install_strategy("r1", replaced)
+
+    # The record and the discussion agree: installing again finishes it.
+    assert kit.room_strategy("r1") is replaced
+    assert kit._discussions["r1"].strategy is replaced
+    kit.attach_channel = attach_channel  # type: ignore[method-assign]
+    await kit.install_strategy("r1", replaced)
+    assert "b" in {b.channel_id for b in await kit.store.list_bindings("r1")}
+    await kit.close()
+
+
+async def test_a_second_direct_install_takes_the_place_of_the_first() -> None:
+    kit = RoomKit()
+    await kit.create_room(room_id="r1")
+    kit.register_channel(_People("chat"))
+    await kit.attach_channel("r1", "chat")
+    a = AIChannel("a", provider=_provider("a"))
+    await Discussion([a]).install(kit, "r1")
+    await kit.listen_only("r1", ["a"])
+    second = Discussion([a], max_turns=3)
+
+    await second.install(kit, "r1")
+
+    assert kit._discussions["r1"].strategy is second
+    assert _queue(kit).listening == frozenset({"a"})
+    await kit.close()
+
+
 async def test_uninstalling_from_a_speak_queue_hook_releases_the_room() -> None:
     kit = RoomKit()
     strategy = Discussion([AIChannel("a", provider=_provider("a"))])

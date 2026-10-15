@@ -17,9 +17,20 @@ from roomkit import Discussion, RoomKit
 from roomkit.channels.ai import AIChannel
 from roomkit.core.locks import InMemoryLockManager
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory, EventType
-from roomkit.models.event import TextContent
-from roomkit.orchestration.strategies.discussion import _driver, _shared
+from roomkit.models.enums import (
+    ChannelCategory,
+    ChannelType,
+    EventType,
+    HookExecution,
+    HookTrigger,
+)
+from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.orchestration.strategies.discussion import (
+    SpeakQueueChange,
+    SpeakQueueEvent,
+    _driver,
+    _shared,
+)
 from roomkit.orchestration.strategies.discussion._config import DiscussionConfig
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
@@ -27,6 +38,7 @@ from roomkit.store.memory import InMemoryStore
 from tests.test_framework import SimpleChannel
 
 AGENTS = ("investigator", "sre", "comms")
+KEPT = ("investigator", "sre")
 
 
 @pytest.fixture(autouse=True)
@@ -338,8 +350,9 @@ async def test_a_process_that_only_follows_uninstalls_the_discussion_for_all() -
     await cluster.close()
 
 
-async def test_changing_the_agents_in_one_process_reaches_the_others() -> None:
-    cluster = _Cluster()
+async def _two_processes_then_a_change(cluster: _Cluster) -> tuple[RoomKit, RoomKit]:
+    """A and B serve the room, sre only listens and one turn was given; then
+    A installs the discussion without comms."""
     a = await cluster.process(install=True, create=True)
     b = await cluster.process(install=True)
     await b.listen_only("r1", ["sre"])
@@ -349,24 +362,34 @@ async def test_changing_the_agents_in_one_process_reaches_the_others() -> None:
         return len(await cluster.answers()) == 1
 
     await _until(one)
-
-    replaced = cluster.strategy(names=("investigator", "sre"))
-    await a.install_strategy("r1", replaced)
-
-    # The queue stays: who listens, the turns given; comms, which the install
-    # attached, leaves the room.
-    stored = await cluster.stored()
-    assert stored is not None and stored.agents == ["investigator", "sre"]
-    assert await cluster.turns_given() == 1
-    assert "comms" not in await cluster.bound()
-    assert a.room_strategy("r1") is replaced
-    held_b = b._discussions["r1"]
+    await a.install_strategy("r1", cluster.strategy(names=KEPT))
 
     async def b_follows() -> bool:
-        return held_b.config.agents == ["investigator", "sre"]
+        return b._discussions["r1"].config.agents == list(KEPT)
 
     await _until(b_follows)
-    assert not held_b.drives  # its host installed the old agents: it gives no turn
+    return a, b
+
+
+async def test_changing_the_agents_keeps_the_queue_and_lets_the_removed_agent_go() -> None:
+    cluster = _Cluster()
+    a, b = await _two_processes_then_a_change(cluster)
+
+    stored = await cluster.stored()
+    assert stored is not None and stored.agents == list(KEPT)
+    assert await cluster.turns_given() == 1
+    assert "comms" not in await cluster.bound()
+    view_a, view_b = a.speak_queue("r1"), b.speak_queue("r1")
+    assert view_a is not None and view_b is not None
+    assert view_a.listening == view_b.listening == frozenset({"sre"})
+    assert a._discussions["r1"].drives
+    await cluster.close()
+
+
+async def test_a_process_whose_host_installed_the_old_agents_gives_no_turn() -> None:
+    cluster = _Cluster()
+    _, b = await _two_processes_then_a_change(cluster)
+    assert not b._discussions["r1"].drives
 
     # B routes by the new configuration: @comms names no agent any more, and
     # the message asks everyone the discussion holds that does not only listen.
@@ -379,13 +402,76 @@ async def test_changing_the_agents_in_one_process_reaches_the_others() -> None:
     await asyncio.sleep(0.3)
     assert await cluster.answers() == ["investigator", "investigator"]
     assert "+comms" not in cluster.log
-    view_a, view_b = a.speak_queue("r1"), b.speak_queue("r1")
-    assert view_a is not None and view_b is not None
-    assert view_a.listening == view_b.listening == frozenset({"sre"})
+    await cluster.close()
 
-    # Once its host installs the stored agents, B may give turns again.
-    await b.install_strategy("r1", cluster.strategy(names=("investigator", "sre")))
-    assert held_b.drives and b._discussions["r1"] is held_b
+
+async def test_installing_the_stored_agents_lets_a_process_give_turns_again() -> None:
+    cluster = _Cluster()
+    _, b = await _two_processes_then_a_change(cluster)
+    held = b._discussions["r1"]
+
+    await b.install_strategy("r1", cluster.strategy(names=KEPT))
+
+    assert held.drives and b._discussions["r1"] is held
+    await cluster.close()
+
+
+async def test_an_instruction_or_a_result_reaching_a_process_that_gives_no_turn_is_not_kept() -> (
+    None
+):
+    cluster = _Cluster()
+    _, b = await _two_processes_then_a_change(cluster)
+    seen: list[tuple[SpeakQueueChange, tuple[str, ...]]] = []
+
+    @b.hook(HookTrigger.ON_SPEAK_QUEUE, execution=HookExecution.ASYNC)
+    async def follow(event: SpeakQueueEvent, context: Any) -> None:
+        seen.append((event.change, event.channel_ids))
+
+    await _say(b, "summarise", addressed_to=["investigator"], event_type=EventType.INSTRUCTION)
+    result = RoomEvent(
+        room_id="r1",
+        source=EventSource(channel_id="investigator", channel_type=ChannelType.AI),
+        content=TextContent(body="Result of the task"),
+    )
+
+    # B cannot give the turn that would take them: it reports the
+    # instruction dropped, and leaves the result for its caller to post.
+    assert await b._queue_discussion_post("r1", result) is False
+    await asyncio.sleep(0.1)
+    assert (SpeakQueueChange.INSTRUCTION_DROPPED, ("investigator",)) in seen
+    assert all(change != SpeakQueueChange.QUEUED for change, _ in seen)
+    assert b._discussions["r1"].instructions == {}
+    await cluster.close()
+
+
+async def test_a_quiet_follower_routes_host_calls_by_a_new_configuration() -> None:
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True, names=KEPT)
+    follower = await cluster.process(install=False)
+    await _say(follower, "@investigator hello")  # it follows from here on, then goes quiet
+    await a.install_strategy("r1", cluster.strategy())  # comms joins
+
+    await follower.listen_only("r1", ["comms"])
+
+    room = await cluster.store.get_room("r1")
+    assert room is not None and room.metadata["_speak_queue"]["listening"] == ["comms"]
+    assert follower._discussions["r1"].config.agents == list(AGENTS)
+    await cluster.close()
+
+
+async def test_a_direct_install_in_a_process_that_follows_takes_the_turns() -> None:
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True)
+    await a.close()
+    b = await cluster.process(install=False)
+    await _say(b, "@investigator are you there?")  # followed: queued, nobody gives it
+
+    await cluster.strategy().install(b, "r1")
+
+    async def answered() -> bool:
+        return await cluster.answers() == ["investigator"]
+
+    await _until(answered)
     await cluster.close()
 
 
@@ -399,7 +485,7 @@ async def test_removing_the_agent_whose_turn_runs_cuts_it_in_the_process_giving_
         return "+comms" in cluster.log
 
     await _until(started)
-    await b.install_strategy("r1", cluster.strategy(names=("investigator", "sre"), delay=2.0))
+    await b.install_strategy("r1", cluster.strategy(names=KEPT, delay=2.0))
 
     async def ended() -> bool:
         queue = a.speak_queue("r1")
