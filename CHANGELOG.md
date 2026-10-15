@@ -118,16 +118,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A Loop answers a message with a photo (RMK-767): a media, or a text with a
-  photo, got no answer at all (the loop rendered nothing). The producer now
-  answers such a message alone and sees the media, as a one-pass supervisor
-  does (RFC §19.7.4). The other readers of a message outside the AI channel
-  read it as the AI channel does (RFC §6.6): a delegated worker's brief, the
-  speak and discussion dispatch classifiers and a discussion turn's notes
-  read its text and `[Media: …]`, where a media vanished and a composite lost
-  its words; scoring no longer judges an answer against an older text
+- A Loop answers a message with a photo (RMK-767): a media, a text with a
+  photo or an empty text got no answer at all (the loop rendered nothing).
+  The producer now answers such a message alone and sees the media, as a
+  one-pass supervisor does (RFC §19.7.4). The other readers of a message
+  outside the AI channel read it as the AI channel does (RFC §6.6): a
+  delegated worker's brief, the speak and discussion dispatch classifiers, a
+  discussion turn's notes and a memory's summary read its text, `[Media: …]`
+  and a voice message's transcript, where a media vanished and a composite
+  lost its words; scoring no longer judges an answer against an older text
   message; a discussion's addressing and a memory's search read the author's
-  words and a photo's caption, never a file name (`roomkit._media.content_words`).
+  words, a photo's caption and a voice message's transcript, never a file
+  name.
+- The AI channel reads a `RichContent` by its plain text, a voice message or
+  a video in the history as the live event reads it (its transcript or
+  label), and, for a model that sees, every part of a `CompositeContent`
+  (RMK-767). Each read as nothing before; `describe_empty_event` is no longer
+  asked about a `RichContent`, which now has text of its own. A memory's
+  summary reads a voice message as its transcript or label, never its
+  `data:` URI.
 - A document sent as a `MediaContent` (a PDF, `application/octet-stream`) no
   longer reaches the model as an image the provider refuses: it reads as its
   label (RMK-763).

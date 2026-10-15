@@ -29,6 +29,7 @@ from roomkit.orchestration._background import (
     background_failure_text,
     run_in_background,
 )
+from roomkit.orchestration._worker_run import task_input
 from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor._common import (
     _DEFAULT_MAX_REVISIONS,
@@ -476,11 +477,7 @@ async def _one_pass_delegate(
 ) -> ChannelOutput:
     """One-pass: workers run on raw message (validated between steps by the
     supervisor in sequential mode) → supervisor presents."""
-    # Extract user's raw message
-    user_message = ""
-    if isinstance(event.content, TextContent):
-        user_message = event.content.body
-
+    user_message = task_input(event)
     if not user_message:
         return await original_on_event(event, binding, context)
 

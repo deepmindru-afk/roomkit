@@ -289,6 +289,7 @@ class TestRunLoop:
             reviewers=[reviewer],
             strategy=None,
             event=event,
+            task="Write something",
             max_iterations=3,
         )
 
@@ -316,36 +317,12 @@ class TestRunLoop:
             reviewers=[_make_agent("editor")],
             strategy=None,
             event=event,
+            task="Write something",
             max_iterations=3,
         )
 
         [answer] = result.response_events
         assert (answer.chain_depth, answer.parent_event_id) == (3, "thread-root")
-
-    async def test_run_loop_empty_content_returns_empty(self) -> None:
-        """Non-text event should return empty output."""
-        from roomkit.models.event import MediaContent
-
-        kit = _make_mock_kit(Room(id="r1"))
-        producer = _make_agent("writer")
-        reviewer = _make_agent("editor")
-
-        event = RoomEvent(
-            room_id="r1",
-            source=EventSource(channel_id="user", channel_type=ChannelType.SMS),
-            content=MediaContent(url="https://example.com/img.png", mime_type="image/png"),
-        )
-        result = await _run_loop(
-            kit=kit,
-            room_id="r1",
-            producer=producer,
-            reviewers=[reviewer],
-            strategy=None,
-            event=event,
-            max_iterations=3,
-        )
-
-        assert not result.responded
 
 
 # -- Tests: _execute_loop ---------------------------------------------------

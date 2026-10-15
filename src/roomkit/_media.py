@@ -11,6 +11,8 @@ long.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from roomkit._media_url import (
     VISION_IMAGE_TYPES,
     data_uri_media_type,
@@ -71,32 +73,48 @@ def video_label(content: VideoContent) -> str:
 
 
 def content_text(content: EventContent) -> str | None:
-    """What a text-only reader reads of *content*: its text (rich content's
-    plain text), a media as its label, a composite's parts joined; None for
-    content of another kind."""
-    if isinstance(content, TextContent):
-        return content.body
-    if isinstance(content, RichContent):
-        return content.plain_text or content.body
-    if isinstance(content, MediaContent):
-        return media_label(content)
-    if isinstance(content, CompositeContent):
-        parts = (content_text(part) for part in content.parts)
-        return "\n".join(part for part in parts if part)
-    return None
+    """What a text-only reader reads of *content* (RFC §6.6): its text (rich
+    content's plain text), each media as its label, a composite's parts
+    joined; None for content of another kind."""
+    return _read(content, _label)
 
 
 def content_words(content: EventContent) -> str | None:
-    """What the author wrote in *content*: its text and its media's captions,
-    never a file name or a type (a name read in ``nova.png`` would address an
-    agent); None for content of another kind."""
+    """What the author wrote in *content* (RFC §6.6): its text, a media's
+    caption, a voice message's transcript, never a file name or a type (a name
+    read in ``nova.png`` would address an agent); None for content of another
+    kind."""
+    return _read(content, _words)
+
+
+type _Media = MediaContent | AudioContent | VideoContent
+
+
+def _read(content: EventContent, media: Callable[[_Media], str]) -> str | None:
+    """*content* as text, each media read by *media*."""
     if isinstance(content, TextContent):
         return content.body
     if isinstance(content, RichContent):
         return content.plain_text or content.body
-    if isinstance(content, MediaContent):
-        return content.caption or ""
+    if isinstance(content, MediaContent | AudioContent | VideoContent):
+        return media(content)
     if isinstance(content, CompositeContent):
-        parts = (content_words(part) for part in content.parts)
+        parts = (_read(part, media) for part in content.parts)
         return "\n".join(part for part in parts if part)
     return None
+
+
+def _label(content: _Media) -> str:
+    if isinstance(content, AudioContent):
+        return audio_label(content)
+    if isinstance(content, VideoContent):
+        return video_label(content)
+    return media_label(content)
+
+
+def _words(content: _Media) -> str:
+    if isinstance(content, AudioContent):
+        return content.transcript or ""
+    if isinstance(content, MediaContent):
+        return content.caption or ""
+    return ""

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from roomkit.core.exceptions import ToolTimeoutError
 from roomkit.models.enums import TaskStatus
+from roomkit.models.event import RoomEvent, TextContent
 from roomkit.orchestration.status_bus import StatusLevel, post_agent_lifecycle
 from roomkit.tasks.models import task_work
 from roomkit.tools.timeout import answer_within
@@ -25,6 +26,15 @@ from roomkit.tools.timeout import answer_within
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
     from roomkit.tasks.models import DelegatedTask, DelegatedTaskResult
+
+
+def task_input(event: RoomEvent) -> str:
+    """The text a strategy's tasks carry for *event*: a plain text's body, else
+    the empty string. A message it is empty for (a media, a composite, an empty
+    text) is answered by the lead agent alone, whose own channel reads it
+    (RFC §19.7.3, §19.7.4)."""
+    content = event.content
+    return content.body if isinstance(content, TextContent) else ""
 
 
 def task_output(result: Any) -> str:

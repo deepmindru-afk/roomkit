@@ -31,7 +31,13 @@ from roomkit.orchestration._background import (
 )
 from roomkit.orchestration._call_room import in_call_room
 from roomkit.orchestration._installs import set_up_for_voice_room
-from roomkit.orchestration._worker_run import WorkerEnd, WorkerOutcome, WorkerStatus, run_worker
+from roomkit.orchestration._worker_run import (
+    WorkerEnd,
+    WorkerOutcome,
+    WorkerStatus,
+    run_worker,
+    task_input,
+)
 from roomkit.orchestration.base import Orchestration
 from roomkit.orchestration.state import (
     ConversationState,
@@ -232,9 +238,10 @@ class _LoopTurns:
             return ChannelOutput.empty()
         if event.source.channel_type in (ChannelType.AI, ChannelType.SYSTEM):
             return await producer._respond(event, binding, context)
-        if not isinstance(event.content, TextContent):
-            # A media or a composite: the producer's own channel sees it, where
-            # the loop's tasks carry text alone (RFC §19.7.4).
+        task = task_input(event)
+        if not task:
+            # A message the loop's tasks cannot carry: the producer's own
+            # channel reads it and answers (RFC §19.7.4).
             return await producer._respond(event, binding, context)
         return await _run_loop(
             kit=self._kit,
@@ -243,6 +250,7 @@ class _LoopTurns:
             reviewers=self._reviewers,
             strategy=self._strategy,
             event=event,
+            task=task,
             max_iterations=self._max_iterations,
         )
 
@@ -337,22 +345,17 @@ async def _run_loop(
     reviewers: list[Agent],
     strategy: WorkerStrategy | None,
     event: RoomEvent,
+    task: str,
     max_iterations: int,
 ) -> ChannelOutput:
-    """Run the full produce/review loop using child rooms."""
-    user_message = ""
-    if isinstance(event.content, TextContent):
-        user_message = event.content.body
-    if not user_message:
-        return ChannelOutput.empty()
-
+    """Run the full produce/review loop on *task*, *event*'s text, using child rooms."""
     outcome = await _execute_loop(
         kit=kit,
         room_id=room_id,
         producer=producer,
         reviewers=reviewers,
         strategy=strategy,
-        task_desc=user_message,
+        task_desc=task,
         max_iterations=max_iterations,
     )
     # The producer's failure reaches the caller whether an earlier output goes

@@ -47,7 +47,7 @@ from roomkit.channels.base import Channel
 from roomkit.core.visibility import visible_events
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import EventType
-from roomkit.models.event import RichContent, RoomEvent
+from roomkit.models.event import RoomEvent
 
 logger = logging.getLogger("roomkit.channels.acp")
 
@@ -83,10 +83,7 @@ def _plain_text(event: RoomEvent) -> str:
     """*event*'s content as a string: rich content by its plain text, a media
     as its label and a composite as its parts (RFC §6.6), as the live event
     the channel takes as text reads."""
-    content = event.content
-    if isinstance(content, RichContent):
-        return content.plain_text or content.body
-    text = content_text(content)
+    text = content_text(event.content)
     return text if text is not None else Channel.extract_text(event)
 
 

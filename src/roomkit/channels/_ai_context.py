@@ -976,10 +976,11 @@ class AIContextMixin(_AIChannelContract):
         if isinstance(content, CompositeContent):
             parts: list[_ContentPart] = []
             for index, part in enumerate(content.parts):
-                if isinstance(part, TextContent):
-                    parts.append(AITextPart(text=part.body))
-                elif isinstance(part, MediaContent):
+                if isinstance(part, MediaContent):
                     parts.extend(images.parts(event.id, index, part))
+                elif text := content_text(part):
+                    # Any other part as a text-only reader reads it (RFC §6.6).
+                    parts.append(AITextPart(text=text))
             return parts or ""
         return self._extract_text(event)
 
