@@ -137,6 +137,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   asked about a `RichContent`, which now has text of its own. A memory's
   summary reads a voice message as its transcript or label, never its
   `data:` URI.
+- Tool Search keeps a called tool's schema declared after later searches,
+  including when the model's arguments were rejected. Invalid calls retain
+  the schema for the current turn, without entering the memory of executed
+  calls. Realtime sessions retain schemas for their current catalogue and
+  publish them after the result is delivered; catalogue replacement clears
+  them. Access refusals, skill gates and BEFORE_TOOL_USE remain unchanged.
 - A document sent as a `MediaContent` (a PDF, `application/octet-stream`) no
   longer reaches the model as an image the provider refuses: it reads as its
   label (RMK-763).
