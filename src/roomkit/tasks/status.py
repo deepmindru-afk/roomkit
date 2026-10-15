@@ -20,6 +20,7 @@ from roomkit.tools.context import current_tool_call, current_tool_room, current_
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
+    from roomkit.models.room import Room
     from roomkit.tasks.models import DelegatedTask, DelegatedTaskResult
 
 TASK_ACTION = "task"
@@ -183,9 +184,8 @@ class TaskStatusTool:
         room_id = current_tool_room_id()
         if room_id is None:
             return json.dumps({"error": "task_status answers only within a conversation"})
-        tasks = _named_by_handle(
-            await room_task_lines(self._kit.status_bus, room_id, self._window)
-        )
+        lines = await room_task_lines(self._kit.status_bus, room_id, self._window)
+        tasks = _named_by_handle(lines, current_tool_room())
         wanted = str(arguments.get("task_id") or "")
         if wanted:
             tasks = [t for t in tasks if t["task_id"] == wanted]
@@ -194,11 +194,10 @@ class TaskStatusTool:
         return json.dumps({"tasks": tasks[-self._limit :]}, ensure_ascii=False)
 
 
-def _named_by_handle(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """*tasks* with each one's agent named as the room of the call addresses
-    it: a discussion's agent by its handle (RFC §19.7.5 rule 4), any other by
-    its channel id."""
-    room = current_tool_room()
+def _named_by_handle(tasks: list[dict[str, Any]], room: Room | None) -> list[dict[str, Any]]:
+    """*tasks* with each one's agent named as *room*, the room of the call,
+    addresses it: a discussion's agent by its handle (RFC §19.7.5 rule 4),
+    any other by its channel id."""
     handles = discussion_handles(room.metadata if room is not None else None)
     return [{**t, "agent": handles.get(t["agent"], t["agent"])} for t in tasks]
 
