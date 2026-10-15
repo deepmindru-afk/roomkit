@@ -19,12 +19,12 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from roomkit._media import content_text
 from roomkit._text import quoted
 from roomkit.channels._discussion_turn import issue_mark, retire_mark
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT, chain_depth_exceeded, unanswered
 from roomkit.core.task_utils import hold_task
 from roomkit.models.enums import ChannelType, EventStatus, RoomStatus
-from roomkit.models.event import TextContent
 from roomkit.tasks.posting import send_posted
 
 from ._dispatching import Dispatcher
@@ -342,7 +342,7 @@ class TurnDriver:
             author = self._room.label(answered.source.channel_id)
         else:
             author = quoted(person_label(answered, context), _LABEL)
-        body = answered.content.body if isinstance(answered.content, TextContent) else ""
+        body = content_text(answered.content) or ""
         return f"the message from {author}, {quoted(body, _QUOTE)}"
 
     # -- Running it --

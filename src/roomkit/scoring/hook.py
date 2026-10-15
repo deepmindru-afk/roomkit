@@ -19,6 +19,7 @@ from collections import deque
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from roomkit._media import content_text
 from roomkit.models.enums import HookExecution, HookTrigger
 from roomkit.models.task import Observation
 from roomkit.models.tool_call import AIResponseEvent
@@ -160,8 +161,10 @@ class ScoringHook:
         if not hasattr(context, "recent_events") or not context.recent_events:
             return ""
         for e in reversed(context.recent_events):
-            if hasattr(e.content, "body") and e.source.channel_id != event.channel_id:
-                return str(e.content.body)
+            if e.source.channel_id == event.channel_id:
+                continue
+            if text := content_text(e.content):
+                return text
         return ""
 
     async def close(self) -> None:

@@ -10,12 +10,12 @@ notified channel may read, each under its author's label and quoted as data.
 
 from __future__ import annotations
 
+from roomkit._media import content_text
 from roomkit._text import bounded_text, fence, json_text_line
 from roomkit.channels._speaker import turn_labels
 from roomkit.core.visibility import visible_events
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import EventType
-from roomkit.models.event import TextContent
 
 CONVERSATION_TAG = "conversation"
 """The tag the room's conversation is set apart in, in a worker's description."""
@@ -32,17 +32,15 @@ def conversation_block(context: RoomContext, reader: str, count: int) -> str | N
     if count <= 0:
         return None
     said = [
-        event
+        (event, text)
         for event in visible_events(context, reader)
-        if event.type == EventType.MESSAGE
-        and isinstance(event.content, TextContent)
-        and event.content.body.strip()
+        if event.type == EventType.MESSAGE and (text := content_text(event.content) or "").strip()
     ]
-    labels = turn_labels(said, context)
+    labels = turn_labels([event for event, _ in said], context)
     lines = [
-        f"{label}: {json_text_line(bounded_text(event.content.body, MAX_MESSAGE_CHARS))}"
-        for event in said
-        if isinstance(event.content, TextContent) and (label := labels.get(event.id))
+        f"{label}: {json_text_line(bounded_text(text, MAX_MESSAGE_CHARS))}"
+        for event, text in said
+        if (label := labels.get(event.id))
     ][-count:]
     if not lines:
         return None

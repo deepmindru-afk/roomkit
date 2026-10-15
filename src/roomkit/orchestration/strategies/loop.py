@@ -232,6 +232,10 @@ class _LoopTurns:
             return ChannelOutput.empty()
         if event.source.channel_type in (ChannelType.AI, ChannelType.SYSTEM):
             return await producer._respond(event, binding, context)
+        if not isinstance(event.content, TextContent):
+            # A media or a composite: the producer's own channel sees it, where
+            # the loop's tasks carry text alone (RFC §19.7.4).
+            return await producer._respond(event, binding, context)
         return await _run_loop(
             kit=self._kit,
             room_id=context.room.id if context.room else event.room_id,

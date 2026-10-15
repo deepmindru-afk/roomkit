@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any
 
+from roomkit._media import content_text
 from roomkit.classifiers.base import (
     Answers,
     ChoiceAnswer,
@@ -27,7 +28,7 @@ from roomkit.classifiers.base import (
     YesNoAnswer,
     YesNoQuestion,
 )
-from roomkit.models.event import RoomEvent, TextContent
+from roomkit.models.event import RoomEvent
 from roomkit.speaking.base import SpeakDecision, SpeakMode, SpeakPolicy, SpeakTurn
 from roomkit.speaking.listening import (
     ASKED_ME,
@@ -432,4 +433,4 @@ def _asked_while_listening(judgments: Mapping[str, float]) -> bool:
 
 
 def _text(event: RoomEvent) -> str:
-    return event.content.body if isinstance(event.content, TextContent) else ""
+    return content_text(event.content) or ""

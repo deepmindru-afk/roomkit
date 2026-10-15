@@ -16,8 +16,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from roomkit._media import content_text
 from roomkit.classifiers.base import Classifier, YesNoQuestion
-from roomkit.models.event import RoomEvent, TextContent
+from roomkit.models.event import RoomEvent
 
 from .base import DispatchCandidate, DispatchDecision, DispatchPolicy, DispatchTurn
 
@@ -115,4 +116,4 @@ def _line(event: RoomEvent, turn: DispatchTurn) -> dict[str, str]:
 
 
 def _text(event: RoomEvent) -> str:
-    return event.content.body if isinstance(event.content, TextContent) else ""
+    return content_text(event.content) or ""

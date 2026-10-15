@@ -11,11 +11,12 @@ import asyncio
 import logging
 from dataclasses import replace
 
+from roomkit._media import content_words
 from roomkit.knowledge.base import KnowledgeResult, KnowledgeSource
 from roomkit.memory._wrapper import _MemoryWrapper
 from roomkit.memory.base import MemoryProvider, MemoryResult
 from roomkit.models.context import RoomContext
-from roomkit.models.event import CompositeContent, RoomEvent, TextContent
+from roomkit.models.event import RoomEvent
 from roomkit.tools.fence import fence
 
 logger = logging.getLogger("roomkit.memory.retrieval")
@@ -148,14 +149,9 @@ class RetrievalMemory(_MemoryWrapper):
 
     @staticmethod
     def _extract_query(event: RoomEvent) -> str:
-        """Extract text from event content for search queries."""
-        content = event.content
-        if isinstance(content, TextContent):
-            return content.body
-        if isinstance(content, CompositeContent):
-            texts = [p.body for p in content.parts if isinstance(p, TextContent)]
-            return " ".join(texts)
-        return ""
+        """The author's words in *event*, a media's caption included, as the
+        search query: never a file name or a type (RFC §6.6)."""
+        return content_words(event.content) or ""
 
     @staticmethod
     def _format_results(results: list[KnowledgeResult]) -> str:

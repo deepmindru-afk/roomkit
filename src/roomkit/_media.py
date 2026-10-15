@@ -25,6 +25,7 @@ from roomkit.models.event import (
     CompositeContent,
     EventContent,
     MediaContent,
+    RichContent,
     TextContent,
     VideoContent,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "VISION_IMAGE_TYPES",
     "audio_label",
     "content_text",
+    "content_words",
     "data_uri_media_type",
     "is_data_uri",
     "is_link",
@@ -69,13 +71,32 @@ def video_label(content: VideoContent) -> str:
 
 
 def content_text(content: EventContent) -> str | None:
-    """What a text-only reader reads of *content*: its text, a media as its
-    label, a composite's parts joined; None for content of another kind."""
+    """What a text-only reader reads of *content*: its text (rich content's
+    plain text), a media as its label, a composite's parts joined; None for
+    content of another kind."""
     if isinstance(content, TextContent):
         return content.body
+    if isinstance(content, RichContent):
+        return content.plain_text or content.body
     if isinstance(content, MediaContent):
         return media_label(content)
     if isinstance(content, CompositeContent):
         parts = (content_text(part) for part in content.parts)
+        return "\n".join(part for part in parts if part)
+    return None
+
+
+def content_words(content: EventContent) -> str | None:
+    """What the author wrote in *content*: its text and its media's captions,
+    never a file name or a type (a name read in ``nova.png`` would address an
+    agent); None for content of another kind."""
+    if isinstance(content, TextContent):
+        return content.body
+    if isinstance(content, RichContent):
+        return content.plain_text or content.body
+    if isinstance(content, MediaContent):
+        return content.caption or ""
+    if isinstance(content, CompositeContent):
+        parts = (content_words(part) for part in content.parts)
         return "\n".join(part for part in parts if part)
     return None

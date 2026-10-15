@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+from roomkit.models.event import CompositeContent, MediaContent, TextContent
 from roomkit.models.task import Observation
 from roomkit.models.tool_call import AIResponseEvent
 from roomkit.scoring import (
@@ -19,6 +19,7 @@ from roomkit.scoring import (
     ScoringHook,
 )
 from roomkit.store.memory import InMemoryStore
+from tests.conftest import make_event as make_room_event
 
 # ---------------------------------------------------------------------------
 # Score dataclass
@@ -203,28 +204,22 @@ class TestScoringHook:
         assert len(hook.recent_scores) == 2
 
     async def test_extract_last_user_query(self):
-        @dataclass
-        class FakeEvent:
-            content: Any
-            source: Any
-
-        @dataclass
-        class FakeContent:
-            body: str
-
-        @dataclass
-        class FakeSource:
-            channel_id: str
-
+        photo = MediaContent(url="app-media://p1", mime_type="image/png", filename="lamp.png")
         events = [
-            FakeEvent(content=FakeContent("user says hello"), source=FakeSource("sms")),
-            FakeEvent(content=FakeContent("ai response"), source=FakeSource("ai-1")),
+            make_room_event(channel_id="sms", body="an older question"),
+            make_room_event(channel_id="sms").model_copy(
+                update={
+                    "content": CompositeContent(parts=[TextContent(body="user says hello"), photo])
+                }
+            ),
+            make_room_event(channel_id="ai-1", body="ai response"),
         ]
         ctx = MagicMock(recent_events=events)
         event = _make_event(channel_id="ai-1")
 
         query = ScoringHook._extract_last_user_query(event, ctx)
-        assert query == "user says hello"
+        # The latest message, a composite included: not an older text one.
+        assert query == "user says hello\n[Media: lamp.png]"
 
     async def test_extract_last_user_query_empty(self):
         ctx = MagicMock(recent_events=[])

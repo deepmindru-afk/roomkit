@@ -20,6 +20,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Any
 
+from roomkit._media import content_words
 from roomkit.channels.acp import ACPChannel
 from roomkit.core.hooks import HookRegistration
 from roomkit.core.task_utils import hold_task
@@ -456,9 +457,10 @@ class DiscussionRoom:
         return list(self.agents if everyone is None else everyone)
 
     def _names_people(self, event: RoomEvent, context: RoomContext) -> bool:
-        if not isinstance(event.content, TextContent):
+        words = content_words(event.content)
+        if not words:
             return False
-        names = read_names(event.content.body, self.by_handle, people=self.people(context))
+        names = read_names(words, self.by_handle, people=self.people(context))
         return bool(names.people)
 
     async def _queue_named(self, event: RoomEvent, reach: set[str], *, asker: str) -> list[str]:
@@ -498,9 +500,9 @@ class DiscussionRoom:
         for other in named:
             ask = Ask(event_id=event.id, depth=event.chain_depth, asker=agent, index=event.index)
             state.ask(other, ask)
-        if isinstance(event.content, TextContent):
+        if words := content_words(event.content):
             index = self.people_index(context)
-            names = read_names(event.content.body, self.by_handle, people=names_of(index))
+            names = read_names(words, self.by_handle, people=names_of(index))
             for name in names.people:
                 label = one_person(index, name)
                 if label is not None:
@@ -530,11 +532,12 @@ class DiscussionRoom:
         return HookResult.allow()
 
     async def _read_names(self, event: RoomEvent, context: RoomContext) -> HookResult:
-        if not isinstance(event.content, TextContent) or event.addressed_to == []:
+        words = content_words(event.content)
+        if not words or event.addressed_to == []:
             return HookResult.allow()
         speaker = event.source.channel_id
         names = read_names(
-            event.content.body,
+            words,
             self.by_handle,
             people=self.people(context),
             speaker=speaker if speaker in self.agents else None,
