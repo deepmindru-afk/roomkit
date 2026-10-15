@@ -68,7 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the status line, the notices and `/tasks` say `@Dev`, and `/listen @Dev`,
   `/talk`, `/task` read a name as the discussion does (RMK-764);
   `AgentCard.channel_id` (new) keys a host's own card whose handle is not its
-  channel id. Example: `examples/discussion_group_chat.py`.
+  channel id. A `CLIChannel` with no `agent_label` shows such an agent by its
+  handle too (`Dev:`, `@dev` in console mode) where it showed
+  `Agent:8E41…` (RMK-766); a host's `agent_label` still receives the channel
+  id. Example: `examples/discussion_group_chat.py`.
 
 ### Changed
 

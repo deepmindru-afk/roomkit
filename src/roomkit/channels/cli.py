@@ -26,8 +26,11 @@ import json
 import logging
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
+from roomkit._text import identifier
+from roomkit.channels._discussion_turn import discussion_handles
 from roomkit.channels._speaker import speaker_label
 from roomkit.channels.base import Channel
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
@@ -117,7 +120,10 @@ class CLIChannel(Channel):
         agent_color: ANSI code for agent output (default: cyan).
         use_color: Enable ANSI colors. Auto-detected from terminal.
         agent_label: Callable that maps ``channel_id`` to a display name
-            for agent responses.  Defaults to the raw channel ID.
+            for agent responses. Defaults to the agent's handle in the
+            room's discussion (RFC §19.7.5 rule 4), the name a person types
+            to address it, else a name made from the channel id
+            (``agent-researcher`` gives ``Researcher``).
         markdown: Render agent output as progressively updated Markdown.
             Requires the ``console`` extra.
         console: Full branded console mode — startup banner (logo, RoomKit
@@ -177,7 +183,7 @@ class CLIChannel(Channel):
         self._agent_color = agent_color
         self._thinking_color = thinking_color
         self._use_color = use_color if use_color is not None else _is_tty()
-        self._agent_label = agent_label or _default_agent_label
+        self._agent_label = agent_label
         self._show_thinking = show_thinking
         self._markdown = markdown
         self._console = console
@@ -218,7 +224,7 @@ class CLIChannel(Channel):
         if not text:
             return ChannelOutput.empty()
 
-        label = speaker_label(event, context, self._agent_label)
+        label = self._speaker(event, context)
         if self._console:
             from roomkit.console._chat import print_message
 
@@ -238,6 +244,15 @@ class CLIChannel(Channel):
         else:
             self._print_agent(label, text)
         return ChannelOutput.empty()
+
+    def _speaker(self, event: RoomEvent, context: RoomContext) -> str:
+        """Who said *event*, as the person at the terminal reads it: a person
+        by name and channel, an agent by the host's ``agent_label``, else by
+        :func:`_room_agent_label`."""
+        label = self._agent_label
+        if label is None:
+            label = partial(_room_agent_label, discussion_handles(context.room.metadata))
+        return speaker_label(event, context, label)
 
     @property
     def supports_streaming_delivery(self) -> bool:
@@ -262,7 +277,7 @@ class CLIChannel(Channel):
         if event.source.channel_id == self.channel_id:
             return ChannelOutput.empty()
 
-        label = speaker_label(event, context, self._agent_label)
+        label = self._speaker(event, context)
         if self._console or self._markdown:
             return await self._deliver_rendered_stream(text_stream, label, event.source.channel_id)
 
@@ -596,6 +611,14 @@ class CLIChannel(Channel):
             )
             sys.stdout.write(f"\n{symbol} {content.tool_name}{duration}\n")
         sys.stdout.flush()
+
+
+def _room_agent_label(handles: Mapping[str, str], channel_id: str) -> str:
+    """An agent's label with no ``agent_label`` from the host: its handle in
+    the room's discussion (*handles*), as typed, else a name made from its
+    channel id."""
+    handle = handles.get(channel_id)
+    return identifier(handle, "agent") if handle else _default_agent_label(channel_id)
 
 
 def _default_agent_label(channel_id: str) -> str:

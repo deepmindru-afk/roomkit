@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
+from roomkit import Agent, Discussion
 from roomkit.channels._cli_markdown import MarkdownStreamRenderer
+from roomkit.channels._discussion_turn import DISCUSSION_CONFIG
 from roomkit.channels._speaker import speaker_label
 from roomkit.channels.cli import CLIChannel, _default_agent_label
 from roomkit.core.framework import RoomKit
@@ -25,6 +27,8 @@ from roomkit.models.identity import IdentityHookResult, IdentityResult
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.models.streaming import ThinkingDeltaMarker
+from roomkit.providers.ai.mock import MockAIProvider
+from tests.orchestration.test_strategy_discussion import _settle
 from tests.test_framework import SimpleChannel
 from tests.test_identity_pipeline import CountingIdentityResolver
 
@@ -798,3 +802,91 @@ class TestDefaultAgentLabel:
 
     def test_plain_id(self) -> None:
         assert _default_agent_label("ai") == "Ai"
+
+
+class TestDiscussionHandles:
+    """RMK-766: in a room a discussion holds, an agent reads as its handle,
+    the name a person types to address it (RFC §19.7.5 rule 4)."""
+
+    AGENT = "agent:8e41f0d2"
+
+    def _context(self) -> RoomContext:
+        stored = {
+            DISCUSSION_CONFIG: {"agents": [self.AGENT], "handles": {self.AGENT: "ResearchDesk"}}
+        }
+        return RoomContext(room=Room(id="room-1", metadata=stored), bindings=[_make_binding()])
+
+    @pytest.mark.parametrize(
+        ("options", "shown"),
+        [
+            ({}, "ResearchDesk:"),
+            ({"markdown": True}, "ResearchDesk:"),
+            ({"console": True}, "@researchdesk"),
+        ],
+        ids=["plain", "markdown", "console"],
+    )
+    async def test_a_delivered_answer_reads_as_its_agents_handle(
+        self, options: dict[str, bool], shown: str
+    ) -> None:
+        cli = CLIChannel("cli", use_color=False, **options)
+        event = _make_event(channel_id=self.AGENT, body="Done.")
+
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            await cli.deliver(event, _make_binding(), self._context())
+            output = mock_out.getvalue()
+
+        assert shown in output and "8e41" not in output
+
+    async def test_a_streamed_answer_reads_as_its_agents_handle(self) -> None:
+        cli = CLIChannel("cli", use_color=False)
+
+        async def chunks() -> None:
+            yield "Done."  # type: ignore[misc]
+
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            await cli.deliver_stream(  # type: ignore[arg-type]
+                chunks(),
+                _make_event(channel_id=self.AGENT, body=""),
+                _make_binding(),
+                self._context(),
+            )
+            output = mock_out.getvalue()
+
+        assert "ResearchDesk: Done." in output
+
+    async def test_the_hosts_label_is_given_the_channel_id_and_wins(self) -> None:
+        seen: list[str] = []
+
+        def label(channel_id: str) -> str:
+            seen.append(channel_id)
+            return "Bot"
+
+        cli = CLIChannel("cli", use_color=False, agent_label=label)
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            await cli.deliver(_make_event(channel_id=self.AGENT), _make_binding(), self._context())
+            assert "Bot:" in mock_out.getvalue()
+        assert seen == [self.AGENT]
+
+    async def test_an_answer_in_a_discussion_room_prints_under_the_handle(self) -> None:
+        kit = RoomKit()
+        kit.register_channel(SimpleChannel("ops"))
+        cli = CLIChannel("cli", use_color=False)
+        kit.register_channel(cli)
+        dev = Agent(
+            self.AGENT, provider=MockAIProvider(responses=["Release 4.2 went out."]), name="Dev"
+        )
+        await kit.create_room(room_id="r1", orchestration=Discussion([dev]))
+        await kit.attach_channel("r1", "ops")
+        await kit.attach_channel("r1", "cli")
+
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            await kit.process_inbound(
+                InboundMessage(
+                    channel_id="ops", sender_id="ops", content=TextContent(body="@dev?")
+                )
+            )
+            await _settle(kit)
+            output = mock_out.getvalue()
+        await kit.close()
+
+        assert "Dev: Release 4.2 went out." in output and "8e41" not in output
