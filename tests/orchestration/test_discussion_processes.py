@@ -513,25 +513,88 @@ async def test_uninstalling_in_another_process_leaves_no_record_behind() -> None
     await cluster.close()
 
 
-async def test_uninstalling_under_the_room_lock_while_a_turn_runs_returns() -> None:
-    # A host serialises its own room changes under the room's lock (RFC §19.7).
-    cluster = _Cluster()
-    a = await cluster.process(install=True, create=True, delay=1.5)
-    follower = await cluster.process(install=False)
-    await _say(a, "@investigator take your time")
-
+async def _turn_started(cluster: _Cluster, agent: str = "investigator") -> None:
     async def started() -> bool:
-        return "+investigator" in cluster.log
+        return f"+{agent}" in cluster.log
 
     await _until(started)
-    async with asyncio.timeout(1.0), a.lock_manager.locked("r1"):
-        assert await a.uninstall_strategy("r1") is True
 
-    # Gone for every process: the room answers by its policy again.
+
+async def _uninstall(kit: RoomKit, *, locked: bool) -> None:
+    """Uninstall as a host does, under the room's lock when *locked*: it
+    returns within a second whatever the turn running (RFC §19.7)."""
+    async with asyncio.timeout(1.0):
+        if not locked:
+            assert await kit.uninstall_strategy("r1") is True
+            return
+        # A host serialises its own room changes under the room's lock.
+        async with kit.lock_manager.locked("r1"):
+            assert await kit.uninstall_strategy("r1") is True
+
+
+@pytest.mark.parametrize("locked", [False, True], ids=["unlocked", "under_the_lock"])
+@pytest.mark.parametrize("who", ["giving_the_turn", "other_installer", "follower"])
+async def test_uninstalling_while_a_turn_runs_cuts_it_and_records_nothing(
+    who: str, locked: bool
+) -> None:
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True, delay=1.0)
+    b = await cluster.process(install=True, delay=1.0)
+    follower = await cluster.process(install=False)
+    await _say(follower, "@investigator take your time")
+    await _turn_started(cluster)
+    giving = next(k for k in (a, b) if k._discussions["r1"].driver.speaking == "investigator")
+    kit = {"giving_the_turn": giving, "other_installer": b if giving is a else a}.get(
+        who, follower
+    )
+
+    await _uninstall(kit, locked=locked)
+    await asyncio.sleep(1.3)  # past the turn's delay: its end would be written by now
+
+    room = await cluster.store.get_room("r1")
+    assert room is not None
+    assert room.metadata.get("_speak_queue") is None
+    assert room.metadata.get("_discussion") is None
+    assert await cluster.answers() == []  # cut wherever it ran
+    assert a.room_strategy("r1") is None and b.room_strategy("r1") is None
+    await cluster.close()
+
+
+async def test_uninstalling_under_the_room_lock_does_not_wait_for_an_observer_taking_it() -> None:
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True, delay=1.0)
+
+    @a.hook(HookTrigger.ON_SPEAK_QUEUE, execution=HookExecution.ASYNC)
+    async def note(event: SpeakQueueEvent, context: Any) -> None:
+        await a.update_room_metadata("r1", {"last_change": event.change.value})
+
+    await _say(a, "@investigator take your time")
+    await _turn_started(cluster)
+
+    await _uninstall(a, locked=True)
+
     assert await cluster.stored() is None
-    assert a.room_strategy("r1") is None and a.speak_queue("r1") is None
-    await _say(follower, "hello")
-    assert follower.speak_queue("r1") is None
+    await cluster.close()
+
+
+async def test_installing_under_the_room_lock_returns_mid_turn() -> None:
+    cluster = _Cluster()
+    a = cluster.kit()
+    await a.create_room(room_id="r1")
+    await a.attach_channel("r1", "ops")
+    async with asyncio.timeout(1.0), a.lock_manager.locked("r1"):
+        await a.install_strategy("r1", cluster.strategy(delay=1.0))
+    await _say(a, "@investigator take your time")
+    await _turn_started(cluster)
+
+    # Over the discussion, the speaking agent left out: its turn is cut.
+    async with asyncio.timeout(1.0), a.lock_manager.locked("r1"):
+        await a.install_strategy("r1", cluster.strategy(names=("sre", "comms")))
+    await asyncio.sleep(1.3)
+
+    assert await cluster.answers() == []
+    stored = await cluster.stored()
+    assert stored is not None and stored.agents == ["sre", "comms"]
     await cluster.close()
 
 

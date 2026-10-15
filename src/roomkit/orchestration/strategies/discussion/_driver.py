@@ -406,29 +406,43 @@ class TurnDriver:
             await self._ended(turn)
 
     async def _watch(self, turn: _Turn) -> None:
-        """While *turn* runs: its agent set to listen, or no longer one of the
-        discussion's, elsewhere cuts it, and the lease is renewed before it
-        expires."""
+        """While *turn* runs: what another process stored cuts it (the
+        discussion uninstalled, its agent set to listen or removed), and the
+        lease is renewed before it expires."""
         room = self._room
         while True:
             await asyncio.sleep(POLL_SECONDS)
             try:
                 state = await room.read()
-                agent = turn.entry.agent
-                set_to_listen = agent in state.listening and not turn.listening
-                turn.listening = agent in state.listening
-                if (set_to_listen or agent not in room.agents) and not turn.cut:
+                reason = self._cut_reason(turn, state)
+                turn.listening = turn.entry.agent in state.listening
+                if reason is not None and not turn.cut:
                     turn.cut = True
-                    await room.cut(agent, "listen_only" if set_to_listen else "agent_removed")
+                    if reason == "discussion_uninstalled":
+                        # Gone for every process: its end is recorded nowhere (rule 1).
+                        room.forgotten = True
+                    await room.cut(turn.entry.agent, reason)
                 if room.shared.renew_due(state):
                     async with room.editing() as editing:
                         room.shared.take(editing)
             except Exception:
                 logger.warning("Watching the turn in room %s failed", room.room_id, exc_info=True)
 
+    def _cut_reason(self, turn: _Turn, state: SpeakQueueState) -> str | None:
+        """Why the stored queue, just read as *state*, cuts *turn*, if it does."""
+        room = self._room
+        agent = turn.entry.agent
+        if room.shared.config is None:
+            return "discussion_uninstalled"
+        if agent in state.listening and not turn.listening:
+            return "listen_only"
+        if agent not in room.agents:
+            return "agent_removed"
+        return None
+
     async def _ended(self, turn: _Turn) -> None:
-        """The turn has ended (rule 6), announced once what it delivered
-        queued whom it names, but in a discussion being forgotten (rule 1)."""
+        """The turn has ended (rule 6): announced, once its end is recorded,
+        unless the discussion is being forgotten and its queue goes (rule 1)."""
         room = self._room
         agent = turn.entry.agent
         # Its queue is about to go: recording the end would wait on the room
@@ -446,6 +460,9 @@ class TurnDriver:
         queued: list[str] = []
         try:
             async with room.editing() as state:
+                if room.shared.config is None:
+                    # Uninstalled elsewhere meanwhile: no queue to write back.
+                    return []
                 state.ended(agent)
                 if turn.entry.instruction is not None:
                     room.forget_instruction(turn.entry.instruction, state)

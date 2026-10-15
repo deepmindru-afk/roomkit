@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit._media import content_words
 from roomkit.channels.acp import ACPChannel
 from roomkit.core.hooks import HookRegistration
+from roomkit.core.locks import _has_room_lock
 from roomkit.core.task_utils import hold_task
 from roomkit.models.enums import EventStatus, EventType, HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
@@ -261,14 +262,12 @@ class DiscussionRoom:
     async def forget(self) -> None:
         """Leave the discussion, for every process (rule 1): the turns
         stopped, the running one cut with its end recorded nowhere, then the
-        queue and the configuration forgotten."""
-        self.forgotten = True
-        await self.stop()
-        await self.reset()
-
-    async def reset(self) -> None:
-        """Forget the discussion, for every process: the queue, who listens,
-        who asked whom, the turns given and whether it is over (rule 1)."""
+        queue (who listens, who asked whom, the turns given, whether it is
+        over) and the configuration forgotten. The lease stays this process's
+        until both are gone, so no other process gives a turn meanwhile."""
+        self.forgotten = self.closed = True
+        if self.driver is not None:
+            await self.driver.stop()
         async with self.kit._lock_manager.locked(self.room_id):
             state = await self.shared.read()
             mine = [e for e in state.entries if e.holder == self.shared.me]
@@ -728,5 +727,8 @@ class DiscussionRoom:
         which the rest wait for."""
         last = self._last_fire
         if last is None or asyncio.current_task() in self._announcing:
+            return
+        if _has_room_lock(self.room_id):
+            # An announcement's hooks may take the room lock this caller holds.
             return
         await asyncio.wait([last], timeout=_STOP_WAIT)
