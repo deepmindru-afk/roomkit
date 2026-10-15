@@ -74,9 +74,11 @@ def speaker_label(
     handle. Anything without a participant (an agent, a system event) keeps the
     channel-derived label.
 
-    ``agent_label`` renames those channel-derived labels for presentation; it
-    defaults to the channel id itself, which is what a room addressed by
-    ``@channel-id`` should show.
+    ``agent_label`` renames those channel-derived labels for presentation,
+    from the channel id; without one, the channel id is shown as it is. A
+    caller that reads the room's discussion passes a label giving each agent
+    its handle, the name a person types (``CLIChannel`` does, RFC §19.7.5
+    rule 4).
 
     ``source.participant_id`` holds a ``Participant.id`` when the channel names
     its own sender, and an ``Identity.id`` when the identity pipeline resolved

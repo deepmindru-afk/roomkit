@@ -159,7 +159,7 @@ async def run_console_shell(
     model_label: str | None = None
     if banner.models:
         entry = banner.models[0]
-        model_label = entry.model or entry.channel_id
+        model_label = entry.shown
         if entry.provider:
             model_label = f"{model_label} ({entry.provider})"
     tracker = ActivityTracker()

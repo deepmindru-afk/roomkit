@@ -12,6 +12,7 @@ from roomkit.channels._cli_markdown import MarkdownStreamRenderer
 from roomkit.channels._discussion_turn import DISCUSSION_CONFIG
 from roomkit.channels._speaker import speaker_label
 from roomkit.channels.cli import CLIChannel, _default_agent_label
+from roomkit.console._activity import ActivityTracker
 from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities
 from roomkit.models.context import RoomContext
@@ -704,6 +705,7 @@ class TestRun:
         cli = CLIChannel("cli", use_color=False, console=True)
         kit = AsyncMock()
         kit.list_bindings = AsyncMock(return_value=[])
+        kit.store.get_room = AsyncMock(return_value=None)
         kit.channels = {}
 
         with (
@@ -837,22 +839,36 @@ class TestDiscussionHandles:
 
         assert shown in output and "8e41" not in output
 
-    async def test_a_streamed_answer_reads_as_its_agents_handle(self) -> None:
-        cli = CLIChannel("cli", use_color=False)
+    @pytest.mark.parametrize(
+        ("options", "shown"),
+        [
+            ({}, "ResearchDesk: Done."),
+            ({"markdown": True}, "ResearchDesk:"),
+            ({"console": True}, "@researchdesk"),
+        ],
+        ids=["plain", "markdown", "console"],
+    )
+    async def test_a_streamed_answer_reads_as_its_agents_handle(
+        self, options: dict[str, bool], shown: str
+    ) -> None:
+        cli = CLIChannel("cli", use_color=False, **options)
+        cli._activity = ActivityTracker()
+        started = patch.object(cli._activity, "start", wraps=cli._activity.start)
 
         async def chunks() -> None:
             yield "Done."  # type: ignore[misc]
 
-        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+        event = _make_event(channel_id=self.AGENT, body="")
+        with started as start, patch("sys.stdout", new_callable=StringIO) as mock_out:
             await cli.deliver_stream(  # type: ignore[arg-type]
-                chunks(),
-                _make_event(channel_id=self.AGENT, body=""),
-                _make_binding(),
-                self._context(),
+                chunks(), event, _make_binding(), self._context()
             )
             output = mock_out.getvalue()
 
-        assert "ResearchDesk: Done." in output
+        assert shown in output and "8e41" not in output
+        if options:
+            # The status bar names who is working the same way.
+            start.assert_called_once_with(self.AGENT, "ResearchDesk")
 
     async def test_the_hosts_label_is_given_the_channel_id_and_wins(self) -> None:
         seen: list[str] = []

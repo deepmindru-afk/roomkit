@@ -17,8 +17,10 @@ from rich.markdown import Markdown
 from rich.table import Table
 from rich.text import Text
 
+from roomkit._text import identifier
 from roomkit._version import __version__
 from roomkit.channels._cli_markdown import MarkdownStreamRenderer, _format_arguments
+from roomkit.channels._discussion_turn import discussion_handles
 from roomkit.console._brand import ACCENT, MUTED, PRIMARY, PRIMARY_LIGHT, SURFACE, logo_lines
 from roomkit.console._tool_preview import tool_result_preview
 from roomkit.models.enums import ChannelCategory, EventType
@@ -35,6 +37,13 @@ class BannerModel:
     channel_id: str
     model: str | None
     provider: str | None
+    handle: str | None = None
+    """The agent's handle in the room's discussion (RFC §19.7.5 rule 4)."""
+
+    @property
+    def shown(self) -> str:
+        """What the line names: the model, else the agent as the room addresses it."""
+        return self.model or _addressed(self.channel_id, self.handle)
 
 
 @dataclass(slots=True)
@@ -44,6 +53,18 @@ class BannerChannel:
     channel_id: str
     channel_type: str
     category: str
+    handle: str | None = None
+    """The agent's handle in the room's discussion (RFC §19.7.5 rule 4)."""
+
+    @property
+    def shown(self) -> str:
+        """The channel as the room addresses it: an agent by its handle."""
+        return _addressed(self.channel_id, self.handle)
+
+
+def _addressed(channel_id: str, handle: str | None) -> str:
+    """``@`` and *handle*, the name a person types; *channel_id* without one."""
+    return f"@{identifier(handle, 'agent')}" if handle else channel_id
 
 
 @dataclass(slots=True)
@@ -65,13 +86,17 @@ async def collect_banner_data(kit: RoomKit, room_id: str) -> ConsoleBannerData:
     list.
     """
     data = ConsoleBannerData(version=__version__, room_id=room_id)
+    room = await kit.store.get_room(room_id)
+    handles = discussion_handles(room.metadata if room is not None else None)
     bindings = await kit.list_bindings(room_id)
     for binding in bindings:
+        handle = handles.get(binding.channel_id)
         data.channels.append(
             BannerChannel(
                 channel_id=binding.channel_id,
                 channel_type=str(binding.channel_type.value),
                 category=str(binding.category.value),
+                handle=handle,
             )
         )
         if binding.category != ChannelCategory.INTELLIGENCE:
@@ -89,7 +114,9 @@ async def collect_banner_data(kit: RoomKit, room_id: str) -> ConsoleBannerData:
             provider, model, label = None, None, None
         if model is not None or label is not None:
             data.models.append(
-                BannerModel(channel_id=binding.channel_id, model=model, provider=label)
+                BannerModel(
+                    channel_id=binding.channel_id, model=model, provider=label, handle=handle
+                )
             )
     return data
 
@@ -106,7 +133,7 @@ def build_banner(data: ConsoleBannerData, *, notes: str | None = None) -> Render
     for entry in data.models:
         line = Text()
         line.append("◆ ", style=ACCENT)
-        line.append(entry.model or entry.channel_id, style=ACCENT)
+        line.append(entry.shown, style=ACCENT)
         if entry.provider:
             line.append(f" ({entry.provider})", style=MUTED)
         lines.append(line)
@@ -115,7 +142,7 @@ def build_banner(data: ConsoleBannerData, *, notes: str | None = None) -> Render
     context.append(f"Room: {data.room_id}", style=MUTED)
     if data.channels:
         rendered = ", ".join(
-            ch.channel_id if ch.category == "transport" else f"{ch.channel_id} ({ch.category})"
+            ch.shown if ch.category == "transport" else f"{ch.shown} ({ch.category})"
             for ch in data.channels
         )
         context.append(f"  ·  Channels: {rendered}", style=MUTED)

@@ -10,10 +10,11 @@ import json
 from io import StringIO
 from types import SimpleNamespace
 
-from roomkit import __version__
+from roomkit import Agent, Discussion, __version__
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.cli import CLIChannel
 from roomkit.console._chat import (
+    BannerModel,
     ConsoleStreamRenderer,
     PinnedStreamRenderer,
     collect_banner_data,
@@ -91,6 +92,27 @@ class TestCollectBannerData:
 
         assert data.models == []
         assert data.channels[0].category == "intelligence"
+
+
+class TestBannerHandles:
+    """RMK-766: the banner names a discussion's agent as a person types it."""
+
+    async def test_a_discussions_agent_shows_by_its_handle(self) -> None:
+        kit = RoomKit()
+        kit.register_channel(CLIChannel("cli"))
+        dev = Agent("agent:8e41f0d2", provider=MockAIProvider(), name="Dev")
+        await kit.create_room(room_id="room-1", orchestration=Discussion([dev]))
+        await kit.attach_channel("room-1", "cli")
+
+        out = StringIO()
+        print_banner(await collect_banner_data(kit, "room-1"), file=out, use_color=False)
+
+        assert "@Dev (intelligence)" in out.getvalue() and "8e41" not in out.getvalue()
+
+    def test_a_model_line_without_a_model_names_the_agent_by_handle(self) -> None:
+        line = BannerModel(channel_id="agent:8e41f0d2", model=None, provider="acp", handle="Dev")
+        assert line.shown == "@Dev"
+        assert BannerModel(channel_id="ai", model=None, provider="acp").shown == "ai"
 
 
 class TestAIChannelProvider:
