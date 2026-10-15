@@ -8,6 +8,7 @@ locks. One queue in the store, one process giving the turns under a lease.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -16,9 +17,10 @@ from roomkit import Discussion, RoomKit
 from roomkit.channels.ai import AIChannel
 from roomkit.core.locks import InMemoryLockManager
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import EventType
+from roomkit.models.enums import ChannelCategory, EventType
 from roomkit.models.event import TextContent
 from roomkit.orchestration.strategies.discussion import _driver, _shared
+from roomkit.orchestration.strategies.discussion._config import DiscussionConfig
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
@@ -58,20 +60,50 @@ class _Cluster:
         self.log: list[str] = []
         self.kits: list[RoomKit] = []
 
-    def strategy(self, delay: float = 0.15, **options: Any) -> Discussion:
-        agents = [AIChannel(n, provider=_Slow(n, self.log, delay)) for n in AGENTS]
+    def strategy(
+        self, delay: float = 0.15, names: Sequence[str] = AGENTS, **options: Any
+    ) -> Discussion:
+        agents = [AIChannel(n, provider=_Slow(n, self.log, delay)) for n in names]
         return Discussion(agents, **options)
 
-    async def process(self, *, install: bool, create: bool = False, **options: Any) -> RoomKit:
+    def kit(self) -> RoomKit:
         kit = RoomKit(store=self.store, lock_manager=self.locks)
         kit.register_channel(SimpleChannel("ops"))
         self.kits.append(kit)
+        return kit
+
+    async def process(self, *, install: bool, create: bool = False, **options: Any) -> RoomKit:
+        kit = self.kit()
         if create:
             await kit.create_room(room_id="r1", orchestration=self.strategy(**options))
             await kit.attach_channel("r1", "ops")
         elif install:
-            await self.strategy(**options).install(kit, "r1")
+            await kit.install_strategy("r1", self.strategy(**options))
         return kit
+
+    async def hosted(self, bound: str) -> RoomKit:
+        """A process that creates the room and binds *bound* itself before
+        installing the discussion: the install attaches the other agents."""
+        kit = self.kit()
+        strategy = self.strategy()
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "ops")
+        kit.register_channel(next(a for a in strategy.agents() if a.channel_id == bound))
+        await kit.attach_channel("r1", bound, category=ChannelCategory.INTELLIGENCE)
+        await kit.install_strategy("r1", strategy)
+        return kit
+
+    async def stored(self) -> DiscussionConfig | None:
+        room = await self.store.get_room("r1")
+        return DiscussionConfig.stored(room.metadata if room is not None else None)
+
+    async def turns_given(self) -> int:
+        room = await self.store.get_room("r1")
+        assert room is not None
+        return int(room.metadata["_speak_queue"]["turns_given"])
+
+    async def bound(self) -> set[str]:
+        return {b.channel_id for b in await self.store.list_bindings("r1")}
 
     async def answers(self) -> list[str]:
         events = await self.store.list_events("r1", limit=100)
@@ -241,4 +273,136 @@ async def test_listen_only_in_one_process_cuts_the_turn_running_in_another() -> 
 
     await _until(ended, timeout=3.0)
     assert await cluster.answers() == []
+    await cluster.close()
+
+
+async def test_a_restarted_process_takes_the_discussion_back() -> None:
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True)
+    await a.close()  # the process stops: the queue and its configuration stay stored
+    b = await cluster.process(install=False)
+    await _say(b, "@investigator are you there?")
+    await asyncio.sleep(0.3)
+    assert await cluster.answers() == []  # followed: no process gives the turns
+
+    await b.install_strategy("r1", cluster.strategy())
+
+    async def answered() -> bool:
+        return await cluster.answers() == ["investigator"]
+
+    await _until(answered)
+    assert isinstance(b.room_strategy("r1"), Discussion)
+    assert b.speak_queue("r1") is not None
+    await cluster.close()
+
+
+async def test_a_process_that_only_follows_uninstalls_the_discussion_for_all() -> None:
+    cluster = _Cluster()
+    a = await cluster.hosted(bound="investigator")
+    stored = await cluster.stored()
+    assert stored is not None and stored.attached == ["comms", "sre"]
+    await a.close()
+    b = cluster.kit()
+
+    assert await b.uninstall_strategy("r1") is True
+
+    # Gone for every process, the agents its install attached with it; the
+    # agent the host bound itself stays.
+    assert await cluster.stored() is None
+    assert await cluster.bound() == {"ops", "investigator"}
+    assert b.speak_queue("r1") is None and b.room_strategy("r1") is None
+    assert await b.uninstall_strategy("r1") is False
+    b.register_channel(AIChannel("investigator", provider=_Slow("investigator", cluster.log, 0.0)))
+    result = await _say(b, "anyone?")
+    # The room answers by its policy again.
+    assert [e.source.channel_id for e in result.response_events] == ["investigator"]
+    await cluster.close()
+
+
+async def test_changing_the_agents_in_one_process_reaches_the_others() -> None:
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True)
+    b = await cluster.process(install=True)
+    await b.listen_only("r1", ["sre"])
+    await _say(a, "@investigator hello")
+
+    async def one() -> bool:
+        return len(await cluster.answers()) == 1
+
+    await _until(one)
+
+    replaced = cluster.strategy(names=("investigator", "sre"))
+    await a.install_strategy("r1", replaced)
+
+    # The queue stays: who listens, the turns given; comms, which the install
+    # attached, leaves the room.
+    stored = await cluster.stored()
+    assert stored is not None and stored.agents == ["investigator", "sre"]
+    assert await cluster.turns_given() == 1
+    assert "comms" not in await cluster.bound()
+    assert a.room_strategy("r1") is replaced
+    held_b = b._discussions["r1"]
+
+    async def b_follows() -> bool:
+        return held_b.config.agents == ["investigator", "sre"]
+
+    await _until(b_follows)
+    assert not held_b.drives  # its host installed the old agents: it gives no turn
+
+    # B routes by the new configuration: @comms names no agent any more, and
+    # the message asks everyone the discussion holds that does not only listen.
+    await _say(b, "@comms are you there?")
+
+    async def two() -> bool:
+        return len(await cluster.answers()) == 2
+
+    await _until(two)
+    await asyncio.sleep(0.3)
+    assert await cluster.answers() == ["investigator", "investigator"]
+    assert "+comms" not in cluster.log
+    view_a, view_b = a.speak_queue("r1"), b.speak_queue("r1")
+    assert view_a is not None and view_b is not None
+    assert view_a.listening == view_b.listening == frozenset({"sre"})
+
+    # Once its host installs the stored agents, B may give turns again.
+    await b.install_strategy("r1", cluster.strategy(names=("investigator", "sre")))
+    assert held_b.drives and b._discussions["r1"] is held_b
+    await cluster.close()
+
+
+async def test_removing_the_agent_whose_turn_runs_cuts_it_in_the_process_giving_it() -> None:
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True, delay=2.0)
+    b = await cluster.process(install=True, delay=2.0)
+    await _say(a, "@comms take your time")
+
+    async def started() -> bool:
+        return "+comms" in cluster.log
+
+    await _until(started)
+    await b.install_strategy("r1", cluster.strategy(names=("investigator", "sre"), delay=2.0))
+
+    async def ended() -> bool:
+        queue = a.speak_queue("r1")
+        return queue is not None and queue.speaking is None
+
+    await _until(ended, timeout=3.0)
+    assert await cluster.answers() == []
+    await cluster.close()
+
+
+async def test_uninstalling_in_another_process_leaves_no_record_behind() -> None:
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True)
+    b = await cluster.process(install=True)
+
+    assert await b.uninstall_strategy("r1") is True
+
+    async def left() -> bool:
+        return a.room_strategy("r1") is None
+
+    await _until(left)
+    assert a.speak_queue("r1") is None
+    await a.install_strategy("r1", cluster.strategy())  # the room takes a discussion again
+    assert isinstance(a.room_strategy("r1"), Discussion)
     await cluster.close()

@@ -322,6 +322,20 @@ class SpeakQueueState(BaseModel):
         self.entries = [e for e in self.entries if e.instruction is None]
         return dropped
 
+    def drop_agents(self, agents: Sequence[str]) -> list[Entry]:
+        """Forget *agents*, which the discussion no longer holds: their turns,
+        their listening, what they asked people and their place among a
+        message's candidates; the instruction turns it dropped (rule 1)."""
+        gone = set(agents)
+        dropped = [e for e in self.entries if e.agent in gone and e.instruction is not None]
+        self.entries = [e for e in self.entries if e.agent not in gone]
+        self.listening = [a for a in self.listening if a not in gone]
+        self.asked = [(a, p) for a, p in self.asked if a not in gone]
+        for pending in self.dispatching:
+            pending.candidates = [a for a in pending.candidates if a not in gone]
+            pending.asked = [a for a in pending.asked if a not in gone]
+        return dropped
+
     def drop(self) -> list[Entry]:
         """Empty the queue, the messages waiting for a decision with it; the
         instruction turns it dropped."""

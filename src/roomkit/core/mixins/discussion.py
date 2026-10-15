@@ -21,6 +21,7 @@ from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.models.enums import ChannelCategory, ChannelType, HookTrigger
 from roomkit.orchestration.strategies.discussion._config import DiscussionConfig
 from roomkit.orchestration.strategies.discussion._room import DiscussionRoom
+from roomkit.orchestration.strategies.discussion.strategy import Discussion
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
     from roomkit.models.room import Room
+    from roomkit.orchestration.base import Orchestration
     from roomkit.orchestration.strategies.discussion import (
         DispatchDecisionEvent,
         SpeakQueue,
@@ -62,6 +64,8 @@ class DiscussionMixin(HelpersMixin):
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _get_router: Any  # RoomKit._get_router
     _enqueue_exec: Any  # LaneExecutionMixin
+    _detach_agents: Any  # StrategyMixin
+    _drop_record: Any  # StrategyMixin
     attach_channel: Any  # ChannelOpsMixin
     register_channel: Any  # ChannelOpsMixin
 
@@ -141,46 +145,96 @@ class DiscussionMixin(HelpersMixin):
 
     # -- Install --
 
+    def _replaces_discussion(self, room_id: str, strategy: Orchestration) -> bool:
+        """Whether *strategy* takes the place of the discussion *room_id*
+        holds here, installed or followed: a Discussion does (RFC §19.7)."""
+        return isinstance(strategy, Discussion) and room_id in self._discussions
+
     async def _install_discussion(self, room_id: str, discussion: Any) -> None:
-        """Give *room_id* to *discussion*: its agents attached, its hooks
-        installed, its stored queue read, its turns started (rule 1).
+        """Give *room_id* to *discussion*, or put it in place of the discussion
+        the room holds, here or stored by another process (rules 1 and 16).
 
         Raises:
-            ValueError: the room holds a discussion already, or something the
-                discussion cannot share it with (rule 1).
+            ValueError: a discussion is being installed in the room, or the room
+                holds something the discussion cannot share it with (rule 1).
         """
-        held = self._discussions.get(room_id)
-        installing = room_id in self._installing_discussions
-        if (held is not None and held.driver is not None) or installing:
+        room = await self._store.get_room(room_id)
+        if room_id in self._installing_discussions:
             raise ValueError(f"Room {room_id} holds a discussion already")
-        if held is not None:
-            # Followed here until now: installed, this process may give turns.
-            self._leave_discussion(room_id, held)
-        # Claimed before the first await: two installs at once are one too many.
+        if room is not None:
+            self._follow_discussion(room)
+        held = self._discussions.get(room_id)
+        # Claimed before the next await: two installs at once are one too many.
         self._installing_discussions.add(room_id)
         try:
-            await self._prepare_discussion(room_id, discussion)
-            await discussion.load()
+            if held is None:
+                await self._start_discussion(room_id, discussion)
+            else:
+                await self._replace_discussion(room_id, held, discussion)
         finally:
             self._installing_discussions.discard(room_id)
+
+    async def _start_discussion(self, room_id: str, discussion: Any) -> None:
+        """Give *room_id*, which holds no discussion, to *discussion*: its
+        agents bound, its configuration stored, its hooks and turns started."""
+        context = await self._prepare_discussion(room_id, discussion)
+        await self._bind_agents(room_id, discussion, context)
+        await discussion.load()
         self._discussions[room_id] = discussion
         for hook in discussion.hooks():
             self._hook_engine.add_room_hook(room_id, hook)
         discussion.driver.start()
 
-    async def _prepare_discussion(self, room_id: str, discussion: Any) -> None:
-        """Refuse what the room cannot share with *discussion*, then bind its
-        agents (rule 1)."""
+    async def _replace_discussion(self, room_id: str, held: Any, incoming: Any) -> None:
+        """Put *incoming*'s configuration in place of the one *held* routes
+        by, keeping the queue (rule 1): the agents that leave and an install
+        attached unbound, the new ones bound, this process giving turns."""
+        await held.read()
+        stored = held.shared.config or held.config
+        leaving = [a for a in stored.attached if a not in incoming.agents]
+        context = await self._prepare_discussion(room_id, incoming, leaving=leaving)
+        stayed = await self._detach_agents(room_id, leaving)
+        if stayed:
+            raise RuntimeError(f"Room {room_id} still binds {stayed}, which left its discussion")
+        started = held.driver is not None
+        await held.take_over(incoming)
+        await self._bind_agents(room_id, held, context)
+        if not started:
+            held.driver.start()
+        held.wake()
+
+    async def _prepare_discussion(
+        self, room_id: str, discussion: Any, *, leaving: Sequence[str] = ()
+    ) -> RoomContext:
+        """Refuse what the room cannot share with *discussion* (rule 1), the
+        agents *leaving* it aside, its agents registered; the room's context."""
         for agent in discussion.agents.values():
             if agent.channel_id not in self._channels:
                 self.register_channel(agent)
         context = await self._build_context(room_id)
-        refusal = self._discussion_refusal(room_id, discussion, context)
+        refusal = self._discussion_refusal(room_id, discussion, context, leaving=leaving)
         if refusal is not None:
             raise ValueError(f"Room {room_id} cannot hold a discussion: {refusal}")
+        return context
+
+    async def _bind_agents(self, room_id: str, discussion: Any, context: RoomContext) -> None:
+        """Bind the agents of *discussion* the room's *context* does not bind."""
         for agent_id in discussion.agents:
             if context.get_binding(agent_id) is None:
                 await self.attach_channel(room_id, agent_id, category=ChannelCategory.INTELLIGENCE)
+
+    async def _hold_attached(self, room_id: str, attached: list[str]) -> None:
+        """Store *attached*, the agents an install of the discussion *room_id*
+        holds here attached, with it, for any process uninstalling it to
+        detach them (RFC §19.7). Nothing for a room holding no such discussion."""
+        discussion = self._discussions.get(room_id)
+        if attached and discussion is not None and discussion.strategy is not None:
+            await discussion.hold_attached(attached)
+
+    def _stored_attached(self, room: Room) -> list[str]:
+        """The agents installs of the discussion *room* stores attached to it."""
+        config = DiscussionConfig.stored(room.metadata)
+        return list(config.attached) if config is not None else []
 
     async def _uninstall_discussion(self, room_id: str) -> None:
         """Give *room_id* back to its policy (rule 1): released first, so what
@@ -195,10 +249,29 @@ class DiscussionMixin(HelpersMixin):
         await discussion.stop()
         await discussion.reset()
 
+    async def _uninstall_stored_discussion(self, room: Room) -> bool:
+        """Uninstall the discussion *room* holds with no install of this
+        process recorded, one another process stored included (rule 16), the
+        agents its installs attached detached; whether it held one.
+
+        Raises:
+            RuntimeError: an agent its installs attached is still bound.
+        """
+        self._follow_discussion(room)
+        if room.id not in self._discussions:
+            return False
+        await self._uninstall_discussion(room.id)
+        stayed = await self._detach_agents(room.id, self._stored_attached(room))
+        if stayed:
+            raise RuntimeError(f"Room {room.id} still binds {stayed} its discussion attached")
+        return True
+
     def _follow_discussion(self, room: Room) -> None:
-        """Join, or leave, the discussion *room* holds as stored (rule 16): a
-        room another process gave a discussion is followed here, one whose
-        discussion is gone is left. Run for every context the kit builds."""
+        """Join, follow or leave the discussion *room* holds as stored (rule
+        16): a room another process gave a discussion is followed here, one
+        whose discussion another process replaced is routed by the new
+        configuration, one whose discussion is gone is left. Run for every
+        context the kit builds."""
         held = self._discussions.get(room.id)
         config = DiscussionConfig.stored(room.metadata)
         if held is None and config is not None and room.id not in self._installing_discussions:
@@ -207,18 +280,21 @@ class DiscussionMixin(HelpersMixin):
             self._discussions[room.id] = follower
             for hook in follower.hooks():
                 self._hook_engine.add_room_hook(room.id, hook)
+        elif held is not None and config is not None:
+            held.follow(config)
         elif held is not None and held.driver is None and config is None:
             self._leave_discussion(room.id, held)
 
     async def _forget_discussion(self, room_id: str, discussion: Any) -> None:
         """Another process uninstalled the discussion this one gave turns for:
-        leave it here, writing nothing back."""
+        leave it here, the strategy record with it, writing nothing back."""
         if self._discussions.get(room_id) is not discussion:
             return
         # The task results this process was to post: the queue is gone, they
         # are posted all the same (rule 19).
         discussion.post_held()
         self._leave_discussion(room_id, discussion)
+        await self._drop_record(room_id, discussion.strategy)
         if discussion.driver is not None:
             await discussion.driver.stop()
 
@@ -238,10 +314,13 @@ class DiscussionMixin(HelpersMixin):
                 logger.exception("Discussion of room %s did not stop", discussion.room_id)
 
     def _discussion_refusal(
-        self, room_id: str, discussion: Any, context: RoomContext
+        self, room_id: str, discussion: Any, context: RoomContext, *, leaving: Sequence[str] = ()
     ) -> str | None:
-        """What the room holds that a discussion cannot share it with (rule 1)."""
+        """What the room holds that a discussion cannot share it with (rule 1),
+        but for the agents *leaving* the room with the discussion it replaces."""
         for binding in context.bindings:
+            if binding.channel_id in leaving:
+                continue
             channel = self._channels.get(binding.channel_id)
             refusal = discussion_binding_refusal(
                 discussion, binding.channel_id, binding.category, channel

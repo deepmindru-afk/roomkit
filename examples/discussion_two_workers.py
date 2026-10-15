@@ -11,8 +11,10 @@ with its own agent objects. Three scenes:
    time. Before the discussion was stored with the room, B solicited every
    agent at once and they answered each other until the depth limit (45
    messages for one question in the same setup).
-2. Two messages reach the two workers at once. One queue in the store, one
-   worker giving the turns under the room's lease: the agents speak one
+2. Worker B installs the discussion it follows, through ``install_strategy``
+   as a worker that restarted does: it takes the stored queue as it is.
+   Two messages then reach the two workers at once. One queue in the store,
+   one worker giving the turns under the room's lease: the agents speak one
    after the other. Before, each worker kept its own queue and two agents
    spoke at the same time.
 3. Worker A stops without a word (a crash). Its lease expires and worker B,
@@ -114,7 +116,7 @@ async def main() -> None:
     logger.info("   answers: %s", await answers(store))
 
     logger.info("2. worker B installs the discussion too; two messages reach two workers")
-    await discussion("B").install(b, ROOM)
+    await b.install_strategy(ROOM, discussion("B"))
     await say(a, "@investigator what do the logs say?")
     await say(b, "@sre and the metrics?")
     await until(store, 5)

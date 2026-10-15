@@ -70,6 +70,11 @@ class StrategyMixin(HelpersMixin):
     attach_channel: Any  # ChannelOpsMixin
     detach_channel: Any  # ChannelOpsMixin
     register_channel: Any  # ChannelOpsMixin
+    _follow_discussion: Any  # DiscussionMixin
+    _replaces_discussion: Any  # DiscussionMixin
+    _hold_attached: Any  # DiscussionMixin
+    _stored_attached: Any  # DiscussionMixin
+    _uninstall_stored_discussion: Any  # DiscussionMixin
 
     def room_strategy(
         self, room_id: str, *, organization_id: str | None = None
@@ -94,11 +99,18 @@ class StrategyMixin(HelpersMixin):
         agents' turns read it. *organization_id* scopes the call to one
         tenant (RFC §17.2).
 
+        A Discussion installed in a room that holds a discussion, installed
+        through this kit or stored by another process, takes its place and
+        keeps its queue (RFC §19.7.5 rule 1): how a process that restarted
+        takes the discussion back, and how the host changes its agents.
+
         Raises:
             ValueError: the room holds a strategy already (uninstall it first),
                 or the strategy refuses the room.
         """
         room = await self.get_room(room_id, organization_id=organization_id)
+        # A discussion another process stored is this room's here too (rule 16).
+        self._follow_discussion(room)
         await self._install_strategy(room_id, strategy, organization_id=room.organization_id)
 
     async def uninstall_strategy(
@@ -107,12 +119,16 @@ class StrategyMixin(HelpersMixin):
         """Take the room's strategy back out (RFC §19.7): its own uninstall
         step, then what its install added for the room. The room answers by
         its ``agent_response_policy`` again and may take another strategy.
-        Whether a strategy was installed."""
-        await self.get_room(room_id, organization_id=organization_id)
+        A discussion is uninstalled from any process serving the room, one
+        where no host installed it included (RFC §19.7.5 rule 16). Whether a
+        strategy was installed."""
+        room = await self.get_room(room_id, organization_id=organization_id)
         installed = self._room_strategies.get(room_id)
         if installed is None:
-            return False
+            return await self._uninstall_stored_discussion(room)
         await installed.strategy.uninstall(self, room_id)  # ty: ignore[invalid-argument-type]
+        # A discussion's agents another process's install attached too.
+        installed.attached = sorted({*installed.attached, *self._stored_attached(room)})
         # Released only once all of it is taken back: a room left with part of
         # a strategy is still that strategy's, never open to a second one.
         await self._take_back(room_id, installed)
@@ -125,6 +141,9 @@ class StrategyMixin(HelpersMixin):
         installs; a strategy installed by calling its ``install`` directly
         calls this first, as the built-in ones do.
 
+        A Discussion may claim a room holding a discussion no install of this
+        kit recorded, to take its place (RFC §19.7.5 rule 1).
+
         Raises:
             ValueError: the room holds another strategy or a discussion.
         """
@@ -133,7 +152,11 @@ class StrategyMixin(HelpersMixin):
             raise ValueError(
                 f"Room {room_id} holds a strategy already: uninstall_strategy() first"
             )
-        if installed is None and room_id in self._discussions:
+        if (
+            installed is None
+            and room_id in self._discussions
+            and not self._replaces_discussion(room_id, strategy)
+        ):
             raise ValueError(f"Room {room_id} holds a discussion: no other strategy can join it")
 
     async def _forget_strategy(self, room_id: str) -> None:
@@ -151,6 +174,16 @@ class StrategyMixin(HelpersMixin):
         if installed is None:
             return
         await installed.strategy.uninstall(self, room_id)  # ty: ignore[invalid-argument-type]
+        await self._drop_record(room_id, installed.strategy)
+
+    async def _drop_record(self, room_id: str, strategy: Orchestration | None) -> None:
+        """Forget the record of *strategy* in *room_id*, taking back what its
+        install set up in this process: its hooks, tools and turn runners.
+        The room's bindings and metadata are not this process's to take back
+        any more (the room is new, or another process uninstalled it)."""
+        installed = self._room_strategies.get(room_id)
+        if installed is None or installed.strategy is not strategy:
+            return
         installed.attached, installed.keys = [], []
         await self._take_back(room_id, installed)
         del self._room_strategies[room_id]
@@ -158,6 +191,9 @@ class StrategyMixin(HelpersMixin):
     async def _install_strategy(
         self, room_id: str, strategy: Orchestration, *, organization_id: str | None
     ) -> None:
+        if self._replaces_discussion(room_id, strategy):
+            await self._replace_strategy(room_id, strategy, organization_id=organization_id)
+            return
         self.claim_room_strategy(room_id, strategy)
         if room_id in self._room_strategies:
             raise ValueError(f"Room {room_id} holds this strategy already")
@@ -172,9 +208,45 @@ class StrategyMixin(HelpersMixin):
             except BaseException:
                 await self._undo_install(room_id, strategy, organization_id, before)
                 raise
-            self._room_strategies[room_id] = _added(
-                strategy, organization_id, before, await self._snapshot(room_id)
-            )
+            installed, _ = await self._recorded(room_id, strategy, organization_id, before)
+            self._room_strategies[room_id] = installed
+
+    async def _replace_strategy(
+        self, room_id: str, strategy: Orchestration, *, organization_id: str | None
+    ) -> None:
+        """Install *strategy*, a Discussion, in place of the discussion
+        *room_id* holds (RFC §19.7.5 rule 1): the record names it and keeps
+        what each install set up in this process."""
+        held = self._room_strategies.get(room_id)
+        # Claimed before the first await, as a first install is.
+        self._room_strategies[room_id] = _Installed(strategy, organization_id)
+        async with self._lock_manager.locked(room_id):
+            before = await self._snapshot(room_id)
+            try:
+                await strategy.install(self, room_id)  # ty: ignore[invalid-argument-type]
+            except BaseException:
+                self._restore_record(room_id, held)
+                raise
+            added, bound = await self._recorded(room_id, strategy, organization_id, before)
+        self._room_strategies[room_id] = added if held is None else _joined(held, added, bound)
+
+    def _restore_record(self, room_id: str, held: _Installed | None) -> None:
+        """Put back the record a refused replacement had claimed over."""
+        if held is None:
+            self._room_strategies.pop(room_id, None)
+        else:
+            self._room_strategies[room_id] = held
+
+    async def _recorded(
+        self, room_id: str, strategy: Orchestration, organization_id: str | None, before: _Snapshot
+    ) -> tuple[_Installed, set[str]]:
+        """What an install of *strategy* added since *before*, the agents it
+        attached stored with the room's discussion when it is one (RFC
+        §19.7); with the channels the room binds now."""
+        after = await self._snapshot(room_id)
+        added = _added(strategy, organization_id, before, after)
+        await self._hold_attached(room_id, added.attached)
+        return added, after.bindings
 
     async def _undo_install(
         self,
@@ -237,19 +309,42 @@ class StrategyMixin(HelpersMixin):
                     room_id, installed.tools.get(cid, ()), turn_runner=cid in installed.runners
                 )
         installed.tools, installed.runners = {}, []
-        stayed: list[str] = []
-        for cid in list(installed.attached):
-            try:
-                await self.detach_channel(room_id, cid)
-                installed.attached.remove(cid)
-            except Exception:
-                logger.exception("Agent %s was not detached from room %s", cid, room_id)
-                stayed.append(cid)
+        stayed = await self._detach_agents(room_id, installed.attached)
+        installed.attached = stayed
         if installed.keys:
             await self._store.patch_room_metadata(room_id, dict.fromkeys(installed.keys))
             installed.keys = []
         if stayed:
             raise RuntimeError(f"Room {room_id} still binds {stayed} its strategy attached")
+
+    async def _detach_agents(self, room_id: str, channel_ids: list[str]) -> list[str]:
+        """Detach each of *channel_ids* from *room_id*, whatever one of them
+        raises; the ones still bound."""
+        stayed: list[str] = []
+        for cid in channel_ids:
+            try:
+                await self.detach_channel(room_id, cid)
+            except Exception:
+                logger.exception("Agent %s was not detached from room %s", cid, room_id)
+                stayed.append(cid)
+        return stayed
+
+
+def _joined(held: _Installed, added: _Installed, bound: set[str]) -> _Installed:
+    """The record of *added*'s strategy, which took the place of *held*'s:
+    what both installs set up in this process, but agents no longer *bound*."""
+    tools = dict(held.tools)
+    for cid, names in added.tools.items():
+        tools[cid] = tools.get(cid, frozenset()) | names
+    return _Installed(
+        added.strategy,
+        added.organization_id,
+        hooks=sorted({*held.hooks, *added.hooks}),
+        tools=tools,
+        runners=sorted({*held.runners, *added.runners}),
+        attached=sorted({*held.attached, *added.attached} & bound),
+        keys=sorted({*held.keys, *added.keys}),
+    )
 
 
 def _added(

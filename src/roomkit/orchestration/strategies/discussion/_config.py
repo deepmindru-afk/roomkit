@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from roomkit.channels._discussion_turn import DISCUSSION_CONFIG
 
@@ -37,6 +37,16 @@ class DiscussionConfig(BaseModel):
     dispatch: bool = False
     """A dispatch policy decides who takes a person's unaddressed message: it
     waits for the process holding the lease (rule 18)."""
+    attached: list[str] = Field(default_factory=list)
+    """The agents installs of the discussion attached to the room, which any
+    process uninstalling it detaches (RFC §19.7)."""
+
+    def same_as(self, other: DiscussionConfig | None) -> bool:
+        """Whether *other* configures the same discussion, whatever agents
+        its installs attached."""
+        if other is None:
+            return False
+        return self.model_dump(exclude={"attached"}) == other.model_dump(exclude={"attached"})
 
     @classmethod
     def of(cls, strategy: Discussion, default_depth: int) -> DiscussionConfig:

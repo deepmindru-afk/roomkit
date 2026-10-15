@@ -113,13 +113,15 @@ class Discussion(Orchestration):
 
     async def install(self, kit: RoomKit, room_id: str) -> None:
         """Give the room to the discussion: its agents attached, its stored
-        queue read, its turns started.
+        queue read, its turns started. A room holding a discussion keeps its
+        queue, the discussion's configuration replaced by this one's.
 
         Raises:
             ValueError: the room binds another intelligence channel or a voice
                 or realtime channel, an agent thinks while it listens, or a
-                router, another strategy or a discussion is installed.
+                router or another strategy is installed.
         """
+        kit.claim_room_strategy(room_id, self)
         await kit._install_discussion(room_id, DiscussionRoom.installed(kit, room_id, self))
 
     async def uninstall(self, kit: RoomKit, room_id: str) -> None:

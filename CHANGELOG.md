@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A discussion is installed, changed and uninstalled from any process
+  serving its room (RMK-777, RFC §19.7 and §19.7.5 rules 1 and 16). After a
+  restart, or on a second worker, `install_strategy` refused the stored
+  discussion (`holds a discussion: no other strategy can join it`) and the
+  room answered nothing; `uninstall_strategy` answered `False` and left it
+  stored; changing the agents meant uninstall then install, which emptied
+  the queue and left the other workers on the old agents, a message naming
+  a removed agent answered by nobody on one worker and by another agent on
+  the next. `install_strategy(room_id, Discussion(...))` over a discussion
+  now takes its place and keeps the queue, who listens and the turns given:
+  an agent left out leaves the queue, its running turn is cut and it is
+  detached when an install attached it (an agent the host bound itself is
+  refused). The agents installs attached are stored with the configuration,
+  so `uninstall_strategy` in any process, one that only follows the
+  discussion included, ends it everywhere and detaches them. Every process
+  routes by the stored configuration as it changes; a process whose host
+  installed another gives up the lease and only follows until its host
+  installs the stored one. A process whose discussion another process
+  uninstalled no longer keeps a strategy record without its discussion.
+  `Discussion.install` called directly now claims the room as every
+  built-in strategy does, so it is refused over another strategy the kit
+  recorded, a discussion included: install over one with `install_strategy`.
+
 ## [0.104.0] — 2026-10-15
 
 ### Added

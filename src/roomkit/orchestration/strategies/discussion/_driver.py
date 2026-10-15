@@ -153,10 +153,12 @@ class TurnDriver:
     async def _next_turn(self) -> _Turn | None:
         room = self._room
         shared = room.shared
-        peek = await shared.read()
+        peek = await room.read()
         if shared.config is None:
             # Another process uninstalled the discussion.
             await room.kit._forget_discussion(room.room_id, room)
+            return None
+        if not await self._gives_turns(peek):
             return None
         if peek.over or shared.held_elsewhere(peek):
             return None
@@ -188,6 +190,17 @@ class TurnDriver:
             await self._dispatcher.decide(pending)
             self.wake()
         return turn
+
+    async def _gives_turns(self, peek: SpeakQueueState) -> bool:
+        """Whether this process gives the turns of the discussion the room
+        stores: one whose host installed another gives up the lease (rule 16)."""
+        room = self._room
+        if room.drives:
+            return True
+        if room.shared.holds(peek):
+            async with room.editing() as state:
+                room.shared.release(state)
+        return False
 
     def _waiting_decision(self, state: SpeakQueueState, *, done: bool) -> Pending | None:
         """The first message waiting for the dispatch policy, unless the
@@ -389,16 +402,18 @@ class TurnDriver:
             await self._ended(turn)
 
     async def _watch(self, turn: _Turn) -> None:
-        """While *turn* runs: its agent set to listen elsewhere cuts it, and
-        the lease is renewed before it expires."""
+        """While *turn* runs: its agent set to listen, or no longer one of the
+        discussion's, elsewhere cuts it, and the lease is renewed before it
+        expires."""
         room = self._room
         while True:
             await asyncio.sleep(POLL_SECONDS)
             try:
-                state = await room.shared.read()
-                if turn.entry.agent in state.listening and not turn.cut:
+                state = await room.read()
+                agent = turn.entry.agent
+                if (agent in state.listening or agent not in room.agents) and not turn.cut:
                     turn.cut = True
-                    await room.cut(turn.entry.agent)
+                    await room.cut(agent)
                 if room.shared.renew_due(state):
                     async with room.editing() as editing:
                         room.shared.take(editing)

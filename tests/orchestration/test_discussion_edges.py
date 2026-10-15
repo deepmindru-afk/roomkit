@@ -391,12 +391,55 @@ async def test_uninstalling_forgets_the_discussion_so_a_new_one_starts_fresh() -
     await _settle(kit)
     assert _queue(kit).over
 
-    await first.uninstall(kit, "r1")
+    await kit.uninstall_strategy("r1")
     second = Discussion([kit.channels["a"]], max_turns=5)  # type: ignore[list-item]
-    await second.install(kit, "r1")
+    await kit.install_strategy("r1", second)
 
     queue = _queue(kit)
     assert (queue.over, queue.listening, queue.queue) == (False, frozenset(), ())
+    await kit.close()
+
+
+async def test_installing_a_discussion_over_one_keeps_its_queue() -> None:
+    kit = RoomKit()
+    await _room(kit, {"a": _provider("a"), "b": _provider("b"), "c": _provider("c")})
+    await kit.listen_only("r1", ["b"])
+    await _say(kit, "@a go")
+    await _settle(kit)
+    assert kit._discussions["r1"].state.turns_given == 1
+
+    replaced = Discussion([kit.channels["a"], kit.channels["b"]])  # type: ignore[list-item]
+    await kit.install_strategy("r1", replaced)
+
+    # Who listens and the turns given stay; c, which the install attached, leaves.
+    assert _queue(kit).listening == frozenset({"b"})
+    assert kit._discussions["r1"].state.turns_given == 1
+    assert kit.room_strategy("r1") is replaced
+    assert {b.channel_id for b in await kit.store.list_bindings("r1")} == {"chat", "a", "b"}
+    # The record covers both installs: uninstalling gives the room back whole.
+    assert await kit.uninstall_strategy("r1") is True
+    assert {b.channel_id for b in await kit.store.list_bindings("r1")} == {"chat"}
+    await kit.close()
+
+
+async def test_removing_an_agent_the_host_bound_itself_is_refused() -> None:
+    kit = RoomKit()
+    kit.register_channel(_People("chat"))
+    a, c = AIChannel("a", provider=_provider("a")), AIChannel("c", provider=_provider("c"))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "chat")
+    kit.register_channel(c)
+    await kit.attach_channel("r1", "c", category=ChannelCategory.INTELLIGENCE)
+    first = Discussion([a, c])
+    await kit.install_strategy("r1", first)
+
+    with pytest.raises(ValueError, match="c is an intelligence channel that is not one"):
+        await kit.install_strategy("r1", Discussion([a]))
+
+    # The room keeps the discussion it held, its agents and its record.
+    assert kit.room_strategy("r1") is first
+    assert kit._discussions["r1"].config.agents == ["a", "c"]
+    assert {b.channel_id for b in await kit.store.list_bindings("r1")} == {"chat", "a", "c"}
     await kit.close()
 
 
@@ -531,6 +574,13 @@ async def test_a_failure_reading_the_queue_is_retried() -> None:
 async def test_concurrent_installs_on_one_room_are_one_too_many() -> None:
     kit = RoomKit()
     await kit.create_room(room_id="r1")
+    load_room_context = kit.store.load_room_context
+
+    async def slow(room_id: str) -> Any:
+        await asyncio.sleep(0.01)  # the first install is still running
+        return await load_room_context(room_id)
+
+    kit.store.load_room_context = slow  # type: ignore[method-assign]
     first = Discussion([AIChannel("a", provider=_provider())])
     second = Discussion([kit.channels.get("a") or AIChannel("a", provider=_provider())])
 

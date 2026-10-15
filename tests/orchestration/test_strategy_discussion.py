@@ -503,11 +503,13 @@ async def test_a_room_with_a_voice_channel_is_refused() -> None:
     await kit.close()
 
 
-async def test_a_second_discussion_in_the_room_is_refused() -> None:
+async def test_a_discussion_installed_directly_over_the_kits_is_refused() -> None:
+    # Installed directly, a strategy claims the room as every built-in one does
+    # (RFC §19.7): the kit's record of the first one refuses it.
     kit = RoomKit()
     await _room(kit, {"a": _provider()})
 
-    with pytest.raises(ValueError, match="holds a discussion already"):
+    with pytest.raises(ValueError, match="holds a strategy already"):
         await Discussion([kit.channels["a"]]).install(kit, "r1")  # type: ignore[list-item]
     await kit.close()
 

@@ -80,18 +80,11 @@ class DiscussionRoom:
     ) -> None:
         self.kit = kit
         self.room_id = room_id
-        self.config = config
         self.strategy = strategy
-        own = {a.channel_id: a for a in strategy.agents()} if strategy is not None else {}
-        self.agents: dict[str, Any] = {
-            agent_id: own.get(agent_id) or kit.channels.get(agent_id) for agent_id in config.agents
-        }
-        stored = config.handles or {}
-        self.handles = {agent_id: stored.get(agent_id, agent_id) for agent_id in config.agents}
-        """The name each agent is addressed by, by channel id (rule 4)."""
-        self.by_handle = {handle: agent_id for agent_id, handle in self.handles.items()}
-        self.silent = SilentToken(config.silent_token)
-        self.max_depth = config.max_depth
+        self.own = config if strategy is not None else None
+        """The configuration of the discussion the host installed in this
+        process, if it installed one."""
+        self._configure(config)
         self.organization_id: str | None = None
         self.shared = SharedQueue(kit, room_id)
         self.instructions: dict[str, RoomEvent] = {}
@@ -111,6 +104,48 @@ class DiscussionRoom:
     def following(cls, kit: Any, room_id: str, config: DiscussionConfig) -> DiscussionRoom:
         """A discussion another process installed: this one routes and queues."""
         return cls(kit, room_id, config, None)
+
+    def _configure(self, config: DiscussionConfig) -> None:
+        """Route and queue by *config*, each agent the channel the kit runs
+        under its id, else the host's strategy's."""
+        self.config = config
+        own = {a.channel_id: a for a in self.strategy.agents()} if self.strategy else {}
+        # The kit's channel runs the turns: a strategy installed over another
+        # may bring new objects under ids the kit has registered already.
+        self.agents: dict[str, Any] = {
+            agent_id: self.kit.channels.get(agent_id) or own.get(agent_id)
+            for agent_id in config.agents
+        }
+        stored = config.handles or {}
+        self.handles = {agent_id: stored.get(agent_id, agent_id) for agent_id in config.agents}
+        """The name each agent is addressed by, by channel id (rule 4)."""
+        self.by_handle = {handle: agent_id for agent_id, handle in self.handles.items()}
+        self.silent = SilentToken(config.silent_token)
+        self.max_depth = config.max_depth
+
+    @property
+    def drives(self) -> bool:
+        """Whether this process may give the turns: its host installed the
+        discussion the room stores (rule 16)."""
+        return self.own is not None and self.own.same_as(self.config)
+
+    def follow(self, config: DiscussionConfig) -> None:
+        """Route and queue by *config*, the configuration the room stores now,
+        which another process may have replaced (rule 16)."""
+        if config == self.config:
+            return
+        if config.same_as(self.config):
+            self.config = config
+        else:
+            self._configure(config)
+
+    async def read(self) -> SpeakQueueState:
+        """The stored queue, read now, without the lock; the room routed by
+        the configuration stored with it from then on."""
+        state = await self.shared.read()
+        if self.shared.config is not None:
+            self.follow(self.shared.config)
+        return state
 
     @property
     def state(self) -> SpeakQueueState:
@@ -171,6 +206,40 @@ class DiscussionRoom:
         except Exception:
             logger.exception("The speak queue of room %s was not stored", self.room_id)
         await self._finish_announcing()
+
+    async def take_over(self, incoming: DiscussionRoom) -> None:
+        """Hold *incoming*'s configuration and strategy in place of this
+        room's, keeping the queue but for the agents it no longer holds
+        (rule 1). The agents installs attached stay recorded but for those."""
+        async with self.editing() as state:
+            stored = self.shared.config or self.config
+            gone = [a for a in stored.agents if a not in incoming.config.agents]
+            attached = [a for a in stored.attached if a not in gone]
+            config = incoming.config.model_copy(update={"attached": attached})
+            await self.shared.store_config(config)
+            self.drop_instructions(state.drop_agents(gone), keep=state)
+            # The wait may have been for an agent that left.
+            ended = state.waiting and not state.owes_a_person(has_people=True)
+            if ended:
+                state.waiting = False
+        self.strategy, self.own = incoming.strategy, incoming.own
+        self._configure(config)
+        if self.driver is None:
+            self.driver = TurnDriver(self)
+        if ended:
+            self.fire(SpeakQueueChange.WAITING, [])
+
+    async def hold_attached(self, agents: Sequence[str]) -> None:
+        """Store *agents*, which an install attached to the room, with the
+        configuration, for any process uninstalling the discussion to detach
+        them (RFC §19.7)."""
+        async with self.editing():
+            stored = self.shared.config
+            if stored is None:
+                return
+            config = stored.model_copy(update={"attached": sorted({*stored.attached, *agents})})
+            await self.shared.store_config(config)
+        self.follow(config)
 
     async def reset(self) -> None:
         """Forget the discussion, for every process: the queue, who listens,
@@ -324,7 +393,8 @@ class DiscussionRoom:
     async def cut(self, agent: str) -> None:
         """Cut *agent*'s running turn, as a ``Cancel`` does; a turn given but
         not started yet has no loop a Cancel reaches and is abandoned."""
-        channel = self.agents.get(agent)
+        # An agent the discussion no longer holds still has its channel here.
+        channel = self.agents.get(agent) or self.kit.channels.get(agent)
         if isinstance(channel, ACPChannel):
             # An external agent's turn: its prompt cancelled (RFC §6.4). Idle,
             # it has none, and the turn given is abandoned below.
