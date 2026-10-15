@@ -30,15 +30,6 @@ from collections.abc import Sequence
 
 from roomkit.voice.voices import DialogueTurn
 
-# Characters a reader may drop before reading (Fish drops the zero-width
-# space): format characters, variation selectors, the combining grapheme
-# joiner, fillers. Between the marks of a token they would hide it.
-_INVISIBLE = (
-    "\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f"
-    "\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\u3164"
-    "\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\U0001bca0-\U0001bca3"
-    "\U000e0001\U000e0020-\U000e007f\U000e0100-\U000e01ef"
-)
 # The marks and their look-alikes (fullwidth, small forms, single guillemets,
 # angle brackets, the bars a model may read as "|").
 _OPEN = "<\uff1c\ufe64\u2039\u2329\u3008"
@@ -46,21 +37,28 @@ _BAR = "|\uff5c\uffe8\u2223\u01c0\ufe31\ufe32\u00a6\u2502"
 _CLOSE = ">\uff1e\ufe65\u203a\u232a\u3009"
 _OPEN_CHARS = frozenset(_OPEN)
 _MAX_NAME = 64
+# What may sit between the marks of a token and leave it a token: any
+# character but a letter, a digit, a newline or a mark, and the fillers that
+# are letters. Fish drops more before it reads than a list could name: the
+# zero-width space, and also an emoji, U+0600 and U+1D173, each of which
+# switched the voice inside a token on s2.1-pro (2026-10-15, two takes of
+# two). A space or a punctuation mark Fish keeps costs nothing to treat the
+# same way: the token becomes one space either way.
+_FILLERS = "\u115f\u1160\u3164\uffa0"
+_HIDDEN = rf"(?:[^\w\n{_OPEN}{_BAR}{_CLOSE}]|[{_FILLERS}])"
 
 # A whole token, else a lone opening or closing mark. The name is bounded and
 # lazy: the only quantifiers next to each other match disjoint classes, so a
 # long run of marks costs at most _MAX_NAME steps per opening mark.
 _TOKEN = re.compile(
-    rf"[{_OPEN}][{_INVISIBLE}]*[{_BAR}][^\n]{{0,{_MAX_NAME}}}?[{_BAR}][{_INVISIBLE}]*[{_CLOSE}]"
-    rf"|[{_OPEN}][{_INVISIBLE}]*[{_BAR}]"
-    rf"|[{_BAR}][{_INVISIBLE}]*[{_CLOSE}]"
+    rf"[{_OPEN}]{_HIDDEN}*[{_BAR}][^\n]{{0,{_MAX_NAME}}}?[{_BAR}]{_HIDDEN}*[{_CLOSE}]"
+    rf"|[{_OPEN}]{_HIDDEN}*[{_BAR}]"
+    rf"|[{_BAR}]{_HIDDEN}*[{_CLOSE}]"
 )
 # What the end of a streamed piece may hold of a token still to come: an
 # opening mark, and the start of a name no closing mark has ended yet.
-_PARTIAL_OPENING = re.compile(
-    rf"[{_OPEN}][{_INVISIBLE}]*(?:[{_BAR}][^\n{_CLOSE}]{{0,{_MAX_NAME}}})?"
-)
-_TRAILING_BAR = re.compile(rf"[{_BAR}][{_INVISIBLE}]*\Z")
+_PARTIAL_OPENING = re.compile(rf"[{_OPEN}]{_HIDDEN}*(?:[{_BAR}][^\n{_CLOSE}]{{0,{_MAX_NAME}}})?")
+_TRAILING_BAR = re.compile(rf"[{_BAR}]{_HIDDEN}*\Z")
 _MARKUP = re.compile(r"<(/?[A-Za-z][^<>\n]{0,40})>")
 # A tag or a direction a piece may end in the middle of.
 _PARTIAL_MARKUP = re.compile(r"<(?:/?[A-Za-z][^<>\n]{0,40}|/)?\Z")
