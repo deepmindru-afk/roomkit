@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 from roomkit import HookExecution, HookResult, HookTrigger, RoomKit
+from roomkit.channels._discussion_turn import DISCUSSION_CONFIG
 from roomkit.channels.agent import Agent
 from roomkit.core.mixins.delegation import task_name
 from roomkit.models.enums import ChannelCategory, EventType, TaskStatus
@@ -20,7 +21,7 @@ from roomkit.orchestration.strategies.supervisor._inject_strategy import _follow
 from roomkit.providers.ai.base import AIContext, AIResponse, AITool
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks import TASK_STATUS_TOOL, TaskStatusTool
-from roomkit.tasks.status import room_tasks
+from roomkit.tasks.status import room_task_lines, room_tasks
 from roomkit.tools.compose import extract_tools
 from roomkit.tools.context import tool_turn_context
 from tests.conference.test_conference_realtime import until
@@ -93,6 +94,30 @@ async def test_task_status_gives_the_whole_result_the_summary_cut() -> None:
     assert done.detail.endswith("…")
     assert done.metadata["result"] == _FORECAST
     assert answer["tasks"][0]["result"] == _FORECAST
+
+
+async def test_task_status_names_a_discussions_agent_by_its_handle() -> None:
+    """RMK-765: the model reads the agent as the room addresses it (RFC §19.7.5
+    rule 4); the lines a host reads keep the channel id."""
+    worker_id = "agent:7c1e0b2a-3d4f-4a5b-8c6d-9e0f1a2b3c4d"
+    kit = await _room(Agent(worker_id, provider=MockAIProvider(responses=["Done."])))
+    task = await kit.delegate("r", worker_id, "Go through the tickets", notify="speaker")
+    await task.wait()
+    await until(lambda: task.result is not None, timeout=5)
+    stored = await kit.get_room("r")
+    discussion = {DISCUSSION_CONFIG: {"agents": [worker_id], "handles": {worker_id: "Comms"}}}
+    room = stored.model_copy(update={"metadata": {**stored.metadata, **discussion}})
+
+    with tool_turn_context(room=room):
+        in_discussion = json.loads(await TaskStatusTool(kit).handler(TASK_STATUS_TOOL, {}))
+    with tool_turn_context(room_id="r"):
+        elsewhere = json.loads(await TaskStatusTool(kit).handler(TASK_STATUS_TOOL, {}))
+    lines = await room_task_lines(kit.status_bus, "r", 50)
+    await kit.close()
+
+    assert [t["agent"] for t in in_discussion["tasks"]] == ["Comms"]
+    assert [t["agent"] for t in elsewhere["tasks"]] == [worker_id]
+    assert [line["agent"] for line in lines] == [worker_id]
 
 
 def test_a_bounded_text_is_cut_at_a_word_and_marked() -> None:

@@ -7,6 +7,7 @@ import json
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
+from roomkit.channels._discussion_turn import discussion_handles
 from roomkit.core.exceptions import RoomNotFoundError, UnservedToolCallError
 from roomkit.models.enums import TaskStatus
 from roomkit.orchestration.status_bus import (
@@ -15,7 +16,7 @@ from roomkit.orchestration.status_bus import (
     StatusLevel,
     post_agent_lifecycle,
 )
-from roomkit.tools.context import current_tool_call, current_tool_room_id
+from roomkit.tools.context import current_tool_call, current_tool_room, current_tool_room_id
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -182,13 +183,24 @@ class TaskStatusTool:
         room_id = current_tool_room_id()
         if room_id is None:
             return json.dumps({"error": "task_status answers only within a conversation"})
-        tasks = await room_task_lines(self._kit.status_bus, room_id, self._window)
+        tasks = _named_by_handle(
+            await room_task_lines(self._kit.status_bus, room_id, self._window)
+        )
         wanted = str(arguments.get("task_id") or "")
         if wanted:
             tasks = [t for t in tasks if t["task_id"] == wanted]
             if not tasks:
                 return json.dumps({"tasks": [], "message": f"No task {wanted} here."})
         return json.dumps({"tasks": tasks[-self._limit :]}, ensure_ascii=False)
+
+
+def _named_by_handle(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*tasks* with each one's agent named as the room of the call addresses
+    it: a discussion's agent by its handle (RFC §19.7.5 rule 4), any other by
+    its channel id."""
+    room = current_tool_room()
+    handles = discussion_handles(room.metadata if room is not None else None)
+    return [{**t, "agent": handles.get(t["agent"], t["agent"])} for t in tasks]
 
 
 async def room_task_lines(bus: StatusBus, room_id: str, window: int) -> list[dict[str, Any]]:

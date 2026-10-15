@@ -149,8 +149,7 @@ def background_tool_server(kit: RoomKit, agent_id: str) -> Any:
             started = await kit.start_task(room_id, agent_id, task)
         except ValueError as exc:
             return json.dumps({"error": str(exc)})
-        called = await kit.store.get_room(room_id)
-        agent = identifier(agent_handle(called.metadata if called else None, agent_id), "agent")
+        agent = identifier(agent_handle(room.metadata if room else None, agent_id), "agent")
         back = (
             f"its result is posted as {agent}'s message"
             if started.hand_back == "post"

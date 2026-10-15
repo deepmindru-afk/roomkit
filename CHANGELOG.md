@@ -110,6 +110,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `task_status` names a discussion's agent by its handle (`"agent": "Comms"`),
+  as the turn's notes do, where the model read `agent:7c1e…` (RMK-765). The
+  lines `room_task_lines` gives a host keep the channel id.
 - A document sent as a `MediaContent` (a PDF, `application/octet-stream`) no
   longer reaches the model as an image the provider refuses: it reads as its
   label (RMK-763).
