@@ -302,3 +302,29 @@ async def test_the_console_reads_and_shows_the_discussions_handles(pipe: PipeInp
     console.exit()
     await asyncio.wait_for(running, 5)
     await kit.close()
+
+
+def test_a_posted_result_by_another_agent_names_it_by_handle() -> None:
+    view = DiscussionView(HANDLED, you="ops")
+    view.agent(DEV_ID, [], "Findings.", by=SRE_ID)
+    assert "@Dev · a task's result, by @SRE → nobody" in _room(view)
+
+
+@pytest.mark.parametrize(
+    ("typed", "named"),
+    [
+        ("@dev", [DEV_ID]),
+        ("dev", [DEV_ID]),
+        ("@DEV:", [DEV_ID]),
+        ("@dev,@sre", [DEV_ID, SRE_ID]),
+        ("@all", [DEV_ID, SRE_ID]),
+        ("@agent:8e41f0d2", []),
+        ("@nobody", []),
+    ],
+)
+def test_a_command_names_agents_as_the_discussion_reads_names(
+    typed: str, named: list[str]
+) -> None:
+    console = DiscussionConsole(RoomKit(), "r1", channel_id="ops")
+    console._view = DiscussionView(HANDLED, you="ops")
+    assert console._named_agents(typed) == named

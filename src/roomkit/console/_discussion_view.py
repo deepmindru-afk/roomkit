@@ -303,7 +303,9 @@ class DiscussionView:
     ) -> str:
         card = self._card(author)
         about = f" · {card.model}" if card is not None and card.model and by is None else ""
-        work = f" · a task's result, by {identifier(by, 'worker')}" if by else ""
+        # The worker may be another agent of the discussion: named by its handle.
+        worker = (self._labels.get(by) or identifier(by, "worker")) if by else ""
+        work = f" · a task's result, by {worker}" if by else ""
         where = "writing…" if writing else f"→ {self._to(addressed)}"
         return f"{self.label(author)}{about}{work} {where}"
 

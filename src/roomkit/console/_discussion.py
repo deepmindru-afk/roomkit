@@ -28,6 +28,7 @@ from roomkit.core.hooks import HookRegistration
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, EventType, HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
+from roomkit.orchestration.strategies.discussion._names import read_names
 from roomkit.tasks.background import BACKGROUND_TOOL
 from roomkit.tasks.status import room_task_lines
 
@@ -41,8 +42,6 @@ logger = logging.getLogger("roomkit.console.discussion")
 
 Command = Callable[[str], Awaitable[None]]
 """A slash command of the host's: receives the rest of the line."""
-
-EVERYONE = "all"
 
 HELP = """You are @{you}: write to the room, name agents with @ to ask them ({agents}).
   @{first} what do you think?   asks @{first} (no name: the agents that asked you, else everyone)
@@ -131,7 +130,12 @@ class DiscussionConsole:
         return self._view
 
     async def run(self) -> None:
-        """Show the room until the person quits (Ctrl-C, Ctrl-D or ``/quit``)."""
+        """Show the room until the person quits (Ctrl-C, Ctrl-D or ``/quit``).
+
+        Raises:
+            RoomNotFoundError: the room does not exist (with no ``cards``,
+                the panel reads the room's agents and their handles).
+        """
         cards = self._cards or await self._room_cards()
         if self._tasks is None:
             setups = self._kit._background_setups
@@ -274,15 +278,12 @@ class DiscussionConsole:
             await self._kit.talk_again(self._room_id, agents)
 
     def _named_agents(self, text: str) -> list[str]:
-        """The channel ids of the agents *text* names by handle, ``@all`` every one."""
-        channels = [c.channel for c in self.view.cards]
-        by_name = {c.handle.lower(): c.channel for c in self.view.cards}
-        named: list[str] = []
-        for word in text.split():
-            key = word.removeprefix("@").rstrip(".,").lower()
-            found = channels if key == EVERYONE else [by_name[key]] if key in by_name else []
-            named.extend(c for c in found if c not in named)
-        return named
+        """The channel ids of the agents *text* names by handle, as the
+        discussion reads a name (RFC §19.7.5 rule 4), ``@all`` every one; a
+        command's bare word (``/listen dev``) names too."""
+        words = " ".join(w if w.startswith("@") else f"@{w}" for w in text.split())
+        handles = {c.handle: c.channel for c in self.view.cards}
+        return list(read_names(words, handles).agents)
 
     def _help(self) -> str:
         extra = "".join(f" · /{name}" for name in self._commands)
@@ -442,15 +443,15 @@ class DiscussionConsole:
         for binding in await self._kit.list_bindings(self._room_id):
             if binding.category != ChannelCategory.INTELLIGENCE:
                 continue
-            channel = self._kit.channels.get(binding.channel_id)
+            agent = self._kit.channels.get(binding.channel_id)
             cards.append(
                 AgentCard(
                     handle=handles.get(binding.channel_id, binding.channel_id),
                     channel_id=binding.channel_id,
-                    name=getattr(channel, "name", None),
-                    role=getattr(channel, "role", None),
-                    description=getattr(channel, "description", None),
-                    model=_model(channel),
+                    name=getattr(agent, "name", None),
+                    role=getattr(agent, "role", None),
+                    description=getattr(agent, "description", None),
+                    model=_model(agent),
                 )
             )
         return cards

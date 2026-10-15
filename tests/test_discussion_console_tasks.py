@@ -170,21 +170,31 @@ async def test_the_console_shows_an_answer_as_it_streams(pipe: PipeInput) -> Non
     await kit.close()
 
 
-async def _tasks_room(kit: RoomKit) -> None:
+async def _tasks_room(kit: RoomKit, dev_id: str = "dev", name: str | None = None) -> None:
     kit.register_channel(SimpleChannel("ops"))
     kit.register_channel(Agent("helper", provider=_Slow("Findings.", 5.0)))
-    dev = Agent("dev", provider=MockAIProvider(ai_responses=[AIResponse(content="ok")]))
+    reply = MockAIProvider(ai_responses=[AIResponse(content="ok")])
+    dev = Agent(dev_id, provider=reply, name=name)
     sre = Agent("sre", provider=MockAIProvider(ai_responses=[AIResponse(content="ok")]))
     kit.setup_background(dev, worker="helper")
     await kit.create_room(room_id="r1", orchestration=Discussion([dev, sre]))
     await kit.attach_channel("r1", "ops")
 
 
-async def test_the_person_starts_lists_and_cancels_tasks(pipe: PipeInput) -> None:
+@pytest.mark.parametrize(
+    ("dev_id", "name", "handle"),
+    [("dev", None, "dev"), ("agent:8e41f0d2", "Dev", "Dev")],
+    ids=["channel id", "handle"],
+)
+async def test_the_person_starts_lists_and_cancels_tasks(
+    pipe: PipeInput, dev_id: str, name: str | None, handle: str
+) -> None:
+    """With a handle (RMK-764), task commands are on, ``@dev`` reaches the
+    agent, and the console names it by its handle."""
     kit = RoomKit()
-    await _tasks_room(kit)
+    await _tasks_room(kit, dev_id, name)
     console, running = await _console(kit, pipe)
-    assert "/task @dev" in _room(console.view)
+    assert f"/task @{handle}" in _room(console.view)
 
     pipe.send_text("/task @dev read the tax engine's source\r")
     await _until(lambda: "started: @helper" in _room(console.view))
@@ -193,7 +203,7 @@ async def test_the_person_starts_lists_and_cancels_tasks(pipe: PipeInput) -> Non
     short = task_id.removeprefix("task-")[:6]
 
     pipe.send_text("/tasks\r")
-    await _until(lambda: f"{short}  @dev" in _room(console.view))
+    await _until(lambda: f"{short}  @{handle}" in _room(console.view))
     assert "running" in _room(console.view)
 
     pipe.send_text(f"/cancel {short}\r")
