@@ -276,6 +276,25 @@ async def test_listen_only_in_one_process_cuts_the_turn_running_in_another() -> 
     await cluster.close()
 
 
+async def test_an_agent_that_only_listens_answers_a_person_naming_it_in_another_process() -> None:
+    # Rule 12: the named agent takes its one turn; listening already when the
+    # turn was given, the process giving it does not cut it.
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True, delay=0.3)
+    follower = await cluster.process(install=False)
+    await a.listen_only("r1", ["sre"])
+
+    await _say(follower, "@sre what do the metrics say?")
+
+    async def answered() -> bool:
+        return await cluster.answers() == ["sre"]
+
+    await _until(answered)
+    queue = a.speak_queue("r1")
+    assert queue is not None and queue.listening == frozenset({"sre"})
+    await cluster.close()
+
+
 async def test_a_restarted_process_takes_the_discussion_back() -> None:
     cluster = _Cluster()
     a = await cluster.process(install=True, create=True)

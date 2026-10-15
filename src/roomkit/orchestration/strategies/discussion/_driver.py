@@ -62,6 +62,9 @@ class _Turn:
     cut: bool = False
     posted: RoomEvent | None = None
     """A task's result the turn posts as the agent's message (rule 19)."""
+    listening: bool = False
+    """Its agent only listens, as last read: a person named it (rule 12), and
+    only setting the state while the turn runs cuts it."""
 
 
 class TurnDriver:
@@ -284,6 +287,7 @@ class TurnDriver:
         """*turn* given: taken from the queue, the driver's to finish."""
         room = self._room
         self._turn = turn
+        turn.listening = turn.entry.agent in state.listening
         state.take(turn.entry)
         room.turn_rows = []
         if self._max_turns_given(state):
@@ -411,7 +415,9 @@ class TurnDriver:
             try:
                 state = await room.read()
                 agent = turn.entry.agent
-                if (agent in state.listening or agent not in room.agents) and not turn.cut:
+                set_to_listen = agent in state.listening and not turn.listening
+                turn.listening = agent in state.listening
+                if (set_to_listen or agent not in room.agents) and not turn.cut:
                     turn.cut = True
                     await room.cut(agent)
                 if room.shared.renew_due(state):

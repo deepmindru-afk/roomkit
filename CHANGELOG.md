@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Discussion.install` called directly now claims the room as every
   built-in strategy does, so it is refused over another strategy the kit
   recorded, a discussion included: install over one with `install_strategy`.
+- An agent that only listens answers a person who names it (RMK-777, RFC
+  §19.7.5 rule 12). Its turn was given, then cut at the first look the
+  process giving it took at the queue, as if the host had just set it to
+  listen: "@sre what do the metrics say?" to an `sre` that only listens got
+  no answer whenever the model took longer than that look (50 ms to 1 s).
+  Only setting the state while the turn runs cuts it now.
 
 ## [0.104.0] — 2026-10-15
 
