@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Discussion(rules=...)` gives each turn the host's rules for how the room
+  works, in place of the default (RMK-806, RFC §19.7.5 rule 14). `{handle}` in
+  them stands for another agent's `@handle`, an example the agent can follow,
+  and `{silent}` for `silent_token`; what the turn knows of the room (its own
+  handle, the other agents, the people, what it answers and who asked) stays
+  the discussion's. The rules are stored with the discussion's configuration,
+  so every process gives its turns with the same, and a configuration stored
+  before them reads with the default. Blank rules are refused.
+
 - `RoomKit(attached_media=...)` names the media an application keeps beside a
   message's content (RMK-805, RFC §6.4). An application that stores a message
   as its words, with its files in a record of its own (its metadata, say),
@@ -27,6 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that raises names none for that event, and an instruction is read as it is.
 
 ### Changed
+
+- A discussion's default rules ask for the handle wherever someone must act
+  next (RMK-806): "Whenever another agent must act next, end your message
+  with its handle, as in @dev: a name without @ reaches nobody, and a message
+  that names nobody wakes nobody." Told only that a name with `@` addresses
+  another, agents on some models went on calling each other by their bare
+  names, and the discussion stopped after the first answer.
 
 - A model that does not see reads an image an author sent as
   `[Image not shown, this model does not see images: “lamp.png”]` (RMK-805,

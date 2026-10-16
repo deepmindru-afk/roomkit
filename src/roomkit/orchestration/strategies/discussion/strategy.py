@@ -66,6 +66,12 @@ class Discussion(Orchestration):
         done: ``done(room_id)``, checked before each turn: once it holds,
             the discussion is over.
         silent_token: The answer of an agent with nothing to add.
+        rules: How the room works, as each turn's notes give it, in place of
+            the default (rule 14): ``{handle}`` in them stands for another
+            agent's ``@handle``, an example the agent can follow, and
+            ``{silent}`` for ``silent_token``. ``None``: the default, which
+            tells the agent to end its message with the handle of the agent
+            that must act next.
         dispatch: Decides which agents take a person's message that names
             none and answers none, in place of asking ``everyone`` (rule 18):
             ``ClassifierDispatchPolicy`` asks a classifier who it is for.
@@ -86,10 +92,11 @@ class Discussion(Orchestration):
         max_depth: int | None = None,
         done: DoneFn | None = None,
         silent_token: str = "(silent)",
+        rules: str | None = None,
         dispatch: DispatchPolicy | None = None,
         dispatch_timeout: float = 5.0,
     ) -> None:
-        _check(agents, everyone, max_turns, max_depth, silent_token)
+        _check(agents, everyone, max_turns, max_depth, silent_token, rules)
         _check_dispatch(dispatch, dispatch_timeout, addressed_only=addressed_only)
         self._agents = list(agents)
         self._handles = _handles(agents, handles or {})
@@ -100,6 +107,7 @@ class Discussion(Orchestration):
         self.max_depth = max_depth
         self.done = done
         self.silent_token = silent_token
+        self.rules = rules
         self.dispatch = dispatch
         self.dispatch_timeout = dispatch_timeout
 
@@ -136,6 +144,7 @@ def _check(
     max_turns: int | None,
     max_depth: int | None,
     silent_token: str,
+    rules: str | None,
 ) -> None:
     if not agents:
         raise ValueError("A discussion needs at least one agent")
@@ -158,6 +167,8 @@ def _check(
         raise ValueError("max_depth must be at least 2")
     if not silent_token.strip():
         raise ValueError("silent_token must not be blank")
+    if rules is not None and not rules.strip():
+        raise ValueError("rules must not be blank: None gives the default")
 
 
 def _handles(agents: Sequence[AIChannel | ACPChannel], given: Mapping[str, str]) -> dict[str, str]:

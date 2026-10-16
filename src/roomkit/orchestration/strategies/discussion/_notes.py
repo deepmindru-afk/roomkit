@@ -7,7 +7,8 @@ space, no punctuation but ``_ . -``) and bounded. Everything else a
 participant controls is quoted, on one line, between marks it cannot close
 (``roomkit._text.quoted``): the label an author carries in the transcript
 (``Alice (2)`` for a second source that takes Alice's name) and what they
-wrote. An Agent's name, role and description are the host's.
+wrote. An Agent's name, role and description are the host's, and so are
+the rules a discussion gives in place of the default.
 """
 
 from __future__ import annotations
@@ -17,6 +18,17 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 HEADER = "[Discussion: the room and how it works]"
+
+DEFAULT_RULES = (
+    "How the room works: an agent takes a turn only when a message names it with @. "
+    "Whenever another agent must act next, end your message with its handle, as in "
+    "{handle}: a name without @ reaches nobody, and a message that names nobody wakes "
+    "nobody. Answer exactly {silent} when you have nothing to add."
+)
+"""The rules a turn's notes give when the host gives none (rule 14). An agent
+told only that a name with ``@`` addresses another went on calling the others
+by their bare names, and the discussion stopped: the rule asks for the
+handle wherever someone must act next."""
 
 
 class TurnKind(StrEnum):
@@ -44,13 +56,14 @@ def turn_notes(
     answering: str,
     askers: Sequence[str],
     silent_token: str,
+    rules: str | None = None,
 ) -> str:
     """The block a discussion's turn adds to the turn's input, for the agent
     whose handle is *me*.
 
     *answering* names the event the turn answers (its author's label and a
     quote of it); *askers* are who asked for the turn, agents as ``@handle``
-    and people by their label.
+    and people by their label. *rules* are the host's (:func:`room_rules`).
     """
     lines = [
         HEADER,
@@ -63,12 +76,17 @@ def turn_notes(
     if people:
         lines.append("People you may address: " + ", ".join(f"@{p}" for p in people) + ".")
     lines.append(_what_it_answers(kind, answering, askers))
-    lines.append(
-        "How the room works: name an agent with @ to address it, as in "
-        f"@{others[0].handle if others else 'name'}; a message that names nobody wakes "
-        f"nobody; answer exactly {silent_token} when you have nothing to add."
-    )
+    lines.append(room_rules(rules, f"@{others[0].handle if others else 'name'}", silent_token))
     return "\n".join(lines)
+
+
+def room_rules(rules: str | None, handle: str, silent_token: str) -> str:
+    """How the room works, as a turn's notes give it: the host's *rules*, else
+    :data:`DEFAULT_RULES`, ``{handle}`` filled with *handle* and ``{silent}``
+    with *silent_token*. Replaced rather than formatted: any other brace in a
+    host's text stays as written."""
+    text = rules if rules is not None else DEFAULT_RULES
+    return text.replace("{handle}", handle).replace("{silent}", silent_token)
 
 
 def _what_it_answers(kind: TurnKind, answering: str, askers: Sequence[str]) -> str:

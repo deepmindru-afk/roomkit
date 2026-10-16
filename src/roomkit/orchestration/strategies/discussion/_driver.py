@@ -359,6 +359,7 @@ class TurnDriver:
                 for asker, person in entry.askers()
             ],
             silent_token=room.silent.token,
+            rules=room.config.rules,
         )
 
     def _answering(self, answered: RoomEvent, context: RoomContext) -> str:

@@ -115,6 +115,11 @@ room = await kit.create_room(orchestration=Discussion(
 - An agent with nothing to add answers `silent_token` (`"(silent)"`): the row
   is stored `BLOCKED` with `blocked_by="discussion_silent"` and never reaches
   a transport, streamed or not.
+- Each turn's notes end with how the room works: by default, end the message
+  with the handle of the agent that must act next. `rules="..."` gives the
+  host's text instead, `{handle}` standing for another agent's `@handle` and
+  `{silent}` for `silent_token`; it is stored with the discussion, so every
+  process gives its turns with it.
 - `max_depth` bounds how far a chain of agent turns reaches from a person's
   message (default: the kit's `max_chain_depth`); a stopped turn waits for
   the next person's message. `max_turns` and `done(room_id)` end it.
