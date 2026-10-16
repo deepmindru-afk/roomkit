@@ -243,6 +243,10 @@ MIRROR_ONLY: dict[str, str] = {
     # not serve them (GET /v1/models, 2026-09-27). roomkit reaches Glimmer
     # through a self-hosted server: vLLM, llama.cpp, Ollama.
     "meta/muse-glimmer-30b": "open-weight model the Meta Model API does not serve",
+    # Same for Muse Spark Open, which the mirror describes as a coding-optimized
+    # open-weight model: GET /v1/models on the Meta Model API lists no such id
+    # (2026-10-16).
+    "meta/muse-spark-open": "open-weight model the Meta Model API does not serve",
 }
 
 # Catalog ids where roomkit's value is deliberately not the mirror's. Each one
@@ -337,6 +341,14 @@ PRICE_DELIBERATE: dict[str, str] = {
     # 2026-09-21). Like every entry here this blinds the gate in both
     # directions: a genuine xAI repricing of 4.7 will not be reported either.
     "grok-4.7": "mirror runs a launch promo at 20% off; roomkit bills xAI's list rate",
+    # The other way round: the mirror quotes $0.825/$4.125/$0.0825, exactly 10%
+    # over every rate Google's pricing page states for the standard paid tier
+    # ($0.75/$3.75/$0.075 through December 31, 2026; page last updated
+    # 2026-10-15, read 2026-10-16). RoomKit's gemini provider calls Google's API,
+    # so the catalog carries Google's rate. The January doubling is already a
+    # scheduled re-read in providers/gemini/models.py; this entry blinds the
+    # gate to any other repricing until then.
+    "gemini-3.8-flash": "mirror quotes 10% over Google's rate; catalog carries Google's own",
 }
 
 # Per-field suppressions: a normalization where the upstream pricing object
