@@ -164,7 +164,7 @@ class DiscussionMixin(HelpersMixin):
         held = self._discussions.get(room.id)
         if held is None:
             return False
-        if DiscussionConfig.stored(room.metadata) is None:
+        if _uninstalled(held, room):
             await self._forget_discussion(room.id, held)
             return False
         return isinstance(held.strategy, kind) and held.drives
@@ -191,6 +191,11 @@ class DiscussionMixin(HelpersMixin):
         # Claimed before the next await: two installs at once are one too many.
         self._installing_discussions.add(room_id)
         try:
+            if held is not None and held.driver is not None and _uninstalled(held, room):
+                # Gone since this process installed it: left here, and the
+                # install starts afresh, never in the room it left (rule 16).
+                await self._forget_discussion(room_id, held)
+                held = None
             if held is None:
                 await self._start_discussion(room_id, discussion)
             else:
@@ -438,6 +443,13 @@ class DiscussionMixin(HelpersMixin):
 
 def _in_scope(discussion: Any, organization_id: str | None) -> bool:
     return organization_id is None or discussion.organization_id == organization_id
+
+
+def _uninstalled(discussion: Any, room: Room | None) -> bool:
+    """Whether *discussion* is gone: *room*, just read, stores none, or this
+    process read it uninstalled before, one installed again since included
+    (rule 16)."""
+    return discussion.forgotten or room is None or DiscussionConfig.stored(room.metadata) is None
 
 
 def discussion_binding_refusal(

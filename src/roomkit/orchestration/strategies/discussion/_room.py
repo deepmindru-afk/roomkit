@@ -93,8 +93,10 @@ class DiscussionRoom:
         """What the speaking agent committed during its turn, read at its end."""
         self.closed = False
         self.forgotten = False
-        """Being uninstalled: the queue goes, so the end of a turn cut on the
-        way is not recorded (rule 1)."""
+        """Uninstalled, here or as another process was read to have done: the
+        queue goes, so the end of a turn cut on the way is not recorded (rule
+        1), and this room gives no turn again, a discussion installed since
+        included (rule 16)."""
         self.driver: TurnDriver | None = TurnDriver(self) if strategy is not None else None
         self._last_fire: asyncio.Task[None] | None = None
         self._announcing: set[asyncio.Task[None]] = set()

@@ -157,8 +157,9 @@ class TurnDriver:
         room = self._room
         shared = room.shared
         peek = await room.read()
-        if shared.config is None:
-            # Another process uninstalled the discussion.
+        if shared.config is None or room.forgotten:
+            # Another process uninstalled the discussion, whether or not one
+            # was installed again since: this process leaves it (rule 16).
             await room.kit._forget_discussion(room.room_id, room)
             return None
         if not await self._gives_turns(peek):
