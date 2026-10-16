@@ -77,6 +77,8 @@ class StrategyMixin(HelpersMixin):
     _hold_attached: Any  # DiscussionMixin
     _runs_discussion: Any  # DiscussionMixin
     _stored_attached: Any  # DiscussionMixin
+    _stored_with_room: Any  # DiscussionMixin
+    _discussion_is_current: Any  # DiscussionMixin
     _uninstall_stored_discussion: Any  # DiscussionMixin
 
     def room_strategy(
@@ -91,6 +93,39 @@ class StrategyMixin(HelpersMixin):
         if organization_id is not None and installed.organization_id != organization_id:
             return None
         return installed.strategy
+
+    async def room_strategy_is_current(
+        self,
+        room_id: str,
+        kind: type[Orchestration],
+        *,
+        organization_id: str | None = None,
+    ) -> bool:
+        """Whether the strategy of *kind* this process installed in *room_id*
+        is the one the room stores now (RFC §19.7).
+
+        A strategy stored with the room, a discussion (RFC §19.7.5 rule 16),
+        may be replaced by another process's install, after which this
+        process gives no turn. False then, when this process installed none,
+        and once it was uninstalled; the room's stored state is read when
+        called. A host that finds it false installs what it wants::
+
+            if not await kit.room_strategy_is_current(room_id, Discussion):
+                await kit.install_strategy(room_id, Discussion(agents))
+
+        *organization_id* scopes the call to one tenant (RFC §17.2).
+
+        Raises:
+            TypeError: *kind* is not a strategy stored with the room.
+            RoomNotFoundError: the room does not exist in the scope.
+        """
+        if not self._stored_with_room(kind):
+            raise TypeError(
+                f"{getattr(kind, '__name__', kind)!r} is not a strategy stored with the room: "
+                "only a Discussion is, which another process's install may replace"
+            )
+        room = await self.get_room(room_id, organization_id=organization_id)
+        return self._discussion_is_current(room, kind)
 
     async def install_strategy(
         self, room_id: str, strategy: Orchestration, *, organization_id: str | None = None

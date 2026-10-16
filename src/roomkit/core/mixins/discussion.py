@@ -150,6 +150,21 @@ class DiscussionMixin(HelpersMixin):
         holds here, installed or followed: a Discussion does (RFC §19.7)."""
         return isinstance(strategy, Discussion) and room_id in self._discussions
 
+    def _stored_with_room(self, kind: Any) -> bool:
+        """Whether *kind* is a strategy stored with the room, which another
+        process's install may replace: a Discussion (rule 16)."""
+        return isinstance(kind, type) and issubclass(kind, Discussion)
+
+    def _discussion_is_current(self, room: Room, kind: type) -> bool:
+        """Whether the discussion of *kind* this process installed is the one
+        *room*, just read, stores: the one this process gives turns by (rule
+        16)."""
+        self._follow_discussion(room)
+        held = self._discussions.get(room.id)
+        if held is None or DiscussionConfig.stored(room.metadata) is None:
+            return False
+        return isinstance(held.strategy, kind) and held.drives
+
     def _runs_discussion(self, room_id: str, strategy: Orchestration) -> bool:
         """Whether the discussion *room_id* holds here runs *strategy*."""
         discussion = self._discussions.get(room_id)

@@ -19,6 +19,11 @@ with its own agent objects. Three scenes:
    spoke at the same time.
 3. Worker A stops without a word (a crash). Its lease expires and worker B,
    which installed the discussion too, takes the turns over.
+4. Worker C installs the discussion without comms (its host read comms
+   switched off a moment), then stops. Worker B, whose host still installed
+   comms, gives no turn by agents the room no longer stores:
+   ``room_strategy_is_current`` tells its host so, the host installs its
+   agents again, and the room answers.
 
 The models are scripted mocks, so the example runs without keys.
 
@@ -69,9 +74,9 @@ def clock() -> float:
     return time.monotonic() - START
 
 
-def discussion(worker: str) -> Discussion:
+def discussion(worker: str, agents: tuple[str, ...] = AGENTS) -> Discussion:
     """The discussion as one worker builds it: its own agent objects."""
-    return Discussion([AIChannel(a, provider=Timed(a, worker)) for a in AGENTS])
+    return Discussion([AIChannel(a, provider=Timed(a, worker)) for a in agents])
 
 
 async def worker(name: str, store: InMemoryStore, locks: InMemoryLockManager) -> RoomKit:
@@ -127,6 +132,23 @@ async def main() -> None:
     held.driver._task.cancel()  # no stop(): the lease is not given back
     await say(b, "@comms post a status update")
     await until(store, 6)
+    logger.info("   answers: %s", await answers(store))
+
+    logger.info("4. worker C installs the discussion without comms, then stops")
+    c = await worker("C", store, locks)
+    await c.install_strategy(ROOM, discussion("C", ("investigator", "sre")))
+    await c.close()
+    current = await b.room_strategy_is_current(ROOM, Discussion)
+    logger.info("   worker B: room_strategy_is_current = %s", current)
+    await say(b, "@investigator still with us?")
+    if not current:
+        # The host installs the agents it holds: B gives the turns again.
+        await b.install_strategy(ROOM, discussion("B"))
+        logger.info(
+            "   worker B: room_strategy_is_current = %s",
+            await b.room_strategy_is_current(ROOM, Discussion),
+        )
+    await until(store, 7)
     logger.info("   answers: %s", await answers(store))
     await b.close()
 

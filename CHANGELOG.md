@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `await kit.room_strategy_is_current(room_id, Discussion)` tells a host
+  whether the discussion this process installed is the one the room stores
+  (RMK-779, RFC §19.7 and §19.7.5 rule 16). A process whose discussion another
+  process replaced gives no turn, while `room_strategy()` still returns its own
+  `Discussion`: once the process that replaced it stopped, the room waited and
+  its host could not tell. False after such a replacement, when the process
+  installed none, and once the discussion was uninstalled; the stored state is
+  read when called. A strategy kind not stored with the room (`Pipeline`,
+  `Swarm`, `Loop`, `Supervisor`) raises `TypeError`, so the question keeps its
+  meaning if another kind comes to be stored.
+
 ### Fixed
 
 - `uninstall_strategy` called while the host holds the room's lock returns

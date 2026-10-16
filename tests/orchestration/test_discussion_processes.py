@@ -13,8 +13,9 @@ from typing import Any
 
 import pytest
 
-from roomkit import Discussion, RoomKit
+from roomkit import Discussion, Loop, Pipeline, RoomKit, Supervisor, Swarm
 from roomkit.channels.ai import AIChannel
+from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.core.locks import InMemoryLockManager
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import (
@@ -615,3 +616,68 @@ async def test_a_process_that_stops_during_a_turn_records_its_end_and_keeps_the_
     assert queue["last_speaker"] == "investigator"  # its end recorded
     assert [e["agent"] for e in queue["entries"]] == ["sre"]  # the queue kept (rule 16)
     assert await cluster.stored() is not None
+
+
+async def test_a_process_whose_install_another_replaced_is_current_again_once_it_installs() -> (
+    None
+):
+    # B's host read gamma switched off a moment: it installs without comms,
+    # then stops. A follows B's agents and gives no turn: the room waits.
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True)
+    b = await cluster.process(install=True, names=KEPT)
+    assert await b.room_strategy_is_current("r1", Discussion) is True
+    assert await a.room_strategy_is_current("r1", Discussion) is False
+    await b.close()
+    await asyncio.sleep(0.8)  # past the lease
+    await _say(a, "@investigator are you there?")
+    await asyncio.sleep(0.3)
+    assert await cluster.answers() == []
+
+    # A's host finds it false and installs the agents it holds.
+    await a.install_strategy("r1", cluster.strategy())
+    assert await a.room_strategy_is_current("r1", Discussion) is True
+
+    async def answered() -> bool:
+        return await cluster.answers() == ["investigator"]
+
+    await _until(answered)
+    await cluster.close()
+
+
+async def test_a_process_that_installed_none_or_whose_discussion_went_is_not_current() -> None:
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True)
+    follower = await cluster.process(install=False)
+    await _say(follower, "hello")  # it follows the stored discussion
+    assert await follower.room_strategy_is_current("r1", Discussion) is False
+    assert await a.room_strategy_is_current("r1", Discussion) is True
+
+    assert await follower.uninstall_strategy("r1") is True
+
+    # Read from the room as it is now, before A's driver polls.
+    assert await a.room_strategy_is_current("r1", Discussion) is False
+    await cluster.close()
+
+
+@pytest.mark.parametrize("kind", [Pipeline, Swarm, Loop, Supervisor, "instance", "not_a_strategy"])
+async def test_asking_about_a_strategy_not_stored_with_the_room_is_refused(kind: Any) -> None:
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True)
+    asked = {"instance": a.room_strategy("r1"), "not_a_strategy": str}.get(kind, kind)
+
+    with pytest.raises(TypeError, match="not a strategy stored with the room"):
+        await a.room_strategy_is_current("r1", asked)
+    await cluster.close()
+
+
+async def test_a_room_of_another_organization_is_not_asked_about() -> None:
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("ops"))
+    await kit.create_room(room_id="r1", organization_id="org-a")
+    await kit.install_strategy("r1", _Cluster().strategy(), organization_id="org-a")
+
+    assert await kit.room_strategy_is_current("r1", Discussion, organization_id="org-a")
+    with pytest.raises(RoomNotFoundError):
+        await kit.room_strategy_is_current("r1", Discussion, organization_id="org-b")
+    await kit.close()
