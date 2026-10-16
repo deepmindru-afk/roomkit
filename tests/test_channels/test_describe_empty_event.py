@@ -100,9 +100,25 @@ async def test_none_keeps_the_omission() -> None:
     assert [m.content for m in sent.messages if m.role == "user"] == ["hello"]
 
 
-async def test_an_image_a_text_only_provider_cannot_read_is_described_too() -> None:
-    """The extraction is empty for a captionless image on a provider without
-    vision, whatever the reason: the describer covers it."""
+async def test_a_document_a_text_only_provider_cannot_read_is_described_too() -> None:
+    """The extraction is empty for a captionless media that is no image on a
+    provider without vision, whatever the reason: the describer covers it."""
+    pdf = MediaContent(url="https://x.test/a.pdf", mime_type="application/pdf")
+    document = make_event(channel_id="sms1").model_copy(update={"content": pdf})
+
+    sent, _ch = await _turn(
+        make_event(body="what was that?", channel_id="sms1"),
+        [document],
+        describe_empty_event=lambda event: "[a document]",
+    )
+
+    assert "[a document]" in _texts(sent.messages)
+
+
+async def test_an_image_a_text_only_provider_cannot_see_says_so() -> None:
+    """A captionless image on a provider without vision reads as an image the
+    model does not see, the describer never asked (RFC §6.4)."""
+    describer = _Describer()
     image = make_event(channel_id="sms1").model_copy(
         update={"content": MediaContent(url="https://x.test/a.png", mime_type="image/png")}
     )
@@ -110,10 +126,12 @@ async def test_an_image_a_text_only_provider_cannot_read_is_described_too() -> N
     sent, _ch = await _turn(
         make_event(body="what was that?", channel_id="sms1"),
         [image],
-        describe_empty_event=lambda event: "[an image]",
+        describe_empty_event=describer,
     )
 
-    assert "[an image]" in _texts(sent.messages)
+    not_seen = "[Image not shown, this model does not see images: \u201cimage/png\u201d]"
+    assert not_seen in _texts(sent.messages)
+    assert describer.read == []
 
 
 async def test_without_a_describer_an_empty_event_is_omitted() -> None:

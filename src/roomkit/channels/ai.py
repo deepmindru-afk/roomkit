@@ -470,6 +470,9 @@ class AIChannel(
         # The application's resolver of the media its references name
         # (RFC §6.4): wired at registration from the framework's.
         self._media_resolver = None
+        # The application's reader of the media an event carries beside its
+        # content (RFC §6.4): wired at registration from the framework's.
+        self._attached_media = None
 
     @property
     def tool_handler(self) -> ToolHandler | None:

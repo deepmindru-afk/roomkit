@@ -310,12 +310,17 @@ class TestMention:
 class TestModelThatDoesNotSee:
     async def test_it_reads_a_mention_never_the_bytes(self, streaming: bool) -> None:
         host = _Host()
-        history = [_event(_photo(_PNG, caption="my lamp"))]
+        history = [_event(_photo(_PNG, caption="my lamp")), _event(_photo())]
         channel = _channel(streaming, vision=False, resolver=host)
 
         context = await _turn(channel, _event(TextContent(body="what was that?")), history)
 
-        assert "[Media: my lamp]" in _text(context)
+        assert "[Image not shown, this model does not see images: \u201cmy lamp\u201d]" in _text(
+            context
+        )
+        assert "[Image not shown, this model does not see images: \u201clamp.png\u201d]" in _text(
+            context
+        )
         assert "base64" not in repr(context.messages)
         assert host.asked == []
 
@@ -326,14 +331,27 @@ class TestModelThatDoesNotSee:
             _channel(vision=False), _event(TextContent(body="?")), [_event(composite)]
         )
 
-        assert "compare with mine\n[Media: lamp.png]" in _text(context)
+        not_seen = "[Image not shown, this model does not see images: \u201clamp.png\u201d]"
+        assert f"compare with mine\n{not_seen}" in _text(context)
 
-    async def test_a_captionless_media_reads_as_its_label_without_a_describer(self) -> None:
+    async def test_a_document_reads_as_its_label(self) -> None:
+        pdf = _photo(_REF, filename="contract.pdf", mime_type="application/pdf")
+        composite = CompositeContent(parts=[TextContent(body="sign this"), pdf])
+
         context = await _turn(
-            _channel(vision=False), _event(TextContent(body="?")), [_event(_photo())]
+            _channel(vision=False), _event(TextContent(body="?")), [_event(composite)]
         )
 
-        assert "[Media: lamp.png]" in _text(context)
+        assert "sign this\n[Media: contract.pdf]" in _text(context)
+
+    async def test_a_captionless_document_reads_as_its_label_without_a_describer(
+        self,
+    ) -> None:
+        pdf = _photo(_REF, filename="contract.pdf", mime_type="application/pdf")
+
+        context = await _turn(_channel(vision=False), _event(TextContent(body="?")), [_event(pdf)])
+
+        assert "[Media: contract.pdf]" in _text(context)
 
 
 class TestTranscoding:
@@ -503,7 +521,9 @@ class TestLivePath:
     """Through the router, which transcodes what a binding cannot take."""
 
     @staticmethod
-    async def _first_turn(provider: MockAIProvider, **channel: Any) -> AIContext:
+    async def _first_turn(
+        provider: MockAIProvider, content: MediaContent | None = None, **channel: Any
+    ) -> AIContext:
         kit = RoomKit()
         kit.register_channel(SimpleChannel("user"))
         kit.register_channel(AIChannel("ai1", provider=provider, **channel))
@@ -511,7 +531,7 @@ class TestLivePath:
             await kit.create_room(room_id="room")
             await kit.attach_channel("room", "user")
             await kit.attach_channel("room", "ai1", category=ChannelCategory.INTELLIGENCE)
-            photo = MediaContent(url=_PNG, mime_type="image/png")
+            photo = content or MediaContent(url=_PNG, mime_type="image/png")
             await kit.process_inbound(
                 InboundMessage(channel_id="user", sender_id="person", content=photo),
                 room_id="room",
@@ -520,19 +540,32 @@ class TestLivePath:
         finally:
             await kit.close()
 
-    async def test_a_live_captionless_image_goes_to_the_describer_first(self) -> None:
+    async def test_a_live_captionless_document_goes_to_the_describer_first(self) -> None:
+        provider = MockAIProvider(responses=["ok"], vision=False)
+        pdf = MediaContent(url=_REF, mime_type="application/pdf", filename="contract.pdf")
+
+        context = await self._first_turn(
+            provider, pdf, describe_empty_event=lambda event: "[a file the user sent]"
+        )
+
+        assert context.messages[-1].content == "[a file the user sent]"
+
+    async def test_a_live_captionless_image_says_the_model_does_not_see_it(self) -> None:
         provider = MockAIProvider(responses=["ok"], vision=False)
 
         context = await self._first_turn(
             provider, describe_empty_event=lambda event: "[a photo the user sent]"
         )
 
-        assert context.messages[-1].content == "[a photo the user sent]"
+        assert (
+            context.messages[-1].content
+            == "[Image not shown, this model does not see images: \u201cimage/png\u201d]"
+        )
 
     async def test_a_model_that_does_not_see_never_reads_the_payload(self) -> None:
         context = await self._first_turn(MockAIProvider(responses=["ok"], vision=False))
 
-        assert context.messages[-1].content == "[Media: image/png]"
+        assert "base64" not in repr(context.messages)
 
     async def test_a_model_that_sees_gets_the_image(self) -> None:
         context = await self._first_turn(MockAIProvider(responses=["ok"], vision=True))

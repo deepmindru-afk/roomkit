@@ -28,7 +28,7 @@ from roomkit.models.enums import (
 
 if TYPE_CHECKING:
     from roomkit.channels._ai_callbacks import RoomVisionLoader
-    from roomkit.channels._author_images import MediaResolver
+    from roomkit.channels._author_images import AttachedMedia, MediaResolver
     from roomkit.channels.ai import AIChannel
     from roomkit.core.event_router import EventRouter
     from roomkit.core.hooks import HookEngine
@@ -125,6 +125,7 @@ class ChannelOpsMixin(HelpersMixin):
     _telemetry: TelemetryProvider
     _realtime: RealtimeBackend
     _media_resolver: MediaResolver | None
+    _attached_media: AttachedMedia | None
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     get_room: Any  # see ChannelOpsHost
@@ -245,6 +246,7 @@ class ChannelOpsMixin(HelpersMixin):
         channel._room_tasks_loader = self._build_room_tasks_loader()
         channel._room_vision_loader = self._build_room_vision_loader()
         channel._media_resolver = self._media_resolver
+        channel._attached_media = self._attached_media
         channel._before_generation_hook = self._build_before_generation_hook(channel.channel_id)
         channel._after_tool_round_hook = self._build_after_tool_round_hook()
         channel._thinking_hook = self._build_thinking_hook(channel.channel_id)

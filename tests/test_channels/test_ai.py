@@ -168,7 +168,7 @@ class TestAIChannel:
         assert msg.content[0].url == "https://example.com/photo.png"
 
     async def test_non_vision_provider_gets_text_only(self) -> None:
-        """Non-vision provider gets empty string for media content."""
+        """A non-vision provider is told an image was not shown, never sent it."""
         provider = MockAIProvider(responses=["ok"], vision=False)
         ch = AIChannel("ai1", provider=provider)
         binding = ChannelBinding(
@@ -186,10 +186,12 @@ class TestAIChannel:
         output = await ch.on_event(event, binding, ctx)
         await read_reply(output)
 
-        # The model reads that a media was sent, never its bytes (RFC §6.4).
+        # The model reads that it cannot see the image, never its bytes (RFC §6.4).
         assert output.responded is True
         call_ctx = provider.calls[0]
-        assert [m.content for m in call_ctx.messages] == ["[Media: https://example.com/image.jpg]"]
+        assert [m.content for m in call_ctx.messages] == [
+            "[Image not shown, this model does not see images: \u201cimage/jpeg\u201d]"
+        ]
 
     async def test_composite_content_with_vision(self) -> None:
         """Vision provider receives composite content with text and images."""

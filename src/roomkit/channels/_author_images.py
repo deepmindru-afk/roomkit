@@ -5,12 +5,15 @@ reaches a model that sees as an image after its caption, with the words of the
 event. Its URL is a data URI, a link handed to the provider as it is, or a
 reference the application's :data:`MediaResolver` turns into bytes as the turn
 is built: the store and every broadcast carry the reference alone, and nothing
-is kept from one turn to the next.
+is kept from one turn to the next. An application that keeps a message's media
+beside its content names them through its :data:`AttachedMedia` reader, and the
+channel reads the event with them as parts (:func:`with_attached_media`).
 
 Per turn the newest ``max_author_images`` images go, history and input counted
 together, of a type and a size every vision provider takes. Anything else
 takes the image's place as a text mention, never a failed turn: a media that
-is no such image reads as its label (RFC §6.6), an image past the bound as an
+is no such image reads as its label (RFC §6.6), an image for a model that does
+not see as an image that model cannot see, an image past the bound as an
 earlier image not shown, a reference that does not resolve as an image
 unavailable, an image a provider refused as refused. A request that carried
 author images and failed on a provider error not retried marks them refused in
@@ -35,7 +38,14 @@ from roomkit._media import (
     vision_image_type,
 )
 from roomkit._text import quoted
-from roomkit.models.event import CompositeContent, EventContent, MediaContent, RoomEvent
+from roomkit.models.enums import EventType
+from roomkit.models.event import (
+    CompositeContent,
+    EventContent,
+    MediaContent,
+    RoomEvent,
+    TextContent,
+)
 from roomkit.providers.ai.base import AIImagePart, AITextPart
 from roomkit.providers.utils import to_data_uri
 
@@ -47,6 +57,15 @@ media a reference names, or None when it has none to give. Handed to the
 framework (``RoomKit(media_resolver=...)``), it serves every AI channel
 registered on it. Any participant can write a reference: answer only for a
 media the room *room_id* may show, None for any other."""
+
+AttachedMedia = Callable[[RoomEvent], Sequence[MediaContent]]
+"""An application's reader of the media an event carries outside its content
+(RFC §6.4): ``event`` → the media it names, the same ones in the same order
+every time it is asked, since an image is known by its event and its place.
+Handed to the framework (``RoomKit(attached_media=...)``), it serves every AI
+channel registered on it: each reads the events of a turn with the media named
+after their own content (:func:`with_attached_media`), the store and the
+broadcasts keeping the events as stored."""
 
 DEFAULT_MAX_AUTHOR_IMAGES = 4
 """The newest author images a turn sends, history and input together."""
@@ -60,10 +79,40 @@ ImageKey = tuple[str, int]
 """An author image: the id of the event that brought it, and its part's index."""
 
 _EARLIER = "Earlier image not shown"
+_NOT_SEEN = "Image not shown, this model does not see images"
 _UNAVAILABLE = "Image unavailable"
 _REFUSED = "Image refused by the model's provider"
 _NAME_CHARS = 120
 _MAX_ROOMS = 100  # FIFO cap across rooms a shared channel serves
+
+
+def with_attached_media(event: RoomEvent, reader: AttachedMedia | None) -> RoomEvent:
+    """*event* as an AI channel reads it (RFC §6.4): its content, then the media
+    the application's *reader* names for it, as the parts of one composite.
+    The event itself when the reader names none or fails, and an instruction,
+    the application's own direction, as it is."""
+    if reader is None or event.type == EventType.INSTRUCTION:
+        return event
+    try:
+        attached = [media for media in reader(event) if isinstance(media, MediaContent)]
+    except Exception:
+        logger.warning("The attached-media reader failed on event %s", event.id, exc_info=True)
+        return event
+    if not attached:
+        return event
+    return event.model_copy(update={"content": _followed_by(event.content, attached)})
+
+
+def _followed_by(content: EventContent, attached: list[MediaContent]) -> EventContent:
+    """*content*'s parts then *attached*; a text without words gives them its place."""
+    if isinstance(content, CompositeContent):
+        own: list[EventContent] = list(content.parts)
+    elif isinstance(content, TextContent) and not content.body.strip():
+        own = []
+    else:
+        own = [content]
+    parts = [*own, *attached]
+    return parts[0] if len(parts) == 1 else CompositeContent(parts=parts)
 
 
 def media_of(content: EventContent) -> list[tuple[int, MediaContent]]:
@@ -101,6 +150,20 @@ class AuthorImages:
             caption = [AITextPart(text=media.caption)] if media.caption else []
             return [*caption, decided]
         return [AITextPart(text=decided if decided is not None else media_label(media))]
+
+
+def unseen_images(events: Sequence[RoomEvent]) -> AuthorImages:
+    """What each image *events* carry becomes for a model that does not see: a
+    mention that it cannot see it, so it says so rather than answer as if it
+    had (RFC §6.4). Nothing is resolved, and the bound does not apply."""
+    return AuthorImages(
+        {
+            (event.id, index): _mention(_NOT_SEEN, media)
+            for event in events
+            for index, media in media_of(event.content)
+            if is_vision_image(media)
+        }
+    )
 
 
 async def author_images(

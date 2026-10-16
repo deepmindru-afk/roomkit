@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 if TYPE_CHECKING:
-    from roomkit.channels._author_images import MediaResolver
+    from roomkit.channels._author_images import AttachedMedia, MediaResolver
     from roomkit.delivery.base import DeliveryBackend
     from roomkit.orchestration.base import Orchestration
     from roomkit.telemetry.base import TelemetryProvider
@@ -198,6 +198,7 @@ class RoomKit(
         delivery_claim_lock_manager: RoomLockManager | None = None,
         verification_policy: VerificationPolicy | None = None,
         media_resolver: MediaResolver | None = None,
+        attached_media: AttachedMedia | None = None,
     ) -> None:
         """Initialise the RoomKit orchestrator.
 
@@ -243,6 +244,15 @@ class RoomKit(
                 can write a reference: answer only for a media the room may
                 show, None otherwise. Without a resolver, a referenced image
                 reads as unavailable to the model.
+            attached_media: The media an event carries outside its content,
+                for an application that keeps a message's files beside its
+                words (RFC §6.4): ``(event) -> Sequence[MediaContent]``, the
+                same media in the same order each time it is asked. Every AI
+                channel registered here reads the events of a turn, history
+                and input alike, with the media named after their own
+                content, as a composite; a reference among them is resolved
+                by ``media_resolver``. The store and broadcasts keep the event
+                as stored. A reader that raises names none for that event.
             process_timeout: Timeout in seconds for the locked processing phase.
             stt: Optional speech-to-text provider for transcription.
             tts: Optional text-to-speech provider for synthesis.
@@ -296,6 +306,7 @@ class RoomKit(
         self._identity_resolver = identity_resolver
         self._identity_channel_types = identity_channel_types
         self._media_resolver = media_resolver
+        self._attached_media = attached_media
         self._max_chain_depth = max_chain_depth
         # Counted by _store_refusing_room: a stream reads the room's status
         # once, and again only when this moved (RFC §5.1).

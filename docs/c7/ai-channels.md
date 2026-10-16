@@ -887,8 +887,10 @@ and input together, each with its author's words (`AIChannel(max_author_images=.
 changes the bound, `None` removes it). Only PNG, JPEG, GIF and WebP up to 5 MB
 go as images, each under the type it was read as (`image/jpg` goes as
 `image/jpeg`). Anything else takes the image's place as a short mention, never a
-failed turn: `[Media: contract.pdf]` for a document or a model without vision,
-`[Earlier image not shown: …]` past the bound, `[Image unavailable: …]` for a
+failed turn: `[Media: contract.pdf]` for a document, `[Image not shown, this
+model does not see images: …]` for an image sent to a model without vision (so
+it says it cannot see it rather than answer as if it had), `[Earlier image not
+shown: …]` past the bound, `[Image unavailable: …]` for a
 reference that does not resolve, `[Image refused by the model's provider: …]`
 for an image a provider refused on an earlier turn (the turn's first request
 failed on a non-retried error that is no authentication, payment, permission,
@@ -900,13 +902,36 @@ as it is: resolve it yourself where a transport needs the media. An AI channel
 takes media whatever its model sees, so the turn reads a live event as it reads
 the same event in its history.
 
-A captionless media alone in its event, on a provider without vision, and an
-upload a host stores with an empty body and its files in metadata, extract to
-nothing. `AIChannel(describe_empty_event=...)` gives the host the word: a
-callable asked only for such an event, whose text stands in for it in the
-history and the turn's input. Without one, or when it answers `None`, the media
-reads as its label (`[Media: lamp.jpg]`) and the empty upload is omitted. The
-stored event is never touched.
+An application that stores a message as its words, with its files in a record
+of its own beside them (the event's metadata, say), names those files with an
+`attached_media` reader rather than reshaping every message it stores. Every AI
+channel reads the events of a turn through it, the history its memory measures
+and the event it answers alike: the media named follow the event's own content,
+as the parts of a composite (a text without words gives them its place), under
+every rule above. The store and every broadcast keep the event as stored. The
+reader is asked on every turn: name the same media in the same order each time,
+since an image is known by its event and its place (a refusal is recorded that
+way). A reader that raises names none for that event; an instruction is read as
+it is.
+
+```python
+def attached(event: RoomEvent) -> list[MediaContent]:
+    return [
+        MediaContent(url=f"media://{f['id']}", mime_type=f["mime_type"], filename=f["name"])
+        for f in event.metadata.get("files", [])
+    ]
+
+kit = RoomKit(media_resolver=resolve, attached_media=attached)
+```
+
+A captionless media that is no image alone in its event, on a provider without
+vision, and an upload a host stores with an empty body and its files in
+metadata (unless an `attached_media` reader names them), extract to nothing.
+`AIChannel(describe_empty_event=...)` gives the host the word: a callable asked
+only for such an event, whose text stands in for it in the history and the
+turn's input. Without one, or when it answers `None`, the media reads as its
+label (`[Media: contract.pdf]`) and the empty upload is omitted. The stored
+event is never touched.
 
 ```python
 def describe_upload(event):

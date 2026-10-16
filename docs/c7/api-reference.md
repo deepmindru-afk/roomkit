@@ -141,6 +141,7 @@ RoomKit exports **255 symbols** from `roomkit`. Providers and voice types import
 | `AIGenerationEvent` | Payload for BEFORE_AI_GENERATION hooks, before AI provider invocation |
 | `EmptyEventDescriber` | `AIChannel(describe_empty_event=...)`: an event whose content extracts to nothing, in; the text the transcript reads for it, or `None` to omit it, out |
 | `MediaResolver` | `RoomKit(media_resolver=...)`: a referenced `MediaContent` (`<scheme>://…`) and its room id, in; the media's bytes, or `None` when this room may not show it, out (RFC §6.4) |
+| `AttachedMedia` | `RoomKit(attached_media=...)`: an event in; the `MediaContent`s its application keeps beside its content out, the same ones in the same order each time, which every AI channel reads after the event's own content (RFC §6.4) |
 | `ContinuationPolicy` | `AIChannel(continuation=...)`: the text of a round the model ended itself without a call, in; the instruction to go on, or `None`, out (RFC §6.4) |
 | `ToolRoundEvent` | Payload for AFTER_TOOL_ROUND hooks, between two rounds of a tool loop: the round's calls and results, the turn's toolset, `withdraw()` and `add_message()` |
 | `AIResponseEvent` | Payload for ON_AI_RESPONSE hooks, after AI generation completes |

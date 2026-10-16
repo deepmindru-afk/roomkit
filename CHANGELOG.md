@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `RoomKit(attached_media=...)` names the media an application keeps beside a
+  message's content (RMK-805, RFC §6.4). An application that stores a message
+  as its words, with its files in a record of its own (its metadata, say),
+  could give a model its images only by reshaping every message it stores into
+  a composite, which every reader of its text then had to learn. The reader,
+  `(event) -> Sequence[MediaContent]` (exported as `AttachedMedia`), is asked
+  of every event an AI channel reads for a turn, the history it hands its
+  memory provider and the event it answers alike; the media it names follow
+  the event's own content as the parts of a composite (a text without words
+  gives them its place), so an image among them goes as an author's image
+  does: resolved by `media_resolver`, under `max_author_images`, refused like
+  one, a mention for a model that does not see, and measured and summarized
+  by the memory as the turn will send it. The store and every broadcast keep
+  the event as stored. The reader names the same media in the same order each
+  time it is asked, since an image is known by its event and its place; one
+  that raises names none for that event, and an instruction is read as it is.
+
+### Changed
+
+- A model that does not see reads an image an author sent as
+  `[Image not shown, this model does not see images: “lamp.png”]` (RMK-805,
+  RFC §6.4), where it read `[Media: lamp.png]`: the label did not tell it that
+  it could not see the image, and a small model answered as if it had. Like
+  the other mentions, it names the image by its caption, else its filename,
+  else its type, and nothing is resolved for it. A captionless image alone in
+  its event now reads as that mention rather than as what
+  `describe_empty_event` says, which still answers first for a captionless
+  media that is no image. A document still reads as its label.
+
 ## [0.105.0] — 2026-10-16
 
 ### Added

@@ -9,7 +9,13 @@ from typing import TYPE_CHECKING, Any
 from roomkit._media import content_text, media_label
 from roomkit.channels._ai_cuts import CUT_MARK, cut_answer_ids, cut_records
 from roomkit.channels._ai_policy import policy_check
-from roomkit.channels._author_images import AuthorImages, RefusedImages, author_images
+from roomkit.channels._author_images import (
+    AuthorImages,
+    RefusedImages,
+    author_images,
+    unseen_images,
+    with_attached_media,
+)
 from roomkit.channels._dangling_recovery import patch_dangling_tool_calls
 from roomkit.channels._discussion_turn import (
     discussion_handles,
@@ -81,7 +87,7 @@ from roomkit.tools.context import TurnFootprint
 
 if TYPE_CHECKING:
     from roomkit.channels._ai_callbacks import RoomTasksLoader, RoomVisionLoader, ToolUsageLoader
-    from roomkit.channels._author_images import MediaResolver
+    from roomkit.channels._author_images import AttachedMedia, MediaResolver
     from roomkit.channels._skill_activation import SkillActivationMemory
     from roomkit.channels._tool_registry import ChannelRegistry
     from roomkit.channels._tool_usage import ToolUsageMemory
@@ -159,6 +165,7 @@ class AIContextMixin(_AIChannelContract):
     _room_tasks_loader: RoomTasksLoader | None
     _room_vision_loader: RoomVisionLoader | None
     _media_resolver: MediaResolver | None
+    _attached_media: AttachedMedia | None
     _max_author_images: int | None
     _refused_images: RefusedImages
     _skill_activation: SkillActivationMemory
@@ -290,10 +297,17 @@ class AIContextMixin(_AIChannelContract):
         # its own (a summary, a minimum it always keeps).
         if standalone:
             return MemoryResult()
+        # Each event as the model reads it, the media the application keeps
+        # beside its content among its parts (RFC §6.4): the provider measures
+        # and summarizes what the turn will send.
+        visible = [
+            with_attached_media(past, self._attached_media)
+            for past in visible_events(context, self.channel_id)
+        ]
         return await self._memory.retrieve(
             event.room_id,
             event,
-            context.model_copy(update={"recent_events": visible_events(context, self.channel_id)}),
+            context.model_copy(update={"recent_events": visible}),
             channel_id=self.channel_id,
         )
 
@@ -308,7 +322,10 @@ class AIContextMixin(_AIChannelContract):
         """The conversation the model reads this turn: the history this channel
         sees, then the input carrying the turn's notes, the channel's own
         (*own_notes*) after what the memory retrieved. The notes' header is the
-        channel's alone: a copy the conversation holds is replaced (RFC §6.4)."""
+        channel's alone: a copy the conversation holds is replaced (RFC §6.4).
+        The event is read with the media its application keeps beside its
+        content, as the history is."""
+        event = with_attached_media(event, self._attached_media)
         memory_result = await self._visible_memory(event, context, standalone)
         loop_ctx.author_images = await self._author_images(event, memory_result)
         messages, attribute_speakers, requester = self._turn_messages(
@@ -327,9 +344,9 @@ class AIContextMixin(_AIChannelContract):
 
     async def _author_images(self, event: RoomEvent, memory_result: MemoryResult) -> AuthorImages:
         """What the images the turn's history and input carry become (RFC §6.4);
-        none decided for a model that does not see, which reads each as its label."""
+        for a model that does not see, a mention that it does not see them."""
         if not self._provider.supports_vision:
-            return _NO_IMAGES
+            return unseen_images([*memory_result.events, event])
         return await author_images(
             [*memory_result.events, event],
             room_id=event.room_id,
@@ -968,7 +985,7 @@ class AIContextMixin(_AIChannelContract):
         each media as *images* decided (its image, else a mention)."""
         content = event.content
         if not self._provider.supports_vision:
-            return self._extract_text(event)
+            return self._extract_text(event, images)
         if isinstance(content, TextContent):
             return content.body
         if isinstance(content, MediaContent):
@@ -982,16 +999,34 @@ class AIContextMixin(_AIChannelContract):
                     # Any other part as a text-only reader reads it (RFC §6.6).
                     parts.append(AITextPart(text=text))
             return parts or ""
-        return self._extract_text(event)
+        return self._extract_text(event, images)
 
-    def _extract_text(self, event: RoomEvent) -> str:
-        """What *event* says to a model that does not see: its text, a media as
-        its label (RFC §6.6), never its bytes; nothing for a lone media without
-        a caption, which the host's describer has the word on first."""
+    @staticmethod
+    def _extract_text(event: RoomEvent, images: AuthorImages) -> str:
+        """What *event* says to a model that does not see: its text, an image
+        as *images* decided (a mention that the model does not see it), any
+        other media as its label (RFC §6.6), never bytes; nothing for a lone
+        media without a caption that is no image, which the host's describer
+        has the word on first."""
         content = event.content
-        if isinstance(content, MediaContent) and not content.caption:
-            return ""
+        if isinstance(content, MediaContent):
+            if not content.caption and (event.id, 0) not in images.decided:
+                return ""
+            return _text_of(images.parts(event.id, 0, content))
+        if isinstance(content, CompositeContent):
+            texts = (
+                _text_of(images.parts(event.id, index, part))
+                if isinstance(part, MediaContent)
+                else content_text(part)
+                for index, part in enumerate(content.parts)
+            )
+            return "\n".join(text for text in texts if text)
         return content_text(content) or ""
+
+
+def _text_of(parts: list[AITextPart | AIImagePart]) -> str:
+    """The text parts of *parts*, one per line."""
+    return "\n".join(part.text for part in parts if isinstance(part, AITextPart))
 
 
 _NO_IMAGES = AuthorImages()
