@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `benchmarks/rtp/` measures how many G.711 calls one core carries on the RTP
+  media path, the work a SIP call does before any voice pipeline stage
+  (RMK-794). One Rust generator drives each system under test: aiortp (one
+  `RTPSession` per call, optionally with adaptive playout or uvloop) and a
+  native Rust echo with a media server's hot path (one socket per call, or one
+  shared socket per thread with `recvmmsg`/`sendmmsg`). Loss, round-trip time
+  and gaps come from timestamps carried in the echoed audio, never from the
+  server's own counters, and `--find-max` searches for the largest call count
+  that passes. A point disturbed by other processes or by a struggling
+  generator is retried, never blamed on the system under test. On one
+  performance core over loopback: aiortp 0.7.0 carries 950 calls (10.4 µs per
+  packet) and the native engine 5250 to 8250 (1.7 to 1.07 µs). The suite lives
+  outside the installed package and needs a Rust toolchain; Linux only.
+  `benchmarks/voice` measures what RoomKit adds per frame past RTP.
+
 - `benchmarks/voice/` measures the CPU RoomKit spends per inbound 20 ms voice
   frame once a transport has decoded it (RMK-796): `python -m benchmarks.voice`
   feeds N sessions, one room each, through a mock backend's audio callback,

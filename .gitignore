@@ -49,3 +49,4 @@ recordings/
 *.pt
 *.png
 examples/test-click.py
+/benchmarks/rtp/native/target/

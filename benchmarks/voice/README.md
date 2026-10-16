@@ -5,8 +5,8 @@ transport has decoded it. Frames enter where a voice backend's audio
 callback hands them over (`MockVoiceBackend.simulate_audio_received`), on
 N sessions with one room each, so the figure covers the audio pipeline,
 the VAD, the STT hand-off and each turn's inbound path. RTP, codecs and
-models are excluded: add the RTP figure from a transport benchmark to get
-the cost of a whole call.
+models are excluded: add the RTP figure from `benchmarks/rtp` to get the
+cost of a whole call.
 
 ```bash
 # Energy VAD, batch mock STT, 100 calls, 10 s, three runs, pinned to CPU 2.
