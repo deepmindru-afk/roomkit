@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.105.0] — 2026-10-15
+
 ### Added
 
 - `await kit.room_strategy_is_current(room_id, Discussion)` tells a host
@@ -15078,7 +15080,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.104.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.105.0...HEAD
+[0.105.0]: https://github.com/roomkit-live/roomkit/compare/v0.104.0...v0.105.0
 [0.104.0]: https://github.com/roomkit-live/roomkit/compare/v0.103.0...v0.104.0
 [0.103.0]: https://github.com/roomkit-live/roomkit/compare/v0.102.0...v0.103.0
 [0.102.0]: https://github.com/roomkit-live/roomkit/compare/v0.101.0...v0.102.0
