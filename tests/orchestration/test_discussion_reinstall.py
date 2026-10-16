@@ -16,7 +16,14 @@ import pytest
 
 from roomkit import Discussion, RoomKit
 from roomkit.channels.ai import AIChannel
-from roomkit.orchestration.strategies.discussion import _driver, _shared
+from roomkit.models.enums import ChannelType, EventType, HookExecution, HookTrigger
+from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.orchestration.strategies.discussion import (
+    SpeakQueueChange,
+    SpeakQueueEvent,
+    _driver,
+    _shared,
+)
 from roomkit.orchestration.strategies.discussion._config import DiscussionConfig
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
@@ -342,4 +349,43 @@ async def test_a_failed_install_over_a_discussion_left_here_keeps_no_record_of_i
     # A left its discussion: no record of it says the room still runs it.
     assert a.room_strategy("r1") is None
     assert await a.room_strategy_is_current("r1", Discussion) is False
+    await cluster.close()
+
+
+async def test_a_result_or_instruction_reaching_a_process_after_an_uninstall_is_not_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A does not look again before B installs the discussion back; what
+    # reaches A in between has no queue to go to.
+    monkeypatch.setattr(_driver, "POLL_SECONDS", 3.0)
+    monkeypatch.setattr(_shared, "LEASE_SECONDS", 6.0)
+    monkeypatch.setattr(_shared, "_RENEW_BEFORE", 4.0)
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True, delay=1.0)
+    b = cluster.kit()
+    seen: list[tuple[SpeakQueueChange, tuple[str, ...]]] = []
+
+    @a.hook(HookTrigger.ON_SPEAK_QUEUE, execution=HookExecution.ASYNC)
+    async def follow(event: SpeakQueueEvent, context: Any) -> None:
+        seen.append((event.change, event.channel_ids))
+
+    await _say(a, "@investigator take your time")
+    await _turn_started(cluster)
+    assert await b.uninstall_strategy("r1") is True
+    result = RoomEvent(
+        room_id="r1",
+        source=EventSource(channel_id="sre", channel_type=ChannelType.AI),
+        content=TextContent(body="Result of the task"),
+        addressed_to=[],
+    )
+    assert await a._queue_discussion_post("r1", result) is True
+    await _say(a, "summarise", addressed_to=["comms"], event_type=EventType.INSTRUCTION)
+    await b.install_strategy("r1", cluster.strategy(delay=0.05))
+
+    async def handed_back() -> bool:
+        events = await cluster.store.list_events("r1", limit=200)
+        posted = any(e.content == result.content for e in events)
+        return posted and (SpeakQueueChange.INSTRUCTION_DROPPED, ("comms",)) in seen
+
+    await _until(handed_back)
     await cluster.close()

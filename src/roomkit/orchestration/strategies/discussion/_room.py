@@ -173,6 +173,12 @@ class DiscussionRoom:
             self._follow_stored()
             yield state
 
+    def _takes_nothing(self, state: SpeakQueueState) -> bool:
+        """Whether the queue, read as *state* while editing, takes no turn:
+        the discussion is over, this process left it, or the room no longer
+        stores it (another process uninstalled it, rule 1)."""
+        return state.over or self.closed or self.shared.config is None
+
     # -- Lifecycle --
 
     async def load(self) -> None:
@@ -350,7 +356,7 @@ class DiscussionRoom:
             self.fire(SpeakQueueChange.INSTRUCTION_DROPPED, agents, event.id)
             return
         async with self.editing() as state:
-            if state.over or self.closed:
+            if self._takes_nothing(state):
                 self.fire(SpeakQueueChange.INSTRUCTION_DROPPED, agents, event.id)
                 return
             if agents:
@@ -372,7 +378,7 @@ class DiscussionRoom:
         if not self.drives or agent not in self.agents:
             return False
         async with self.editing() as state:
-            if state.over or self.closed:
+            if self._takes_nothing(state):
                 self.post_later(event)
                 return True
             self.instructions[event.id] = event
@@ -388,7 +394,7 @@ class DiscussionRoom:
         for each of *agents* not already queued for it (rule 7); the agents
         queued."""
         async with self.editing() as state:
-            if state.over or self.closed:
+            if self._takes_nothing(state):
                 return []
             ask = Ask(
                 event_id=trigger.id,
@@ -470,7 +476,7 @@ class DiscussionRoom:
         it."""
         who = person_label(event, context)
         async with self.editing() as state:
-            if state.over or self.closed:
+            if self._takes_nothing(state):
                 return []
             overflow = None
             if self.config.dispatch and self._unaddressed(event, context):
@@ -577,7 +583,7 @@ class DiscussionRoom:
         if not named:
             return []
         async with self.editing() as state:
-            if state.over or self.closed:
+            if self._takes_nothing(state):
                 return []
             for agent in named:
                 ask = Ask(
