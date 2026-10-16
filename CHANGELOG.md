@@ -16,8 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Discussion`: once the process that replaced it stopped, the room waited and
   its host could not tell. False after such a replacement, when the process
   installed none, and once the discussion was uninstalled; the stored state is
-  read when called, and an uninstall another process made is taken at once,
-  even when a discussion was installed again before this process looked
+  read when called, and an uninstall another process made is taken as soon as
+  this process reads it, a discussion installed again since included
   (`room_strategy()` then answers `None`, where a replaced install still names
   the process's own). A host reinstalls only while its own state still wants
   the discussion. A strategy kind not stored with the room (`Pipeline`,
@@ -67,9 +67,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing back into the room either: a person's message there stored its
   ask, which a discussion installed later answered, and its lease, written
   into the emptied room, kept a fresh install from giving a turn for up to
-  15 s. One case remains: a discussion uninstalled and installed again
-  within one poll (a second) of the process giving a turn still takes that
-  turn's end (RMK-785).
+  15 s; a task's result or an instruction reaching it meanwhile is posted or
+  reported dropped. One case remains (RMK-785): an uninstall and an install
+  again by another process, both before a process that installed the
+  discussion reads the room (within its one-second poll, or while it is
+  idle), go unseen there: that process stays installed and current, and the
+  turn it was giving ends in the new queue.
 - A discussion is installed, changed and uninstalled from any process
   serving its room (RMK-777, RFC §19.7 and §19.7.5 rules 1 and 16). After a
   restart, or on a second worker, `install_strategy` refused the stored
