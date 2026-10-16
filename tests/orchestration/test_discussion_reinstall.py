@@ -17,10 +17,12 @@ import pytest
 from roomkit import Discussion, RoomKit
 from roomkit.channels.ai import AIChannel
 from roomkit.orchestration.strategies.discussion import _driver, _shared
+from roomkit.orchestration.strategies.discussion._config import DiscussionConfig
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
 from tests.orchestration.test_discussion_processes import (
+    AGENTS,
     KEPT,
     _Cluster,
     _say,
@@ -52,8 +54,8 @@ class _HandsOver(MockAIProvider):
         return await super().generate(context)
 
 
-def _handing_over(cluster: _Cluster) -> Discussion:
-    return Discussion([AIChannel(n, provider=_HandsOver(n, cluster.log)) for n in KEPT])
+def _handing_over(cluster: _Cluster, names: tuple[str, ...] = KEPT) -> Discussion:
+    return Discussion([AIChannel(n, provider=_HandsOver(n, cluster.log)) for n in names])
 
 
 async def _created(cluster: _Cluster) -> RoomKit:
@@ -280,4 +282,64 @@ async def test_a_turn_looked_for_as_another_process_uninstalls_leaves_no_lease()
 
     room = await cluster.store.get_room("r1")
     assert room is not None and room.metadata.get("_speak_queue") is None
+    await cluster.close()
+
+
+async def _installed_again_elsewhere(cluster: _Cluster) -> RoomKit:
+    """A's watch read B's uninstall; B installed every agent again since."""
+    a = cluster.kit()
+    await a.create_room(room_id="r1", orchestration=_handing_over(cluster, AGENTS))
+    await a.attach_channel("r1", "ops")
+    b = cluster.kit()
+    await _cut_by_an_uninstall_elsewhere(cluster, a, b)
+    await b.install_strategy("r1", _handing_over(cluster, AGENTS))
+    return a
+
+
+async def test_installing_again_over_one_installed_elsewhere_meanwhile_takes_its_place() -> None:
+    cluster = _Cluster()
+    a = await _installed_again_elsewhere(cluster)
+
+    # A's host installs without comms before A looks again: it takes the place
+    # of B's discussion, and comms, which an install attached, goes.
+    await a.install_strategy("r1", _handing_over(cluster, KEPT))
+
+    stored = await cluster.stored()
+    assert stored is not None and stored.agents == list(KEPT)
+    assert "comms" not in await cluster.bound()
+    assert await a.room_strategy_is_current("r1", Discussion) is True
+    await cluster.close()
+
+
+async def test_installing_again_over_one_installed_elsewhere_keeps_what_it_attached() -> None:
+    cluster = _Cluster()
+    a = await _installed_again_elsewhere(cluster)
+    attached = (await cluster.stored() or DiscussionConfig()).attached
+
+    await a.install_strategy("r1", _handing_over(cluster, AGENTS))
+    stored = await cluster.stored()
+    assert stored is not None and stored.attached == attached
+
+    follower = await cluster.process(install=False)
+    assert await follower.uninstall_strategy("r1") is True
+    assert await cluster.bound() == {"ops"}
+    await cluster.close()
+
+
+async def test_a_failed_install_over_a_discussion_left_here_keeps_no_record_of_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cluster = _Cluster()
+    a = await _installed_again_elsewhere(cluster)
+
+    async def refuse(*args: Any, **kwargs: Any) -> Any:
+        raise ValueError("refused by the test")
+
+    monkeypatch.setattr(a, "_prepare_discussion", refuse)
+    with pytest.raises(ValueError, match="refused by the test"):
+        await a.install_strategy("r1", _handing_over(cluster, AGENTS))
+
+    # A left its discussion: no record of it says the room still runs it.
+    assert a.room_strategy("r1") is None
+    assert await a.room_strategy_is_current("r1", Discussion) is False
     await cluster.close()

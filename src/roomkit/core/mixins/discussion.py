@@ -205,10 +205,11 @@ class DiscussionMixin(HelpersMixin):
         self._installing_discussions.add(room_id)
         try:
             if held is not None and held.driver is not None and _uninstalled(held, room):
-                # Gone since this process installed it: left here, and the
-                # install starts afresh, never in the room it left (rule 16).
+                # Gone since this process installed it: left here, never
+                # reused. The install takes the place of the discussion the
+                # room stores now, another process's, else starts afresh.
                 await self._leave_uninstalled(room_id, held)
-                held = None
+                held = self._join_stored(room) if room is not None else None
             if held is None:
                 await self._start_discussion(room_id, discussion)
             else:
@@ -321,15 +322,24 @@ class DiscussionMixin(HelpersMixin):
         held = self._discussions.get(room.id)
         config = DiscussionConfig.stored(room.metadata)
         if held is None and config is not None and room.id not in self._installing_discussions:
-            follower = DiscussionRoom.following(self, room.id, config)
-            follower.organization_id = room.organization_id
-            self._discussions[room.id] = follower
-            for hook in follower.hooks():
-                self._hook_engine.add_room_hook(room.id, hook)
+            self._join_stored(room)
         elif held is not None and config is not None:
             held.follow(config)
         elif held is not None and held.driver is None and config is None:
             self._leave_discussion(room.id, held)
+
+    def _join_stored(self, room: Room) -> Any:
+        """Follow the discussion *room* stores, another process's (rule 16):
+        this process routes and queues by it; None when it stores none."""
+        config = DiscussionConfig.stored(room.metadata)
+        if config is None:
+            return None
+        follower = DiscussionRoom.following(self, room.id, config)
+        follower.organization_id = room.organization_id
+        self._discussions[room.id] = follower
+        for hook in follower.hooks():
+            self._hook_engine.add_room_hook(room.id, hook)
+        return follower
 
     async def _forget_discussion(self, room_id: str, discussion: Any, *, installs: int) -> bool:
         """Another process uninstalled the discussion this one gave turns for,

@@ -321,10 +321,11 @@ class StrategyMixin(HelpersMixin):
     ) -> None:
         """Record what a failed replacement leaves the room holding: *strategy*
         once the discussion runs it (installing it again finishes the
-        install), else the record *held* before."""
+        install), else the record *held* before while the discussion still
+        runs its strategy (one this process left has none)."""
         if self._runs_discussion(room_id, strategy):
             self._room_strategies[room_id] = added if held is None else _joined(held, added, bound)
-        elif held is not None:
+        elif held is not None and self._runs_discussion(room_id, held.strategy):
             self._room_strategies[room_id] = held
         else:
             del self._room_strategies[room_id]
