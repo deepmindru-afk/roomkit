@@ -445,6 +445,47 @@ async def test_an_instruction_or_a_result_reaching_a_process_that_gives_no_turn_
     await cluster.close()
 
 
+async def test_what_a_process_held_when_another_install_replaced_its_own_is_not_kept() -> None:
+    # A takes a task's result and an instruction for sre behind a slow turn;
+    # B's install then replaces A's (sre kept), so A gives no turn: it posts
+    # the result and reports the instruction dropped (rules 16 and 19).
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True, delay=1.0)
+    b = await cluster.process(install=True, delay=1.0)
+    seen: list[tuple[SpeakQueueChange, tuple[str, ...]]] = []
+
+    @a.hook(HookTrigger.ON_SPEAK_QUEUE, execution=HookExecution.ASYNC)
+    async def follow(event: SpeakQueueEvent, context: Any) -> None:
+        seen.append((event.change, event.channel_ids))
+
+    await _say(a, "@investigator take your time")
+    await _turn_started(cluster)
+    result = RoomEvent(
+        room_id="r1",
+        source=EventSource(channel_id="sre", channel_type=ChannelType.AI),
+        content=TextContent(body="Result of the task"),
+        addressed_to=[],
+    )
+    assert await a._queue_discussion_post("r1", result) is True
+    await _say(a, "summarise", addressed_to=["sre"], event_type=EventType.INSTRUCTION)
+    await b.install_strategy("r1", cluster.strategy(names=KEPT, delay=1.0))
+
+    async def posted() -> list[RoomEvent]:
+        events = await cluster.store.list_events("r1", limit=200)
+        return [e for e in events if e.content == result.content]
+
+    async def handed_back() -> bool:
+        dropped = (SpeakQueueChange.INSTRUCTION_DROPPED, ("sre",)) in seen
+        return dropped and bool(await posted())
+
+    await _until(handed_back)
+    await asyncio.sleep(0.3)
+    assert len(await posted()) == 1
+    assert a._discussions["r1"].instructions == {}
+    assert "+sre" not in cluster.log  # the instruction's turn was given nowhere
+    await cluster.close()
+
+
 async def test_a_quiet_follower_routes_host_calls_by_a_new_configuration() -> None:
     cluster = _Cluster()
     a = await cluster.process(install=True, create=True, names=KEPT)

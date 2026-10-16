@@ -216,14 +216,21 @@ class DiscussionRoom:
         if self.driver is not None:
             await self.driver.stop()
         try:
-            async with self.editing() as state:
-                self.shared.release(state)
-                mine = [e for e in state.entries if e.holder == self.shared.me]
-                state.entries = [e for e in state.entries if e not in mine]
-                self.drop_instructions(mine)
+            await self.give_up()
         except Exception:
             logger.exception("The speak queue of room %s was not stored", self.room_id)
         await self._finish_announcing()
+
+    async def give_up(self) -> None:
+        """Give no turn from this process: the lease released, the instruction
+        turns only this process could give reported dropped and the task
+        results they were to post posted; the rest of the queue stays (rules
+        16 and 19)."""
+        async with self.editing() as state:
+            self.shared.release(state)
+            mine = [e for e in state.entries if e.holder == self.shared.me]
+            state.entries = [e for e in state.entries if e not in mine]
+            self.drop_instructions(mine)
 
     async def take_over(self, incoming: DiscussionRoom) -> None:
         """Hold *incoming*'s configuration and strategy in place of this

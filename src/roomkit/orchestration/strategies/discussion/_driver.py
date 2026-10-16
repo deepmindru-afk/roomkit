@@ -198,13 +198,14 @@ class TurnDriver:
 
     async def _gives_turns(self, peek: SpeakQueueState) -> bool:
         """Whether this process gives the turns of the discussion the room
-        stores: one whose host installed another gives up the lease (rule 16)."""
+        stores: one whose host installed another gives up the lease and the
+        turns only it could give, queued before (rules 16 and 19)."""
         room = self._room
         if room.drives:
             return True
-        if room.shared.holds(peek):
-            async with room.editing() as state:
-                room.shared.release(state)
+        held = any(e.holder == room.shared.me for e in peek.entries)
+        if held or room.shared.holds(peek):
+            await room.give_up()
         return False
 
     def _waiting_decision(self, state: SpeakQueueState, *, done: bool) -> Pending | None:
