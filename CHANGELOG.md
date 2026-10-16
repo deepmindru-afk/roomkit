@@ -16,12 +16,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Discussion`: once the process that replaced it stopped, the room waited and
   its host could not tell. False after such a replacement, when the process
   installed none, and once the discussion was uninstalled; the stored state is
-  read when called, and an uninstall another process made is taken at once
+  read when called, and an uninstall another process made is taken at once,
+  even when a discussion was installed again before this process looked
   (`room_strategy()` then answers `None`, where a replaced install still names
   the process's own). A host reinstalls only while its own state still wants
   the discussion. A strategy kind not stored with the room (`Pipeline`,
   `Swarm`, `Loop`, `Supervisor`) raises `TypeError`, so the question keeps its
   meaning if another kind comes to be stored.
+
+### Changed
+
+- **BREAKING — `install_strategy(room_id, Discussion(...))` over a room's
+  discussion takes its place instead of refusing** (RMK-777, RFC §19.7). Over
+  a discussion this kit installed (`install_strategy` or
+  `create_room(orchestration=...)`) it raised `ValueError` ("holds a strategy
+  already: uninstall_strategy() first"); it now replaces it and keeps the
+  queue, an agent the new one leaves out cut mid-turn and detached when an
+  install attached it (an agent the host bound itself is refused).
+  `uninstall_strategy` in a process that installed nothing ends a discussion
+  another process stored, in every process, and detaches the agents its
+  installs attached, where it returned `False`. `Discussion.install(kit,
+  room_id)` called directly now claims the room as every built-in strategy
+  does: over a strategy the host recorded with `install_strategy` it raises
+  `ValueError`, where both were set up side by side. Migration: a host that
+  relied on the refusal to keep the first discussion checks
+  `kit.room_strategy(room_id)` before installing; call `uninstall_strategy`
+  only where the discussion should end for every worker; install over
+  another strategy after `uninstall_strategy`.
 
 ### Fixed
 
@@ -32,16 +53,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never returned and the room stayed locked for everyone (a lock manager that
   times out released it after its timeout, the end lost with a
   `TimeoutError`). Uninstalling now cuts the running turn and records nothing
-  of its end, the queue being forgotten, and no longer waits under the lock
-  for the `ON_SPEAK_QUEUE` announcements, whose hooks may take it (that wait
-  cost up to 10 s). A process that stops still records the end and keeps the
-  queue.
+  of its end, the queue being forgotten, without waiting for the cut turn to
+  unwind (one that stored its text before a tool call writes its end on that
+  message, under the lock), and no longer waits under the lock for the
+  `ON_SPEAK_QUEUE` announcements, whose hooks may take it (that wait cost up
+  to 10 s). A process that stops still records the end and keeps the queue.
 - A discussion uninstalled by another process no longer comes back
-  (RMK-778, RFC §19.7.5 rule 16). The turn running in the process giving the
-  turns went on to its end and wrote the queue back into the room: a later
-  discussion did not start fresh (its first pick read the old
+  (RMK-778, RFC §19.7.5 rules 1 and 16). The turn running in the process
+  giving the turns went on to its end and wrote the queue back into the
+  room: a later discussion did not start fresh (its first pick read the old
   `last_speaker`). That turn is now cut once its process reads the queue
-  again, and nothing of its end is written.
+  again, and nothing of its end is written. Until then that process writes
+  nothing back into the room either: a person's message there stored its
+  ask, which a discussion installed later answered, and its lease, written
+  into the emptied room, kept a fresh install from giving a turn for up to
+  15 s. One case remains: a discussion uninstalled and installed again
+  within one poll (a second) of the process giving a turn still takes that
+  turn's end (RMK-785).
 - A discussion is installed, changed and uninstalled from any process
   serving its room (RMK-777, RFC §19.7 and §19.7.5 rules 1 and 16). After a
   restart, or on a second worker, `install_strategy` refused the stored
@@ -50,23 +78,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stored; changing the agents meant uninstall then install, which emptied
   the queue and left the other workers on the old agents, a message naming
   a removed agent answered by nobody on one worker and by another agent on
-  the next. `install_strategy(room_id, Discussion(...))` over a discussion
-  now takes its place and keeps the queue, who listens and the turns given:
-  an agent left out leaves the queue, its running turn is cut and it is
-  detached when an install attached it (an agent the host bound itself is
-  refused). The agents installs attached are stored with the configuration,
-  so `uninstall_strategy` in any process, one that only follows the
-  discussion included, ends it everywhere and detaches them. Every process
-  routes by the stored configuration as it changes; a process whose host
-  installed another gives up the lease and only follows until its host
-  installs the stored one. A process whose discussion another process
-  uninstalled no longer keeps a strategy record without its discussion.
-  `Discussion.install` called directly now claims the room as every
-  built-in strategy does, so it is refused over another strategy the kit
-  recorded, a discussion included: install over one with `install_strategy`.
-  A discussion stored by 0.104.0 or earlier names no attached agents:
-  uninstalling it from a process that did not install it detaches none, and a
-  0.104.0 worker storing its configuration drops the list.
+  the next. An install over a discussion now takes its place and keeps the
+  queue, who listens and the turns given (see **Changed**). The agents
+  installs attached are stored with the configuration, so
+  `uninstall_strategy` in any process, one that only follows the discussion
+  included, ends it everywhere and detaches them. Every process routes by
+  the stored configuration as it changes; a process whose host installed
+  another gives up the lease and only follows until its host installs the
+  stored one, handing back the turns only it could give: the task results
+  they were to post are posted, the instructions reported dropped. A
+  process whose discussion another process uninstalled no longer keeps a
+  strategy record without its discussion. A discussion stored by 0.104.0 or
+  earlier names no attached agents: uninstalling it detaches none, from any
+  process, the one that takes it back after a restart included, and an
+  install that leaves out one of its agents is refused while that agent is
+  bound (uninstall it, then install). During a rolling upgrade, a 0.104.0
+  worker that installed the discussion keeps giving turns by its own
+  configuration after a 0.105.0 process changed the agents, and drops the
+  stored list when it stores its configuration: change the agents once
+  every worker runs 0.105.0.
 - An agent that only listens answers a person who names it (RMK-777, RFC
   §19.7.5 rule 12). Its turn was given, then cut at the first look the
   process giving it took at the queue, as if the host had just set it to
