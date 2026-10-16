@@ -3,7 +3,7 @@
 An application often runs several workers behind a load balancer, all on one
 Postgres (``PostgresStore`` and ``PostgresAdvisoryLockManager``). Here two
 kits share one store and one lock manager to play those two workers, each
-with its own agent objects. Three scenes:
+with its own agent objects. Four scenes:
 
 1. A message reaches worker B, where the host never installed the
    discussion. B follows the discussion stored with the room: it asks no
@@ -108,24 +108,22 @@ async def until(store: InMemoryStore, count: int) -> None:
             await asyncio.sleep(0.05)
 
 
-async def main() -> None:
-    store, locks = InMemoryStore(), InMemoryLockManager()
-    a = await worker("A", store, locks)
-    await a.create_room(room_id=ROOM, orchestration=discussion("A"))
-    await a.attach_channel(ROOM, "ops")
-    b = await worker("B", store, locks)
-
+async def a_follower_queues(b: RoomKit, store: InMemoryStore) -> None:
     logger.info("1. a message reaches worker B, which only follows the discussion")
     await say(b, "checkout is failing, what happened?")
     await until(store, 3)
     logger.info("   answers: %s", await answers(store))
 
+
+async def both_install(a: RoomKit, b: RoomKit, store: InMemoryStore) -> None:
     logger.info("2. worker B installs the discussion too; two messages reach two workers")
     await b.install_strategy(ROOM, discussion("B"))
     await say(a, "@investigator what do the logs say?")
     await say(b, "@sre and the metrics?")
     await until(store, 5)
 
+
+async def a_crash_hands_over(a: RoomKit, b: RoomKit, store: InMemoryStore) -> None:
     logger.info("3. worker A crashes; B takes the turns over once A's lease expires (15 s)")
     held = a._discussions[ROOM]
     held.closed = True
@@ -134,6 +132,8 @@ async def main() -> None:
     await until(store, 6)
     logger.info("   answers: %s", await answers(store))
 
+
+async def a_replaced_install(b: RoomKit, store: InMemoryStore, locks: InMemoryLockManager) -> None:
     logger.info("4. worker C installs the discussion without comms, then stops")
     c = await worker("C", store, locks)
     await c.install_strategy(ROOM, discussion("C", ("investigator", "sre")))
@@ -142,7 +142,7 @@ async def main() -> None:
     logger.info("   worker B: room_strategy_is_current = %s", current)
     await say(b, "@investigator still with us?")
     if not current:
-        # The host installs the agents it holds: B gives the turns again.
+        # B's host still wants its discussion, comms included: it installs it again.
         await b.install_strategy(ROOM, discussion("B"))
         logger.info(
             "   worker B: room_strategy_is_current = %s",
@@ -150,6 +150,18 @@ async def main() -> None:
         )
     await until(store, 7)
     logger.info("   answers: %s", await answers(store))
+
+
+async def main() -> None:
+    store, locks = InMemoryStore(), InMemoryLockManager()
+    a = await worker("A", store, locks)
+    await a.create_room(room_id=ROOM, orchestration=discussion("A"))
+    await a.attach_channel(ROOM, "ops")
+    b = await worker("B", store, locks)
+    await a_follower_queues(b, store)
+    await both_install(a, b, store)
+    await a_crash_hands_over(a, b, store)
+    await a_replaced_install(b, store, locks)
     await b.close()
 
 

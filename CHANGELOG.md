@@ -16,7 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Discussion`: once the process that replaced it stopped, the room waited and
   its host could not tell. False after such a replacement, when the process
   installed none, and once the discussion was uninstalled; the stored state is
-  read when called. A strategy kind not stored with the room (`Pipeline`,
+  read when called, and an uninstall another process made is taken at once
+  (`room_strategy()` then answers `None`, where a replaced install still names
+  the process's own). A host reinstalls only while its own state still wants
+  the discussion. A strategy kind not stored with the room (`Pipeline`,
   `Swarm`, `Loop`, `Supervisor`) raises `TypeError`, so the question keeps its
   meaning if another kind comes to be stored.
 

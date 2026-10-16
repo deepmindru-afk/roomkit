@@ -621,7 +621,7 @@ async def test_a_process_that_stops_during_a_turn_records_its_end_and_keeps_the_
 async def test_a_process_whose_install_another_replaced_is_current_again_once_it_installs() -> (
     None
 ):
-    # B's host read gamma switched off a moment: it installs without comms,
+    # B's host read comms switched off a moment: it installs without it,
     # then stops. A follows B's agents and gives no turn: the room waits.
     cluster = _Cluster()
     a = await cluster.process(install=True, create=True)
@@ -655,7 +655,59 @@ async def test_a_process_that_installed_none_or_whose_discussion_went_is_not_cur
 
     assert await follower.uninstall_strategy("r1") is True
 
-    # Read from the room as it is now, before A's driver polls.
+    # Read from the room as it is now, before A's driver polls; A takes the
+    # uninstall at once, so its host sees the discussion gone.
+    assert await a.room_strategy_is_current("r1", Discussion) is False
+    assert a.room_strategy("r1") is None and a.speak_queue("r1") is None
+    await cluster.close()
+
+
+async def test_an_uninstall_elsewhere_is_taken_at_once_even_under_the_lock_mid_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A's driver does not look again before A's host asks.
+    monkeypatch.setattr(_driver, "POLL_SECONDS", 5.0)
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True, delay=1.0)
+    b = await cluster.process(install=True)
+    await _say(a, "@investigator take your time")
+    await _turn_started(cluster)
+    assert await b.uninstall_strategy("r1") is True
+
+    async with asyncio.timeout(1.0), a.lock_manager.locked("r1"):
+        assert await a.room_strategy_is_current("r1", Discussion) is False
+    assert a.room_strategy("r1") is None
+
+    # A host that still wants the discussion would install it; this one
+    # follows the uninstall, and nothing of A's cut turn comes back.
+    await asyncio.sleep(1.3)
+    room = await cluster.store.get_room("r1")
+    assert room is not None and room.metadata.get("_speak_queue") is None
+    assert await cluster.stored() is None
+    assert await cluster.answers() == []
+    await cluster.close()
+
+
+async def test_the_same_configuration_installed_by_another_process_keeps_both_current() -> None:
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True)
+    b = await cluster.process(install=True)
+
+    assert await a.room_strategy_is_current("r1", Discussion) is True
+    assert await b.room_strategy_is_current("r1", Discussion) is True
+    await cluster.close()
+
+
+async def test_the_kind_asked_about_is_the_kind_installed() -> None:
+    class Panel(Discussion):
+        """A host's own discussion."""
+
+    cluster = _Cluster()
+    a = await cluster.process(install=True, create=True)
+
+    assert await a.room_strategy_is_current("r1", Discussion) is True
+    assert await a.room_strategy_is_current("r1", Panel) is False
+    assert await a.uninstall_strategy("r1") is True
     assert await a.room_strategy_is_current("r1", Discussion) is False
     await cluster.close()
 

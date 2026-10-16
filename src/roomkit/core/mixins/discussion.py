@@ -155,13 +155,17 @@ class DiscussionMixin(HelpersMixin):
         process's install may replace: a Discussion (rule 16)."""
         return isinstance(kind, type) and issubclass(kind, Discussion)
 
-    def _discussion_is_current(self, room: Room, kind: type) -> bool:
+    async def _discussion_is_current(self, room: Room, kind: type) -> bool:
         """Whether the discussion of *kind* this process installed is the one
         *room*, just read, stores: the one this process gives turns by (rule
-        16)."""
+        16). One another process uninstalled is forgotten here at once, so
+        ``room_strategy()`` tells the host it is gone."""
         self._follow_discussion(room)
         held = self._discussions.get(room.id)
-        if held is None or DiscussionConfig.stored(room.metadata) is None:
+        if held is None:
+            return False
+        if DiscussionConfig.stored(room.metadata) is None:
+            await self._forget_discussion(room.id, held)
             return False
         return isinstance(held.strategy, kind) and held.drives
 
@@ -312,6 +316,9 @@ class DiscussionMixin(HelpersMixin):
         leave it here, the strategy record with it, writing nothing back."""
         if self._discussions.get(room_id) is not discussion:
             return
+        # Its queue is gone: a turn cut on the way records nothing, and so
+        # takes no room lock its caller may hold (rule 1).
+        discussion.forgotten = True
         # The task results this process was to post: the queue is gone, they
         # are posted all the same (rule 19).
         discussion.post_held()

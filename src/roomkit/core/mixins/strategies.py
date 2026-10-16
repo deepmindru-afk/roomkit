@@ -58,7 +58,8 @@ class _Installed:
 
 
 class StrategyMixin(HelpersMixin):
-    """Adds ``install_strategy()``, ``uninstall_strategy()`` and ``room_strategy()``."""
+    """Adds ``install_strategy()``, ``uninstall_strategy()``, ``room_strategy()``
+    and ``room_strategy_is_current()``."""
 
     _store: ConversationStore
     _lock_manager: RoomLockManager
@@ -105,12 +106,17 @@ class StrategyMixin(HelpersMixin):
         is the one the room stores now (RFC §19.7).
 
         A strategy stored with the room, a discussion (RFC §19.7.5 rule 16),
-        may be replaced by another process's install, after which this
-        process gives no turn. False then, when this process installed none,
-        and once it was uninstalled; the room's stored state is read when
-        called. A host that finds it false installs what it wants::
+        may be replaced by another process's install with another
+        configuration, after which this process gives no turn. False then,
+        when this process installed none, and once it was uninstalled; the
+        room's stored state is read when called. An uninstall another process
+        made is taken here at once: :meth:`room_strategy` answers None from
+        then on, where a replaced install still names this process's own.
+        A host that finds it false installs again only while its own state
+        still wants the discussion, else it would bring back one another
+        process took out::
 
-            if not await kit.room_strategy_is_current(room_id, Discussion):
+            if wanted and not await kit.room_strategy_is_current(room_id, Discussion):
                 await kit.install_strategy(room_id, Discussion(agents))
 
         *organization_id* scopes the call to one tenant (RFC §17.2).
@@ -121,11 +127,11 @@ class StrategyMixin(HelpersMixin):
         """
         if not self._stored_with_room(kind):
             raise TypeError(
-                f"{getattr(kind, '__name__', kind)!r} is not a strategy stored with the room: "
-                "only a Discussion is, which another process's install may replace"
+                f"room_strategy_is_current() takes a strategy class stored with the room "
+                f"(Discussion), not {kind!r}: it is not a strategy stored with the room"
             )
         room = await self.get_room(room_id, organization_id=organization_id)
-        return self._discussion_is_current(room, kind)
+        return await self._discussion_is_current(room, kind)
 
     async def install_strategy(
         self, room_id: str, strategy: Orchestration, *, organization_id: str | None = None
