@@ -53,13 +53,17 @@ class SharedQueue:
     async def editing(self) -> AsyncGenerator[SpeakQueueState, None]:
         """Change the stored queue: read under the room lock, written back when
         the block changed it, its version moved when the queue itself changed
-        (a lease renewal alone does not)."""
+        (a lease renewal alone does not). A room that stores no discussion
+        when read gets nothing back, whatever the block changed: another
+        process uninstalled it, and a discussion installed later starts with
+        an empty queue (rule 1)."""
         async with self._kit._lock_manager.locked(self._room_id):
             state = await self.read()
+            stored = self.config is not None
             before = state.model_dump(mode="json")
             yield state
             after = state.model_dump(mode="json")
-            if after != before:
+            if stored and after != before:
                 if _queue_part(after) != _queue_part(before):
                     state.version += 1
                 await self.write(state)

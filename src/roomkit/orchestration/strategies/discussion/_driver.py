@@ -179,7 +179,8 @@ class TurnDriver:
             if context.room.status in _REFUSING:
                 return None
             async with room.editing() as state:
-                if not shared.take(state):
+                # Uninstalled since the peek: no turn, the next look leaves it.
+                if shared.config is None or not shared.take(state):
                     return None
                 pending = self._waiting_decision(state, done=done)
                 turn, stopped = None, []

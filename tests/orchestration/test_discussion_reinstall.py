@@ -2,7 +2,9 @@
 
 A process that read the discussion uninstalled leaves it, even when another
 process installed one again before it looked; its host installing again
-starts the discussion afresh, never in the room it left.
+starts the discussion afresh, never in the room it left. Until it looks, it
+writes nothing back into the room, so a discussion installed later starts
+with an empty queue.
 """
 
 from __future__ import annotations
@@ -240,4 +242,42 @@ async def test_a_read_begun_before_an_install_here_does_not_undo_it(
         return await cluster.answers() == ["investigator"]
 
     await _until(answered)
+    await cluster.close()
+
+
+async def test_a_message_before_a_process_sees_an_uninstall_writes_no_queue_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A bound investigator itself, so it stays bound once B uninstalls; A
+    # does not look again before a person writes to it.
+    monkeypatch.setattr(_driver, "POLL_SECONDS", 5.0)
+    cluster = _Cluster()
+    a = await cluster.hosted("investigator")
+    await asyncio.sleep(0.1)
+    b = await cluster.process(install=False)
+    assert await b.uninstall_strategy("r1") is True
+
+    await _say(a, "@investigator are you there?")
+    room = await cluster.store.get_room("r1")
+    assert room is not None and room.metadata.get("_speak_queue") is None
+
+    # A discussion installed later starts with nothing asked of it.
+    await b.install_strategy("r1", cluster.strategy(delay=0.05))
+    await asyncio.sleep(0.5)
+    assert await cluster.answers() == []
+    await cluster.close()
+
+
+async def test_a_turn_looked_for_as_another_process_uninstalls_leaves_no_lease() -> None:
+    cluster = _Cluster()
+    await cluster.process(install=True, create=True)
+    b = await cluster.process(install=False)
+    await asyncio.sleep(0.3)
+    async with cluster.locks.locked("r1"):
+        await asyncio.sleep(0.3)  # A's driver has read the queue and waits for the lock
+        assert await b.uninstall_strategy("r1") is True
+    await asyncio.sleep(0.3)
+
+    room = await cluster.store.get_room("r1")
+    assert room is not None and room.metadata.get("_speak_queue") is None
     await cluster.close()
