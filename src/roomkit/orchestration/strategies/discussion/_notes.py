@@ -22,13 +22,15 @@ HEADER = "[Discussion: the room and how it works]"
 DEFAULT_RULES = (
     "How the room works: an agent takes a turn only when a message names it with @. "
     "Whenever another agent must act next, end your message with its handle, as in "
-    "{handle}: a name without @ reaches nobody, and a message that names nobody wakes "
-    "nobody. Answer exactly {silent} when you have nothing to add."
+    '{handle}: a name without @ reaches nobody, nor does "your turn" or "over to you" '
+    "alone, in any language, and a message that names nobody wakes nobody. Answer exactly "
+    "{silent} when you have nothing to add."
 )
 """The rules a turn's notes give when the host gives none (rule 14). An agent
 told only that a name with ``@`` addresses another went on calling the others
 by their bare names, and the discussion stopped: the rule asks for the
-handle wherever someone must act next."""
+handle wherever someone must act next. One told that much still handed over
+with "à toi" and no handle: the rule names that too."""
 
 
 class TurnKind(StrEnum):

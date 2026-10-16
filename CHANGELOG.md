@@ -39,10 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A discussion's default rules ask for the handle wherever someone must act
   next (RMK-806): "Whenever another agent must act next, end your message
-  with its handle, as in @dev: a name without @ reaches nobody, and a message
-  that names nobody wakes nobody." Told only that a name with `@` addresses
-  another, agents on some models went on calling each other by their bare
-  names, and the discussion stopped after the first answer.
+  with its handle, as in @dev: a name without @ reaches nobody, nor does "your
+  turn" or "over to you" alone, in any language, and a message that names
+  nobody wakes nobody." Told only that a name with `@` addresses another,
+  agents on some models went on calling each other by their bare names, or
+  handed over with "à toi" and no handle, and the discussion stopped.
 
 - A model that does not see reads an image an author sent as
   `[Image not shown, this model does not see images: “lamp.png”]` (RMK-805,

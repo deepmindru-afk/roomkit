@@ -42,6 +42,7 @@ async def test_the_default_asks_for_the_handle_of_whoever_acts_next() -> None:
 
     assert "end your message with its handle, as in @counsel" in notes
     assert "a name without @ reaches nobody" in notes
+    assert '"your turn" or "over to you" alone, in any language' in notes
     assert "Answer exactly (silent)" in notes
 
 
