@@ -199,7 +199,7 @@ async def test_results_held_when_another_process_uninstalls_are_posted() -> None
     async with asyncio.timeout(5):
         while not discussion.instructions:  # the result, queued behind sre's turn
             await asyncio.sleep(0.01)
-    await kit._forget_discussion("r1", discussion)
+    await kit._forget_discussion("r1", discussion, installs=discussion.installs)
     said = await _until_said(kit, 2)
 
     posted = [e for e in said if e.content.body.startswith("Result of the task")]

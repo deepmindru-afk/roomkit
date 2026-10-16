@@ -171,3 +171,73 @@ async def test_installing_again_after_an_uninstall_elsewhere_gives_turns(
 
     await _until(answered)
     await cluster.close()
+
+
+class _LateRead(InMemoryStore):
+    """A store where one task's next room read, once armed, comes back late
+    with the room as it was when asked: a slow round trip."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate: tuple[str, asyncio.Event, asyncio.Event] | None = None
+
+    def arm(self, task_name: str) -> tuple[asyncio.Event, asyncio.Event]:
+        entered, release = asyncio.Event(), asyncio.Event()
+        self.gate = (task_name, entered, release)
+        return entered, release
+
+    async def get_room(self, room_id: str) -> Any:
+        room = await super().get_room(room_id)
+        task = asyncio.current_task()
+        if self.gate is None or task is None or not task.get_name().startswith(self.gate[0]):
+            return room
+        _, entered, release = self.gate
+        self.gate = None
+        entered.set()
+        await release.wait()
+        return room
+
+
+@pytest.mark.parametrize("reader", ["driver", "host"])
+async def test_a_read_begun_before_an_install_here_does_not_undo_it(
+    reader: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A's read finds the discussion gone (B uninstalled it), and comes back
+    # once B installed it again and A's host installed over it: the read
+    # tells nothing of A's install.
+    monkeypatch.setattr(_driver, "POLL_SECONDS", 5.0)
+    cluster = _Cluster()
+    store = cluster.store = _LateRead()
+    a = await cluster.process(install=True, create=True, delay=0.05)
+    await asyncio.sleep(0.1)
+    b = cluster.kit()
+    assert await b.uninstall_strategy("r1") is True
+
+    if reader == "driver":
+        entered, release = store.arm("roomkit-discussion-")
+        a._discussions["r1"].wake()
+        reading: asyncio.Task[Any] | None = None
+    else:
+        entered, release = store.arm("late-read")
+        reading = asyncio.create_task(
+            a.room_strategy_is_current("r1", Discussion), name="late-read"
+        )
+    await asyncio.wait_for(entered.wait(), 2.0)
+    await b.install_strategy("r1", cluster.strategy(delay=0.05))
+    await a.install_strategy("r1", cluster.strategy(delay=0.05))
+    release.set()
+    if reading is not None:
+        await reading
+    await asyncio.sleep(0.2)
+
+    assert isinstance(a.room_strategy("r1"), Discussion)
+    assert await a.room_strategy_is_current("r1", Discussion) is True
+    await b.close()  # A alone gives the turns from here
+    await asyncio.sleep(0.8)  # past B's lease
+    await _say(a, "@investigator are you there?")
+
+    async def answered() -> bool:
+        return await cluster.answers() == ["investigator"]
+
+    await _until(answered)
+    await cluster.close()

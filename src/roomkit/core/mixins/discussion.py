@@ -63,6 +63,7 @@ class DiscussionMixin(HelpersMixin):
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _get_router: Any  # RoomKit._get_router
+    get_room: Any  # RoomLifecycleMixin
     _enqueue_exec: Any  # LaneExecutionMixin
     _detach_agents: Any  # StrategyMixin
     _drop_record: Any  # StrategyMixin
@@ -155,17 +156,29 @@ class DiscussionMixin(HelpersMixin):
         process's install may replace: a Discussion (rule 16)."""
         return isinstance(kind, type) and issubclass(kind, Discussion)
 
-    async def _discussion_is_current(self, room: Room, kind: type) -> bool:
+    async def _discussion_is_current(
+        self, room_id: str, kind: type, *, organization_id: str | None
+    ) -> bool:
         """Whether the discussion of *kind* this process installed is the one
-        *room*, just read, stores: the one this process gives turns by (rule
-        16). One another process uninstalled is forgotten here at once, so
-        ``room_strategy()`` tells the host it is gone."""
+        the room stores now: the one this process gives turns by (rule 16).
+        One another process uninstalled is forgotten here at once, so
+        ``room_strategy()`` tells the host it is gone.
+
+        Raises:
+            RoomNotFoundError: the room does not exist in the scope.
+        """
+        seen = self._discussions.get(room_id)
+        installs = seen.installs if seen is not None else 0
+        room = await self.get_room(room_id, organization_id=organization_id)
         self._follow_discussion(room)
         held = self._discussions.get(room.id)
         if held is None:
             return False
-        if _uninstalled(held, room):
-            await self._forget_discussion(room.id, held)
+        if (
+            held is seen
+            and _uninstalled(held, room)
+            and await self._forget_discussion(room.id, held, installs=installs)
+        ):
             return False
         return isinstance(held.strategy, kind) and held.drives
 
@@ -194,7 +207,7 @@ class DiscussionMixin(HelpersMixin):
             if held is not None and held.driver is not None and _uninstalled(held, room):
                 # Gone since this process installed it: left here, and the
                 # install starts afresh, never in the room it left (rule 16).
-                await self._forget_discussion(room_id, held)
+                await self._leave_uninstalled(room_id, held)
                 held = None
             if held is None:
                 await self._start_discussion(room_id, discussion)
@@ -218,6 +231,8 @@ class DiscussionMixin(HelpersMixin):
         """Put *incoming*'s configuration in place of the one *held* routes
         by, keeping the queue (rule 1): the agents that leave and an install
         attached unbound, the new ones bound, this process giving turns."""
+        # Before any await: a read begun until now tells nothing of this install.
+        held.installs += 1
         await held.read()
         stored = held.shared.config
         leaving = [a for a in stored.attached if a not in incoming.agents] if stored else []
@@ -316,9 +331,19 @@ class DiscussionMixin(HelpersMixin):
         elif held is not None and held.driver is None and config is None:
             self._leave_discussion(room.id, held)
 
-    async def _forget_discussion(self, room_id: str, discussion: Any) -> None:
-        """Another process uninstalled the discussion this one gave turns for:
-        leave it here, the strategy record with it, writing nothing back."""
+    async def _forget_discussion(self, room_id: str, discussion: Any, *, installs: int) -> bool:
+        """Another process uninstalled the discussion this one gave turns for,
+        as a read begun once *discussion* had taken *installs* installs found:
+        leave it here; whether it was left. A read begun before an install of
+        this process took its place tells nothing of that install (rule 16)."""
+        if discussion.installs != installs or self._discussions.get(room_id) is not discussion:
+            return False
+        await self._leave_uninstalled(room_id, discussion)
+        return True
+
+    async def _leave_uninstalled(self, room_id: str, discussion: Any) -> None:
+        """Leave *discussion*, which another process uninstalled, the strategy
+        record with it, writing nothing back."""
         if self._discussions.get(room_id) is not discussion:
             return
         # Its queue is gone: a turn cut on the way records nothing, and so

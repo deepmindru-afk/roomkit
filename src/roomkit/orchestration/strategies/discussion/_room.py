@@ -97,6 +97,9 @@ class DiscussionRoom:
         queue goes, so the end of a turn cut on the way is not recorded (rule
         1), and this room gives no turn again, a discussion installed since
         included (rule 16)."""
+        self.installs = 0
+        """How many installs of this process's host took this room's place: a
+        read begun before one tells nothing of it (rule 16)."""
         self.driver: TurnDriver | None = TurnDriver(self) if strategy is not None else None
         self._last_fire: asyncio.Task[None] | None = None
         self._announcing: set[asyncio.Task[None]] = set()

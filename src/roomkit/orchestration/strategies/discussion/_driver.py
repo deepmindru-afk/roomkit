@@ -156,11 +156,12 @@ class TurnDriver:
     async def _next_turn(self) -> _Turn | None:
         room = self._room
         shared = room.shared
+        installs = room.installs
         peek = await room.read()
         if shared.config is None or room.forgotten:
             # Another process uninstalled the discussion, whether or not one
             # was installed again since: this process leaves it (rule 16).
-            await room.kit._forget_discussion(room.room_id, room)
+            await room.kit._forget_discussion(room.room_id, room, installs=installs)
             return None
         if not await self._gives_turns(peek):
             return None
@@ -414,8 +415,10 @@ class TurnDriver:
         while True:
             await asyncio.sleep(POLL_SECONDS)
             try:
+                installs = room.installs
                 state = await room.read()
-                reason = self._cut_reason(turn, state)
+                # A read begun before an install here tells nothing of it.
+                reason = self._cut_reason(turn, state, outdated=room.installs != installs)
                 turn.listening = turn.entry.agent in state.listening
                 if reason is not None and not turn.cut:
                     turn.cut = True
@@ -429,12 +432,13 @@ class TurnDriver:
             except Exception:
                 logger.warning("Watching the turn in room %s failed", room.room_id, exc_info=True)
 
-    def _cut_reason(self, turn: _Turn, state: SpeakQueueState) -> str | None:
-        """Why the stored queue, just read as *state*, cuts *turn*, if it does."""
+    def _cut_reason(self, turn: _Turn, state: SpeakQueueState, *, outdated: bool) -> str | None:
+        """Why the stored queue, just read as *state*, cuts *turn*, if it does;
+        a read *outdated* by an install here since tells no uninstall."""
         room = self._room
         agent = turn.entry.agent
         if room.shared.config is None:
-            return "discussion_uninstalled"
+            return None if outdated else "discussion_uninstalled"
         if agent in state.listening and not turn.listening:
             return "listen_only"
         if agent not in room.agents:

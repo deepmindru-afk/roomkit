@@ -130,8 +130,7 @@ class StrategyMixin(HelpersMixin):
                 f"room_strategy_is_current() takes a strategy class stored with the room "
                 f"(Discussion), not {kind!r}: it is not a strategy stored with the room"
             )
-        room = await self.get_room(room_id, organization_id=organization_id)
-        return await self._discussion_is_current(room, kind)
+        return await self._discussion_is_current(room_id, kind, organization_id=organization_id)
 
     async def install_strategy(
         self, room_id: str, strategy: Orchestration, *, organization_id: str | None = None
