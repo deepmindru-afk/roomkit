@@ -23,6 +23,7 @@ from roomkit._media import content_text
 from roomkit._text import quoted
 from roomkit.channels._discussion_turn import issue_mark, retire_mark
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT, chain_depth_exceeded, unanswered
+from roomkit.core.locks import _has_room_lock
 from roomkit.core.task_utils import hold_task
 from roomkit.models.enums import ChannelType, EventStatus, RoomStatus
 from roomkit.tasks.posting import send_posted
@@ -76,6 +77,8 @@ class TurnDriver:
         self._task: asyncio.Task[None] | None = None
         self._turn: _Turn | None = None
         self._stopping = False
+        self._drain = True
+        """Whether a turn cut by a stop waits for its delivery to unwind."""
         self._seen_version = -1
         self._dispatcher = Dispatcher(room)
 
@@ -105,8 +108,10 @@ class TurnDriver:
     async def stop(self) -> None:
         """Stop giving turns; a turn running is cut, what it committed kept.
         From the driver's own task (a ``done`` that uninstalls), the loop ends
-        once that call returns."""
+        once that call returns. A caller holding the room lock does not wait
+        for the cut turn to unwind, which may take that lock (RFC §19.7)."""
         self._stopping = True
+        self._drain = not _has_room_lock(self._room.room_id)
         task, self._task = self._task, None
         if task is None or task is asyncio.current_task():
             return
@@ -378,7 +383,7 @@ class TurnDriver:
         try:
             await room.kit._finish_cascade(turn.cascade, room.room_id)
         except asyncio.CancelledError:
-            await _abandon(turn, "discussion_stopped")
+            await _abandon(turn, "discussion_stopped", drain=self._drain)
             raise
         except Exception:
             logger.exception("Turn of %s in room %s failed", turn.entry.agent, room.room_id)
@@ -489,7 +494,7 @@ class TurnDriver:
     async def _abandon_orphan(self, turn: _Turn) -> None:
         """A turn handed to the lane that the driver will not run: abandoned,
         its mark retired, its end read."""
-        await _abandon(turn, "discussion_stopped")
+        await _abandon(turn, "discussion_stopped", drain=self._drain)
         retire_mark(turn.mark)
         self._turn = None
         if turn.posted is not None:
@@ -555,8 +560,13 @@ class TurnDriver:
         room.fire(SpeakQueueChange.OVER, [])
 
 
-async def _abandon(turn: _Turn, reason: str) -> None:
+async def _abandon(turn: _Turn, reason: str, *, drain: bool = True) -> None:
+    """Abandon *turn*'s delivery: waiting for it to unwind when *drain*, else
+    only cancelled, its caller holding the room lock it may take."""
     if turn.cascade is None:
+        return
+    if not drain:
+        turn.cascade.cancel(reason)
         return
     try:
         await turn.cascade.abandon(reason)

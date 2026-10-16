@@ -8,6 +8,7 @@ locks. One queue in the store, one process giving the turns under a lease.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Sequence
 from typing import Any
 
@@ -33,7 +34,7 @@ from roomkit.orchestration.strategies.discussion import (
     _shared,
 )
 from roomkit.orchestration.strategies.discussion._config import DiscussionConfig
-from roomkit.providers.ai.base import AIResponse
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
 from tests.test_framework import SimpleChannel
@@ -617,6 +618,50 @@ async def test_uninstalling_under_the_room_lock_does_not_wait_for_an_observer_ta
 
     assert await cluster.stored() is None
     await cluster.close()
+
+
+async def test_uninstalling_under_the_room_lock_returns_while_the_turn_runs_a_tool(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The cut turn stored its text before the call; its end, written on that
+    # message, takes the room lock the host holds.
+    called = asyncio.Event()
+
+    async def lookup(name: str, arguments: dict[str, Any]) -> str:
+        called.set()
+        await asyncio.sleep(3.0)
+        return "found"
+
+    provider = MockAIProvider(
+        ai_responses=[
+            AIResponse(
+                content="Looking.",
+                finish_reason="tool_calls",
+                tool_calls=[AIToolCall(id="c1", name="lookup", arguments={})],
+            ),
+            AIResponse(content="Done."),
+        ],
+        streaming=True,
+    )
+    tool = AITool(name="lookup", description="Look up", parameters={"type": "object"})
+    agent = AIChannel(
+        "investigator", provider=provider, tools=[tool], tool_handler=lookup, tool_search=False
+    )
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("ops"))
+    await kit.create_room(room_id="r1", orchestration=Discussion([agent]))
+    await kit.attach_channel("r1", "ops")
+    await _say(kit, "@investigator check")
+    await asyncio.wait_for(called.wait(), 5.0)
+    await asyncio.sleep(0.1)
+    events = await kit.store.list_events("r1")
+    assert any(e.source.channel_id == "investigator" for e in events)  # its text stored
+
+    caplog.set_level(logging.ERROR, logger="roomkit")
+    await _uninstall(kit, locked=True)
+
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []
+    await kit.close()
 
 
 async def test_installing_under_the_room_lock_returns_mid_turn() -> None:
