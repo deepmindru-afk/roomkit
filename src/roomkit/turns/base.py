@@ -44,26 +44,6 @@ class TurnTimeouts:
         return max(1, round(self.heartbeat_timeout / self.heartbeat_interval))
 
 
-_TURNS_RUN_UNDER: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
-    "roomkit_turns_run_under", default=()
-)
-"""The turns the current code runs under, outermost first: a close called
-from one of them must not cut it (the turns' :func:`held_runs`)."""
-
-
-def turns_run_under() -> tuple[str, ...]:
-    """The ids of the turns the current code runs under."""
-    return _TURNS_RUN_UNDER.get()
-
-
-def enter_turn(turn_id: str) -> None:
-    """The current code runs under *turn_id* too: a close it calls spares
-    that turn (the turns' :func:`held_runs`)."""
-    turns = _TURNS_RUN_UNDER.get()
-    if turn_id not in turns:
-        _TURNS_RUN_UNDER.set((*turns, turn_id))
-
-
 async def heartbeat_tick(interval: float) -> None:
     """Wait one heartbeat interval on the loop's own timer, so code that
     patches ``asyncio.sleep`` (a test, a host's clock) cannot make the

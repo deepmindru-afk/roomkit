@@ -345,7 +345,9 @@ class DeliveryCascade:
         self.cancelled = reason
         for task in self._tasks:
             if not task.done() and not task.cancelling():
-                task.cancel()
+                # The reason travels with the cancellation: a turn the
+                # cascade runs tells its executor why (RFC §10.6.8).
+                task.cancel(reason)
         self._done.set()
         self._cleanup_task = asyncio.create_task(
             self._cleanup(),

@@ -2,7 +2,7 @@
 
 A ``tool_call`` runs the handler the owner keeps for the tool, and a
 ``host_call`` a verb of the turn's ``TurnHost``, each as a task of its own,
-in a copy of the execution context of the owner task reading the turn when
+in a copy of the execution context of the owner task waiting on the turn when
 the call arrives (the delivery target awaiting the output, or the reader
 awaiting an item), under the turn's id, and under what the turn gave the
 call: its room and channel (the request's: a call naming others is refused),
@@ -26,11 +26,11 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import set_turn_owner_tools
+from roomkit.core._turn_scope import enter_turn
 from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.tools.context import ToolCallContext, owner_served_call
 from roomkit.tools.result import as_tool_result
 from roomkit.turns._codec import encode_result, error_record
-from roomkit.turns.base import enter_turn
 from roomkit.turns.host import set_turn_host
 from roomkit.turns.wire import HostCall, HostResult, ToolCall, ToolResult
 
@@ -73,9 +73,10 @@ class OwnerCalls:
         self._held = held
         self._running: dict[str, asyncio.Task[None]] = {}
 
-    def start(self, call: ToolCall | HostCall) -> None:
-        """Run *call* in a copy of the current task's context."""
-        context = contextvars.copy_context()
+    def start(self, call: ToolCall | HostCall, waiting: contextvars.Context | None) -> None:
+        """Run *call* in a copy of *waiting*, the context of the task waiting
+        on the turn when it arrived (a fresh one when none has waited yet)."""
+        context = waiting.copy() if waiting is not None else contextvars.Context()
         context.run(_enter_owner_call, self._request.turn_id)
         if isinstance(call, HostCall):
             work, failed = self._verb_result(call), partial(_verb_failed, call.call_id)

@@ -247,6 +247,9 @@ class _ToolLoopContext:
     # Set once the turn ended and the calls it cut were reported.
     ended: asyncio.Event = field(default_factory=asyncio.Event)
     loop_id: str = ""
+    # The turn the loop serves, as the turn backend names it: what the room
+    # owner's steering addresses (RFC §10.6.8). ``None`` outside a turn.
+    turn_id: str | None = None
     # The turn's one response-metadata record (see ``roomkit.models.response_metadata``).
     # Created here, at the start of the turn, so a memory provider writing during
     # ``_build_context`` writes the same object a tool handler reaches mid-loop;

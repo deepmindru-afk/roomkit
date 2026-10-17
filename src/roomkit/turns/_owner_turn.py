@@ -4,19 +4,24 @@ The owner reads the turn's frames back into the objects the pipeline reads
 locally: a ``ChannelOutput``, a stream whose every read pulls one item, the
 turn's one response-metadata record updated in place, and call markers whose
 fixed arguments and early ends are set on the owner's own copies. The calls
-the turn makes to tools the owner serves run here as they arrive (RFC
-§10.6.5). The turn is watched while it is read: an executor silent too long
-has lost the turn.
+the turn makes to its owner run here as they arrive (RFC §10.6.5), and the
+owner steers the turn's loop (RFC §10.6.8). The turn is watched from its
+submission to its end: an executor silent too long has lost the turn.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import weakref
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from roomkit.core.exceptions import TurnLinkError
+from roomkit.models.channel import ChannelOutput
+from roomkit.models.steering import Cancel as SteeringCancel
+from roomkit.models.steering import SteeringDirective
 from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
 from roomkit.turns._codec import decode_end, decode_item, decode_output, rebuild_error
 from roomkit.turns._owner_calls import OwnerCalls
@@ -34,21 +39,21 @@ from roomkit.turns.wire import (
     Output,
     Pull,
     Record,
+    Steer,
+    SteerResult,
     ToolArgs,
     ToolCall,
     ToolEnded,
 )
 
 if TYPE_CHECKING:
-    from roomkit.models.channel import ChannelOutput
     from roomkit.models.response_metadata import ResponseMetadata
     from roomkit.turns.base import OwnerHost, OwnerTools, TurnLink, TurnTimeouts
-    from roomkit.turns.wire import Control, Frame
+    from roomkit.turns.wire import Control, Frame, TurnRequest
 
 logger = logging.getLogger("roomkit.turns")
 
-# The closes of streams their reader dropped, and the reads of turns their
-# output ended, held until they end.
+# The closes of streams their reader dropped, held until they end.
 _DROPPED_CLOSES: set[asyncio.Task[None]] = set()
 
 
@@ -73,7 +78,16 @@ def _close_dropped(turn: OwnerTurn, loop: asyncio.AbstractEventLoop) -> None:
 
 
 class OwnerTurn:
-    """The owner's side of one turn, from its submission to its end."""
+    """The owner's side of one turn, from its submission to its end.
+
+    One task reads the turn's frames as they come: it applies at once the
+    ones that change what the owner holds or ask it to act (a record, a
+    call's arguments or end, a call to the owner, a steering result), and
+    queues the others (the output, a stream item, an error, the end) for the
+    task reading the turn. It watches the executor too: one silent too long
+    has lost the turn. A call the turn makes runs in a copy of the context
+    of the task that last waited on the turn (RFC §10.6.5).
+    """
 
     def __init__(
         self,
@@ -92,7 +106,18 @@ class OwnerTurn:
         self._record: ResponseMetadata | None = None
         self._starts: dict[int, ToolCallStartMarker] = {}
         self._early_ends: dict[int, ToolCallEndMarker] = {}
-        self._beat = asyncio.get_running_loop().create_task(self._beat_while_open())
+        self._main: asyncio.Queue[tuple[int, Frame] | BaseException] = asyncio.Queue()
+        self._waiting: contextvars.Context | None = None
+        self._steers: dict[str, asyncio.Future[int | None]] = {}
+        self._steer_cut = False
+        loop = asyncio.get_running_loop()
+        self._beat = loop.create_task(self._beat_while_open())
+        self._pump = loop.create_task(self._read_frames(), context=contextvars.Context())
+
+    @property
+    def request(self) -> TurnRequest:
+        """The request the turn was submitted with."""
+        return self._link.request
 
     @property
     def over(self) -> bool:
@@ -118,13 +143,14 @@ class OwnerTurn:
             self._record = output.response_metadata
             if frame.streams:
                 output.response_stream = RemoteStream(self)
-            else:
-                self._read_to_end()
             return output
         if isinstance(frame, Error):
             self._finish()
             raise rebuild_error(frame.error)
         self._finish()
+        if self._steer_cut:
+            # Cut by a steering Cancel before it answered (RFC §10.6.8).
+            return ChannelOutput.empty()
         raise TurnLinkError("executor_lost", "The turn ended before its output")
 
     async def read_item(self) -> Any:
@@ -144,14 +170,9 @@ class OwnerTurn:
             await self._drain_to_end(None)
             raise rebuild_error(frame.error)
         self._finish()
+        if self._steer_cut:
+            raise StopAsyncIteration
         raise TurnLinkError("executor_lost", "The turn ended in the middle of its stream")
-
-    def _read_to_end(self) -> None:
-        """Read the turn's last frames in the background until its end: a
-        call a task of its tools still makes is answered (RFC §10.6.5)."""
-        task = asyncio.get_running_loop().create_task(self._drain_to_end(None))
-        _DROPPED_CLOSES.add(task)
-        task.add_done_callback(_DROPPED_CLOSES.discard)
 
     async def close_stream(self) -> None:
         """Close the stream: the executor closes the channel's, a running
@@ -167,10 +188,12 @@ class OwnerTurn:
         try:
             return decode(*args)
         except (KeyError, TypeError, ValueError) as exc:
-            self._finish()
-            raise TurnLinkError(
+            invalid = TurnLinkError(
                 "frame_invalid", f"A frame of the turn could not be read: {exc}"
-            ) from exc
+            )
+            self._main.put_nowait(invalid)
+            self._finish()
+            raise invalid from exc
 
     def _item(self, seq: int, data: dict[str, Any]) -> Any:
         """A new item, a call's end the same object as its start's ``ended``."""
@@ -188,6 +211,31 @@ class OwnerTurn:
             start.ended = end
         return end
 
+    # -- Steering --------------------------------------------------------------
+
+    async def steer(self, directive: SteeringDirective) -> int:
+        """Send *directive* to the turn's loop: how many loops it reached. A
+        channel without steering takes a ``Cancel`` as the turn's cancel,
+        which counts as one (RFC §10.6.8)."""
+        if self._over:
+            return 0
+        steer_id = uuid4().hex
+        reached: asyncio.Future[int | None] = asyncio.get_running_loop().create_future()
+        self._steers[steer_id] = reached
+        try:
+            await self._link.send(Steer(steer_id=steer_id, directive=directive))
+            loops = await reached
+        finally:
+            self._steers.pop(steer_id, None)
+        if loops is not None:
+            return loops
+        if not isinstance(directive, SteeringCancel) or self._over:
+            return 0
+        # Read to its end by whoever reads it, as after a close.
+        self._steer_cut = True
+        await self._send_best_effort(Cancel(reason=directive.reason or "steered"))
+        return 1
+
     # -- Frames ---------------------------------------------------------------
 
     async def _next_main(self) -> Frame:
@@ -195,28 +243,46 @@ class OwnerTurn:
         return frame
 
     async def _next_main_with_seq(self) -> tuple[int, Frame]:
-        """The next output, item, error or end; the frames that change what
-        the owner holds applied on the way; the executor watched."""
+        """The next output, item, error or end, waited for by the current
+        task, whose context a call arriving meanwhile copies."""
+        self._waiting = contextvars.copy_context()
+        got = await self._main.get()
+        if isinstance(got, BaseException):
+            # Every later reader learns it too.
+            self._main.put_nowait(got)
+            raise got
+        return got
+
+    async def _read_frames(self) -> None:
+        """Read every frame of the turn until its end, applying those that
+        change what the owner holds, queueing the others; watch the executor."""
         silent = 0
-        while True:
-            try:
-                seq, frame = await asyncio.wait_for(
-                    self._link.receive(), self._timeouts.heartbeat_interval
-                )
-            except TimeoutError:
-                silent += 1
-                if silent >= self._silence_limit():
-                    raise await self._lost() from None
-                continue
-            except TurnLinkError:
-                self._finish()
-                raise
-            silent = 0
-            if not self._apply(seq, frame):
-                return seq, frame
+        try:
+            while not self._over:
+                try:
+                    seq, frame = await asyncio.wait_for(
+                        self._link.receive(), self._timeouts.heartbeat_interval
+                    )
+                except TimeoutError:
+                    silent += 1
+                    if silent >= self._silence_limit():
+                        await self._lost()
+                        return
+                    continue
+                silent = 0
+                if self._apply(seq, frame):
+                    continue
+                self._main.put_nowait((seq, frame))
+                if isinstance(frame, End):
+                    self._finish()
+                    return
+        except TurnLinkError as lost:
+            self._main.put_nowait(lost)
+            self._finish()
 
     def _apply(self, seq: int, frame: Frame) -> bool:
-        """Apply a frame that changes what the owner holds; whether it was one."""
+        """Apply a frame that changes what the owner holds or asks it to act;
+        whether it was one."""
         if isinstance(frame, Accepted | Heartbeat):
             self._accepted = True
         elif isinstance(frame, Record):
@@ -232,11 +298,13 @@ class OwnerTurn:
             if (start := self._starts.get(frame.start)) is not None:
                 start.ended = end
         elif isinstance(frame, ToolCall | HostCall):
-            # Run by the task reading the turn now: the call holds that
-            # task's reentrancy (RFC §10.6.5).
-            self._calls.start(frame)
+            # The call holds the reentrancy of the task waiting on the turn.
+            self._calls.start(frame, self._waiting)
         elif isinstance(frame, CallCancel):
             self._calls.withdraw(frame.call_id)
+        elif isinstance(frame, SteerResult):
+            if (reached := self._steers.get(frame.steer_id)) is not None and not reached.done():
+                reached.set_result(frame.loops)
         else:
             return False
         return True
@@ -248,12 +316,13 @@ class OwnerTurn:
             return self._timeouts.silent_intervals
         return max(1, round(self._timeouts.accept / self._timeouts.heartbeat_interval))
 
-    async def _lost(self) -> TurnLinkError:
+    async def _lost(self) -> None:
+        """The executor fell silent: the turn fails, its reader learning why."""
         reason = "executor_lost" if self._link.taken or self._accepted else "no_executor"
         logger.warning("Turn %s failed: %s", self._link.request.turn_id, reason)
         await self._send_best_effort(Cancel(reason=reason))
+        self._main.put_nowait(TurnLinkError(reason))
         self._finish()
-        return TurnLinkError(reason)
 
     # -- Ending ---------------------------------------------------------------
 
@@ -273,11 +342,11 @@ class OwnerTurn:
                 break
 
     async def _drain_to_end(self, bound: float | None) -> None:
-        """Read the turn's last frames until its end, applying them; past
-        *bound*, report incomplete drainage and drop the rest."""
+        """Read the turn's last frames until its end; past *bound*, report
+        incomplete drainage and drop the rest."""
         try:
             async with asyncio.timeout(bound):
-                while not self._over:
+                while not self._over or not self._main.empty():
                     frame = await self._next_main()
                     if isinstance(frame, End):
                         break
@@ -293,12 +362,20 @@ class OwnerTurn:
             self._finish()
 
     def _finish(self) -> None:
-        """The turn is over for the owner: stop beating, drop later frames."""
+        """The turn is over for the owner: stop beating and reading, cancel
+        its calls, answer its steering, drop later frames."""
         if self._over:
             return
         self._over = True
         self._beat.cancel()
+        if self._pump is not asyncio.current_task():
+            self._pump.cancel()
         self._calls.cancel_all()
+        for reached in self._steers.values():
+            if not reached.done():
+                reached.set_result(0)
+        # A reader still waiting learns the turn is gone.
+        self._main.put_nowait(TurnLinkError("backend_closed"))
         self._link.release()
 
     async def _send_result(self, message: Control) -> None:

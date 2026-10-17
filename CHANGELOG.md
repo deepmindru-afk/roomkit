@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `RoomKit.steer(directive, channel_id, *, room_id=None, turn_id=None)`
+  (RMK-811, RFC §21.3, §10.6.8): steering through the turn backend. The kit
+  resolves the turns of the channel it started and that still run (the turn
+  `turn_id`; else the room's, every one for a `Cancel` and the most recent
+  for another directive; else the channel's most recent), sends the
+  directive as a `steer` on each turn's link, and answers the sum of the
+  loops each reached (`steer_result`). The executor applies it to the loops
+  of that turn (`AIChannel.steer(..., turn_id=...)`, a loop knowing its
+  turn); a channel without steering takes a `Cancel` as its turn's cancel,
+  counted as one, and its reader reads the end as a closed stream's. The
+  owner now reads a turn's frames as they come, so a steering result or a
+  call is heard while nobody reads the turn's stream. A discussion cuts an
+  AI agent's turn through it.
+
 - `TurnHost` and `current_turn_host()` (RMK-811, RFC §10.6.5): how a host's
   tool, or a hook the executor fires, reaches a room from a turn wherever the
   turn runs. `current_turn_host()` answers inside a call of a host tool during
@@ -177,6 +191,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   media that is no image. A document still reads as its label.
 
 ### Fixed
+
+- A cancelled delivery tells its turn's executor why (RMK-811, RFC §10.6.8):
+  the cascade's reason (`superseded`, `caller_cancelled`, `kit_closed`...)
+  rides its cancellation down to the turn, where every turn read
+  `cancelled`.
 
 - An event a hook injects into a room where a strategy takes an agent's turns
   no longer runs the strategy (RMK-814): its delivery to a supervisor ran the

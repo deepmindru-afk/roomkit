@@ -26,6 +26,7 @@ from roomkit.channels._ai_tools import call_end_marker
 from roomkit.channels._mark_copies import compile_mark_patterns, without_mark_copies
 from roomkit.channels._note_blocks import add_turn_note
 from roomkit.channels._turn_notes import carries_turn_images
+from roomkit.core._turn_scope import current_turn_id
 from roomkit.core.task_utils import shielded
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.event import RoomEvent
@@ -366,6 +367,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
         room = context.room.room if context.room else None
         room_id = room.id if room is not None else None
         loop_ctx = _ToolLoopContext.for_loop(parent, room_id, room=room)
+        loop_ctx.turn_id = current_turn_id()
         loop_ctx.channel_id = self.channel_id
         _current_loop_ctx.set(loop_ctx)
         self._active_loops[loop_ctx.loop_id] = loop_ctx

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes, discussion_turn
+from roomkit.models.steering import Cancel as SteeringCancel
 from roomkit.turns._owner_turn import OwnerTurn, RemoteStream
 from roomkit.turns._registry_tools import RegistryOwnerTools
 from roomkit.turns.base import TurnTimeouts
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
     from roomkit.models.channel import ChannelBinding, ChannelOutput
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
+    from roomkit.models.steering import SteeringDirective
     from roomkit.turns.base import OwnerHost, OwnerTools, TurnBackend
     from roomkit.turns.wire import OwnerTool
 
@@ -95,6 +97,9 @@ class TurnClient:
         self._host = host
         self._serving = executor is None
         self._open: weakref.WeakSet[OwnerTurn] = weakref.WeakSet()
+        # The turns this client started and that still run, in start order:
+        # what steering resolves its targets from (RFC §10.6.8).
+        self._started: list[OwnerTurn] = []
         # The owner-served calls running for this client's turns (RFC §10.6.5).
         self._calls: set[asyncio.Task[None]] = set()
 
@@ -126,7 +131,37 @@ class TurnClient:
         link = await self.backend.submit(request)
         turn = OwnerTurn(link, self._timeouts, self._tools, self._calls, self._host)
         self._open.add(turn)
+        self._started = [*(t for t in self._started if not t.over), turn]
         return await turn.output()
+
+    async def steer(
+        self,
+        directive: SteeringDirective,
+        channel_id: str,
+        *,
+        room_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> int:
+        """Steer the running turns of *channel_id* this client started (RFC
+        §21.3, §10.6.8): the turn *turn_id*; else the turns of *room_id*, all
+        of them for a ``Cancel`` and the most recent for any other directive;
+        else the most recent turn of the channel. How many loops it reached.
+
+        Raises:
+            ValueError: both *room_id* and *turn_id* given.
+        """
+        if room_id is not None and turn_id is not None:
+            raise ValueError("steer() addresses a room_id or a turn_id, not both")
+        running = [t for t in self._started if not t.over and t.request.channel_id == channel_id]
+        if turn_id is not None:
+            targets = [t for t in running if t.request.turn_id == turn_id]
+        elif room_id is not None:
+            in_room = [t for t in running if t.request.room_id == room_id]
+            targets = in_room if isinstance(directive, SteeringCancel) else in_room[-1:]
+        else:
+            targets = running[-1:]
+        reached = await asyncio.gather(*(turn.steer(directive) for turn in targets))
+        return sum(reached)
 
     async def close(self) -> None:
         """Close the own executor, which cuts its turns, stop holding every

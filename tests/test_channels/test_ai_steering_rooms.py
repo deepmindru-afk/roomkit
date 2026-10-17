@@ -75,7 +75,7 @@ def test_unaddressed_the_most_recent_loop_is_reached_whatever_its_room() -> None
 def test_a_loop_and_a_room_are_not_addressed_together() -> None:
     ch, _loops = _channel_with_loops("A")
 
-    with pytest.raises(ValueError, match="not both"):
+    with pytest.raises(ValueError, match="not several"):
         ch.steer(Cancel(reason="stop"), loop_id="loop-0", room_id="A")
 
 

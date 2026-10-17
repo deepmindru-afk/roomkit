@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.event import RoomEvent
+from roomkit.models.steering import SteeringDirective
 from roomkit.models.task import Observation, Task
 from roomkit.providers.ai.base import AITool
 
@@ -134,6 +135,15 @@ class End(BaseModel):
     type: Literal["end"] = "end"
 
 
+class SteerResult(BaseModel):
+    """How many loops a ``steer`` reached; ``None`` for a channel without
+    steering, whose owner then cuts the turn on a ``Cancel``."""
+
+    type: Literal["steer_result"] = "steer_result"
+    steer_id: str
+    loops: int | None
+
+
 # -- Calls: executor to owner, each answered once by its result --------------
 
 
@@ -205,6 +215,14 @@ class Cancel(BaseModel):
     reason: str
 
 
+class Steer(BaseModel):
+    """A steering directive for the turn's loop (RFC §21.3)."""
+
+    type: Literal["steer"] = "steer"
+    steer_id: str
+    directive: SteeringDirective = Field(discriminator="type")
+
+
 class ToolResult(BaseModel):
     """The owner's answer to one ``tool_call``."""
 
@@ -242,11 +260,13 @@ Frame = Annotated[
     | End
     | ToolCall
     | HostCall
-    | CallCancel,
+    | CallCancel
+    | SteerResult,
     Field(discriminator="type"),
 ]
 Control = Annotated[
-    Pull | Close | Cancel | Heartbeat | ToolResult | HostResult, Field(discriminator="type")
+    Pull | Close | Cancel | Heartbeat | Steer | ToolResult | HostResult,
+    Field(discriminator="type"),
 ]
 
 

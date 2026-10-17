@@ -319,21 +319,23 @@ class SegmentWriter:
             async with aclosing(self.stream(reader)) as items:
                 async for _ in items:
                     pass
-        except asyncio.CancelledError:
-            await self.end_cancelled(reader)
+        except asyncio.CancelledError as cut:
+            await self.end_cancelled(reader, cut.args[0] if cut.args else None)
             raise
         except Exception:
             await self.end_failed(reader)
             raise
 
-    async def end_cancelled(self, reader: ResponseReader) -> None:
+    async def end_cancelled(self, reader: ResponseReader, reason: Any = None) -> None:
         """Write what a cancelled turn leaves: open calls closed, text kept as
         cancelled, and its record ``cancelled``, as a turn its reader stopped.
 
-        A running tool is aborted and its call closed ``failed``, so no start
-        row stays pending (RFC §12.2 step 13s).
+        A running tool is aborted, with the cancellation's *reason*, and its
+        call closed ``failed``, so no start row stays pending (RFC §12.2 step
+        13s).
         """
-        await self.close_calls(await reader.abandon())
+        why = reason if isinstance(reason, str) else None
+        await self.close_calls(await reader.abandon(reason=why))
         self.end_stopped()
         await self.flush_text(cancelled=True)
         # Text already written at a call's boundary carries no record of its

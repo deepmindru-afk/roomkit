@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, issue_mark, retire_mark
 from roomkit.channels._strategy_turn import strategy_turn
 from roomkit.channels._tool_registry import set_turn_owner_tools
+from roomkit.core._turn_scope import enter_turn
 from roomkit.core.exceptions import ChannelNotRegisteredError, TurnLinkError
 from roomkit.models.streaming import ThinkingDeltaMarker, ToolCallEndMarker, ToolCallStartMarker
 from roomkit.turns._codec import (
@@ -29,7 +30,7 @@ from roomkit.turns._codec import (
     record_payload,
 )
 from roomkit.turns._executor_calls import ExecutorCalls
-from roomkit.turns.base import enter_turn, heartbeat_tick
+from roomkit.turns.base import heartbeat_tick
 from roomkit.turns.host import TurnHost, set_turn_host
 from roomkit.turns.wire import (
     Accepted,
@@ -43,6 +44,8 @@ from roomkit.turns.wire import (
     Output,
     Pull,
     Record,
+    Steer,
+    SteerResult,
     ToolArgs,
     ToolEnded,
     ToolResult,
@@ -100,6 +103,7 @@ class ExecutorTurn:
         self._wake = asyncio.Event()
         self._heard = True
         self._work: asyncio.Task[Any] | None = None
+        self._built: Channel | None = None
         self._spared = False
         self._mark: dict[str, Any] | None = None
         self._record: dict[str, Any] = {}
@@ -148,6 +152,7 @@ class ExecutorTurn:
         except Exception as exc:
             await self._send(Error(error=error_record(exc)))
             return
+        self._built = channel
         if channel is None:
             missing = ChannelNotRegisteredError(
                 f"No channel {self._request.channel_id!r} on executor {self._executor_id}"
@@ -362,6 +367,10 @@ class ExecutorTurn:
                 self._cut_turn(message.reason)
             elif isinstance(message, ToolResult | HostResult):
                 self._calls.resolve(message)
+            elif isinstance(message, Steer):
+                await self._send(
+                    SteerResult(steer_id=message.steer_id, loops=self._steer(message))
+                )
             self._wake.set()
 
     async def _beat(self) -> None:
@@ -380,6 +389,16 @@ class ExecutorTurn:
     @property
     def turn_id(self) -> str:
         return self._request.turn_id
+
+    def _steer(self, message: Steer) -> int | None:
+        """Apply a steering directive to this turn's loops: how many it
+        reached; ``None`` for a channel without steering (RFC §10.6.8)."""
+        if self._built is None:
+            return 0
+        steer = getattr(self._built, "steer", None)
+        if steer is None:
+            return None
+        return int(steer(message.directive, turn_id=self._request.turn_id))
 
     def spare(self) -> None:
         """Let the turn's work run on whatever ends its link: a close called

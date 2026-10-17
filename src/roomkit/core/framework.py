@@ -13,6 +13,7 @@ from uuid import uuid4
 if TYPE_CHECKING:
     from roomkit.channels._author_images import AttachedMedia, MediaResolver
     from roomkit.delivery.base import DeliveryBackend
+    from roomkit.models.steering import SteeringDirective
     from roomkit.orchestration.base import Orchestration
     from roomkit.telemetry.base import TelemetryProvider
     from roomkit.telemetry.config import TelemetryConfig
@@ -517,6 +518,29 @@ class RoomKit(
         own through the turn backend, past the agent's speak policy and its
         thinker (RFC §10.6.1)."""
         return await self._turns.run(event, binding, context, strategy_turn=True)
+
+    async def steer(
+        self,
+        directive: SteeringDirective,
+        channel_id: str,
+        *,
+        room_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> int:
+        """Steer the running turns of an intelligence channel (RFC §21.3,
+        §10.6.8), wherever they run: the turn *turn_id*; else the turns of
+        *room_id*, every one for a ``Cancel`` and the most recent for any
+        other directive; else the channel's most recent turn. How many loops
+        it reached; a channel without steering takes a ``Cancel`` as its
+        turn's cancel, counted as one.
+
+        Only the turns this kit started are reached: with several kits owning
+        rooms, steer from the one delivering the room.
+
+        Raises:
+            ValueError: both *room_id* and *turn_id* given.
+        """
+        return await self._turns.steer(directive, channel_id, room_id=room_id, turn_id=turn_id)
 
     def hooks_for(self, trigger: HookTrigger) -> HookEngine:
         """The engine *trigger*'s hooks register on (RFC §10.6.6): the kit's

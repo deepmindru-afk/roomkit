@@ -87,9 +87,11 @@ class ResponseReader:
         return ends
 
     async def abandon(
-        self, error: str = "cancelled"
+        self, error: str = "cancelled", *, reason: str | None = None
     ) -> list[tuple[ToolCallStartMarker, ToolCallEndMarker]]:
-        """Cancel a running tool's read (the turn itself was cancelled or failed).
+        """Cancel a running tool's read (the turn itself was cancelled or failed),
+        with the cancellation's *reason* when it gave one: a turn of the turn
+        backend tells its executor why (RFC §10.6.8).
 
         Returns every call still open, closed as it ended when it did, else
         as ``failed`` with *error*, so no start row stays pending (RFC §12.2
@@ -97,7 +99,7 @@ class ResponseReader:
         """
         pending, self._pending = self._pending, None
         if pending is not None and not pending.done():
-            pending.cancel()
+            pending.cancel(reason)
             await asyncio.gather(pending, return_exceptions=True)
         return self._close_open(error)
 

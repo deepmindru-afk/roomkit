@@ -443,7 +443,8 @@ class DiscussionRoom:
             # it has none, and the turn given is abandoned below.
             reached = channel._prompting(self.room_id) and await channel.cancel(self.room_id)
         elif channel is not None:
-            reached = channel.steer(Cancel(reason=reason), room_id=self.room_id)
+            # Its turn runs through the turn backend: the owner steers it.
+            reached = await self.kit.steer(Cancel(reason=reason), agent, room_id=self.room_id)
         else:
             reached = 0
         if not reached and self.driver is not None:

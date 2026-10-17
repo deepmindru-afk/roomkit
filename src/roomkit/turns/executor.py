@@ -15,11 +15,12 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from roomkit.core._turn_scope import turns_run_under
 from roomkit.core.hooks import HookEngine, HookRegistration, hook_decorator
 from roomkit.core.task_utils import cancel_and_wait
 from roomkit.models.enums import HookExecution
 from roomkit.turns._executor_turn import ExecutorTurn
-from roomkit.turns.base import TurnTimeouts, turns_run_under
+from roomkit.turns.base import TurnTimeouts
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel

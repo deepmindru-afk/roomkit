@@ -164,7 +164,8 @@ async def test_the_owner_refuses_a_call_naming_another_room_or_channel(
             name="probe",
             arguments={},
             context=CallContext(tool_call_id="c1", room_id=room_id, channel_id=channel_id),
-        )
+        ),
+        None,
     )
     while not answers:
         await asyncio.sleep(0)
