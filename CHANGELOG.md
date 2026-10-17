@@ -25,17 +25,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only); outside a turn the kit's executor publishes directly, a host's drops
   them. A room's background tasks and what its cameras last saw are read
   through the turn's host (`TurnHost.room_tasks()`, `TurnHost.room_vision()`),
-  being state of the owner's process. `ScoringHook.attach` takes an executor.
-  The request carries the broadcast span's context (`TurnRequest.trace`),
-  which a turn in a context of its own continues.
+  being state of the owner's process. `ScoringHook.attach` takes an executor,
+  and records through the turn's host while the turn runs. The request
+  carries the broadcast span's id (`TurnRequest.trace`), which a turn in a
+  context of its own continues on the same telemetry provider; a trace
+  context another process's provider continues (a W3C `traceparent`) comes
+  with the distributed backend (RMK-813). The owner publishes what a turn
+  published off the turn's frame reader, in order, so a framework-event
+  handler may wait on its turn (answer its input, close the kit), and only
+  the framework events the wiring emits, as the turn's room and channel.
 
 - Room hooks on the triggers a turn fires are defined by name on the
   executors and enabled per room on the kit (RMK-821, RFC §10.6.6, §10.6.7):
   `executor.room_hook("audit", HookTrigger.ON_TOOL_CALL)(fn)`,
   `kit.enable_room_hook(room_id, "audit")`, `kit.disable_room_hook(room_id,
   "audit")`. A turn's request names its room's (`TurnRequest.room_hooks`), and
-  only an executor that defines every name takes it. A turn executor's
-  engine refuses a room hook by callable.
+  only an executor that defines every name takes it (one given a turn
+  anyway fails it with `no_executor`). Enabling or disabling applies to the
+  kit's own executor at once, so realtime voice and conference tool calls in
+  the room run the room's hooks too. Defining a name on a trigger again
+  replaces it. A turn executor's engine refuses a room hook by callable.
 
 - `RoomKit.channel_call(channel_id, room_id, verb, *, organization_id=None,
   **arguments)` (RMK-812, RFC §10.6.3, §6.4): a per-room verb of a channel

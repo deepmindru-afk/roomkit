@@ -645,7 +645,14 @@ class AIContextMixin(_AIChannelContract):
         §12.8.7), fenced as data; a standalone turn reads none."""
         if standalone or self._room_vision_loader is None:
             return []
-        note = await self._room_vision_loader(context)
+        try:
+            note = await self._room_vision_loader(context)
+        except Exception:
+            # An owner that cannot answer costs the turn its view, not the turn.
+            logger.warning(
+                "Could not read room %s's view for its turn", context.room.id, exc_info=True
+            )
+            return []
         return [note] if note else []
 
     async def _own_notes(

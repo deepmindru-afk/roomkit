@@ -509,7 +509,10 @@ class RoomKit(
         kit's telemetry, the triggers it keeps out of it, and the framework
         events only an engine raises (RFC §8.2 ``hook_timeout``)."""
         engine._telemetry = self._telemetry
-        engine._framework_emitter = self._emit_framework_event
+        if engine is not self._turn_hooks:
+            # The executor's engine emits through the executor's wiring, as a
+            # frame during a turn (RFC §10.6.2).
+            engine._framework_emitter = self._emit_framework_event
         if suppressed is not None:
             engine._suppressed_triggers = suppressed
 

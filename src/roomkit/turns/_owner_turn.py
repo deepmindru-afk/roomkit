@@ -79,6 +79,25 @@ def _cut_end(start: ToolCallStartMarker) -> ToolCallEndMarker:
     )
 
 
+TURN_FRAMEWORK_EVENTS = frozenset(
+    {
+        "tool_call",
+        "before_tool_use",
+        "user_input_required",
+        "ai_response",
+        "before_ai_generation",
+        "hook_timeout",
+    }
+)
+"""The framework events a turn's executor emits (RFC §8.2): the owner emits no
+other a ``framework_event`` frame names."""
+
+
+def _of_the_turn(request: TurnRequest, room_id: str | None, channel_id: str | None) -> bool:
+    """Whether what a turn published names its room and channel (or none)."""
+    return room_id in (None, request.room_id) and channel_id in (None, request.channel_id)
+
+
 class OwnerTurn:
     """The owner's side of one turn, from its submission to its end.
 
@@ -104,6 +123,11 @@ class OwnerTurn:
         self._link = link
         self._timeouts = timeouts
         self._events = events
+        # What the turn published on its executor, published here in order by
+        # a task of its own: a handler that waits on the turn (an answer to an
+        # input request, a close) never stalls the frames it waits for.
+        self._to_publish: asyncio.Queue[Ephemeral | FrameworkEventFrame | None] = asyncio.Queue()
+        self._publisher: asyncio.Task[None] | None = None
         held = held_calls if held_calls is not None else set()
         self._calls = OwnerCalls(link.request, tools, host, self._send_result, held)
         self._inputs = inputs if inputs is not None else OwnerInputs(timeouts.input_hold_timeout)
@@ -304,7 +328,7 @@ class OwnerTurn:
                     continue
                 silent = 0
                 if isinstance(frame, Ephemeral | FrameworkEventFrame):
-                    await self._published(frame)
+                    self._publish_later(frame)
                     continue
                 if self._apply(seq, frame):
                     continue
@@ -361,27 +385,51 @@ class OwnerTurn:
             return False
         return True
 
-    async def _published(self, frame: Ephemeral | FrameworkEventFrame) -> None:
-        """Publish on the owner what the turn published on its executor, for
-        the turn's room alone; one that names another room is dropped."""
+    def _publish_later(self, frame: Ephemeral | FrameworkEventFrame) -> None:
+        """Queue *frame* for the turn's publisher, started on the first, in a
+        copy of the context of the task waiting on the turn (RFC §10.6.5)."""
         if self._events is None:
             return
-        room_id = self._link.request.room_id
+        if self._publisher is None:
+            context = self._waiting.copy() if self._waiting is not None else None
+            self._publisher = asyncio.get_running_loop().create_task(
+                self._publish_queued(), context=context
+            )
+        self._to_publish.put_nowait(frame)
+
+    async def _publish_queued(self) -> None:
+        while (frame := await self._to_publish.get()) is not None:
+            await self._published(frame)
+
+    async def _published(self, frame: Ephemeral | FrameworkEventFrame) -> None:
+        """Publish on the owner what the turn published on its executor, as
+        the turn's channel in the turn's room, and only what the wiring emits;
+        anything else is dropped."""
+        assert self._events is not None
+        request = self._link.request
         try:
             if isinstance(frame, Ephemeral):
                 event = EphemeralEvent.from_dict(frame.event)
-                if frame.channel != f"room:{room_id}" or event.room_id != room_id:
-                    logger.warning("Turn %s published outside its room: dropped", room_id)
+                if not _of_the_turn(request, event.room_id, event.channel_id) or (
+                    frame.channel != f"room:{request.room_id}"
+                ):
+                    logger.warning("Turn %s published outside its room: dropped", request.turn_id)
                     return
                 await self._events.publish(frame.channel, event)
                 return
-            if frame.room_id not in (None, room_id):
-                logger.warning("Turn %s emitted outside its room: dropped", room_id)
+            if frame.event_type not in TURN_FRAMEWORK_EVENTS or not _of_the_turn(
+                request, frame.room_id, frame.channel_id
+            ):
+                logger.warning(
+                    "Turn %s emitted %s outside its room or kind: dropped",
+                    request.turn_id,
+                    frame.event_type,
+                )
                 return
             await self._events.emit(
                 frame.event_type,
-                room_id=frame.room_id,
-                channel_id=frame.channel_id,
+                room_id=request.room_id,
+                channel_id=request.channel_id,
                 event_id=frame.event_id,
                 data=frame.data,
             )
@@ -448,6 +496,8 @@ class OwnerTurn:
         if self._over:
             return
         self._over = True
+        # What the turn published is still published; nothing is added after.
+        self._to_publish.put_nowait(None)
         self._beat.cancel()
         if self._pump is not asyncio.current_task():
             self._pump.cancel()

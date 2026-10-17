@@ -352,15 +352,24 @@ class HookEngine:
 
     def define_room_hook(self, hook: HookRegistration) -> None:
         """Define a turn executor's room hook under its name: it applies to a
-        room whose turn's request names it (RFC §10.6.6). A name may carry a
-        hook per trigger."""
+        room whose turn's request names it (RFC §10.6.6). A name carries a
+        hook per trigger: defining the name on a trigger again replaces it."""
         if not self._turns:
             raise ValueError("Room hooks are defined by name on a turn executor only")
         if not hook.name:
             raise ValueError("A room hook defined on a turn executor needs a name")
         self._check_side(hook, room=True)
-        self._named_room_hooks.setdefault(hook.name, []).append(hook)
+        self._check_lock_placement(hook, None)
+        defined = self._named_room_hooks.setdefault(hook.name, [])
+        defined[:] = [h for h in defined if h.trigger != hook.trigger]
+        defined.append(hook)
         self._trigger_index.add(hook.trigger)
+        for room_id, hooks in self._room_hooks.items():
+            # A room using the name runs the new definition from now.
+            if any(h.name == hook.name for h in hooks):
+                self._room_hooks[room_id] = [
+                    h for h in hooks if not (h.name == hook.name and h.trigger == hook.trigger)
+                ] + [hook]
 
     def undefine_room_hook(self, name: str) -> bool:
         """Forget the room hooks defined under *name*, in every room."""

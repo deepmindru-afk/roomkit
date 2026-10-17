@@ -26,6 +26,7 @@ from roomkit.models.task import Observation
 from roomkit.models.tool_call import AIResponseEvent
 from roomkit.scoring.base import ConversationScorer, Score
 from roomkit.turns.executor import TurnExecutor
+from roomkit.turns.host import current_turn_host
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -149,7 +150,13 @@ class ScoringHook:
                 },
             )
             try:
-                await self._store.add_observation(obs)
+                # A scorer writes through its turn's host while the turn runs
+                # (RFC §10.6.6), to the store it holds once the turn ended.
+                host = current_turn_host()
+                if host is not None:
+                    await host.add_observation(obs)
+                else:
+                    await self._store.add_observation(obs)
             except Exception:
                 logger.warning("Failed to store score observation", exc_info=True)
 

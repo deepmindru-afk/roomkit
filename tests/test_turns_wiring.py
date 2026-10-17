@@ -16,20 +16,29 @@ from typing import Any
 
 import pytest
 
-from roomkit import RoomKit
+from roomkit import HookResult, RoomKit
 from roomkit.channels.agent import Agent
+from roomkit.channels.ai import AIChannel
 from roomkit.core.exceptions import TurnLinkError
 from roomkit.core.hooks import HookRegistration
+from roomkit.models.channel import ChannelBinding
+from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory, HookExecution, HookTrigger
-from roomkit.models.event import TextContent
+from roomkit.models.enums import ChannelCategory, ChannelType, HookExecution, HookTrigger
+from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.room import Room
+from roomkit.models.tool_call import ToolCallEvent
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
 from roomkit.scoring import MockScorer, ScoringHook
 from roomkit.store.memory import InMemoryStore
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.mock import MockTelemetryProvider
-from roomkit.turns import InMemoryTurnBackend, TurnExecutor, memory
+from roomkit.tools.human_input import HumanInputToolHandler
+from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, memory
+from roomkit.turns._owner_turn import _of_the_turn
+from roomkit.turns.wire import FrameworkEventFrame
 from tests.test_framework import SimpleChannel
 
 LOOKUP = AITool(name="lookup", description="Look it up.", parameters={"type": "object"})
@@ -273,6 +282,9 @@ async def test_a_room_hook_runs_for_the_rooms_that_enable_it() -> None:
 
     assert kit.disable_room_hook("r1", "audit") is True
     assert kit.disable_room_hook("r1", "audit") is False
+    await _say(kit)
+    await _settle()
+    assert seen == ["r1"]  # disabled: the next turn of r1 runs without it
     await kit.close()
 
 
@@ -330,3 +342,241 @@ def test_a_room_hook_on_an_executor_trigger_is_refused_by_callable() -> None:
     )
     with pytest.raises(ValueError, match="room_hook"):
         executor.hooks.add_room_hook("r1", registration)
+
+
+# -- Review: what the owner does with a turn's publications ------------------------
+
+
+ASK = AITool(
+    name="ask_user",
+    description="Ask the user.",
+    parameters={"type": "object", "properties": {"question": {"type": "string"}}},
+)
+
+
+async def test_a_framework_handler_may_answer_the_input_its_turn_asks() -> None:
+    """The handler runs off the turn's frame reader: the answer's ``input_taken``
+    is read while it waits."""
+    call = AIResponse(
+        content="",
+        tool_calls=[AIToolCall(id="c1", name="ask_user", arguments={"question": "Color?"})],
+    )
+    provider = MockAIProvider(ai_responses=[call, AIResponse(content="Thanks.")])
+    human = HumanInputToolHandler(tool_names={"ask_user"}, timeout=5, tool_definitions=[ASK])
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("ops"))
+    kit.register_channel(AIChannel("agent", provider=provider, human_input_handler=human))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "ops")
+    await kit.attach_channel("r1", "agent", category=ChannelCategory.INTELLIGENCE)
+    said: list[bool] = []
+
+    @kit.on("user_input_required")
+    async def auto_answer(event: Any) -> None:
+        said.append(await kit.answer_input(event.data["pending_id"], "Blue"))
+
+    await asyncio.wait_for(_say(kit), 4)
+    assert said == [True]
+    await kit.close()
+
+
+async def test_the_owner_publishes_a_turn_s_events_for_its_room_and_channel_only() -> None:
+    request = type("R", (), {"room_id": "r1", "channel_id": "agent"})()
+    assert _of_the_turn(request, "r1", "agent")
+    assert _of_the_turn(request, None, None)
+    assert not _of_the_turn(request, "r2", "agent")
+    assert not _of_the_turn(request, "r1", "other")
+
+
+async def test_a_frame_for_another_room_or_of_another_kind_is_dropped() -> None:
+    kit = await _kit()
+    emitted: list[Any] = []
+
+    @kit.on("video_vision_result")
+    async def vision(event: Any) -> None:
+        emitted.append(event)
+
+    @kit.on("tool_call")
+    async def tool_call(event: Any) -> None:
+        emitted.append(event)
+
+    executor = kit.turn_executor
+    take = executor.take
+
+    def forging(link: Any) -> None:
+        send = link.send
+
+        async def forged(frame: Any) -> int:
+            if frame.type == "accepted":
+                seq = await send(frame)
+                await send(FrameworkEventFrame(event_type="video_vision_result", room_id="r1"))
+                await send(FrameworkEventFrame(event_type="tool_call", room_id="elsewhere"))
+                await send(FrameworkEventFrame(event_type="tool_call", room_id=None))
+                return seq
+            return await send(frame)
+
+        link.send = forged
+        take(link)
+
+    executor.take = forging  # ty: ignore[invalid-assignment]
+    await _say(kit)
+    await _settle()
+
+    # The forged kind and room are dropped; a room-less one is the turn's room.
+    forged = [e for e in emitted if e.type == "video_vision_result" or e.room_id != "r1"]
+    assert forged == []
+    await kit.close()
+
+
+# -- Review: room hooks reach every door of the kit's executor ------------------------
+
+
+async def test_a_room_hook_gates_a_call_outside_a_turn_as_soon_as_it_is_enabled() -> None:
+    kit = RoomKit()
+    await kit.create_room(room_id="r1")
+
+    async def deny(event: Any, ctx: Any) -> HookResult:
+        return HookResult.block("needs approval")
+
+    kit.turn_executor.room_hook("approval", HookTrigger.BEFORE_TOOL_USE)(deny)
+    event = ToolCallEvent(
+        channel_id="voice",
+        channel_type=ChannelType.REALTIME_VOICE,
+        tool_call_id="t1",
+        name="transfer_money",
+        arguments={},
+        room_id="r1",
+    )
+    kit.enable_room_hook("r1", "approval")
+    # What the realtime voice tool gate calls, with no turn of the room yet.
+    denied, _ = await kit._decide_before_tool_use(event, "voice")
+    kit.disable_room_hook("r1", "approval")
+    allowed, _ = await kit._decide_before_tool_use(event, "voice")
+
+    assert (denied.allowed, allowed.allowed) == (False, True)
+    await kit.close()
+
+
+def test_a_room_hook_defined_again_on_a_trigger_replaces_the_first() -> None:
+    executor = TurnExecutor(lambda channel_id: None)
+
+    async def first(event: Any, ctx: Any) -> None: ...
+    async def second(event: Any, ctx: Any) -> None: ...
+
+    executor.room_hook("audit", HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)(first)
+    executor.room_hook("audit", HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)(second)
+    executor.room_hook("audit", HookTrigger.ON_AI_RESPONSE, HookExecution.ASYNC)(first)
+
+    defined = executor.hooks._named_room_hooks["audit"]
+    assert [(h.trigger, h.fn) for h in defined] == [
+        (HookTrigger.ON_TOOL_CALL, second),
+        (HookTrigger.ON_AI_RESPONSE, first),
+    ]
+
+
+def test_a_fail_closed_room_hook_must_run_in_line() -> None:
+    executor = TurnExecutor(lambda channel_id: None)
+
+    async def fn(event: Any, ctx: Any) -> None: ...
+
+    with pytest.raises(ValueError):
+        executor.room_hook(
+            "audit", HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC, fail_closed=True
+        )(fn)
+
+
+async def test_an_executor_refuses_a_turn_whose_room_hooks_it_does_not_define() -> None:
+    backend = InMemoryTurnBackend()
+    executor = TurnExecutor(lambda channel_id: _agent(), store=InMemoryStore())
+    await backend.serve(executor)
+    client = TurnClient(backend)
+    client._room_hooks["r1"] = ["missing"]
+    # A backend that places on the channel alone (not the in-memory one).
+    backend._place = lambda channel_id, room_id, room_hooks=(): executor  # type: ignore[method-assign]
+    event = RoomEvent(
+        room_id="r1",
+        source=EventSource(channel_id="ops", channel_type=ChannelType.SMS),
+        content=TextContent(body="go"),
+    )
+    binding = ChannelBinding(
+        channel_id="agent",
+        room_id="r1",
+        channel_type=ChannelType.AI,
+        category=ChannelCategory.INTELLIGENCE,
+    )
+    with pytest.raises(TurnLinkError) as raised:
+        await client.run(event, binding, RoomContext(room=Room(id="r1"), bindings=[binding]))
+    assert raised.value.reason == "no_executor"
+    await executor.close()
+
+
+# -- Review: the channels an executor builds ------------------------------------------
+
+
+async def test_concurrent_first_turns_share_one_build_and_a_close_waits_for_it() -> None:
+    release = asyncio.Event()
+    built: list[Agent] = []
+
+    async def factory(channel_id: str) -> Agent:
+        await release.wait()
+        built.append(_agent())
+        return built[-1]
+
+    executor = TurnExecutor(factory)
+    first = asyncio.create_task(executor._channels.get("agent"))
+    second = asyncio.create_task(executor._channels.get("agent"))
+    await asyncio.sleep(0)
+    closing = asyncio.create_task(executor.close())
+    await asyncio.sleep(0)
+    release.set()
+    await closing
+
+    results = await asyncio.gather(first, second, return_exceptions=True)
+    assert len(built) == 1
+    # The build finished after the close began: it is closed, never held.
+    assert all(isinstance(r, RuntimeError) for r in results)
+    assert executor._channels._built == {}
+
+
+async def test_a_factory_error_is_its_turn_s_and_the_next_build_tries_again() -> None:
+    calls: list[int] = []
+
+    def factory(channel_id: str) -> Agent:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("factory down")
+        return _agent()
+
+    executor = TurnExecutor(factory)
+    with pytest.raises(RuntimeError, match="factory down"):
+        await executor._channels.get("agent")
+    assert await executor._channels.get("agent") is not None
+    await executor.close()
+
+
+async def test_a_host_s_channel_gets_the_host_s_media_readers() -> None:
+    async def resolve(reference: str) -> Any:
+        return None
+
+    executor = TurnExecutor(lambda channel_id: _agent(), media_resolver=resolve)
+    channel = await executor._channels.get("agent")
+    assert channel is not None and channel._media_resolver is resolve  # type: ignore[attr-defined]
+    await executor.close()
+
+
+async def test_a_host_s_executor_drops_what_is_published_outside_a_turn() -> None:
+    executor = TurnExecutor(lambda channel_id: _agent())
+    event = EphemeralEvent(room_id="r1", type=EphemeralEventType.CUSTOM, user_id="agent")
+    await executor.wiring.realtime.publish_to_room("r1", event)  # nothing raises
+    await executor.wiring.emit("tool_call", room_id="r1")
+
+
+async def test_a_view_that_cannot_be_read_costs_the_turn_its_view_only() -> None:
+    agent = _agent(calls=False)
+
+    async def failing(context: Any) -> str | None:
+        raise RuntimeError("owner down")
+
+    agent._room_vision_loader = failing
+    context = RoomContext(room=Room(id="r1"))
+    assert await agent._vision_notes(context, standalone=False) == []

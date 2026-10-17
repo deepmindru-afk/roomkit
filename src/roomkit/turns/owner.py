@@ -171,6 +171,7 @@ class TurnClient:
         names = self._room_hooks.setdefault(room_id, [])
         if name not in names:
             names.append(name)
+        self._apply_room_hooks(room_id)
 
     def disable_room_hook(self, room_id: str, name: str) -> bool:
         """Stop naming *name* among *room_id*'s hooks; whether it was."""
@@ -180,7 +181,15 @@ class TurnClient:
         names.remove(name)
         if not names:
             self._room_hooks.pop(room_id, None)
+        self._apply_room_hooks(room_id)
         return True
+
+    def _apply_room_hooks(self, room_id: str) -> None:
+        """The own executor fires turn triggers outside a turn too (realtime
+        voice, conference, RFC §10.6.6): its room hooks follow the names at
+        once, not at the room's next turn."""
+        if self.executor is not None:
+            self.executor.hooks.use_room_hooks(room_id, self.room_hook_names(room_id))
 
     def room_hook_names(self, room_id: str) -> list[str]:
         """The names of *room_id*'s hooks on executor triggers."""

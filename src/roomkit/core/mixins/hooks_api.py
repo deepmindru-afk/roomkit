@@ -76,6 +76,7 @@ class HooksApiMixin(HelpersMixin):
     _store: ConversationStore
     _hook_engine: HookEngine
     _turns: Any  # RoomKit's TurnClient
+    turn_executor: Any  # RoomKit's own TurnExecutor
     _event_handlers: list[tuple[str, FrameworkEventHandler]]
     _identity_hooks: dict[HookTrigger, list[IdentityHookRegistration]]
 
@@ -397,6 +398,14 @@ class HooksApiMixin(HelpersMixin):
         fires (``executor.room_hook(name, trigger)(fn)``) for *room_id*'s
         turns (RFC §10.6.6): the turns' requests name it, and only an
         executor that defines it takes them (RFC §10.6.7)."""
+        if not self.turn_executor.hooks.defines_room_hooks([name]):
+            logger.warning(
+                "Room hook %r enabled for room %s is not defined on the kit's own "
+                "executor: its calls outside a turn (realtime voice, conference) run "
+                "without it",
+                name,
+                room_id,
+            )
         self._turns.enable_room_hook(room_id, name)
 
     def disable_room_hook(self, room_id: str, name: str) -> bool:

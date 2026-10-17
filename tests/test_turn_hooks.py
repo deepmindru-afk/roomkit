@@ -143,6 +143,9 @@ async def test_uninstalling_a_strategy_takes_back_its_room_hook_on_the_executor(
     await kit.create_room(room_id="room")
     await kit.install_strategy("room", _AuditStrategy())
     assert kit._turns.room_hook_names("room") == ["audit"]
+    assert kit.turn_executor.hooks.room_hook_names("room") == ["audit"]
     await kit.uninstall_strategy("room")
     assert kit._turns.room_hook_names("room") == []
+    # Off the kit's executor at once, not at the room's next turn.
+    assert kit.turn_executor.hooks.room_hook_names("room") == []
     await kit.close()

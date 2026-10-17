@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from roomkit.core._turn_scope import turns_run_under
+from roomkit.core.exceptions import TurnLinkError
 from roomkit.core.hooks import HookEngine, HookRegistration, hook_decorator
 from roomkit.core.task_utils import cancel_and_wait
 from roomkit.models.enums import HookExecution
@@ -85,6 +86,8 @@ class TurnExecutor:
         self._hooks = HookEngine(turns=True)
         if telemetry is not None:
             self._hooks._telemetry = telemetry
+        # A hook's timeout (RFC §8.2) is emitted where the turn's events go.
+        self._hooks._framework_emitter = self._emit_framework_event
         self.store = store
         """The shared store the executor was given, ``None`` for none."""
         env = StoreWiringEnv(store, media_resolver=media_resolver, attached_media=attached_media)
@@ -108,6 +111,9 @@ class TurnExecutor:
         """Wire channels from *env* in place of what the executor was given:
         what the kit gives its own executor, before any channel is wired."""
         self._wiring = TurnWiring(self._hooks, env)
+
+    async def _emit_framework_event(self, event_type: str, **fields: Any) -> None:
+        await self._wiring.emit(event_type, **fields)
 
     def wire(self, channel: Channel) -> None:
         """Give *channel* what its turns fire this executor's hooks through:
@@ -203,7 +209,6 @@ class TurnExecutor:
     def take(self, link: ExecutorLink) -> None:
         """Start the turn *link* brought; it runs on its own task."""
         request = link.request
-        self._hooks.use_room_hooks(request.room_id, request.room_hooks)
         stale = self._rooms.enter(
             request.channel_id, request.room_id, request.turn_id, request.previous_turn
         )
@@ -250,7 +255,15 @@ class TurnExecutor:
         self._turns.pop(task, None)
 
     async def _turn_channel(self, request: TurnRequest, stale: bool) -> Channel | None:
-        """The channel of *request*'s turn, readied for its room (RFC §10.6.2)."""
+        """The channel of *request*'s turn, readied for its room (RFC §10.6.2)
+        and its hooks: a turn whose room hooks this executor does not define
+        fails rather than run without them (RFC §10.6.6)."""
+        if not self._hooks.defines_room_hooks(request.room_hooks):
+            raise TurnLinkError(
+                "no_executor",
+                f"Executor {self.executor_id} defines no room hook among {request.room_hooks}",
+            )
+        self._hooks.use_room_hooks(request.room_id, request.room_hooks)
         channel = await self._channels.get(request.channel_id)
         if channel is not None:
             await self._rooms.prepare(channel, request, stale=stale)
