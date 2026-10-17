@@ -325,7 +325,7 @@ class TestFindTools:
     )
 
     async def test_a_text_search_names_no_pinned_tool_as_related(self) -> None:
-        channel = _orchestrated(
+        kit, channel = _orchestrated(
             False,
             [self.PINNED, *CRM],
             _calling("find_tools", query="crm operation number 3"),
@@ -333,7 +333,7 @@ class TestFindTools:
             tool_search_pinned=["crm_pinned_summary"],
         )
 
-        result = json.loads(_text_result(channel, await _turn(channel, "r1")))
+        result = json.loads(_text_result(channel, await _turn(kit, channel, "r1")))
 
         assert result["matches"]
         assert "crm_pinned_summary" not in (result.get("related_tools_same_source") or [])
@@ -363,15 +363,15 @@ class TestFindTools:
 async def test_a_tool_tool_search_never_hides_is_always_declared() -> None:
     """``plan_tasks`` is reported ``always``, its first use aside (§6.4)."""
     plan = _calling("plan_tasks", tasks=[{"title": "one", "status": "pending"}])
-    channel = _orchestrated(False, CRM, plan, tool_search=True, enable_planning=True)
+    kit, channel = _orchestrated(False, CRM, plan, tool_search=True, enable_planning=True)
     seen: list[AIResponseEvent] = []
 
     async def observe(event: AIResponseEvent) -> None:
         seen.append(event)
 
     channel._after_response_hook = observe
-    await _turn(channel, "r1")
-    await _turn(channel, "r1")
+    await _turn(kit, channel, "r1")
+    await _turn(kit, channel, "r1")
 
     origins = [{t.name: t.origin for t in event.declared_tools}["plan_tasks"] for event in seen]
     assert origins == ["always", "always"]
@@ -381,9 +381,9 @@ class TestListTools:
     """``list_tools`` lists every tool the turn or session can call (§21.1)."""
 
     async def test_a_text_turn_lists_the_tools_always_declared(self) -> None:
-        channel = _orchestrated(False, CRM, _calling("list_tools"), tool_search=True)
+        kit, channel = _orchestrated(False, CRM, _calling("list_tools"), tool_search=True)
 
-        result = json.loads(_text_result(channel, await _turn(channel, "r1")))
+        result = json.loads(_text_result(channel, await _turn(kit, channel, "r1")))
 
         names = {tool["name"] for tool in result["tools"]}
         assert "delegate_task" in names
@@ -415,9 +415,9 @@ class TestAnUndeclaredInfrastructureTool:
     """Tool Search hiding nothing, ``find_tools`` is refused as undeclared (§6.4, §12.4)."""
 
     async def test_a_text_turn_refuses_it(self) -> None:
-        channel = _orchestrated(False, CRM[:2], _calling("find_tools", query="crm"))
+        kit, channel = _orchestrated(False, CRM[:2], _calling("find_tools", query="crm"))
 
-        result = json.loads(_text_result(channel, await _turn(channel, "r1")))
+        result = json.loads(_text_result(channel, await _turn(kit, channel, "r1")))
 
         assert result == {"error": "Tool 'find_tools' is not declared."}
 

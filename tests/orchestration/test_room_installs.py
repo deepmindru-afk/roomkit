@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from roomkit import RoomKit, ToolNameCollisionError
+from roomkit.channels._tool_registry import ToolSource
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
@@ -41,7 +42,7 @@ from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransp
 from tests.conftest import make_event
 from tests.test_framework import SimpleChannel
 from tests.tool_loop_modes import respond
-from tests.tool_room import room_tool_names
+from tests.tool_room import owner_tools_in, room_tool_names
 
 TENANTS = ("bank-A", "clinic-B")
 
@@ -159,7 +160,8 @@ async def test_the_repeat_guard_holds_on_an_orchestration_tool(streaming: bool) 
         "delegate_task", {"agent": "w", "task": "same"}, times=5, streaming=streaming
     )
     channel = AIChannel("ai1", provider=provider, tool_search=False)
-    setup_delegation(channel, Recording(RoomKit()))
+    kit = RoomKit()
+    setup_delegation(channel, Recording(kit))
 
     binding = ChannelBinding(
         channel_id="ai1",
@@ -168,7 +170,8 @@ async def test_the_repeat_guard_holds_on_an_orchestration_tool(streaming: bool) 
         category=ChannelCategory.INTELLIGENCE,
     )
     event = make_event(room_id="r1", body="go", channel_id="sms1")
-    await respond(channel, event, binding, RoomContext(room=Room(id="r1")))
+    with owner_tools_in(kit, "ai1", "r1"):
+        await respond(channel, event, binding, RoomContext(room=Room(id="r1")))
 
     assert len(delegations) == 2
 
@@ -510,6 +513,15 @@ def _strategies() -> dict[str, Callable[[], tuple[Any, list[Any]]]]:
     }
 
 
+def _set_up_for(kit: RoomKit, channel: Any, room_id: str) -> list[str]:
+    """The tools a strategy set up for *channel* that *room_id* declares:
+    kept by *kit* for an agent, on a realtime channel's own registry."""
+    if isinstance(channel, RealtimeVoiceChannel):
+        entries = channel._registry.entries(room_id, source=ToolSource.ORCHESTRATION)
+        return [entry.name for entry in entries]
+    return room_tool_names(kit, channel.channel_id, room_id)
+
+
 @pytest.mark.parametrize("kind", list(_strategies()))
 async def test_installing_a_strategy_again_in_its_room_replaces_its_own(kind: str) -> None:
     """RFC §21.1: the same strategy installed again for a room replaces what it
@@ -520,11 +532,11 @@ async def test_installing_a_strategy_again_in_its_room_replaces_its_own(kind: st
         if channel.channel_id not in kit.channels:
             kit.register_channel(channel)
     await kit.create_room(room_id="room-A", orchestration=orchestration)
-    before = {c.channel_id: room_tool_names(c, "room-A") for c in channels}
+    before = {c.channel_id: _set_up_for(kit, c, "room-A") for c in channels}
 
     await orchestration.install(kit, "room-A")
 
-    assert {c.channel_id: room_tool_names(c, "room-A") for c in channels} == before
+    assert {c.channel_id: _set_up_for(kit, c, "room-A") for c in channels} == before
     await kit.close()
 
 
@@ -544,7 +556,7 @@ async def test_an_install_refused_halfway_sets_nothing_up() -> None:
     with pytest.raises(ToolNameCollisionError, match="delegate_to_w2"):
         await Supervisor(sup, workers).install(kit, "room-A")
 
-    assert room_tool_names(sup, "room-A") == []
+    assert room_tool_names(kit, "sup", "room-A") == []
     await kit.close()
 
 

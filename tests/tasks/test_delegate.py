@@ -21,9 +21,10 @@ from roomkit.tasks.delegate import (
     setup_realtime_delegation,
 )
 from roomkit.tasks.models import DelegatedTask
+from roomkit.turns._registry_tools import OwnerToolStore
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
-from tests.tool_room import tool_call_in
+from tests.tool_room import owner_tool_call_in, owner_tool_definitions, tool_call_in
 
 # -- Tool definition ----------------------------------------------------------
 
@@ -121,22 +122,29 @@ class TestDelegateHandler:
 # -- setup_delegation ---------------------------------------------------------
 
 
+def _mock_kit() -> MagicMock:
+    """A kit double that keeps the tools a delegation sets up (RFC §10.6.2)."""
+    kit = MagicMock()
+    kit._owner_tools = OwnerToolStore({}.get)
+    return kit
+
+
 class TestSetupDelegation:
     def test_declares_the_tool_and_serves_it(self):
         channel = AIChannel("ai-main", provider=MockAIProvider(responses=["hi"]))
-        kit = MagicMock()
+        kit = _mock_kit()
         handler = DelegateHandler(kit)
 
         setup_delegation(channel, handler)
 
-        tool_names = [t.name for t in channel.extra_tools]
+        tool_names = [t.name for t in owner_tool_definitions(kit, "ai-main")]
         assert "delegate_task" in tool_names
         # The host's handler is left as it was.
         assert channel.tool_handler is None
 
     def test_double_setup_raises(self):
         channel = AIChannel("ai-main", provider=MockAIProvider(responses=["hi"]))
-        kit = MagicMock()
+        kit = _mock_kit()
         handler = DelegateHandler(kit)
 
         setup_delegation(channel, handler)
@@ -145,7 +153,7 @@ class TestSetupDelegation:
 
     async def test_wrapped_handler_intercepts_delegate_task(self):
         channel = AIChannel("ai-main", provider=MockAIProvider(responses=["hi"]))
-        kit = MagicMock()
+        kit = _mock_kit()
         task_handle = DelegatedTask(
             id="t1",
             child_room_id="child-1",
@@ -158,7 +166,7 @@ class TestSetupDelegation:
         handler = DelegateHandler(kit, notify="ai-main")
         setup_delegation(channel, handler)
 
-        with tool_call_in("room-1"):
+        with owner_tool_call_in(kit, "ai-main", "room-1"):
             result_str = await channel._channel_tool_handler(
                 "delegate_task",
                 {"agent": "pr-reviewer", "task": "review PR"},
@@ -170,15 +178,17 @@ class TestSetupDelegation:
 
     async def test_wrapped_handler_no_room_id_returns_error(self):
         channel = AIChannel("ai-main", provider=MockAIProvider(responses=["hi"]))
-        kit = MagicMock()
+        kit = _mock_kit()
         handler = DelegateHandler(kit)
         setup_delegation(channel, handler)
 
-        # Called directly, outside any tool loop: no call names a room.
-        result_str = await channel._channel_tool_handler(
-            "delegate_task",
-            {"agent": "a", "task": "b"},
-        )
+        # Served directly, outside any tool loop: no call names a room. The
+        # kit serves the delegation, never the channel outside a turn.
+        registry = kit._owner_tools.get("ai-main")
+        assert registry is not None
+        entry = registry.lookup("delegate_task", None)
+        assert entry is not None and entry.serve is not None
+        result_str = await entry.serve({"agent": "a", "task": "b"})
 
         result = json.loads(result_str)
         assert "error" in result
@@ -194,7 +204,7 @@ class TestSetupDelegation:
 
         channel.tool_handler = original_handler
 
-        kit = MagicMock()
+        kit = _mock_kit()
         handler = DelegateHandler(kit)
         setup_delegation(channel, handler)
 

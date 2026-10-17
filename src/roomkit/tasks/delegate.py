@@ -293,7 +293,8 @@ def setup_delegation(
     Raises:
         RuntimeError: Delegation is already set up on the channel.
     """
-    if channel._registry.lookup(DELEGATE_TOOL_NAME, None) is not None:
+    registry = handler._kit._owner_tools.of(channel.channel_id)
+    if registry.lookup(DELEGATE_TOOL_NAME, None) is not None:
         msg = f"setup_delegation() already called for channel '{channel.channel_id}'"
         raise RuntimeError(msg)
 
@@ -308,7 +309,7 @@ def setup_delegation(
     entry = orchestration_tool(
         tool or DELEGATE_TOOL, in_call_room(DELEGATE_TOOL_NAME, delegate), waits=True
     )
-    channel._registry.register(entry, owner=handler)
+    registry.register(entry, owner=handler)
 
 
 def setup_realtime_delegation(

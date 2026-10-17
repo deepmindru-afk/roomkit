@@ -25,6 +25,7 @@ from roomkit.orchestration.state import get_conversation_state
 from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.test_framework import SimpleChannel
+from tests.tool_room import room_tool_names
 
 
 def _agent(name: str, *answers: AIResponse | str) -> Agent:
@@ -118,7 +119,7 @@ async def test_a_room_moves_from_a_swarm_to_a_discussion_and_back() -> None:
     # What the swarm added is gone: its router, its handoff tool, its state and
     # the agent it attached; the assistant bound before it stays.
     assert not kit.hook_engine.has_router_hook("r1")
-    assert "handoff_conversation" not in sales._registry.room_tool_names("r1")
+    assert "handoff_conversation" not in room_tool_names(kit, "sales", "r1")
     assert get_conversation_state(await kit.get_room("r1")).active_agent_id is None
     assert await _bound(kit) == {"ops", "sales"}
     assert kit.room_strategy("r1") is None

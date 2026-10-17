@@ -9,6 +9,8 @@ from roomkit.models.room import Room
 from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.loop import Loop
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.turns._registry_tools import OwnerToolStore
+from tests.tool_room import owner_tool_definitions
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -38,6 +40,8 @@ def _make_mock_kit(room: Room) -> MagicMock:
     kit.hook_engine.add_room_hook = MagicMock()
     kit.channels = {}
     kit.register_channel = MagicMock()
+    # The kit keeps the tools an install sets up for an agent (RFC §10.6.2).
+    kit._owner_tools = OwnerToolStore(kit.channels.get)
     return kit
 
 
@@ -114,6 +118,8 @@ class TestLoopInstall:
         loop = Loop(agent=writer, reviewers=[editor])
         await loop.install(kit, "r1")
 
-        assert not any(t.name == "handoff_conversation" for t in writer.extra_tools)
-        assert not any(t.name == "handoff_conversation" for t in editor.extra_tools)
-        assert not any(t.name == "approve_output" for t in editor.extra_tools)
+        writer_tools = owner_tool_definitions(kit, "writer", "r1")
+        editor_tools = owner_tool_definitions(kit, "editor", "r1")
+        assert not any(t.name == "handoff_conversation" for t in writer_tools)
+        assert not any(t.name == "handoff_conversation" for t in editor_tools)
+        assert not any(t.name == "approve_output" for t in editor_tools)

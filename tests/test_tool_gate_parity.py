@@ -75,11 +75,11 @@ class _Sandbox(SandboxExecutor):
 async def test_a_hidden_tool_is_validated_whoever_serves_it(name: str, streaming: bool) -> None:
     sandbox = _Sandbox()
     strict = AITool(name="crm_strict", description="Strict.", parameters=_STRICT)
-    channel = _orchestrated(
+    kit, channel = _orchestrated(
         streaming, [*CRM, strict], _calling(name, cmd=42), tool_search=True, sandbox=sandbox
     )
 
-    first = await _turn(channel, "r1")
+    first = await _turn(kit, channel, "r1")
 
     assert name not in {t.name for t in _model(channel).calls[first].tools}
     assert "missing required argument 'command'" in _tool_result(channel, first)
@@ -111,7 +111,7 @@ async def test_a_hidden_human_input_tool_is_validated_before_a_person_is_asked(
     human = HumanInputToolHandler(
         tool_names={"AskUserQuestion"}, tool_definitions=[ask], handler=_Spy()
     )
-    channel = _orchestrated(
+    kit, channel = _orchestrated(
         streaming,
         CRM,
         _calling("AskUserQuestion", bogus=1),
@@ -119,7 +119,7 @@ async def test_a_hidden_human_input_tool_is_validated_before_a_person_is_asked(
         human_input_handler=human,
     )
 
-    first = await asyncio.wait_for(_turn(channel, "r1"), 5)
+    first = await asyncio.wait_for(_turn(kit, channel, "r1"), 5)
 
     assert "missing required argument 'question'" in _tool_result(channel, first)
     assert asked == []

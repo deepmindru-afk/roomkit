@@ -16,7 +16,6 @@ from typing import Any
 import pytest
 
 from roomkit import RoomKit
-from roomkit.channels._tool_registry import ToolSource
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
@@ -40,7 +39,7 @@ from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransp
 from tests.conftest import make_event
 from tests.test_framework import SimpleChannel
 from tests.tool_loop_modes import respond
-from tests.tool_room import room_tool_names
+from tests.tool_room import owner_tools_in, room_tool_names
 
 TENANTS = ("tenant-A", "tenant-B")
 
@@ -320,8 +319,13 @@ async def test_a_result_tool_is_declared_in_the_child_room_only() -> None:
         category=ChannelCategory.INTELLIGENCE,
     )
 
+    kit = RoomKit()
+
     # A delegation to this same agent runs in another room meanwhile.
-    with capture_result(channel, "parent::task-abc", SUBMIT_RESULT):
+    with (
+        capture_result(kit._owner_tools.of("ai1"), "parent::task-abc", SUBMIT_RESULT),
+        owner_tools_in(kit, "ai1", "customer-room"),
+    ):
         await respond(
             channel,
             make_event(room_id="customer-room", body="hi", channel_id="sms1"),
@@ -334,7 +338,7 @@ async def test_a_result_tool_is_declared_in_the_child_room_only() -> None:
         "read_stored_result",
     ]
     assert seen == []
-    assert not channel._registry.entries("parent::task-abc", source=ToolSource.ORCHESTRATION)
+    assert not room_tool_names(kit, "ai1", "parent::task-abc")
 
 
 async def test_the_supervisor_runs_its_sub_runs_without_its_strategy_tool() -> None:
@@ -364,7 +368,7 @@ async def test_the_supervisor_runs_its_sub_runs_without_its_strategy_tool() -> N
     declared = [[tool.name for tool in call.tools or []] for call in sup_model.calls]
     assert "delegate_workers" in declared[0]
     assert all("delegate_workers" not in names for names in declared[1:-1])
-    assert room_tool_names(supervisor, "tenant-B") == ["delegate_workers"]
+    assert room_tool_names(kit, "sup", "tenant-B") == ["delegate_workers"]
     await kit.close()
 
 

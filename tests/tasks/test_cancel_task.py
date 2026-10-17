@@ -235,8 +235,10 @@ async def test_the_owner_serves_the_task_tools_set_up_on_an_agent() -> None:
     declared = room.kit._turns._tools.declared("speaker", "r")
     names = sorted(tool.tool.name for tool in declared)
     with tool_turn_context(room_id="r", call=_call()):
-        entry = speaker._registry.owner_lookup(CANCEL_TASK_TOOL, "r")  # type: ignore[attr-defined]
-        assert entry is not None
+        registry = room.kit._owner_tools.get("speaker")
+        assert registry is not None
+        entry = registry.owner_lookup(CANCEL_TASK_TOOL, "r")
+        assert entry is not None and entry.serve is not None
         answer = json.loads(await entry.serve({"task_id": task.id}))
     await room.kit.close()
 
@@ -278,7 +280,8 @@ async def test_setup_task_tools_sets_up_both_tools_or_neither() -> None:
     with pytest.raises(ToolNameCollisionError):
         kit.setup_task_tools(agent)
 
-    assert agent._registry.lookup(TASK_STATUS_TOOL, None) is None
+    registry = kit._owner_tools.get("speaker")
+    assert registry is None or registry.lookup(TASK_STATUS_TOOL, None) is None
     await kit.close()
 
 

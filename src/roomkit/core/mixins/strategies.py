@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from roomkit.core.locks import RoomLockManager
     from roomkit.orchestration.base import Orchestration
     from roomkit.store.base import ConversationStore
+    from roomkit.turns._registry_tools import OwnerToolStore
 
 logger = logging.getLogger("roomkit.framework")
 
@@ -70,6 +71,7 @@ class StrategyMixin(HelpersMixin):
     _turn_hooks: HookEngine  # the kit's turn executor's (RFC §10.6.6)
     _turns: Any  # RoomKit's TurnClient
     _turn_runners: TurnRunners  # the strategies' runners, kept by the owner (RFC §10.6.1)
+    _owner_tools: OwnerToolStore  # the tools installs set up, kept by the owner (RFC §10.6.2)
     _channels: dict[str, Channel]
     _discussions: dict[str, Any]
     _room_strategies: dict[str, _Installed]
@@ -364,11 +366,16 @@ class StrategyMixin(HelpersMixin):
         return owner | {(True, name) for name in self._turns.room_hook_names(room_id)}
 
     def _registries(self) -> dict[str, ChannelRegistry]:
-        return {
+        """Where an install sets tools up: the owner's store for an
+        intelligence channel (RFC §10.6.2), a realtime channel's own registry
+        for the voice installs, which never cross the turn backend."""
+        own = {
             cid: registry
             for cid, channel in self._channels.items()
-            if isinstance(registry := getattr(channel, "_registry", None), ChannelRegistry)
+            if channel.category is not ChannelCategory.INTELLIGENCE
+            and isinstance(registry := getattr(channel, "_registry", None), ChannelRegistry)
         }
+        return {**own, **self._owner_tools.registries()}
 
     async def _take_back(self, room_id: str, installed: _Installed) -> None:
         """Remove what a strategy's install added for *room_id*: everything it

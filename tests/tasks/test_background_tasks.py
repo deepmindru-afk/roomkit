@@ -56,7 +56,9 @@ async def _until(predicate: Any, timeout: float = 5.0) -> None:
 
 async def test_setup_declares_the_tool_on_the_agent() -> None:
     kit, speaker, _helper = await _kit()
-    assert speaker._registry.lookup(BACKGROUND_TOOL, None) is not None
+    registry = kit._owner_tools.get(speaker.channel_id)
+    assert registry is not None
+    assert registry.lookup(BACKGROUND_TOOL, None) is not None
     with pytest.raises(RuntimeError, match="already"):
         kit.setup_background(speaker)
     await kit.close()
@@ -67,7 +69,8 @@ async def test_setup_refuses_an_unknown_hand_back() -> None:
     agent = Agent("a", provider=MockAIProvider(responses=["x"]))
     with pytest.raises(ValueError, match="hand_back"):
         kit.setup_background(agent, hand_back="shout")
-    assert agent._registry.lookup(BACKGROUND_TOOL, None) is None
+    registry = kit._owner_tools.get("a")
+    assert registry is None or registry.lookup(BACKGROUND_TOOL, None) is None
     await kit.close()
 
 

@@ -37,7 +37,7 @@ from roomkit.tasks.handback import RESULT_TURN_NOTE, hand_back
 from roomkit.tasks.models import TaskStatus
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.test_framework import SimpleChannel
-from tests.tool_room import tool_call_in
+from tests.tool_room import owner_tool_call_in, tool_call_in
 
 
 async def _kit(worker_output: str, kit: RoomKit | None = None) -> tuple[RoomKit, AIChannel]:
@@ -222,7 +222,7 @@ async def test_the_delegating_agent_is_told_by_default() -> None:
     kit, notified = await _kit("Findings.")
     setup_delegation(notified, DelegateHandler(kit))
 
-    with tool_call_in("call"):
+    with owner_tool_call_in(kit, notified.channel_id, "call"):
         await notified._channel_tool_handler("delegate_task", {"agent": "worker", "task": "look"})
     told = await _told(notified, 1)
 

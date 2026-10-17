@@ -51,8 +51,15 @@ from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.handback import RESULT_TURN_NOTE
 from roomkit.tasks.models import DelegatedTaskResult
 from roomkit.tools.context import tool_turn_context
+from roomkit.turns._registry_tools import OwnerToolStore
 from tests.strategy_turns import owner_turn
-from tests.tool_room import room_tool_names, tool_call_in
+from tests.tool_room import (
+    owner_tool_call_in,
+    owner_tool_definitions,
+    owner_tools_in,
+    room_tool_names,
+    tool_call_in,
+)
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -99,6 +106,8 @@ def _make_mock_kit(room: Room) -> MagicMock:
     kit._finish_cascade = AsyncMock(return_value=(None, None))
     # The owner keeps the strategies' runners (RFC §10.6.1).
     kit._turn_runners = TurnRunners()
+    # ... and the tools they set up for an agent (RFC §10.6.2).
+    kit._owner_tools = OwnerToolStore(kit.channels.get)
     return kit
 
 
@@ -301,7 +310,7 @@ class TestSupervisorInstall:
         )
         await s.install(kit, "r1")
 
-        assert room_tool_names(boss, "r1") == ["delegate_workers"]
+        assert room_tool_names(kit, "boss", "r1") == ["delegate_workers"]
 
     async def test_install_per_worker_tools(self) -> None:
         boss = _make_agent("boss")
@@ -311,7 +320,7 @@ class TestSupervisorInstall:
         s = Supervisor(supervisor=boss, workers=workers)
         await s.install(kit, "r1")
 
-        tool_names = room_tool_names(boss, "r1")
+        tool_names = room_tool_names(kit, "boss", "r1")
         assert tool_names == ["delegate_to_w1", "delegate_to_w2"]
 
     async def test_double_install_no_duplicate_tools(self) -> None:
@@ -326,10 +335,12 @@ class TestSupervisorInstall:
         await s.install(kit, "r1")
         kit2 = _make_mock_kit(Room(id="r2"))
         kit2.delegate = AsyncMock(return_value=mock_task)
+        # The second mock stands for the same kit's other room: one store.
+        kit2._owner_tools = kit._owner_tools
         await s.install(kit2, "r2")
 
         for room_id in ("r1", "r2"):
-            assert room_tool_names(boss, room_id) == ["delegate_to_w1"]
+            assert room_tool_names(kit, "boss", room_id) == ["delegate_to_w1"]
 
     async def test_double_install_strategy_tool_no_duplicate(self) -> None:
         boss = _make_agent("boss")
@@ -343,11 +354,13 @@ class TestSupervisorInstall:
         await s.install(kit, "r1")
         handler = boss.tool_handler
         kit2 = _make_mock_kit(Room(id="r2"))
+        # The second mock stands for the same kit's other room: one store.
+        kit2._owner_tools = kit._owner_tools
         await s.install(kit2, "r2")
 
         # Declared once in each room it serves, and served by one handler.
         for room_id in ("r1", "r2"):
-            assert room_tool_names(boss, room_id) == ["delegate_workers"]
+            assert room_tool_names(kit, "boss", room_id) == ["delegate_workers"]
         assert boss.tool_handler is handler
 
     async def test_router_hook_installed_in_strategy_tool_async_delivery(self) -> None:
@@ -404,7 +417,7 @@ class TestPerWorkerDelegation:
         s = Supervisor(supervisor=boss, workers=[w1], wait_for_result=True)
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             result = await boss._channel_tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         assert parsed["result"] == "Worker result"
@@ -419,7 +432,7 @@ class TestPerWorkerDelegation:
         s = Supervisor(supervisor=boss, workers=[w1], wait_for_result=True)
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             result = await boss._channel_tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         # A failed task reads as failed, never with its error (RMK-295).
@@ -434,7 +447,7 @@ class TestPerWorkerDelegation:
         s = Supervisor(supervisor=boss, workers=[w1], wait_for_result=True)
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             result = await boss._channel_tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         assert parsed["status"] == "failed"
@@ -451,7 +464,7 @@ class TestPerWorkerDelegation:
         s = Supervisor(supervisor=boss, workers=[w1], wait_for_result=False)
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             result = await boss._channel_tool_handler("delegate_to_w1", {"task": "Do work"})
         parsed = json.loads(result)
         assert parsed["status"] == "delegated"
@@ -470,11 +483,11 @@ class TestPerWorkerDelegation:
         await s.install(kit, "r1")
 
         # First call succeeds
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             await boss._channel_tool_handler("delegate_to_w1", {"task": "Do work"})
 
         # Second call should detect already running
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             result = await boss._channel_tool_handler("delegate_to_w1", {"task": "Do more"})
         parsed = json.loads(result)
         assert parsed["status"] == "already_running"
@@ -489,7 +502,10 @@ class TestPerWorkerDelegation:
         await s.install(kit, "r1")
 
         # Raised on to the channel, which reads it as any failed call (RMK-295).
-        with tool_call_in("r1"), pytest.raises(RuntimeError, match="Connection lost"):
+        with (
+            owner_tool_call_in(kit, "boss", "r1"),
+            pytest.raises(RuntimeError, match="Connection lost"),
+        ):
             await boss._channel_tool_handler("delegate_to_w1", {"task": "Do work"})
 
     async def test_unknown_tool_falls_through(self) -> None:
@@ -499,7 +515,7 @@ class TestPerWorkerDelegation:
         s = Supervisor(supervisor=boss, workers=[_make_agent("w1")])
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"), pytest.raises(UnservedToolCallError):
+        with owner_tool_call_in(kit, "boss", "r1"), pytest.raises(UnservedToolCallError):
             await boss._channel_tool_handler("unknown_tool", {})
 
 
@@ -520,7 +536,7 @@ class TestStrategyToolHandler:
         )
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             result = await boss._channel_tool_handler("delegate_workers", {"task": "analyze"})
         # The handler hands the supervisor a review brief (prose), not raw JSON:
         # the request, the worker output, and an instruction to verify + deliver.
@@ -547,7 +563,7 @@ class TestStrategyToolHandler:
         )
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             result = await boss._channel_tool_handler("delegate_workers", {"task": "analyze"})
         # Review brief carries both workers' outputs for the supervisor to verify.
         assert "analyze" in result
@@ -565,7 +581,7 @@ class TestStrategyToolHandler:
         )
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"), pytest.raises(UnservedToolCallError):
+        with owner_tool_call_in(kit, "boss", "r1"), pytest.raises(UnservedToolCallError):
             await boss._channel_tool_handler("unknown_tool", {})
 
     async def test_strategy_tool_exception_returns_error(self) -> None:
@@ -581,7 +597,7 @@ class TestStrategyToolHandler:
         await s.install(kit, "r1")
 
         # Raised on to the channel, which reads it as any failed call (RMK-295).
-        with tool_call_in("r1"), pytest.raises(RuntimeError, match="Boom"):
+        with owner_tool_call_in(kit, "boss", "r1"), pytest.raises(RuntimeError, match="Boom"):
             await boss._channel_tool_handler("delegate_workers", {"task": "x"})
 
     async def test_strategy_tool_dedup_cache(self) -> None:
@@ -597,10 +613,10 @@ class TestStrategyToolHandler:
         )
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             result1 = await boss._channel_tool_handler("delegate_workers", {"task": "analyze"})
         calls_after_first = kit.delegate.call_count
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             result2 = await boss._channel_tool_handler(
                 "delegate_workers", {"task": "analyze again"}
             )
@@ -621,10 +637,10 @@ class TestStrategyToolHandler:
         s = Supervisor(supervisor=boss, workers=[_make_agent("w1")], strategy="sequential")
         await s.install(kit, "r1")
 
-        with tool_turn_context(room_id="r1", requester="Alice"):
+        with tool_turn_context(room_id="r1", requester="Alice"), owner_tools_in(kit, "boss", "r1"):
             first = await boss._channel_tool_handler("delegate_workers", {"task": "analyze"})
         calls_after_first = kit.delegate.call_count
-        with tool_turn_context(room_id="r1", requester="Bob"):
+        with tool_turn_context(room_id="r1", requester="Bob"), owner_tools_in(kit, "boss", "r1"):
             second = await boss._channel_tool_handler("delegate_workers", {"task": "analyze"})
 
         assert "Requested by Alice, in the delegating agent's words:" in first
@@ -833,7 +849,9 @@ class TestSupervisedSequential:
             room_id: str, channel_id: str, task: str, *, wait: bool = False, **kw: Any
         ) -> Any:
             if channel_id == "boss":
-                declared_during.append({rid: room_tool_names(boss, rid) for rid in ("r1", "r2")})
+                declared_during.append(
+                    {rid: room_tool_names(kit, "boss", rid) for rid in ("r1", "r2")}
+                )
             return await router(room_id, channel_id, task, wait=wait, **kw)
 
         kit.delegate = AsyncMock(side_effect=recording)
@@ -844,7 +862,7 @@ class TestSupervisedSequential:
         expected = {"r1": ["delegate_workers"], "r2": ["delegate_workers"]}
         assert declared_during
         assert all(seen == expected for seen in declared_during)
-        assert "delegate_workers" not in [t.name for t in boss.extra_tools]
+        assert "delegate_workers" not in [t.name for t in owner_tool_definitions(kit, "boss")]
 
     async def test_rework_on_rejection_then_approve(self) -> None:
         kit = _make_mock_kit(Room(id="r1"))

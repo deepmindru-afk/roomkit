@@ -25,10 +25,16 @@ from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.turns._registry_tools import OwnerToolStore
 from tests.conference.test_conference_realtime import until
 from tests.strategy_turns import owner_turn
 from tests.test_framework import SimpleChannel
-from tests.tool_room import room_tool_names, tool_call_in
+from tests.tool_room import (
+    owner_tool_call_in,
+    owner_tool_definitions,
+    room_tool_names,
+    tool_call_in,
+)
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -66,6 +72,8 @@ def _make_mock_kit(room: Room) -> MagicMock:
     kit._finish_cascade = AsyncMock(return_value=(None, None))
     # The owner keeps the strategies' runners (RFC §10.6.1).
     kit._turn_runners = TurnRunners()
+    # ... and the tools they set up for an agent (RFC §10.6.2).
+    kit._owner_tools = OwnerToolStore(kit.channels.get)
     return kit
 
 
@@ -125,9 +133,9 @@ class TestSupervisorInstall:
         await s.install(kit, "r1")
 
         # Declared in the room it was installed in (RFC §19.7), not channel-wide.
-        tool_names = room_tool_names(boss, "r1")
+        tool_names = room_tool_names(kit, "boss", "r1")
         assert tool_names == ["delegate_to_w1", "delegate_to_w2"]
-        assert boss.extra_tools == []
+        assert owner_tool_definitions(kit, "boss") == []
 
     async def test_sets_initial_state(self):
         boss = _make_agent("boss")
@@ -156,7 +164,7 @@ class TestSupervisorInstall:
         await s.install(kit, "r1")
 
         # Call the delegation tool handler
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             result = await boss._channel_tool_handler("delegate_to_w1", {"task": "Do something"})
         parsed = json.loads(result)
 
@@ -174,7 +182,7 @@ class TestSupervisorInstall:
         s = Supervisor(supervisor=boss, workers=[_make_agent("w1")])
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"), pytest.raises(UnservedToolCallError):
+        with owner_tool_call_in(kit, "boss", "r1"), pytest.raises(UnservedToolCallError):
             await boss._channel_tool_handler("unknown_tool", {})
 
     async def test_double_install_skips_tools(self):
@@ -190,10 +198,12 @@ class TestSupervisorInstall:
         await s.install(kit, "r1")
         kit2 = _make_mock_kit(Room(id="r2"))
         kit2.delegate = AsyncMock(return_value=mock_task)
+        # The second mock stands for the same kit's other room: one store.
+        kit2._owner_tools = kit._owner_tools
         await s.install(kit2, "r2")
 
         for room_id in ("r1", "r2"):
-            assert room_tool_names(boss, room_id) == ["delegate_to_w1"]
+            assert room_tool_names(kit, "boss", room_id) == ["delegate_to_w1"]
 
 
 class TestSupervisorShareChannels:
@@ -217,7 +227,7 @@ class TestSupervisorShareChannels:
         )
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             await boss._channel_tool_handler("delegate_to_w1", {"task": "Do something"})
         await until(lambda: kit.delegate.called)  # in the background run, when not waited
 
@@ -243,7 +253,7 @@ class TestSupervisorShareChannels:
         )
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             await boss._channel_tool_handler("delegate_to_w1", {"task": "Do something"})
         await until(lambda: kit.delegate.called)  # in the background run, when not waited
 
@@ -268,7 +278,7 @@ class TestSupervisorShareChannels:
         )
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             await boss._channel_tool_handler("delegate_workers", {"task": "Analyze this"})
 
         _, kwargs = kit.delegate.call_args
@@ -293,7 +303,7 @@ class TestSupervisorShareChannels:
         )
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             await boss._channel_tool_handler("delegate_workers", {"task": "Analyze this"})
 
         assert kit.delegate.call_count == 2
@@ -314,7 +324,7 @@ class TestSupervisorShareChannels:
         s = Supervisor(supervisor=boss, workers=[w1], wait_for_result=False)
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             await boss._channel_tool_handler("delegate_to_w1", {"task": "Do something"})
         await until(lambda: kit.delegate.called)  # in the background run, when not waited
 
@@ -423,7 +433,7 @@ class TestSupervisorShareChannels:
         channels.append("hacked")
 
         await s.install(kit, "r1")
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             await boss._channel_tool_handler("delegate_to_w1", {"task": "Do something"})
         await until(lambda: kit.delegate.called)  # in the background run, when not waited
 

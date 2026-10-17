@@ -31,8 +31,10 @@ from roomkit.orchestration.pipeline import (
 )
 from roomkit.orchestration.router import ConversationRouter
 from roomkit.orchestration.state import ConversationState, set_conversation_state
+from roomkit.turns._registry_tools import OwnerToolStore
 from roomkit.voice.base import VoiceSession
 from tests.conftest import make_event
+from tests.tool_room import owner_tool_definitions
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -307,6 +309,8 @@ def _mock_kit() -> MagicMock:
     # kit.hook(trigger, ...)(fn) — returns the decorator then calls it
     hook_decorator = MagicMock()
     kit.hook.return_value = hook_decorator
+    # The kit keeps the tools the install sets up for an agent (RFC §10.6.2).
+    kit._owner_tools = OwnerToolStore({}.get)
     return kit
 
 
@@ -343,8 +347,8 @@ class TestPipelineInstall:
 
         # Each agent should have the handoff tool injected
         for agent in agents:
-            assert len(agent.extra_tools) == 1
-            assert agent.extra_tools[0].name == "handoff_conversation"
+            assert len(owner_tool_definitions(kit, agent.channel_id)) == 1
+            assert owner_tool_definitions(kit, agent.channel_id)[0].name == "handoff_conversation"
 
     def test_install_returns_router_and_handler(self):
         pipeline = ConversationPipeline(
@@ -425,6 +429,7 @@ def _mock_kit_capturing_hooks() -> tuple[MagicMock, dict[tuple[str, str], list]]
         return decorator
 
     kit.hook.side_effect = _hook_side_effect
+    kit._owner_tools = OwnerToolStore({}.get)
     return kit, captured
 
 
@@ -780,14 +785,14 @@ class TestAgentAwareInstall:
         pipeline.install(kit, [triage, advisor])
 
         # triage should have tool with enum=["agent-advisor"]
-        assert len(triage.extra_tools) == 1
-        tool = triage.extra_tools[0]
+        assert len(owner_tool_definitions(kit, triage.channel_id)) == 1
+        tool = owner_tool_definitions(kit, triage.channel_id)[0]
         target_prop = tool.parameters["properties"]["target"]
         assert target_prop["enum"] == ["agent-advisor"]
 
         # advisor should have tool with enum=["agent-triage"]
-        assert len(advisor.extra_tools) == 1
-        tool = advisor.extra_tools[0]
+        assert len(owner_tool_definitions(kit, advisor.channel_id)) == 1
+        tool = owner_tool_definitions(kit, advisor.channel_id)[0]
         target_prop = tool.parameters["properties"]["target"]
         assert target_prop["enum"] == ["agent-triage"]
 
@@ -806,7 +811,7 @@ class TestAgentAwareInstall:
         pipeline.install(kit, [agent_a, agent_b])
 
         # agent-a's tool should mention agent-b's description
-        tool = agent_a.extra_tools[0]
+        tool = owner_tool_definitions(kit, agent_a.channel_id)[0]
         assert "Does B things" in tool.description
 
     def test_install_uses_stage_description_fallback(self):
@@ -828,7 +833,7 @@ class TestAgentAwareInstall:
         pipeline.install(kit, [agent_a, agent_b])
 
         # agent-a's tool should use PipelineStage.description for agent-b
-        tool = agent_a.extra_tools[0]
+        tool = owner_tool_definitions(kit, agent_a.channel_id)[0]
         assert "Stage B desc" in tool.description
 
     def test_install_auto_wires_voice_map(self):
@@ -891,7 +896,7 @@ class TestAgentAwareInstall:
         pipeline.install(kit, [agent_a, agent_b])
 
         # agent-b has no reachable targets → empty targets → generic tool
-        assert agent_b.extra_tools[0] is HANDOFF_TOOL
+        assert owner_tool_definitions(kit, agent_b.channel_id)[0] is HANDOFF_TOOL
 
 
 # -- Realtime (speech-to-speech) install ------------------------------------
@@ -915,6 +920,7 @@ def _mock_kit_with_rtv(rtv_channel_id: str = "rtv"):
     kit.hook.return_value = hook_decorator
     rtv = _make_rtv(rtv_channel_id)
     kit.channels = {rtv_channel_id: rtv}
+    kit._owner_tools = OwnerToolStore({}.get)
     return kit, rtv
 
 
@@ -942,8 +948,8 @@ class TestRealtimeInstall:
 
         # Agents should NOT have handoff tools injected directly
         # (they're config-only, the RTV serves the handoff)
-        assert len(a.extra_tools) == 0
-        assert len(b.extra_tools) == 0
+        assert len(owner_tool_definitions(kit, a.channel_id)) == 0
+        assert len(owner_tool_definitions(kit, b.channel_id)) == 0
 
         # The RTV serves the handoff, beside the host's handler it leaves alone
         assert rtv._registry.lookup("handoff_conversation", None) is not None
@@ -1334,6 +1340,6 @@ class TestRealtimeInstall:
         pipeline.install(kit, [agent_a, agent_b], voice_channel_id="voice")
 
         # Traditional: agents get handoff tools directly
-        assert len(agent_a.extra_tools) == 1
-        assert len(agent_b.extra_tools) == 1
+        assert len(owner_tool_definitions(kit, agent_a.channel_id)) == 1
+        assert len(owner_tool_definitions(kit, agent_b.channel_id)) == 1
         vc.update_voice_map.assert_called_once()

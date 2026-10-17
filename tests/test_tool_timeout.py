@@ -42,6 +42,7 @@ from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransp
 from roomkit.voice.realtime.reasoning import ReasoningBackend, ReasoningOutput, ReasoningRequest
 from tests.conference.test_conference_realtime import ROOM, realtime_kit, until
 from tests.test_tool_policy_exemptions import _calls, _tool_payload, _turn
+from tests.tool_room import owner_tools_in
 
 SLOW = {
     "name": "slow",
@@ -180,11 +181,14 @@ async def test_a_waiting_orchestration_tool_keeps_its_own_bound(streaming: bool)
         return '{"delegated": true}'
 
     tool = schema_tool({"name": "delegate_task", "parameters": {"type": "object"}})
-    channel._registry.register(  # noqa: SLF001
+    # Set up by the room owner, which gives it to the channel's turn.
+    kit = RoomKit()
+    kit._owner_tools.of("ai1").register(
         orchestration_tool(tool, delegate, waits=True), room_id="r1", owner=object()
     )
 
-    await _turn(channel)
+    with owner_tools_in(kit, "ai1", "r1"):
+        await _turn(channel)
 
     assert not worker.cancelled
     assert _tool_payload(provider.calls[1], "delegate_task") == {"delegated": True}

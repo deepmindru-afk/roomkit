@@ -25,8 +25,9 @@ from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.loop import Loop
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.turns._registry_tools import OwnerToolStore
 from tests.conference.test_conference_realtime import until
-from tests.tool_room import room_tool_names, tool_call_in
+from tests.tool_room import owner_tool_call_in, owner_tool_definitions, room_tool_names
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -113,6 +114,8 @@ def _make_mock_kit(room: Room, bindings: list[ChannelBinding] | None = None) -> 
     kit.lock_manager.locked = MagicMock(return_value=_NoopLock())
     kit.channels = {}
     kit.register_channel = MagicMock()
+    # The kit keeps the tools the install sets up for an agent (RFC §10.6.2).
+    kit._owner_tools = OwnerToolStore(kit.channels.get)
     return kit
 
 
@@ -133,6 +136,8 @@ class TestSupervisorHandlerIdempotency:
         kit1.delegate = AsyncMock(return_value=mock_task)
         kit2 = _make_mock_kit(Room(id="r2"))
         kit2.delegate = AsyncMock(return_value=mock_task)
+        # The second mock stands for the same kit's other room: one store.
+        kit2._owner_tools = kit1._owner_tools
 
         s = Supervisor(supervisor=boss, workers=[w1], wait_for_result=False)
         await s.install(kit1, "r1")
@@ -140,10 +145,10 @@ class TestSupervisorHandlerIdempotency:
 
         # One delegation tool per installed room, none channel-wide
         for room_id in ("r1", "r2"):
-            assert room_tool_names(boss, room_id) == ["delegate_to_w1"]
-        assert boss.extra_tools == []
+            assert room_tool_names(kit1, "boss", room_id) == ["delegate_to_w1"]
+        assert owner_tool_definitions(kit1, "boss") == []
 
-        with tool_call_in("r2"):
+        with owner_tool_call_in(kit2, "boss", "r2"):
             result = await boss._channel_tool_handler("delegate_to_w1", {"task": "do it"})
         parsed = json.loads(result)
         assert parsed["status"] == "delegated"
@@ -164,7 +169,7 @@ class TestSupervisorHandlerIdempotency:
         s = Supervisor(supervisor=boss, workers=[w1])
         await s.install(kit, "r1")
 
-        with tool_call_in("r1"), pytest.raises(RuntimeError, match="boom"):
+        with owner_tool_call_in(kit, "boss", "r1"), pytest.raises(RuntimeError, match="boom"):
             await boss._channel_tool_handler("delegate_to_w1", {"task": "fail"})
 
     async def test_original_handler_preserved(self):

@@ -109,6 +109,7 @@ from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
 from roomkit.tasks.background import BackgroundSetup
 from roomkit.tasks.base import TaskRunner
+from roomkit.turns._registry_tools import OwnerToolStore
 from roomkit.turns.base import TurnBackend
 from roomkit.turns.executor import TurnExecutor
 from roomkit.turns.owner import registry_turn_client
@@ -338,8 +339,15 @@ class RoomKit(
         self._channels: dict[str, Channel] = {}
         # Every intelligence turn runs through the turn backend (RFC §10.6);
         # the triggers a turn fires are its executor's (RFC §10.6.6).
+        # The tools orchestration sets up for a channel, kept beside its
+        # declaration, never on the live object (RFC §10.6.2).
+        self._owner_tools = OwnerToolStore(self._channels.get)
         self._turns = registry_turn_client(
-            self._channels, turn_backend, host=KitHost(self), events=KitEvents(self)
+            self._channels,
+            turn_backend,
+            host=KitHost(self),
+            events=KitEvents(self),
+            owner_tools=self._owner_tools,
         )
         # The kit's executor wires each channel the kit registers from the kit.
         self.turn_executor.use_wiring(KitWiringEnv(self))

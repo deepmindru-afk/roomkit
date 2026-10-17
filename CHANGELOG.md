@@ -240,6 +240,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The tools orchestration sets up for an AI channel are kept by the room's
+  owner, per channel and room, beside the channel's declaration, never on the
+  live agent (RMK-826, RFC §10.6.2, §10.6.5): the handoff (`setup_handoff`,
+  Swarm, Pipeline, `ConversationRouter`, `ConversationPipeline`), the
+  Supervisor's `delegate_workers` and `delegate_to_<id>`, a delegation's
+  `submit_result` / `submit_verdict`, `setup_background`, `setup_task_tools`
+  and `setup_delegation`. The kit lists them in each turn it submits, as
+  before. `AIChannel.extra_tools` returns the host's tools only. A tool given
+  to a live agent under the name of an orchestration tool already set up for
+  it is no longer refused when given: the executor refuses the agent's next
+  turn instead, with `ToolNameCollisionError` naming the tool, as it refuses
+  any turn whose owner tool its channel declares too (a host executor's agent
+  differing from the kit's copy, or one the kit holds by declaration). The
+  realtime installs stay on the realtime channel.
+
 - Attaching an intelligence channel to a room, and detaching it, reach every
   executor that declares the channel through the turn backend (RMK-812, RFC
   §10.6.3: `RoomAttached`, `RoomDetached`). The executor calls the channel's
@@ -365,6 +380,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or called, and with them `pydub` from the `fastrtc` extra (RMK-824).
 
 ### Fixed
+
+- A delegation requiring a structured result from a worker the kit holds by
+  its declaration alone fell back to the worker's text: the result tool was
+  set up on a live object the kit did not have (RMK-826). It is now set up for
+  the worker in the owner's store, and its executor's turn is given it.
 
 - `unregister_channel` drops the agent's auto-greet hook (RMK-822). An agent
   registered again under the id, or replaced by its declaration, kept the old

@@ -14,7 +14,7 @@ from roomkit.models.enums import HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent
 from roomkit.orchestration.state import get_conversation_state
 from roomkit.providers.ai.mock import MockAIProvider
-from tests.tool_room import tool_call_in
+from tests.tool_room import owner_tool_call_in
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -68,7 +68,7 @@ class TestWaitForResultBasic:
         await kit.attach_channel("room", "ws")
 
         # Call the delegation tool directly
-        with tool_call_in("room"):
+        with owner_tool_call_in(kit, supervisor.channel_id, "room"):
             result = await supervisor._channel_tool_handler(
                 "delegate_to_worker", {"task": "Do the thing"}
             )
@@ -108,7 +108,7 @@ class TestWaitForResultBasic:
         await kit.create_room(room_id="room")
         await kit.attach_channel("room", "ws")
 
-        with tool_call_in("room"):
+        with owner_tool_call_in(kit, supervisor.channel_id, "room"):
             result = await supervisor._channel_tool_handler("delegate_to_worker", {"task": "test"})
         parsed = json.loads(result)
 
@@ -161,7 +161,7 @@ class TestWaitForResultHooks:
         async def on_completed(event: RoomEvent, _ctx: object) -> None:
             hook_events.append(("completed", event.metadata))
 
-        with tool_call_in("room"):
+        with owner_tool_call_in(kit, supervisor.channel_id, "room"):
             await supervisor._channel_tool_handler("delegate_to_worker", {"task": "test"})
 
         assert len(hook_events) == 2
@@ -224,7 +224,7 @@ class TestWaitForResultMultipleWorkers:
         await kit.attach_channel("room", "ws")
 
         # Delegate to researcher
-        with tool_call_in("room"):
+        with owner_tool_call_in(kit, supervisor.channel_id, "room"):
             r1 = json.loads(
                 await supervisor._channel_tool_handler(
                     "delegate_to_researcher", {"task": "Research AI"}
@@ -234,7 +234,7 @@ class TestWaitForResultMultipleWorkers:
         assert "Research findings." in r1["result"]
 
         # Delegate to writer
-        with tool_call_in("room"):
+        with owner_tool_call_in(kit, supervisor.channel_id, "room"):
             r2 = json.loads(
                 await supervisor._channel_tool_handler(
                     "delegate_to_writer", {"task": "Write about AI"}
@@ -276,7 +276,7 @@ class TestWaitForResultFalse:
         await kit.create_room(room_id="room")
         await kit.attach_channel("room", "ws")
 
-        with tool_call_in("room"):
+        with owner_tool_call_in(kit, supervisor.channel_id, "room"):
             result = json.loads(
                 await supervisor._channel_tool_handler("delegate_to_worker", {"task": "Do it"})
             )
@@ -323,7 +323,7 @@ class TestInlineDelegationState:
         room = await kit.get_room("room")
         state_before = get_conversation_state(room)
 
-        with tool_call_in("room"):
+        with owner_tool_call_in(kit, supervisor.channel_id, "room"):
             await supervisor._channel_tool_handler("delegate_to_worker", {"task": "test"})
 
         # State after delegation — should be unchanged

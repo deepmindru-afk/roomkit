@@ -24,7 +24,7 @@ from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.base import AIContext, AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
-from tests.tool_room import tool_call_in
+from tests.tool_room import owner_tool_call_in
 
 
 class _Held(MockAIProvider):
@@ -73,7 +73,7 @@ async def _supervisor_tool(kit: RoomKit, worker: Agent) -> Callable[[], Awaitabl
     await kit.create_room(room_id="r", orchestration=strategy)
 
     async def call() -> Any:
-        with tool_call_in("r"):
+        with owner_tool_call_in(kit, "boss", "r"):
             return await boss._channel_tool_handler("delegate_workers", {"task": "Write it."})
 
     return call
@@ -100,7 +100,7 @@ async def _supervised_tool(kit: RoomKit, worker: Agent) -> Callable[[], Awaitabl
     await kit.create_room(room_id="r", orchestration=strategy)
 
     async def call() -> Any:
-        with tool_call_in("r"):
+        with owner_tool_call_in(kit, "boss", "r"):
             return await boss._channel_tool_handler("delegate_workers", {"task": "Write it."})
 
     return call
@@ -113,7 +113,7 @@ async def _per_worker(kit: RoomKit, worker: Agent) -> Callable[[], Awaitable[Any
     await kit.create_room(room_id="r", orchestration=strategy)
 
     async def call() -> Any:
-        with tool_call_in("r"):
+        with owner_tool_call_in(kit, "boss", "r"):
             return await boss._channel_tool_handler("delegate_to_worker", {"task": "Write it."})
 
     return call

@@ -31,7 +31,7 @@ from roomkit.tasks.memory import InMemoryTaskRunner
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.conference.test_conference_realtime import until
 from tests.test_framework import SimpleChannel
-from tests.tool_room import tool_call_in
+from tests.tool_room import owner_tool_call_in
 
 DOORS = {
     "team-tool": ("delegate_workers", {"strategy": "parallel", "async_delivery": True}),
@@ -185,7 +185,7 @@ async def _team_delegations(
     else:
         kit.register_channel(boss)
         await kit.create_room(room_id="r1", orchestration=strategy)
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "boss", "r1"):
             await boss._channel_tool_handler("delegate_workers", {"task": "Do it."})
     await until(lambda: len(delegated) >= max(at_least, 2 if config_only else 3))
     await asyncio.sleep(0.05)
@@ -243,7 +243,7 @@ async def test_a_rejected_supervised_chain_is_told_failed_in_the_background(
         return real_post(agent_id, action, status, **kwargs)
 
     kit.status_bus.post = post  # type: ignore[method-assign]
-    with tool_call_in("r1"):
+    with owner_tool_call_in(kit, "boss", "r1"):
         await boss._channel_tool_handler("delegate_workers", {"task": "Do it."})
     await until(lambda: bool(posted))
     await kit.close()

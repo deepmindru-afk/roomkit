@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from roomkit import HookExecution, HookResult, HookTrigger
-from roomkit.channels._tool_registry import ChannelRegistry, ToolSource
+from roomkit.channels._tool_registry import ChannelRegistry
 from roomkit.channels.agent import Agent
 from roomkit.core.event_router import BroadcastResult
 from roomkit.core.framework import RoomKit
@@ -28,7 +28,8 @@ from roomkit.orchestration.result import is_submit_result, normalize_result, orc
 from roomkit.orchestration.strategies.supervisor.prompts import SUBMIT_VERDICT
 from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
-from tests.tool_room import room_tool_names
+from roomkit.turns._registry_tools import OwnerToolStore
+from tests.tool_room import owner_tools_in, room_tool_names
 
 
 def _text_event(body: str) -> RoomEvent:
@@ -67,14 +68,18 @@ def _make_kit(
 
     channel = SimpleNamespace(_registry=ChannelRegistry(agent_id, list), role="Researcher")
     kit.channels = {agent_id: channel}
+    # The kit keeps the result tool it sets up for the agent (RFC §10.6.2).
+    kit._owner_tools = OwnerToolStore(kit.channels.get)
     counter: dict[str, Any] = {"n": 0, "messages": []}
 
     async def _broadcast(event, _binding, _context):
         counter["n"] += 1
         counter["messages"].append(getattr(event.content, "body", ""))
         if submit_on_attempt is not None and counter["n"] == submit_on_attempt:
-            # The agent's tool loop in the child room serves the result tool.
-            entry = channel._registry.lookup(tool_name, "parent::task-1")
+            # The agent's tool loop in the child room serves the result tool,
+            # given to its turn by the kit.
+            with owner_tools_in(kit, agent_id, "parent::task-1"):
+                entry = channel._registry.lookup(tool_name, "parent::task-1")
             arguments = payload or {"status": "completed", "summary": "done", "data": {"x": 1}}
             await entry.serve(arguments)
             trace.append(
@@ -91,7 +96,7 @@ def _make_kit(
 
 class TestStructuredResultGuard:
     async def test_returns_structured_payload_when_worker_submits(self) -> None:
-        kit, channel, counter = _make_kit("agent:w1", submit_on_attempt=1)
+        kit, _channel, counter = _make_kit("agent:w1", submit_on_attempt=1)
         out = await _run_with_structured_result(
             kit, "parent::task-1", "do it", max_result_retries=3
         )
@@ -100,7 +105,7 @@ class TestStructuredResultGuard:
         assert payload["data"] == {"x": 1}
         assert counter["n"] == 1  # no retries needed
         # The tool was declared in the child room only, and removed afterwards.
-        assert not channel._registry.entries("parent::task-1", source=ToolSource.ORCHESTRATION)
+        assert not room_tool_names(kit, "agent:w1", "parent::task-1")
 
     async def test_reprompts_until_worker_submits(self) -> None:
         kit, _channel, counter = _make_kit("agent:w1", submit_on_attempt=3)
@@ -143,6 +148,7 @@ def _make_cc_kit(events: list[RoomEvent]):
     kit._report_intelligence_errors = AsyncMock()
     channel = SimpleNamespace(_registry=ChannelRegistry("agent:w1", list), role="Researcher")
     kit.channels = {"agent:w1": channel}
+    kit._owner_tools = OwnerToolStore(kit.channels.get)
 
     async def _broadcast(_event, _binding, _context):
         # The gateway handled submit_result; tool_handler is not called here.
@@ -269,7 +275,7 @@ class TestAnotherResultTool:
     goes through ``submit_verdict`` this way (RMK-246)."""
 
     async def test_the_given_tool_is_injected_and_its_call_captured(self) -> None:
-        kit, channel, _counter = _make_kit(
+        kit, _channel, _counter = _make_kit(
             "agent:boss",
             submit_on_attempt=1,
             payload={"approved": True, "feedback": "", "next_task": "write it up"},
@@ -279,7 +285,7 @@ class TestAnotherResultTool:
         original_broadcast = kit._get_router.return_value.broadcast.side_effect
 
         async def _spy(event, binding, context):
-            seen.append(room_tool_names(channel, "parent::task-1"))
+            seen.append(room_tool_names(kit, "agent:boss", "parent::task-1"))
             return await original_broadcast(event, binding, context)
 
         kit._get_router.return_value.broadcast.side_effect = _spy
@@ -290,7 +296,7 @@ class TestAnotherResultTool:
 
         assert json.loads(out) == {"approved": True, "feedback": "", "next_task": "write it up"}
         assert seen == [["submit_verdict"]]
-        assert not channel._registry.entries("parent::task-1", source=ToolSource.ORCHESTRATION)
+        assert not room_tool_names(kit, "agent:boss", "parent::task-1")
 
     async def test_its_reminder_and_its_missing_payload_are_used(self) -> None:
         kit, _channel, counter = _make_kit(

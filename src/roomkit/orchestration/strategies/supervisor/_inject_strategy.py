@@ -105,7 +105,9 @@ class _StrategyToolMixin:
         )
         serve = in_call_room(_STRATEGY_TOOL_NAME, server.serve)
         entry = orchestration_tool(self._strategy_tool(), serve, waits=True)
-        self._supervisor._registry.register(entry, room_id=room_id, owner=self)
+        kit._owner_tools.of(self._supervisor.channel_id).register(
+            entry, room_id=room_id, owner=self
+        )
 
 
 _SUBTASK_REFUSAL = json.dumps(

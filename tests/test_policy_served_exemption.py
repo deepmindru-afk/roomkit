@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -30,6 +30,7 @@ from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.test_hook_tool_restrictions import _DONE, _Recorder, _round, _turn
 from tests.test_realtime_fixed_tools import call
+from tests.tool_room import owner_tools_in
 
 _SEARCH_ONLY = ToolPolicy(allow=["search_*"])
 
@@ -148,9 +149,12 @@ class TestOneDeclarationPerName:
             provider=provider,
             tools=[AITool(name="delegate_task", description="host", parameters={})],
         )
+        # The kit holds the channel live: it reads the channel's own names.
+        kit = RoomKit()
+        kit.register_channel(ch)
 
         with pytest.raises(ToolNameCollisionError, match="a tool of the host"):
-            setup_delegation(ch, DelegateHandler(MagicMock()))
+            setup_delegation(ch, DelegateHandler(kit))
 
     async def test_a_turn_tool_under_an_orchestration_name_is_not_declared(
         self, streaming: bool
@@ -159,10 +163,12 @@ class TestOneDeclarationPerName:
         late to be refused: the orchestration's definition is declared."""
         provider = MockAIProvider(ai_responses=[_DONE], streaming=streaming)
         ch = AIChannel("ai1", provider=provider)
-        setup_delegation(ch, DelegateHandler(MagicMock()))
+        kit = RoomKit()
+        setup_delegation(ch, DelegateHandler(kit))
         host = {"name": "delegate_task", "description": "host", "parameters": {}}
 
-        await _turn(ch, binding_tools=[host])
+        with owner_tools_in(kit, "ai1", "r1"):
+            await _turn(ch, binding_tools=[host])
 
         declared = [t for t in provider.calls[0].tools or [] if t.name == "delegate_task"]
         assert [t.description for t in declared] == [DELEGATE_TOOL.description]

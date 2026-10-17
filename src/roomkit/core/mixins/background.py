@@ -19,6 +19,7 @@ from roomkit.tasks.status import TASK_STATUS_TOOL, CancelTaskTool, TaskStatusToo
 if TYPE_CHECKING:
     from roomkit.channels.ai import AIChannel
     from roomkit.tasks.models import DelegatedTask
+    from roomkit.turns._registry_tools import OwnerToolStore
 
 
 class BackgroundMixin:
@@ -26,6 +27,7 @@ class BackgroundMixin:
     task, off its turn."""
 
     _background_setups: dict[str, BackgroundSetup]
+    _owner_tools: OwnerToolStore
 
     def setup_background(
         self, agent: AIChannel, *, worker: str | None = None, hand_back: str = "relay"
@@ -46,11 +48,12 @@ class BackgroundMixin:
             RuntimeError: The tool is already set up on the agent.
         """
         setup = BackgroundSetup(worker=worker, hand_back=hand_back)
-        if agent._registry.lookup(BACKGROUND_TOOL, None) is not None:
+        registry = self._owner_tools.of(agent.channel_id)
+        if registry.lookup(BACKGROUND_TOOL, None) is not None:
             msg = f"setup_background() already called for channel '{agent.channel_id}'"
             raise RuntimeError(msg)
         serve = background_tool_server(self, agent.channel_id)  # ty: ignore[invalid-argument-type]
-        agent._registry.register(
+        registry.register(
             orchestration_tool(BACKGROUND_TOOL_DEF, in_call_room(BACKGROUND_TOOL, serve)),
             owner=self,
         )
@@ -69,7 +72,8 @@ class BackgroundMixin:
             ToolNameCollisionError: The agent already serves a tool of one of
                 those names (its own ``CancelTaskTool``, say): neither is set up.
         """
-        if agent._registry.lookup(TASK_STATUS_TOOL, None) is not None:
+        registry = self._owner_tools.of(agent.channel_id)
+        if registry.lookup(TASK_STATUS_TOOL, None) is not None:
             msg = f"setup_task_tools() already called for channel '{agent.channel_id}'"
             raise RuntimeError(msg)
         entries = []
@@ -77,7 +81,7 @@ class BackgroundMixin:
             definition = AITool(**tool.definition)
             entries.append(orchestration_tool(definition, _served_by(tool, definition.name)))
         # Both or neither: an agent never keeps half of them.
-        agent._registry.register_all(entries, owner=self)
+        registry.register_all(entries, owner=self)
 
     async def start_task(
         self, room_id: str, agent_id: str, task: str, *, hand_back: str | None = None

@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, runtime_checkable
 from uuid import uuid4
 
+from roomkit.channels.declared import DeclaredChannel
 from roomkit.core._failure_log import mark_reported
 from roomkit.core.event_router import responder_turn_entries, stream_record
 from roomkit.core.exceptions import TaskCutShortError, TaskTurnFailedError, TurnCutShortError
@@ -572,7 +573,7 @@ def _served(content: Any) -> bool:
 
 @runtime_checkable
 class _InjectableToolChannel(Protocol):
-    """A channel a delegation can set a result tool up on, for one room.
+    """A live channel whose turns declare the tools its owner serves.
 
     ``_run_with_structured_result`` matches by structure, not by class, so
     duck-typed agent channels (and test doubles) qualify as long as they carry
@@ -580,6 +581,13 @@ class _InjectableToolChannel(Protocol):
     """
 
     _registry: ChannelRegistry
+
+
+def _takes_owner_tools(channel: object) -> bool:
+    """Whether a delegation can set a result tool up for *channel*: a live
+    one whose turns declare its owner's tools, or one the kit holds by its
+    declaration, whose executor builds such a channel (RFC §10.6.5)."""
+    return isinstance(channel, DeclaredChannel | _InjectableToolChannel)
 
 
 async def _run_with_structured_result(
@@ -611,13 +619,13 @@ async def _run_with_structured_result(
     room = await kit.get_room(child_room_id)
     agent_id = (room.metadata or {}).get("task_agent_id")
     channel = kit.channels.get(agent_id) if agent_id else None
-    if not isinstance(channel, _InjectableToolChannel):
+    if not _takes_owner_tools(channel):
         # No injectable agent channel — fall back to plain text collection.
         text = await _broadcast_and_collect(kit, child_room_id, task_desc, turns=turns)
         return text or ""
     role = getattr(channel, "role", None) or getattr(channel, "description", None) or str(agent_id)
 
-    with capture_result(channel, child_room_id, tool):
+    with capture_result(kit._owner_tools.of(str(agent_id)), child_room_id, tool):
         message = task_desc
         last_text = ""
         for _attempt in range(max_result_retries + 1):

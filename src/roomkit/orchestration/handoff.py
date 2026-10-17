@@ -714,24 +714,28 @@ def setup_handoff(
     Raises:
         RuntimeError: The handoff is already set up where it would be declared.
     """
-    if channel._registry.lookup(HANDOFF_TOOL_NAME, room_id) is not None:
+    registry = handler._kit._owner_tools.of(channel.channel_id)
+    if registry.lookup(HANDOFF_TOOL_NAME, room_id) is not None:
         msg = f"setup_handoff() already called for channel '{channel.channel_id}'"
         raise RuntimeError(msg)
-    channel._registry.register(
-        handoff_entry(channel, handler, tool), room_id=room_id, owner=handler
-    )
+    registry.register(handoff_entry(channel, handler, tool), room_id=room_id, owner=handler)
 
 
 def set_up_handoffs(
-    handoffs: Sequence[tuple[AIChannel, ToolEntry]], *, room_id: str, owner: object
+    kit: RoomKit,
+    handoffs: Sequence[tuple[AIChannel, ToolEntry]],
+    *,
+    room_id: str,
+    owner: object,
 ) -> None:
-    """Serve each agent's handoff in *room_id* for the strategy *owner*: all of
-    them, or none when one is refused. Installing *owner* again replaces its own
-    (RFC §19.7, §21.1)."""
+    """Serve each agent's handoff in *room_id* for the strategy *owner*, on
+    *kit*: all of them, or none when one is refused. Installing *owner* again
+    replaces its own (RFC §19.7, §21.1)."""
+    store = kit._owner_tools
     for channel, entry in handoffs:
-        channel._registry.check(entry, room_id=room_id, owner=owner)
+        store.of(channel.channel_id).check(entry, room_id=room_id, owner=owner)
     for channel, entry in handoffs:
-        channel._registry.register(entry, room_id=room_id, owner=owner)
+        store.of(channel.channel_id).register(entry, room_id=room_id, owner=owner)
 
 
 def handoff_entry(channel: AIChannel, handler: HandoffHandler, tool: AITool | None) -> ToolEntry:

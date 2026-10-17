@@ -303,6 +303,18 @@ class ChannelRegistry:
                 return f"served in room {rid!r}"
         return None
 
+    def own_names(self) -> set[str]:
+        """The names the channel's own tools carry: the host's, and the ones
+        the channel serves itself (never orchestration's)."""
+        names = set(self._host_names())
+        for scope in (self._channel, *self._rooms.values()):
+            names.update(
+                name
+                for name, held in scope.items()
+                if held.entry.source is not ToolSource.ORCHESTRATION
+            )
+        return names
+
     def refuse_host_names(self, names: Iterable[str | None]) -> None:
         """Refuse host tools given under a name orchestration serves in any room."""
         scopes = [self._channel, *self._rooms.values()]

@@ -29,6 +29,7 @@ from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.delegate import DelegateHandler, setup_delegation
 from tests.test_framework import SimpleChannel
+from tests.tool_room import owner_tools_in
 
 
 async def _until(predicate: Callable[[], Any], timeout: float = 5.0) -> None:
@@ -224,7 +225,8 @@ async def test_a_supervisor_tool_called_outside_a_tool_call_is_not_served(
     orchestration = Supervisor(supervisor, [researcher], strategy=strategy)
     await kit.create_room(room_id="r1", orchestration=orchestration)
 
-    with pytest.raises(UnservedToolCallError):
+    # Given r1's tools, as a turn of r1 is: a call naming no room is not r1's.
+    with owner_tools_in(kit, "sup", "r1"), pytest.raises(UnservedToolCallError):
         await supervisor._channel_tool_handler(tool, {"task": "x"})
 
     assert await _children(kit) == {}

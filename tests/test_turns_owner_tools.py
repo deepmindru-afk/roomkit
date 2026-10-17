@@ -134,8 +134,10 @@ async def test_a_handler_runs_on_the_owner_under_what_the_turn_gave_its_call(
         return {"ok": 1}
 
     agent = _agent("agent", _call("probe", {"q": "x"}), "done", streaming=streaming)
-    agent._registry.register(orchestration_tool(PROBE, serve), room_id="r1", owner=object())
     kit = await _kit(agent, attach=("agent",))
+    kit._owner_tools.of("agent").register(
+        orchestration_tool(PROBE, serve), room_id="r1", owner=object()
+    )
     reports = _reports(kit)
 
     await kit.send_event(
@@ -168,8 +170,10 @@ async def test_a_handler_that_raises_fails_the_call_with_its_class() -> None:
         raise ValueError("no such row")
 
     agent = _agent("agent", _call("probe", {}), "sorry")
-    agent._registry.register(orchestration_tool(PROBE, serve), room_id="r1", owner=object())
     kit = await _kit(agent, attach=("agent",))
+    kit._owner_tools.of("agent").register(
+        orchestration_tool(PROBE, serve), room_id="r1", owner=object()
+    )
     reports = _reports(kit)
 
     await _say(kit, "go")
@@ -185,8 +189,10 @@ async def test_a_call_nothing_on_the_owner_serves_is_served_by_nothing() -> None
         raise UnservedToolCallError("not mine")
 
     agent = _agent("agent", _call("probe", {}), "fine")
-    agent._registry.register(orchestration_tool(PROBE, serve), room_id="r1", owner=object())
     kit = await _kit(agent, attach=("agent",))
+    kit._owner_tools.of("agent").register(
+        orchestration_tool(PROBE, serve), room_id="r1", owner=object()
+    )
     reports = _reports(kit)
 
     await _say(kit, "go")
@@ -210,8 +216,10 @@ async def test_a_call_past_its_bound_is_withdrawn_from_the_owner() -> None:
         return "never"
 
     agent = _agent("agent", _call("probe", {}), "too slow", tool_timeout_seconds=0.2)
-    agent._registry.register(orchestration_tool(PROBE, serve), room_id="r1", owner=object())
     kit = await _kit(agent, attach=("agent",))
+    kit._owner_tools.of("agent").register(
+        orchestration_tool(PROBE, serve), room_id="r1", owner=object()
+    )
     reports = _reports(kit)
 
     await _say(kit, "go")
@@ -237,10 +245,10 @@ async def test_a_turn_cut_withdraws_its_calls_from_the_owner() -> None:
         return "never"
 
     agent = _agent("agent", _call("probe", {}), "unread")
-    agent._registry.register(
+    kit = await _kit(agent, attach=("agent",))
+    kit._owner_tools.of("agent").register(
         orchestration_tool(PROBE, serve, waits=True), room_id="r1", owner=object()
     )
-    kit = await _kit(agent, attach=("agent",))
 
     turn = asyncio.create_task(_say(kit, "go"))
     await asyncio.wait_for(started.wait(), 2)
@@ -259,8 +267,10 @@ async def test_a_structured_copy_that_cannot_cross_fails_the_call() -> None:
         return "ok"
 
     agent = _agent("agent", _call("probe", {}), "fine")
-    agent._registry.register(orchestration_tool(PROBE, serve), room_id="r1", owner=object())
     kit = await _kit(agent, attach=("agent",))
+    kit._owner_tools.of("agent").register(
+        orchestration_tool(PROBE, serve), room_id="r1", owner=object()
+    )
     reports = _reports(kit)
 
     await _say(kit, "go")
@@ -373,8 +383,10 @@ async def test_a_handlers_error_of_a_class_of_its_own_keeps_its_name() -> None:
         raise QuotaExceededError("over quota")
 
     agent = _agent("agent", _call("probe", {}), "sorry")
-    agent._registry.register(orchestration_tool(PROBE, serve), room_id="r1", owner=object())
     kit = await _kit(agent, attach=("agent",))
+    kit._owner_tools.of("agent").register(
+        orchestration_tool(PROBE, serve), room_id="r1", owner=object()
+    )
     reports = _reports(kit)
 
     await _say(kit, "go")
@@ -414,11 +426,13 @@ async def test_a_call_past_its_bound_is_cancelled_on_the_owner_while_its_turn_go
         tool_timeout_seconds=0.2,
     )
     owner = object()
-    agent._registry.register(orchestration_tool(PROBE, slow), room_id="r1", owner=owner)
-    agent._registry.register(
+    kit = await _kit(agent, attach=("agent",))
+    kit._owner_tools.of("agent").register(
+        orchestration_tool(PROBE, slow), room_id="r1", owner=owner
+    )
+    kit._owner_tools.of("agent").register(
         orchestration_tool(later, after, waits=True), room_id="r1", owner=owner
     )
-    kit = await _kit(agent, attach=("agent",))
 
     await _say(kit, "go")
 
@@ -436,10 +450,10 @@ async def test_a_handler_ended_by_a_cancellation_not_of_its_call_fails_the_call(
         return await job
 
     agent = _agent("agent", _call("probe", {}), "moved on")
-    agent._registry.register(
+    kit = await _kit(agent, attach=("agent",))
+    kit._owner_tools.of("agent").register(
         orchestration_tool(PROBE, serve, waits=True), room_id="r1", owner=object()
     )
-    kit = await _kit(agent, attach=("agent",))
     reports = _reports(kit)
 
     await asyncio.wait_for(_say(kit, "go"), 5)
@@ -465,8 +479,10 @@ async def test_parallel_calls_of_one_round_each_run_on_the_owner_at_once() -> No
         ],
     )
     agent = _agent("agent", two, "both")
-    agent._registry.register(orchestration_tool(PROBE, serve), room_id="r1", owner=object())
     kit = await _kit(agent, attach=("agent",))
+    kit._owner_tools.of("agent").register(
+        orchestration_tool(PROBE, serve), room_id="r1", owner=object()
+    )
     reports = _reports(kit)
 
     await _say(kit, "go")
@@ -491,10 +507,10 @@ async def test_the_kits_close_waits_for_a_running_handler_to_unwind() -> None:
         return "never"
 
     agent = _agent("agent", _call("probe", {}), "unread")
-    agent._registry.register(
+    kit = await _kit(agent, attach=("agent",))
+    kit._owner_tools.of("agent").register(
         orchestration_tool(PROBE, serve, waits=True), room_id="r1", owner=object()
     )
-    kit = await _kit(agent, attach=("agent",))
     turn = asyncio.create_task(_say(kit, "go"))
     await asyncio.wait_for(started.wait(), 2)
 
@@ -521,10 +537,10 @@ async def test_a_handler_that_closes_the_kit_sees_the_close_through() -> None:
         return "closed"
 
     agent = _agent("agent", _call("probe", {}), "done")
-    agent._registry.register(
+    kit = await _kit(agent, attach=("agent",))
+    kit._owner_tools.of("agent").register(
         orchestration_tool(PROBE, serve, waits=True), room_id="r1", owner=object()
     )
-    kit = await _kit(agent, attach=("agent",))
 
     await asyncio.wait_for(asyncio.gather(_say(kit, "go"), return_exceptions=True), 5)
     with contextlib.suppress(TimeoutError):

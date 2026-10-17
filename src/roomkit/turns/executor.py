@@ -14,8 +14,9 @@ from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from roomkit.channels._tool_registry import ChannelRegistry
 from roomkit.core._turn_scope import turns_run_under
-from roomkit.core.exceptions import TurnLinkError
+from roomkit.core.exceptions import ToolNameCollisionError, TurnLinkError
 from roomkit.core.hooks import HookEngine, HookRegistration, hook_decorator
 from roomkit.core.task_utils import cancel_and_wait
 from roomkit.models.enums import HookExecution
@@ -271,5 +272,22 @@ class TurnExecutor:
             self._hooks.use_room_hooks(request.room_id, request.room_hooks)
         channel = await self._channels.get(request.channel_id)
         if channel is not None:
+            self._refuse_clashing_owner_tools(channel, request)
             await self._rooms.prepare(channel, request, stale=stale)
         return channel
+
+    def _refuse_clashing_owner_tools(self, channel: Channel, request: TurnRequest) -> None:
+        """Refuse a turn whose owner serves a tool the channel declares too
+        (RFC §10.6.5): which handler a call reaches would depend on the
+        executor. The owner refuses it at setup only for a channel it holds
+        live."""
+        registry = getattr(channel, "_registry", None)
+        if not isinstance(registry, ChannelRegistry) or not request.owner_tools:
+            return
+        clash = sorted({owned.tool.name for owned in request.owner_tools} & registry.own_names())
+        if clash:
+            raise ToolNameCollisionError(
+                f"Tool {clash[0]!r} is served both by the room owner and by channel "
+                f"{request.channel_id!r} on executor {self.executor_id}: rename one of them "
+                "(RFC §10.6.5)"
+            )

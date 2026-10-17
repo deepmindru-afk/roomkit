@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit.channels._tool_registry import orchestration_tool
 
 if TYPE_CHECKING:
+    from roomkit.channels._tool_registry import ChannelRegistry
     from roomkit.orchestration.result import ResultTool
 
 
@@ -38,15 +39,15 @@ class ResultSlot:
 
 @contextlib.contextmanager
 def capture_result(
-    channel: Any, child_room_id: str, tool: ResultTool
+    registry: ChannelRegistry, child_room_id: str, tool: ResultTool
 ) -> Generator[ResultSlot, None, None]:
-    """Serve *tool*'s call made in *child_room_id* by the agent behind *channel*.
+    """Serve *tool*'s call made in *child_room_id* by the agent whose owner
+    tools *registry* keeps.
 
     The tool is declared and served in *child_room_id*'s turns for as long as
     the capture runs.
     """
     slot = ResultSlot(tool)
-    registry = channel._registry
     entry = orchestration_tool(tool.tool, slot.receive)
     registry.register(entry, room_id=child_room_id, owner=slot)
     try:

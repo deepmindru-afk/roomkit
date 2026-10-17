@@ -47,13 +47,17 @@ def _attributes(channel: Any) -> dict[str, int]:
     return {name: id(value) for name, value in vars(channel).items()}
 
 
-def _registered(channel: Any) -> list[tuple[str, str, int]]:
-    """What *channel*'s registry serves, scope by scope."""
-    registry = channel._registry
-    scopes = [("", registry._channel), *registry._rooms.items()]
+def _registered(kit: RoomKit, channel: Any) -> list[tuple[str, str, str, int]]:
+    """What *channel*'s registry serves, and what *kit* keeps for it (the
+    tools orchestration set up for an agent, RFC §10.6.2), scope by scope."""
+    registries = [("channel", channel._registry)]
+    kept = kit._owner_tools.get(channel.channel_id)
+    if kept is not None:
+        registries.append(("owner", kept))
     return sorted(
-        (room_id, name, id(held.entry))
-        for room_id, scope in scopes
+        (where, room_id, name, id(held.entry))
+        for where, registry in registries
+        for room_id, scope in [("", registry._channel), *registry._rooms.items()]
         for name, held in scope.items()
     )
 
@@ -90,7 +94,11 @@ async def test_two_rooms_run_at_once_and_leave_the_shared_agent_as_it_was(
             orchestration=Supervisor(sup, [workers[room_id]], wait_for_result=True),
         )
         await kit.attach_channel(room_id, f"sms-{room_id}")
-    attributes, registered, bindings = _attributes(sup), _registered(sup), await _bindings(kit)
+    attributes, registered, bindings = (
+        _attributes(sup),
+        _registered(kit, sup),
+        await _bindings(kit),
+    )
 
     await asyncio.gather(
         *(
@@ -116,7 +124,7 @@ async def test_two_rooms_run_at_once_and_leave_the_shared_agent_as_it_was(
     # changed is each room's SMS binding, which now names its sender: the
     # router retains the first sender it routes to a room (RFC §10.4).
     assert _attributes(sup) == attributes
-    assert _registered(sup) == registered
+    assert _registered(kit, sup) == registered
     assert await _bindings(kit) == {
         room_id: [
             {**b, "participant_id": "u"} if b["channel_id"] == f"sms-{room_id}" else b
@@ -159,7 +167,11 @@ async def test_two_rooms_talk_at_once_and_leave_the_shared_voice_channel_as_it_w
         await kit.store.update_room(set_conversation_state(room, triage_state))
         await kit.attach_channel(room_id, "voice")
         sessions[room_id] = await voice.start_session(room_id, f"caller-{room_id}", "ws")
-    attributes, registered, bindings = _attributes(voice), _registered(voice), await _bindings(kit)
+    attributes, registered, bindings = (
+        _attributes(voice),
+        _registered(kit, voice),
+        await _bindings(kit),
+    )
 
     handoff = {"target": "billing", "reason": "refund", "summary": "wants a refund"}
     await asyncio.gather(
@@ -178,7 +190,7 @@ async def test_two_rooms_talk_at_once_and_leave_the_shared_voice_channel_as_it_w
     assert connected["system_prompt"].startswith("I am TRIAGE")
     # And the shared channel is as the installs left it.
     assert _attributes(voice) == attributes
-    assert _registered(voice) == registered
+    assert _registered(kit, voice) == registered
     assert await _bindings(kit) == bindings
     await kit.close()
 
@@ -220,7 +232,7 @@ async def test_two_rooms_capture_one_shared_agent_s_results_at_once(streaming: b
     for room_id in ROOMS:
         await kit.create_room(room_id=room_id)
     model.before = _attributes(worker)
-    registered = _registered(worker)
+    registered = _registered(kit, worker)
 
     delegated = await asyncio.gather(
         *(
@@ -234,5 +246,5 @@ async def test_two_rooms_capture_one_shared_agent_s_results_at_once(streaming: b
     summaries = [json.loads(task.result.output)["summary"] for task in delegated]
     assert summaries == list(ROOMS)
     assert model.untouched and all(model.untouched)
-    assert _registered(worker) == registered
+    assert _registered(kit, worker) == registered
     await kit.close()

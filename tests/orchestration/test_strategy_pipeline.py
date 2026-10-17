@@ -11,6 +11,7 @@ from roomkit.models.room import Room
 from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.pipeline import Pipeline
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.turns._registry_tools import OwnerToolStore
 from tests.tool_room import room_tool_names
 
 # -- Helpers ------------------------------------------------------------------
@@ -52,6 +53,8 @@ def _make_mock_kit(room: Room, bindings: list[ChannelBinding]) -> MagicMock:
     kit.lock_manager = MagicMock()
     kit.lock_manager.locked = MagicMock(return_value=_NoopLock())
     kit.channels = {}
+    # The kit keeps the tools the install sets up for an agent (RFC §10.6.2).
+    kit._owner_tools = OwnerToolStore(kit.channels.get)
     return kit
 
 
@@ -133,10 +136,10 @@ class TestPipelineInstall:
         await p.install(kit, "r1")
 
         # Agent A should have handoff tool targeting B, in the installed room
-        assert "handoff_conversation" in room_tool_names(agents[0], "r1")
+        assert "handoff_conversation" in room_tool_names(kit, "a", "r1")
 
         # Agent B is the last stage — handoff tool with no targets
-        assert "handoff_conversation" in room_tool_names(agents[1], "r1")
+        assert "handoff_conversation" in room_tool_names(kit, "b", "r1")
 
     async def test_double_install_skips_handoff(self):
         """Shared Agent instances get one handoff per installed room (RFC §19.7)."""
@@ -149,9 +152,12 @@ class TestPipelineInstall:
         await p.install(kit, "r1")
         # Second install with same agent instances
         kit2 = _make_mock_kit(room, bindings)
+        # The second mock stands for the same kit's other room: one store.
+        kit2._owner_tools = kit._owner_tools
         await p.install(kit2, "r2")
 
         # Exactly one handoff tool per agent in each room
         for agent in agents:
             for room_id in ("r1", "r2"):
-                assert room_tool_names(agent, room_id).count("handoff_conversation") == 1
+                names = room_tool_names(kit, agent.channel_id, room_id)
+                assert names.count("handoff_conversation") == 1

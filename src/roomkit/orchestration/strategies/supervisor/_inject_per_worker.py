@@ -69,7 +69,9 @@ class _PerWorkerToolMixin:
             orchestration_tool(tool, in_call_room(tool.name, server.serve), waits=True)
             for tool in map(_worker_tool, self._workers)
         ]
-        self._supervisor._registry.register_all(entries, room_id=room_id, owner=self)
+        kit._owner_tools.of(self._supervisor.channel_id).register_all(
+            entries, room_id=room_id, owner=self
+        )
 
 
 class _PerWorkerToolServer:

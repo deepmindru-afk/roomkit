@@ -109,7 +109,7 @@ class Swarm(Orchestration):
             ]
             tool = build_handoff_tool(targets)
             handoffs.append((agent, handoff_entry(agent, handler, tool)))
-        set_up_handoffs(handoffs, room_id=room_id, owner=self)
+        set_up_handoffs(kit, handoffs, room_id=room_id, owner=self)
 
         # Set initial conversation state
         initial_state = ConversationState(

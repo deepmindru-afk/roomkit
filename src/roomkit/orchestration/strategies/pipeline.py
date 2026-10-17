@@ -123,7 +123,7 @@ class Pipeline(Orchestration):
         )
 
         # Wire handoff tools per agent
-        self._wire_handoff(self._agents, handler, cp, room_id)
+        self._wire_handoff(kit, self._agents, handler, cp, room_id)
 
         # Set initial conversation state
         initial_state = ConversationState(
@@ -150,6 +150,7 @@ class Pipeline(Orchestration):
 
     def _wire_handoff(
         self,
+        kit: RoomKit,
         agents: list[Agent],
         handler: HandoffHandler,
         cp: ConversationPipeline,
@@ -183,4 +184,4 @@ class Pipeline(Orchestration):
 
             tool = build_handoff_tool(targets)
             handoffs.append((agent, handoff_entry(agent, handler, tool)))
-        set_up_handoffs(handoffs, room_id=room_id, owner=self)
+        set_up_handoffs(kit, handoffs, room_id=room_id, owner=self)

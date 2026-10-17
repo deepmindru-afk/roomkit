@@ -516,8 +516,9 @@ class AIChannel(
 
     @property
     def extra_tools(self) -> list[AITool]:
-        """The host's tools, then the ones orchestration set up for every room."""
-        return self._user_tools + self._orchestration_tools(None)
+        """The host's tools. The tools orchestration sets up for the channel
+        are its room owner's, which lists them in each turn (RFC §10.6.5)."""
+        return list(self._user_tools)
 
     def active_skill_names(self, room_id: str | None) -> set[str]:
         """Skills whose instructions are binding in *room_id* right now.

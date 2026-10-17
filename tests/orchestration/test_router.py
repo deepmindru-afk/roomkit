@@ -19,7 +19,9 @@ from roomkit.orchestration.state import (
     ConversationState,
     set_conversation_state,
 )
+from roomkit.turns._registry_tools import OwnerToolStore
 from tests.conftest import make_event
+from tests.tool_room import owner_tool_definitions
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -597,6 +599,8 @@ def _mock_kit() -> MagicMock:
     kit = MagicMock()
     hook_decorator = MagicMock()
     kit.hook.return_value = hook_decorator
+    # The kit keeps the tools the install sets up for an agent (RFC §10.6.2).
+    kit._owner_tools = OwnerToolStore({}.get)
     return kit
 
 
@@ -636,8 +640,9 @@ class TestRouterInstall:
         router.install(kit, agents)
 
         for agent in agents:
-            assert len(agent.extra_tools) == 1
-            assert agent.extra_tools[0].name == "handoff_conversation"
+            tools = owner_tool_definitions(kit, agent.channel_id)
+            assert len(tools) == 1
+            assert tools[0].name == "handoff_conversation"
 
     def test_install_passes_aliases(self):
         router = ConversationRouter(default_agent_id="agent-a")

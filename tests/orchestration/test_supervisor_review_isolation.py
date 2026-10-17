@@ -12,7 +12,6 @@ import asyncio
 from typing import Any
 
 from roomkit import Agent, RoomKit
-from roomkit.channels._tool_registry import ToolSource
 from roomkit.orchestration.strategies.supervisor.supervised import _supervisor_review
 from roomkit.providers.ai.base import (
     AIContext,
@@ -21,6 +20,7 @@ from roomkit.providers.ai.base import (
     AIToolCall,
     AIToolResultPart,
 )
+from tests.tool_room import owner_tool_definitions, room_tool_names
 
 
 class _JudgeByOutput(AIProvider):
@@ -104,6 +104,7 @@ class TestReviewThroughTheToolLoop:
         kit, boss, worker, judge = await _kit_with_supervisor(streaming=streaming)
         handler_before = boss.tool_handler
         tools_before = list(boss.extra_tools)
+        kept_before = owner_tool_definitions(kit, "boss")
 
         good, bad = await asyncio.gather(
             _review(kit, boss, worker, "room-a", "GOOD: Montréal, StatCan"),
@@ -118,5 +119,6 @@ class TestReviewThroughTheToolLoop:
         # And the shared channel is left as it was found.
         assert boss.tool_handler is handler_before
         assert boss.extra_tools == tools_before
+        assert owner_tool_definitions(kit, "boss") == kept_before
         for room in ("room-a", "room-b"):
-            assert not boss._registry.entries(room, source=ToolSource.ORCHESTRATION)
+            assert not room_tool_names(kit, "boss", room)

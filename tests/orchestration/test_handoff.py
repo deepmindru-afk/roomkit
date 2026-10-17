@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from roomkit import RoomKit
 from roomkit.channels._mark_copies import COPIED_MARK
 from roomkit.channels._runtime_record import RUNTIME_RECORD
 from roomkit.channels.ai import AIChannel
@@ -33,7 +34,7 @@ from roomkit.orchestration.state import (
 from roomkit.providers.ai.base import AIMessage
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
-from tests.tool_room import room_tool_names, tool_call_in
+from tests.tool_room import owner_tool_call_in, owner_tool_definitions, room_tool_names
 
 # -- Helpers ------------------------------------------------------------------
 
@@ -476,20 +477,29 @@ def _channel(channel_id: str = "agent-a", tool_handler: Any = None) -> AIChannel
     )
 
 
+def _handler(kit: RoomKit) -> MagicMock:
+    """A handoff handler double on *kit*, which keeps the handoff it sets up
+    (RFC §10.6.2)."""
+    handler = MagicMock(spec=HandoffHandler)
+    handler._kit = kit
+    return handler
+
+
 class TestSetupHandoff:
     def test_injects_handoff_tool(self):
         channel = _channel()
+        kit = RoomKit()
 
-        handler = MagicMock(spec=HandoffHandler)
+        handler = _handler(kit)
         setup_handoff(channel, handler)
 
-        assert [t.name for t in channel.extra_tools] == ["handoff_conversation"]
+        assert [t.name for t in owner_tool_definitions(kit, "agent-a")] == ["handoff_conversation"]
 
     def test_leaves_the_host_handler_alone(self):
         host = AsyncMock(return_value='{"ok": true}')
         channel = _channel(tool_handler=host)
 
-        handler = MagicMock(spec=HandoffHandler)
+        handler = _handler(RoomKit())
         setup_handoff(channel, handler)
 
         # The handoff is served beside the host's handler, which stays its own.
@@ -497,15 +507,16 @@ class TestSetupHandoff:
 
     async def test_handoff_tool_call_dispatched(self):
         channel = _channel()
+        kit = RoomKit()
 
-        handler = MagicMock(spec=HandoffHandler)
+        handler = _handler(kit)
         handler.handle = AsyncMock(
             return_value=HandoffResult(accepted=True, new_agent_id="agent-b", new_phase="handling")
         )
 
         setup_handoff(channel, handler)
 
-        with tool_call_in("r1"):
+        with owner_tool_call_in(kit, "agent-a", "r1"):
             result_json = await channel._channel_tool_handler(
                 "handoff_conversation",
                 {
@@ -529,7 +540,7 @@ class TestSetupHandoff:
         original = AsyncMock(return_value='{"result": "ok"}')
         channel = _channel(tool_handler=original)
 
-        handler = MagicMock(spec=HandoffHandler)
+        handler = _handler(RoomKit())
         setup_handoff(channel, handler)
 
         result = await channel._channel_tool_handler("some_other_tool", {"arg": "val"})
@@ -538,12 +549,18 @@ class TestSetupHandoff:
 
     async def test_handoff_without_room_id_returns_error(self):
         channel = _channel()
+        kit = RoomKit()
 
-        handler = MagicMock(spec=HandoffHandler)
+        handler = _handler(kit)
         setup_handoff(channel, handler)
 
-        # Called directly, outside any tool loop: no call names a room.
-        result_json = await channel._channel_tool_handler("handoff_conversation", {"target": "x"})
+        # Served directly, outside any tool loop: no call names a room. The
+        # kit serves the handoff, never the channel outside a turn.
+        registry = kit._owner_tools.get("agent-a")
+        assert registry is not None
+        entry = registry.lookup("handoff_conversation", None)
+        assert entry is not None and entry.serve is not None
+        result_json = await entry.serve({"target": "x"})
 
         result = json.loads(result_json)
         assert "error" in result
@@ -551,7 +568,7 @@ class TestSetupHandoff:
     def test_double_setup_raises(self):
         channel = _channel()
 
-        handler = MagicMock(spec=HandoffHandler)
+        handler = _handler(RoomKit())
         setup_handoff(channel, handler)
 
         with pytest.raises(RuntimeError, match="already called"):
@@ -561,14 +578,15 @@ class TestSetupHandoff:
         """A strategy installed in a room sets up its handoff for that room
         (RFC §19.7): each room's install serves its own."""
         channel = _channel()
-        in_a, in_b = MagicMock(spec=HandoffHandler), MagicMock(spec=HandoffHandler)
+        kit = RoomKit()
+        in_a, in_b = _handler(kit), _handler(kit)
 
         setup_handoff(channel, in_a, room_id="A")
         setup_handoff(channel, in_b, room_id="B")
 
-        assert channel.extra_tools == []
-        assert room_tool_names(channel, "A") == ["handoff_conversation"]
-        assert room_tool_names(channel, "C") == []
+        assert owner_tool_definitions(kit, "agent-a") == []
+        assert room_tool_names(kit, "agent-a", "A") == ["handoff_conversation"]
+        assert room_tool_names(kit, "agent-a", "C") == []
 
 
 # -- Hook firing --------------------------------------------------------------
@@ -683,20 +701,22 @@ class TestBuildHandoffTool:
 class TestSetupHandoffCustomTool:
     def test_custom_tool_injected(self):
         channel = _channel()
+        kit = RoomKit()
 
         custom_tool = build_handoff_tool([("agent-b", "specialist")])
-        handler = MagicMock(spec=HandoffHandler)
+        handler = _handler(kit)
         setup_handoff(channel, handler, tool=custom_tool)
 
-        assert channel.extra_tools == [custom_tool]
+        assert owner_tool_definitions(kit, "agent-a") == [custom_tool]
 
     def test_default_tool_when_none(self):
         channel = _channel()
+        kit = RoomKit()
 
-        handler = MagicMock(spec=HandoffHandler)
+        handler = _handler(kit)
         setup_handoff(channel, handler)
 
-        assert channel.extra_tools == [HANDOFF_TOOL]
+        assert owner_tool_definitions(kit, "agent-a") == [HANDOFF_TOOL]
 
 
 # -- known_agents + on_handoff_complete ---------------------------------------

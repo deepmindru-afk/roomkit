@@ -32,6 +32,7 @@ from roomkit.tasks.delegate import DelegateHandler, setup_delegation, setup_real
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.conftest import make_event
 from tests.tool_loop_modes import respond
+from tests.tool_room import owner_tools_in
 
 ORCHESTRATION = {"handoff_conversation", "delegate_task", "submit_result"}
 CRM = [
@@ -46,7 +47,12 @@ CRM = [
 
 
 class _Orchestrator:
-    """The handoff's and the delegation's handler: a delegation is accepted."""
+    """The handoff's and the delegation's handler: a delegation is accepted.
+
+    It sets its tools up on *kit*, which serves them to the channel's turns."""
+
+    def __init__(self, kit: RoomKit) -> None:
+        self._kit = kit
 
     async def handle(self, **kwargs: Any) -> Any:
         return {"status": "delegated"}
@@ -70,14 +76,16 @@ def _orchestrated(
     *script: AIResponse,
     provider: MockAIProvider | None = None,
     **kwargs: Any,
-) -> AIChannel:
-    """A channel with a handoff and a delegation wired on it."""
+) -> tuple[RoomKit, AIChannel]:
+    """A channel with a handoff and a delegation wired on it, and the kit
+    that serves them."""
     answers = [*script, *(AIResponse(content="noted") for _ in range(4))]
     provider = provider or MockAIProvider(ai_responses=answers, streaming=streaming)
     channel = AIChannel("ai1", provider=provider, tools=tools, tool_handler=_crm, **kwargs)
-    setup_handoff(channel, _Orchestrator())
-    setup_delegation(channel, _Orchestrator())
-    return channel
+    kit = RoomKit()
+    setup_handoff(channel, _Orchestrator(kit))
+    setup_delegation(channel, _Orchestrator(kit))
+    return kit, channel
 
 
 def _calling(name: str, **arguments: Any) -> AIResponse:
@@ -88,8 +96,9 @@ def _calling(name: str, **arguments: Any) -> AIResponse:
     )
 
 
-async def _turn(channel: AIChannel, room_id: str) -> int:
-    """Run one turn in *room_id*; the index of its first provider call."""
+async def _turn(kit: RoomKit, channel: AIChannel, room_id: str) -> int:
+    """Run one turn in *room_id*, given the tools *kit* serves it; the index
+    of its first provider call."""
     binding = ChannelBinding(
         channel_id="ai1",
         room_id=room_id,
@@ -97,12 +106,13 @@ async def _turn(channel: AIChannel, room_id: str) -> int:
         category=ChannelCategory.INTELLIGENCE,
     )
     before = len(_model(channel).calls)
-    await respond(
-        channel,
-        make_event(room_id=room_id, body="go", channel_id="sms1"),
-        binding,
-        RoomContext(room=Room(id=room_id)),
-    )
+    with owner_tools_in(kit, "ai1", room_id):
+        await respond(
+            channel,
+            make_event(room_id=room_id, body="go", channel_id="sms1"),
+            binding,
+            RoomContext(room=Room(id=room_id)),
+        )
     return before
 
 
@@ -116,15 +126,15 @@ def _declared_at(channel: AIChannel, call: int) -> set[str]:
     return {tool.name for tool in _model(channel).calls[call].tools or []}
 
 
-async def _declared_in(channel: AIChannel, room_id: str) -> set[str]:
-    return _declared_at(channel, await _turn(channel, room_id))
+async def _declared_in(kit: RoomKit, channel: AIChannel, room_id: str) -> set[str]:
+    return _declared_at(channel, await _turn(kit, channel, room_id))
 
 
 async def test_the_tools_orchestration_injects_stay_declared(streaming: bool) -> None:
-    channel = _orchestrated(streaming, CRM)
+    kit, channel = _orchestrated(streaming, CRM)
 
-    with capture_result(channel, "r1", SUBMIT_RESULT):
-        declared = await _declared_in(channel, "r1")
+    with capture_result(kit._owner_tools.of("ai1"), "r1", SUBMIT_RESULT):
+        declared = await _declared_in(kit, channel, "r1")
 
     assert declared >= ORCHESTRATION
     assert "find_tools" in declared  # Tool Search is on
@@ -132,11 +142,11 @@ async def test_the_tools_orchestration_injects_stay_declared(streaming: bool) ->
 
 
 async def test_a_result_tool_stays_in_its_child_room(streaming: bool) -> None:
-    channel = _orchestrated(streaming, CRM)
+    kit, channel = _orchestrated(streaming, CRM)
 
-    with capture_result(channel, "parent::task-1", SUBMIT_RESULT):
-        elsewhere = await _declared_in(channel, "r1")
-        child = await _declared_in(channel, "parent::task-1")
+    with capture_result(kit._owner_tools.of("ai1"), "parent::task-1", SUBMIT_RESULT):
+        elsewhere = await _declared_in(kit, channel, "r1")
+        child = await _declared_in(kit, channel, "parent::task-1")
 
     assert "submit_result" not in elsewhere
     assert "submit_result" in child
@@ -151,9 +161,9 @@ async def test_orchestration_tools_do_not_tip_a_catalogue_into_tool_search(
     # A budget the host tools fit under, and that the orchestration tools
     # would overflow if they counted.
     budget_pct = (sum(estimate_tool_tokens(t) for t in host) + 1) * 100 / window
-    channel = _orchestrated(streaming, host, tool_search_threshold_pct=budget_pct)
+    kit, channel = _orchestrated(streaming, host, tool_search_threshold_pct=budget_pct)
 
-    declared = await _declared_in(channel, "r1")
+    declared = await _declared_in(kit, channel, "r1")
 
     assert "find_tools" not in declared
     assert {"crm_action_0", "handoff_conversation", "delegate_task"} <= declared
@@ -165,19 +175,19 @@ async def test_orchestration_tools_do_not_count_when_the_window_is_unknown(
     """Without a window the rule counts tools: 20 host tools stay under the
     default threshold of 20 whatever orchestration adds."""
     provider = _UnknownWindow(responses=["hi"], streaming=streaming)
-    channel = _orchestrated(streaming, CRM[:20], provider=provider)
+    kit, channel = _orchestrated(streaming, CRM[:20], provider=provider)
 
-    declared = await _declared_in(channel, "r1")
+    declared = await _declared_in(kit, channel, "r1")
 
     assert "find_tools" not in declared
     assert {"crm_action_19", "handoff_conversation", "delegate_task"} <= declared
 
 
 async def test_a_later_round_keeps_the_result_tool_in_its_child_room(streaming: bool) -> None:
-    channel = _orchestrated(streaming, CRM, _calling("find_tools", query="crm record"))
+    kit, channel = _orchestrated(streaming, CRM, _calling("find_tools", query="crm record"))
 
-    with capture_result(channel, "parent::task-1", SUBMIT_RESULT):
-        first = await _turn(channel, "parent::task-1")
+    with capture_result(kit._owner_tools.of("ai1"), "parent::task-1", SUBMIT_RESULT):
+        first = await _turn(kit, channel, "parent::task-1")
 
     assert "submit_result" in _declared_at(channel, first)
     assert "submit_result" in _declared_at(channel, first + 1)
@@ -185,9 +195,9 @@ async def test_a_later_round_keeps_the_result_tool_in_its_child_room(streaming: 
 
 async def test_find_tools_does_not_name_an_orchestration_tool(streaming: bool) -> None:
     search = _calling("find_tools", query="delegate a task to another agent")
-    channel = _orchestrated(streaming, CRM, search)
+    kit, channel = _orchestrated(streaming, CRM, search)
 
-    first = await _turn(channel, "r1")
+    first = await _turn(kit, channel, "r1")
 
     results = [
         str(part.result)
@@ -203,7 +213,7 @@ async def test_an_orchestration_tool_is_declared_always_even_once_used(streaming
     """A tool the room already called turns sticky; one orchestration
     injected is never gated by Tool Search, so it stays ``always``."""
     delegate = _calling("delegate_task", agent="worker", task="research")
-    channel = _orchestrated(streaming, CRM, delegate)
+    kit, channel = _orchestrated(streaming, CRM, delegate)
     seen: list[AIResponseEvent] = []
 
     async def observe(event: AIResponseEvent) -> None:
@@ -211,8 +221,8 @@ async def test_an_orchestration_tool_is_declared_always_even_once_used(streaming
 
     channel._after_response_hook = observe
 
-    await _turn(channel, "r1")
-    await _turn(channel, "r1")
+    await _turn(kit, channel, "r1")
+    await _turn(kit, channel, "r1")
 
     origins = [
         {tool.name: tool.origin for tool in event.declared_tools}["delegate_task"]
