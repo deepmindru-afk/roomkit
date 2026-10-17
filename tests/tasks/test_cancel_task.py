@@ -192,3 +192,49 @@ def test_the_definition_asks_for_the_task_id() -> None:
     definition = CancelTaskTool(RoomKit()).definition
     assert definition["name"] == CANCEL_TASK_TOOL
     assert definition["parameters"]["required"] == ["task_id"]
+
+
+async def test_a_forged_status_line_reaches_no_other_rooms_task() -> None:
+    """The StatusBus is not what decides: a ``task`` line for room ``r`` naming
+    another room's task, posted by any code holding the kit, cancels nothing."""
+    room = await _Room(_Endless()).open()
+    await room.kit.create_room(room_id="other")
+    await room.kit.attach_channel("other", "speaker", category=ChannelCategory.INTELLIGENCE)
+    theirs = await room.running_task("other")
+    room.kit.status_bus.post(
+        "worker",
+        "task",
+        "pending",
+        metadata={"room_id": "r", "task_id": theirs.id, "task_status": "running"},
+    )
+    await asyncio.sleep(0)
+
+    answer = await _cancel(CancelTaskTool(room.kit), theirs.id)
+    await asyncio.sleep(0.05)
+    still_running = theirs.result is None
+    await room.kit.close()
+
+    assert answer["status"] == "unknown"
+    assert still_running
+
+
+async def test_the_owner_serves_the_task_tools_set_up_on_an_agent() -> None:
+    """``setup_task_tools`` makes them the room owner's: listed in a turn's
+    request, served on the owner for a turn on any executor."""
+    room = await _Room(_Endless()).open()
+    speaker = room.kit.channels["speaker"]
+    room.kit.setup_task_tools(speaker)  # type: ignore[arg-type]
+    task = await room.running_task()
+
+    declared = room.kit._turns._tools.declared("speaker", "r")
+    names = sorted(tool.tool.name for tool in declared)
+    with tool_turn_context(room_id="r", call=_call()):
+        entry = speaker._registry.owner_lookup(CANCEL_TASK_TOOL, "r")  # type: ignore[attr-defined]
+        assert entry is not None
+        answer = json.loads(await entry.serve({"task_id": task.id}))
+    await room.kit.close()
+
+    assert names == ["cancel_task", "task_status"]
+    assert answer["status"] == "cancelled"
+    with pytest.raises(RuntimeError, match="already"):
+        room.kit.setup_task_tools(speaker)  # type: ignore[arg-type]

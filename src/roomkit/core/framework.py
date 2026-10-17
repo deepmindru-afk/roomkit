@@ -453,6 +453,9 @@ class RoomKit(
         # The tasks a ``cancel_task`` call is cancelling, by the channel that
         # made it: that channel is not handed the cancellation back (RFC §23.4).
         self._task_cancelled_by: dict[str, str] = {}
+        # Each background task still running, by id: its parent room, which
+        # a cancel_task call must name (RFC §23.4).
+        self._task_rooms: dict[str, str] = {}
         # Each agent's background setup: its worker and how its results come
         # back (RFC §23.4).
         self._background_setups: dict[str, BackgroundSetup] = {}

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import orchestration_tool
 from roomkit.orchestration._call_room import in_call_room
+from roomkit.providers.ai.base import AITool
 from roomkit.tasks.background import (
     BACKGROUND_TOOL,
     BACKGROUND_TOOL_DEF,
@@ -13,6 +14,7 @@ from roomkit.tasks.background import (
     background_tool_server,
     start_background_task,
 )
+from roomkit.tasks.status import TASK_STATUS_TOOL, CancelTaskTool, TaskStatusTool
 
 if TYPE_CHECKING:
     from roomkit.channels.ai import AIChannel
@@ -54,6 +56,26 @@ class BackgroundMixin:
         )
         self._background_setups[agent.channel_id] = setup
 
+    def setup_task_tools(self, agent: AIChannel) -> None:
+        """Give *agent* ``task_status`` and ``cancel_task`` (RFC §23.4), served
+        by the room's owner wherever the agent's turns run (RFC §10.6.5): the
+        tasks of the room of the call, and a cancel of one of them, never
+        another room's. ``TaskStatusTool(kit)`` and ``CancelTaskTool(kit)``
+        are the same tools as an agent's own, for an agent run in this
+        process.
+
+        Raises:
+            RuntimeError: The tools are already set up on the agent.
+        """
+        if agent._registry.lookup(TASK_STATUS_TOOL, None) is not None:
+            msg = f"setup_task_tools() already called for channel '{agent.channel_id}'"
+            raise RuntimeError(msg)
+        for tool in (TaskStatusTool(self), CancelTaskTool(self)):  # ty: ignore[invalid-argument-type]
+            definition = AITool(**tool.definition)
+            agent._registry.register(
+                orchestration_tool(definition, _served_by(tool, definition.name)), owner=self
+            )
+
     async def start_task(
         self, room_id: str, agent_id: str, task: str, *, hand_back: str | None = None
     ) -> DelegatedTask:
@@ -84,3 +106,13 @@ class BackgroundMixin:
             setup=setup,
             hand_back=hand_back,
         )
+
+
+def _served_by(tool: TaskStatusTool | CancelTaskTool, name: str) -> Any:
+    """What serves calls to *name* with *tool*'s handler, which reads the room
+    of the call itself."""
+
+    async def serve(arguments: dict[str, Any]) -> str:
+        return await tool.handler(name, arguments)
+
+    return serve

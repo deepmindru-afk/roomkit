@@ -263,9 +263,12 @@ class CancelTaskTool:
         if not task_id:
             return json.dumps({"error": "task_id is required"})
         line = await self._line(room_id, task_id)
-        if line is None:
+        running = line is not None and line.get("status") == "running"
+        if line is None or (running and not self._kit._is_room_task(task_id, room_id)):
+            # A line naming a task the kit runs for another room is not this
+            # room's to cancel, whoever posted it.
             return _answer(task_id, "unknown", f"No task {task_id} here.")
-        if line.get("status") == "running" and await self._cancel(task_id):
+        if running and await self._cancel(task_id, room_id):
             return _answer(
                 task_id, str(TaskStatus.CANCELLED), "Cancelled: its result will not come back."
             )
@@ -277,12 +280,12 @@ class CancelTaskTool:
         lines = await room_task_lines(self._kit.status_bus, room_id, self._window)
         return next((t for t in lines if t["task_id"] == task_id), None)
 
-    async def _cancel(self, task_id: str) -> bool:
-        """Cancel for the channel that made the call, which is then not told twice."""
+    async def _cancel(self, task_id: str, room_id: str) -> bool:
+        """Cancel a task of *room_id* for the channel that made the call,
+        which is then not told twice."""
         call = current_tool_call()
-        if call is not None and call.channel_id:
-            return await self._kit._cancel_task_for(task_id, call.channel_id)
-        return await self._kit.cancel_task(task_id)
+        channel_id = call.channel_id if call is not None else None
+        return await self._kit._cancel_task_for(task_id, channel_id, room_id=room_id)
 
 
 def _answer(task_id: str, status: str, message: str) -> str:

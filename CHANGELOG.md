@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `RoomKit.setup_task_tools(agent)` (RMK-825, RFC §23.4, §10.6.5): gives an AI
+  channel `task_status` and `cancel_task` as tools the room's owner serves,
+  wherever the agent's turns run, as `setup_background` gives
+  `work_in_background`. `TaskStatusTool(kit)` / `CancelTaskTool(kit)` stay the
+  same tools for an agent run in the kit's process.
+
 - An executor wires the channels it runs (RMK-821, RFC §10.6.2, §10.6.6). A
   `TurnExecutor` a host builds (`TurnExecutor(build_channel, store=,
   media_resolver=, attached_media=, telemetry=)`) builds each channel once,
@@ -339,6 +345,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or called, and with them `pydub` from the `fastrtc` extra (RMK-824).
 
 ### Fixed
+
+- `cancel_task` cancels only a task of the room of the call (RMK-825, RFC
+  §23.4). It found a task by the status bus's `task` lines for the room and
+  cancelled it by id, so a line any code holding the kit posted, naming
+  another room's task, made a room's `cancel_task` cancel that task. The kit
+  now records each running background task's parent room when it submits
+  it, and a cancel for a room reaches only that room's.
 
 - `roomkit[fastrtc]` imports on Python 3.13 (RMK-824). The vendored WebRTC
   transport used `audioop`, which left the stdlib in 3.13: directly in

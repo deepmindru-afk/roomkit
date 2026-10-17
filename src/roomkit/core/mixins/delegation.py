@@ -289,6 +289,7 @@ class DelegationMixin(HelpersMixin):
     _closed: bool
     _background_runs: set[asyncio.Task[None]]
     _task_cancelled_by: dict[str, str]
+    _task_rooms: dict[str, str]
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     get_room: Any  # see DelegationHost
@@ -774,6 +775,7 @@ class DelegationMixin(HelpersMixin):
         session_id = session.id if session is not None else None
 
         async def _on_bg_complete(result: DelegatedTaskResult) -> None:
+            self._task_rooms.pop(result.task_id, None)
             span.end(result)
             await self._on_delegation_complete(result)
             if handle._post_status:
@@ -790,12 +792,17 @@ class DelegationMixin(HelpersMixin):
             if on_complete:
                 await on_complete(result)
 
-        await self._task_runner.submit(
-            self,  # ty: ignore[invalid-argument-type]
-            handle,
-            context=context,
-            on_complete=_on_bg_complete,
-        )
+        self._task_rooms[handle.id] = handle.parent_room_id
+        try:
+            await self._task_runner.submit(
+                self,  # ty: ignore[invalid-argument-type]
+                handle,
+                context=context,
+                on_complete=_on_bg_complete,
+            )
+        except BaseException:
+            self._task_rooms.pop(handle.id, None)
+            raise
         return handle
 
     async def cancel_task(self, task_id: str) -> bool:
@@ -812,11 +819,23 @@ class DelegationMixin(HelpersMixin):
         """
         return await self._task_runner.cancel(task_id)
 
-    async def _cancel_task_for(self, task_id: str, channel_id: str) -> bool:
-        """Cancel *task_id* for *channel_id*'s ``cancel_task`` call: when that
-        channel is the one the result was going to, it is not handed the
-        cancellation back, the tool's answer having told it (RFC §23.4)."""
-        self._task_cancelled_by[task_id] = channel_id
+    def _is_room_task(self, task_id: str, room_id: str) -> bool:
+        """Whether *task_id* is a background task still running for *room_id*,
+        as the kit submitted it: what a room's ``cancel_task`` may reach,
+        whatever the StatusBus says (RFC §23.4)."""
+        return self._task_rooms.get(task_id) == room_id
+
+    async def _cancel_task_for(
+        self, task_id: str, channel_id: str | None, *, room_id: str
+    ) -> bool:
+        """Cancel *task_id* for a ``cancel_task`` call made in *room_id*: only
+        a task of that room; when *channel_id*, the caller, is the one the
+        result was going to, it is not handed the cancellation back, the
+        tool's answer having told it (RFC §23.4)."""
+        if not self._is_room_task(task_id, room_id):
+            return False
+        if channel_id:
+            self._task_cancelled_by[task_id] = channel_id
         try:
             return await self._task_runner.cancel(task_id)
         finally:
