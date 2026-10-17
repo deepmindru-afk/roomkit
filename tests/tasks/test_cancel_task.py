@@ -18,12 +18,18 @@ import pytest
 
 from roomkit import HookExecution, HookResult, HookTrigger, RoomKit
 from roomkit.channels.agent import Agent
-from roomkit.core.exceptions import UnservedToolCallError
+from roomkit.core.exceptions import ToolNameCollisionError, UnservedToolCallError
+from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, EventType, TaskStatus
-from roomkit.providers.ai.base import AIContext, AIResponse
+from roomkit.models.event import TextContent
+from roomkit.orchestration._worker_run import WorkerStatus, follow_worker
+from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks import CANCEL_TASK_TOOL, CancelTaskTool
+from roomkit.tasks.handback import CALLER_HANDS_BACK
+from roomkit.tasks.status import TASK_STATUS_TOOL
 from roomkit.tools.context import ToolCallContext, tool_turn_context
+from roomkit.turns._registry_tools import RegistryOwnerTools
 from tests.conference.test_conference_realtime import until
 from tests.test_framework import SimpleChannel
 
@@ -238,3 +244,137 @@ async def test_the_owner_serves_the_task_tools_set_up_on_an_agent() -> None:
     assert answer["status"] == "cancelled"
     with pytest.raises(RuntimeError, match="already"):
         room.kit.setup_task_tools(speaker)  # type: ignore[arg-type]
+
+
+async def test_a_task_whose_end_is_being_told_reads_ended_not_unknown() -> None:
+    """While its ON_TASK_COMPLETED hooks run, the room's own task is still the
+    room's: cancel_task says it had already ended (RFC §23.4)."""
+    room = await _Room(MockAIProvider(responses=["Mille."])).open()
+    in_hook = asyncio.Event()
+    release = asyncio.Event()
+
+    @room.kit.hook(HookTrigger.ON_TASK_COMPLETED, execution=HookExecution.ASYNC)
+    async def slow(event: Any, ctx: Any) -> None:
+        in_hook.set()
+        await release.wait()
+
+    task = await room.kit.delegate("r", "worker", "Compte.", notify="speaker")
+    await asyncio.wait_for(in_hook.wait(), 5)
+    cancelling = asyncio.ensure_future(_cancel(CancelTaskTool(room.kit), task.id))
+    await asyncio.sleep(0.05)
+    release.set()
+    answer = await asyncio.wait_for(cancelling, 5)
+    await room.kit.close()
+
+    assert answer["status"] == "completed"
+    assert room.kit._task_rooms == {}
+
+
+async def test_setup_task_tools_sets_up_both_tools_or_neither() -> None:
+    kit = RoomKit()
+    agent = Agent("speaker", provider=MockAIProvider(responses=["x"]), tools=[CancelTaskTool(kit)])
+    kit.register_channel(agent)
+
+    with pytest.raises(ToolNameCollisionError):
+        kit.setup_task_tools(agent)
+
+    assert agent._registry.lookup(TASK_STATUS_TOOL, None) is None
+    await kit.close()
+
+
+async def test_a_strategy_s_unposted_worker_is_never_a_room_s_to_cancel() -> None:
+    """A task a strategy runs without posting it (``post_status=False``) is
+    the strategy's to follow, though its follower posts lines (RFC §23.4)."""
+    room = await _Room(_Endless()).open()
+    task = await room.kit.delegate(
+        "r", "worker", "Compte.", notify=CALLER_HANDS_BACK, post_status=False
+    )
+    follower = asyncio.ensure_future(
+        follow_worker(
+            room.kit,
+            task,
+            timeout=None,
+            status=WorkerStatus({"room_id": "r", "mode": "per_worker_async"}),
+        )
+    )
+    await asyncio.wait_for(room.worker.started.wait(), 5)
+
+    answer = await _cancel(CancelTaskTool(room.kit), task.id)
+    still_running = task.result is None
+    await room.kit.cancel_task(task.id)
+    await asyncio.wait_for(follower, 5)
+    await room.kit.close()
+
+    assert answer["status"] == "unknown"
+    assert still_running
+
+
+async def test_a_cancel_with_no_tool_call_is_held_to_the_room_too() -> None:
+    room = await _Room(_Endless()).open()
+    await room.kit.create_room(room_id="other")
+    await room.kit.attach_channel("other", "speaker", category=ChannelCategory.INTELLIGENCE)
+    theirs = await room.running_task("other")
+    room.kit.status_bus.post(
+        "worker", "task", "pending", metadata={"room_id": "r", "task_id": theirs.id}
+    )
+    await asyncio.sleep(0)
+
+    with tool_turn_context(room_id="r"):
+        answer = json.loads(
+            await CancelTaskTool(room.kit).handler(CANCEL_TASK_TOOL, {"task_id": theirs.id})
+        )
+    still_running = theirs.result is None
+    await room.kit.close()
+
+    assert answer["status"] == "unknown" and still_running
+
+
+async def test_a_turn_s_cancel_task_is_served_by_the_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    served: list[str] = []
+    serve = RegistryOwnerTools.serve
+
+    async def spy(self: RegistryOwnerTools, request: Any, call: Any) -> Any:
+        task = asyncio.current_task()
+        served.append(f"{call.name}@{task.get_name() if task else ''}")
+        return await serve(self, request, call)
+
+    monkeypatch.setattr(RegistryOwnerTools, "serve", spy)
+    room = await _Room(_Endless()).open()
+    speaker = room.kit.channels["speaker"]
+    room.kit.setup_task_tools(speaker)  # type: ignore[arg-type]
+    task = await room.running_task()
+    call = AIToolCall(id="c1", name=CANCEL_TASK_TOOL, arguments={"task_id": task.id})
+    speaker._provider._ai_responses = [  # type: ignore[attr-defined]
+        AIResponse(content="", tool_calls=[call]),
+        AIResponse(content="Annulé."),
+    ]
+    speaker._provider._index = 0  # type: ignore[attr-defined]
+
+    await room.kit.process_inbound(
+        InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Annule.")),
+        room_id="r",
+    )
+    result = await task.wait(timeout=5)
+    await asyncio.sleep(0.2)
+    await room.kit.close()
+
+    assert result.status == TaskStatus.CANCELLED
+    assert any(s.startswith("cancel_task@roomkit-owner-call-") for s in served)
+    assert room.handed_back == []
+
+
+async def test_a_submit_that_fails_leaves_no_task_of_the_room() -> None:
+    room = await _Room(_Endless()).open()
+
+    async def down(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("down")
+
+    room.kit._task_runner.submit = down  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await room.kit.delegate("r", "worker", "Compte.", notify="speaker")
+    left = dict(room.kit._task_rooms)
+    await room.kit.close()
+
+    assert left == {}

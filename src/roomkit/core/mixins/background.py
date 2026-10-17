@@ -66,15 +66,18 @@ class BackgroundMixin:
 
         Raises:
             RuntimeError: The tools are already set up on the agent.
+            ToolNameCollisionError: The agent already serves a tool of one of
+                those names (its own ``CancelTaskTool``, say): neither is set up.
         """
         if agent._registry.lookup(TASK_STATUS_TOOL, None) is not None:
             msg = f"setup_task_tools() already called for channel '{agent.channel_id}'"
             raise RuntimeError(msg)
+        entries = []
         for tool in (TaskStatusTool(self), CancelTaskTool(self)):  # ty: ignore[invalid-argument-type]
             definition = AITool(**tool.definition)
-            agent._registry.register(
-                orchestration_tool(definition, _served_by(tool, definition.name)), owner=self
-            )
+            entries.append(orchestration_tool(definition, _served_by(tool, definition.name)))
+        # Both or neither: an agent never keeps half of them.
+        agent._registry.register_all(entries, owner=self)
 
     async def start_task(
         self, room_id: str, agent_id: str, task: str, *, hand_back: str | None = None

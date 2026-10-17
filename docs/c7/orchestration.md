@@ -193,8 +193,10 @@ await kit.cancel_task(task.id)
 
 - `setup_task_tools(agent)` gives an AI channel `task_status` and
   `cancel_task`, served by the room's owner wherever its turns run (RFC
-  §10.6.5); a `cancel_task` reaches only a task the kit runs for the room of
-  the call, whatever the status bus says.
+  §10.6.5); a `cancel_task` reaches only a task the kit delegated for the
+  room of the call and posts on the status bus. A `task` line naming another
+  room's task cancels nothing, and a task a strategy runs unposted
+  (`post_status=False`) is the strategy's to follow.
 
 - `setup_background(agent, worker=None, hand_back="relay")` gives an AI
   channel the `work_in_background` tool; the task runs on its worker (itself,

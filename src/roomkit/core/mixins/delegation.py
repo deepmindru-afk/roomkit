@@ -213,6 +213,8 @@ class DelegationHost(Protocol):
             ends, so its close cuts it (a hand-back under way included).
         _task_cancelled_by: The tasks a ``cancel_task`` call is cancelling,
             by the channel that made the call.
+        _task_rooms: Each running background task the room's tools may
+            cancel, by id: its parent room.
 
     Cross-mixin methods (provided by other mixins in the MRO):
         get_room: From :class:`RoomLifecycleMixin`.
@@ -230,6 +232,7 @@ class DelegationHost(Protocol):
     _closed: bool
     _background_runs: set[asyncio.Task[None]]
     _task_cancelled_by: dict[str, str]
+    _task_rooms: dict[str, str]
 
 
 _TASK_NAME_CHARS = 200
@@ -775,7 +778,13 @@ class DelegationMixin(HelpersMixin):
         session_id = session.id if session is not None else None
 
         async def _on_bg_complete(result: DelegatedTaskResult) -> None:
-            self._task_rooms.pop(result.task_id, None)
+            try:
+                await _complete(result)
+            finally:
+                # Once the bus shows its end: a cancel meanwhile reads it ended.
+                self._task_rooms.pop(result.task_id, None)
+
+        async def _complete(result: DelegatedTaskResult) -> None:
             span.end(result)
             await self._on_delegation_complete(result)
             if handle._post_status:
@@ -792,7 +801,10 @@ class DelegationMixin(HelpersMixin):
             if on_complete:
                 await on_complete(result)
 
-        self._task_rooms[handle.id] = handle.parent_room_id
+        if handle._post_status:
+            # A task a strategy runs without posting it is the strategy's to
+            # follow, never a room's cancel_task's (RFC §23.4).
+            self._task_rooms[handle.id] = handle.parent_room_id
         try:
             await self._task_runner.submit(
                 self,  # ty: ignore[invalid-argument-type]

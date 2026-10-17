@@ -50,9 +50,7 @@ from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.sms.mock import MockSMSProvider
 from roomkit.tasks import (
     CANCEL_TASK_TOOL,
-    CancelTaskTool,
     DelegateHandler,
-    TaskStatusTool,
     build_delegate_tool,
     setup_delegation,
 )
@@ -120,12 +118,13 @@ async def main() -> None:
         "assistant",
         provider=_AssistantAI(delegated),
         system_prompt="Tu es l'assistant météo. Tu délègues les recherches.",
-        # Follow the room's tasks, and stop one the person no longer wants.
-        tools=[TaskStatusTool(kit), CancelTaskTool(kit)],
     )
     weather = Agent("meteo", provider=_WeatherAgentAI(), role="Météo")
     for channel in (sms, assistant, weather):
         kit.register_channel(channel)
+    # Follow the room's tasks, and stop one the person no longer wants: the
+    # room's owner serves both, wherever the assistant's turns run.
+    kit.setup_task_tools(assistant)
     setup_delegation(
         assistant,
         DelegateHandler(kit),

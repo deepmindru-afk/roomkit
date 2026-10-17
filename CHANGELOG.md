@@ -351,7 +351,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cancelled it by id, so a line any code holding the kit posted, naming
   another room's task, made a room's `cancel_task` cancel that task. The kit
   now records each running background task's parent room when it submits
-  it, and a cancel for a room reaches only that room's.
+  it, and a cancel for a room reaches only that room's. Its reach is
+  narrower: a task a strategy runs unposted (`post_status=False`) or one
+  submitted straight to `kit.task_runner` answers `unknown`, and is cancelled
+  by `kit.cancel_task(task_id)`. A task whose end is being told reads ended.
 
 - `roomkit[fastrtc]` imports on Python 3.13 (RMK-824). The vendored WebRTC
   transport used `audioop`, which left the stdlib in 3.13: directly in
