@@ -79,6 +79,10 @@ def _named_correspondent(binding: ChannelBinding, channel: Channel) -> ChannelBi
     return binding.model_copy(update=update) if update else binding
 
 
+def _auto_greet_hook_name(agent_id: str) -> str:
+    return f"_agent_auto_greet:{agent_id}"
+
+
 def _refuse_declared_binding(channel: Channel, category: ChannelCategory | None) -> None:
     """A channel the kit holds by its declaration alone takes part as an
     intelligence channel only: nothing here delivers to it (RFC §10.6.2)."""
@@ -174,6 +178,8 @@ class ChannelOpsMixin(HelpersMixin):
                 already registered.
             ValueError: a declaration of a channel that is not an
                 intelligence channel.
+            pydantic.ValidationError: an intelligence channel whose own
+                declaration is invalid (an empty id, a negative window).
         """
         if isinstance(channel, ChannelDeclaration):
             channel = DeclaredChannel(channel)
@@ -183,6 +189,11 @@ class ChannelOpsMixin(HelpersMixin):
                 f"Call unregister_channel({channel.channel_id!r}) first to "
                 f"replace it deliberately."
             )
+        # The kit reads an intelligence channel through its declaration (RFC
+        # §10.6.2): one it cannot give is refused before anything is set up.
+        declaration = (
+            channel.declaration() if channel.category is ChannelCategory.INTELLIGENCE else None
+        )
         self._channels[channel.channel_id] = channel
         self._event_router = None  # Reset router cache
 
@@ -211,12 +222,8 @@ class ChannelOpsMixin(HelpersMixin):
             # The host is the RoomKit instance; the mixin cannot say so.
             channel.set_framework(self)  # ty: ignore[invalid-argument-type]
 
-        # Auto-greet: register global ON_SESSION_STARTED hook for agents, a
-        # declared one as a live one (RFC §10.6.2).
-        if channel.category is ChannelCategory.INTELLIGENCE:
-            identity = channel.declaration().identity
-            if identity is not None and identity.auto_greet and identity.greeting:
-                self._register_auto_greet_hook(channel.channel_id)
+        if declaration is not None:
+            self._set_up_auto_greet(declaration)
 
         # RFC §8.2 — the registry changing is an observable framework event.
         self._emit_framework_event_soon(
@@ -246,6 +253,8 @@ class ChannelOpsMixin(HelpersMixin):
         if channel is None:
             return None
         self._event_router = None  # Reset router cache
+        # A channel registered again under the id greets by its own setup.
+        self._hook_engine.remove_global_hook(_auto_greet_hook_name(channel_id))
         self._emit_framework_event_soon(
             "channel_unregistered",
             channel_id=channel_id,
@@ -775,11 +784,18 @@ class ChannelOpsMixin(HelpersMixin):
             raise ChannelNotFoundError(f"Channel {channel_id} not in room {room_id}")
         return binding
 
+    def _set_up_auto_greet(self, declaration: ChannelDeclaration) -> None:
+        """Greet on a session start for an agent that says so, a declared one
+        as a live one (RFC §10.6.2, §19.1)."""
+        identity = declaration.identity
+        if identity is not None and identity.auto_greet and identity.greeting:
+            self._register_auto_greet_hook(declaration.channel_id)
+
     def _register_auto_greet_hook(self, agent_id: str) -> None:
         """Register a global ON_SESSION_STARTED hook for agent auto-greeting."""
         from roomkit.core.hooks import HookRegistration
 
-        hook_name = f"_agent_auto_greet:{agent_id}"
+        hook_name = _auto_greet_hook_name(agent_id)
         kit_ref = self
         # Track rooms already greeted for text channels (no session to dedup on).
         # Bounded to prevent unbounded growth on long-running servers.

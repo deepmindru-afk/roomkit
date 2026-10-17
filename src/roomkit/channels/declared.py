@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from roomkit.channels.base import Channel
@@ -78,20 +79,22 @@ class DeclaredChannel(Channel):
         )
 
 
-def register_strategy_agent(kit: RoomKit, agent: Channel) -> None:
-    """Register *agent*, a strategy's, on *kit* unless the kit holds its id
-    already.
+def register_strategy_agents(kit: RoomKit, agents: Iterable[Channel]) -> None:
+    """Register on *kit* each of a strategy's *agents* it does not hold yet:
+    all of them, or none when one is refused.
 
     Raises:
-        ValueError: the kit holds the id by its declaration alone: the
+        ValueError: the kit holds one's id by its declaration alone: the
             strategy would set its turns and tools up on an object the kit
             never reads.
     """
-    held = kit.channels.get(agent.channel_id)
-    if held is None:
-        kit.register_channel(agent)
-    elif isinstance(held, DeclaredChannel):
-        raise ValueError(
-            f"Channel {agent.channel_id!r} is registered by its declaration alone: "
-            "a strategy needs the agent itself registered on the kit"
-        )
+    agents = list(agents)
+    for agent in agents:
+        if isinstance(kit.channels.get(agent.channel_id), DeclaredChannel):
+            raise ValueError(
+                f"Channel {agent.channel_id!r} is registered by its declaration alone: "
+                "a strategy needs the agent itself registered on the kit"
+            )
+    for agent in agents:
+        if agent.channel_id not in kit.channels:
+            kit.register_channel(agent)

@@ -12,6 +12,7 @@ from roomkit import (
     Agent,
     AgentIdentity,
     AIChannel,
+    ChannelAlreadyRegisteredError,
     ChannelDeclaration,
     DeclaredChannel,
     Loop,
@@ -19,14 +20,23 @@ from roomkit import (
     RoomKit,
     Supervisor,
     Swarm,
+    TurnLinkError,
 )
 from roomkit.channels.voice import VoiceChannel
 from roomkit.models.channel import ChannelCapabilities
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory, ChannelMediaType, ChannelType, EventType
+from roomkit.models.enums import (
+    ChannelCategory,
+    ChannelMediaType,
+    ChannelType,
+    EventType,
+    HookExecution,
+    HookTrigger,
+)
 from roomkit.models.event import TextContent
 from roomkit.orchestration import Discussion
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.speaking.mock import MockSpeakPolicy, MockThinker
 from roomkit.store.memory import InMemoryStore
 from roomkit.turns import InMemoryTurnBackend, TurnExecutor
 from roomkit.voice import AudioPipelineConfig
@@ -50,6 +60,7 @@ class _Host:
         self.store = InMemoryStore()
         self.backend = InMemoryTurnBackend()
         self.built: list[str] = []
+        self.providers: dict[str, MockAIProvider] = {}
         self._answers = agents
         self.executor = TurnExecutor(
             self._build, hosts=lambda channel_id: channel_id in agents, store=self.store
@@ -60,6 +71,7 @@ class _Host:
             return None
         self.built.append(channel_id)
         provider = MockAIProvider(responses=[self._answers[channel_id]])
+        self.providers[channel_id] = provider
         return Agent(channel_id, provider=provider, role="Weather agent")
 
     async def kit(self, *declarations: ChannelDeclaration) -> RoomKit:
@@ -129,6 +141,23 @@ def test_an_agent_declares_its_identity_and_the_history_it_reads() -> None:
     assert declared.thinks_while_listening is False
 
 
+def test_an_ai_channel_with_a_thinker_declares_it_thinks_while_listening() -> None:
+    ai = AIChannel(
+        "ai",
+        provider=MockAIProvider(responses=["x"]),
+        speak_policy=MockSpeakPolicy(["speak"]),
+        thinker=MockThinker([]),
+    )
+
+    assert ai.declaration().thinks_while_listening is True
+
+
+def test_a_declaration_left_to_its_defaults_reads_as_an_ai_channel() -> None:
+    live = AIChannel("ana", provider=MockAIProvider(responses=["x"])).declaration()
+
+    assert ChannelDeclaration(channel_id="ana") == live
+
+
 def test_an_ai_channel_and_an_acp_agent_declare_no_identity(tmp_path: Any) -> None:
     ai = AIChannel("ai", provider=MockAIProvider(responses=["x"]))
     acp = ACPChannel("acp", ["agent"], cwd=tmp_path)
@@ -171,6 +200,24 @@ async def test_a_declared_agent_s_turn_runs_on_the_executor_that_builds_it() -> 
     assert host.built == ["ana"]
 
 
+async def test_a_hand_written_declaration_s_turns_read_the_room_s_history() -> None:
+    """A declaration that names only its id gets the history a live AI channel
+    gets, though nothing else in the process reads the room's tail."""
+    host = _Host(ana="It is sunny.")
+    kit = await host.kit(ChannelDeclaration(channel_id="ana"))
+    await kit.attach_channel("r", "ana")
+
+    await _say(kit, "Hello.")
+    await _say(kit, "What is the weather?")
+    last = host.providers["ana"].calls[-1]
+    await host.close(kit)
+
+    assert [m.content for m in last.messages if m.role == "user"][-2:] == [
+        "Hello.",
+        "What is the weather?",
+    ]
+
+
 async def test_with_no_executor_to_build_it_a_declared_agent_s_turn_fails_at_once() -> None:
     kit = RoomKit()
     kit.register_channel(SimpleChannel("sms"))
@@ -188,6 +235,94 @@ async def test_with_no_executor_to_build_it_a_declared_agent_s_turn_fails_at_onc
 
     assert taken == (False, True)
     assert said == []
+
+
+async def test_a_channel_call_to_a_declared_agent_with_no_executor_fails_at_once() -> None:
+    kit = RoomKit()
+    kit.register_channel(ANA)
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "ana")
+
+    with pytest.raises(TurnLinkError) as raised:
+        await asyncio.wait_for(kit.channel_call("ana", "r", "set_mode", mode="quiet"), 2)
+    await kit.close()
+
+    assert raised.value.reason == "no_executor"
+
+
+async def test_a_declaration_never_takes_a_live_channel_s_id_nor_the_reverse() -> None:
+    kit = RoomKit()
+    kit.register_channel(_agent("bob"))
+    kit.register_channel(ANA)
+
+    with pytest.raises(ChannelAlreadyRegisteredError):
+        kit.register_channel(ChannelDeclaration(channel_id="bob"))
+    with pytest.raises(ChannelAlreadyRegisteredError):
+        kit.register_channel(_agent("ana"))
+
+    assert isinstance(kit.channels["bob"], Agent)
+    assert isinstance(kit.channels["ana"], DeclaredChannel)
+
+
+def test_an_intelligence_channel_with_no_valid_declaration_is_never_registered() -> None:
+    class _Unbounded(AIChannel):
+        @property
+        def recent_events_window(self) -> int:
+            return -1
+
+    kit = RoomKit()
+
+    with pytest.raises(ValueError):
+        kit.register_channel(_Unbounded("ai", provider=MockAIProvider(responses=["x"])))
+
+    assert "ai" not in kit.channels
+
+
+def _auto_greets(kit: RoomKit, agent_id: str) -> int:
+    hooks = kit._hook_engine._global_hooks
+    return sum(1 for h in hooks if h.name == f"_agent_auto_greet:{agent_id}")
+
+
+def test_an_agent_registered_again_greets_by_its_new_setup_only() -> None:
+    kit = RoomKit()
+    greeter = Agent("ana", provider=MockAIProvider(responses=["x"]), greeting="Welcome!")
+    kit.register_channel(greeter)
+
+    kit.unregister_channel("ana")
+    kit.register_channel(greeter.declaration())
+    twice = _auto_greets(kit, "ana")
+    kit.unregister_channel("ana")
+    kit.register_channel(ChannelDeclaration(channel_id="ana", identity=AgentIdentity()))
+
+    assert twice == 1
+    assert _auto_greets(kit, "ana") == 0
+
+
+@pytest.mark.parametrize(("auto_greet", "greetings"), [(True, 1), (False, 0)])
+async def test_a_room_is_greeted_by_the_agent_s_last_registration(
+    auto_greet: bool, greetings: int
+) -> None:
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(Agent("ana", provider=MockAIProvider(responses=["x"]), greeting="Hi!"))
+    kit.unregister_channel("ana")
+    again = Agent(
+        "ana", provider=MockAIProvider(responses=["x"]), greeting="Hi!", auto_greet=auto_greet
+    )
+    kit.register_channel(again)
+
+    @kit.hook(HookTrigger.ON_ROOM_CREATED, HookExecution.ASYNC)
+    async def attach(event: Any, ctx: Any) -> None:
+        await kit.attach_channel(event.room_id, "ana", category=ChannelCategory.INTELLIGENCE)
+
+    result = await kit.process_inbound(
+        InboundMessage(channel_id="sms", sender_id="marie", content=TextContent(body="Hello"))
+    )
+    await asyncio.sleep(0.3)
+    events = await kit.store.list_events(result.event.room_id)
+    await kit.close()
+
+    assert sum(1 for e in events if e.metadata.get("auto_greeting")) == greetings
 
 
 async def test_a_delegation_to_a_declared_worker_runs_on_its_executor() -> None:
@@ -300,17 +435,28 @@ def _agent(channel_id: str) -> Agent:
 
 
 @pytest.mark.parametrize(
-    "strategy",
+    ("strategy", "left"),
     [
-        lambda: Supervisor(supervisor=_agent("boss"), workers=[_agent("ana")]),
-        lambda: Loop(agent=_agent("writer"), reviewers=[_agent("ana")]),
-        lambda: Discussion(agents=[_agent("ana"), _agent("bob")]),
-        lambda: Pipeline(agents=[_agent("ana"), _agent("bob")]),
-        lambda: Swarm(agents=[_agent("ana"), _agent("bob")]),
+        # The supervisor and the producer are the room's agents, bound before
+        # the strategy's install refuses its worker or reviewer: a failed
+        # install takes their bindings back, never a registration of the kit.
+        (
+            lambda: Supervisor(supervisor=_agent("boss"), workers=[_agent("w1"), _agent("ana")]),
+            {"boss"},
+        ),
+        (
+            lambda: Loop(agent=_agent("writer"), reviewers=[_agent("rev"), _agent("ana")]),
+            {"writer"},
+        ),
+        (lambda: Discussion(agents=[_agent("bob"), _agent("ana")]), set()),
+        (lambda: Pipeline(agents=[_agent("bob"), _agent("ana")]), set()),
+        (lambda: Swarm(agents=[_agent("bob"), _agent("ana")]), set()),
     ],
     ids=["supervisor", "loop", "discussion", "pipeline", "swarm"],
 )
-async def test_a_strategy_refuses_an_agent_the_kit_holds_by_declaration(strategy: Any) -> None:
+async def test_a_strategy_refuses_an_agent_the_kit_holds_by_declaration(
+    strategy: Any, left: set[str]
+) -> None:
     kit = RoomKit()
     kit.register_channel(ANA)
 
@@ -318,6 +464,9 @@ async def test_a_strategy_refuses_an_agent_the_kit_holds_by_declaration(strategy
         await kit.create_room(room_id="r", orchestration=strategy())
 
     assert isinstance(kit.channels["ana"], DeclaredChannel)
+    # No agent the refusing call was given is registered, the ones before
+    # the declared one included.
+    assert set(kit.channels) == {"ana", *left}
     await kit.close()
 
 

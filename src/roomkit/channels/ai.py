@@ -61,18 +61,19 @@ from roomkit.channels.base import Channel
 from roomkit.memory.base import MemoryProvider
 from roomkit.memory.sliding_window import SlidingWindowMemory
 from roomkit.models.channel import (
+    AI_CHANNEL_CONTEXT_EVENTS,
     ChannelBinding,
     ChannelCapabilities,
     ChannelDeclaration,
     ChannelOutput,
     RetryPolicy,
+    ai_channel_capabilities,
 )
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import (
     ChannelCategory,
     ChannelDirection,
-    ChannelMediaType,
     ChannelType,
     EventType,
 )
@@ -164,7 +165,7 @@ class AIChannel(
         system_prompt: str | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
-        max_context_events: int = 50,
+        max_context_events: int = AI_CHANNEL_CONTEXT_EVENTS,
         tool_handler: ToolHandler | None = None,
         tools: list[AITool | Tool] | None = None,
         max_tool_rounds: int = 50,
@@ -559,11 +560,7 @@ class AIChannel(
         reads each media itself, an image for a model that sees, its label or
         the host's description otherwise, so the event a turn answers reads as
         the same event does in its history (RFC §6.4)."""
-        return ChannelCapabilities(
-            media_types=[ChannelMediaType.TEXT, ChannelMediaType.RICH, ChannelMediaType.MEDIA],
-            supports_rich_text=True,
-            supports_media=True,
-        )
+        return ai_channel_capabilities()
 
     async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
         raise NotImplementedError("AI channel does not accept inbound messages")

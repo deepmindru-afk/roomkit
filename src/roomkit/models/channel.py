@@ -79,6 +79,20 @@ class ChannelCapabilities(BaseModel):
     custom: dict[str, Any] = Field(default_factory=dict)
 
 
+AI_CHANNEL_CONTEXT_EVENTS = 50
+"""The history an AI channel reads per turn unless told otherwise."""
+
+
+def ai_channel_capabilities() -> ChannelCapabilities:
+    """What an AI channel can do: text, rich content and media whatever the
+    model sees, each media read by the channel itself (RFC §6.4)."""
+    return ChannelCapabilities(
+        media_types=[ChannelMediaType.TEXT, ChannelMediaType.RICH, ChannelMediaType.MEDIA],
+        supports_rich_text=True,
+        supports_media=True,
+    )
+
+
 class AgentIdentity(BaseModel):
     """What the room's owner reads of an agent (RFC §10.6.2, §19.1)."""
 
@@ -95,17 +109,21 @@ class AgentIdentity(BaseModel):
 class ChannelDeclaration(BaseModel):
     """What the room's owner knows of a channel without its live object
     (RFC §10.6.2): enough to bind it, plan its turns and read it in a
-    strategy. An executor builds the channel itself."""
+    strategy. An executor builds the channel itself.
+
+    A field left out reads as an AI channel built with its defaults:
+    ``channel.declaration()`` gives a live channel's own.
+    """
 
     channel_id: str = Field(min_length=1)
     channel_type: ChannelType = ChannelType.AI
     category: ChannelCategory = ChannelCategory.INTELLIGENCE
-    capabilities: ChannelCapabilities = Field(default_factory=ChannelCapabilities)
+    capabilities: ChannelCapabilities = Field(default_factory=ai_channel_capabilities)
     identity: AgentIdentity | None = None
     """An agent's identity; None for a channel that is no agent."""
     thinks_while_listening: bool = False
     """It carries a thinker (RFC §6.4), which a discussion refuses."""
-    recent_events_window: int = Field(default=0, ge=0)
+    recent_events_window: int = Field(default=AI_CHANNEL_CONTEXT_EVENTS, ge=0)
     """How many recent room events the owner loads for its turns."""
 
 

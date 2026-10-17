@@ -145,6 +145,11 @@ kit.register_channel(
 await kit.attach_channel(room_id, "meteo")  # an intelligence binding
 ```
 
+- A field left out reads as an `AIChannel` built with its defaults (text,
+  rich and media capabilities, a 50-event history); `agent.declaration()`
+  gives a live agent's own.
+- Give the host's executor `hosts=`: without it, it takes every channel's
+  turns, the kit's live ones included.
 - The kit holds a `DeclaredChannel` under the id: a binding takes its
   `capabilities`, routing plans its turns, `delegate` / `start_task` name it,
   `send_greeting` and auto-greet read its identity (`auto_greet` defaults to
@@ -152,7 +157,8 @@ await kit.attach_channel(room_id, "meteo")  # an intelligence binding
 - Its turns run on an executor that takes the id; the kit's own executor never
   builds it, so with none they fail at once with `no_executor`.
 - `agent.declaration()` gives any channel's declaration; registering it reads
-  on the kit as registering the agent does.
+  on the kit as registering the agent does. An intelligence channel whose
+  declaration is invalid (an empty id, a negative window) is never registered.
 - Refused: a declaration that is not an intelligence channel's, a binding of
   it with another category, and a strategy (Supervisor, Loop, Discussion,
   Pipeline, Swarm) given a live agent whose id the kit holds by declaration.

@@ -17,12 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `delegate`, `start_task`, `send_greeting` and auto-greet read as they read
   a live agent. Its turns run on an executor whose host builds it; the kit's
   own executor never builds it, so with none they fail at once with
-  `no_executor`. `Channel.declaration()` gives any channel's declaration
-  (`Agent` its identity, `AIChannel` whether it thinks while listening), and
-  registering it reads on the kit as registering the agent does. A
-  declaration that is not an intelligence channel's, a binding of one with
-  another category, and a strategy given a live agent whose id the kit holds
-  by declaration are refused with `ValueError`. Example:
+  `no_executor`. A field left out reads as an `AIChannel` built with its
+  defaults (text, rich and media capabilities, a 50-event history).
+  `Channel.declaration()` gives any channel's declaration (`Agent` its
+  identity, `AIChannel` whether it thinks while listening), and registering
+  it reads on the kit as registering the agent does. A declaration that is
+  not an intelligence channel's, a binding of one with another category, and
+  a strategy given a live agent whose id the kit holds by declaration are
+  refused with `ValueError`, the strategy registering none of the agents it
+  was given; an intelligence channel whose own declaration is invalid (an
+  empty id, a negative window) is refused before it is registered. Example:
   `examples/declared_agent.py`.
 
 - `RoomKit.setup_task_tools(agent)` (RMK-825, RFC §23.4, §10.6.5): gives an AI
@@ -361,6 +365,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or called, and with them `pydub` from the `fastrtc` extra (RMK-824).
 
 ### Fixed
+
+- `unregister_channel` drops the agent's auto-greet hook (RMK-822). An agent
+  registered again under the id, or replaced by its declaration, kept the old
+  hook beside its new one: a text room was greeted twice, and an agent
+  registered again with `auto_greet=False` still greeted.
 
 - `cancel_task` cancels only a task of the room of the call (RMK-825, RFC
   §23.4). It found a task by the status bus's `task` lines for the room and

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from roomkit.channels.declared import register_strategy_agent
+from roomkit.channels.declared import register_strategy_agents
 from roomkit.core.hooks import HookRegistration
 from roomkit.models.enums import HookExecution, HookTrigger
 from roomkit.orchestration.base import Orchestration
@@ -211,8 +211,7 @@ class Supervisor(
         flow delegates to it to frame and validate each step (RFC §19.7.3)."""
         supervises = not (supervisor_in_room or self._supervisor.is_config_only)
         agents = [*self._workers, self._supervisor] if supervises else [*self._workers]
-        for agent in agents:
-            register_strategy_agent(kit, agent)
+        register_strategy_agents(kit, agents)
 
     async def install(self, kit: RoomKit, room_id: str) -> None:
         """Wire supervisor routing and delegation tools."""
