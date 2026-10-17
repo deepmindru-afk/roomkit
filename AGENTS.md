@@ -855,5 +855,11 @@ Tool Execution:      BEFORE_TOOL_USE, ON_TOOL_CALL (unified — fires from AICha
 Realtime Voice:      ON_REALTIME_TEXT_INJECTED, ON_REALTIME_DELEGATION
 ```
 
+The triggers a turn fires (`roomkit.TURN_TRIGGERS`: BEFORE_AI_GENERATION,
+ON_AI_THINKING, ON_AI_RESPONSE, BEFORE_TOOL_USE, AFTER_TOOL_ROUND,
+ON_TOOL_CALL, ON_USER_INPUT_REQUIRED, ON_SPEAK_DECISION, ON_THOUGHT,
+ON_PLAN_UPDATED) register on the turn executor,
+`@kit.turn_executor.hook(...)`; `kit.hook(...)` refuses them (RFC §10.6.6).
+
 Common triggers grouped for quick reference; RFC §9.2 lists the complete,
 authoritative set (65 implemented) with per-trigger execution mode and status.

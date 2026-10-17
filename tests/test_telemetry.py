@@ -365,6 +365,7 @@ class TestRoomKitWiring:
         mock = MockTelemetryProvider()
         kit = RoomKit(telemetry=mock)
         assert kit.hook_engine._telemetry is mock
+        assert kit.turn_executor.hooks._telemetry is mock
 
     def test_channel_receives_telemetry(self) -> None:
         mock = MockTelemetryProvider()
@@ -1227,9 +1228,10 @@ class TestTelemetryPhase4:
         """User can pass custom suppressed triggers via TelemetryConfig."""
         config = TelemetryConfig(suppressed_hook_triggers={"on_speech_start"})
         kit = RoomKit(telemetry=config)
-        assert "on_speech_start" in kit.hook_engine._suppressed_triggers
-        # Default audio level triggers should NOT be present
-        assert "on_input_audio_level" not in kit.hook_engine._suppressed_triggers
+        for engine in (kit.hook_engine, kit.turn_executor.hooks):
+            assert "on_speech_start" in engine._suppressed_triggers
+            # Default audio level triggers should NOT be present
+            assert "on_input_audio_level" not in engine._suppressed_triggers
 
     async def test_suppressed_async_hooks_skip_spans(self) -> None:
         """Async hooks with suppressed triggers skip span creation."""

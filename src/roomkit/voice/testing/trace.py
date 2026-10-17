@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from roomkit.core.hooks import TURN_TRIGGERS
+from roomkit.core.hooks import hook_decorator
 from roomkit.models.enums import HookExecution, HookTrigger
 from roomkit.voice.base import VoiceSession
 
@@ -93,15 +93,15 @@ class VoiceTrace:
         self._triggers = tuple(triggers)
         self._hook_names = [f"voice_trace:{id(self):x}:{t.value}" for t in self._triggers]
         for trigger, name in zip(self._triggers, self._hook_names, strict=True):
-            # A trigger a turn fires registers on the kit's turn executor (RFC §10.6.6).
-            side = kit.turn_executor if trigger in TURN_TRIGGERS else kit
-            side.hook(trigger, HookExecution.ASYNC, name=name)(self._observer(trigger))
+            register = kit.hooks_for(trigger).register
+            hook_decorator(register, trigger, HookExecution.ASYNC, name=name)(
+                self._observer(trigger)
+            )
 
     def close(self) -> None:
         """Remove this trace's hooks from the kit. The entries stay readable."""
-        for name in self._hook_names:
-            if not self._kit.hook_engine.remove_global_hook(name):
-                self._kit.turn_executor.hooks.remove_global_hook(name)
+        for trigger, name in zip(self._triggers, self._hook_names, strict=True):
+            self._kit.hooks_for(trigger).remove_global_hook(name)
         self._hook_names = []
 
     @property

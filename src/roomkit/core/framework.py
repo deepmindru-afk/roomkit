@@ -41,6 +41,7 @@ from roomkit.core.exceptions import (
     VoiceNotConfiguredError,
 )
 from roomkit.core.hooks import (
+    TURN_TRIGGERS,
     HookEngine,
     IdentityHookRegistration,
 )
@@ -451,16 +452,20 @@ class RoomKit(
             self._telemetry = telemetry.provider or NoopTelemetryProvider()
         else:
             self._telemetry = NoopTelemetryProvider()
-        self._hook_engine._telemetry = self._telemetry
-        self._turn_hooks._telemetry = self._telemetry
-        # RFC §8.2 ``hook_timeout`` — only the engine sees a hook time out.
-        self._hook_engine._framework_emitter = self._emit_framework_event
-        self._turn_hooks._framework_emitter = self._emit_framework_event
-        if isinstance(telemetry, _TelemetryConfigCls):
-            self._hook_engine._suppressed_triggers = telemetry.suppressed_hook_triggers
-            # Propagate global metadata to the provider for searchable tags
-            if telemetry.metadata and hasattr(self._telemetry, "_metadata"):
-                self._telemetry._metadata = telemetry.metadata  # ty: ignore[invalid-assignment]
+        suppressed = (
+            telemetry.suppressed_hook_triggers
+            if isinstance(telemetry, _TelemetryConfigCls)
+            else None
+        )
+        for engine in (self._hook_engine, self._turn_hooks):
+            self._wire_hook_engine(engine, suppressed)
+        # Propagate global metadata to the provider for searchable tags
+        if (
+            isinstance(telemetry, _TelemetryConfigCls)
+            and telemetry.metadata
+            and hasattr(self._telemetry, "_metadata")
+        ):
+            self._telemetry._metadata = telemetry.metadata  # ty: ignore[invalid-assignment]
         self._store._telemetry = self._telemetry  # ty: ignore[invalid-assignment]
         # Default orchestration strategy
         self._default_orchestration = orchestration
@@ -486,10 +491,25 @@ class RoomKit(
         """The backing conversation store."""
         return self._store
 
+    def _wire_hook_engine(self, engine: HookEngine, suppressed: set[str] | None) -> None:
+        """Give *engine* (the kit's, or its turn executor's, RFC §10.6.6) the
+        kit's telemetry, the triggers it keeps out of it, and the framework
+        events only an engine raises (RFC §8.2 ``hook_timeout``)."""
+        engine._telemetry = self._telemetry
+        engine._framework_emitter = self._emit_framework_event
+        if suppressed is not None:
+            engine._suppressed_triggers = suppressed
+
     @property
     def hook_engine(self) -> HookEngine:
         """The hook engine of the room owner's triggers (RFC §10.6.6)."""
         return self._hook_engine
+
+    def hooks_for(self, trigger: HookTrigger) -> HookEngine:
+        """The engine *trigger*'s hooks register on (RFC §10.6.6): the kit's
+        turn executor's for a trigger a turn fires, the kit's own otherwise.
+        For code that registers hooks on triggers of both sides."""
+        return self._turn_hooks if trigger in TURN_TRIGGERS else self._hook_engine
 
     @property
     def turn_executor(self) -> TurnExecutor:

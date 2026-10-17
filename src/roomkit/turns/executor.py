@@ -17,13 +17,14 @@ from uuid import uuid4
 
 from roomkit.core.hooks import HookEngine, HookRegistration, hook_decorator
 from roomkit.core.task_utils import cancel_and_wait
+from roomkit.models.enums import HookExecution
 from roomkit.turns._executor_turn import ExecutorTurn, turns_run_under
 from roomkit.turns.base import TurnTimeouts
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
     from roomkit.core.hooks import AsyncHookFn, SyncHookFn
-    from roomkit.models.enums import HookExecution, HookTrigger
+    from roomkit.models.enums import ChannelDirection, ChannelType, EventType, HookTrigger
     from roomkit.turns.base import ExecutorLink
 
 logger = logging.getLogger("roomkit.turns")
@@ -59,16 +60,49 @@ class TurnExecutor:
         self._timeouts = timeouts or TurnTimeouts()
         self._turns: dict[asyncio.Task[None], ExecutorTurn] = {}
         self._closed = False
-        self.hooks = HookEngine(turns=True)
-        """The hooks of the triggers a turn fires (RFC §10.6.6)."""
+        self._hooks = HookEngine(turns=True)
 
-    def hook(self, trigger: HookTrigger, *args: Any, **kwargs: Any) -> Callable[..., Any]:
+    @property
+    def hooks(self) -> HookEngine:
+        """The hooks of the triggers a turn fires (RFC §10.6.6)."""
+        return self._hooks
+
+    def hook(
+        self,
+        trigger: HookTrigger,
+        execution: HookExecution = HookExecution.SYNC,
+        priority: int = 0,
+        name: str = "",
+        timeout: float = 30.0,
+        channel_types: set[ChannelType] | None = None,
+        channel_ids: set[str] | None = None,
+        directions: set[ChannelDirection] | None = None,
+        event_types: set[EventType] | None = None,
+        fail_closed: bool = False,
+    ) -> Callable[..., Any]:
         """Decorator to register a hook on a trigger a turn fires
         (``ON_TOOL_CALL``, ``BEFORE_TOOL_USE``, ``ON_AI_RESPONSE``...), with
-        ``RoomKit.hook``'s options. A host registers its turn hooks with one
-        function it runs on every executor, the kit's own included
-        (``kit.turn_executor``). An owner's trigger raises ``ValueError``."""
-        return hook_decorator(self.hooks.register, trigger, *args, **kwargs)
+        ``RoomKit.hook``'s options. An owner's trigger raises ``ValueError``.
+
+        The kit's own executor (``kit.turn_executor``) fires these hooks for
+        the turns it runs and for the tool calls the kit's process serves
+        (realtime voice, conference). An executor a host builds runs its turns
+        without them for now: the kit wires the channels it registers, and an
+        executor that wires its own comes with the distributed backends.
+        """
+        return hook_decorator(
+            self._hooks.register,
+            trigger,
+            execution=execution,
+            priority=priority,
+            name=name,
+            timeout=timeout,
+            channel_types=channel_types,
+            channel_ids=channel_ids,
+            directions=directions,
+            event_types=event_types,
+            fail_closed=fail_closed,
+        )
 
     def add_room_hook(
         self,
@@ -82,7 +116,7 @@ class TurnExecutor:
         fail_closed: bool = False,
     ) -> None:
         """Add a hook on a trigger a turn fires, for *room_id* alone."""
-        self.hooks.add_room_hook(
+        self._hooks.add_room_hook(
             room_id,
             HookRegistration(
                 trigger=trigger,
@@ -96,7 +130,7 @@ class TurnExecutor:
 
     def remove_room_hook(self, room_id: str, name: str) -> bool:
         """Remove a room hook by name."""
-        return self.hooks.remove_room_hook(room_id, name)
+        return self._hooks.remove_room_hook(room_id, name)
 
     def declares(self, channel_id: str) -> bool:
         """Whether this executor takes the turns of *channel_id*."""

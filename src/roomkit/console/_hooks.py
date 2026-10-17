@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from roomkit.console._state import ConsoleState, ConversationTurn, VoiceEvent
-from roomkit.core.hooks import TURN_TRIGGERS, HookRegistration
+from roomkit.core.hooks import HookRegistration
 from roomkit.models.enums import HookExecution, HookTrigger
 
 _ACCENT = "rgb(6,182,212)"
@@ -174,8 +174,7 @@ def register_console_hooks(kit: RoomKit, state: ConsoleState) -> list[str]:
     names: list[str] = []
     for trigger, tag in _HOOK_DEFS:
         name = f"{HOOK_PREFIX}{tag}"
-        engine = kit.turn_executor.hooks if trigger in TURN_TRIGGERS else kit.hook_engine
-        engine.register(
+        kit.hooks_for(trigger).register(
             HookRegistration(
                 trigger=trigger,
                 execution=HookExecution.ASYNC,
@@ -190,6 +189,6 @@ def register_console_hooks(kit: RoomKit, state: ConsoleState) -> list[str]:
 
 def unregister_console_hooks(kit: RoomKit, names: list[str]) -> None:
     """Remove previously registered console hooks from *kit*."""
+    triggers = {f"{HOOK_PREFIX}{tag}": trigger for trigger, tag in _HOOK_DEFS}
     for name in names:
-        if not kit.hook_engine.remove_global_hook(name):
-            kit.turn_executor.hooks.remove_global_hook(name)
+        kit.hooks_for(triggers[name]).remove_global_hook(name)

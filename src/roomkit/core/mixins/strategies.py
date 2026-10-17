@@ -35,7 +35,7 @@ logger = logging.getLogger("roomkit.framework")
 class _Snapshot:
     """What a room holds that a strategy's install may add to."""
 
-    hooks: set[str]
+    hooks: set[tuple[bool, str]]  # (on the turn executor, name)
     tools: dict[str, frozenset[str]]
     runners: set[str]
     bindings: set[str]
@@ -48,7 +48,7 @@ class _Installed:
 
     strategy: Orchestration
     organization_id: str | None = None
-    hooks: list[str] = field(default_factory=list)
+    hooks: list[tuple[bool, str]] = field(default_factory=list)  # (on the executor, name)
     tools: dict[str, frozenset[str]] = field(default_factory=dict)
     runners: list[str] = field(default_factory=list)
     attached: list[str] = field(default_factory=list)
@@ -64,6 +64,7 @@ class StrategyMixin(HelpersMixin):
     _store: ConversationStore
     _lock_manager: RoomLockManager
     _hook_engine: HookEngine
+    _turn_hooks: HookEngine  # the kit's turn executor's (RFC §10.6.6)
     _channels: dict[str, Channel]
     _discussions: dict[str, Any]
     _room_strategies: dict[str, _Installed]
@@ -344,12 +345,18 @@ class StrategyMixin(HelpersMixin):
         room = await self._store.get_room(room_id)
         registries = self._registries()
         return _Snapshot(
-            hooks=set(self._hook_engine.room_hook_names(room_id)),
+            hooks=self._room_hooks(room_id),
             tools={cid: reg.room_tool_names(room_id) for cid, reg in registries.items()},
             runners={cid for cid, reg in registries.items() if reg.turn_runner(room_id)},
             bindings={b.channel_id for b in await self._store.list_bindings(room_id)},
             keys=set(room.metadata) if room is not None else set(),
         )
+
+    def _room_hooks(self, room_id: str) -> set[tuple[bool, str]]:
+        """The room hooks *room_id* holds on either side of the turn backend:
+        the kit's, and its turn executor's (RFC §10.6.6)."""
+        owner = {(False, name) for name in self._hook_engine.room_hook_names(room_id)}
+        return owner | {(True, name) for name in self._turn_hooks.room_hook_names(room_id)}
 
     def _registries(self) -> dict[str, ChannelRegistry]:
         return {
@@ -362,8 +369,9 @@ class StrategyMixin(HelpersMixin):
         """Remove what a strategy's install added for *room_id*: everything it
         can, then a failure if anything stays (what was taken back is dropped
         from *installed*, so a retry finishes the rest)."""
-        for name in installed.hooks:
-            self._hook_engine.remove_room_hook(room_id, name)
+        for on_executor, name in installed.hooks:
+            engine = self._turn_hooks if on_executor else self._hook_engine
+            engine.remove_room_hook(room_id, name)
         installed.hooks = []
         registries = self._registries()
         for cid in {*installed.tools, *installed.runners}:

@@ -77,7 +77,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   triggers the same way. Realtime voice, conference and external tool calls,
   which run in the kit's process, fire the hooks of the kit's own executor:
   one registration covers every door. `ScoringHook.attach` and the console
-  register there.
+  register there. The removal doors follow: `kit.remove_room_hook` and
+  `kit.hook_engine.remove_global_hook` find no turn hook (they answer `False`);
+  remove it with `kit.turn_executor.remove_room_hook` or
+  `kit.turn_executor.hooks.remove_global_hook`. `FAIL_CLOSED_TRIGGERS` is
+  per side as well: the kit's engine keeps `BEFORE_TTS` and `ON_TRANSCRIPTION`,
+  the executor's `BEFORE_TOOL_USE`, and setting a trigger of the other side
+  raises, so a fail-closed redaction hook on `ON_TOOL_CALL` is set on
+  `kit.turn_executor.hooks.FAIL_CLOSED_TRIGGERS`. A bare `HookEngine()` is
+  the kit's side and refuses the turn triggers. `kit.hooks_for(trigger)` and
+  `roomkit.TURN_TRIGGERS` serve code that registers on triggers of both sides.
+  Only the kit's own executor fires these hooks today: an executor a host
+  builds runs its turns without them until executors wire their own channels.
 
 - A discussion's default rules ask for the handle wherever someone must act
   next (RMK-806): "Whenever another agent must act next, end your message

@@ -282,9 +282,10 @@ async def test_a_log_file_that_cannot_be_opened_leaves_nothing_behind(
     with pytest.raises(OSError):
         await console.run()
 
-    assert not any(
-        h.name.startswith("discussion_console_") for h in kit.hook_engine._room_hooks.get("r1", [])
-    )
+    for engine in (kit.hook_engine, kit.turn_executor.hooks):
+        assert not any(
+            h.name.startswith("discussion_console_") for h in engine._room_hooks.get("r1", [])
+        )
     assert kit.channels["ops"].connection_count == 0  # type: ignore[attr-defined]
     assert root.handlers == before
     await kit.close()

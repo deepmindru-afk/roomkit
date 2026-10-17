@@ -232,6 +232,21 @@ async def test_a_registered_hook_still_gets_the_floor() -> None:
     assert context.recent_events[-1].content.body == f"msg-{_RECENT_EVENTS_FLOOR + 9}"  # type: ignore[union-attr]
 
 
+async def test_a_hook_on_the_turn_executor_gets_the_floor_too() -> None:
+    """A turn's hook lives on the executor (RFC §10.6.6): it reads the floor."""
+    kit = RoomKit()
+    room = await kit.create_room()
+    await _seed(kit, room.id, _RECENT_EVENTS_FLOOR + 10)
+
+    @kit.turn_executor.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
+    async def observe(event: object, ctx: RoomContext) -> None:
+        return None
+
+    context = await kit._build_context(room.id)
+
+    assert len(context.recent_events) == _RECENT_EVENTS_FLOOR
+
+
 async def test_a_hook_on_a_real_turn_reads_the_recent_conversation() -> None:
     """The card's own criterion: a registered hook receives its context.
 

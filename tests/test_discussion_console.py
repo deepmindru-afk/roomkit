@@ -181,9 +181,10 @@ async def test_what_the_person_types_goes_to_the_room_and_the_answers_come_back(
     pipe.send_text("/quit\r")
     await asyncio.wait_for(running, 5)
     # Closed, it leaves nothing behind in the room's hooks.
-    assert not any(
-        h.name.startswith("discussion_console_") for h in kit.hook_engine._room_hooks["r1"]
-    )
+    for engine in (kit.hook_engine, kit.turn_executor.hooks):
+        assert not any(
+            h.name.startswith("discussion_console_") for h in engine._room_hooks.get("r1", [])
+        )
     await kit.close()
 
 

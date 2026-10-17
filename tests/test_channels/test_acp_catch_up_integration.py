@@ -33,6 +33,7 @@ async def _room(channel: Any) -> RoomKit:
     await kit.attach_channel(ROOM, "sms", category=ChannelCategory.TRANSPORT)
     await kit.attach_channel(ROOM, channel.channel_id, category=ChannelCategory.INTELLIGENCE)
     assert not kit.hook_engine.has_hooks()
+    assert not kit.turn_executor.hooks.has_hooks()
     return kit
 
 

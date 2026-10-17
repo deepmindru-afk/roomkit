@@ -6,12 +6,11 @@ from __future__ import annotations
 from typing import Any
 
 from roomkit import RoomKit
-from roomkit.core.hooks import TURN_TRIGGERS
+from roomkit.core.hooks import hook_decorator
 from roomkit.models.enums import HookTrigger
 
 
 def hook_on_its_side(kit: RoomKit, trigger: HookTrigger | str, *args: Any, **kwargs: Any) -> Any:
-    """``kit.turn_executor.hook`` for a trigger a turn fires, ``kit.hook``
-    for an owner's."""
-    side = kit.turn_executor if HookTrigger(trigger) in TURN_TRIGGERS else kit
-    return side.hook(HookTrigger(trigger), *args, **kwargs)
+    """A hook decorator registering on the engine *trigger* fires on."""
+    trigger = HookTrigger(trigger)
+    return hook_decorator(kit.hooks_for(trigger).register, trigger, *args, **kwargs)

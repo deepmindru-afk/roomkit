@@ -180,6 +180,9 @@ class HookEngine:
 
     def __init__(self, *, turns: bool = False) -> None:
         self._turns = turns
+        self._fail_closed = frozenset(
+            t for t in self.DEFAULT_FAIL_CLOSED_TRIGGERS if (t in TURN_TRIGGERS) == turns
+        )
         self._global_hooks: list[HookRegistration] = []
         self._room_hooks: dict[str, list[HookRegistration]] = {}
         self._trigger_index: set[HookTrigger] = set()
@@ -295,24 +298,30 @@ class HookEngine:
         where = f"Room {room_id} holds" if room_id is not None else "A room holds"
         raise ValueError(f"{where} a discussion: a router cannot be installed there")
 
-    def _check_side(self, hook: HookRegistration) -> None:
+    def _check_side(self, hook: HookRegistration, *, room: bool) -> None:
         """Refuse a hook on a trigger that fires on the other side of the
-        turn backend (RFC §10.6.6), naming where it registers."""
-        in_turn = hook.trigger in TURN_TRIGGERS
-        if in_turn and not self._turns:
-            raise ValueError(
-                f"Hook {hook.name!r}: {hook.trigger} fires on the turn executor (RFC §10.6.6); "
-                "register it with kit.turn_executor.hook(...)"
+        turn backend (RFC §10.6.6), naming the call that registers it there:
+        a room's hook stays a room's, a global one stays global."""
+        if (hook.trigger in TURN_TRIGGERS) == self._turns:
+            return
+        if self._turns:
+            where = "the room owner"
+            call = "kit.add_room_hook(room_id, ...)" if room else "kit.hook(...)"
+        else:
+            where = "the turn executor"
+            call = (
+                "kit.turn_executor.add_room_hook(room_id, ...)"
+                if room
+                else "kit.turn_executor.hook(...) or kit.turn_executor.hooks.register(...)"
             )
-        if self._turns and not in_turn:
-            raise ValueError(
-                f"Hook {hook.name!r}: {hook.trigger} fires on the room owner (RFC §10.6.6); "
-                "register it with kit.hook(...)"
-            )
+        raise ValueError(
+            f"Hook {hook.name!r}: {hook.trigger} fires on {where} (RFC §10.6.6); "
+            f"register it with {call}"
+        )
 
     def register(self, hook: HookRegistration) -> None:
         """Register a global hook."""
-        self._check_side(hook)
+        self._check_side(hook, room=False)
         self._check_router_placement(hook, None)
         self._check_lock_placement(hook, None)
         self._global_hooks.append(hook)
@@ -320,7 +329,7 @@ class HookEngine:
 
     def add_room_hook(self, room_id: str, hook: HookRegistration) -> None:
         """Register a hook for a specific room."""
-        self._check_side(hook)
+        self._check_side(hook, room=True)
         self._check_router_placement(hook, room_id)
         self._check_lock_placement(hook, room_id)
         self._room_hooks.setdefault(room_id, []).append(hook)
@@ -420,9 +429,28 @@ class HookEngine:
     #: error and carrying on would publish, or run, exactly what the hook
     #: existed to stop (RFC §9.3). Everywhere else a failing hook stays
     #: non-fatal, so a broken hook cannot take a room down.
-    FAIL_CLOSED_TRIGGERS: ClassVar[frozenset[HookTrigger]] = frozenset(
+    DEFAULT_FAIL_CLOSED_TRIGGERS: ClassVar[frozenset[HookTrigger]] = frozenset(
         {HookTrigger.BEFORE_TTS, HookTrigger.ON_TRANSCRIPTION, HookTrigger.BEFORE_TOOL_USE}
     )
+
+    @property
+    def FAIL_CLOSED_TRIGGERS(self) -> frozenset[HookTrigger]:  # noqa: N802 - kept the public name
+        """This engine's fail-closed triggers: the defaults that fire on its
+        side of the turn backend (RFC §10.6.6), or the set a host gave it."""
+        return self._fail_closed
+
+    @FAIL_CLOSED_TRIGGERS.setter
+    def FAIL_CLOSED_TRIGGERS(self, triggers: frozenset[HookTrigger]) -> None:  # noqa: N802
+        """Set the fail-closed triggers; one that fires on the other side
+        is refused, since this engine never runs its hooks."""
+        elsewhere = sorted(str(t) for t in triggers if (t in TURN_TRIGGERS) != self._turns)
+        if elsewhere:
+            where = "kit.hook_engine" if self._turns else "kit.turn_executor.hooks"
+            raise ValueError(
+                f"{', '.join(elsewhere)} fire(s) on the other side of the turn backend "
+                f"(RFC §10.6.6): set them on {where}.FAIL_CLOSED_TRIGGERS"
+            )
+        self._fail_closed = frozenset(triggers)
 
     def _apply_rewrite(
         self,

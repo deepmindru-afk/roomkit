@@ -141,16 +141,16 @@ class HooksApiMixin(HelpersMixin):
         return hook_decorator(
             self._hook_engine.register,
             trigger,
-            execution,
-            priority,
-            name,
-            timeout,
-            channel_types,
-            channel_ids,
-            directions,
-            event_types,
-            fail_closed,
-            needs_lock,
+            execution=execution,
+            priority=priority,
+            name=name,
+            timeout=timeout,
+            channel_types=channel_types,
+            channel_ids=channel_ids,
+            directions=directions,
+            event_types=event_types,
+            fail_closed=fail_closed,
+            needs_lock=needs_lock,
         )
 
     def on(self, event_type: str) -> Callable[..., Any]:
@@ -368,7 +368,8 @@ class HooksApiMixin(HelpersMixin):
         """Add a hook for a specific room.
 
         ``fail_closed`` and ``needs_lock`` have the meaning they have on
-        :meth:`hook`.
+        :meth:`hook`. A trigger a turn fires (RFC §10.6.6) raises
+        ``ValueError``: add it with ``kit.turn_executor.add_room_hook``.
         """
         self._hook_engine.add_room_hook(
             room_id,
@@ -384,5 +385,6 @@ class HooksApiMixin(HelpersMixin):
         )
 
     def remove_room_hook(self, room_id: str, name: str) -> bool:
-        """Remove a room hook by name."""
+        """Remove a room hook of the kit by name; a hook on a trigger a turn
+        fires is the turn executor's (``kit.turn_executor.remove_room_hook``)."""
         return self._hook_engine.remove_room_hook(room_id, name)
