@@ -447,6 +447,16 @@ class EventRouter:
                     return
 
             channel = self._channels.get(binding.channel_id)
+            if channel is None and binding.category == ChannelCategory.TRANSPORT:
+                # A transport reaches a client from the process the client
+                # connected to: another process, or none while nobody is
+                # connected. Its binding outlives both, so a transport absent
+                # here is the normal state, not a fault.
+                logger.debug(
+                    "Transport channel %s not registered in this process, skipping",
+                    binding.channel_id,
+                )
+                return
             if channel is None:
                 logger.warning(
                     "Channel %s not found in registry, skipping. Available: %s",

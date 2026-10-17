@@ -437,6 +437,37 @@ class TestUnsolicitedTargetsCostNothing:
         await kit.close()
 
 
+class TestAnAbsentTransportIsSilent:
+    """A transport's binding outlives the process its client connected to.
+
+    The client may be connected to another process, or to none, and the
+    binding stays: a transport channel missing from this process's registry
+    is the normal state, so the router skips it without a warning.
+    """
+
+    async def test_an_unregistered_transport_is_skipped_silently(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        kit, human, _agents = await _room()
+        away = SimpleChannel("ws-away")
+        kit.register_channel(away)
+        await kit.attach_channel("room-1", "ws-away")
+        kit.unregister_channel("ws-away")
+
+        with caplog.at_level(logging.WARNING, logger="roomkit.event_router"):
+            result = await kit.process_inbound(
+                InboundMessage(
+                    channel_id="human",
+                    sender_id="user",
+                    content=TextContent(body="still here?"),
+                )
+            )
+
+        assert not result.blocked
+        assert "not found in registry" not in caplog.text
+        await kit.close()
+
+
 class TestDirectInjectionAddressing:
     """``send_event`` has a sender too, and a sender may name who it asks."""
 

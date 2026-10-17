@@ -480,6 +480,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The router skips a transport binding whose channel is not registered in the
+  process without a warning (RMK-828). A transport reaches its client from the
+  process the client connected to, and its binding outlives that connection:
+  a host that keeps a client's binding between two connections, or runs
+  several processes, held bindings with no live channel here, and every
+  broadcast logged one warning per such binding with the whole registry in
+  it. An absent intelligence channel the event solicits still warns, since
+  an agent goes silent.
+
 - A hook's channel filters hold on the triggers a turn fires (RMK-833, RFC
   §9.1): `channel_ids` and `channel_types` were ignored there, so
   `@kit.hook(HookTrigger.ON_TOOL_CALL, channel_ids={"support"})` fired for
