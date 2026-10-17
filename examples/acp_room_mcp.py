@@ -98,12 +98,12 @@ async def build(
         await kit.attach_channel(room_id, "desk")
         await kit.attach_channel(room_id, "claude-code", category=ChannelCategory.INTELLIGENCE)
 
-    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="show-gate")
+    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, name="show-gate")
     async def show_gate(event: ToolCallEvent, _ctx: RoomContext) -> HookResult:
         print(f"   [gate] room {event.room_id}: {event.name} {event.arguments}")
         return HookResult.allow()
 
-    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
     async def answered(event: AIResponseEvent, _ctx: RoomContext) -> None:
         await answers.put(event)
 

@@ -64,7 +64,9 @@ async def _channel(
     await kit.attach_channel("r1", "rt")
     observed: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
+    @kit.turn_executor.hook(
+        HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe"
+    )
     async def observe(event: ToolCallEvent, ctx: RoomContext) -> None:
         observed.append(event)
 
@@ -217,7 +219,9 @@ async def test_a_cancellation_while_the_observers_run_adds_no_second_report() ->
     kit, channel, provider, session, observed = await _channel(found)
     in_observer, release = asyncio.Event(), asyncio.Event()
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="slow-audit")
+    @kit.turn_executor.hook(
+        HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="slow-audit"
+    )
     async def slow_audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         in_observer.set()
         await release.wait()
@@ -237,7 +241,7 @@ async def test_a_refusal_is_on_the_wire_before_it_is_reported() -> None:
     kit, channel, provider, session, _ = await _channel(_Gated())
     on_wire: list[int] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="wire")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="wire")
     async def wire(event: ToolCallEvent, ctx: RoomContext) -> None:
         on_wire.append(len(provider.tool_results))
 

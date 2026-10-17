@@ -364,7 +364,7 @@ async def test_no_hook_sees_a_denied_tool_s_schema(tmp_path: Path) -> None:
     kit.register_channel(channel)
     seen: list[str] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="seen")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="seen")
     async def on_call(event: Any, ctx: Any) -> HookResult:
         seen.append(str(event.result))
         return HookResult.allow()

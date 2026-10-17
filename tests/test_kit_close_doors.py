@@ -175,7 +175,7 @@ async def test_a_room_turn_returns_cancelled_to_its_caller(
     if entry == "regenerate_response":
         await kit.process_inbound(message)
 
-    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
     async def on_response(event: Any, context: Any) -> None:
         responses.append(str(event.loop_end_reason))
 

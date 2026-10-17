@@ -94,7 +94,7 @@ async def main() -> None:
     kit.register_channel(cli)
     kit.register_channel(ai)
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL)
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL)
     async def show_tool_call(event, _ctx):
         return log_tool_call(
             event, tool_names=["generate_report", "read_stored_result"], label="tool"

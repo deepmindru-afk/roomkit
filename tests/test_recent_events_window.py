@@ -46,7 +46,10 @@ def _resolve(
     engine = SimpleNamespace(has_hooks=lambda trigger=None: hooked)
     identity_hooks = {HookTrigger.ON_IDENTITY_UNKNOWN: [object()]} if identity else {}
     fake_self = SimpleNamespace(
-        _channels=channels, _hook_engine=engine, _identity_hooks=identity_hooks
+        _channels=channels,
+        _hook_engine=engine,
+        _turn_hooks=SimpleNamespace(has_hooks=lambda trigger=None: False),
+        _identity_hooks=identity_hooks,
     )
     return HelpersMixin._resolve_recent_events_limit(
         fake_self, bindings, reads_history=reads_history

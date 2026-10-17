@@ -298,7 +298,9 @@ class TestBeforeToolUseHook:
 
         blocked_tools: list[str] = []
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny-weather")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny-weather"
+        )
         async def deny_weather(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             blocked_tools.append(event.name)
             return HookResult(action="block", reason="Weather tools disabled")
@@ -325,7 +327,9 @@ class TestBeforeToolUseHook:
 
         observed_tools: list[str] = []
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="allow-all")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="allow-all"
+        )
         async def allow_all(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             observed_tools.append(event.name)
             return HookResult(action="allow")
@@ -362,11 +366,15 @@ class TestBeforeToolUseHook:
 
         observed_by_on_tool_call: list[dict[str, Any]] = []
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="rewrite")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="rewrite"
+        )
         async def rewrite(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult(action="allow", metadata={"arguments": {"city": "Montreal"}})
 
-        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="observe")
+        @kit.turn_executor.hook(
+            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="observe"
+        )
         async def observe(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             observed_by_on_tool_call.append(event.arguments)
             return HookResult(action="allow")
@@ -400,7 +408,9 @@ class TestBeforeToolUseHook:
         room = await kit.create_room()
         await kit.attach_channel(room.id, "ai-1", category=ChannelCategory.INTELLIGENCE)
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="bad-rewrite")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="bad-rewrite"
+        )
         async def bad_rewrite(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult(action="allow", metadata={"arguments": {"city": 42}})
 
@@ -429,7 +439,9 @@ class TestBeforeToolUseHook:
         room = await kit.create_room()
         await kit.attach_channel(room.id, "ai-1", category=ChannelCategory.INTELLIGENCE)
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="bad-shape")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="bad-shape"
+        )
         async def bad_shape(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult(action="allow", metadata={"arguments": ["not", "an", "object"]})
 
@@ -458,7 +470,9 @@ class TestBeforeToolUseHook:
         room = await kit.create_room()
         await kit.attach_channel(room.id, "ai-1", category=ChannelCategory.INTELLIGENCE)
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="mutate")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="mutate"
+        )
         async def mutate(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             event.arguments["city"] = 42
             return HookResult(action="allow")
@@ -489,7 +503,9 @@ class TestBeforeToolUseHook:
         room = await kit.create_room()
         await kit.attach_channel(room.id, "ai-1", category=ChannelCategory.INTELLIGENCE)
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="plain-allow")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="plain-allow"
+        )
         async def plain_allow(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult(action="allow")
 
@@ -575,14 +591,14 @@ class TestBeforeToolUseHook:
 
         call_order: list[str] = []
 
-        @kit.hook(
+        @kit.turn_executor.hook(
             HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="audit", priority=10
         )
         async def audit(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             call_order.append("audit")
             return HookResult(action="allow")
 
-        @kit.hook(
+        @kit.turn_executor.hook(
             HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="block", priority=20
         )
         async def block(event: ToolCallEvent, ctx: RoomContext) -> HookResult:

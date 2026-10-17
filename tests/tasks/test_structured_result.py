@@ -347,7 +347,7 @@ class TestAResultTheHooksBlockedIsNone:
         await kit.create_room(room_id="parent")
         if block:
 
-            @kit.hook(HookTrigger.ON_TOOL_CALL, HookExecution.SYNC)
+            @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, HookExecution.SYNC)
             async def refuse(event: ToolCallEvent, ctx: Any) -> HookResult:
                 return HookResult.block("not now")
 

@@ -96,7 +96,9 @@ async def run(provider: MockRealtimeProvider, channel: RealtimeVoiceChannel) -> 
     room = await kit.create_room()
     await kit.attach_channel(room.id, "voice")
 
-    @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="compliance")
+    @kit.turn_executor.hook(
+        HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="compliance"
+    )
     async def compliance(event: Any, ctx: Any) -> HookResult:
         amount = event.arguments.get("amount", 0)
         if event.name == "wire_transfer" and amount > APPROVAL_THRESHOLD:

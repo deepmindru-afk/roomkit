@@ -100,7 +100,7 @@ async def test_a_session_answers_an_id_reissued_while_its_report_runs() -> None:
     kit.register_channel(channel)
     observed: list[str] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
         observed.append(str(event.result))
 
@@ -161,7 +161,7 @@ async def test_an_id_reissued_while_the_result_is_sent_is_answered() -> None:
     kit, _, session = await _lookup_session(provider, AsyncMock(return_value="found"))
     observed: list[str] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
         observed.append(str(event.result))
 
@@ -189,7 +189,7 @@ async def test_a_cancellation_names_the_call_reissued_under_the_id() -> None:
     kit, _, session = await _lookup_session(provider, handler)
     observed: list[tuple[str, bool]] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
         observed.append((event.name, event.cancelled))
 
@@ -221,7 +221,7 @@ async def test_a_reconnect_the_first_call_caused_abandons_the_reissued_call() ->
     kit, _, session = await _lookup_session(provider, handler)
     observed: list[tuple[str, bool]] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
         observed.append((event.name, event.cancelled))
         if event.name == "ghost":
@@ -275,7 +275,7 @@ async def test_elevenlabs_answers_an_id_reissued_while_its_report_runs(
     kit.register_channel(channel)
 
     # An observer, or no report is made and the window never opens.
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
         pass
 

@@ -22,6 +22,24 @@ async def log_event(event: RoomEvent, ctx: RoomContext) -> None:
     await analytics.track("message", {"room": event.room_id})
 ```
 
+**Hooks of a turn.** The triggers a turn fires (`BEFORE_AI_GENERATION`,
+`ON_AI_THINKING`, `ON_AI_RESPONSE`, `BEFORE_TOOL_USE`, `AFTER_TOOL_ROUND`,
+`ON_TOOL_CALL`, `ON_USER_INPUT_REQUIRED`, `ON_SPEAK_DECISION`, `ON_THOUGHT`,
+`ON_PLAN_UPDATED`) fire on the turn executor that runs the turn (RFC §10.6.6),
+so their hooks register there; `kit.hook(...)` refuses them with a
+`ValueError` that names the right call. Write them in one function you run on
+every executor, the kit's own included: realtime voice and conference tool
+calls fire the same hooks.
+
+```python
+def register_turn_hooks(executor):
+    @executor.hook(HookTrigger.BEFORE_TOOL_USE, name="tool_gate")
+    async def tool_gate(event, ctx) -> HookResult:
+        return HookResult.allow()
+
+register_turn_hooks(kit.turn_executor)
+```
+
 ## HookResult
 
 Sync hooks (BEFORE_BROADCAST) must return a `HookResult`:
@@ -80,6 +98,9 @@ oversight. Two levers exist if you need more, and their exact scope matters:
       HookTrigger.BEFORE_BROADCAST,
   }
   ```
+
+  A trigger a turn fires (`BEFORE_TOOL_USE`, `ON_TOOL_CALL`...) reads the
+  set of the turn executor's engine instead: `kit.turn_executor.hooks`.
 
   Weigh it first: fail-closed moderation means an outage in your hook is an
   outage of the room.

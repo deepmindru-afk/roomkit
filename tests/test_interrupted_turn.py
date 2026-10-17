@@ -93,7 +93,7 @@ async def _room(
     await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
     responses: list[Any] = []
 
-    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="spy")
+    @kit.turn_executor.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="spy")
     async def spy(event: Any, ctx: Any) -> None:
         responses.append(event)
 
@@ -165,7 +165,9 @@ async def test_an_interrupted_turn_is_reported_then_raised(streaming: bool) -> N
     kit, _, responses = await _room(_FailingAt(2, answers, streaming=streaming))
     seen: list[str] = []
 
-    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="order_ai")
+    @kit.turn_executor.hook(
+        HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="order_ai"
+    )
     async def order_ai(event: Any, ctx: Any) -> None:
         seen.append("ON_AI_RESPONSE")
 

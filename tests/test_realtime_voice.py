@@ -535,7 +535,7 @@ class TestToolCalls:
         session = await channel.start_session(room_id, "user-1", "fake-ws")
 
         # Register a tool call hook
-        @kit.hook(
+        @kit.turn_executor.hook(
             HookTrigger.ON_TOOL_CALL,
             execution=HookExecution.SYNC,
             name="handle_tool",
@@ -677,7 +677,7 @@ class TestToolCalls:
         kit = RoomKit()
         kit.register_channel(ch)
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE)
+        @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE)
         async def allow(event: Any, ctx: RoomContext) -> HookResult:
             seen["hook_record"] = current_response_metadata()
             return HookResult.allow()

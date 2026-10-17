@@ -118,7 +118,7 @@ async def main() -> None:
         return HookResult.modify(modified)
 
     # Show skill tool invocations in the terminal
-    @kit.hook(HookTrigger.ON_TOOL_CALL)
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL)
     async def show_tool_call(event, _ctx):
         return log_tool_call(event, label="skill")
 

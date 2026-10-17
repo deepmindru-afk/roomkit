@@ -59,10 +59,11 @@ class ScoringHook:
         self.recent_scores: deque[dict[str, Any]] = deque(maxlen=max_recent)
 
     def attach(self, kit: RoomKit) -> None:
-        """Register the scoring hook on a RoomKit instance."""
+        """Register the scoring hook on a RoomKit instance's turn executor,
+        where ON_AI_RESPONSE fires (RFC §10.6.6)."""
         if self._store is None:
             self._store = kit._store
-        decorator = kit.hook(
+        decorator = kit.turn_executor.hook(
             HookTrigger.ON_AI_RESPONSE,
             execution=HookExecution.ASYNC,
             name="scoring_hook",

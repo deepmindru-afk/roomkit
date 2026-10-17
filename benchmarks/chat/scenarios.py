@@ -242,11 +242,11 @@ async def tool_hooks(h: Harness) -> None:
 
     h.handler = record_handler(h, handler)
 
-    @h.kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC)
+    @h.kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC)
     async def rewrite(event: ToolCallEvent, context: RoomContext) -> HookResult:
         return HookResult(action="allow", metadata={"arguments": {"a": 20, "b": 22}})
 
-    @h.kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, priority=20)
+    @h.kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, priority=20)
     async def override(event: ToolCallEvent, context: RoomContext) -> HookResult:
         return HookResult(action="allow", metadata={"result": '{"sum":99}'})
 
@@ -453,7 +453,7 @@ async def denied_tool(h: Harness) -> None:
 
     h.handler = record_handler(h, handler)
 
-    @h.kit.hook(HookTrigger.BEFORE_TOOL_USE)
+    @h.kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE)
     async def deny(event: ToolCallEvent, context: RoomContext) -> HookResult:
         return HookResult.block("Synthetic policy denies inventory. Answer DENIED.")
 

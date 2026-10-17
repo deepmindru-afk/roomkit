@@ -12,6 +12,7 @@ from roomkit.core.hooks import (
     AsyncHookFn,
     HookRegistration,
     SyncHookFn,
+    hook_decorator,
 )
 from roomkit.core.inbound_router import binding_admits
 from roomkit.core.mixins.helpers import HelpersMixin
@@ -131,28 +132,26 @@ class HooksApiMixin(HelpersMixin):
                 (RFC §9.5.1). Only for a hook that reads the event, not the
                 room's state. Raises ``ValueError`` on another trigger, or when
                 a locked hook would be ordered before it by priority.
+
+        A trigger a turn fires (``ON_TOOL_CALL``, ``BEFORE_TOOL_USE``...,
+        RFC §10.6.6) registers on the turn executor instead,
+        ``kit.turn_executor.hook(...)``; this raises ``ValueError`` for it.
         """
 
-        def decorator(fn: SyncHookFn | AsyncHookFn) -> SyncHookFn | AsyncHookFn:
-            self._hook_engine.register(
-                HookRegistration(
-                    trigger=trigger,
-                    execution=execution,
-                    fn=fn,
-                    priority=priority,
-                    name=name or fn.__name__,  # ty: ignore[unresolved-attribute]
-                    timeout=timeout,
-                    channel_types=channel_types,
-                    channel_ids=channel_ids,
-                    directions=directions,
-                    event_types=event_types,
-                    fail_closed=fail_closed,
-                    needs_lock=needs_lock,
-                )
-            )
-            return fn
-
-        return decorator
+        return hook_decorator(
+            self._hook_engine.register,
+            trigger,
+            execution,
+            priority,
+            name,
+            timeout,
+            channel_types,
+            channel_ids,
+            directions,
+            event_types,
+            fail_closed,
+            needs_lock,
+        )
 
     def on(self, event_type: str) -> Callable[..., Any]:
         """Decorator to register a framework event handler filtered by type."""

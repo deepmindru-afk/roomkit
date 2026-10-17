@@ -24,7 +24,7 @@ from roomkit.channels._speaker import turn_labels
 from roomkit.channels.acp import ACPChannel
 from roomkit.console._discussion_screen import DiscussionScreen
 from roomkit.console._discussion_view import AgentCard, DiscussionView, short_task
-from roomkit.core.hooks import HookRegistration
+from roomkit.core.hooks import TURN_TRIGGERS, HookEngine, HookRegistration
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, EventType, HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
@@ -156,12 +156,12 @@ class DiscussionConsole:
         live = None
         try:
             for hook in hooks:
-                self._kit.hook_engine.add_room_hook(self._room_id, hook)
+                _engine_for(self._kit, hook).add_room_hook(self._room_id, hook)
             live = self._follow_streams()
             await self._screen.run()
         finally:
             for hook in hooks:
-                self._kit.hook_engine.remove_room_hook(self._room_id, hook.name)
+                _engine_for(self._kit, hook).remove_room_hook(self._room_id, hook.name)
             if live is not None:
                 live()
             restore_logs()
@@ -455,6 +455,12 @@ class DiscussionConsole:
                 )
             )
         return cards
+
+
+def _engine_for(kit: RoomKit, hook: HookRegistration) -> HookEngine:
+    """The engine *hook* registers on: the turn executor's for a trigger a
+    turn fires (RFC §10.6.6), the kit's otherwise."""
+    return kit.turn_executor.hooks if hook.trigger in TURN_TRIGGERS else kit.hook_engine
 
 
 def _model(channel: Any) -> str | None:

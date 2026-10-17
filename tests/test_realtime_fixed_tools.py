@@ -158,7 +158,7 @@ async def test_native_and_transported_calls_share_hook_validation(
     async with channel_context() as (kit, channel, provider, session, handler):
         seen = []
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC)
+        @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC)
         async def gate(event: Any, context: Any) -> HookResult:
             seen.append((event.name, event.arguments, event.tool_call_id))
             if decision == "deny":
@@ -341,13 +341,13 @@ async def test_a_find_tools_call_is_judged_before_the_model_reads_it(decision: s
         kit, channel, provider, session, handler = ctx
         observed: list[Any] = []
 
-        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
+        @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
         async def rewrite(event: Any, context: Any) -> HookResult:
             if decision == "block":
                 return HookResult.block("no")
             return HookResult.modify(dataclasses.replace(event, result={"n": 1}))
 
-        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+        @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
         async def audit(event: Any, context: Any) -> None:
             observed.append(event)
 

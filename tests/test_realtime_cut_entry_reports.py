@@ -42,7 +42,7 @@ def _hold_reports(kit: RoomKit) -> asyncio.Event:
 def _audit(kit: RoomKit) -> list[tuple[str, bool, bool]]:
     seen: list[tuple[str, bool, bool]] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
         seen.append((event.tool_call_id, bool(event.cancelled), bool(event.refused)))
 

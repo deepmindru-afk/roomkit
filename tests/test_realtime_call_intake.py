@@ -31,7 +31,7 @@ LOOKUP = [{"name": "lookup", "parameters": {"type": "object"}}]
 def _observe(kit: RoomKit) -> list[Any]:
     seen: list[Any] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
         seen.append(event)
 

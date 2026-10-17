@@ -103,6 +103,7 @@ from roomkit.store.memory import InMemoryStore
 from roomkit.tasks.background import BackgroundSetup
 from roomkit.tasks.base import TaskRunner
 from roomkit.turns.base import TurnBackend
+from roomkit.turns.executor import TurnExecutor
 from roomkit.turns.owner import registry_turn_client
 
 logger = logging.getLogger("roomkit.framework")
@@ -327,8 +328,10 @@ class RoomKit(
         self._verification_timers: dict[str, asyncio.Task[None]] = {}
         self._process_timeout = process_timeout
         self._channels: dict[str, Channel] = {}
-        # Every intelligence turn runs through the turn backend (RFC §10.6).
+        # Every intelligence turn runs through the turn backend (RFC §10.6);
+        # the triggers a turn fires are its executor's (RFC §10.6.6).
         self._turns = registry_turn_client(self._channels, turn_backend)
+        self._turn_hooks = self.turn_executor.hooks
         # Explicit detaches (revocations, RFC §7.5-7) are recorded in room
         # metadata by detach_channel() — not here — so they survive restarts
         # and are visible to every process sharing the store.
@@ -449,8 +452,10 @@ class RoomKit(
         else:
             self._telemetry = NoopTelemetryProvider()
         self._hook_engine._telemetry = self._telemetry
+        self._turn_hooks._telemetry = self._telemetry
         # RFC §8.2 ``hook_timeout`` — only the engine sees a hook time out.
         self._hook_engine._framework_emitter = self._emit_framework_event
+        self._turn_hooks._framework_emitter = self._emit_framework_event
         if isinstance(telemetry, _TelemetryConfigCls):
             self._hook_engine._suppressed_triggers = telemetry.suppressed_hook_triggers
             # Propagate global metadata to the provider for searchable tags
@@ -483,8 +488,16 @@ class RoomKit(
 
     @property
     def hook_engine(self) -> HookEngine:
-        """The hook engine used for sync/async hook pipelines."""
+        """The hook engine of the room owner's triggers (RFC §10.6.6)."""
         return self._hook_engine
+
+    @property
+    def turn_executor(self) -> TurnExecutor:
+        """The kit's own turn executor (RFC §10.6): where the hooks of the
+        triggers a turn fires register (``kit.turn_executor.hook(...)``)."""
+        executor = self._turns.executor
+        assert executor is not None
+        return executor
 
     @property
     def realtime(self) -> RealtimeBackend:

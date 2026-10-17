@@ -83,7 +83,9 @@ async def _tool_end(kit: RoomKit) -> ToolCallContent:
 async def test_a_blocked_call_is_failed_and_carries_no_structured_copy(streaming: bool) -> None:
     kit, provider = await _kit(streaming=streaming)
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="withhold")
+    @kit.turn_executor.hook(
+        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="withhold"
+    )
     async def withhold(event: ToolCallEvent, ctx: Any) -> HookResult:
         return HookResult.block("restricted: not for this room")
 
@@ -99,7 +101,7 @@ async def test_the_hook_sees_the_copy_and_may_replace_it(streaming: bool) -> Non
     kit, _ = await _kit(streaming=streaming)
     seen: list[Any] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="redact")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="redact")
     async def redact(event: ToolCallEvent, ctx: Any) -> HookResult:
         seen.append(event.structured_content)
         copy = {**(event.structured_content or {}), "contact": "[PERSON_1]"}
@@ -115,7 +117,7 @@ async def test_the_hook_sees_the_copy_and_may_replace_it(streaming: bool) -> Non
 async def test_the_hook_may_clear_the_copy(streaming: bool) -> None:
     kit, _ = await _kit(streaming=streaming)
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="clear")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="clear")
     async def clear(event: ToolCallEvent, ctx: Any) -> HookResult:
         return HookResult(action="allow", metadata={"structured_content": None})
 
@@ -129,7 +131,9 @@ async def test_a_result_rewrite_alone_keeps_the_copy(streaming: bool) -> None:
     """Re-tokenising text is not withholding the payload a widget renders."""
     kit, _ = await _kit(streaming=streaming)
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="tokenise")
+    @kit.turn_executor.hook(
+        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="tokenise"
+    )
     async def tokenise(event: ToolCallEvent, ctx: Any) -> HookResult:
         text = str(event.result).replace("Jane Doe", "[PERSON_1]")
         return HookResult(action="allow", metadata={"result": text})
@@ -169,7 +173,7 @@ async def test_a_copy_that_is_not_a_mapping_is_dropped_and_the_turn_goes_on(
 ) -> None:
     kit, provider = await _kit(streaming=streaming)
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="broken")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="broken")
     async def broken(event: ToolCallEvent, ctx: Any) -> HookResult:
         return HookResult(action="allow", metadata={"structured_content": ["not", "a", "dict"]})
 
@@ -207,7 +211,9 @@ async def test_a_fail_closed_hook_that_cannot_run_withholds_the_result() -> None
     fail-closed one withholds, as its own failure would."""
     kit, _ = await _kit(streaming=True)
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="pii", fail_closed=True)
+    @kit.turn_executor.hook(
+        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="pii", fail_closed=True
+    )
     async def pii(event: ToolCallEvent, ctx: Any) -> HookResult:
         return HookResult.allow()
 
@@ -234,7 +240,7 @@ async def test_without_a_fail_closed_hook_the_result_stands() -> None:
     closed: the result stands."""
     kit, _ = await _kit(streaming=True)
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: Any) -> HookResult:
         return HookResult.allow()
 

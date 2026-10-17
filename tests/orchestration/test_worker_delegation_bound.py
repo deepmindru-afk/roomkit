@@ -97,7 +97,7 @@ async def _run(door: str, *, bound: float = _BOUND, call_bound: float | None = N
         if event.metadata["agent_id"] == "worker":
             turn.ends.append(str(event.metadata["task_status"]))
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
     async def _reported(event: ToolCallEvent, ctx: Any) -> None:
         if event.name == tool:
             turn.reports.append(str(event.result))

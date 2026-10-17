@@ -40,7 +40,7 @@ def _gate(kit: RoomKit, failure: str) -> None:
     """An approval hook that cannot answer: it raises, outlives its timeout, or
     returns something that is not a decision."""
 
-    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="approval", timeout=0.05)
+    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, name="approval", timeout=0.05)
     async def approval(event: ToolCallEvent, ctx: RoomContext) -> Any:
         if failure == "raises":
             raise ConnectionError(f"cannot reach {SECRET}")
@@ -143,7 +143,7 @@ async def test_a_conference_call_is_refused(failure: str) -> None:
     )
     _gate(kit, failure)
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         calls.observed.append(event)
 
@@ -179,7 +179,7 @@ async def test_a_hook_that_answers_still_lets_the_call_run() -> None:
     calls = _Calls()
     kit, _, provider, session = await _channel(calls, policy=ToolPolicy())
 
-    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="approval")
+    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, name="approval")
     async def approval(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult.allow()
 
@@ -195,13 +195,13 @@ async def test_a_deliberate_block_keeps_its_reason_beside_a_failed_hook() -> Non
     refuse the call: the one that blocked did, in its own words, with no detail."""
     calls = _Calls()
     kit, _, provider, session = await _channel(calls, policy=ToolPolicy())
-    kit.hook_engine.FAIL_CLOSED_TRIGGERS = frozenset()
+    kit.turn_executor.hooks.FAIL_CLOSED_TRIGGERS = frozenset()
 
-    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="logger", priority=0)
+    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, name="logger", priority=0)
     async def logger(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         raise RuntimeError("log sink down")
 
-    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="approval", priority=1)
+    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, name="approval", priority=1)
     async def approval(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult.block("needs a supervisor's approval")
 
@@ -219,7 +219,7 @@ REASON = "needs a supervisor's approval"
 
 
 def _block(kit: RoomKit) -> None:
-    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="approval")
+    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, name="approval")
     async def approval(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult.block(REASON)
 

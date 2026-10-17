@@ -422,7 +422,7 @@ class RoomKitConsole:
         self._console = RichConsole(stderr=True)
         self._original_level: int = logging.WARNING
 
-        self._hook_names = register_console_hooks(kit.hook_engine, self._state, kit)
+        self._hook_names = register_console_hooks(kit, self._state)
         self._setup_logging(log_level)
 
         if self._is_tty:
@@ -493,7 +493,7 @@ class RoomKitConsole:
             self._live.stop()
             self._live = None
 
-        unregister_console_hooks(self._kit.hook_engine, self._hook_names)
+        unregister_console_hooks(self._kit, self._hook_names)
         self._hook_names.clear()
 
         root = logging.getLogger()

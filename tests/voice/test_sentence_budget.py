@@ -71,7 +71,7 @@ async def test_a_last_sentence_over_the_budget_ends_the_reply_too() -> None:
     async def spoken(text: str, ctx: Any) -> None:
         after.append(text)
 
-    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
     async def answered(event: Any, ctx: Any) -> None:
         responses.append(event)
 

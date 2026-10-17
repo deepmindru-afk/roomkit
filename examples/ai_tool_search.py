@@ -182,7 +182,9 @@ async def main() -> None:
     # BEFORE_AI_GENERATION would show round 0 only: no send_sms.
     declared: list[AIResponseEvent] = []
 
-    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="offered")
+    @kit.turn_executor.hook(
+        HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="offered"
+    )
     async def on_response(event: AIResponseEvent, ctx: RoomContext) -> None:
         declared.append(event)
 

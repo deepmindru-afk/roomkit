@@ -173,7 +173,7 @@ class _Host:
 def _observe_calls(kit: RoomKit) -> list[ToolCallEvent]:
     seen: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
     async def observe(event: ToolCallEvent, ctx: Any) -> None:
         seen.append(event)
 

@@ -121,7 +121,7 @@ async def test_the_channel_refuses_a_cut_call_as_cut_off() -> None:
     await kit.attach_channel("r1", "rt")
     seen: list[Any] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
         seen.append((event.is_error, json.loads(str(event.result))["error"]))
 

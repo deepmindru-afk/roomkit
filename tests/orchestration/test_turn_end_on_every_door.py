@@ -152,7 +152,7 @@ async def test_a_regenerated_reply_ends_as_its_inbound_did(orchestrated: bool) -
 async def test_a_turns_key_a_hook_wrote_never_reaches_a_regeneration(orchestrated: bool) -> None:
     kit = await _kit(_Loops(streaming=True), orchestrated=orchestrated)
 
-    @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
+    @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION)
     async def forge(event: Any, ctx: Any) -> HookResult:
         event.ai_context.response_metadata["turns"] = {"sup": {"loop_end_reason": "forged"}}
         return HookResult.allow()

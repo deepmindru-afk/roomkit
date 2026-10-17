@@ -61,12 +61,16 @@ class _Heard:
         self.sync: list[ToolCallEvent] = []
         self.observed: list[ToolCallEvent] = []
 
-        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
+        @kit.turn_executor.hook(
+            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve"
+        )
         async def serve(event: ToolCallEvent, ctx: Any) -> HookResult:
             self.sync.append(event)
             return HookResult.allow()
 
-        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+        @kit.turn_executor.hook(
+            HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit"
+        )
         async def audit(event: ToolCallEvent, ctx: Any) -> None:
             self.observed.append(event)
 

@@ -30,9 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   result JSON has no form for, an unknown stream item) fails the turn with a
   `TypeError` naming it; a record value JSON has no form for crosses as its
   text. A stream its reader drops, or a cancelled delivery set leaves unread,
-  is closed on the executor. Hooks, steering, human input,
-  RoomKit's own tools and the strategies' turn runners still run on the
-  channel the kit holds; their move to the executor side follows.
+  is closed on the executor. Steering, human input, RoomKit's own tools and
+  the strategies' turn runners still run on the channel the kit holds; their
+  move to the executor side follows.
 
 - `Discussion(rules=...)` gives each turn the host's rules for how the room
   works, in place of the default (RMK-806, RFC §19.7.5 rule 14). `{handle}` in
@@ -61,6 +61,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that raises names none for that event, and an instruction is read as it is.
 
 ### Changed
+
+- **BREAKING — the hooks of a turn register on the turn executor**
+  (RMK-810, RFC §10.6.6): `BEFORE_AI_GENERATION`, `ON_AI_THINKING`,
+  `ON_AI_RESPONSE`, `BEFORE_TOOL_USE`, `AFTER_TOOL_ROUND`, `ON_TOOL_CALL`,
+  `ON_USER_INPUT_REQUIRED`, `ON_SPEAK_DECISION`, `ON_THOUGHT` and
+  `ON_PLAN_UPDATED` fire where the turn runs, so `kit.hook(...)`,
+  `kit.add_room_hook(...)` and `kit.hook_engine.register(...)` refuse them with
+  a `ValueError` naming the right call: a hook registered there would never
+  fire for a turn another process runs. Migration: `@kit.hook(HookTrigger.ON_TOOL_CALL, ...)`
+  becomes `@kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, ...)` (same
+  options), `kit.hook_engine.register(...)` becomes
+  `kit.turn_executor.hooks.register(...)`, and `kit.add_room_hook(...)` becomes
+  `kit.turn_executor.add_room_hook(...)`. An executor refuses the owner's
+  triggers the same way. Realtime voice, conference and external tool calls,
+  which run in the kit's process, fire the hooks of the kit's own executor:
+  one registration covers every door. `ScoringHook.attach` and the console
+  register there.
 
 - A discussion's default rules ask for the handle wherever someone must act
   next (RMK-806): "Whenever another agent must act next, end your message

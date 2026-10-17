@@ -74,6 +74,64 @@ class HookRegistration:
     needs_lock: bool = True
 
 
+TURN_TRIGGERS: frozenset[HookTrigger] = frozenset(
+    {
+        HookTrigger.BEFORE_AI_GENERATION,
+        HookTrigger.ON_AI_THINKING,
+        HookTrigger.ON_AI_RESPONSE,
+        HookTrigger.BEFORE_TOOL_USE,
+        HookTrigger.AFTER_TOOL_ROUND,
+        HookTrigger.ON_TOOL_CALL,
+        HookTrigger.ON_USER_INPUT_REQUIRED,
+        HookTrigger.ON_SPEAK_DECISION,
+        HookTrigger.ON_THOUGHT,
+        HookTrigger.ON_PLAN_UPDATED,
+    }
+)
+"""The triggers that fire on the turn executor hosting the channel, during a
+turn or between turns (RFC §10.6.6); every other trigger fires on the room
+owner."""
+
+
+def hook_decorator(
+    register: Callable[[HookRegistration], None],
+    trigger: HookTrigger,
+    execution: HookExecution = HookExecution.SYNC,
+    priority: int = 0,
+    name: str = "",
+    timeout: float = 30.0,
+    channel_types: set[ChannelType] | None = None,
+    channel_ids: set[str] | None = None,
+    directions: set[ChannelDirection] | None = None,
+    event_types: set[EventType] | None = None,
+    fail_closed: bool = False,
+    needs_lock: bool = True,
+) -> Callable[..., Any]:
+    """A decorator that registers the function it decorates through
+    *register*, as a hook with these options (``RoomKit.hook``'s)."""
+
+    def decorator(fn: SyncHookFn | AsyncHookFn) -> SyncHookFn | AsyncHookFn:
+        register(
+            HookRegistration(
+                trigger=trigger,
+                execution=execution,
+                fn=fn,
+                priority=priority,
+                name=name or fn.__name__,  # ty: ignore[unresolved-attribute]
+                timeout=timeout,
+                channel_types=channel_types,
+                channel_ids=channel_ids,
+                directions=directions,
+                event_types=event_types,
+                fail_closed=fail_closed,
+                needs_lock=needs_lock,
+            )
+        )
+        return fn
+
+    return decorator
+
+
 @dataclass
 class IdentityHookRegistration:
     """A registered identity hook function.
@@ -112,9 +170,16 @@ class SyncPipelineResult:
 
 
 class HookEngine:
-    """Manages global and per-room hook registration and execution."""
+    """Manages global and per-room hook registration and execution.
 
-    def __init__(self) -> None:
+    An engine sits on one side of the turn backend (RFC §10.6.6): a kit's
+    takes the room owner's triggers, a turn executor's (*turns*) the
+    triggers a turn fires; each refuses the other's at registration, where
+    the hook would never fire.
+    """
+
+    def __init__(self, *, turns: bool = False) -> None:
+        self._turns = turns
         self._global_hooks: list[HookRegistration] = []
         self._room_hooks: dict[str, list[HookRegistration]] = {}
         self._trigger_index: set[HookTrigger] = set()
@@ -230,8 +295,24 @@ class HookEngine:
         where = f"Room {room_id} holds" if room_id is not None else "A room holds"
         raise ValueError(f"{where} a discussion: a router cannot be installed there")
 
+    def _check_side(self, hook: HookRegistration) -> None:
+        """Refuse a hook on a trigger that fires on the other side of the
+        turn backend (RFC §10.6.6), naming where it registers."""
+        in_turn = hook.trigger in TURN_TRIGGERS
+        if in_turn and not self._turns:
+            raise ValueError(
+                f"Hook {hook.name!r}: {hook.trigger} fires on the turn executor (RFC §10.6.6); "
+                "register it with kit.turn_executor.hook(...)"
+            )
+        if self._turns and not in_turn:
+            raise ValueError(
+                f"Hook {hook.name!r}: {hook.trigger} fires on the room owner (RFC §10.6.6); "
+                "register it with kit.hook(...)"
+            )
+
     def register(self, hook: HookRegistration) -> None:
         """Register a global hook."""
+        self._check_side(hook)
         self._check_router_placement(hook, None)
         self._check_lock_placement(hook, None)
         self._global_hooks.append(hook)
@@ -239,6 +320,7 @@ class HookEngine:
 
     def add_room_hook(self, room_id: str, hook: HookRegistration) -> None:
         """Register a hook for a specific room."""
+        self._check_side(hook)
         self._check_router_placement(hook, room_id)
         self._check_lock_placement(hook, room_id)
         self._room_hooks.setdefault(room_id, []).append(hook)

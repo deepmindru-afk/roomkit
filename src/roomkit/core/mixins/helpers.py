@@ -219,6 +219,7 @@ class FrameworkHelpers(Protocol):
     _store: ConversationStore
     _channels: dict[str, Channel]
     _hook_engine: HookEngine
+    _turn_hooks: HookEngine  # the kit's own turn executor's (RFC §10.6.6)
     _event_handlers: list[tuple[str, FrameworkEventHandler]]
     _identity_hooks: dict[HookTrigger, list[IdentityHookRegistration]]
     _pending_traces: dict[str, list[object]]
@@ -234,6 +235,7 @@ class HelpersMixin:
     _store: ConversationStore
     _channels: dict[str, Channel]
     _hook_engine: HookEngine
+    _turn_hooks: HookEngine  # the kit's own turn executor's (RFC §10.6.6)
     _event_handlers: list[tuple[str, FrameworkEventHandler]]
     _identity_hooks: dict[HookTrigger, list[IdentityHookRegistration]]
     _pending_traces: dict[str, list[object]]  # room_id -> [ProtocolTrace, ...]
@@ -857,7 +859,12 @@ class HelpersMixin:
             getattr(self._channels.get(b.channel_id), "recent_events_window", 0) for b in bindings
         ]
         largest = max(windows, default=0)
-        read = reads_history or self._hook_engine.has_hooks() or any(self._identity_hooks.values())
+        read = (
+            reads_history
+            or self._hook_engine.has_hooks()
+            or self._turn_hooks.has_hooks()
+            or any(self._identity_hooks.values())
+        )
         floor = _RECENT_EVENTS_FLOOR if read else 0
         return min(_RECENT_EVENTS_LIMIT, max(floor, largest))
 
@@ -1054,12 +1061,12 @@ class HelpersMixin:
         *carrying* is a context the caller already built for this call, which
         spares the room history a second read.
         """
-        if not self._hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
+        if not self._turn_hooks.has_hooks(HookTrigger.ON_TOOL_CALL):
             return SyncPipelineResult(event=event), None
         context = await self._hook_context(room_id, HookTrigger.ON_TOOL_CALL, carrying=carrying)
         if context is None:
             return None
-        hook_result = await self._hook_engine.run_sync_hooks(
+        hook_result = await self._turn_hooks.run_sync_hooks(
             room_id,
             HookTrigger.ON_TOOL_CALL,
             event,
@@ -1123,7 +1130,7 @@ class HelpersMixin:
             await self._observe_failed_tool_call(event, channel_id, claim=claim)
             return
         context: RoomContext | None = None
-        if self._hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
+        if self._turn_hooks.has_hooks(HookTrigger.ON_TOOL_CALL):
             # The one runner of the chain, so each hook sees the call as the
             # previous one left it, whichever form its rewrite took; nothing it
             # returns reaches the agent.
@@ -1160,7 +1167,7 @@ class HelpersMixin:
 
     async def _observe_tool_call(self, event: ToolCallEvent, context: RoomContext) -> None:
         """Fire ON_TOOL_CALL's ASYNC observers alone on *event*."""
-        await self._hook_engine.run_observers(
+        await self._turn_hooks.run_observers(
             str(event.room_id),
             HookTrigger.ON_TOOL_CALL,
             event,
@@ -1209,7 +1216,7 @@ class HelpersMixin:
         result is withheld as that hook's own failure would withhold it, since
         the redaction it exists for must not be skipped.
         """
-        closed = self._hook_engine.fail_closed_hook(room_id, HookTrigger.ON_TOOL_CALL)
+        closed = self._turn_hooks.fail_closed_hook(room_id, HookTrigger.ON_TOOL_CALL)
         if closed is None:
             return None
         reason = json.dumps({"error": f"hook_error:{closed}"})
@@ -1250,7 +1257,7 @@ class HelpersMixin:
         if not event.room_id:
             return
         context: RoomContext | None = None
-        if self._hook_engine.has_hooks(HookTrigger.ON_TOOL_CALL):
+        if self._turn_hooks.has_hooks(HookTrigger.ON_TOOL_CALL):
             context = await self._hook_context(event.room_id, HookTrigger.ON_TOOL_CALL)
             if context is None:
                 # The observers need the context that failed; the framework
@@ -1260,7 +1267,7 @@ class HelpersMixin:
         if claim is not None and not claim():
             return
         if context is not None:
-            await self._hook_engine.run_observers(
+            await self._turn_hooks.run_observers(
                 event.room_id,
                 HookTrigger.ON_TOOL_CALL,
                 event,
@@ -1279,13 +1286,13 @@ class HelpersMixin:
         kit_ref = self
 
         async def _callback(room_id: str, thinking: str, round_idx: int) -> None:
-            if not room_id or not kit_ref._hook_engine.has_hooks(HookTrigger.ON_AI_THINKING):
+            if not room_id or not kit_ref._turn_hooks.has_hooks(HookTrigger.ON_AI_THINKING):
                 return
             context = await kit_ref._hook_context(room_id, HookTrigger.ON_AI_THINKING)
             if context is None:
                 return
 
-            await kit_ref._hook_engine.run_async_hooks(
+            await kit_ref._turn_hooks.run_async_hooks(
                 room_id,
                 HookTrigger.ON_AI_THINKING,
                 ThinkingEvent(
@@ -1306,12 +1313,12 @@ class HelpersMixin:
 
         async def _callback(event: SpeakDecisionEvent) -> None:
             trigger = HookTrigger.ON_SPEAK_DECISION
-            if not event.room_id or not kit_ref._hook_engine.has_hooks(trigger):
+            if not event.room_id or not kit_ref._turn_hooks.has_hooks(trigger):
                 return
             context = await kit_ref._hook_context(event.room_id, trigger)
             if context is None:
                 return
-            await kit_ref._hook_engine.run_async_hooks(
+            await kit_ref._turn_hooks.run_async_hooks(
                 event.room_id, trigger, event, context, skip_event_filter=True
             )
 
@@ -1323,12 +1330,12 @@ class HelpersMixin:
 
         async def _callback(event: ThoughtEvent) -> None:
             trigger = HookTrigger.ON_THOUGHT
-            if not event.room_id or not kit_ref._hook_engine.has_hooks(trigger):
+            if not event.room_id or not kit_ref._turn_hooks.has_hooks(trigger):
                 return
             context = await kit_ref._hook_context(event.room_id, trigger)
             if context is None:
                 return
-            await kit_ref._hook_engine.run_async_hooks(
+            await kit_ref._turn_hooks.run_async_hooks(
                 event.room_id, trigger, event, context, skip_event_filter=True
             )
 
@@ -1339,13 +1346,13 @@ class HelpersMixin:
         kit_ref = self
 
         async def _callback(room_id: str, tasks: list[dict[str, Any]]) -> None:
-            if not room_id or not kit_ref._hook_engine.has_hooks(HookTrigger.ON_PLAN_UPDATED):
+            if not room_id or not kit_ref._turn_hooks.has_hooks(HookTrigger.ON_PLAN_UPDATED):
                 return
             context = await kit_ref._hook_context(room_id, HookTrigger.ON_PLAN_UPDATED)
             if context is None:
                 return
 
-            await kit_ref._hook_engine.run_async_hooks(
+            await kit_ref._turn_hooks.run_async_hooks(
                 room_id,
                 HookTrigger.ON_PLAN_UPDATED,
                 PlanUpdatedEvent(room_id=room_id, channel_id=channel_id, tasks=list(tasks)),
@@ -1410,12 +1417,12 @@ class HelpersMixin:
 
         With no hook registered there is nothing to run and no context is built.
         """
-        if not self._hook_engine.has_hooks(HookTrigger.BEFORE_TOOL_USE):
+        if not self._turn_hooks.has_hooks(HookTrigger.BEFORE_TOOL_USE):
             return SyncPipelineResult(event=event), None
         context = await self._hook_context(room_id, HookTrigger.BEFORE_TOOL_USE, carrying=carrying)
         if context is None:
             return None
-        hook_result = await self._hook_engine.run_sync_hooks(
+        hook_result = await self._turn_hooks.run_sync_hooks(
             room_id,
             HookTrigger.BEFORE_TOOL_USE,
             event,
@@ -1447,13 +1454,13 @@ class HelpersMixin:
             if not event.room_id:
                 return True  # Allow if no room context
             hook_result = SyncPipelineResult(event=event)
-            if kit_ref._hook_engine.has_hooks(HookTrigger.ON_USER_INPUT_REQUIRED):
+            if kit_ref._turn_hooks.has_hooks(HookTrigger.ON_USER_INPUT_REQUIRED):
                 context = await kit_ref._hook_context(
                     event.room_id, HookTrigger.ON_USER_INPUT_REQUIRED
                 )
                 if context is None:
                     return True  # Allow on error (fail-open)
-                hook_result = await kit_ref._hook_engine.run_sync_hooks(
+                hook_result = await kit_ref._turn_hooks.run_sync_hooks(
                     event.room_id,
                     HookTrigger.ON_USER_INPUT_REQUIRED,
                     event,
@@ -1493,11 +1500,11 @@ class HelpersMixin:
         async def _callback(event: AIResponseEvent) -> None:
             if not event.room_id:
                 return
-            if kit_ref._hook_engine.has_hooks(HookTrigger.ON_AI_RESPONSE):
+            if kit_ref._turn_hooks.has_hooks(HookTrigger.ON_AI_RESPONSE):
                 context = await kit_ref._hook_context(event.room_id, HookTrigger.ON_AI_RESPONSE)
                 if context is None:
                     return
-                await kit_ref._hook_engine.run_async_hooks(
+                await kit_ref._turn_hooks.run_async_hooks(
                     event.room_id,
                     HookTrigger.ON_AI_RESPONSE,
                     event,
@@ -1531,12 +1538,12 @@ class HelpersMixin:
 
         async def _callback(event: ToolRoundEvent) -> None:
             trigger = HookTrigger.AFTER_TOOL_ROUND
-            if not event.room_id or not kit_ref._hook_engine.has_hooks(trigger):
+            if not event.room_id or not kit_ref._turn_hooks.has_hooks(trigger):
                 return
             context = await kit_ref._hook_context(event.room_id, trigger)
             if context is None:
                 return
-            await kit_ref._hook_engine.run_sync_hooks(
+            await kit_ref._turn_hooks.run_sync_hooks(
                 event.room_id, trigger, event, context, skip_event_filter=True
             )
 
@@ -1558,13 +1565,13 @@ class HelpersMixin:
             if not event.room_id:
                 return SyncPipelineResult(allowed=True)
             sync_result = SyncPipelineResult(event=event)
-            if kit_ref._hook_engine.has_hooks(HookTrigger.BEFORE_AI_GENERATION):
+            if kit_ref._turn_hooks.has_hooks(HookTrigger.BEFORE_AI_GENERATION):
                 context = await kit_ref._hook_context(
                     event.room_id, HookTrigger.BEFORE_AI_GENERATION
                 )
                 if context is None:
                     return SyncPipelineResult(allowed=True)
-                sync_result = await kit_ref._hook_engine.run_sync_hooks(
+                sync_result = await kit_ref._turn_hooks.run_sync_hooks(
                     event.room_id,
                     HookTrigger.BEFORE_AI_GENERATION,
                     event,

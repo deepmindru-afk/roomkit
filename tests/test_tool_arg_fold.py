@@ -152,7 +152,9 @@ class TestClassicChannel:
 
         seen_by_hook: list[dict[str, Any]] = []
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="observe")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="observe"
+        )
         async def observe(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             seen_by_hook.append(event.arguments)
             return HookResult(action="allow")
@@ -226,7 +228,9 @@ class TestClassicChannel:
         provider = _tool_call_provider("boards", FOLDED_CALL, streaming=streaming)
         kit, ai, room_id = await _ai_setup(provider, handler, [BOARDS_TOOL])
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="flatten")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="flatten"
+        )
         async def flatten(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult(action="allow", metadata={"arguments": dict(HOISTED_CALL)})
 
@@ -289,7 +293,9 @@ class TestRealtimeChannel:
 
         seen_by_hook: list[dict[str, Any]] = []
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="observe")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="observe"
+        )
         async def observe(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             seen_by_hook.append(event.arguments)
             return HookResult(action="allow")
@@ -342,7 +348,9 @@ class TestRealtimeChannel:
         handler, calls = _recording_handler()
         kit, channel, room_id = await _rt_setup(rt_provider, handler, [BOARDS_TOOL])
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="flatten")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="flatten"
+        )
         async def flatten(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult(action="allow", metadata={"arguments": dict(HOISTED_CALL)})
 

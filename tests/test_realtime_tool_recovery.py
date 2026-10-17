@@ -91,7 +91,9 @@ class TestRecoveredCallsAreGated:
 
         kit, _channel, session = await _session(provider, "rt-rec-block", handler=handler)
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny"
+        )
         async def deny(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult.block("lookup is off limits")
 
@@ -169,7 +171,9 @@ class TestRecoveredCallsAreGated:
 
         kit, _channel, session = await _session(provider, "rt-rec-rewrite", handler=handler)
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="restore")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="restore"
+        )
         async def restore(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult(action="allow", metadata={"arguments": {"city": "Montreal"}})
 
@@ -185,11 +189,15 @@ class TestRecoveredCallsAreGated:
         kit, _channel, session = await _session(provider, "rt-rec-hookonly")
         served: list[dict[str, Any]] = []
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny"
+        )
         async def deny(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult.block("no")
 
-        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
+        @kit.turn_executor.hook(
+            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve"
+        )
         async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             served.append(event.arguments)
             return HookResult.allow()
@@ -205,7 +213,9 @@ class TestRecoveredCallsAreGated:
         """The model spoke the call, so it has no FunctionResponse waiting."""
         kit, _channel, session = await _session(provider, "rt-rec-nosubmit")
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny"
+        )
         async def deny(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult.block("no")
 
@@ -337,7 +347,9 @@ class TestRecoveredResultsFollowChannelPolicy:
         and never the hook's message (RMK-295, RFC §9.3)."""
         kit, _channel, session = await _session(provider, "rt-rec-hookboom")
 
-        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="boom")
+        @kit.turn_executor.hook(
+            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="boom"
+        )
         async def boom(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             raise RuntimeError("hook is broken")
 
@@ -358,7 +370,9 @@ class TestRecoveredResultsFollowChannelPolicy:
 
         kit, _channel, session = await _session(provider, "rt-rec-hookboom2", handler=handler)
 
-        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="boom")
+        @kit.turn_executor.hook(
+            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="boom"
+        )
         async def boom(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             raise RuntimeError("hook is broken")
 
@@ -514,11 +528,15 @@ class TestARefusedRecoveredCallIsObserved:
         observed: list[ToolCallEvent] = []
         served: list[str] = []
 
-        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+        @kit.turn_executor.hook(
+            HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit"
+        )
         async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
             observed.append(event)
 
-        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
+        @kit.turn_executor.hook(
+            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve"
+        )
         async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             served.append(event.name)
             return HookResult.allow()
@@ -554,7 +572,9 @@ class TestARefusedRecoveredCallIsObserved:
         kit, _channel, session = await _session(provider, "rt-rec-observed-deny", handler=handler)
         observed, served = self._observe(kit)
 
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny"
+        )
         async def deny(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult.block("lookup is off limits")
 

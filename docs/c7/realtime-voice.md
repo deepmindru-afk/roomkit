@@ -198,7 +198,7 @@ provider = OpenAIRealtime(
 ```python
 from roomkit import HookTrigger, HookExecution
 
-@kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+@kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
 async def on_tool(event, ctx):
     print(f"Realtime tool call: {event}")
 

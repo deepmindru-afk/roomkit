@@ -90,7 +90,7 @@ async def _channel(
             Participant(id="u1", room_id="r1", channel_id="rt", role=role)
         )
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         calls.observed.append(event)
 

@@ -67,7 +67,7 @@ async def _room(channel: AIChannel) -> tuple[RoomKit, list[ToolCallEvent]]:
     await kit.attach_channel("r", channel.channel_id, category=ChannelCategory.INTELLIGENCE)
     reports: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, context: Any) -> None:
         reports.append(event)
 
@@ -336,7 +336,7 @@ async def _backend_turn(rounds: list[list[AIToolCall]]) -> tuple[list[ToolCallEv
     await kit.attach_channel("r", "rt")
     reports: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, context: Any) -> None:
         reports.append(event)
 

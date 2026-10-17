@@ -131,7 +131,7 @@ async def test_the_streaming_transcript_reports_what_the_room_saw() -> None:
     kit = RoomKit()
     seen: list[AIResponseEvent] = []
 
-    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
     async def observe(event: AIResponseEvent, ctx: Any) -> None:
         seen.append(event)
 

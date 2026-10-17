@@ -109,11 +109,11 @@ def _observe(kit: RoomKit) -> tuple[list[ToolCallEvent], list[ToolCallEvent]]:
     observed: list[ToolCallEvent] = []
     judged: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: Any) -> None:
         observed.append(event)
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="judge")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="judge")
     async def judge(event: ToolCallEvent, ctx: Any) -> HookResult:
         judged.append(event)
         return HookResult.allow()
@@ -217,14 +217,14 @@ async def test_a_call_cut_while_its_report_runs_is_reported_once_with_its_outcom
     kit = await _room(_channel(handler, [_call("Bash"), AIResponse(content="done")]))
     observed: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="hold")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="hold")
     async def hold(event: ToolCallEvent, ctx: Any) -> HookResult:
         if not event.cancelled:
             held.set()
             await asyncio.sleep(30)
         return HookResult.allow()
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: Any) -> None:
         observed.append(event)
 
@@ -252,13 +252,13 @@ async def test_a_call_the_provider_ran_cut_while_reported_keeps_its_outcome(
     kit = await _room(channel)
     observed: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="hold")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="hold")
     async def hold(event: ToolCallEvent, ctx: Any) -> HookResult:
         held.set()
         await asyncio.sleep(30)
         return HookResult.allow()
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: Any) -> None:
         observed.append(event)
 
@@ -286,7 +286,7 @@ async def test_a_call_cut_while_its_observers_run_is_reported_once() -> None:
     kit = await _room(_channel(handler, [_call("Bash"), AIResponse(content="done")]))
     observed: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: Any) -> None:
         observed.append(event)
         observing.set()

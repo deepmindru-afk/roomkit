@@ -69,7 +69,7 @@ async def main() -> None:
     # Several voices on one channel: a group binding (RFC §10.4).
     await kit.attach_channel("home", "living-room", group=True)
 
-    @kit.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
     async def on_decision(event: SpeakDecisionEvent, ctx: object) -> None:
         logger.info("  → %s (%s)", event.decision.mode, event.decision.reason)
 

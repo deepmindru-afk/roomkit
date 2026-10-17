@@ -89,32 +89,35 @@ class TestLogRingBuffer:
 # ---------------------------------------------------------------------------
 
 
+def _all_hooks(kit: RoomKit) -> list:
+    """The kit's global hooks and its turn executor's (RFC §10.6.6)."""
+    return [*kit.hook_engine._global_hooks, *kit.turn_executor.hooks._global_hooks]
+
+
 class TestHookRegistration:
     async def test_register_and_unregister(self):
         kit = RoomKit()
         state = ConsoleState()
 
-        names = register_console_hooks(kit.hook_engine, state)
+        names = register_console_hooks(kit, state)
         assert len(names) == 12
         assert all(n.startswith(HOOK_PREFIX) for n in names)
 
         for name in names:
-            found = any(h.name == name for h in kit.hook_engine._global_hooks)
+            found = any(h.name == name for h in _all_hooks(kit))
             assert found, f"Hook {name} not found"
 
-        unregister_console_hooks(kit.hook_engine, names)
+        unregister_console_hooks(kit, names)
         for name in names:
-            found = any(h.name == name for h in kit.hook_engine._global_hooks)
+            found = any(h.name == name for h in _all_hooks(kit))
             assert not found, f"Hook {name} still present"
 
     async def test_input_level_hook_updates_state(self):
         kit = RoomKit()
         state = ConsoleState()
-        register_console_hooks(kit.hook_engine, state)
+        register_console_hooks(kit, state)
 
-        hook = next(
-            h for h in kit.hook_engine._global_hooks if h.name == f"{HOOK_PREFIX}input_level"
-        )
+        hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}input_level")
         await hook.fn(MagicMock(level_db=-25.0), None)
 
         assert state.input_level_db == -25.0
@@ -123,11 +126,9 @@ class TestHookRegistration:
     async def test_vad_level_hook_updates_state(self):
         kit = RoomKit()
         state = ConsoleState()
-        register_console_hooks(kit.hook_engine, state)
+        register_console_hooks(kit, state)
 
-        hook = next(
-            h for h in kit.hook_engine._global_hooks if h.name == f"{HOOK_PREFIX}vad_level"
-        )
+        hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}vad_level")
         await hook.fn(MagicMock(level_db=-10.0, is_speech=True), None)
 
         assert state.input_level_db == -10.0
@@ -136,11 +137,9 @@ class TestHookRegistration:
     async def test_session_started_hook(self):
         kit = RoomKit()
         state = ConsoleState()
-        register_console_hooks(kit.hook_engine, state)
+        register_console_hooks(kit, state)
 
-        hook = next(
-            h for h in kit.hook_engine._global_hooks if h.name == f"{HOOK_PREFIX}session_started"
-        )
+        hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}session_started")
         mock_session = MagicMock(id="sess-abc123")
         await hook.fn(
             MagicMock(
@@ -161,14 +160,10 @@ class TestHookRegistration:
     async def test_speech_start_end_hooks(self):
         kit = RoomKit()
         state = ConsoleState()
-        register_console_hooks(kit.hook_engine, state)
+        register_console_hooks(kit, state)
 
-        start_hook = next(
-            h for h in kit.hook_engine._global_hooks if h.name == f"{HOOK_PREFIX}speech_start"
-        )
-        end_hook = next(
-            h for h in kit.hook_engine._global_hooks if h.name == f"{HOOK_PREFIX}speech_end"
-        )
+        start_hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}speech_start")
+        end_hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}speech_end")
 
         await start_hook.fn(MagicMock(), None)
         assert state.voice_state == "listening"
@@ -180,16 +175,12 @@ class TestHookRegistration:
         """Standard TranscriptionEvent (VoiceChannel) — no role attr, always user."""
         kit = RoomKit()
         state = ConsoleState()
-        register_console_hooks(kit.hook_engine, state)
+        register_console_hooks(kit, state)
 
         partial_hook = next(
-            h
-            for h in kit.hook_engine._global_hooks
-            if h.name == f"{HOOK_PREFIX}partial_transcription"
+            h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}partial_transcription"
         )
-        final_hook = next(
-            h for h in kit.hook_engine._global_hooks if h.name == f"{HOOK_PREFIX}transcription"
-        )
+        final_hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}transcription")
 
         await partial_hook.fn(MagicMock(text="hello wo"), None)
         assert state.partial_text == "hello wo"
@@ -207,11 +198,9 @@ class TestHookRegistration:
         """RealtimeTranscriptionEvent — role=user and role=assistant finals."""
         kit = RoomKit()
         state = ConsoleState()
-        register_console_hooks(kit.hook_engine, state)
+        register_console_hooks(kit, state)
 
-        hook = next(
-            h for h in kit.hook_engine._global_hooks if h.name == f"{HOOK_PREFIX}transcription"
-        )
+        hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}transcription")
 
         # User final transcription
         user_event = MagicMock(text="bonjour", role="user")
@@ -233,12 +222,10 @@ class TestHookRegistration:
         """ON_PARTIAL_TRANSCRIPTION with role — streaming user and assistant text."""
         kit = RoomKit()
         state = ConsoleState()
-        register_console_hooks(kit.hook_engine, state)
+        register_console_hooks(kit, state)
 
         partial_hook = next(
-            h
-            for h in kit.hook_engine._global_hooks
-            if h.name == f"{HOOK_PREFIX}partial_transcription"
+            h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}partial_transcription"
         )
 
         # User partial (VoiceChannel style — no role, defaults to user)
@@ -255,14 +242,10 @@ class TestHookRegistration:
     async def test_tts_hooks_with_conversation(self):
         kit = RoomKit()
         state = ConsoleState()
-        register_console_hooks(kit.hook_engine, state)
+        register_console_hooks(kit, state)
 
-        before_hook = next(
-            h for h in kit.hook_engine._global_hooks if h.name == f"{HOOK_PREFIX}before_tts"
-        )
-        after_hook = next(
-            h for h in kit.hook_engine._global_hooks if h.name == f"{HOOK_PREFIX}after_tts"
-        )
+        before_hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}before_tts")
+        after_hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}after_tts")
 
         await before_hook.fn("Hello there!", None)
         assert state.voice_state == "speaking"
@@ -279,9 +262,9 @@ class TestHookRegistration:
     async def test_barge_in_hook(self):
         kit = RoomKit()
         state = ConsoleState()
-        register_console_hooks(kit.hook_engine, state)
+        register_console_hooks(kit, state)
 
-        hook = next(h for h in kit.hook_engine._global_hooks if h.name == f"{HOOK_PREFIX}barge_in")
+        hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}barge_in")
         await hook.fn(MagicMock(), None)
         assert state.barge_in_count == 1
         assert state.voice_state == "listening"
@@ -289,11 +272,9 @@ class TestHookRegistration:
     async def test_tool_call_hook(self):
         kit = RoomKit()
         state = ConsoleState()
-        register_console_hooks(kit.hook_engine, state)
+        register_console_hooks(kit, state)
 
-        hook = next(
-            h for h in kit.hook_engine._global_hooks if h.name == f"{HOOK_PREFIX}tool_call"
-        )
+        hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}tool_call")
         await hook.fn(MagicMock(), None)
         assert state.tool_call_count == 1
 
@@ -413,14 +394,12 @@ class TestRoomKitConsole:
         kit = RoomKit()
         rkc = console.RoomKitConsole(kit)
 
-        hook_count_before = len(kit.hook_engine._global_hooks)
+        hook_count_before = len(_all_hooks(kit))
         assert hook_count_before >= 12
 
         await rkc.stop()
 
-        console_hooks = [
-            h for h in kit.hook_engine._global_hooks if h.name.startswith(HOOK_PREFIX)
-        ]
+        console_hooks = [h for h in _all_hooks(kit) if h.name.startswith(HOOK_PREFIX)]
         assert len(console_hooks) == 0
 
     @patch("roomkit.console._display.sys")

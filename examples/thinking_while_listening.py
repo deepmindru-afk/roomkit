@@ -149,11 +149,11 @@ async def main() -> None:
     for name in ("Sylvain", "Paul"):
         await kit.ensure_participant("meeting", "sms", name.lower(), display_name=name)
 
-    @kit.hook(HookTrigger.ON_THOUGHT, execution=HookExecution.ASYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_THOUGHT, execution=HookExecution.ASYNC)
     async def on_thought(event: ThoughtEvent, ctx: object) -> None:
         logger.info(thought_line(event))
 
-    @kit.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
     async def on_decision(event: SpeakDecisionEvent, ctx: object) -> None:
         logger.info(decision_line(event))
 

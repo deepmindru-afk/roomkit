@@ -122,7 +122,7 @@ async def _door(
         session = await conference._realtime.ensure_session(ROOM)
     observed: list[tuple[str, bool]] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
         observed.append((event.tool_call_id, event.cancelled))
         if hold_first_report is not None and len(observed) == 1:

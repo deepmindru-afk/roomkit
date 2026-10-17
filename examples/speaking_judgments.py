@@ -149,7 +149,7 @@ async def main() -> None:
     # Several people write on this one channel: a group binding (RFC §10.4).
     await kit.attach_channel("meeting", "sms", group=True)
 
-    @kit.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
     async def on_decision(event: SpeakDecisionEvent, ctx: object) -> None:
         decision = event.decision
         judged = " ".join(f"{k}={v:.2f}" for k, v in decision.judgments.items() if v >= 0.05)

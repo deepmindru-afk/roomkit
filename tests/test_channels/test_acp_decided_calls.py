@@ -77,7 +77,7 @@ async def _run(tmp_path: Path, handler: Any, *, starts: bool, closes: bool) -> t
     await kit.attach_channel("room-1", "acp-agent", category=ChannelCategory.INTELLIGENCE)
     reports: list[Any] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def _audit(event: Any, ctx: Any) -> None:
         reports.append(event)
 

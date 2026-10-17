@@ -423,7 +423,7 @@ async def run(stack: AsyncExitStack) -> None:
     async def on_barge_in(event, ctx):
         logger.info("Barge-in: the assistant stops speaking")
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL)
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL)
     async def on_tool_call(event, ctx):
         return log_tool_call(event, show_result=True)
 

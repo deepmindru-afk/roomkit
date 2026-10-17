@@ -268,7 +268,9 @@ async def main() -> None:
         playwright_tool_names=playwright_tool_names,
     )
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="screen_tool_handler")
+    @kit.turn_executor.hook(
+        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="screen_tool_handler"
+    )
     async def on_tool_call(event: object, ctx: object) -> HookResult:
         t0 = time.monotonic()
         result = await dispatcher.handle(event.name, event.arguments)  # type: ignore[attr-defined]

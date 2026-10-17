@@ -75,13 +75,13 @@ async def test_a_provider_served_call_cut_while_judged_is_reported_once_served()
     judging = asyncio.Event()
     reports: list[Any] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="slow")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="slow")
     async def slow(event: Any, ctx: Any) -> HookResult:
         judging.set()
         await asyncio.sleep(0.3)
         return HookResult.allow()
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
         reports.append(event)
 

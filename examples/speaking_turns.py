@@ -95,7 +95,7 @@ async def main() -> None:
     # Several people write on this one channel: a group binding (RFC §10.4).
     await kit.attach_channel("meeting", "sms", group=True)
 
-    @kit.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
     async def on_decision(event: SpeakDecisionEvent, ctx: object) -> None:
         body = getattr(event.event.content, "body", "")
         logger.info(

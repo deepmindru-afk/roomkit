@@ -114,7 +114,7 @@ async def _channel(
     await kit.attach_channel("r1", "rt")
     seen: list[Any] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
         seen.append((event.tool_call_id, event.name, event.is_error, event.cancelled))
 
@@ -220,7 +220,7 @@ async def test_an_id_less_refusal_names_the_tool_call_tool_carries() -> None:
     channel._tool_search_support.uses_call_tool = True
     bodies: list[str] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="bodies")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="bodies")
     async def record(event: Any, ctx: Any) -> None:
         bodies.append(json.loads(str(event.result))["error"])
 
@@ -248,7 +248,9 @@ async def test_a_duplicate_s_observer_reconnecting_abandons_the_first_call() -> 
         tool_handler=lambda *a: asyncio.sleep(0.3, "ok"),
     )
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="reconnects")
+    @kit.turn_executor.hook(
+        HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="reconnects"
+    )
     async def reconnects(event: Any, ctx: Any) -> None:
         if event.is_error and not event.cancelled:
             await holder["provider"].simulate_tool_call_cancellation(session, ["d1"])
@@ -336,7 +338,7 @@ async def test_a_backends_call_that_named_no_tool_is_refused_as_the_providers() 
     await kit.attach_channel("r1", "rt")
     seen: list[Any] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
         seen.append((json.loads(str(event.result))["error"], event.refused))
 

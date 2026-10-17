@@ -35,7 +35,7 @@ def log_tool_call(
 
         from shared.hooks import log_tool_call
 
-        @kit.hook(HookTrigger.ON_TOOL_CALL)
+        @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL)
         async def show_tool_call(event, _ctx):
             return log_tool_call(event, tool_names=["activate_skill"], label="skill")
     """
@@ -81,7 +81,7 @@ def enable_voice_debug(kit: RoomKit) -> None:
     async def on_speech_end(event, ctx):
         logger.info("[debug] speech end")
 
-    @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
+    @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION)
     async def before_generation(event, ctx):
         messages = event.ai_context.messages
         logger.info(

@@ -93,7 +93,7 @@ class _Room:
             "r1", "ai1", category=ChannelCategory.INTELLIGENCE, metadata=binding_metadata
         )
 
-        @self.kit.hook(HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC, name="observe")
+        @self.kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC, name="observe")
         async def observe(event: ToolCallEvent, ctx: Any) -> None:
             self.observed.append(event)
 
@@ -202,7 +202,7 @@ async def test_a_block_refuses_a_call_on_a_channel_without_a_handler(streaming: 
     room = _Room(AIChannel("ai1", provider=provider))
     await room.open(tools=[{"name": "Bash", "description": "b", "parameters": {"type": "object"}}])
 
-    @room.kit.hook(HookTrigger.BEFORE_TOOL_USE, name="deny")
+    @room.kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, name="deny")
     async def deny(event: ToolCallEvent, ctx: Any) -> HookResult:
         return HookResult.block("denied by policy")
 
@@ -232,7 +232,7 @@ async def test_a_tool_the_hook_withdrew_stays_the_channels_to_refuse(streaming: 
     )
     room = await _Room(ai).open()
 
-    @room.kit.hook(HookTrigger.BEFORE_AI_GENERATION, name="withdraw")
+    @room.kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION, name="withdraw")
     async def withdraw(event: Any, ctx: Any) -> HookResult:
         event.ai_context.tools[:] = [t for t in event.ai_context.tools if t.name != "lookup"]
         return HookResult.allow()

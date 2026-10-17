@@ -91,12 +91,12 @@ async def main() -> None:
     await kit.attach_channel("call", "voice")
     await kit.ensure_participant("call", "sms", "sylvain", display_name="Sylvain")
 
-    @kit.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
     async def on_decision(event: SpeakDecisionEvent, ctx: object) -> None:
         decision = event.decision
         logger.info("  → %s (%s) %s", decision.mode, decision.reason, list(decision.notes))
 
-    @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
+    @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION)
     async def show_history(event: AIGenerationEvent, ctx: object) -> HookResult:
         said = [m.content for m in event.ai_context.messages if m.role == "assistant"]
         if said:

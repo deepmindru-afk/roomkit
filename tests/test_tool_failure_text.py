@@ -75,7 +75,7 @@ async def _realtime(**kwargs: Any) -> tuple[RoomKit, RealtimeVoiceChannel, Any, 
     kit.register_channel(channel)
     observed: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         observed.append(event)
 
@@ -127,7 +127,7 @@ async def test_the_conference_reads_the_class_and_observers_get_the_message() ->
     )
     observed: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         observed.append(event)
 
@@ -178,7 +178,7 @@ async def test_hooks_that_raised_on_an_unserved_call_reach_the_observers(
 
     kit, ch, room_id, observed, _ = await _ai_room(streaming=streaming, tool_handler=unknown)
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="server")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="server")
     async def server(event: ToolCallEvent, ctx: RoomContext) -> None:
         raise RuntimeError(f"cannot reach {SECRET}")
 
@@ -223,7 +223,7 @@ async def test_realtime_hooks_that_raised_on_an_unserved_call_reach_the_observer
     kit, channel, provider, session, observed = await _realtime()
     channel._tool_handler = None
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="server")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="server")
     async def server(event: ToolCallEvent, ctx: RoomContext) -> None:
         raise RuntimeError(f"cannot reach {SECRET}")
 

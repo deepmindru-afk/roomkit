@@ -94,8 +94,8 @@ async def main() -> None:
     await kit.create_room(room_id="room")
     await kit.attach_channel("room", "member")
     await kit.attach_channel("room", "agent", category=ChannelCategory.INTELLIGENCE)
-    kit.hook(HookTrigger.BEFORE_TOOL_USE, name="count_calls")(count_calls)
-    kit.hook(HookTrigger.AFTER_TOOL_ROUND, name="close_mailbox")(close_mailbox)
+    kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, name="count_calls")(count_calls)
+    kit.turn_executor.hook(HookTrigger.AFTER_TOOL_ROUND, name="close_mailbox")(close_mailbox)
 
     result = await kit.process_inbound(
         InboundMessage(channel_id="member", sender_id="u1", content=TextContent(body="Any mail?"))

@@ -38,6 +38,7 @@ from roomkit.realtime.memory import InMemoryRealtime
 from roomkit.tools.external import PolicyExternalToolHandler, ToolDecision
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from roomkit.voice.realtime.reasoning import AgentReasoningBackend
+from tests.hook_sides import hook_on_its_side
 from tests.test_framework import SimpleChannel
 from tests.tool_doors import TOOL, TOOL_DICT
 
@@ -62,7 +63,7 @@ class _Hangs:
 def _observe(kit: RoomKit) -> list[ToolCallEvent]:
     reports: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: Any) -> None:
         reports.append(event)
 
@@ -402,7 +403,7 @@ async def test_a_close_from_a_hook_of_the_turn_does_not_wait_for_that_turn(
     kit, _ = await _text_room(channel)
     took: list[float] = []
 
-    @kit.hook(trigger, name="closer")
+    @hook_on_its_side(kit, trigger, name="closer")
     async def closer(event: Any, ctx: Any) -> HookResult:
         loop = asyncio.get_running_loop()
         started = loop.time()

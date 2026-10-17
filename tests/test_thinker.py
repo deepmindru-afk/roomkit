@@ -434,7 +434,7 @@ async def test_the_thinker_reads_what_before_ai_generation_left() -> None:
     kit = await _meeting(nova)
     purposes: list[str] = []
 
-    @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
+    @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION)
     async def guard(event: AIGenerationEvent, ctx: object) -> HookResult:
         purposes.append(event.purpose)
         trigger = getattr(event.trigger.content, "body", "") if event.trigger else ""
@@ -467,7 +467,7 @@ async def test_a_replacement_event_is_what_the_thinker_reads() -> None:
     )
     kit = await _meeting(nova)
 
-    @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
+    @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION)
     async def redact(event: AIGenerationEvent, ctx: object) -> HookResult:
         messages = [
             m.model_copy(update={"content": str(m.content).replace("4417", "[redacted]")})
@@ -499,7 +499,7 @@ async def test_every_new_thought_reaches_on_thought() -> None:
     await kit.attach_channel("meeting", "sms")
     seen: list[ThoughtEvent] = []
 
-    @kit.hook(HookTrigger.ON_THOUGHT, execution=HookExecution.ASYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_THOUGHT, execution=HookExecution.ASYNC)
     async def on_thought(event: ThoughtEvent, ctx: object) -> None:
         seen.append(event)
 
@@ -530,7 +530,7 @@ async def test_speaking_reports_the_emptied_thought() -> None:
     kit = await _meeting(nova)
     seen: list[ThoughtEvent] = []
 
-    @kit.hook(HookTrigger.ON_THOUGHT, execution=HookExecution.ASYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_THOUGHT, execution=HookExecution.ASYNC)
     async def on_thought(event: ThoughtEvent, ctx: object) -> None:
         seen.append(event)
 

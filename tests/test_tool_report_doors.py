@@ -59,7 +59,7 @@ async def _room(kit: RoomKit, channel: AIChannel) -> list[ToolCallEvent]:
     await kit.attach_channel("r", channel.channel_id, category=ChannelCategory.INTELLIGENCE)
     reports: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, context: Any) -> None:
         reports.append(event)
 
@@ -95,7 +95,7 @@ async def test_a_call_the_turn_cuts_is_closed_with_the_arguments_it_ran_with(
     kit = RoomKit()
     reports = await _room(kit, channel)
 
-    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="detokenise")
+    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, name="detokenise")
     async def detokenise(event: Any, context: Any) -> HookResult:
         return HookResult(action="allow", metadata={"arguments": dict(REAL)})
 
@@ -166,12 +166,12 @@ async def test_a_reasoning_backend_s_call_is_reported_under_its_model_s_id(case:
     await kit.attach_channel("r", "rt")
     reports: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, context: Any) -> None:
         reports.append(event)
 
     if before is not None:
-        kit.hook(HookTrigger.BEFORE_TOOL_USE, name="gate")(before)
+        kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, name="gate")(before)
     session = await channel.start_session("r", "u", "ws")
     await provider.simulate_delegation(session, "d1", "integrator")
     for _ in range(300):
@@ -231,7 +231,7 @@ async def _two_calls_realtime() -> tuple[list[ToolCallEvent], list[dict[str, Any
     await kit.attach_channel("r", "rt")
     reports: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, context: Any) -> None:
         reports.append(event)
 

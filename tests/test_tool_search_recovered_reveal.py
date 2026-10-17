@@ -116,13 +116,15 @@ async def _unserved(name: str, arguments: dict[str, Any]) -> str:
 
 
 def _deny_before_use(kit: RoomKit) -> None:
-    @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
+    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
     async def _deny(event: Any, ctx: Any) -> HookResult:
         return HookResult.block("not now")
 
 
 def _withhold_result(kit: RoomKit) -> None:
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="withhold")
+    @kit.turn_executor.hook(
+        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="withhold"
+    )
     async def _withhold(event: Any, ctx: Any) -> HookResult:
         return HookResult.block("withheld")
 
@@ -207,7 +209,9 @@ async def test_a_sibling_answered_while_a_recovery_waits_does_not_reference_it(
         return '{"found": true}'
 
     def deny_after_a_wait(kit: RoomKit) -> None:
-        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="approve")
+        @kit.turn_executor.hook(
+            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="approve"
+        )
         async def _approve(event: Any, ctx: Any) -> HookResult:
             if event.name == "send_sms":
                 await asyncio.sleep(0.05)

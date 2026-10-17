@@ -26,6 +26,7 @@ from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.voice.realtime.mock import MockCall, MockRealtimeProvider, MockRealtimeTransport
 from tests.conftest import make_event
+from tests.hook_sides import hook_on_its_side
 from tests.test_toolset_edges import (
     SPOTIFY,
     _call,
@@ -45,7 +46,7 @@ FOUND = {"spotify_play", "spotify_search"}
 def _judge_search(kit: RoomKit, verdict: str) -> list[ToolCallEvent]:
     """Block or replace every Tool Search call; the observers' reports."""
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="judge")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="judge")
     async def judge(event: ToolCallEvent, ctx: Any) -> HookResult:
         if event.name not in ("find_tools", "list_tools"):
             return HookResult.allow()
@@ -55,7 +56,7 @@ def _judge_search(kit: RoomKit, verdict: str) -> list[ToolCallEvent]:
 
     seen: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: Any) -> None:
         seen.append(event)
 
@@ -306,7 +307,9 @@ class TestRealtimeReview:
         provider = _InBand()
         kit, channel, session = await _realtime_kit(provider)
 
-        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="handoff")
+        @kit.turn_executor.hook(
+            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="handoff"
+        )
         async def handoff(event: ToolCallEvent, ctx: Any) -> HookResult:
             if event.name == "find_tools":
                 tools = [_schema(n) for n in AFTER_HANDOFF]
@@ -323,7 +326,9 @@ class TestRealtimeReview:
         provider = MockRealtimeProvider()
         kit, channel, session = await _realtime_kit(provider)
 
-        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="handoff")
+        @kit.turn_executor.hook(
+            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="handoff"
+        )
         async def handoff(event: ToolCallEvent, ctx: Any) -> HookResult:
             if event.name == "find_tools":
                 await channel.reconfigure_session(session, system_prompt="New agent")
@@ -353,7 +358,9 @@ class TestRealtimeReview:
         kit, session = await _session(channel)
         judged: list[int] = []
 
-        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="size")
+        @kit.turn_executor.hook(
+            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="size"
+        )
         async def size(event: ToolCallEvent, ctx: Any) -> HookResult:
             judged.append(len(str(event.result)))
             return HookResult.allow()
@@ -382,7 +389,7 @@ async def _fixed_list_tools(verdict: str, arguments: dict[str, Any]) -> str:
     big = "x" * 5000
     trigger = HookTrigger.BEFORE_TOOL_USE if verdict == "refuse" else HookTrigger.ON_TOOL_CALL
 
-    @kit.hook(trigger, execution=HookExecution.SYNC, name="judge")
+    @hook_on_its_side(kit, trigger, execution=HookExecution.SYNC, name="judge")
     async def judge(event: ToolCallEvent, ctx: Any) -> HookResult:
         if event.name != "list_tools":
             return HookResult.allow()

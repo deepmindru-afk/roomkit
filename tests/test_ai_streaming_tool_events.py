@@ -327,12 +327,12 @@ async def test_provider_executed_tool_never_fires_retroactive_before_hook() -> N
     before_events: list[ToolCallEvent] = []
     observed_events: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC)
+    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC)
     async def before(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         before_events.append(event)
         return HookResult.block("too late")
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
     async def observe(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         observed_events.append(event)
         return HookResult.allow()
@@ -373,13 +373,13 @@ async def test_a_provider_run_call_is_reported_as_the_provider_ran_it(decision: 
     ai = AIChannel("ai1", provider=provider)
     observed: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
     async def rewrite(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         if decision == "block":
             return HookResult.block("no")
         return HookResult(action="allow", metadata={"result": None})
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
     async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         observed.append(event)
 

@@ -90,7 +90,7 @@ async def main() -> None:
             Participant(id=participant_id, room_id=room.id, channel_id="voice", role=role)
         )
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: Any) -> None:
         outcome = "refused" if event.is_error else "served"
         print(f"  audit         : {event.name} {outcome}")

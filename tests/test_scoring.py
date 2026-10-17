@@ -128,9 +128,9 @@ class TestScoringHook:
         hook = ScoringHook(scorers=[scorer])
         kit = MagicMock()
         kit._store = InMemoryStore()
-        kit.hook.return_value = lambda fn: fn
+        kit.turn_executor.hook.return_value = lambda fn: fn
         hook.attach(kit)
-        kit.hook.assert_called_once()
+        kit.turn_executor.hook.assert_called_once()
 
     async def test_on_response_calls_scorers(self):
         store = InMemoryStore()

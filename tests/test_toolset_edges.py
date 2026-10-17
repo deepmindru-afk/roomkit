@@ -392,7 +392,9 @@ async def test_a_blocked_text_activation_reveals_nothing(tmp_path: Path) -> None
     kit = RoomKit()
     kit.register_channel(channel)
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="no_skills")
+    @kit.turn_executor.hook(
+        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="no_skills"
+    )
     async def block(event: Any, ctx: Any) -> HookResult:
         return HookResult.block("no skills here")
 
@@ -516,7 +518,9 @@ async def test_a_blocked_realtime_activation_reveals_nothing(tmp_path: Path) -> 
     )
     kit, session = await _session(channel)
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="no_skills")
+    @kit.turn_executor.hook(
+        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="no_skills"
+    )
     async def block(event: Any, ctx: Any) -> HookResult:
         return HookResult.block("no skills here")
 

@@ -5,14 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from roomkit.console._state import ConsoleState, ConversationTurn, VoiceEvent
-from roomkit.core.hooks import HookRegistration
+from roomkit.core.hooks import TURN_TRIGGERS, HookRegistration
 from roomkit.models.enums import HookExecution, HookTrigger
 
 _ACCENT = "rgb(6,182,212)"
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
-    from roomkit.core.hooks import HookEngine
+
 
 # All console hook names share this prefix for clean removal.
 HOOK_PREFIX = "_console_"
@@ -165,16 +165,16 @@ def _make_handler(tag: str, state: ConsoleState, kit: RoomKit | None = None) -> 
     return handlers[tag]
 
 
-def register_console_hooks(
-    engine: HookEngine, state: ConsoleState, kit: RoomKit | None = None
-) -> list[str]:
-    """Register all console observer hooks on *engine*.
+def register_console_hooks(kit: RoomKit, state: ConsoleState) -> list[str]:
+    """Register all console observer hooks on *kit*, each on the side its
+    trigger fires on: a turn's on the kit's turn executor (RFC §10.6.6).
 
     Returns the list of hook names for later removal.
     """
     names: list[str] = []
     for trigger, tag in _HOOK_DEFS:
         name = f"{HOOK_PREFIX}{tag}"
+        engine = kit.turn_executor.hooks if trigger in TURN_TRIGGERS else kit.hook_engine
         engine.register(
             HookRegistration(
                 trigger=trigger,
@@ -188,7 +188,8 @@ def register_console_hooks(
     return names
 
 
-def unregister_console_hooks(engine: HookEngine, names: list[str]) -> None:
-    """Remove previously registered console hooks from *engine*."""
+def unregister_console_hooks(kit: RoomKit, names: list[str]) -> None:
+    """Remove previously registered console hooks from *kit*."""
     for name in names:
-        engine.remove_global_hook(name)
+        if not kit.hook_engine.remove_global_hook(name):
+            kit.turn_executor.hooks.remove_global_hook(name)

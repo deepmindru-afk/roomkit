@@ -62,7 +62,7 @@ async def _session(channel: RealtimeVoiceChannel) -> tuple[RoomKit, Any]:
 def _observe(kit: RoomKit) -> list[ToolCallEvent]:
     seen: list[ToolCallEvent] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: Any) -> None:
         seen.append(event)
 
@@ -85,7 +85,7 @@ async def test_a_search_call_whose_judgement_the_ending_cut_is_cancelled() -> No
     kit, session = await _session(channel)
     held = asyncio.Event()
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="slow")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="slow")
     async def slow(event: ToolCallEvent, ctx: Any) -> HookResult:
         held.set()
         await asyncio.sleep(30)
@@ -145,7 +145,7 @@ async def test_a_backend_that_hangs_up_ends_its_delegation_and_its_next_call() -
     holder["session"] = session
     gated: list[str] = []
 
-    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="gate")
+    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, name="gate")
     async def gate(event: ToolCallEvent, ctx: Any) -> HookResult:
         gated.append(event.name)
         return HookResult.allow()

@@ -170,11 +170,13 @@ async def test_a_gate_refusal_is_bounded_and_observed_whole(
     await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
     observed: list[str] = []
 
-    @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
+    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
     async def deny(event: ToolCallEvent, ctx: Any) -> HookResult:
         return HookResult.block(_REASON)
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
+    @kit.turn_executor.hook(
+        HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe"
+    )
     async def observe(event: ToolCallEvent, ctx: Any) -> None:
         observed.append(str(event.result))
 
@@ -209,11 +211,13 @@ async def test_a_realtime_refusal_is_bounded_for_the_model_and_observed_whole() 
     await kit.attach_channel("r1", "rt")
     observed: list[str] = []
 
-    @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
+    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
     async def deny(event: ToolCallEvent, ctx: Any) -> HookResult:
         return HookResult.block(_REASON)
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
+    @kit.turn_executor.hook(
+        HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe"
+    )
     async def observe(event: ToolCallEvent, ctx: Any) -> None:
         observed.append(str(event.result))
 
@@ -292,7 +296,7 @@ def _watch(kit: RoomKit, replace_with: Any = ...) -> tuple[list[Any], list[Any]]
     chain: list[Any] = []
     observed: list[Any] = []
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="see")
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="see")
     async def see(event: ToolCallEvent, ctx: Any) -> HookResult:
         chain.append(event.structured_content)
         if replace_with is ...:
@@ -301,7 +305,9 @@ def _watch(kit: RoomKit, replace_with: Any = ...) -> tuple[list[Any], list[Any]]
             return HookResult.block("withheld")
         return HookResult(action="allow", metadata={"structured_content": replace_with})
 
-    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
+    @kit.turn_executor.hook(
+        HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe"
+    )
     async def observe(event: ToolCallEvent, ctx: Any) -> None:
         observed.append(event.structured_content)
 

@@ -15,12 +15,15 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from roomkit.core.hooks import HookEngine, HookRegistration, hook_decorator
 from roomkit.core.task_utils import cancel_and_wait
 from roomkit.turns._executor_turn import ExecutorTurn, turns_run_under
 from roomkit.turns.base import TurnTimeouts
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
+    from roomkit.core.hooks import AsyncHookFn, SyncHookFn
+    from roomkit.models.enums import HookExecution, HookTrigger
     from roomkit.turns.base import ExecutorLink
 
 logger = logging.getLogger("roomkit.turns")
@@ -56,6 +59,44 @@ class TurnExecutor:
         self._timeouts = timeouts or TurnTimeouts()
         self._turns: dict[asyncio.Task[None], ExecutorTurn] = {}
         self._closed = False
+        self.hooks = HookEngine(turns=True)
+        """The hooks of the triggers a turn fires (RFC §10.6.6)."""
+
+    def hook(self, trigger: HookTrigger, *args: Any, **kwargs: Any) -> Callable[..., Any]:
+        """Decorator to register a hook on a trigger a turn fires
+        (``ON_TOOL_CALL``, ``BEFORE_TOOL_USE``, ``ON_AI_RESPONSE``...), with
+        ``RoomKit.hook``'s options. A host registers its turn hooks with one
+        function it runs on every executor, the kit's own included
+        (``kit.turn_executor``). An owner's trigger raises ``ValueError``."""
+        return hook_decorator(self.hooks.register, trigger, *args, **kwargs)
+
+    def add_room_hook(
+        self,
+        room_id: str,
+        trigger: HookTrigger,
+        execution: HookExecution,
+        fn: SyncHookFn | AsyncHookFn,
+        priority: int = 0,
+        name: str = "",
+        *,
+        fail_closed: bool = False,
+    ) -> None:
+        """Add a hook on a trigger a turn fires, for *room_id* alone."""
+        self.hooks.add_room_hook(
+            room_id,
+            HookRegistration(
+                trigger=trigger,
+                execution=execution,
+                fn=fn,
+                priority=priority,
+                name=name,
+                fail_closed=fail_closed,
+            ),
+        )
+
+    def remove_room_hook(self, room_id: str, name: str) -> bool:
+        """Remove a room hook by name."""
+        return self.hooks.remove_room_hook(room_id, name)
 
     def declares(self, channel_id: str) -> bool:
         """Whether this executor takes the turns of *channel_id*."""

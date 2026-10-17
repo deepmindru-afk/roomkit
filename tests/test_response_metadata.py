@@ -137,7 +137,7 @@ async def _setup_kit(*, streaming: bool) -> RoomKit:
     await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
     await kit.attach_channel("r1", "sms1")
 
-    @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
+    @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION)
     async def attribute(event: AIGenerationEvent, ctx: Any) -> HookResult:
         _attribution_hook(event)
         return HookResult.allow()
@@ -417,7 +417,7 @@ async def test_a_before_tool_use_write_reaches_the_inbound_result(
     )
     await kit.attach_channel("r1", "sms1")
 
-    @kit.hook(HookTrigger.BEFORE_TOOL_USE)
+    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE)
     async def count(event: Any, ctx: Any) -> HookResult:
         record = current_response_metadata()
         if record is not None:
