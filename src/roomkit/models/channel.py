@@ -79,6 +79,36 @@ class ChannelCapabilities(BaseModel):
     custom: dict[str, Any] = Field(default_factory=dict)
 
 
+class AgentIdentity(BaseModel):
+    """What the room's owner reads of an agent (RFC §10.6.2, §19.1)."""
+
+    name: str | None = None
+    role: str | None = None
+    description: str | None = None
+    scope: str | None = None
+    greeting: str | None = None
+    language: str | None = None
+    auto_greet: bool = True
+    """Whether the owner sends :attr:`greeting` when a session starts."""
+
+
+class ChannelDeclaration(BaseModel):
+    """What the room's owner knows of a channel without its live object
+    (RFC §10.6.2): enough to bind it, plan its turns and read it in a
+    strategy. An executor builds the channel itself."""
+
+    channel_id: str = Field(min_length=1)
+    channel_type: ChannelType = ChannelType.AI
+    category: ChannelCategory = ChannelCategory.INTELLIGENCE
+    capabilities: ChannelCapabilities = Field(default_factory=ChannelCapabilities)
+    identity: AgentIdentity | None = None
+    """An agent's identity; None for a channel that is no agent."""
+    thinks_while_listening: bool = False
+    """It carries a thinker (RFC §6.4), which a discussion refuses."""
+    recent_events_window: int = Field(default=0, ge=0)
+    """How many recent room events the owner loads for its turns."""
+
+
 class ChannelBinding(BaseModel):
     """A channel's attachment to a room."""
 

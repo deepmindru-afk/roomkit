@@ -16,6 +16,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN
+from roomkit.channels.declared import register_strategy_agent
 from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.models.enums import ChannelCategory, ChannelType, HookTrigger
@@ -250,8 +251,7 @@ class DiscussionMixin(HelpersMixin):
         """Refuse what the room cannot share with *discussion* (rule 1), the
         agents *leaving* it aside, its agents registered; the room's context."""
         for agent in discussion.agents.values():
-            if agent.channel_id not in self._channels:
-                self.register_channel(agent)
+            register_strategy_agent(self, agent)  # ty: ignore[invalid-argument-type]
         context = await self._build_context(room_id)
         refusal = self._discussion_refusal(room_id, discussion, context, leaving=leaving)
         if refusal is not None:

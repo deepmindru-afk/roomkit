@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import orchestration_tool, schema_tool
+from roomkit.channels.declared import register_strategy_agent
 from roomkit.core._failure_log import mark_reported
 from roomkit.core.exceptions import RoomKitError
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -159,12 +160,11 @@ class Loop(Orchestration):
 
         # Register all reviewers on the kit (not attached to room)
         for rev in reviewers:
-            if rev.channel_id not in kit.channels:
-                kit.register_channel(rev)
+            register_strategy_agent(kit, rev)
 
         # Also register producer if async (not attached to room)
-        if async_delivery and producer.channel_id not in kit.channels:
-            kit.register_channel(producer)
+        if async_delivery:
+            register_strategy_agent(kit, producer)
 
         if async_delivery:
             self._install_async_loop(kit, room_id)

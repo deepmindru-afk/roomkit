@@ -55,6 +55,7 @@ from roomkit.channels.conference import (
     ConferenceTranscription,
     UtteranceTiming,
 )
+from roomkit.channels.declared import DeclaredChannel
 from roomkit.channels.realtime_av import RealtimeAudioVideoChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel, get_current_voice_session
 from roomkit.channels.realtime_voice import ToolHandler as ToolHandler
@@ -151,7 +152,13 @@ from roomkit.delivery import (
     InMemoryDeliveryBackend,
 )
 from roomkit.memory import MemoryProvider, MemoryResult, TurnFootprint
-from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
+from roomkit.models.channel import (
+    AgentIdentity,
+    ChannelBinding,
+    ChannelCapabilities,
+    ChannelDeclaration,
+    ChannelOutput,
+)
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import (
     SUPERSEDED,
@@ -464,12 +471,14 @@ __all__ = [
     "ACPTransport",
     "ACPSessionInvalidatedError",
     "Agent",
+    "AgentIdentity",
     "AIChannel",
     "AIChannelTurnConfig",
     "AudioVideoChannel",
     "BuzzChannel",
     "Channel",
     "CLIChannel",
+    "DeclaredChannel",
     "ConferenceChannel",
     "DiscordChannel",
     "EmailChannel",
@@ -676,6 +685,7 @@ __all__ = [
     "BeforeGenerationCallback",
     "ChannelBinding",
     "ChannelCapabilities",
+    "ChannelDeclaration",
     "ChannelOutput",
     "DeclaredTool",
     "DeliveryError",

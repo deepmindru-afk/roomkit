@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.core.task_utils import log_task_exception
-from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
+from roomkit.models.channel import (
+    ChannelBinding,
+    ChannelCapabilities,
+    ChannelDeclaration,
+    ChannelOutput,
+)
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import (
@@ -477,6 +482,17 @@ class Channel(ABC):
     def capabilities(self) -> ChannelCapabilities:
         """Return channel capabilities."""
         return ChannelCapabilities(media_types=[ChannelMediaType.TEXT])
+
+    def declaration(self) -> ChannelDeclaration:
+        """What the room's owner knows of this channel without its object
+        (RFC §10.6.2): its kind, what it can do, the history it reads."""
+        return ChannelDeclaration(
+            channel_id=self.channel_id,
+            channel_type=self.channel_type,
+            category=self.category,
+            capabilities=self.capabilities(),
+            recent_events_window=self.recent_events_window,
+        )
 
     async def close(self) -> None:
         """Close the channel and its provider."""

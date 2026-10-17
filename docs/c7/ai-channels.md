@@ -120,6 +120,45 @@ realtime pipeline alike. A host that renders the agent's identity in its own
 prompt passes `identity_in_prompt=False`: no block is written anywhere, and
 the fields stay readable on the agent.
 
+## An Agent the Kit Holds by Its Declaration
+
+The kit that owns the rooms needs no live agent object (RFC §10.6.2): it
+registers a `ChannelDeclaration`, and a `TurnExecutor` builds the agent where
+its turns run, from the host's factory:
+
+```python
+from roomkit import AgentIdentity, ChannelDeclaration, RoomKit
+from roomkit.turns import InMemoryTurnBackend, TurnExecutor
+
+backend = InMemoryTurnBackend()
+executor = TurnExecutor(build_agent, hosts=lambda channel_id: channel_id == "meteo", store=store)
+await backend.serve(executor)  # in this process or another, on a shared backend
+
+kit = RoomKit(store=store, turn_backend=backend)
+kit.register_channel(
+    ChannelDeclaration(
+        channel_id="meteo",
+        identity=AgentIdentity(name="Meteo", greeting="Hi, ask me the weather."),
+        recent_events_window=50,
+    )
+)
+await kit.attach_channel(room_id, "meteo")  # an intelligence binding
+```
+
+- The kit holds a `DeclaredChannel` under the id: a binding takes its
+  `capabilities`, routing plans its turns, `delegate` / `start_task` name it,
+  `send_greeting` and auto-greet read its identity (`auto_greet` defaults to
+  true, as on `Agent`).
+- Its turns run on an executor that takes the id; the kit's own executor never
+  builds it, so with none they fail at once with `no_executor`.
+- `agent.declaration()` gives any channel's declaration; registering it reads
+  on the kit as registering the agent does.
+- Refused: a declaration that is not an intelligence channel's, a binding of
+  it with another category, and a strategy (Supervisor, Loop, Discussion,
+  Pipeline, Swarm) given a live agent whose id the kit holds by declaration.
+
+Runnable: `examples/declared_agent.py`.
+
 ## Steering a Running Turn
 
 `steer()` hands a running tool loop a directive (`Cancel`, `InjectMessage`,

@@ -168,6 +168,9 @@ RoomKit exports **255 symbols** from `roomkit`. Providers and voice types import
 | `TurnBackend` | ABC for what carries an intelligence channel's turns between the room owner and an executor (RFC §10.6) |
 | `InMemoryTurnBackend` | Default turn backend: in this process, every message serialized |
 | `TurnExecutor` | Builds a channel and runs its turns; the kit owns one reading its registered channels. One a host builds (`TurnExecutor(build_channel, store=, media_resolver=, attached_media=, telemetry=)`) builds each channel once, wires it as the kit wires the ones it registers (its hooks fire, what the channel publishes during a turn crosses as `ephemeral` / `framework_event` frames), and closes what it built; `executor.room_hook(name, trigger)(fn)` defines a room hook by name |
+| `ChannelDeclaration` | What the room's owner knows of a channel without its object: `channel_id`, `channel_type`, `category`, `capabilities`, `identity`, `thinks_while_listening`, `recent_events_window`; `channel.declaration()` gives a live channel's |
+| `AgentIdentity` | An agent's identity in its declaration: `name`, `role`, `description`, `scope`, `greeting`, `language`, `auto_greet` |
+| `DeclaredChannel` | The channel the kit holds for a registered declaration: bound and routed to, never run in the kit's process |
 | `TurnClient` | The room owner's side: runs a turn, reads it back as the channel's `ChannelOutput` |
 | `OwnerTools` | ABC for the tools a room owner serves its turns: what a request lists, how a call's handler runs |
 | `OwnerTool` | One tool a turn's request lists, served by the room owner (`tool`, `waits_by_design`) |
@@ -310,7 +313,7 @@ kit = RoomKit(
 
 | Method | Description |
 |--------|-------------|
-| `register_channel(channel)` | Register a channel |
+| `register_channel(channel)` | Register a channel, or a `ChannelDeclaration`: an intelligence channel held by its declaration alone, its turns run on an executor that builds it (RFC §10.6.2) |
 | `attach_channel(room_id, channel_id, category?, access?, ...)` | Attach channel to room |
 | `detach_channel(room_id, channel_id)` | Detach channel from room |
 | `mute(room_id, channel_id)` | Mute a channel |

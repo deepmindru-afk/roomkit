@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes, discussion_turn
+from roomkit.channels.declared import DeclaredChannel
 from roomkit.models.steering import Cancel as SteeringCancel
 from roomkit.telemetry.context import get_current_span
 from roomkit.turns._owner_inputs import OwnerInputs
@@ -322,10 +323,16 @@ def registry_turn_client(
     """A client whose own executor serves the channels of a registry (a
     kit's, a router's), on *backend* or an in-memory one, its turns' host
     verbs run by *host*, what they publish published by *events*. The
-    registry's owner wires and closes its channels."""
+    registry's owner wires and closes its channels; one it holds by its
+    declaration alone is a host executor's to build (RFC §10.6.2)."""
+
+    def runs_here(channel_id: str) -> bool:
+        channel = channels.get(channel_id)
+        return channel is not None and not isinstance(channel, DeclaredChannel)
+
     return TurnClient(
         backend or InMemoryTurnBackend(),
-        executor=TurnExecutor(channels.get, hosts=channels.__contains__, owns_channels=False),
+        executor=TurnExecutor(channels.get, hosts=runs_here, owns_channels=False),
         tools=RegistryOwnerTools(channels.get),
         host=host,
         events=events,

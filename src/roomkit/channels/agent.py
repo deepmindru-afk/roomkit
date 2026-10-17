@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels.ai import AIChannel
+from roomkit.models.channel import AgentIdentity, ChannelDeclaration
 from roomkit.providers.ai.base import AIContext, AIProvider, AIResponse
 
 if TYPE_CHECKING:
@@ -107,6 +108,18 @@ class Agent(AIChannel):
         # False: a host that renders the agent's identity in its own prompt
         # turns the block off everywhere RoomKit writes it, the fields kept.
         self.identity_in_prompt = identity_in_prompt
+
+    def declaration(self) -> ChannelDeclaration:
+        identity = AgentIdentity(
+            name=self.name,
+            role=self.role,
+            description=self.description,
+            scope=self.scope,
+            greeting=self.greeting,
+            language=self.language,
+            auto_greet=self.auto_greet,
+        )
+        return super().declaration().model_copy(update={"identity": identity})
 
     @property
     def is_config_only(self) -> bool:

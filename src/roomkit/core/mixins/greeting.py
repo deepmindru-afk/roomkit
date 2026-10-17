@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.models.enums import (
+    ChannelCategory,
     ChannelDirection,
     ChannelType,
     EventStatus,
@@ -17,6 +18,7 @@ from roomkit.models.event import EventSource, RoomEvent, TextContent
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
+    from roomkit.models.channel import AgentIdentity
     from roomkit.store.base import ConversationStore
     from roomkit.voice.base import VoiceSession
 
@@ -84,36 +86,19 @@ class GreetingMixin(HelpersMixin):
             channel_id: Optional channel ID to use for finding the agent.
             agent_id: Optional agent channel ID to use (alternative to
                 ``channel_id``).
-            greeting: Explicit greeting text.  Falls back to
-                ``Agent.greeting`` if not provided.
+            greeting: Explicit greeting text.  Falls back to the agent's
+                (``Agent.greeting``, or its declaration's) if not provided.
             session: The voice session to deliver into (passed by the
                 auto-greet handler from the ``SessionStartedEvent``).
             channel_type: The channel type that started the session.
         """
-        from roomkit.channels.agent import Agent as AgentChannel
-
-        # Resolve the agent channel
-        agent: AgentChannel | None = None
-        resolve_id = agent_id or channel_id
-        if resolve_id:
-            ch = self._channels.get(resolve_id)
-            if isinstance(ch, AgentChannel):
-                agent = ch
-
-        # Fallback: scan room bindings for an Agent channel
-        if agent is None:
-            bindings = await self._store.list_bindings(room_id)
-            for b in bindings:
-                ch = self._channels.get(b.channel_id)
-                if isinstance(ch, AgentChannel):
-                    agent = ch
-                    break
-
-        if agent is None:
+        found = await self._greeting_agent(room_id, agent_id or channel_id)
+        if found is None:
             return  # No agent found — nothing to greet with
+        agent_channel_id, identity = found
 
         # Resolve greeting text
-        text = greeting or agent.greeting
+        text = greeting or identity.greeting
         if not text:
             return  # No greeting configured
 
@@ -125,15 +110,15 @@ class GreetingMixin(HelpersMixin):
         if session is not None and isinstance(voice_ch, RealtimeVoiceChannel):
             # Every realtime channel, an audio-video one included (its session
             # start names its own type).
-            await self._greet_realtime(voice_ch, session, room_id, agent.channel_id, text)
+            await self._greet_realtime(voice_ch, session, room_id, agent_channel_id, text)
             return
 
         if session is not None and channel_type == ChannelType.VOICE:
             # Store first so AI sees greeting in history even if TTS fails
-            await self._store_greeting_event(room_id, agent.channel_id, text)
+            await self._store_greeting_event(room_id, agent_channel_id, text)
             voice_ch = self._channels.get(session.channel_id)
             if isinstance(voice_ch, VoiceChannel) and voice_ch._tts and voice_ch._backend:
-                voice = voice_ch._resolve_voice(agent.channel_id)
+                voice = voice_ch._resolve_voice(agent_channel_id)
                 await voice_ch.say(session, text, voice=voice)
             return
 
@@ -142,9 +127,31 @@ class GreetingMixin(HelpersMixin):
         # order as every other event's (RFC §10.2).
         await self._commit_and_deliver(
             room_id,
-            self._make_greeting_event(room_id, agent.channel_id, text),
-            agent.channel_id,
+            self._make_greeting_event(room_id, agent_channel_id, text),
+            agent_channel_id,
         )
+
+    async def _greeting_agent(
+        self, room_id: str, channel_id: str | None
+    ) -> tuple[str, AgentIdentity] | None:
+        """The agent that greets *room_id* and its identity: *channel_id*'s
+        when it is an agent, else the first agent bound to the room. A
+        declared agent is one as a live one is (RFC §10.6.2)."""
+        if channel_id:
+            identity = self._agent_identity(channel_id)
+            if identity is not None:
+                return channel_id, identity
+        for binding in await self._store.list_bindings(room_id):
+            identity = self._agent_identity(binding.channel_id)
+            if identity is not None:
+                return binding.channel_id, identity
+        return None
+
+    def _agent_identity(self, channel_id: str) -> AgentIdentity | None:
+        channel = self._channels.get(channel_id)
+        if channel is None or channel.category is not ChannelCategory.INTELLIGENCE:
+            return None
+        return channel.declaration().identity
 
     async def _greet_realtime(
         self, channel: Any, session: VoiceSession, room_id: str, agent_id: str, text: str

@@ -18,6 +18,7 @@ from roomkit.channels._turn_notes import split_turn_notes as split_turn_notes
 from roomkit.channels.acp import ACPChannel as ACPChannel
 from roomkit.channels.ai import AIChannel as AIChannel
 from roomkit.channels.cli import CLIChannel as CLIChannel
+from roomkit.channels.declared import DeclaredChannel as DeclaredChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel as RealtimeVoiceChannel
 from roomkit.channels.skill_script_tool import RunSkillScriptTool as RunSkillScriptTool
 from roomkit.channels.transport import TransportChannel

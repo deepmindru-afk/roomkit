@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import ChannelRegistry
+from roomkit.channels.declared import register_strategy_agent
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.models.enums import ChannelCategory
 
@@ -338,8 +339,7 @@ class StrategyMixin(HelpersMixin):
     async def _attach_agents(self, room_id: str, strategy: Orchestration) -> None:
         bound = {b.channel_id for b in await self._store.list_bindings(room_id)}
         for agent in strategy.agents():
-            if agent.channel_id not in self._channels:
-                self.register_channel(agent)
+            register_strategy_agent(self, agent)  # ty: ignore[invalid-argument-type]
             if agent.channel_id not in bound:
                 await self.attach_channel(
                     room_id, agent.channel_id, category=ChannelCategory.INTELLIGENCE

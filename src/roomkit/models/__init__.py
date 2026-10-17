@@ -1,8 +1,10 @@
 """RoomKit data models."""
 
 from roomkit.models.channel import (
+    AgentIdentity,
     ChannelBinding,
     ChannelCapabilities,
+    ChannelDeclaration,
     ChannelOutput,
     RateLimit,
     RetryPolicy,
@@ -79,8 +81,10 @@ __all__ = [
     "VoiceDeliveryRecord",
     "Access",
     "AudioContent",
+    "AgentIdentity",
     "ChannelBinding",
     "ChannelCapabilities",
+    "ChannelDeclaration",
     "ChannelCategory",
     "ChannelData",
     "ChannelDirection",

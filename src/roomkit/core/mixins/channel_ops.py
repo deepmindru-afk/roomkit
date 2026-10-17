@@ -7,6 +7,7 @@ from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels.base import Channel, FrameworkAwareChannel
+from roomkit.channels.declared import DeclaredChannel
 from roomkit.core.exceptions import (
     ChannelAlreadyRegisteredError,
     ChannelNotFoundError,
@@ -14,7 +15,7 @@ from roomkit.core.exceptions import (
     ConferenceAlreadyAttachedError,
 )
 from roomkit.core.mixins.helpers import HelpersMixin
-from roomkit.models.channel import ChannelBinding
+from roomkit.models.channel import ChannelBinding, ChannelDeclaration
 from roomkit.models.enums import (
     Access,
     ChannelCategory,
@@ -76,6 +77,19 @@ def _named_correspondent(binding: ChannelBinding, channel: Channel) -> ChannelBi
     if named != binding.participant_id:
         update["participant_id"] = named
     return binding.model_copy(update=update) if update else binding
+
+
+def _refuse_declared_binding(channel: Channel, category: ChannelCategory | None) -> None:
+    """A channel the kit holds by its declaration alone takes part as an
+    intelligence channel only: nothing here delivers to it (RFC §10.6.2)."""
+    if isinstance(channel, DeclaredChannel) and category not in (
+        None,
+        ChannelCategory.INTELLIGENCE,
+    ):
+        raise ValueError(
+            f"Channel {channel.channel_id!r} is registered by its declaration alone: "
+            "it can be attached as an intelligence channel only"
+        )
 
 
 @runtime_checkable
@@ -140,8 +154,13 @@ class ChannelOpsMixin(HelpersMixin):
     _on_room_detached: Any  # see ChannelStateMixin
     turn_executor: Any  # see RoomKit
 
-    def register_channel(self, channel: Channel) -> None:
+    def register_channel(self, channel: Channel | ChannelDeclaration) -> None:
         """Register a channel implementation by its ID.
+
+        A :class:`ChannelDeclaration` registers an intelligence channel the
+        kit holds by its declaration alone (RFC §10.6.2), as a
+        :class:`DeclaredChannel`: bound, routed and planned for as the live
+        channel would be, its turns run on an executor whose host builds it.
 
         A duplicate ``channel_id`` is refused: silently replacing a live
         channel would leave existing room bindings routing to an object the
@@ -153,7 +172,11 @@ class ChannelOpsMixin(HelpersMixin):
         Raises:
             ChannelAlreadyRegisteredError: a channel with this ID is
                 already registered.
+            ValueError: a declaration of a channel that is not an
+                intelligence channel.
         """
+        if isinstance(channel, ChannelDeclaration):
+            channel = DeclaredChannel(channel)
         if channel.channel_id in self._channels:
             raise ChannelAlreadyRegisteredError(
                 f"Channel {channel.channel_id!r} is already registered. "
@@ -167,12 +190,14 @@ class ChannelOpsMixin(HelpersMixin):
         channel._trace_framework_handler = self._on_channel_trace
 
         # Propagate telemetry to all channels
-        channel._telemetry = self._telemetry  # ty: ignore[unresolved-attribute]
+        channel._telemetry = self._telemetry  # ty: ignore[invalid-assignment]
 
         # What an intelligence channel's turns fire the hooks through is the
         # executor's to give (RFC §10.6.2): the kit's own wires the channels the
-        # kit registers, as a host's executor wires the ones it builds.
-        self.turn_executor.wire(channel)
+        # kit registers, as a host's executor wires the ones it builds. A
+        # declared channel's executor is a host's.
+        if not isinstance(channel, DeclaredChannel):
+            self.turn_executor.wire(channel)
 
         # Propagate telemetry to channel's sub-providers (AI, STT, TTS, etc.)
         if hasattr(channel, "_propagate_telemetry"):
@@ -186,11 +211,12 @@ class ChannelOpsMixin(HelpersMixin):
             # The host is the RoomKit instance; the mixin cannot say so.
             channel.set_framework(self)  # ty: ignore[invalid-argument-type]
 
-        # Auto-greet: register global ON_SESSION_STARTED hook for agents
-        from roomkit.channels.agent import Agent as AgentChannel
-
-        if isinstance(channel, AgentChannel) and channel.auto_greet and channel.greeting:
-            self._register_auto_greet_hook(channel)
+        # Auto-greet: register global ON_SESSION_STARTED hook for agents, a
+        # declared one as a live one (RFC §10.6.2).
+        if channel.category is ChannelCategory.INTELLIGENCE:
+            identity = channel.declaration().identity
+            if identity is not None and identity.auto_greet and identity.greeting:
+                self._register_auto_greet_hook(channel.channel_id)
 
         # RFC §8.2 — the registry changing is an observable framework event.
         self._emit_framework_event_soon(
@@ -253,6 +279,7 @@ class ChannelOpsMixin(HelpersMixin):
             channel = self._channels.get(channel_id)
             if channel is None:
                 raise ChannelNotRegisteredError(f"Channel {channel_id} not registered")
+            _refuse_declared_binding(channel, category)
             self._refuse_discussion_binding(room_id, channel, category)
             # A conference maps 1:1 to a room (RFC 12.10.1 principle 2, made
             # normative in 12.10.4): a second conference channel is a second
@@ -748,13 +775,10 @@ class ChannelOpsMixin(HelpersMixin):
             raise ChannelNotFoundError(f"Channel {channel_id} not in room {room_id}")
         return binding
 
-    def _register_auto_greet_hook(self, agent: Channel) -> None:
+    def _register_auto_greet_hook(self, agent_id: str) -> None:
         """Register a global ON_SESSION_STARTED hook for agent auto-greeting."""
-        from roomkit.channels.agent import Agent as AgentChannel
         from roomkit.core.hooks import HookRegistration
 
-        assert isinstance(agent, AgentChannel)
-        agent_id = agent.channel_id
         hook_name = f"_agent_auto_greet:{agent_id}"
         kit_ref = self
         # Track rooms already greeted for text channels (no session to dedup on).

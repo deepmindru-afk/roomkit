@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The kit holds an agent by its declaration alone (RMK-822, RFC §10.6.2).
+  `kit.register_channel(ChannelDeclaration(channel_id=..., identity=
+  AgentIdentity(...), capabilities=..., recent_events_window=...))` registers
+  an intelligence channel with no object of it in the kit's process: the kit
+  holds a `DeclaredChannel` under its id, which a binding, routing,
+  `delegate`, `start_task`, `send_greeting` and auto-greet read as they read
+  a live agent. Its turns run on an executor whose host builds it; the kit's
+  own executor never builds it, so with none they fail at once with
+  `no_executor`. `Channel.declaration()` gives any channel's declaration
+  (`Agent` its identity, `AIChannel` whether it thinks while listening), and
+  registering it reads on the kit as registering the agent does. A
+  declaration that is not an intelligence channel's, a binding of one with
+  another category, and a strategy given a live agent whose id the kit holds
+  by declaration are refused with `ValueError`. Example:
+  `examples/declared_agent.py`.
+
 - `RoomKit.setup_task_tools(agent)` (RMK-825, RFC §23.4, §10.6.5): gives an AI
   channel `task_status` and `cancel_task` as tools the room's owner serves,
   wherever the agent's turns run, as `setup_background` gives

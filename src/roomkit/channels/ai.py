@@ -63,6 +63,7 @@ from roomkit.memory.sliding_window import SlidingWindowMemory
 from roomkit.models.channel import (
     ChannelBinding,
     ChannelCapabilities,
+    ChannelDeclaration,
     ChannelOutput,
     RetryPolicy,
 )
@@ -647,6 +648,13 @@ class AIChannel(
         """Whether the channel carries a thinker (RFC §6.4), which a
         discussion refuses (RFC §19.7.5)."""
         return self._thinker is not None
+
+    def declaration(self) -> ChannelDeclaration:
+        return (
+            super()
+            .declaration()
+            .model_copy(update={"thinks_while_listening": self.thinks_while_listening})
+        )
 
     async def _respond(
         self,
