@@ -1,4 +1,4 @@
-# Vendored from gradio-app/fastrtc@v0.0.34 (Apache-2.0); see LICENSE in this directory.
+# Vendored from gradio-app/fastrtc@v0.0.34 (MIT); see LICENSE in this directory.
 import asyncio
 import base64
 import logging

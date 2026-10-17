@@ -1,4 +1,4 @@
-# Vendored from gradio-app/fastrtc@v0.0.34 (Apache-2.0); see LICENSE in this
+# Vendored from gradio-app/fastrtc@v0.0.34 (MIT); see LICENSE in this
 # directory. The WebRTC data models use plain pydantic bases instead of
 # gradio.data_classes so this module carries no gradio dependency, and the
 # pydub-based audio_to_bytes / audio_to_file helpers are left out.

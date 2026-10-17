@@ -1,4 +1,4 @@
-# Vendored from gradio-app/fastrtc@v0.0.34 (Apache-2.0); see LICENSE in this
+# Vendored from gradio-app/fastrtc@v0.0.34 (MIT); see LICENSE in this
 # directory. Trimmed to the headless WebRTC transport: the Gradio UI builder,
 # the `gr.WebRTC` component, the colab/spaces helpers and `fastphone` tunneling
 # were removed so roomkit ships WebRTC without depending on gradio.
