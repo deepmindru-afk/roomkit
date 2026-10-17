@@ -110,10 +110,9 @@ async def test_a_stop_in_one_room_leaves_the_other_rooms_turn_running(streaming:
     ch = AIChannel("ai1", provider=_HeldProvider(release, streaming=streaming))
     turn_a = asyncio.create_task(_turn(ch, "A"))
     turn_b = asyncio.create_task(_turn(ch, "B"))
-    for _ in range(100):
-        if len(ch._active_loops) == 2:
-            break
-        await asyncio.sleep(0)
+    async with asyncio.timeout(2):
+        while len(ch._active_loops) < 2:
+            await asyncio.sleep(0.001)
 
     reached = ch.steer(Cancel(reason="stop pressed"), room_id="A")
     release.set()
