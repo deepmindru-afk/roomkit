@@ -103,21 +103,7 @@ class WebSocketHandler:
                 message = await websocket.receive_json()
 
                 if message["event"] == "media":
-                    audio_payload = base64.b64decode(message["media"]["payload"])
-
-                    audio_array = np.frombuffer(audioop.ulaw2lin(audio_payload, 2), dtype=np.int16)
-
-                    if (
-                        self.stream_handler.phone_mode
-                        and self.stream_handler.input_sample_rate != 8000
-                    ):
-                        audio_array = audio_to_float32(audio_array)
-                        audio_array = librosa.resample(
-                            audio_array,
-                            orig_sr=8000,
-                            target_sr=self.stream_handler.input_sample_rate,
-                        )
-                        audio_array = audio_to_int16(audio_array)
+                    audio_array = self._media_audio(message)
                     try:
                         if isinstance(self.stream_handler, AsyncStreamHandler):
                             await self.stream_handler.receive(
@@ -178,6 +164,22 @@ class WebSocketHandler:
                 await websocket.close()
 
             self.clean_up(cast(str, self.stream_id))
+
+    def _media_audio(self, message: dict[str, Any]) -> np.ndarray:
+        """Return a media event's audio at the stream handler's input rate."""
+        audio_payload = base64.b64decode(message["media"]["payload"])
+
+        audio_array = np.frombuffer(audioop.ulaw2lin(audio_payload, 2), dtype=np.int16)
+
+        if self.stream_handler.phone_mode and self.stream_handler.input_sample_rate != 8000:
+            audio_array = audio_to_float32(audio_array)
+            audio_array = librosa.resample(
+                audio_array,
+                orig_sr=8000,
+                target_sr=self.stream_handler.input_sample_rate,
+            )
+            audio_array = audio_to_int16(audio_array)
+        return audio_array
 
     def emit_with_context(self):
         current_context.set(Context(webrtc_id=cast(str, self.stream_id), websocket=self.websocket))
