@@ -146,6 +146,30 @@ jobs:
       - name: Run smoke test
         run: uv run pytest tests/test_smoke_quickstart.py -v
 
+  # `dev` installs audioop-lts on 3.13 through other extras, and the
+  # integration job runs `fastrtc` on 3.12 only: neither sees the WebRTC
+  # transport import a module the stdlib dropped. Install the extra alone, as
+  # a user does, on the newest Python the test matrix runs.
+  fastrtc-extra:
+    name: fastrtc extra alone (Python 3.13)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install the package with the fastrtc extra only
+        run: uv venv --python 3.13 && uv pip install ".[fastrtc]" pytest pytest-asyncio
+
+      # Imported outside pytest: the tests importorskip roomkit.webrtc, so a
+      # broken import would read as skipped.
+      - name: Import the WebRTC transport
+        run: .venv/bin/python -c "import roomkit.webrtc"
+
+      - name: Run the WebRTC websocket µ-law tests
+        run: .venv/bin/python -m pytest tests/test_webrtc_websocket_g711.py -v
+
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
