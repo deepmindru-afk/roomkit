@@ -27,7 +27,7 @@ from roomkit.turns._executor_turn import ExecutorTurn
 from roomkit.turns._wiring import TurnWiring
 from roomkit.turns._wiring_env import StoreWiringEnv
 from roomkit.turns.base import TurnTimeouts
-from roomkit.turns.wire import ChannelCall, ChannelResult
+from roomkit.turns.wire import ChannelCall, ChannelResult, CommittedEvent
 
 if TYPE_CHECKING:
     from roomkit.channels._author_images import AttachedMedia, MediaResolver
@@ -244,14 +244,17 @@ class TurnExecutor:
 
     async def control(self, message: ChannelControl) -> ChannelResult | None:
         """Apply a channel control message of the owner's (RFC §10.6.3): a
-        ``channel_call``'s result; nothing for ``room_attached`` and
-        ``room_detached``."""
+        ``channel_call``'s result; nothing for ``room_attached``,
+        ``room_detached`` and ``committed_event``."""
         try:
             channel = await self._channels.get(message.channel_id)
         except Exception as exc:
             if isinstance(message, ChannelCall):
                 return ChannelResult(error=error_record(exc), executor_id=self.executor_id)
             logger.exception("The factory failed to build channel %s", message.channel_id)
+            return None
+        if isinstance(message, CommittedEvent):
+            await _hand_event(channel, message)
             return None
         return await self._rooms.apply(channel, message)
 
@@ -291,3 +294,18 @@ class TurnExecutor:
                 f"{request.channel_id!r} on executor {self.executor_id}: rename one of them "
                 "(RFC §10.6.5)"
             )
+
+
+async def _hand_event(channel: Channel | None, message: CommittedEvent) -> None:
+    """Hand a committed event to *channel* for its room, logging what it
+    raises: the room's state is left as it is (RFC §10.6.3)."""
+    if channel is None:
+        return
+    try:
+        await channel.on_room_event(message.room_id, message.event)
+    except Exception:
+        logger.exception(
+            "Channel %s failed on an event committed in room %s",
+            message.channel_id,
+            message.room_id,
+        )

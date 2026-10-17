@@ -300,6 +300,7 @@ from roomkit.turns import (
     ChannelCall,
     ChannelControl,
     ChannelResult,
+    CommittedEvent,
     ExecutorLink,
     InMemoryTurnBackend,
     OwnerTool,
@@ -445,6 +446,7 @@ __all__ = [
     # Turn execution (RFC §10.6)
     "TURN_TRIGGERS",
     "ChannelCall",
+    "CommittedEvent",
     "ChannelControl",
     "ChannelResult",
     "ExecutorLink",

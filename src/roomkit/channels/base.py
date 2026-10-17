@@ -433,6 +433,11 @@ class Channel(ABC):
         attached.  Default: no-op.
         """
 
+    async def on_room_event(self, room_id: str, event: RoomEvent) -> None:  # noqa: B027
+        """Take *event*, committed in *room_id*, as a message the channel's
+        memory is handed without a turn (a discussion's, RFC §19.7.5 rule 3).
+        Default: no-op."""
+
     async def on_room_detached(  # noqa: B027
         self,
         room_id: str,

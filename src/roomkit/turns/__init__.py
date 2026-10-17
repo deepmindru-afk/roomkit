@@ -17,6 +17,7 @@ from roomkit.turns.wire import (
     ChannelCall,
     ChannelControl,
     ChannelResult,
+    CommittedEvent,
     OwnerTool,
     PreviousTurn,
     RoomAttached,
@@ -26,6 +27,7 @@ from roomkit.turns.wire import (
 
 __all__ = [
     "ChannelCall",
+    "CommittedEvent",
     "ChannelControl",
     "ChannelResult",
     "ExecutorLink",

@@ -583,8 +583,10 @@ class AIChannel(
         if decision is None or decision.mode != "silent":
             notes = await self._speaking_notes(room_id, decision)
             return await self._respond(event, binding, context, notes=notes)
-        # No turn, but the conversation is the agent's memory all the same.
-        await self._ingest_event(event, context)
+        # No turn, but the conversation is the agent's memory all the same;
+        # a discussion handed it already when it committed (RFC §19.7.5 rule 3).
+        if discussion_turn(event) is None:
+            await self._ingest_event(event, context)
         decision = await self._think_while_listening(event, binding, context, decision)
         if decision.mode == "silent":
             return ChannelOutput.empty()
@@ -695,14 +697,22 @@ class AIChannel(
         finally:
             _current_loop_ctx.reset(token)
 
+    async def on_room_event(self, room_id: str, event: RoomEvent) -> None:
+        """A committed event of *room_id* for the memory, a discussion's
+        (RFC §19.7.5 rule 3), wherever the channel runs."""
+        await self._ingest(room_id, event)
+
     async def _ingest_event(self, event: RoomEvent, context: RoomContext) -> None:
+        """Hand *event* to the memory provider, read in its room."""
+        await self._ingest(context.room.id if context.room else event.room_id, event)
+
+    async def _ingest(self, room_id: str | None, event: RoomEvent) -> None:
         """Hand *event* to the memory provider (a stateful one, a vector store,
         indexes content as it arrives), whether the agent answers it or not.
 
         An instruction is the application's, not the conversation's (RFC
         §10.1.1): a memory provider never learns it as something said.
         """
-        room_id = context.room.id if context.room else event.room_id
         if not room_id or event.type == EventType.INSTRUCTION:
             return
         try:

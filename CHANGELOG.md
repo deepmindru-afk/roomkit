@@ -260,6 +260,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A discussion hands each committed message to its agents' memories through
+  the turn backend, where each agent runs (RMK-827, RFC §10.6.3, §19.7.5 rule
+  3): a `committed_event` channel control reaches the executor holding the
+  agent's state for the room, else one declaring it, without moving the
+  holder, and calls the new `Channel.on_room_event(room_id, event)` (an
+  `AIChannel` hands it to its memory). It no longer calls the live agent
+  object the kit holds, so an agent held by its declaration alone, or run on
+  a host's executor, learns the conversation too. A discussion turn the speak
+  policy leaves silent no longer hands its message to memory a second time.
+
 - The tools orchestration sets up for an AI channel are kept by the room's
   owner, per channel and room, beside the channel's declaration, never on the
   live agent (RMK-826, RFC §10.6.2, §10.6.5): the handoff (`setup_handoff`,

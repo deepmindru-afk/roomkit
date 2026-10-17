@@ -1,0 +1,96 @@
+"""A discussion hands each committed message to its agents' memories through
+the turn backend, where each agent runs (RFC §10.6.3, §19.7.5 rule 3)."""
+
+from __future__ import annotations
+
+import asyncio
+
+from roomkit import Agent, AgentIdentity, ChannelDeclaration, Discussion, RoomKit
+from roomkit.memory.mock import MockMemoryProvider
+from roomkit.models.delivery import InboundMessage
+from roomkit.models.event import TextContent
+from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.speaking.mock import MockSpeakPolicy
+from roomkit.store.memory import InMemoryStore
+from roomkit.turns import InMemoryTurnBackend, TurnExecutor
+from tests.test_framework import SimpleChannel
+
+
+def _agent(channel_id: str, memory: MockMemoryProvider, **kwargs: object) -> Agent:
+    provider = MockAIProvider(responses=[f"{channel_id} here."] * 4)
+    return Agent(channel_id, provider=provider, memory=memory, **kwargs)  # type: ignore[arg-type]
+
+
+def _ingested(memory: MockMemoryProvider) -> list[str]:
+    return [
+        call.event.content.body
+        for call in memory.ingest_calls
+        if isinstance(call.event.content, TextContent)
+    ]
+
+
+async def _say(kit: RoomKit, text: str) -> None:
+    await kit.process_inbound(
+        InboundMessage(channel_id="sms", sender_id="marie", content=TextContent(body=text)),
+        room_id="r",
+    )
+
+
+async def test_a_declared_agent_s_memory_is_handed_each_message_where_it_runs() -> None:
+    memories = {"ana": MockMemoryProvider(), "bob": MockMemoryProvider()}
+    agents = {cid: _agent(cid, memory) for cid, memory in memories.items()}
+    store, backend = InMemoryStore(), InMemoryTurnBackend()
+    executor = TurnExecutor(agents.get, hosts=lambda cid: cid in agents, store=store)
+    await backend.serve(executor)
+    kit = RoomKit(store=store, turn_backend=backend)
+    kit.register_channel(SimpleChannel("sms"))
+    for cid in agents:
+        kit.register_channel(ChannelDeclaration(channel_id=cid, identity=AgentIdentity()))
+    await kit.create_room(room_id="r", orchestration=Discussion(agents=["ana", "bob"]))
+    await kit.attach_channel("r", "sms")
+
+    await _say(kit, "Hello everyone.")
+    await asyncio.sleep(0.3)
+    handed = {cid: _ingested(memory) for cid, memory in memories.items()}
+    await kit.close()
+    await executor.close()
+
+    for cid, said in handed.items():
+        other = "bob" if cid == "ana" else "ana"
+        assert said.count("Hello everyone.") == 1
+        assert f"{cid} here." not in said  # its own answer is never handed to it
+        assert said.count(f"{other} here.") <= 1
+
+
+async def test_a_silent_discussion_turn_does_not_hand_the_message_again() -> None:
+    quiet = MockMemoryProvider()
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms"))
+    ana = _agent("ana", quiet, speak_policy=MockSpeakPolicy(["silent"]))
+    bob = _agent("bob", MockMemoryProvider())
+    await kit.create_room(room_id="r", orchestration=Discussion(agents=[ana, bob]))
+    await kit.attach_channel("r", "sms")
+
+    await _say(kit, "@ana are you there?")
+    await asyncio.sleep(0.3)
+    said = _ingested(quiet)
+    await kit.close()
+
+    assert said.count("@ana are you there?") == 1
+
+
+async def test_an_agent_no_executor_runs_misses_its_memory_and_the_room_goes_on() -> None:
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms"))
+    bob_memory = MockMemoryProvider()
+    kit.register_channel(ChannelDeclaration(channel_id="ana"))
+    bob = _agent("bob", bob_memory)
+    await kit.create_room(room_id="r", orchestration=Discussion(agents=["ana", bob]))
+    await kit.attach_channel("r", "sms")
+
+    await asyncio.wait_for(_say(kit, "Hello."), 2)
+    await asyncio.sleep(0.2)
+    said = _ingested(bob_memory)
+    await kit.close()
+
+    assert said.count("Hello.") == 1

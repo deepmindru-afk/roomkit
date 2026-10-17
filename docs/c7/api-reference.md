@@ -180,7 +180,8 @@ RoomKit exports **344 symbols** from `roomkit`. Providers and voice types import
 | `PreviousTurn` | A request's (or a channel call's) `previous_turn`: the room's last turn or channel call of the channel (`turn_id`, `executor_id`), `None` after a detach; an executor drops a room's state another left (RFC §10.6.2) |
 | `RoomAttached` / `RoomDetached` | Channel control to every executor declaring the channel: it calls `on_room_attached` / `on_room_detached` and logs what they raise (RFC §10.6.3) |
 | `ChannelCall` / `ChannelResult` | A channel's per-room verb, sent to the executor holding the room's state, and its answer (`result`, `error`, the changed `room_state`) |
-| `ChannelControl` | The union of `RoomAttached`, `RoomDetached` and `ChannelCall` that `TurnBackend.control()` carries |
+| `CommittedEvent` | Channel control to the executor holding the room's state, else one declaring the channel, without moving the holder: it calls `on_room_event(room_id, event)` (a discussion's memory hand-off, RFC §10.6.3) |
+| `ChannelControl` | The union of `RoomAttached`, `RoomDetached`, `CommittedEvent` and `ChannelCall` that `TurnBackend.control()` carries |
 | `TurnLinkError` | A turn the backend could not carry to its end (`no_executor`, at once when no executor declares the channel; `executor_lost`, `frame_lost`) |
 | `RemoteTurnError` | An error raised across the turn backend of a class outside RoomKit and Python, keeping its class name |
 | `DeliveryResult` | Result of delivering a message |

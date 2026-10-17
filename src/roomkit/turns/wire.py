@@ -352,6 +352,16 @@ class RoomDetached(BaseModel):
     room_id: str
 
 
+class CommittedEvent(BaseModel):
+    """An event committed in the room that the channel's memory is handed (a
+    discussion's, RFC §19.7.5 rule 3), answered by nothing (RFC §10.6.3)."""
+
+    type: Literal["committed_event"] = "committed_event"
+    channel_id: str
+    room_id: str
+    event: RoomEvent
+
+
 class ChannelCall(BaseModel):
     """A per-room verb of the channel (an ACP session's ``set_config_option``),
     answered by a :class:`ChannelResult` (RFC §10.6.3)."""
@@ -412,7 +422,7 @@ Control = Annotated[
 
 
 ChannelControl = Annotated[
-    RoomAttached | RoomDetached | ChannelCall,
+    RoomAttached | RoomDetached | CommittedEvent | ChannelCall,
     Field(discriminator="type"),
 ]
 

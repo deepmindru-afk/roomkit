@@ -29,6 +29,7 @@ from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.hook import HookResult
 from roomkit.models.steering import Cancel
 from roomkit.tasks.posting import send_posted
+from roomkit.turns.wire import CommittedEvent
 
 from ._config import DiscussionConfig
 from ._driver import TurnDriver
@@ -338,13 +339,22 @@ class DiscussionRoom:
     ) -> None:
         """Hand *event* to the memory of every agent it reaches but its author,
         as a room with no discussion delivers it (rule 3): a memory that
-        learns as messages arrive learns the whole conversation."""
+        learns as messages arrive learns the whole conversation. It reaches
+        each agent through the turn backend, where the agent runs (RFC
+        §10.6.3), live or held by its declaration alone."""
         for agent_id, agent in self.agents.items():
             if agent is None or agent_id == event.source.channel_id or agent_id not in reach:
                 continue
-            ingest = getattr(agent, "_ingest_event", None)
-            if ingest is not None:
-                await ingest(event, context)
+            handed = CommittedEvent(channel_id=agent_id, room_id=self.room_id, event=event)
+            try:
+                await self.kit._turns.control(handed)
+            except Exception:
+                logger.warning(
+                    "Agent %s's memory was not handed an event of room %s",
+                    agent_id,
+                    self.room_id,
+                    exc_info=True,
+                )
 
     async def queue_instruction(self, event: RoomEvent) -> None:
         """An instruction addressed to agents: a turn of its own each, at the

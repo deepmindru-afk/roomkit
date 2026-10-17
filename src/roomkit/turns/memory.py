@@ -23,6 +23,7 @@ from roomkit.turns.wire import (
     ChannelCall,
     ChannelControlEnvelope,
     ChannelResult,
+    CommittedEvent,
     ControlEnvelope,
     FrameEnvelope,
     Pull,
@@ -185,6 +186,9 @@ class InMemoryTurnBackend(TurnBackend):
             if answer is None:
                 return ChannelResult()
             return ChannelResult.model_validate_json(answer.model_dump_json())
+        if isinstance(message, CommittedEvent):
+            await self._hold(message.channel_id, message.room_id).control(_crossed(raw))
+            return None
         if isinstance(message, RoomDetached):
             self._holders.pop(message.channel_id, message.room_id)
         for executor in [e for e in self._executors if e.declares(message.channel_id)]:
@@ -196,6 +200,17 @@ class InMemoryTurnBackend(TurnBackend):
         for turn in list(self._turns):
             turn.shut()
         self._turns.clear()
+
+    def _hold(self, channel_id: str, room_id: str) -> TurnExecutor:
+        """The executor holding the room's state of *channel_id*, else one
+        that declares the channel, left as the holder it was (RFC §10.6.3)."""
+        holder = self._holders.get(channel_id, room_id)
+        if holder is not None and holder.declares(channel_id):
+            return holder
+        declarer = next((e for e in self._executors if e.declares(channel_id)), None)
+        if declarer is None:
+            raise TurnLinkError("no_executor", f"No executor serves channel {channel_id!r}")
+        return declarer
 
     def _place(
         self, channel_id: str, room_id: str, room_hooks: Sequence[str] = ()
