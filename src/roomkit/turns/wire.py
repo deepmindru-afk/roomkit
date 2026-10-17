@@ -62,6 +62,9 @@ class TurnRequest(BaseModel):
     owner_tools: list[OwnerTool] = Field(default_factory=list)
     """The tools the owner serves for the channel in the room: the channel
     declares them to its model, and a call to one is a ``tool_call``."""
+    room_hooks: list[str] = Field(default_factory=list)
+    """The names of the room's hooks on the triggers the turn fires (RFC
+    §10.6.6): the executor runs those it defines under them."""
     previous_turn: PreviousTurn | None = None
     """The room's previous turn of the channel; ``None`` for its first, or
     its first since the channel was detached from the room. An executor
@@ -179,6 +182,30 @@ class InputTaken(BaseModel):
     type: Literal["input_taken"] = "input_taken"
     request_id: str
     taken: bool
+
+
+class Ephemeral(BaseModel):
+    """An ephemeral event the turn published (thinking, a tool call's
+    composition, a plan): the owner publishes it on its realtime backend
+    (RFC §10.6.3)."""
+
+    type: Literal["ephemeral"] = "ephemeral"
+    channel: str
+    """The realtime channel it was published to (``room:<room_id>``)."""
+    event: dict[str, Any]
+    """The event, as ``EphemeralEvent.to_dict()`` gives it."""
+
+
+class FrameworkEventFrame(BaseModel):
+    """A framework event the turn emitted (RFC §8.2): the owner emits it on
+    its own bus (RFC §10.6.3)."""
+
+    type: Literal["framework_event"] = "framework_event"
+    event_type: str
+    room_id: str | None = None
+    channel_id: str | None = None
+    event_id: str | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
 
 
 class SteerResult(BaseModel):
@@ -373,7 +400,9 @@ Frame = Annotated[
     | SteerResult
     | InputRequest
     | InputClosed
-    | InputTaken,
+    | InputTaken
+    | Ephemeral
+    | FrameworkEventFrame,
     Field(discriminator="type"),
 ]
 Control = Annotated[

@@ -173,8 +173,8 @@ class TestVisionRidesTheTurnNotes:
         ai = kit.channels["ai-1"]
         context = await kit._build_context("r1")
 
-        assert ai._vision_notes(context, standalone=True) == []  # type: ignore[attr-defined]
-        assert ai._vision_notes(context, standalone=False)  # type: ignore[attr-defined]
+        assert await ai._vision_notes(context, standalone=True) == []  # type: ignore[attr-defined]
+        assert await ai._vision_notes(context, standalone=False)  # type: ignore[attr-defined]
 
     async def test_the_latest_view_of_two_video_channels_is_read(self, kit: RoomKit) -> None:
         _, provider = await _room_with_camera(kit)

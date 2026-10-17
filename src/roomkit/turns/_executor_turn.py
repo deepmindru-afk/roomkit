@@ -23,6 +23,7 @@ from roomkit.channels._tool_registry import set_turn_owner_tools
 from roomkit.core._turn_scope import enter_turn
 from roomkit.core.exceptions import ChannelNotRegisteredError, TurnLinkError
 from roomkit.models.streaming import ThinkingDeltaMarker, ToolCallEndMarker, ToolCallStartMarker
+from roomkit.telemetry.context import get_current_span, set_current_span
 from roomkit.tools._turn_inputs import set_turn_inputs
 from roomkit.turns._codec import (
     encode_end,
@@ -33,6 +34,7 @@ from roomkit.turns._codec import (
 )
 from roomkit.turns._executor_calls import ExecutorCalls
 from roomkit.turns._executor_inputs import ExecutorInputs
+from roomkit.turns._outlet import TurnOutlet, set_turn_outlet
 from roomkit.turns.base import heartbeat_tick
 from roomkit.turns.host import TurnHost, set_turn_host
 from roomkit.turns.wire import (
@@ -130,6 +132,8 @@ class ExecutorTurn:
         self._calls = ExecutorCalls(self._request, self._send_call)
         self._host = TurnHost(self._calls.host_call)
         self._inputs = ExecutorInputs(self._send_call)
+        # What the turn's channel publishes and its hooks emit (RFC §10.6.2).
+        self._outlet = TurnOutlet(self._send_published)
 
     async def run(self) -> None:
         """Run the turn to its end, which the owner is always told."""
@@ -145,6 +149,7 @@ class ExecutorTurn:
             # their way are answered first, and the mark its notes rode reads
             # as no mark.
             self._host._close()
+            self._outlet.close()
             self._inputs.close()
             task = asyncio.current_task()
             if self._cut is not None or (task is not None and task.cancelling()):
@@ -285,6 +290,11 @@ class ExecutorTurn:
         context.run(set_turn_owner_tools, self._calls.owner_tools)
         context.run(set_turn_host, self._host)
         context.run(set_turn_inputs, self._inputs)
+        context.run(set_turn_outlet, self._outlet)
+        trace = self._request.trace or {}
+        if trace.get("span_id") and context.run(get_current_span) is None:
+            # A context of its own: the turn continues the owner's span.
+            context.run(set_current_span, trace["span_id"])
         self._work = asyncio.get_running_loop().create_task(
             work, context=context, name=f"roomkit-turn-{self._request.turn_id}-work"
         )
@@ -354,6 +364,21 @@ class ExecutorTurn:
                 logger.exception("Turn %s could not report its error", self._request.turn_id)
                 raise _UncarriedError from exc
             await self._refuse(frame.type, exc)
+
+    async def _send_published(self, frame: Frame) -> None:
+        """Send what the turn published (an ephemeral event, a framework
+        event); one that cannot cross is dropped, the turn going on."""
+        if self._cut in ("owner_lost", "frame_lost"):
+            return
+        try:
+            await self._link.send(frame)
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "Turn %s: a %s cannot cross the turn backend, dropped: %s",
+                self.turn_id,
+                frame.type,
+                exc,
+            )
 
     async def _send_call(self, frame: Frame) -> int:
         """Send a call of the turn to its owner; an owner lost answers none."""

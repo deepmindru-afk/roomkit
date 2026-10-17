@@ -5,7 +5,8 @@ Usage::
     from roomkit.scoring import ScoringHook, MockScorer
 
     hook = ScoringHook(scorers=[MockScorer()])
-    hook.attach(kit)  # registers ON_AI_RESPONSE hook
+    hook.attach(kit)  # registers ON_AI_RESPONSE on the kit's turn executor
+    hook.attach(executor)  # or on an executor a host built (TurnExecutor(store=...))
 
     # Scores are stored as Observations in the ConversationStore
     # and accessible via hook.recent_scores
@@ -24,6 +25,7 @@ from roomkit.models.enums import HookExecution, HookTrigger
 from roomkit.models.task import Observation
 from roomkit.models.tool_call import AIResponseEvent
 from roomkit.scoring.base import ConversationScorer, Score
+from roomkit.turns.executor import TurnExecutor
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -58,12 +60,26 @@ class ScoringHook:
         self._store: ConversationStore | None = store
         self.recent_scores: deque[dict[str, Any]] = deque(maxlen=max_recent)
 
-    def attach(self, kit: RoomKit) -> None:
-        """Register the scoring hook on a RoomKit instance's turn executor,
-        where ON_AI_RESPONSE fires (RFC §10.6.6)."""
+    def attach(self, target: RoomKit | TurnExecutor) -> None:
+        """Register the scoring hook on a turn executor, where ON_AI_RESPONSE
+        fires (RFC §10.6.6): a kit's own, or one a host built. Scores go to
+        the store given, else the kit's or the executor's.
+
+        Raises:
+            ValueError: no store to keep the scores in.
+        """
+        if isinstance(target, TurnExecutor):
+            executor, store = target, target.store
+        else:
+            executor, store = target.turn_executor, target._store
         if self._store is None:
-            self._store = kit._store
-        decorator = kit.turn_executor.hook(
+            self._store = store
+        if self._store is None:
+            raise ValueError(
+                "ScoringHook keeps its scores in a store: ScoringHook(store=...) "
+                "or TurnExecutor(store=...)"
+            )
+        decorator = executor.hook(
             HookTrigger.ON_AI_RESPONSE,
             execution=HookExecution.ASYNC,
             name="scoring_hook",

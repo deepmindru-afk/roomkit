@@ -67,6 +67,7 @@ class StrategyMixin(HelpersMixin):
     _lock_manager: RoomLockManager
     _hook_engine: HookEngine
     _turn_hooks: HookEngine  # the kit's turn executor's (RFC §10.6.6)
+    _turns: Any  # RoomKit's TurnClient
     _turn_runners: TurnRunners  # the strategies' runners, kept by the owner (RFC §10.6.1)
     _channels: dict[str, Channel]
     _discussions: dict[str, Any]
@@ -359,7 +360,7 @@ class StrategyMixin(HelpersMixin):
         """The room hooks *room_id* holds on either side of the turn backend:
         the kit's, and its turn executor's (RFC §10.6.6)."""
         owner = {(False, name) for name in self._hook_engine.room_hook_names(room_id)}
-        return owner | {(True, name) for name in self._turn_hooks.room_hook_names(room_id)}
+        return owner | {(True, name) for name in self._turns.room_hook_names(room_id)}
 
     def _registries(self) -> dict[str, ChannelRegistry]:
         return {
@@ -373,8 +374,10 @@ class StrategyMixin(HelpersMixin):
         can, then a failure if anything stays (what was taken back is dropped
         from *installed*, so a retry finishes the rest)."""
         for on_executor, name in installed.hooks:
-            engine = self._turn_hooks if on_executor else self._hook_engine
-            engine.remove_room_hook(room_id, name)
+            if on_executor:
+                self._turns.disable_room_hook(room_id, name)
+            else:
+                self._hook_engine.remove_room_hook(room_id, name)
         installed.hooks = []
         registries = self._registries()
         for cid in {*installed.tools, *installed.runners}:

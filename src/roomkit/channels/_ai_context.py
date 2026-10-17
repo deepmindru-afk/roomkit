@@ -640,12 +640,12 @@ class AIContextMixin(_AIChannelContract):
         note = render_tasks_note(tasks, now=datetime.now(UTC), handles=handles)
         return [note] if note else []
 
-    def _vision_notes(self, context: RoomContext, *, standalone: bool) -> list[str]:
+    async def _vision_notes(self, context: RoomContext, *, standalone: bool) -> list[str]:
         """What the room's video last showed, for the turn's notes (RFC
         §12.8.7), fenced as data; a standalone turn reads none."""
         if standalone or self._room_vision_loader is None:
             return []
-        note = self._room_vision_loader(context)
+        note = await self._room_vision_loader(context)
         return [note] if note else []
 
     async def _own_notes(
@@ -655,7 +655,7 @@ class AIContextMixin(_AIChannelContract):
         tools used, its background tasks, what its video last showed."""
         notes = self._channel_notes(loop_ctx, standalone=standalone)
         notes += await self._tasks_notes(loop_ctx, context, standalone=standalone)
-        return notes + self._vision_notes(context, standalone=standalone)
+        return notes + await self._vision_notes(context, standalone=standalone)
 
     def _add_skills(
         self,

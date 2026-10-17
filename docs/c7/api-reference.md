@@ -167,7 +167,7 @@ RoomKit exports **255 symbols** from `roomkit`. Providers and voice types import
 | `InMemoryDeliveryBackend` | Asyncio-queue delivery backend (single process, no persistence) |
 | `TurnBackend` | ABC for what carries an intelligence channel's turns between the room owner and an executor (RFC §10.6) |
 | `InMemoryTurnBackend` | Default turn backend: in this process, every message serialized |
-| `TurnExecutor` | Builds a channel and runs its turns; the kit owns one reading its registered channels |
+| `TurnExecutor` | Builds a channel and runs its turns; the kit owns one reading its registered channels. One a host builds (`TurnExecutor(build_channel, store=, media_resolver=, attached_media=, telemetry=)`) builds each channel once, wires it as the kit wires the ones it registers (its hooks fire, what the channel publishes during a turn crosses as `ephemeral` / `framework_event` frames), and closes what it built; `executor.room_hook(name, trigger)(fn)` defines a room hook by name |
 | `TurnClient` | The room owner's side: runs a turn, reads it back as the channel's `ChannelOutput` |
 | `OwnerTools` | ABC for the tools a room owner serves its turns: what a request lists, how a call's handler runs |
 | `OwnerTool` | One tool a turn's request lists, served by the room owner (`tool`, `waits_by_design`) |
@@ -342,7 +342,8 @@ kit = RoomKit(
 | `on(event_type)` | Decorator for framework events |
 | `identity_hook(trigger, ...)` | Decorator for identity hooks |
 | `on_delivery_status(fn)` | Decorator for delivery status |
-| `add_room_hook(room_id, trigger, execution, fn, ...)` | Add room-scoped hook |
+| `add_room_hook(room_id, trigger, execution, fn, ...)` | Add room-scoped hook on an owner trigger |
+| `enable_room_hook(room_id, name)` / `disable_room_hook(room_id, name)` | Run (or stop running) for the room's turns the room hook *name* the executors define on a trigger a turn fires; only an executor defining every enabled name takes the room's turns (RFC §10.6.6) |
 | `remove_room_hook(room_id, name)` | Remove room-scoped hook |
 
 ### Realtime

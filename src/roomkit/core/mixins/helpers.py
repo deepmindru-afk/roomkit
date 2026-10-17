@@ -22,10 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 from collections.abc import Callable, Coroutine
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
@@ -33,7 +31,6 @@ from roomkit.core._authors import with_author
 from roomkit.core._participant_channels import channels_reached, warn_cross_channel
 from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.core.hooks import SyncPipelineResult
-from roomkit.core.task_utils import shielded
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundResult
 from roomkit.models.enums import (
@@ -50,21 +47,12 @@ from roomkit.models.event import EventSource, RoomEvent, SystemContent, TextCont
 from roomkit.models.framework_event import FrameworkEvent
 from roomkit.models.identity import Identity, IdentityHookResult, IdentityResult
 from roomkit.models.participant import Participant
-from roomkit.models.plan_event import PlanUpdatedEvent
-from roomkit.models.store_filter import EventFilter
 from roomkit.models.task import Observation, Task
-from roomkit.models.thinking_event import ThinkingEvent
 from roomkit.models.tool_call import (
     ToolCallEvent,
     ToolCallVerdict,
-    observed_call_event,
-    tool_call_chain_fold,
-    withheld_call_event,
 )
-from roomkit.tools._outcome import kept_in_tool_memory
-from roomkit.tools.context import turn_report_claim
-from roomkit.tools.external import BeforeToolDecision, note_handler_report
-from roomkit.tools.result import before_tool_use_detail, hook_errors_detail, tool_call_verdict
+from roomkit.tools.external import BeforeToolDecision
 
 _RECENT_EVENTS_LIMIT = 2_000
 """Hard ceiling on events kept in ``RoomContext.recent_events`` in memory."""
@@ -104,11 +92,7 @@ def _source_block_reason(binding: ChannelBinding | None) -> str | None:
 
 if TYPE_CHECKING:
     from roomkit.channels._ai_callbacks import (
-        AfterToolRoundHook,
-        BeforeGenerationHook,
-        SpeakDecisionHook,
         ThinkingHook,
-        ThoughtHook,
         ToolUsageLoader,
     )
     from roomkit.channels._task_planner import PlanUpdatedCallback
@@ -117,13 +101,9 @@ if TYPE_CHECKING:
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.room import Room
     from roomkit.models.tool_call import (
-        AfterResponseCallback,
         ToolCallCallback,
         ToolCallObserver,
-        ToolRoundEvent,
     )
-    from roomkit.speaking.base import SpeakDecisionEvent
-    from roomkit.speaking.thought import ThoughtEvent
     from roomkit.store.base import ConversationStore
     from roomkit.tools.external import BeforeToolCallback
 
@@ -134,65 +114,6 @@ IdentityHookFn = Callable[
     [RoomEvent, RoomContext, IdentityResult],
     Coroutine[Any, Any, IdentityHookResult | None],
 ]
-
-
-def _remembered_calls(events: list[RoomEvent]) -> list[dict[str, Any]]:
-    """The calls a tool memory keeps, read off a channel's stored tool rows,
-    in the order they were written."""
-    # The arguments the model sent, from the call's start: the end carries the
-    # ones that ran, which a BEFORE_TOOL_USE hook may have de-tokenised, and
-    # the digest goes back into the model's prompt. An end pairs with the
-    # start of the same call in the same turn (its response's correlation
-    # id): a provider may reuse an id from one turn to the next, and two turns
-    # of a room may run at once.
-    requested: dict[tuple[str | None, str], dict[str, Any]] = {}
-    calls: list[dict[str, Any]] = []
-    for ev in events:
-        content = ev.content
-        call = (ev.correlation_id, getattr(content, "tool_id", ""))
-        if ev.type == EventType.TOOL_CALL_START:
-            requested[call] = getattr(content, "arguments", {}) or {}
-            continue
-        name = getattr(content, "tool_name", "")
-        if ev.type != EventType.TOOL_CALL_END or not name:
-            continue
-        arguments = requested.pop(call, {})
-        # The live memory's rule, read off the outcome the row states: a
-        # refusal or a call nothing served is not kept.
-        if not kept_in_tool_memory(getattr(content, "outcome", None)):
-            continue
-        calls.append(
-            {
-                "name": name,
-                "arguments": arguments,
-                "result": getattr(content, "result", "") or "",
-                "outcome": getattr(content, "outcome", None),
-            }
-        )
-    return calls
-
-
-def _before_tool_decision(name: str, hook_result: Any) -> BeforeToolDecision:
-    """What the BEFORE_TOOL_USE chain decided about a call of *name*.
-
-    Rewritten arguments that are not an object refuse the call. A hook that
-    failed closed refused it too (RFC §9.3): its error rides the decision for
-    the observers, never the model.
-    """
-    rewritten = hook_result.metadata.get("arguments")
-    if "arguments" in hook_result.metadata and not isinstance(rewritten, dict):
-        logger.error(
-            "BEFORE_TOOL_USE hook returned non-object arguments for %s — denying tool call",
-            name,
-        )
-        return BeforeToolDecision(allowed=False)
-    blocked = not hook_result.allowed and not hook_result.failed_closed
-    return BeforeToolDecision(
-        allowed=hook_result.allowed,
-        arguments=rewritten if isinstance(rewritten, dict) else None,
-        detail=before_tool_use_detail(hook_result),
-        reason=hook_result.reason if blocked else None,
-    )
 
 
 @runtime_checkable
@@ -246,6 +167,7 @@ class HelpersMixin:
     _lanes: Any  # RoomLaneRegistry — set by RoomKit.__init__
     _room_close_epoch: int  # counted by _store_refusing_room — set by RoomKit.__init__
     _process_timeout: float  # the pre-commit bound (RFC §13.6) — set by RoomKit.__init__
+    turn_executor: Any  # RoomKit's own TurnExecutor, whose wiring the turn triggers run on
 
     # -- Persistence helpers (policy-aware) --
     #
@@ -939,212 +861,6 @@ class HelpersMixin:
                 skip_event_filter=True,
             )
 
-    def _build_tool_usage_loader(self, channel_id: str) -> ToolUsageLoader:
-        """Build the tool-usage hydration loader for AIChannel *channel_id*.
-
-        Fetches the channel's most recent persisted tool rows in a room so its
-        in-memory ToolUsageMemory (digest + re-reveal set) and its skill
-        activations survive channel-object lifetimes — the store dies with the
-        object (process restart, cache expiry) while conversations outlive it.
-        Only the channel's own rows: another agent's calls in the room are not
-        its memory, and their results may be withheld from it (RFC §7.5 rule
-        8). Called at most once per room per process (the channel marks the
-        room hydrated).
-        """
-        kit_ref = self
-        # Enough to refill both windows (digest 8 + reveal 12) after the
-        # infra-tool rows are filtered out by ToolUsageMemory.record().
-        limit = 30
-
-        async def _load(room_id: str) -> list[dict[str, Any]]:
-            with kit_ref._resource_lease():
-                events = await kit_ref._store.get_timeline(
-                    room_id,
-                    event_filter=EventFilter(
-                        event_types=[EventType.TOOL_CALL_START, EventType.TOOL_CALL_END],
-                        source_channel_id=channel_id,
-                    ),
-                    limit=limit * 2,  # a start and an end per call
-                    newest_first=True,  # most recent N, returned ascending
-                )
-            return _remembered_calls(events)
-
-        return _load
-
-    def _build_tool_call_hook(self, channel_id: str) -> ToolCallCallback:
-        """Build the ON_TOOL_CALL callback for a call a channel served.
-
-        The returned callback runs ON_TOOL_CALL's SYNC hooks as a chain on the
-        call's outcome (RFC §9.3, ``tool_call_chain_fold``) and returns their
-        :class:`ToolCallVerdict` (see :func:`tool_call_verdict`). The ASYNC
-        observers see the final outcome as the model reads it, or, after a
-        BLOCK, the failure. Emits a ``tool_call`` framework event.
-
-        A call nothing served arrives with no result: the chain is the hooks'
-        chance to serve it, not a report on it. The observers then see the
-        result a hook supplied, or the block; when none serves it, the channel
-        reports the failure itself, once (RFC §9.3).
-        """
-        kit_ref = self
-
-        async def _callback(
-            event: ToolCallEvent, *, claim: Callable[[], bool] | None = None
-        ) -> ToolCallVerdict | None:
-            return await kit_ref._judge_tool_call(event, channel_id, claim=claim)
-
-        return _callback
-
-    async def _judge_tool_call(
-        self,
-        event: ToolCallEvent,
-        channel_id: str,
-        *,
-        carrying: RoomContext | None = None,
-        claim: Callable[[], bool] | None = None,
-    ) -> ToolCallVerdict | None:
-        """ON_TOOL_CALL's verdict on a call a channel served, its observers told.
-
-        What :meth:`_build_tool_call_hook`'s callback runs, for every channel;
-        *carrying* is a context the caller already built for this call, which
-        spares the room history a second read. *claim* claims the call's one
-        report between the chain and the observers: when it answers ``False``
-        the outcome was already reported (a cancellation that landed while
-        the chain ran) and nothing more is (RFC §12.4).
-        """
-        if not event.room_id:
-            return None
-        chain = await self._run_tool_call_chain(event, event.room_id, carrying=carrying)
-        if chain is None:
-            unreachable = self._unreachable_tool_call_verdict(event.room_id)
-            # The framework event says what the model reads: the failure of
-            # a hook that fails closed (RFC §9.3).
-            reported = (
-                withheld_call_event(event, str(unreachable.result)) if unreachable else event
-            )
-            await self._report_unreachable_tool_call(reported, channel_id, claim)
-            return unreachable
-        hook_result, context = chain
-        verdict = tool_call_verdict(hook_result, event)
-        read = verdict.result if verdict.result is not None else event.result
-        if read is None:
-            # Served by nothing: the channel reports the failure, once,
-            # with its own framework event, and what any hook that
-            # failed said for the observers.
-            return replace(verdict, error_detail=hook_errors_detail(hook_result))
-        if claim is not None and not claim():
-            return verdict
-        # Observers and the framework event see what the model reads: the
-        # result, or the failure of a call a hook withheld (RFC §9.3). The
-        # report is claimed now: it is made to its end, a cut of the call
-        # meanwhile included, or the call would have none.
-        observed = observed_call_event(hook_result, event, read)
-        await shielded(self._tell_tool_call(observed, context, channel_id))
-        return verdict
-
-    async def _tell_tool_call(
-        self, observed: ToolCallEvent, context: RoomContext | None, channel_id: str
-    ) -> None:
-        """Tell ON_TOOL_CALL's observers and the framework event of a call
-        whose one report was claimed."""
-        if context is not None:
-            await self._observe_tool_call(observed, context)
-        await self._emit_tool_call_event(observed, channel_id)
-
-    async def _run_tool_call_chain(
-        self, event: ToolCallEvent, room_id: str, *, carrying: RoomContext | None = None
-    ) -> tuple[SyncPipelineResult, RoomContext | None] | None:
-        """ON_TOOL_CALL's SYNC chain on a served call, and the context it ran with.
-
-        The one runner of the chain, for every channel (RFC §9.3). With no
-        ON_TOOL_CALL hook registered the call stands as served, and no
-        context is built. ``None`` when the context would not build.
-        *carrying* is a context the caller already built for this call, which
-        spares the room history a second read.
-        """
-        if not self._turn_hooks.has_hooks(HookTrigger.ON_TOOL_CALL):
-            return SyncPipelineResult(event=event), None
-        context = await self._hook_context(room_id, HookTrigger.ON_TOOL_CALL, carrying=carrying)
-        if context is None:
-            return None
-        hook_result = await self._turn_hooks.run_sync_hooks(
-            room_id,
-            HookTrigger.ON_TOOL_CALL,
-            event,
-            context,
-            skip_event_filter=True,
-            fold=tool_call_chain_fold(event),
-            fire_observers=False,
-        )
-        return hook_result, context
-
-    def _build_tool_report_hook(self, channel_id: str) -> ToolCallObserver:
-        """Build the ON_TOOL_CALL callback for a call an external handler ran.
-
-        A report, by construction (RFC §9.3): the agent already read the
-        provider's result, so nothing a hook returns reaches it, no rewrite is
-        folded in, and a BLOCK withholds nothing. The observers see the
-        provider's outcome and its own ``is_error``, a block included. The
-        channel's turn that announced the call claims its one report once the
-        observers hear it.
-        """
-        kit_ref = self
-
-        async def _callback(event: ToolCallEvent) -> None:
-            # The turn that announced the call claims its one report where
-            # the observers hear it (RFC §9.3).
-            turn_claim = turn_report_claim(event.tool_call_id, channel_id)
-
-            def claim() -> bool:
-                # Where the observers hear it: a handler that raises past
-                # this point has made the call's report, and its door does
-                # not make it again.
-                note_handler_report(event.tool_call_id)
-                return turn_claim() if turn_claim is not None else True
-
-            await kit_ref._report_tool_call(event, channel_id, claim=claim)
-
-        return _callback
-
-    async def _report_tool_call(
-        self,
-        event: ToolCallEvent,
-        channel_id: str,
-        *,
-        claim: Callable[[], bool] | None = None,
-    ) -> None:
-        """Fire ON_TOOL_CALL as a report on a call whose outcome the model already read.
-
-        Every hook runs and nothing it returns is applied (RFC §9.3): the
-        observers see *event* as it stands, a BLOCK included. For a call an
-        external handler or a provider ran. A call the turn cut or a
-        gate or handler refused never ran: its ASYNC observers alone hear of
-        it, as of a local call cut or refused.
-        *claim* claims the call's one report between the chain and the
-        observers, as :meth:`_judge_tool_call` does: a report cut while the
-        chain ran is still owed, and one the observers heard is made.
-        """
-        if not event.room_id:
-            return
-        if event.cancelled or event.refused:
-            # Neither ran: the observers alone hear of it, on every door.
-            await self._observe_failed_tool_call(event, channel_id, claim=claim)
-            return
-        context: RoomContext | None = None
-        if self._turn_hooks.has_hooks(HookTrigger.ON_TOOL_CALL):
-            # The one runner of the chain, so each hook sees the call as the
-            # previous one left it, whichever form its rewrite took; nothing it
-            # returns reaches the agent.
-            chain = await self._run_tool_call_chain(event, event.room_id)
-            if chain is None:
-                await self._report_unreachable_tool_call(event, channel_id, claim)
-                return
-            _, context = chain
-        if claim is not None and not claim():
-            return
-        if context is not None:
-            await self._observe_tool_call(event, context)
-        await self._emit_tool_call_event(event, channel_id)
-
     async def _hook_context(
         self, room_id: str, trigger: HookTrigger, *, carrying: RoomContext | None = None
     ) -> RoomContext | None:
@@ -1165,433 +881,75 @@ class HelpersMixin:
             )
             return None
 
-    async def _observe_tool_call(self, event: ToolCallEvent, context: RoomContext) -> None:
-        """Fire ON_TOOL_CALL's ASYNC observers alone on *event*."""
-        await self._turn_hooks.run_observers(
-            str(event.room_id),
-            HookTrigger.ON_TOOL_CALL,
-            event,
-            context,
-            skip_event_filter=True,
-        )
+    # -- The turn triggers' wiring, on the kit's own executor (RFC §10.6.6) -----
+    #
+    # The wiring is the executor's (``roomkit.turns._wiring``); these reach the
+    # kit's own executor's, for the doors that fire a turn trigger in the kit's
+    # process outside a turn (a speech-to-speech session's tool calls, a
+    # conference's, RFC §10.6.6) and for code that held these names.
 
-    async def _emit_tool_call_event(self, event: ToolCallEvent, channel_id: str) -> None:
-        """The ``tool_call`` framework event of one reported call, its failure
-        and cancellation markers included, whichever path reported it."""
-        data: dict[str, Any] = {
-            "tool_name": event.name,
-            "tool_call_id": event.tool_call_id,
-            "channel_type": str(event.channel_type),
-        }
-        if event.is_error:
-            data["is_error"] = True
-        if event.cancelled:
-            data["cancelled"] = True
-        if event.refused:
-            data["refused"] = True
-        if event.refused_but_ran:
-            data["refused_but_ran"] = True
-        await self._emit_framework_event(
-            "tool_call", room_id=event.room_id, channel_id=channel_id, data=data
-        )
+    def _build_tool_usage_loader(self, channel_id: str) -> ToolUsageLoader:
+        return self.turn_executor.wiring.build_tool_usage_loader(channel_id)
 
-    async def _report_unreachable_tool_call(
-        self, event: ToolCallEvent, channel_id: str, claim: Callable[[], bool] | None = None
-    ) -> None:
-        """Report a call whose ON_TOOL_CALL hooks could not run, as *event* stands.
+    def _build_tool_call_hook(self, channel_id: str) -> ToolCallCallback:
+        return self.turn_executor.wiring.tools.build_tool_call_hook(channel_id)
 
-        The observers need the context that failed: the ``tool_call``
-        framework event is then the call's one report, on every channel,
-        saying what the model reads (a fail-closed hook's failure included,
-        which the judge hands it) (RFC §9.3). A call with no result yet is the
-        channel's to report, as the failure it is.
-        """
-        if event.result is not None and (claim is None or claim()):
-            await self._emit_tool_call_event(event, channel_id)
-
-    def _unreachable_tool_call_verdict(self, room_id: str) -> ToolCallVerdict | None:
-        """The verdict on a call whose ON_TOOL_CALL hooks could not run.
-
-        None, keeping the result, unless a hook there fails closed: then the
-        result is withheld as that hook's own failure would withhold it, since
-        the redaction it exists for must not be skipped.
-        """
-        closed = self._turn_hooks.fail_closed_hook(room_id, HookTrigger.ON_TOOL_CALL)
-        if closed is None:
-            return None
-        reason = json.dumps({"error": f"hook_error:{closed}"})
-        return ToolCallVerdict(result=reason, blocked=True)
-
-    def _build_tool_observer_hook(self, channel_id: str) -> ToolCallObserver:
-        """Build a ToolCallObserver closure for an AIChannel.
-
-        The counterpart of :meth:`_build_tool_call_hook` for a call that failed
-        or was refused: it runs the ASYNC observers of ON_TOOL_CALL and returns
-        nothing. A refused call has no result for a hook to provide or correct,
-        and must not reach a hook that would serve it.
-        """
-        kit_ref = self
-
-        async def _callback(event: ToolCallEvent) -> None:
-            claim = turn_report_claim(event.tool_call_id, channel_id)
-            await kit_ref._observe_failed_tool_call(event, channel_id, claim=claim)
-
-        return _callback
-
-    async def _observe_failed_tool_call(
+    async def _judge_tool_call(
         self,
         event: ToolCallEvent,
         channel_id: str,
         *,
+        carrying: RoomContext | None = None,
         claim: Callable[[], bool] | None = None,
+    ) -> ToolCallVerdict | None:
+        tools = self.turn_executor.wiring.tools
+        return await tools.judge_tool_call(event, channel_id, carrying=carrying, claim=claim)
+
+    async def _tell_tool_call(
+        self, observed: ToolCallEvent, context: RoomContext | None, channel_id: str
     ) -> None:
-        """Tell ON_TOOL_CALL's ASYNC observers a call failed, was refused or was
-        cancelled, or one whose report a cut left unmade, and emit its
-        ``tool_call`` framework event, both as *event* stands (RFC §9.3).
+        await self.turn_executor.wiring.tools.tell_tool_call(observed, context, channel_id)
 
-        The one report of such a call, for every channel: nothing that could
-        serve the call reads it. *claim* claims that report once the context
-        the observers read is built, as every report runner does: a report cut
-        before then is still owed.
-        """
-        if not event.room_id:
-            return
-        context: RoomContext | None = None
-        if self._turn_hooks.has_hooks(HookTrigger.ON_TOOL_CALL):
-            context = await self._hook_context(event.room_id, HookTrigger.ON_TOOL_CALL)
-            if context is None:
-                # The observers need the context that failed; the framework
-                # event still reports the call once, as for a served call.
-                await self._report_unreachable_tool_call(event, channel_id, claim)
-                return
-        if claim is not None and not claim():
-            return
-        if context is not None:
-            await self._turn_hooks.run_observers(
-                event.room_id,
-                HookTrigger.ON_TOOL_CALL,
-                event,
-                context,
-                skip_event_filter=True,
-            )
-        await self._emit_tool_call_event(event, channel_id)
+    async def _run_tool_call_chain(
+        self, event: ToolCallEvent, room_id: str, *, carrying: RoomContext | None = None
+    ) -> tuple[SyncPipelineResult, RoomContext | None] | None:
+        tools = self.turn_executor.wiring.tools
+        return await tools.run_tool_call_chain(event, room_id, carrying=carrying)
 
-    def _build_thinking_hook(self, channel_id: str) -> ThinkingHook:
-        """Build an ON_AI_THINKING callback closure for an AIChannel.
+    def _build_tool_report_hook(self, channel_id: str) -> ToolCallObserver:
+        return self.turn_executor.wiring.tools.build_tool_report_hook(channel_id)
 
-        RFC §9.2. The same reasoning also goes out as an ephemeral event for
-        live UIs; the hook is what makes it observable to a host that runs no
-        realtime backend.
-        """
-        kit_ref = self
+    async def _report_tool_call(
+        self, event: ToolCallEvent, channel_id: str, *, claim: Callable[[], bool] | None = None
+    ) -> None:
+        await self.turn_executor.wiring.tools.report_tool_call(event, channel_id, claim=claim)
 
-        async def _callback(room_id: str, thinking: str, round_idx: int) -> None:
-            if not room_id or not kit_ref._turn_hooks.has_hooks(HookTrigger.ON_AI_THINKING):
-                return
-            context = await kit_ref._hook_context(room_id, HookTrigger.ON_AI_THINKING)
-            if context is None:
-                return
+    def _build_tool_observer_hook(self, channel_id: str) -> ToolCallObserver:
+        return self.turn_executor.wiring.tools.build_tool_observer_hook(channel_id)
 
-            await kit_ref._turn_hooks.run_async_hooks(
-                room_id,
-                HookTrigger.ON_AI_THINKING,
-                ThinkingEvent(
-                    room_id=room_id,
-                    channel_id=channel_id,
-                    thinking=thinking,
-                    round_index=round_idx,
-                ),
-                context,
-                skip_event_filter=True,
-            )
-
-        return _callback
-
-    def _build_speak_decision_hook(self) -> SpeakDecisionHook:
-        """Build an ON_SPEAK_DECISION callback for an AIChannel (RFC §6.4)."""
-        kit_ref = self
-
-        async def _callback(event: SpeakDecisionEvent) -> None:
-            trigger = HookTrigger.ON_SPEAK_DECISION
-            if not event.room_id or not kit_ref._turn_hooks.has_hooks(trigger):
-                return
-            context = await kit_ref._hook_context(event.room_id, trigger)
-            if context is None:
-                return
-            await kit_ref._turn_hooks.run_async_hooks(
-                event.room_id, trigger, event, context, skip_event_filter=True
-            )
-
-        return _callback
-
-    def _build_thought_hook(self) -> ThoughtHook:
-        """Build an ON_THOUGHT callback for an AIChannel (RFC §6.4)."""
-        kit_ref = self
-
-        async def _callback(event: ThoughtEvent) -> None:
-            trigger = HookTrigger.ON_THOUGHT
-            if not event.room_id or not kit_ref._turn_hooks.has_hooks(trigger):
-                return
-            context = await kit_ref._hook_context(event.room_id, trigger)
-            if context is None:
-                return
-            await kit_ref._turn_hooks.run_async_hooks(
-                event.room_id, trigger, event, context, skip_event_filter=True
-            )
-
-        return _callback
-
-    def _build_plan_updated_hook(self, channel_id: str) -> PlanUpdatedCallback:
-        """Build an ON_PLAN_UPDATED callback closure for an AIChannel."""
-        kit_ref = self
-
-        async def _callback(room_id: str, tasks: list[dict[str, Any]]) -> None:
-            if not room_id or not kit_ref._turn_hooks.has_hooks(HookTrigger.ON_PLAN_UPDATED):
-                return
-            context = await kit_ref._hook_context(room_id, HookTrigger.ON_PLAN_UPDATED)
-            if context is None:
-                return
-
-            await kit_ref._turn_hooks.run_async_hooks(
-                room_id,
-                HookTrigger.ON_PLAN_UPDATED,
-                PlanUpdatedEvent(room_id=room_id, channel_id=channel_id, tasks=list(tasks)),
-                context,
-                skip_event_filter=True,
-            )
-
-        return _callback
+    async def _observe_failed_tool_call(
+        self, event: ToolCallEvent, channel_id: str, *, claim: Callable[[], bool] | None = None
+    ) -> None:
+        tools = self.turn_executor.wiring.tools
+        await tools.observe_failed_tool_call(event, channel_id, claim=claim)
 
     def _build_before_tool_call_hook(self, channel_id: str) -> BeforeToolCallback:
-        """Build a BEFORE_TOOL_USE callback closure for an AIChannel.
-
-        The returned callback runs BEFORE_TOOL_USE sync hooks against the
-        framework's hook engine. If any hook blocks, the tool call is denied.
-        A hook may also rewrite the call's arguments by returning them under
-        ``metadata["arguments"]`` — the mirror of what ON_TOOL_CALL already
-        does with ``metadata["result"]`` on the way out.
-        """
-        kit_ref = self
-
-        async def _callback(event: ToolCallEvent) -> BeforeToolDecision:
-            decision, _ = await kit_ref._decide_before_tool_use(event, channel_id)
-            return decision
-
-        return _callback
+        return self.turn_executor.wiring.tools.build_before_tool_call_hook(channel_id)
 
     async def _decide_before_tool_use(
         self, event: ToolCallEvent, channel_id: str, *, carrying: RoomContext | None = None
     ) -> tuple[BeforeToolDecision, RoomContext | None]:
-        """What BEFORE_TOOL_USE decides about *event*, for every channel, and
-        the context its hooks ran with, ``None`` when none was built.
+        tools = self.turn_executor.wiring.tools
+        return await tools.decide_before_tool_use(event, channel_id, carrying=carrying)
 
-        *carrying* is a context the caller already built for this call. A
-        context that will not build denies the call: an authorization failure
-        MUST NOT silently permit it (RFC §9.3).
-        """
-        if not event.room_id:
-            return BeforeToolDecision(allowed=True), None  # Allow if no room context
-        ran = await self._run_before_tool_use(event, event.room_id, carrying=carrying)
-        if ran is None:
-            logger.warning("BEFORE_TOOL_USE could not run: tool %s denied", event.name)
-            return BeforeToolDecision(allowed=False), None
-        hook_result, context = ran
-        await self._emit_framework_event(
-            "before_tool_use",
-            room_id=event.room_id,
-            channel_id=channel_id,
-            data={
-                "tool_name": event.name,
-                "tool_call_id": event.tool_call_id,
-                "allowed": hook_result.allowed,
-                "reason": hook_result.reason,
-            },
-        )
-        return _before_tool_decision(event.name, hook_result), context
+    def _build_thinking_hook(self, channel_id: str) -> ThinkingHook:
+        return self.turn_executor.wiring.build_thinking_hook(channel_id)
 
-    async def _run_before_tool_use(
-        self, event: ToolCallEvent, room_id: str, *, carrying: RoomContext | None = None
-    ) -> tuple[SyncPipelineResult, RoomContext | None] | None:
-        """What the BEFORE_TOOL_USE hooks decide about *event*, and the context
-        they ran with; ``None`` when the room's context could not be built.
-
-        With no hook registered there is nothing to run and no context is built.
-        """
-        if not self._turn_hooks.has_hooks(HookTrigger.BEFORE_TOOL_USE):
-            return SyncPipelineResult(event=event), None
-        context = await self._hook_context(room_id, HookTrigger.BEFORE_TOOL_USE, carrying=carrying)
-        if context is None:
-            return None
-        hook_result = await self._turn_hooks.run_sync_hooks(
-            room_id,
-            HookTrigger.BEFORE_TOOL_USE,
-            event,
-            context,
-            skip_event_filter=True,
-        )
-        return hook_result, context
+    def _build_plan_updated_hook(self, channel_id: str) -> PlanUpdatedCallback:
+        return self.turn_executor.wiring.build_plan_updated_hook(channel_id)
 
     def _build_on_user_input_required_hook(self, channel_id: str) -> Any:
-        """Build an ON_USER_INPUT_REQUIRED callback closure.
-
-        The returned callback runs ON_USER_INPUT_REQUIRED **sync** hooks
-        against the framework's hook engine and emits a
-        ``user_input_required`` framework event.
-
-        Sync execution is what gives these hooks their order and their
-        veto — a BLOCK rejects the request. It does not gate the request
-        being answerable: ``HumanInputHandler`` arms the request first and
-        runs this callback off the waiting path, so a human who answers
-        while a slow notification is still in flight is answering a
-        request that is already listening.
-        """
-        from roomkit.models.enums import HookTrigger
-        from roomkit.models.pending_input import PendingInputEvent
-
-        kit_ref = self
-
-        async def _callback(event: PendingInputEvent) -> bool:
-            if not event.room_id:
-                return True  # Allow if no room context
-            hook_result = SyncPipelineResult(event=event)
-            if kit_ref._turn_hooks.has_hooks(HookTrigger.ON_USER_INPUT_REQUIRED):
-                context = await kit_ref._hook_context(
-                    event.room_id, HookTrigger.ON_USER_INPUT_REQUIRED
-                )
-                if context is None:
-                    return True  # Allow on error (fail-open)
-                hook_result = await kit_ref._turn_hooks.run_sync_hooks(
-                    event.room_id,
-                    HookTrigger.ON_USER_INPUT_REQUIRED,
-                    event,
-                    context,
-                    skip_event_filter=True,
-                )
-
-            await kit_ref._emit_framework_event(
-                "user_input_required",
-                room_id=event.room_id,
-                channel_id=event.channel_id or channel_id,
-                data={
-                    "pending_id": event.pending_id,
-                    "tool_name": event.tool_name,
-                    "tool_call_id": event.tool_call_id,
-                    "allowed": hook_result.allowed,
-                    "reason": hook_result.reason,
-                },
-            )
-
-            return hook_result.allowed
-
-        return _callback
-
-    def _build_after_response_hook(self, channel_id: str) -> AfterResponseCallback:
-        """Build an AfterResponseCallback closure for an AIChannel.
-
-        The returned callback runs ON_AI_RESPONSE async hooks against
-        the framework's hook engine and emits an ``ai_response`` framework
-        event.  Observational only — does not block the response path.
-        """
-        from roomkit.models.enums import HookTrigger
-        from roomkit.models.tool_call import AIResponseEvent
-
-        kit_ref = self
-
-        async def _callback(event: AIResponseEvent) -> None:
-            if not event.room_id:
-                return
-            if kit_ref._turn_hooks.has_hooks(HookTrigger.ON_AI_RESPONSE):
-                context = await kit_ref._hook_context(event.room_id, HookTrigger.ON_AI_RESPONSE)
-                if context is None:
-                    return
-                await kit_ref._turn_hooks.run_async_hooks(
-                    event.room_id,
-                    HookTrigger.ON_AI_RESPONSE,
-                    event,
-                    context,
-                    skip_event_filter=True,
-                )
-
-            await kit_ref._emit_framework_event(
-                "ai_response",
-                room_id=event.room_id,
-                channel_id=channel_id,
-                data={
-                    "tool_calls_count": event.tool_calls_count,
-                    "latency_ms": event.latency_ms,
-                    "streaming": event.streaming,
-                },
-            )
-
-        return _callback
-
-    def _build_after_tool_round_hook(self) -> AfterToolRoundHook:
-        """AFTER_TOOL_ROUND for an AIChannel: the room's SYNC hooks on a round
-        its loop ran, between that round and the next (RFC §6.4).
-
-        The hooks act on the event they receive, in place (withdrawals,
-        messages); a MODIFY's returned event is not read. A BLOCK stops the
-        hooks after it, as on any SYNC trigger, and changes nothing of the
-        round, which has run.
-        """
-        kit_ref = self
-
-        async def _callback(event: ToolRoundEvent) -> None:
-            trigger = HookTrigger.AFTER_TOOL_ROUND
-            if not event.room_id or not kit_ref._turn_hooks.has_hooks(trigger):
-                return
-            context = await kit_ref._hook_context(event.room_id, trigger)
-            if context is None:
-                return
-            await kit_ref._turn_hooks.run_sync_hooks(
-                event.room_id, trigger, event, context, skip_event_filter=True
-            )
-
-        return _callback
-
-    def _build_before_generation_hook(self, channel_id: str) -> BeforeGenerationHook:
-        """Build a BeforeGenerationCallback closure for an AIChannel.
-
-        The returned callback runs BEFORE_AI_GENERATION sync hooks against
-        the framework's hook engine.  Returns a :class:`SyncPipelineResult`
-        that indicates whether generation should proceed or be blocked.
-        """
-        from roomkit.models.enums import HookTrigger
-        from roomkit.models.tool_call import AIGenerationEvent
-
-        kit_ref = self
-
-        async def _callback(event: AIGenerationEvent) -> SyncPipelineResult:
-            if not event.room_id:
-                return SyncPipelineResult(allowed=True)
-            sync_result = SyncPipelineResult(event=event)
-            if kit_ref._turn_hooks.has_hooks(HookTrigger.BEFORE_AI_GENERATION):
-                context = await kit_ref._hook_context(
-                    event.room_id, HookTrigger.BEFORE_AI_GENERATION
-                )
-                if context is None:
-                    return SyncPipelineResult(allowed=True)
-                sync_result = await kit_ref._turn_hooks.run_sync_hooks(
-                    event.room_id,
-                    HookTrigger.BEFORE_AI_GENERATION,
-                    event,
-                    context,
-                    skip_event_filter=True,
-                )
-
-            await kit_ref._emit_framework_event(
-                "before_ai_generation",
-                room_id=event.room_id,
-                channel_id=channel_id,
-                data={
-                    "allowed": sync_result.allowed,
-                    "blocked_by": sync_result.blocked_by,
-                },
-            )
-
-            return sync_result
-
-        return _callback
+        return self.turn_executor.wiring.build_on_user_input_required_hook(channel_id)
 
     def _emit_framework_event_soon(
         self,

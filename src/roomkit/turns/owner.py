@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes, discussion_turn
 from roomkit.models.steering import Cancel as SteeringCancel
+from roomkit.telemetry.context import get_current_span
 from roomkit.turns._owner_inputs import OwnerInputs
 from roomkit.turns._owner_turn import OwnerTurn
 from roomkit.turns._registry_tools import RegistryOwnerTools
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
     from roomkit.models.steering import SteeringDirective
-    from roomkit.turns.base import OwnerHost, OwnerTools, TurnBackend
+    from roomkit.turns.base import OwnerEvents, OwnerHost, OwnerTools, TurnBackend
     from roomkit.turns.wire import ChannelControl, ChannelResult, OwnerTool
 
 
@@ -56,6 +57,7 @@ def turn_request(
     if DISCUSSION_TURN in (event.metadata or {}):
         metadata = {k: v for k, v in event.metadata.items() if k != DISCUSSION_TURN}
         event = event.model_copy(update={"metadata": metadata})
+    span_id = get_current_span()
     return TurnRequest(
         turn_id=f"turn-{uuid4().hex}",
         room_id=event.room_id,
@@ -68,6 +70,9 @@ def turn_request(
         notes=notes,
         in_place=in_place,
         owner_tools=owner_tools or [],
+        # The broadcast span the turn runs under, for an executor elsewhere to
+        # continue (RFC §10.6.9); in memory the turn's context carries it too.
+        trace={"span_id": span_id} if span_id else None,
     )
 
 
@@ -82,6 +87,8 @@ class TurnClient:
         tools: The tools the owner serves its turns (RFC §10.6.5), or ``None``.
         host: What the owner runs for its turns' ``TurnHost`` (RFC §10.6.5),
             or ``None``.
+        events: Where the owner publishes what its turns published on their
+            executors (RFC §10.6.3), or ``None``.
     """
 
     def __init__(
@@ -92,12 +99,14 @@ class TurnClient:
         timeouts: TurnTimeouts | None = None,
         tools: OwnerTools | None = None,
         host: OwnerHost | None = None,
+        events: OwnerEvents | None = None,
     ) -> None:
         self.backend = backend
         self.executor = executor
         self._timeouts = timeouts or TurnTimeouts()
         self._tools = tools
         self._host = host
+        self._events = events
         self._serving = executor is None
         self._open: weakref.WeakSet[OwnerTurn] = weakref.WeakSet()
         # The turns this client started and that still run, in start order:
@@ -109,6 +118,8 @@ class TurnClient:
         self.inputs = OwnerInputs(self._timeouts.input_hold_timeout)
         # Each room's last turn of a channel submitted here (RFC §10.6.2).
         self._previous: RoomRecords[PreviousTurn] = RoomRecords()
+        # The names of each room's hooks on executor triggers (RFC §10.6.6).
+        self._room_hooks: dict[str, list[str]] = {}
 
     async def run(
         self,
@@ -133,6 +144,7 @@ class TurnClient:
             strategy_turn=strategy_turn,
             owner_tools=declared,
         )
+        request.room_hooks = list(self._room_hooks.get(request.room_id, ()))
         request.previous_turn, submitted = self._leave(
             channel_id, request.room_id, request.turn_id
         )
@@ -141,7 +153,9 @@ class TurnClient:
         except BaseException:
             self._unleave(channel_id, request.room_id, submitted, request.previous_turn)
             raise
-        turn = OwnerTurn(link, self._timeouts, self._tools, self._calls, self._host, self.inputs)
+        turn = OwnerTurn(
+            link, self._timeouts, self._tools, self._calls, self._host, self.inputs, self._events
+        )
         self._open.add(turn)
         self._started = [*(t for t in self._started if not t.over), turn]
         try:
@@ -149,6 +163,28 @@ class TurnClient:
         finally:
             # Known once the executor took the turn, which its output follows.
             submitted.executor_id = turn.executor_id
+
+    def enable_room_hook(self, room_id: str, name: str) -> None:
+        """Name *name* among *room_id*'s hooks on executor triggers: its
+        turns' requests carry it, and only an executor that defines it takes
+        them (RFC §10.6.6, §10.6.7)."""
+        names = self._room_hooks.setdefault(room_id, [])
+        if name not in names:
+            names.append(name)
+
+    def disable_room_hook(self, room_id: str, name: str) -> bool:
+        """Stop naming *name* among *room_id*'s hooks; whether it was."""
+        names = self._room_hooks.get(room_id, [])
+        if name not in names:
+            return False
+        names.remove(name)
+        if not names:
+            self._room_hooks.pop(room_id, None)
+        return True
+
+    def room_hook_names(self, room_id: str) -> list[str]:
+        """The names of *room_id*'s hooks on executor triggers."""
+        return list(self._room_hooks.get(room_id, ()))
 
     async def control(self, message: ChannelControl) -> ChannelResult | None:
         """Send a channel control message (RFC §10.6.3): a ``channel_call``'s
@@ -269,13 +305,16 @@ def registry_turn_client(
     backend: TurnBackend | None = None,
     *,
     host: OwnerHost | None = None,
+    events: OwnerEvents | None = None,
 ) -> TurnClient:
     """A client whose own executor serves the channels of a registry (a
     kit's, a router's), on *backend* or an in-memory one, its turns' host
-    verbs run by *host*."""
+    verbs run by *host*, what they publish published by *events*. The
+    registry's owner wires and closes its channels."""
     return TurnClient(
         backend or InMemoryTurnBackend(),
-        executor=TurnExecutor(channels.get, hosts=channels.__contains__),
+        executor=TurnExecutor(channels.get, hosts=channels.__contains__, owns_channels=False),
         tools=RegistryOwnerTools(channels.get),
         host=host,
+        events=events,
     )

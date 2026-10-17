@@ -75,6 +75,7 @@ class HooksApiMixin(HelpersMixin):
 
     _store: ConversationStore
     _hook_engine: HookEngine
+    _turns: Any  # RoomKit's TurnClient
     _event_handlers: list[tuple[str, FrameworkEventHandler]]
     _identity_hooks: dict[HookTrigger, list[IdentityHookRegistration]]
 
@@ -369,7 +370,9 @@ class HooksApiMixin(HelpersMixin):
 
         ``fail_closed`` and ``needs_lock`` have the meaning they have on
         :meth:`hook`. A trigger a turn fires (RFC §10.6.6) raises
-        ``ValueError``: add it with ``kit.turn_executor.add_room_hook``.
+        ``ValueError``: define it by name on the executors,
+        ``kit.turn_executor.room_hook(name, trigger)(fn)``, and enable the
+        name for the room with :meth:`enable_room_hook`.
         """
         self._hook_engine.add_room_hook(
             room_id,
@@ -386,5 +389,17 @@ class HooksApiMixin(HelpersMixin):
 
     def remove_room_hook(self, room_id: str, name: str) -> bool:
         """Remove a room hook of the kit by name; a hook on a trigger a turn
-        fires is the turn executor's (``kit.turn_executor.remove_room_hook``)."""
+        fires is disabled for the room with :meth:`disable_room_hook`."""
         return self._hook_engine.remove_room_hook(room_id, name)
+
+    def enable_room_hook(self, room_id: str, name: str) -> None:
+        """Run the room hook *name* the executors define on a trigger a turn
+        fires (``executor.room_hook(name, trigger)(fn)``) for *room_id*'s
+        turns (RFC §10.6.6): the turns' requests name it, and only an
+        executor that defines it takes them (RFC §10.6.7)."""
+        self._turns.enable_room_hook(room_id, name)
+
+    def disable_room_hook(self, room_id: str, name: str) -> bool:
+        """Stop running the room hook *name* for *room_id*'s turns; whether
+        it ran."""
+        return self._turns.disable_room_hook(room_id, name)

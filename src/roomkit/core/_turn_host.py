@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 from pydantic_core import to_jsonable_python
 
+from roomkit.channels._video_hooks import room_vision_note
 from roomkit.models.enums import TaskStatus
 from roomkit.tasks.status import TASK_ACTION
 from roomkit.tools.context import _current_turn_chain_depth
@@ -34,6 +35,8 @@ from roomkit.turns.host import (
     AddObservation,
     Delegate,
     PostStatus,
+    RoomTasks,
+    RoomVision,
     SendEvent,
     UpdateRoomMetadata,
     WaitTask,
@@ -63,6 +66,8 @@ class KitHost(OwnerHost):
             "post_status": self._post_status,
             "update_room_metadata": self._update_room_metadata,
             "add_observation": self._add_observation,
+            "room_tasks": self._room_tasks,
+            "room_vision": self._room_vision,
         }
 
     async def call(self, request: TurnRequest, verb: str, arguments: dict[str, Any]) -> Any:
@@ -123,6 +128,13 @@ class KitHost(OwnerHost):
             args.metadata,
             organization_id=_organization(request, args.room_id, args.organization_id),
         )
+
+    async def _room_tasks(self, request: TurnRequest, args: RoomTasks) -> list[dict[str, Any]]:
+        return await self._kit._build_room_tasks_loader()(request.room_id)
+
+    async def _room_vision(self, request: TurnRequest, args: RoomVision) -> str | None:
+        # What the room's cameras last saw lives in this process (RFC §12.8.7).
+        return room_vision_note(self._kit.channels, request.context)
 
     async def _add_observation(self, request: TurnRequest, args: AddObservation) -> None:
         _same_room(request, args.observation.room_id)

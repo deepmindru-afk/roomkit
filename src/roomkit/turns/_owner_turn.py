@@ -23,6 +23,7 @@ from roomkit.models.channel import ChannelOutput
 from roomkit.models.steering import Cancel as SteeringCancel
 from roomkit.models.steering import SteeringDirective
 from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
+from roomkit.realtime.base import EphemeralEvent
 from roomkit.turns._codec import decode_end, decode_item, decode_output, rebuild_error
 from roomkit.turns._owner_calls import OwnerCalls
 from roomkit.turns._owner_inputs import OwnerInputs
@@ -34,7 +35,9 @@ from roomkit.turns.wire import (
     Cancel,
     Close,
     End,
+    Ephemeral,
     Error,
+    FrameworkEventFrame,
     Heartbeat,
     HostCall,
     InputClosed,
@@ -53,7 +56,7 @@ from roomkit.turns.wire import (
 
 if TYPE_CHECKING:
     from roomkit.models.response_metadata import ResponseMetadata
-    from roomkit.turns.base import OwnerHost, OwnerTools, TurnLink, TurnTimeouts
+    from roomkit.turns.base import OwnerEvents, OwnerHost, OwnerTools, TurnLink, TurnTimeouts
     from roomkit.turns.wire import Control, Frame, TurnRequest
 
 logger = logging.getLogger("roomkit.turns")
@@ -96,9 +99,11 @@ class OwnerTurn:
         held_calls: set[asyncio.Task[None]] | None = None,
         host: OwnerHost | None = None,
         inputs: OwnerInputs | None = None,
+        events: OwnerEvents | None = None,
     ) -> None:
         self._link = link
         self._timeouts = timeouts
+        self._events = events
         held = held_calls if held_calls is not None else set()
         self._calls = OwnerCalls(link.request, tools, host, self._send_result, held)
         self._inputs = inputs if inputs is not None else OwnerInputs(timeouts.input_hold_timeout)
@@ -298,6 +303,9 @@ class OwnerTurn:
                         return
                     continue
                 silent = 0
+                if isinstance(frame, Ephemeral | FrameworkEventFrame):
+                    await self._published(frame)
+                    continue
                 if self._apply(seq, frame):
                     continue
                 self._main.put_nowait((seq, frame))
@@ -352,6 +360,35 @@ class OwnerTurn:
         else:
             return False
         return True
+
+    async def _published(self, frame: Ephemeral | FrameworkEventFrame) -> None:
+        """Publish on the owner what the turn published on its executor, for
+        the turn's room alone; one that names another room is dropped."""
+        if self._events is None:
+            return
+        room_id = self._link.request.room_id
+        try:
+            if isinstance(frame, Ephemeral):
+                event = EphemeralEvent.from_dict(frame.event)
+                if frame.channel != f"room:{room_id}" or event.room_id != room_id:
+                    logger.warning("Turn %s published outside its room: dropped", room_id)
+                    return
+                await self._events.publish(frame.channel, event)
+                return
+            if frame.room_id not in (None, room_id):
+                logger.warning("Turn %s emitted outside its room: dropped", room_id)
+                return
+            await self._events.emit(
+                frame.event_type,
+                room_id=frame.room_id,
+                channel_id=frame.channel_id,
+                event_id=frame.event_id,
+                data=frame.data,
+            )
+        except Exception:
+            # What the turn published never stops the turn.
+            turn_id = self._link.request.turn_id
+            logger.exception("Turn %s: a %s could not be published", turn_id, frame.type)
 
     def _silence_limit(self) -> int:
         """How many silent intervals lose the turn: the accept bound until an

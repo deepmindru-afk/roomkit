@@ -42,8 +42,26 @@ register_turn_hooks(kit.turn_executor)
 
 `kit.hooks_for(trigger)` answers the engine a trigger's hooks register on, for
 code that registers on triggers of both sides (`roomkit.TURN_TRIGGERS` lists
-the turn's). Only the kit's own executor fires these hooks today: an executor
-you build runs its turns without them.
+the turn's). An executor you build fires them too: it wires each channel its
+factory builds, as the kit wires the ones it registers, and gives its hooks a
+room context read from the store you give it:
+
+```python
+executor = TurnExecutor(build_agent, store=store)  # its hooks read the shared store
+register_turn_hooks(executor)
+```
+
+A room hook on one of these triggers is defined by name on the executors and
+enabled per room on the kit, which names a room's hooks in each turn's
+request; only an executor that defines every name takes the room's turns:
+
+```python
+@kit.turn_executor.room_hook("audit", HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)
+async def audit(event, ctx) -> None: ...
+
+kit.enable_room_hook("vip-room", "audit")
+kit.disable_room_hook("vip-room", "audit")
+```
 
 ## HookResult
 
@@ -176,6 +194,10 @@ await kit.add_room_hook(
 # Remove later
 await kit.remove_room_hook("vip-room", "vip_filter")
 ```
+
+A trigger a turn fires takes no room hook by callable: define it by name on
+the executors (`executor.room_hook(name, trigger)(fn)`) and enable the name
+for the room (`kit.enable_room_hook(room_id, name)`), as above.
 
 ## Complete Hook Trigger Reference
 

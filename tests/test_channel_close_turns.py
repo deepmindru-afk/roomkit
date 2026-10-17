@@ -338,6 +338,9 @@ async def test_a_close_while_the_round_s_start_is_published_runs_none_of_its_cal
     await kit.create_room(room_id="r")
     await kit.attach_channel("r", "sms")
     await kit.attach_channel("r", "ai", category=ChannelCategory.INTELLIGENCE)
+    # Where the channel publishes the round's start: its own realtime, which
+    # the turn's frames would otherwise carry to the owner without waiting.
+    channel._realtime = backend
     reports = _observe(kit)
 
     await kit.process_inbound(_message())

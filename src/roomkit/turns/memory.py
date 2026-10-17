@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.exceptions import TurnLinkError
@@ -163,7 +164,7 @@ class InMemoryTurnBackend(TurnBackend):
     async def submit(self, request: TurnRequest) -> TurnLink:
         if self._closed:
             raise TurnLinkError("backend_closed")
-        executor = self._place(request.channel_id, request.room_id)
+        executor = self._place(request.channel_id, request.room_id, request.room_hooks)
         turn = _MemoryTurn(request)
         self._turns.add(turn)
         turn.taken = True
@@ -196,14 +197,20 @@ class InMemoryTurnBackend(TurnBackend):
             turn.shut()
         self._turns.clear()
 
-    def _place(self, channel_id: str, room_id: str) -> TurnExecutor:
+    def _place(
+        self, channel_id: str, room_id: str, room_hooks: Sequence[str] = ()
+    ) -> TurnExecutor:
         """The executor a room's turn or channel call of *channel_id* goes to,
-        recorded as the one holding the room's state from now."""
+        one that defines the room's hooks *room_hooks*, recorded as the one
+        holding the room's state from now."""
         holder = self._holders.get(channel_id, room_id)
-        if holder is None or not holder.declares(channel_id):
-            holder = next((e for e in self._executors if e.declares(channel_id)), None)
+        if holder is None or not holder.takes(channel_id, room_hooks):
+            holder = next((e for e in self._executors if e.takes(channel_id, room_hooks)), None)
         if holder is None:
-            raise TurnLinkError("no_executor", f"No executor serves channel {channel_id!r}")
+            missing = f" with room hooks {list(room_hooks)}" if room_hooks else ""
+            raise TurnLinkError(
+                "no_executor", f"No executor serves channel {channel_id!r}{missing}"
+            )
         self._holders.put(channel_id, room_id, holder)
         return holder
 

@@ -31,7 +31,7 @@ from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.tools.context import ToolCallContext, owner_served_call
 from roomkit.tools.result import as_tool_result
 from roomkit.turns._codec import encode_result, error_record
-from roomkit.turns.host import set_turn_host
+from roomkit.turns.host import READERS, set_turn_host
 from roomkit.turns.wire import HostCall, HostResult, ToolCall, ToolResult
 
 if TYPE_CHECKING:
@@ -154,10 +154,15 @@ class OwnerCalls:
     async def _verb_result(self, call: HostCall) -> HostResult:
         """What the verb of *call* made, as it crosses back."""
         try:
-            with self._serving(call.context):
-                if self._host is None:
-                    raise ValueError(f"No verb {call.verb!r} is served by the room owner")
+            if self._host is None:
+                raise ValueError(f"No verb {call.verb!r} is served by the room owner")
+            if call.verb in READERS:
+                # A reader of the turn's room, made while the turn builds its
+                # input: no tool call's context is its.
                 value = await self._host.call(self._request, call.verb, call.arguments)
+            else:
+                with self._serving(call.context):
+                    value = await self._host.call(self._request, call.verb, call.arguments)
         except Exception as exc:
             logger.debug("Host call %s failed", call.verb, exc_info=True)
             return _verb_failed(call.call_id, exc)

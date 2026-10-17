@@ -48,7 +48,7 @@ def test_the_kit_refuses_a_turn_trigger_on_every_door(trigger: HookTrigger) -> N
     kit = RoomKit()
     with pytest.raises(ValueError, match=r"kit\.turn_executor\.hook\(\.\.\.\)"):
         kit.hook(trigger, execution=HookExecution.ASYNC)(_noop)
-    with pytest.raises(ValueError, match=r"kit\.turn_executor\.add_room_hook\(room_id"):
+    with pytest.raises(ValueError, match=r"kit\.turn_executor\.room_hook\(name"):
         kit.add_room_hook("room", trigger, HookExecution.ASYNC, _noop)
     with pytest.raises(ValueError, match=r"kit\.turn_executor\.hooks\.register"):
         kit.hook_engine.register(
@@ -62,7 +62,7 @@ def test_an_executor_refuses_an_owners_trigger_on_every_door(trigger: HookTrigge
     with pytest.raises(ValueError, match=r"kit\.hook\(\.\.\.\)"):
         executor.hook(trigger, execution=HookExecution.ASYNC)(_noop)
     with pytest.raises(ValueError, match=r"kit\.add_room_hook\(room_id"):
-        executor.add_room_hook("room", trigger, HookExecution.ASYNC, _noop)
+        executor.room_hook("audit", trigger, HookExecution.ASYNC)(_noop)
 
 
 def test_each_side_fails_closed_on_its_own_triggers() -> None:
@@ -117,9 +117,10 @@ async def test_a_room_hook_on_the_executor_fires_in_its_room_only() -> None:
     async def on_response(event: Any, ctx: Any) -> None:
         seen.append(ctx.room.id)
 
-    kit.turn_executor.add_room_hook(
-        "one", HookTrigger.ON_AI_RESPONSE, HookExecution.ASYNC, on_response
+    kit.turn_executor.room_hook("audit", HookTrigger.ON_AI_RESPONSE, HookExecution.ASYNC)(
+        on_response
     )
+    kit.enable_room_hook("one", "audit")
     await _ask(kit, "one")
     await _ask(kit, "two")
     await kit.close()
@@ -133,16 +134,15 @@ class _AuditStrategy(Orchestration):
         return []
 
     async def install(self, kit: RoomKit, room_id: str) -> None:
-        kit.turn_executor.add_room_hook(
-            room_id, HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC, _noop, name="audit"
-        )
+        kit.turn_executor.room_hook("audit", HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)(_noop)
+        kit.enable_room_hook(room_id, "audit")
 
 
 async def test_uninstalling_a_strategy_takes_back_its_room_hook_on_the_executor() -> None:
     kit = RoomKit()
     await kit.create_room(room_id="room")
     await kit.install_strategy("room", _AuditStrategy())
-    assert kit.turn_executor.hooks.room_hook_names("room") == ["audit"]
+    assert kit._turns.room_hook_names("room") == ["audit"]
     await kit.uninstall_strategy("room")
-    assert kit.turn_executor.hooks.room_hook_names("room") == []
+    assert kit._turns.room_hook_names("room") == []
     await kit.close()

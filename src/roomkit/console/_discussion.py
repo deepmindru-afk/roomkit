@@ -24,7 +24,7 @@ from roomkit.channels._speaker import turn_labels
 from roomkit.channels.acp import ACPChannel
 from roomkit.console._discussion_screen import DiscussionScreen
 from roomkit.console._discussion_view import AgentCard, DiscussionView, short_task
-from roomkit.core.hooks import HookRegistration
+from roomkit.core.hooks import TURN_TRIGGERS, HookRegistration
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, EventType, HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
@@ -156,12 +156,12 @@ class DiscussionConsole:
         live = None
         try:
             for hook in hooks:
-                self._kit.hooks_for(hook.trigger).add_room_hook(self._room_id, hook)
+                self._add_hook(hook)
             live = self._follow_streams()
             await self._screen.run()
         finally:
             for hook in hooks:
-                self._kit.hooks_for(hook.trigger).remove_room_hook(self._room_id, hook.name)
+                self._remove_hook(hook)
             if live is not None:
                 live()
             restore_logs()
@@ -297,6 +297,22 @@ class DiscussionConsole:
         )
 
     # -- Following the room --
+
+    def _add_hook(self, hook: HookRegistration) -> None:
+        """Follow the room through *hook*: a trigger a turn fires is a room
+        hook defined by name on the kit's executor (RFC §10.6.6)."""
+        if hook.trigger in TURN_TRIGGERS:
+            self._kit.turn_executor.hooks.define_room_hook(hook)
+            self._kit.enable_room_hook(self._room_id, hook.name)
+        else:
+            self._kit.hook_engine.add_room_hook(self._room_id, hook)
+
+    def _remove_hook(self, hook: HookRegistration) -> None:
+        if hook.trigger in TURN_TRIGGERS:
+            self._kit.disable_room_hook(self._room_id, hook.name)
+            self._kit.turn_executor.hooks.undefine_room_hook(hook.name)
+        else:
+            self._kit.hook_engine.remove_room_hook(self._room_id, hook.name)
 
     def _hooks(self) -> list[HookRegistration]:
         return [

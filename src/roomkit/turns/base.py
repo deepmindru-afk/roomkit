@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit.core.exceptions import TurnLinkError
 
 if TYPE_CHECKING:
+    from roomkit.realtime.base import EphemeralEvent
     from roomkit.turns.executor import TurnExecutor
     from roomkit.turns.wire import (
         ChannelControl,
@@ -153,6 +154,28 @@ class OwnerHost(ABC):
         """Run *verb* for the turn of *request*: its result, as data JSON
         carries. Raises what the verb raises; ``ValueError`` for a verb or
         arguments it does not know."""
+
+
+class OwnerEvents(ABC):
+    """Where a room owner publishes what its turns published on their
+    executors (RFC §10.6.3): ephemeral events on its realtime backend,
+    framework events on its own bus."""
+
+    @abstractmethod
+    async def publish(self, channel: str, event: EphemeralEvent) -> None:
+        """Publish *event* on the realtime channel *channel*."""
+
+    @abstractmethod
+    async def emit(
+        self,
+        event_type: str,
+        *,
+        room_id: str | None,
+        channel_id: str | None,
+        event_id: str | None,
+        data: dict[str, Any],
+    ) -> None:
+        """Emit the framework event *event_type*."""
 
 
 class TurnBackend(ABC):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, cast
 
@@ -185,6 +185,9 @@ class HookEngine:
         )
         self._global_hooks: list[HookRegistration] = []
         self._room_hooks: dict[str, list[HookRegistration]] = {}
+        # A turn executor's room hooks, defined by name: a request names those
+        # of its room (RFC §10.6.6), and they apply to the room from its turn.
+        self._named_room_hooks: dict[str, list[HookRegistration]] = {}
         self._trigger_index: set[HookTrigger] = set()
         self._telemetry: Any = None  # Set by RoomKit after init
         # Set by RoomKit after init — RFC §8.2 mandates a ``hook_timeout``
@@ -310,7 +313,7 @@ class HookEngine:
         else:
             where = "the turn executor"
             call = (
-                "kit.turn_executor.add_room_hook(room_id, ...)"
+                "kit.turn_executor.room_hook(name, ...) and kit.enable_room_hook(room_id, name)"
                 if room
                 else "kit.turn_executor.hook(...) or kit.turn_executor.hooks.register(...)"
             )
@@ -328,12 +331,58 @@ class HookEngine:
         self._trigger_index.add(hook.trigger)
 
     def add_room_hook(self, room_id: str, hook: HookRegistration) -> None:
-        """Register a hook for a specific room."""
+        """Register a hook for a specific room.
+
+        A turn executor's room hooks are defined by name instead
+        (:meth:`define_room_hook`), the room owner naming a room's in its
+        turns' requests (RFC §10.6.6): a hook held for a room on one executor
+        would never fire for the room's turns on another.
+        """
+        if self._turns:
+            raise ValueError(
+                f"Hook {hook.name!r}: a turn executor's room hook is defined by name, "
+                "kit.turn_executor.room_hook(name, ...), and enabled for a room on its "
+                "owner, kit.enable_room_hook(room_id, name) (RFC §10.6.6)"
+            )
         self._check_side(hook, room=True)
         self._check_router_placement(hook, room_id)
         self._check_lock_placement(hook, room_id)
         self._room_hooks.setdefault(room_id, []).append(hook)
         self._trigger_index.add(hook.trigger)
+
+    def define_room_hook(self, hook: HookRegistration) -> None:
+        """Define a turn executor's room hook under its name: it applies to a
+        room whose turn's request names it (RFC §10.6.6). A name may carry a
+        hook per trigger."""
+        if not self._turns:
+            raise ValueError("Room hooks are defined by name on a turn executor only")
+        if not hook.name:
+            raise ValueError("A room hook defined on a turn executor needs a name")
+        self._check_side(hook, room=True)
+        self._named_room_hooks.setdefault(hook.name, []).append(hook)
+        self._trigger_index.add(hook.trigger)
+
+    def undefine_room_hook(self, name: str) -> bool:
+        """Forget the room hooks defined under *name*, in every room."""
+        if self._named_room_hooks.pop(name, None) is None:
+            return False
+        for room_id, hooks in list(self._room_hooks.items()):
+            self._room_hooks[room_id] = [h for h in hooks if h.name != name]
+        self._rebuild_trigger_index()
+        return True
+
+    def defines_room_hooks(self, names: Iterable[str]) -> bool:
+        """Whether a room hook is defined under each of *names*."""
+        return all(name in self._named_room_hooks for name in names)
+
+    def use_room_hooks(self, room_id: str, names: Iterable[str]) -> None:
+        """Apply to *room_id* the room hooks defined under *names*, as its
+        turn's request names them, in place of those it had."""
+        hooks = [hook for name in names for hook in self._named_room_hooks.get(name, ())]
+        if hooks:
+            self._room_hooks[room_id] = hooks
+        else:
+            self._room_hooks.pop(room_id, None)
 
     def remove_global_hook(self, name: str) -> bool:
         """Remove a global hook by name."""
@@ -372,7 +421,7 @@ class HookEngine:
     def _rebuild_trigger_index(self) -> None:
         """Rebuild the trigger index from all registered hooks."""
         self._trigger_index = {h.trigger for h in self._global_hooks}
-        for hooks in self._room_hooks.values():
+        for hooks in [*self._room_hooks.values(), *self._named_room_hooks.values()]:
             self._trigger_index.update(h.trigger for h in hooks)
 
     def _hook_matches_event(self, hook: HookRegistration, event: RoomEvent) -> bool:

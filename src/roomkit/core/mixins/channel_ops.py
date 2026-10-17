@@ -6,7 +6,6 @@ import logging
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.channels._video_hooks import room_vision_note
 from roomkit.channels.base import Channel, FrameworkAwareChannel
 from roomkit.core.exceptions import (
     ChannelAlreadyRegisteredError,
@@ -28,9 +27,7 @@ from roomkit.models.enums import (
 from roomkit.turns.wire import RoomAttached
 
 if TYPE_CHECKING:
-    from roomkit.channels._ai_callbacks import RoomVisionLoader
     from roomkit.channels._author_images import AttachedMedia, MediaResolver
-    from roomkit.channels.ai import AIChannel
     from roomkit.core.event_router import EventRouter
     from roomkit.core.hooks import HookEngine
     from roomkit.core.locks import RoomLockManager
@@ -141,6 +138,7 @@ class ChannelOpsMixin(HelpersMixin):
     _build_room_tasks_loader: Any  # see ChannelOpsHost
     _refuse_discussion_binding: Any  # see DiscussionMixin
     _on_room_detached: Any  # see ChannelStateMixin
+    turn_executor: Any  # see RoomKit
 
     def register_channel(self, channel: Channel) -> None:
         """Register a channel implementation by its ID.
@@ -171,38 +169,10 @@ class ChannelOpsMixin(HelpersMixin):
         # Propagate telemetry to all channels
         channel._telemetry = self._telemetry  # ty: ignore[unresolved-attribute]
 
-        # ON_AI_RESPONSE reports a fact — an agent finished a turn — and every
-        # INTELLIGENCE channel produces it, whichever class it descends from.
-        # A channel that owns its turn in another process is one of those, and
-        # selecting on AIChannel would leave it unable to reach the host's
-        # post-processing while it holds the conversation. The category is what
-        # a channel declares itself to be, so an agent channel written later is
-        # served without editing this.
-        if channel.category is ChannelCategory.INTELLIGENCE:
-            channel._after_response_hook = (  # ty: ignore[unresolved-attribute]
-                self._build_after_response_hook(channel.channel_id)
-            )
-
-        # Propagate realtime backend to AI channels for tool call events. The
-        # rest of these presume the tool loop runs in this process, which is
-        # what makes AIChannel the right selector for them.
-        from roomkit.channels.ai import AIChannel
-
-        if isinstance(channel, AIChannel):
-            self._wire_ai_channel(channel)
-
-        # ACP agents own their tool loop, but use the same RoomKit permission
-        # hooks and realtime activity surface as in-process AI providers.
-        from roomkit.channels.acp import ACPChannel
-
-        if isinstance(channel, ACPChannel):
-            channel._realtime = self._realtime
-            channel._tool_report_hook = self._build_tool_report_hook(channel.channel_id)
-            channel._tool_observer_hook = self._build_tool_observer_hook(channel.channel_id)
-            if channel._external_tool_handler is not None:
-                self._wire_external_tool_handler(
-                    channel.channel_id, channel._external_tool_handler
-                )
+        # What an intelligence channel's turns fire the hooks through is the
+        # executor's to give (RFC §10.6.2): the kit's own wires the channels the
+        # kit registers, as a host's executor wires the ones it builds.
+        self.turn_executor.wire(channel)
 
         # Propagate telemetry to channel's sub-providers (AI, STT, TTS, etc.)
         if hasattr(channel, "_propagate_telemetry"):
@@ -232,62 +202,9 @@ class ChannelOpsMixin(HelpersMixin):
             },
         )
 
-    def _build_room_vision_loader(self) -> RoomVisionLoader:
-        """Build the reader an AI channel's turn takes what its room's video
-        last showed with, for its notes (RFC §12.8.7): from the channels bound
-        to the turn's room, with no store read."""
-        channels = self._channels
-        return lambda context: room_vision_note(channels, context)
-
-    def _wire_ai_channel(self, channel: AIChannel) -> None:
-        """Hand an in-process AI channel the callbacks its tool loop runs the
-        room's hooks through."""
-        channel._realtime = self._realtime
-        channel._tool_call_hook = self._build_tool_call_hook(channel.channel_id)
-        channel._tool_observer_hook = self._build_tool_observer_hook(channel.channel_id)
-        channel._tool_report_hook = self._build_tool_report_hook(channel.channel_id)
-        channel._before_tool_call_hook = self._build_before_tool_call_hook(channel.channel_id)
-        channel._tool_usage_loader = self._build_tool_usage_loader(channel.channel_id)
-        channel._room_tasks_loader = self._build_room_tasks_loader()
-        channel._room_vision_loader = self._build_room_vision_loader()
-        channel._media_resolver = self._media_resolver
-        channel._attached_media = self._attached_media
-        channel._before_generation_hook = self._build_before_generation_hook(channel.channel_id)
-        channel._after_tool_round_hook = self._build_after_tool_round_hook()
-        channel._thinking_hook = self._build_thinking_hook(channel.channel_id)
-        channel._speak_decision_hook = self._build_speak_decision_hook()
-        channel._thought_hook = self._build_thought_hook()
-        channel._plan_updated_hook = self._build_plan_updated_hook(channel.channel_id)
-
-        # Inject hook callbacks into external tool handler if present
-        if channel._external_tool_handler is not None:
-            self._wire_external_tool_handler(channel.channel_id, channel._external_tool_handler)
-
-        # The person's tools announce their requests through the room's
-        # ON_USER_INPUT_REQUIRED hooks; registering makes this object the
-        # owner of its id's requests (a session channel registers its own
-        # from set_framework).
-        if channel._human_input.given:
-            channel._human_input.register(
-                channel.channel_id, self._build_on_user_input_required_hook(channel.channel_id)
-            )
-
     def _wire_external_tool_handler(self, channel_id: str, handler: ExternalToolHandler) -> None:
         """Inject hook callbacks so external tool calls fire RoomKit tool hooks."""
-        if handler._channel_id and handler._channel_id != channel_id:
-            # The injected callbacks are per-channel, so the second wiring
-            # silently re-attributes the first channel's tool hooks — and
-            # anything reading handler.channel_id then names the wrong agent.
-            logger.warning(
-                "External tool handler %s was already wired to channel %r; "
-                "re-wiring to %r. Give each channel its own handler instance.",
-                type(handler).__name__,
-                handler._channel_id,
-                channel_id,
-            )
-        handler._channel_id = channel_id
-        handler._before_tool_hook = self._build_before_tool_call_hook(channel_id)
-        handler._on_tool_hook = self._build_tool_report_hook(channel_id)
+        self.turn_executor.wiring.wire_external_tool_handler(channel_id, handler)
 
     def unregister_channel(self, channel_id: str) -> Channel | None:
         """Remove a channel from the registry and return it.

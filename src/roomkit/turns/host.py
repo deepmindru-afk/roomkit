@@ -128,6 +128,16 @@ class AddObservation(_Verb):
     observation: Observation
 
 
+class RoomTasks(_Verb):
+    """``room_tasks``: the turn's room's background tasks as its StatusBus
+    lists them (RFC §23.4), a reader of the owner's process."""
+
+
+class RoomVision(_Verb):
+    """``room_vision``: what the turn's room's video last showed, as a turn's
+    note (RFC §12.8.7), a reader of the owner's process."""
+
+
 VERBS: dict[str, type[_Verb]] = {
     "send_event": SendEvent,
     "delegate": Delegate,
@@ -135,8 +145,14 @@ VERBS: dict[str, type[_Verb]] = {
     "post_status": PostStatus,
     "update_room_metadata": UpdateRoomMetadata,
     "add_observation": AddObservation,
+    "room_tasks": RoomTasks,
+    "room_vision": RoomVision,
 }
 """Every verb of a turn's host, by its name, with the record of its arguments."""
+
+READERS = frozenset({"room_tasks", "room_vision"})
+"""The verbs that read the owner's process for the turn's room and act for no
+tool call: the owner serves them outside a call's context."""
 
 
 class TurnHost:
@@ -215,6 +231,17 @@ class TurnHost:
     async def add_observation(self, observation: Observation) -> None:
         """Store *observation* for its room."""
         await self._verb("add_observation", AddObservation(observation=observation))
+
+    async def room_tasks(self) -> list[dict[str, Any]]:
+        """The turn's room's background tasks, as ``task_status`` reads them
+        (RFC §23.4): state of the owner's process."""
+        return list(await self._verb("room_tasks", RoomTasks()))
+
+    async def room_vision(self) -> str | None:
+        """What the turn's room's video last showed, as a turn's note (RFC
+        §12.8.7); ``None`` when no camera of the room has a result."""
+        note = await self._verb("room_vision", RoomVision())
+        return None if note is None else str(note)
 
     async def _verb(self, verb: str, args: _Verb) -> Any:
         if not self._open:

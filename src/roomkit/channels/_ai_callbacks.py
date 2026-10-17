@@ -43,6 +43,6 @@ RoomTasksLoader = Callable[[str], Awaitable[list[dict[str, Any]]]]
 """A room's background tasks as the StatusBus lists them, read for the turn's
 notes (RFC §23.4)."""
 
-RoomVisionLoader = Callable[["RoomContext"], str | None]
+RoomVisionLoader = Callable[["RoomContext"], Awaitable[str | None]]
 """What a video channel bound to the turn's room last saw, as the note the
 turn carries (RFC §12.8.7); ``None`` when none has a live session's result."""

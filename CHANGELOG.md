@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- An executor wires the channels it runs (RMK-821, RFC §10.6.2, §10.6.6). A
+  `TurnExecutor` a host builds (`TurnExecutor(build_channel, store=,
+  media_resolver=, attached_media=, telemetry=)`) builds each channel once,
+  gives it what the kit gives a channel it registers (the callbacks its loop
+  fires `BEFORE_TOOL_USE`, `ON_TOOL_CALL`, `ON_AI_RESPONSE` and the other turn
+  triggers through, a realtime backend, its tool-memory reader, the host's
+  media readers), fires its own hooks against a room context read from the
+  given store, and closes what it built when it closes. The kit's own
+  executor is wired by the same code (`kit.turn_executor.wire(channel)` at
+  `register_channel`), from the kit. During a turn, what a channel publishes
+  on its realtime backend and the framework events its hooks emit cross the
+  turn backend as `ephemeral` and `framework_event` frames, which the room's
+  owner publishes on its realtime backend and its bus (for the turn's room
+  only); outside a turn the kit's executor publishes directly, a host's drops
+  them. A room's background tasks and what its cameras last saw are read
+  through the turn's host (`TurnHost.room_tasks()`, `TurnHost.room_vision()`),
+  being state of the owner's process. `ScoringHook.attach` takes an executor.
+  The request carries the broadcast span's context (`TurnRequest.trace`),
+  which a turn in a context of its own continues.
+
+- Room hooks on the triggers a turn fires are defined by name on the
+  executors and enabled per room on the kit (RMK-821, RFC §10.6.6, §10.6.7):
+  `executor.room_hook("audit", HookTrigger.ON_TOOL_CALL)(fn)`,
+  `kit.enable_room_hook(room_id, "audit")`, `kit.disable_room_hook(room_id,
+  "audit")`. A turn's request names its room's (`TurnRequest.room_hooks`), and
+  only an executor that defines every name takes it. A turn executor's
+  engine refuses a room hook by callable.
+
 - `RoomKit.channel_call(channel_id, room_id, verb, *, organization_id=None,
   **arguments)` (RMK-812, RFC §10.6.3, §6.4): a per-room verb of a channel
   attached to the room (`ChannelNotFoundError` otherwise), run on the
@@ -239,13 +267,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   becomes `@kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, ...)` (same
   options), `kit.hook_engine.register(...)` becomes
   `kit.turn_executor.hooks.register(...)`, and `kit.add_room_hook(...)` becomes
-  `kit.turn_executor.add_room_hook(...)`. An executor refuses the owner's
+  a room hook defined by name on the executor,
+  `kit.turn_executor.room_hook(name, ...)`, enabled for the room with
+  `kit.enable_room_hook(room_id, name)` (RMK-821). An executor refuses the owner's
   triggers the same way. Realtime voice, conference and external tool calls,
   which run in the kit's process, fire the hooks of the kit's own executor:
   one registration covers every door. `ScoringHook.attach` and the console
   register there. The removal doors follow: `kit.remove_room_hook` and
   `kit.hook_engine.remove_global_hook` find no turn hook (they answer `False`);
-  remove it with `kit.turn_executor.remove_room_hook` or
+  remove it with `kit.disable_room_hook(room_id, name)` or
   `kit.turn_executor.hooks.remove_global_hook`. `FAIL_CLOSED_TRIGGERS` is
   per side as well: the kit's engine keeps `BEFORE_TTS` and `ON_TRANSCRIPTION`,
   the executor's `BEFORE_TOOL_USE`, and setting a trigger of the other side

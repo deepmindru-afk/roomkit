@@ -44,7 +44,9 @@ def _fail_closed(*, context_fails: bool) -> Any:
             return HookResult.allow()
 
         if context_fails:
-            real_chain = kit._run_tool_call_chain
+            # The chain runs on the kit's executor's wiring (RFC §10.6.6).
+            tools = kit.turn_executor.wiring.tools
+            real_chain = tools.run_tool_call_chain
             real_build = kit._build_context
             armed = False
 
@@ -62,7 +64,7 @@ def _fail_closed(*, context_fails: bool) -> Any:
                     armed = False
 
             kit._build_context = build  # type: ignore[method-assign]
-            kit._run_tool_call_chain = chain  # type: ignore[method-assign]
+            tools.run_tool_call_chain = chain  # type: ignore[method-assign]
 
     return setup
 
