@@ -426,8 +426,9 @@ class ExecutorTurn:
     async def _steer(self, message: Steer) -> int | None:
         """Apply a steering directive to this turn's loops, through the
         channel's ``steer()``, sync or async: how many it reached; ``None``
-        for a channel without steering, or not built yet, whose owner cuts
-        the turn on a ``Cancel`` (RFC §10.6.8)."""
+        for a channel without steering, not built yet, or whose ``steer()``
+        cannot reach the turn yet (answers ``None``), whose owner cuts the
+        turn on a ``Cancel`` (RFC §10.6.8)."""
         steer = getattr(self._built, "steer", None)
         if steer is None:
             return None
@@ -445,7 +446,7 @@ class ExecutorTurn:
         except Exception:
             logger.exception("Turn %s: the channel's steer() failed", self.turn_id)
             return 0
-        return reached if isinstance(reached, int) else 0
+        return reached if reached is None or isinstance(reached, int) else 0
 
     def spare(self) -> None:
         """Let the turn's work run on whatever ends its link: a close called

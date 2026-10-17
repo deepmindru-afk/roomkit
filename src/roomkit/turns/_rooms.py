@@ -2,15 +2,17 @@
 §10.6.2, §10.6.7): the owner its previous turn, the backend where the room's
 state is, the executor the turn that left it.
 
-A record falls out once a side keeps :data:`ROOMS_KEPT` newer ones. Every
-side reads a missing record as a state it cannot vouch for, so a room that
-was quiet that long starts over (its state dropped and rebuilt, RFC
-§10.6.2) and never resumes a stale one.
+A record falls out once a side keeps :data:`ROOMS_KEPT` newer ones. A room
+that was quiet that long starts over and never resumes a stale state: the
+owner then names no previous turn, which an executor holding a record reads
+as stale, and an executor whose record falls out drops the state it vouched
+for (RFC §10.6.2).
 """
 
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Callable
 
 ROOMS_KEPT = 10_000
 """How many (channel, room) pairs a side keeps a record for."""
@@ -25,6 +27,22 @@ def room_state_key(channel_id: str) -> str:
     return f"{ROOM_STATE_KEY}{channel_id}"
 
 
+def refuse_room_state(metadata: dict[str, object]) -> None:
+    """Refuse *metadata* that writes what a room keeps for a channel: only
+    ``kit.channel_call`` writes it, since it sets up the channel's next
+    session (an ACP agent's mode, RFC §6.4).
+
+    Raises:
+        ValueError: a key under :data:`ROOM_STATE_KEY`.
+    """
+    reserved = sorted(key for key in metadata if key.startswith(ROOM_STATE_KEY))
+    if reserved:
+        raise ValueError(
+            f"Room metadata {reserved} is what the room keeps for a channel, "
+            "written by kit.channel_call alone"
+        )
+
+
 def stored_room_state(metadata: dict[str, object], channel_id: str) -> dict[str, object]:
     """What *metadata* holds for *channel_id*; empty when it holds nothing
     readable."""
@@ -34,10 +52,16 @@ def stored_room_state(metadata: dict[str, object], channel_id: str) -> dict[str,
 
 class RoomRecords[T]:
     """One record per (channel, room), the least recently written falling out
-    past *kept*."""
+    past *kept*, *evicted* told of each (channel id, room id) that does."""
 
-    def __init__(self, kept: int = ROOMS_KEPT) -> None:
+    def __init__(
+        self,
+        kept: int = ROOMS_KEPT,
+        *,
+        evicted: Callable[[str, str], None] | None = None,
+    ) -> None:
         self._kept = kept
+        self._evicted = evicted
         self._records: OrderedDict[tuple[str, str], T] = OrderedDict()
 
     def get(self, channel_id: str, room_id: str) -> T | None:
@@ -48,7 +72,9 @@ class RoomRecords[T]:
         self._records[key] = record
         self._records.move_to_end(key)
         while len(self._records) > self._kept:
-            self._records.popitem(last=False)
+            (gone_channel, gone_room), _ = self._records.popitem(last=False)
+            if self._evicted is not None:
+                self._evicted(gone_channel, gone_room)
 
     def pop(self, channel_id: str, room_id: str) -> T | None:
         return self._records.pop((channel_id, room_id), None)

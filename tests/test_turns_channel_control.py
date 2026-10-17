@@ -13,8 +13,10 @@ import logging
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from roomkit import RoomKit
+from roomkit.channels.ai import AIChannel
 from roomkit.channels.base import Channel
 from roomkit.core.exceptions import TurnLinkError
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -24,9 +26,11 @@ from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.room import Room
 from roomkit.models.steering import Cancel
+from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor
 from roomkit.turns._rooms import room_state_key
 from roomkit.turns.base import ExecutorLink
+from roomkit.turns.host import UpdateRoomMetadata
 from roomkit.turns.wire import ChannelCall, RoomAttached, RoomDetached, TurnRequest
 
 
@@ -74,6 +78,8 @@ class _Agent(Channel):
             return dict(self.config[room_id])
         if verb == "forget":
             return self.config.pop(room_id, None) is not None
+        if verb == "read":
+            return dict(self.config.get(room_id, {}))
         if verb == "unsendable":
             return object()
         return await super().channel_call(room_id, verb, arguments)
@@ -391,4 +397,147 @@ async def test_an_intelligence_channel_s_attach_failure_is_logged_on_its_executo
         await kit.attach_channel("room", "agent")
     assert await kit.get_binding("room", "agent") is not None
     assert "no room for you" in caplog.text
+    await kit.close()
+
+
+# -- Review: what a channel call leaves, records that fall out, failed drops ------------
+
+
+async def test_a_channel_call_drops_a_state_a_turn_elsewhere_made_stale() -> None:
+    client, a, b, first, _second = await _two_executors()
+    await client.control(
+        ChannelCall(channel_id="agent", room_id="room", verb="set", arguments={"m": "sonnet"})
+    )  # on A
+    a.declaring = False
+    await client.control(
+        ChannelCall(channel_id="agent", room_id="room", verb="set", arguments={"m": "opus"})
+    )  # on B
+    a.declaring = True
+    await b.close()
+    answer = await client.control(
+        ChannelCall(
+            channel_id="agent",
+            room_id="room",
+            verb="read",
+            room_state={"config": {"m": "opus"}},
+        )
+    )  # back on A, whose copy the call on B made stale
+
+    assert first.log[-2:] == [("detached", "room"), ("read", "room")]
+    # The read changed nothing: the room's opus is not overwritten.
+    assert answer is not None and answer.room_state is None
+    assert first.config == {"room": {"m": "opus"}}
+
+
+async def test_a_turn_after_a_channel_call_names_it_and_keeps_its_state() -> None:
+    client, a, _b, first, _second = await _two_executors()
+    call = ChannelCall(channel_id="agent", room_id="room", verb="set", arguments={"m": "x"})
+    answer = await client.control(call)
+    await _turn(client)
+
+    (request,) = a.requests
+    assert request.previous_turn is not None
+    assert request.previous_turn.turn_id == call.call_id
+    assert answer is not None and request.previous_turn.executor_id == answer.executor_id == "a"
+    assert ("detached", "room") not in first.log
+
+
+async def test_a_record_that_falls_out_drops_the_state_it_vouched_for() -> None:
+    client, a, _b, first, _second = await _two_executors()
+    a._rooms._left._kept = 1
+    await _turn(client, "r1")
+    await _turn(client, "r2")  # r1's record falls out
+    async with asyncio.timeout(5):
+        while ("detached", "r1") not in first.log:
+            await asyncio.sleep(0.01)
+    assert ("detached", "r2") not in first.log
+
+
+async def test_a_failed_drop_is_tried_again_on_the_next_turn() -> None:
+    client, a, b, first, _second = await _two_executors()
+    await _turn(client)  # on A
+    a.declaring = False
+    await _turn(client)  # on B
+    a.declaring = True
+    await b.close()
+    failing = [RuntimeError("store down")]
+    detached = first.on_room_detached
+
+    async def flaky(room_id: str) -> None:
+        if failing:
+            raise failing.pop()
+        await detached(room_id)
+
+    first.on_room_detached = flaky  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="store down"):
+        await _turn(client)  # back on A: the drop fails, so does the turn
+    await _turn(client)
+
+    assert first.log[-2:] == [("detached", "room"), ("turn", "room")]
+
+
+class _Yielding(InMemoryTurnBackend):
+    """A backend whose submit yields, as one carried by a network does."""
+
+    async def submit(self, request: TurnRequest) -> Any:
+        await asyncio.sleep(0)
+        return await super().submit(request)
+
+
+async def test_a_turn_is_the_previous_one_from_the_moment_it_is_sent() -> None:
+    backend = _Yielding()
+    agent = _Agent()
+    executor = _Recording(agent, "a")
+    await backend.serve(executor)
+    client = TurnClient(backend)
+    await asyncio.gather(_turn(client), _turn(client))
+
+    first, second = executor.requests
+    assert second.previous_turn is not None
+    assert second.previous_turn.turn_id == first.turn_id
+    assert ("detached", "room") not in agent.log
+
+
+async def test_a_turn_no_executor_took_is_no_previous_turn() -> None:
+    backend = InMemoryTurnBackend()
+    client = TurnClient(backend)
+    with pytest.raises(TurnLinkError):
+        await _turn(client)
+    executor = _Recording(_Agent(), "a")
+    await backend.serve(executor)
+    await _turn(client)
+    assert executor.requests[0].previous_turn is None
+
+
+async def test_a_turn_cannot_write_the_framework_s_room_metadata() -> None:
+    with pytest.raises(ValidationError, match="framework's room metadata"):
+        UpdateRoomMetadata(
+            room_id="room",
+            metadata={room_state_key("claude"): {"config": {"mode": "bypassPermissions"}}},
+        )
+    with pytest.raises(ValidationError, match="framework's room metadata"):
+        UpdateRoomMetadata(room_id="room", metadata={"roomkit:detached_channels": []})
+    assert UpdateRoomMetadata(room_id="room", metadata={"topic": "billing"}).metadata
+
+
+async def test_detaching_an_ai_channel_drops_everything_it_kept_for_the_room() -> None:
+    kit = RoomKit()
+    agent = AIChannel("ai", provider=MockAIProvider(responses=["ok"]), enable_planning=True)
+    kit.register_channel(agent)
+    await kit.create_room(room_id="room")
+    await kit.attach_channel("room", "ai")
+    assert agent._planner is not None
+    await agent._planner.handle_plan_tasks(
+        {"tasks": [{"title": "Read the logs", "status": "pending"}]}, room_id="room"
+    )
+    agent._tool_usage.record("room", "search", {"q": "x"}, "found")
+    agent._skill_activation.activate("room", "triage")
+    agent._refused_images.add("room", [("https://example.test/a.png", 0)])
+
+    await kit.detach_channel("room", "ai")
+
+    assert agent._planner.plan_for("room") is None
+    assert agent._tool_usage.tool_names("room") == set()
+    assert agent._skill_activation.active_names("room") == set()
+    assert agent._refused_images.of("room") == frozenset()
     await kit.close()

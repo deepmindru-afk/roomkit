@@ -54,6 +54,7 @@ from roomkit.core.locks import InMemoryLockManager, RoomLockManager
 from roomkit.core.mixins import (
     BackgroundMixin,
     ChannelOpsMixin,
+    ChannelStateMixin,
     DelegationMixin,
     DeliverMixin,
     DiscussionMixin,
@@ -161,6 +162,7 @@ class RoomKit(
     DiscussionMixin,
     StrategyMixin,
     ChannelOpsMixin,
+    ChannelStateMixin,
     RoomLifecycleMixin,
     MembershipMixin,
     VoiceOpsMixin,

@@ -10,18 +10,30 @@ prompt as the channel's own cancel does.
 from __future__ import annotations
 
 import asyncio
+import contextvars
+from collections.abc import Callable
 from typing import Any
 
 import pytest
 
 from roomkit import ACPChannel, RoomKit
+from roomkit.core._turn_scope import enter_turn
+from roomkit.core.exceptions import ChannelNotFoundError, RoomNotFoundError
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, HookExecution, HookTrigger
 from roomkit.models.event import TextContent
 from roomkit.models.steering import Cancel
 from roomkit.turns import InMemoryTurnBackend, TurnExecutor
 from roomkit.turns._rooms import room_state_key
-from tests.test_channels.test_acp import _channel, _FakeACPConnection, _FakeTransport, _sent
+from tests.conftest import make_event
+from tests.test_channels.test_acp import (
+    _binding,
+    _channel,
+    _context,
+    _FakeACPConnection,
+    _FakeTransport,
+    _sent,
+)
 from tests.test_channels.test_acp_discussion import _Hanging
 from tests.test_framework import SimpleChannel
 
@@ -57,6 +69,21 @@ def _hanging(tmp_path: Any) -> tuple[ACPChannel, _Hanging]:
     channel = ACPChannel(AGENT, transport=_FakeTransport(connection), cwd=tmp_path)
     connection.client = channel._client
     return channel, connection
+
+
+async def _eventually(holds: Callable[[], bool]) -> None:
+    """Wait for *holds*, done in the background, within 5 s."""
+    async with asyncio.timeout(5):
+        while not holds():
+            await asyncio.sleep(0.01)
+
+
+class _Unanswered(_FakeACPConnection):
+    """An agent that never answers ``session/close``."""
+
+    async def close_session(self, session_id: str) -> None:
+        self.closed_sessions.append(session_id)
+        await asyncio.Event().wait()
 
 
 # -- The host's session verbs --------------------------------------------------------
@@ -140,7 +167,8 @@ async def test_detaching_an_acp_agent_closes_the_room_s_session(tmp_path: Any) -
 
     await kit.detach_channel(ROOM, AGENT)
 
-    assert connection.closed_sessions == [session]
+    # Off the detach, which never waits for the agent.
+    await _eventually(lambda: connection.closed_sessions == [session])
     assert channel.session_id(ROOM) is None
     await kit.attach_channel(ROOM, AGENT, category=ChannelCategory.INTELLIGENCE)
     await _say(kit, "hello again")
@@ -160,12 +188,58 @@ async def test_a_detach_never_waits_for_the_room_s_running_turn(tmp_path: Any) -
 
     connection.release.set()
     await asyncio.wait_for(said, 5)
-    for _ in range(100):
-        if connection.closed_sessions:
-            break
-        await asyncio.sleep(0.01)
+    # The turn that ran across the detach closed its session at its end.
     assert connection.closed_sessions == [session]
     await kit.close()
+
+
+async def test_a_detach_never_waits_for_an_agent_that_does_not_answer(tmp_path: Any) -> None:
+    connection = _Unanswered(None, emit_updates=False)
+    channel = ACPChannel(AGENT, transport=_FakeTransport(connection), cwd=tmp_path)
+    connection.client = channel._client
+    kit = await _room(channel)
+    await _say(kit, "hello")
+
+    await asyncio.wait_for(kit.detach_channel(ROOM, AGENT), 2)
+
+    await _eventually(lambda: connection.closed_sessions == ["session-1"])
+    await kit.close()
+
+
+async def test_a_turn_started_before_a_detach_never_prompts_after_it(tmp_path: Any) -> None:
+    channel, connection, _ = _channel(tmp_path, emit_updates=False)
+    event = make_event(room_id="room-1", body="hello", index=0)
+    output = await channel.on_event(event, _binding(), _context(event))
+    assert output.response_stream is not None
+
+    await channel.on_room_detached("room-1")
+    items = [item async for item in output.response_stream]
+
+    assert items == [] and connection.prompt_calls == [] and connection.new_session_calls == []
+    assert output.response_metadata is not None
+    assert output.response_metadata["acp"]["interrupted"] is True
+    await channel.close()
+
+
+async def test_a_session_opened_by_a_turn_across_a_detach_is_closed(tmp_path: Any) -> None:
+    connection = _SlowOpening()
+    channel = ACPChannel(AGENT, transport=_FakeTransport(connection), cwd=tmp_path)
+    connection.client = channel._client
+    event = make_event(room_id="room-1", body="hello", index=0)
+    output = await channel.on_event(event, _binding(), _context(event))
+    assert output.response_stream is not None
+    reading = asyncio.create_task(anext(output.response_stream, None))
+    await asyncio.wait_for(connection.opening.wait(), 5)
+
+    await channel.on_room_detached("room-1")
+    connection.release.set()
+    await asyncio.wait_for(reading, 5)
+
+    # Opened for a room it was detached from: never prompted, and closed.
+    assert connection.prompt_calls == []
+    assert connection.closed_sessions == ["session-1"]
+    assert channel.session_id("room-1") is None
+    await channel.close()
 
 
 # -- Steering ------------------------------------------------------------------------
@@ -236,4 +310,115 @@ async def test_a_steering_cancel_while_the_session_opens_stops_the_prompt(
     # Nothing was prompted: the opening was stopped before a prompt could go.
     assert connection.prompt_calls == []
     assert not channel._prompting(ROOM)
+    await kit.close()
+
+
+async def test_a_steering_cancel_before_the_agent_is_reached_cuts_the_turn(
+    tmp_path: Any,
+) -> None:
+    contributing = asyncio.Event()
+    release = asyncio.Event()
+
+    async def contributor(context: Any, trigger: Any) -> list[str]:
+        contributing.set()
+        await release.wait()
+        return ["note"]
+
+    channel, connection, _ = _channel(
+        tmp_path, emit_updates=False, context_contributor=contributor
+    )
+    kit = await _room(channel)
+    said = asyncio.create_task(_say(kit, "hello"))
+    await asyncio.wait_for(contributing.wait(), 5)
+
+    # No prompt of the turn is out yet: the owner cuts the turn itself.
+    assert await kit.steer(Cancel(reason="hold"), AGENT, room_id=ROOM) == 1
+    release.set()
+    await asyncio.wait_for(said, 5)
+    assert connection.prompt_calls == []
+    await kit.close()
+
+
+async def test_a_steering_cancel_reaches_the_turn_it_names_only(tmp_path: Any) -> None:
+    channel, connection = _hanging(tmp_path)
+    event = make_event(room_id="room-1", body="hello", index=0)
+    under_turn = contextvars.copy_context()
+    under_turn.run(enter_turn, "turn-1")
+
+    async def prompt() -> None:
+        output = await channel.on_event(event, _binding(), _context(event))
+        assert output.response_stream is not None
+        [chunk async for chunk in output.response_stream]
+
+    running = asyncio.create_task(prompt(), context=under_turn)
+    await asyncio.wait_for(connection.prompted.wait(), 5)
+
+    assert await channel.steer(Cancel(reason="hold"), turn_id="turn-2") is None
+    assert connection.cancelled_sessions == []
+    assert await channel.steer(Cancel(reason="hold"), turn_id="turn-1") == 1
+    await asyncio.wait_for(running, 5)
+    assert connection.cancelled_sessions == ["session-1"]
+    await channel.close()
+
+
+# -- Who may call ---------------------------------------------------------------------
+
+
+async def test_a_channel_call_needs_the_channel_attached_to_the_room(tmp_path: Any) -> None:
+    channel, connection, _ = _channel(tmp_path, emit_updates=False)
+    kit = await _room(channel)
+    await kit.detach_channel(ROOM, AGENT)
+
+    with pytest.raises(ChannelNotFoundError):
+        await kit.channel_call(AGENT, ROOM, "set_config_option", config_id="model", value="opus")
+    assert connection.new_session_calls == []
+    room = await kit.get_room(ROOM)
+    assert room_state_key(AGENT) not in room.metadata
+    await kit.close()
+
+
+async def test_a_channel_call_is_scoped_to_the_room_s_organization(tmp_path: Any) -> None:
+    channel, _connection, _ = _channel(tmp_path, emit_updates=False)
+    kit = RoomKit()
+    kit.register_channel(channel)
+    await kit.create_room(room_id=ROOM, organization_id="acme")
+    await kit.attach_channel(ROOM, AGENT, category=ChannelCategory.INTELLIGENCE)
+
+    with pytest.raises(RoomNotFoundError):
+        await kit.channel_call(AGENT, ROOM, "session_config", organization_id="globex")
+    assert await kit.channel_call(AGENT, ROOM, "session_config", organization_id="acme") == {}
+    await kit.close()
+
+
+async def test_the_room_s_channel_state_is_written_by_channel_calls_alone(tmp_path: Any) -> None:
+    channel, _connection, _ = _channel(tmp_path, emit_updates=False)
+    kit = await _room(channel)
+    forged = {room_state_key(AGENT): {"config": {"mode": "bypassPermissions"}}}
+
+    with pytest.raises(ValueError, match="kit.channel_call alone"):
+        await kit.update_room_metadata(ROOM, forged)
+    with pytest.raises(ValueError, match="kit.channel_call alone"):
+        await kit.create_room(room_id="other", metadata=forged)
+    room = await kit.get_room(ROOM)
+    assert room_state_key(AGENT) not in room.metadata
+    await kit.close()
+
+
+async def test_a_failed_detach_message_still_forgets_the_room_s_values(tmp_path: Any) -> None:
+    channel, _connection, _ = _channel(tmp_path, emit_updates=False)
+    kit = await _room(channel)
+    await kit.channel_call(AGENT, ROOM, "set_config_option", config_id="model", value="sonnet")
+    sent = kit._turns.control
+
+    async def refuse(message: Any) -> Any:
+        if message.type == "room_detached":
+            raise RuntimeError("backend down")
+        return await sent(message)
+
+    kit._turns.control = refuse  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="backend down"):
+        await kit.detach_channel(ROOM, AGENT)
+    room = await kit.get_room(ROOM)
+    assert room_state_key(AGENT) not in room.metadata
+    kit._turns.control = sent  # type: ignore[method-assign]
     await kit.close()

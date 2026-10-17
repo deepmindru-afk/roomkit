@@ -52,6 +52,10 @@ class TaskPlanner:
             self._plans.move_to_end(key)
         return plan
 
+    def forget(self, room_id: str) -> None:
+        """Drop *room_id*'s plan (RFC §10.6.3)."""
+        self._plans.pop(room_id, None)
+
     async def handle_plan_tasks(
         self,
         arguments: dict[str, Any],

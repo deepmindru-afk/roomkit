@@ -23,6 +23,7 @@ from roomkit.models.enums import (
 )
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room, RoomTimers
+from roomkit.turns._rooms import refuse_room_state
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
@@ -98,7 +99,8 @@ class RoomLifecycleMixin(HelpersMixin):
 
         Args:
             room_id: Optional explicit room ID (auto-generated if omitted).
-            metadata: Optional room metadata dict.
+            metadata: Optional room metadata dict; none of what a room keeps
+                for a channel (``roomkit:channel_state:``, ``ValueError``).
             recorders: Optional list of :class:`RoomRecorderBinding` for
                 room-level media recording.
             orchestration: Orchestration strategy for this room. Overrides
@@ -118,6 +120,7 @@ class RoomLifecycleMixin(HelpersMixin):
                 is written, so no room exists afterwards and the recordings
                 already started are stopped (RFC §12.11).
         """
+        refuse_room_state(metadata or {})
         if timers is not None and timers.last_activity_at is None:
             timers = timers.model_copy(update={"last_activity_at": datetime.now(UTC)})
         room = Room(
@@ -421,7 +424,13 @@ class RoomLifecycleMixin(HelpersMixin):
         *,
         organization_id: str | None = None,
     ) -> Room:
-        """Update room metadata."""
+        """Update room metadata.
+
+        Raises:
+            ValueError: a key under ``roomkit:channel_state:``, what the room
+                keeps for a channel, which ``channel_call`` alone writes.
+        """
+        refuse_room_state(metadata)
         async with self._lock_manager.locked(room_id):
             room = await self.get_room(room_id, organization_id=organization_id)
             room = room.model_copy(

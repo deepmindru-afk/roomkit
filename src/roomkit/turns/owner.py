@@ -22,7 +22,7 @@ from roomkit.turns._rooms import RoomRecords
 from roomkit.turns.base import TurnTimeouts
 from roomkit.turns.executor import TurnExecutor
 from roomkit.turns.memory import InMemoryTurnBackend
-from roomkit.turns.wire import PreviousTurn, RoomDetached, TurnRequest
+from roomkit.turns.wire import ChannelCall, PreviousTurn, RoomDetached, TurnRequest
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -44,11 +44,9 @@ def turn_request(
     answers: bool = True,
     strategy_turn: bool = False,
     owner_tools: list[OwnerTool] | None = None,
-    previous_turn: PreviousTurn | None = None,
 ) -> TurnRequest:
     """The request for one turn of *binding*'s channel on *event*, with the
-    tools the owner serves it (*owner_tools*) and the room's previous turn
-    of the channel (*previous_turn*).
+    tools the owner serves it (*owner_tools*).
 
     A discussion's turn mark is this process's: its notes travel in the
     request, and the event goes without it (RFC §10.6.3).
@@ -70,7 +68,6 @@ def turn_request(
         notes=notes,
         in_place=in_place,
         owner_tools=owner_tools or [],
-        previous_turn=previous_turn,
     )
 
 
@@ -128,7 +125,6 @@ class TurnClient:
         await self._serve_own()
         channel_id = binding.channel_id
         declared = self._tools.declared(channel_id, event.room_id) if self._tools else []
-        previous = self._previous.get(channel_id, event.room_id)
         request = turn_request(
             event,
             binding,
@@ -136,11 +132,15 @@ class TurnClient:
             answers=answers,
             strategy_turn=strategy_turn,
             owner_tools=declared,
-            previous_turn=previous.model_copy() if previous is not None else None,
         )
-        link = await self.backend.submit(request)
-        submitted = PreviousTurn(turn_id=request.turn_id)
-        self._previous.put(channel_id, request.room_id, submitted)
+        request.previous_turn, submitted = self._leave(
+            channel_id, request.room_id, request.turn_id
+        )
+        try:
+            link = await self.backend.submit(request)
+        except BaseException:
+            self._unleave(channel_id, request.room_id, submitted, request.previous_turn)
+            raise
         turn = OwnerTurn(link, self._timeouts, self._tools, self._calls, self._host, self.inputs)
         self._open.add(turn)
         self._started = [*(t for t in self._started if not t.over), turn]
@@ -159,7 +159,47 @@ class TurnClient:
         await self._serve_own()
         if isinstance(message, RoomDetached):
             self._previous.pop(message.channel_id, message.room_id)
-        return await self.backend.control(message)
+        if not isinstance(message, ChannelCall):
+            return await self.backend.control(message)
+        # A channel call leaves the room's state as a turn does.
+        channel_id, room_id = message.channel_id, message.room_id
+        previous, made = self._leave(channel_id, room_id, message.call_id)
+        call = message.model_copy(update={"previous_turn": previous})
+        try:
+            answer = await self.backend.control(call)
+        except BaseException:
+            self._unleave(channel_id, room_id, made, previous)
+            raise
+        if answer is not None:
+            made.executor_id = answer.executor_id
+        return answer
+
+    def _leave(
+        self, channel_id: str, room_id: str, entry_id: str
+    ) -> tuple[PreviousTurn | None, PreviousTurn]:
+        """Record the turn or call *entry_id* as the room's last of the
+        channel before it is sent, so one sent alongside names it: the record
+        it replaces (a copy, as a request carries it), and its own."""
+        previous = self._previous.get(channel_id, room_id)
+        made = PreviousTurn(turn_id=entry_id)
+        self._previous.put(channel_id, room_id, made)
+        return (previous.model_copy() if previous is not None else None), made
+
+    def _unleave(
+        self,
+        channel_id: str,
+        room_id: str,
+        made: PreviousTurn,
+        previous: PreviousTurn | None,
+    ) -> None:
+        """Take back the record of a turn or call that was never sent, unless
+        a later one replaced it."""
+        if self._previous.get(channel_id, room_id) is not made:
+            return
+        if previous is None:
+            self._previous.pop(channel_id, room_id)
+        else:
+            self._previous.put(channel_id, room_id, previous)
 
     async def _serve_own(self) -> None:
         """Serve the client's own executor on the backend, once."""

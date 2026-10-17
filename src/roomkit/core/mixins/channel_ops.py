@@ -25,9 +25,7 @@ from roomkit.models.enums import (
     HookTrigger,
     Visibility,
 )
-from roomkit.turns._codec import rebuild_error
-from roomkit.turns._rooms import room_state_key, stored_room_state
-from roomkit.turns.wire import ChannelCall, RoomAttached, RoomDetached
+from roomkit.turns.wire import RoomAttached
 
 if TYPE_CHECKING:
     from roomkit.channels._ai_callbacks import RoomVisionLoader
@@ -142,6 +140,7 @@ class ChannelOpsMixin(HelpersMixin):
     _force_clear_greeting_gate: Any  # see ChannelOpsHost
     _build_room_tasks_loader: Any  # see ChannelOpsHost
     _refuse_discussion_binding: Any  # see DiscussionMixin
+    _on_room_detached: Any  # see ChannelStateMixin
 
     def register_channel(self, channel: Channel) -> None:
         """Register a channel implementation by its ID.
@@ -516,56 +515,6 @@ class ChannelOpsMixin(HelpersMixin):
 
         await self.join(room_id, channel_id)
 
-    async def channel_call(
-        self, channel_id: str, room_id: str, verb: str, **arguments: Any
-    ) -> Any:
-        """Run a per-room verb of a channel on the executor holding the room's
-        state for it (RFC §10.6.3): its result.
-
-        An ACP agent's are its session's: ``set_config_option`` (``config_id``,
-        ``value``), ``close_session``, ``session_config`` and
-        ``config_options``. What the room keeps for the channel, when the verb
-        changes it (the values a host set on the session), is stored with the
-        room (RFC §6.4), so the room's next executor finds it::
-
-            await kit.channel_call("claude", room.id, "set_config_option",
-                                   config_id="model", value="opus")
-
-        Raises:
-            RoomNotFoundError: no room *room_id*.
-            ChannelNotRegisteredError: no channel *channel_id*.
-            ValueError: a verb the channel does not have.
-        """
-        room = await self.get_room(room_id)
-        if channel_id not in self._channels:
-            raise ChannelNotRegisteredError(f"Channel {channel_id} not registered")
-        call = ChannelCall(
-            channel_id=channel_id,
-            room_id=room_id,
-            verb=verb,
-            arguments=arguments,
-            room_state=stored_room_state(room.metadata, channel_id),
-        )
-        answer = await self._turns.control(call)
-        if answer is None:
-            return None
-        if answer.room_state is not None:
-            await self._store_room_state(room_id, channel_id, answer.room_state)
-        if answer.error is not None:
-            raise rebuild_error(answer.error)
-        return answer.result
-
-    async def _store_room_state(
-        self, room_id: str, channel_id: str, state: dict[str, Any]
-    ) -> None:
-        """Keep *state* with the room as what it holds for *channel_id*
-        (empty: nothing)."""
-        key = room_state_key(channel_id)
-        if state:
-            await self._store.patch_room_metadata(room_id, {key: state})
-        else:
-            await self._store.patch_room_metadata(room_id, {}, unset=[key])
-
     async def detach_channel(
         self, room_id: str, channel_id: str, *, organization_id: str | None = None
     ) -> bool:
@@ -619,21 +568,6 @@ class ChannelOpsMixin(HelpersMixin):
                 if refusal is not None:
                     raise refusal
             return removed
-
-    async def _on_room_detached(self, room_id: str, binding: ChannelBinding) -> None:
-        """Let the channel of *binding* let go of the room: an intelligence
-        channel on every executor declaring it, the room forgetting what it
-        kept for the channel (RFC §10.6.3, §6.4)."""
-        channel_id = binding.channel_id
-        if binding.category is not ChannelCategory.INTELLIGENCE:
-            channel = self._channels.get(channel_id)
-            if channel is not None:
-                await channel.on_room_detached(room_id)
-            return
-        await self._turns.control(RoomDetached(channel_id=channel_id, room_id=room_id))
-        room = await self.get_room(room_id)
-        if room_state_key(channel_id) in room.metadata:
-            await self._store_room_state(room_id, channel_id, {})
 
     async def _record_detach_tombstone(self, room_id: str, channel_id: str) -> None:
         """Persist the revocation of *channel_id*'s binding (RFC §7.5-7).

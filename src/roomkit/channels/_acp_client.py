@@ -14,6 +14,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 from roomkit._version import __version__
+from roomkit.core._turn_scope import current_turn_id
 from roomkit.models.streaming import StreamDelta
 
 if TYPE_CHECKING:
@@ -75,6 +76,9 @@ class _TurnDone:
 @dataclass(slots=True)
 class _TurnState:
     room_id: str
+    turn_id: str | None = field(default_factory=current_turn_id)
+    """The turn of the turn backend this one runs under (RFC §10.6), which a
+    steering ``Cancel`` addresses; ``None`` outside one."""
     activity_seen: bool = False
     """Any update or permission request rules out a pre-execution refusal."""
     queue: asyncio.Queue[StreamDelta | _TurnDone] = field(default_factory=asyncio.Queue)

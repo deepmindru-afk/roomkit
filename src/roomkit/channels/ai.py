@@ -607,14 +607,22 @@ class AIChannel(
         await self._forget_room(room_id)
 
     async def on_room_detached(self, room_id: str) -> None:
-        """The room's thought, and what the speak policy kept of it, go with the
-        binding (RFC §6.4)."""
+        """Everything the channel keeps for the room goes with the binding, or
+        when a turn elsewhere made it stale (RFC §6.4, §10.6.2): its thought,
+        what the speak policy kept, its plan, the images its provider
+        refused, and its records of tools used and skills activated, which
+        its next turn hydrates again from the store."""
         await self._forget_room(room_id)
 
     async def _forget_room(self, room_id: str) -> None:
         await self._forget_thought(room_id)
         if self._speak_policy is not None:
             self._speak_policy.forget_room(room_id)
+        if self._planner is not None:
+            self._planner.forget(room_id)
+        self._refused_images.forget(room_id)
+        self._tool_usage.forget(room_id)
+        self._skill_activation.forget(room_id)
 
     async def _thinking_context(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext

@@ -119,6 +119,11 @@ class SkillActivationMemory:
         room = self._by_room.get(room_id)
         return set(room.names) if room else set()
 
+    def forget(self, room_id: str) -> None:
+        """Drop *room_id*'s activations; its next turn hydrates them again
+        from the store (RFC §10.6.3)."""
+        self._by_room.pop(room_id, None)
+
     def needs_hydration(self, room_id: str | None) -> bool:
         """Whether persisted history should be loaded for this room.
 

@@ -66,7 +66,7 @@ class TurnExecutor:
         self._turns: dict[asyncio.Task[None], ExecutorTurn] = {}
         self._closed = False
         self._hooks = HookEngine(turns=True)
-        self._rooms = ExecutorRooms(self.executor_id)
+        self._rooms = ExecutorRooms(self.executor_id, self._channel)
 
     @property
     def hooks(self) -> HookEngine:
@@ -144,7 +144,10 @@ class TurnExecutor:
 
     def take(self, link: ExecutorLink) -> None:
         """Start the turn *link* brought; it runs on its own task."""
-        stale = self._rooms.enter(link.request)
+        request = link.request
+        stale = self._rooms.enter(
+            request.channel_id, request.room_id, request.turn_id, request.previous_turn
+        )
         turn = ExecutorTurn(
             link, self.executor_id, self._turn_channel(link.request, stale), self._timeouts
         )
@@ -178,7 +181,7 @@ class TurnExecutor:
             channel = await self._channel(message.channel_id)
         except Exception as exc:
             if isinstance(message, ChannelCall):
-                return ChannelResult(error=error_record(exc))
+                return ChannelResult(error=error_record(exc), executor_id=self.executor_id)
             logger.exception("The factory failed to build channel %s", message.channel_id)
             return None
         return await self._rooms.apply(channel, message)

@@ -25,7 +25,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from roomkit.models.enums import EventType, Visibility
 from roomkit.models.event import EventContent, RoomEvent
@@ -99,12 +99,27 @@ class PostStatus(_Verb):
     metadata: dict[str, Any] | None = None
 
 
+FRAMEWORK_KEYS = "roomkit:"
+"""The prefix of the room-metadata keys the framework writes (a detach's
+revocation, a held verification, what the room keeps for a channel): a turn
+writes none of them."""
+
+
 class UpdateRoomMetadata(_Verb):
-    """``update_room_metadata``: keys merged into a room's metadata."""
+    """``update_room_metadata``: keys merged into a room's metadata, none of
+    the framework's own."""
 
     room_id: str
     metadata: dict[str, Any]
     organization_id: str | None = None
+
+    @field_validator("metadata")
+    @classmethod
+    def _not_the_framework_s(cls, metadata: dict[str, Any]) -> dict[str, Any]:
+        reserved = sorted(key for key in metadata if key.startswith(FRAMEWORK_KEYS))
+        if reserved:
+            raise ValueError(f"A turn cannot write the framework's room metadata {reserved}")
+        return metadata
 
 
 class AddObservation(_Verb):

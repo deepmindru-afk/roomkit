@@ -199,6 +199,11 @@ class ToolUsageMemory:
         while len(self._by_room) > _MAX_ROOMS:
             self._by_room.popitem(last=False)
 
+    def forget(self, room_id: str) -> None:
+        """Drop *room_id*'s record; its next turn hydrates it again from the
+        store (RFC §10.6.3)."""
+        self._by_room.pop(room_id, None)
+
     def needs_hydration(self, room_id: str | None) -> bool:
         """Whether persisted history should be loaded for this room.
 

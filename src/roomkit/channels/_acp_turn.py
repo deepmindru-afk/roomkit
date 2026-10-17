@@ -105,6 +105,7 @@ class ACPTurnMixin:
     _close_open_tools: Callable[..., Coroutine[Any, Any, bool]]
     _publish: Callable[..., Coroutine[Any, Any, None]]
     _room_locks: dict[str, asyncio.Lock]
+    _detached: dict[str, int]
 
     async def _prompt_stream(
         self,
@@ -119,8 +120,14 @@ class ACPTurnMixin:
         *,
         notes: str | None = None,
         standalone: bool = False,
+        generation: int = 0,
     ) -> AsyncIterator[StreamDelta]:
+        """The turn's prompt, under the room's turn lock; *generation* is the
+        number of the room's detaches when the turn started, past which it
+        never reaches the agent (RFC §10.6.3)."""
         async with self._room_turn_lock(room_id):
+            if self._detached_since(room_id, generation, metadata):
+                return
             opened = await self._start_turn(room_id, standalone, metadata)
             if opened is None:
                 return
@@ -128,6 +135,8 @@ class ACPTurnMixin:
             recovering = False
             completed = False
             try:
+                if self._detached_since(room_id, generation, metadata):
+                    return
                 for attempt in range(2):
                     turn_stream = self._turn_stream(
                         room_id,
@@ -172,6 +181,17 @@ class ACPTurnMixin:
                         await self._discard_room_session(room_id, connection)
                     finally:
                         self._room_locks.pop(room_id, None)
+                elif self._detached.get(room_id, 0) != generation:
+                    # Detached while it ran: the detach left the session to it.
+                    await self._discard_room_session(room_id, connection)
+
+    def _detached_since(self, room_id: str, generation: int, metadata: ResponseMetadata) -> bool:
+        """Whether the channel was detached from *room_id* since the turn
+        started; such a turn is marked interrupted and never prompts."""
+        if self._detached.get(room_id, 0) == generation:
+            return False
+        metadata["acp"]["interrupted"] = True
+        return True
 
     async def _start_turn(
         self, room_id: str, standalone: bool, metadata: ResponseMetadata

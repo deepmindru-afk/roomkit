@@ -261,6 +261,10 @@ class RefusedImages:
         """The images refused in *room_id*."""
         return self._by_room.get(room_id, frozenset())
 
+    def forget(self, room_id: str) -> None:
+        """Drop what *room_id*'s provider refused (RFC §10.6.3)."""
+        self._by_room.pop(room_id, None)
+
     def add(self, room_id: str, keys: Iterable[ImageKey]) -> None:
         """Record *keys* as refused in *room_id*."""
         self._by_room[room_id] = self.of(room_id) | frozenset(keys)

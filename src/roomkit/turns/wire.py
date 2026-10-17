@@ -10,6 +10,7 @@ duplicate is seen on arrival.
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
@@ -31,9 +32,11 @@ class OwnerTool(BaseModel):
 
 class PreviousTurn(BaseModel):
     """The room's previous turn of the channel, the one the owner submitted
-    last, ended or not (RFC §10.6.2)."""
+    last, ended or not (RFC §10.6.2); or its last channel call, which leaves
+    the room's state as a turn does."""
 
     turn_id: str
+    """The turn's id, or the channel call's."""
     executor_id: str | None = None
     """The executor that took it; ``None`` when none had said so yet."""
 
@@ -327,6 +330,7 @@ class ChannelCall(BaseModel):
     answered by a :class:`ChannelResult` (RFC §10.6.3)."""
 
     type: Literal["channel_call"] = "channel_call"
+    call_id: str = Field(default_factory=lambda: f"call-{uuid4().hex}")
     channel_id: str
     room_id: str
     verb: str
@@ -334,6 +338,9 @@ class ChannelCall(BaseModel):
     room_state: dict[str, Any] = Field(default_factory=dict)
     """What the room keeps for the channel, as the owner stores it: the
     channel takes it back when it holds none for the room."""
+    previous_turn: PreviousTurn | None = None
+    """The room's previous turn or call of the channel: the executor drops a
+    state it did not leave before the verb runs, as before a turn."""
 
 
 class ChannelResult(BaseModel):
@@ -343,6 +350,8 @@ class ChannelResult(BaseModel):
     type: Literal["channel_result"] = "channel_result"
     result: Any = None
     error: ErrorRecord | None = None
+    executor_id: str | None = None
+    """The executor that ran the verb."""
     room_state: dict[str, Any] | None = None
     """What the room keeps for the channel once the verb ran, when it
     changed (empty: nothing); ``None`` when it did not."""

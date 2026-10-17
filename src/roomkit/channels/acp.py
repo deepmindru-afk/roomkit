@@ -298,8 +298,11 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         self._closed = False
         self._realtime: RealtimeBackend | None = None
         self._after_response_hook: AfterResponseCallback | None = None
-        # The closes of detached rooms' sessions waiting for a turn to end.
-        self._closings: set[asyncio.Task[bool]] = set()
+        # Room -> how many times the channel was detached from it: a turn
+        # started before a detach never prompts after it (RFC §10.6.3).
+        self._detached: dict[str, int] = {}
+        # The closes of detached rooms' sessions, run off the detach.
+        self._closings: set[asyncio.Task[None]] = set()
 
     @property
     def info(self) -> dict[str, Any]:
@@ -432,27 +435,37 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         if values:
             self._room_config[room_id] = values
 
-    async def steer(self, directive: SteeringDirective, *, room_id: str) -> int:
-        """Steer the room's running turn (RFC §21.3): an external agent takes
-        a ``Cancel`` alone, sent as :meth:`cancel` sends it, so the turn ends
-        as a cancelled prompt ends (RFC §6.4). How many turns it reached:
-        ``0`` for another directive, or for a room with no turn running."""
-        if not isinstance(directive, Cancel) or not self._prompting(room_id):
+    async def steer(self, directive: SteeringDirective, *, turn_id: str) -> int | None:
+        """Steer the turn *turn_id* (RFC §21.3, §10.6.8): an external agent
+        takes a ``Cancel`` alone, as :meth:`cancel` sends it (the turn's
+        session opening stopped, or its prompt cancelled), so the turn ends
+        as a cancelled prompt ends (RFC §6.4): 1. ``None`` while the turn has
+        not reached the agent yet, which its owner then cuts as the turn's
+        cancel; 0 for another directive."""
+        if not isinstance(directive, Cancel):
             return 0
-        return 1 if await self.cancel(room_id) else 0
+        found = next(((k, t) for k, t in self._turns.items() if t.turn_id == turn_id), None)
+        if found is None:
+            return None
+        key, turn = found
+        await self._cancel_turn(key, turn)
+        return 1
 
     async def on_room_detached(self, room_id: str) -> None:
         """The room's session, and the values the host set on it, go with the
         binding (RFC §10.6.3, §6.4): a later attachment opens a new session,
-        caught up on the room. A turn of the room still running keeps its
-        session to its end, closed then: a detach never waits for a turn."""
+        caught up on the room. A detach never waits for the agent: the
+        session is closed off it, by the turn of the room running, at its
+        end, or else in the background; a turn started before the detach that
+        has not prompted yet ends without prompting, marked ``interrupted``."""
         self._room_config.pop(room_id, None)
+        self._detached[room_id] = self._detached.get(room_id, 0) + 1
+        session_id = self._sessions.get(room_id)
         lock = self._room_locks.get(room_id)
-        if lock is None or not lock.locked():
-            await self.close_session(room_id)
+        if session_id is None or (lock is not None and lock.locked()):
             return
         closing = asyncio.get_running_loop().create_task(
-            self.close_session(room_id), name=f"roomkit-acp-close-{room_id}"
+            self._close_detached(room_id, session_id), name=f"roomkit-acp-close-{room_id}"
         )
         self._closings.add(closing)
         closing.add_done_callback(self._closings.discard)
@@ -552,6 +565,7 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
                 metadata,
                 notes=notes,
                 standalone=standalone,
+                generation=self._detached.get(room_id, 0),
             ),
             response_metadata=metadata,
         )
@@ -567,13 +581,9 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
 
     async def cancel(self, room_id: str) -> bool:
         """Request cancellation of the active ACP turn for a Room."""
-        for turn in self._turns.values():
+        for key, turn in self._turns.items():
             if turn.room_id == room_id and turn.preparing:
-                # The turn's session is being opened or rebuilt: no prompt went
-                # out to cancel. Stop the runner before one can.
-                turn.cancel_requested = True
-                if turn.runner is not None:
-                    turn.runner.cancel()
+                await self._cancel_turn(key, turn)
                 return True
         # A standalone turn runs in its own session: that is the one to stop.
         session_id = self._turn_sessions.get(room_id) or self._sessions.get(room_id)
@@ -582,6 +592,28 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
             return False
         await connection.cancel(session_id)
         return True
+
+    async def _cancel_turn(self, key: str, turn: _TurnState) -> None:
+        """Stop *turn*, registered under *key*: a turn whose session is being
+        opened or rebuilt has no prompt out, so its runner is stopped before
+        one can go; a prompting turn's prompt is cancelled in its session,
+        the key it is registered under."""
+        if turn.preparing:
+            turn.cancel_requested = True
+            if turn.runner is not None:
+                turn.runner.cancel()
+            return
+        connection = self._connection
+        if connection is not None:
+            await connection.cancel(key)
+
+    async def _close_detached(self, room_id: str, session_id: str) -> None:
+        """Close the session *room_id* had when it was detached, unless the
+        room holds another by then (it was attached again and opened one)."""
+        async with self._room_turn_lock(room_id), self._room_opening_lock(room_id):
+            if self._sessions.get(room_id) != session_id:
+                return
+            await self._discard_room_session(room_id, self._connection)
 
     async def close_session(self, room_id: str) -> bool:
         """Forget one Room's ACP session, and close it where the agent can.
@@ -675,6 +707,7 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
 
         for closing in list(self._closings):
             closing.cancel()
+        self._detached.clear()
         self._turns.clear()
         self._sessions.clear()
         self._turn_sessions.clear()
