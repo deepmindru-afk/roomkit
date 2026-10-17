@@ -97,18 +97,101 @@ async def test_the_owner_answers_a_turns_request() -> None:
     await kit.close()
 
 
-async def test_the_channels_handler_answers_through_the_owner() -> None:
+async def test_the_channels_handler_answers_where_the_tool_waits_first_come_first_served() -> None:
     kit, _, human, asked, reports = await _kit()
     turn = _say(kit)
     pending_id = await _asked(asked)
 
     assert human.handler.resolve(pending_id, "Green") is True
+    assert human.handler.resolve(pending_id, "Red") is False
+    # The kit's door, right after: the tool already has its answer.
+    await kit.answer_input(pending_id, "Blue")
     await asyncio.wait_for(turn, 5)
 
     [report] = reports
     assert report.result == "Green"
-    # The owner recorded it: the other door answers it no more.
-    assert await kit.answer_input(pending_id, "Red") is False
+    await kit.close()
+
+
+async def test_an_answer_the_handler_took_closes_the_owners_record_while_the_turn_runs() -> None:
+    kit, _, human, asked, _ = await _kit()
+    still_open: list[bool] = []
+
+    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
+    async def after_the_answer(event: ToolCallEvent, ctx: Any) -> None:
+        # The turn still runs; the owner learnt the request settled.
+        for _ in range(100):
+            if event_id not in kit._turns.inputs._open:
+                break
+            await asyncio.sleep(0.005)
+        still_open.append(event_id in kit._turns.inputs._open)
+
+    turn = _say(kit)
+    event_id = await _asked(asked)
+    for _ in range(100):
+        if event_id in kit._turns.inputs._open:
+            break
+        await asyncio.sleep(0.005)
+    assert event_id in kit._turns.inputs._open
+
+    assert human.handler.resolve(event_id, "Green") is True
+    await asyncio.wait_for(turn, 5)
+
+    assert still_open == [False]
+    await kit.close()
+
+
+async def test_a_block_after_an_answer_does_not_take_it_back() -> None:
+    kit, _, human, _, reports = await _kit()
+
+    @kit.turn_executor.hook(
+        HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC, priority=-1
+    )
+    async def answer_then_block(event: PendingInputEvent, ctx: Any) -> HookResult:
+        human.handler.resolve(event.pending_id, "Blue")
+        return HookResult.block("Too late to deny")
+
+    await asyncio.wait_for(_say(kit), 5)
+
+    [report] = reports
+    assert report.result == "Blue"
+    await kit.close()
+
+
+async def test_a_request_asked_after_its_turn_ended_is_the_handlers_alone() -> None:
+    answered: list[str] = []
+    spawned: list[asyncio.Task[Any]] = []
+    human = HumanInputToolHandler(tool_names={"ask_user"}, timeout=2, tool_definitions=[ASK])
+
+    async def later() -> None:
+        await asyncio.sleep(0.2)
+        pending = await human.handler.create(
+            "ask_user", {"question": "Still there?"}, room_id="r1"
+        )
+        assert human.handler.resolve(pending.pending_id, "Yes")
+        answered.append(await human.handler.wait(pending.pending_id, timeout=2))
+
+    async def tool(name: str, arguments: dict[str, Any]) -> str:
+        spawned.append(asyncio.create_task(later()))
+        return "asked later"
+
+    other = AITool(name="later_ask", description="Ask later.", parameters={"type": "object"})
+    call = AIResponse(content="", tool_calls=[AIToolCall(id="c1", name="later_ask", arguments={})])
+    provider = MockAIProvider(ai_responses=[call, AIResponse(content="Done.")])
+    agent = AIChannel(
+        "agent", provider=provider, human_input_handler=human, tools=[other], tool_handler=tool
+    )
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("ops"))
+    kit.register_channel(agent)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "ops")
+    await kit.attach_channel("r1", "agent", category=ChannelCategory.INTELLIGENCE)
+
+    await asyncio.wait_for(_say(kit), 5)
+    await asyncio.wait_for(spawned[0], 5)
+
+    assert answered == ["Yes"]
     await kit.close()
 
 
@@ -202,18 +285,6 @@ async def test_an_answer_held_past_its_bound_is_let_go() -> None:
     assert turn.sent == []
 
 
-async def test_an_answer_for_another_rooms_request_is_refused() -> None:
-    inputs = OwnerInputs(hold=60)
-    turn = _Turn("r2")
-    inputs.opened(turn, InputRequest(request_id="p1", tool_name="ask_user", arguments={}))  # type: ignore[arg-type]
-
-    assert await inputs.answer("p1", "From r1", room_id="r1") is False
-    assert await inputs.answer("p1", "From r2", room_id="r2") is True
-    await _settle()
-
-    assert [a.value for a in turn.sent] == ["From r2"]
-
-
 @pytest.mark.parametrize("ended", ["closed", "turn_ended"])
 async def test_a_request_closed_or_whose_turn_ended_takes_no_answer(ended: str) -> None:
     inputs = OwnerInputs(hold=60)
@@ -221,10 +292,40 @@ async def test_a_request_closed_or_whose_turn_ended_takes_no_answer(ended: str) 
     inputs.opened(turn, InputRequest(request_id="p1", tool_name="ask_user", arguments={}))  # type: ignore[arg-type]
 
     if ended == "closed":
-        inputs.closed("p1")
+        inputs.closed(turn, "p1")  # type: ignore[arg-type]
     else:
         inputs.turn_ended(turn)  # type: ignore[arg-type]
 
     assert await inputs.answer("p1", "Late") is False
     await _settle()
     assert turn.sent == []
+
+
+async def test_a_request_belongs_to_the_turn_that_opened_it() -> None:
+    inputs = OwnerInputs(hold=60)
+    owner, other = _Turn(), _Turn()
+    inputs.opened(owner, InputRequest(request_id="p1", tool_name="ask_user", arguments={}))  # type: ignore[arg-type]
+
+    # Another turn opening or closing the same id changes nothing.
+    inputs.opened(other, InputRequest(request_id="p1", tool_name="ask_user", arguments={}))  # type: ignore[arg-type]
+    inputs.closed(other, "p1")  # type: ignore[arg-type]
+
+    assert await inputs.answer("p1", "Mine") is True
+    await _settle()
+    assert [a.value for a in owner.sent] == ["Mine"]
+    assert other.sent == []
+
+
+async def test_early_answers_are_held_up_to_a_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("roomkit.turns._owner_inputs.HELD_KEPT", 2)
+    inputs = OwnerInputs(hold=60)
+    for request_id in ("p1", "p2", "p3"):
+        assert await inputs.answer(request_id, request_id) is True
+    turn = _Turn()
+
+    for request_id in ("p1", "p3"):
+        inputs.opened(turn, InputRequest(request_id=request_id, tool_name="t", arguments={}))  # type: ignore[arg-type]
+    await _settle()
+
+    # The oldest was let go; the newest is still held.
+    assert [a.value for a in turn.sent] == ["p3"]

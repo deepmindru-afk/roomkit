@@ -100,7 +100,7 @@ class OwnerTurn:
         self._timeouts = timeouts
         held = held_calls if held_calls is not None else set()
         self._calls = OwnerCalls(link.request, tools, host, self._send_result, held)
-        self._inputs = inputs if inputs is not None else OwnerInputs(timeouts.input_hold)
+        self._inputs = inputs if inputs is not None else OwnerInputs(timeouts.input_hold_timeout)
         self._accepted = False
         self._over = False
         self._record: ResponseMetadata | None = None
@@ -156,6 +156,10 @@ class OwnerTurn:
 
     async def read_item(self) -> Any:
         """The stream's next item; ``StopAsyncIteration`` at its end."""
+        if self._over and self._steer_cut:
+            # Read after a steering Cancel ended the turn: the calls it left
+            # open end cancelled first.
+            self._cut_ends.extend(self._open_call_ends())
         if self._cut_ends:
             return self._cut_ends.pop(0)
         if self._over and self._steer_cut:
@@ -334,7 +338,7 @@ class OwnerTurn:
         elif isinstance(frame, InputRequest):
             self._inputs.opened(self, frame)
         elif isinstance(frame, InputClosed):
-            self._inputs.closed(frame.request_id)
+            self._inputs.closed(self, frame.request_id)
         elif isinstance(frame, SteerResult):
             if (reached := self._steers.get(frame.steer_id)) is not None and not reached.done():
                 reached.set_result(frame.loops)

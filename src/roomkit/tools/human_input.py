@@ -302,6 +302,9 @@ class HumanInputHandler:
         )
         self._pending[pending_id] = pending
         inputs = current_turn_inputs()
+        if inputs is not None and not inputs.open:
+            # Asked from a task that outlived its turn: settled here alone.
+            inputs = None
         if inputs is not None:
             self._turn_of[pending_id] = inputs
 
@@ -373,7 +376,7 @@ class HumanInputHandler:
             logger.exception("_on_input_required callback failed for pending %s", event.pending_id)
             return
         if not allowed:
-            self._reject_here(event.pending_id, "Denied by ON_USER_INPUT_REQUIRED hook")
+            self.reject(event.pending_id, "Denied by ON_USER_INPUT_REQUIRED hook")
 
     async def _open_on_owner(self, pending_id: str) -> None:
         """Tell the owner of the request's turn that it is open, when it is."""
@@ -467,7 +470,8 @@ class HumanInputHandler:
         """
         inputs = self._turn_of.pop(pending.pending_id, None)
         if inputs is not None:
-            # Settled here, not by the owner's answer: the owner closes it.
+            # Settled here, where the tool waits, first come first served:
+            # the owner closes its record (RFC §10.6.5).
             inputs.closed(pending.pending_id, pending.status.value)
         if self._retention == 0:
             return
@@ -497,47 +501,8 @@ class HumanInputHandler:
     def resolve(self, pending_id: str, result: str) -> bool:
         """Resolve a pending request with a result.
 
-        A request of a turn the turn backend runs is answered by its owner,
-        which records the answer once whichever door it came through
-        (RFC §10.6.5): it is forwarded there.
-
-        Returns ``True`` if the request was found and resolved, or forwarded.
+        Returns ``True`` if the request was found and resolved.
         """
-        if self._forwarded(pending_id, value=result, reason=None):
-            return True
-        return self._resolve_here(pending_id, result)
-
-    def reject(self, pending_id: str, reason: str = "") -> bool:
-        """Reject a pending request.
-
-        A request of a turn the turn backend runs is forwarded to its owner,
-        as :meth:`resolve` forwards an answer.
-
-        Returns ``True`` if the request was found and rejected, or forwarded.
-        """
-        if self._forwarded(pending_id, value=None, reason=reason):
-            return True
-        return self._reject_here(pending_id, reason)
-
-    def settle(self, pending_id: str, *, value: str | None, reason: str | None) -> bool:
-        """Settle a request with the outcome its turn's owner recorded: an
-        answer (*value*) or a rejection (*reason*)."""
-        self._turn_of.pop(pending_id, None)
-        if value is not None:
-            return self._resolve_here(pending_id, value)
-        return self._reject_here(pending_id, reason or "")
-
-    def _forwarded(self, pending_id: str, *, value: str | None, reason: str | None) -> bool:
-        """Forward an outcome to the owner of the request's turn; whether it
-        is such a request, still open."""
-        inputs = self._turn_of.get(pending_id)
-        pending = self._pending.get(pending_id)
-        if inputs is None or pending is None or pending.status != PendingInputStatus.PENDING:
-            return False
-        inputs.forward(pending_id, value=value, reason=reason)
-        return True
-
-    def _resolve_here(self, pending_id: str, result: str) -> bool:
         pending = self._pending.get(pending_id)
         if pending is None or pending.status != PendingInputStatus.PENDING:
             return False
@@ -547,7 +512,11 @@ class HumanInputHandler:
         self._retain(pending)
         return True
 
-    def _reject_here(self, pending_id: str, reason: str) -> bool:
+    def reject(self, pending_id: str, reason: str = "") -> bool:
+        """Reject a pending request.
+
+        Returns ``True`` if the request was found and rejected.
+        """
         pending = self._pending.get(pending_id)
         if pending is None or pending.status != PendingInputStatus.PENDING:
             return False
@@ -556,6 +525,14 @@ class HumanInputHandler:
         pending._event.set()
         self._retain(pending)
         return True
+
+    def settle(self, pending_id: str, *, value: str | None, reason: str | None) -> bool:
+        """Settle a request with the outcome its turn's owner recorded: an
+        answer (*value*) or a rejection (*reason*), when it is still open."""
+        self._turn_of.pop(pending_id, None)
+        if value is not None:
+            return self.resolve(pending_id, value)
+        return self.reject(pending_id, reason or "")
 
 
 class HumanInputToolHandler:

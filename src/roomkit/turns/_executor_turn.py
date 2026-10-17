@@ -129,7 +129,7 @@ class ExecutorTurn:
         # the verbs of the turn's host (RFC §10.6.5).
         self._calls = ExecutorCalls(self._request, self._send_call)
         self._host = TurnHost(self._calls.host_call)
-        self._inputs = ExecutorInputs(self._send_call, self._calls.host_call)
+        self._inputs = ExecutorInputs(self._send_call)
 
     async def run(self) -> None:
         """Run the turn to its end, which the owner is always told."""
@@ -145,6 +145,7 @@ class ExecutorTurn:
             # their way are answered first, and the mark its notes rode reads
             # as no mark.
             self._host._close()
+            self._inputs.close()
             task = asyncio.current_task()
             if self._cut is not None or (task is not None and task.cancelling()):
                 # Cut: nothing waits for an owner that may no longer answer.
@@ -167,6 +168,10 @@ class ExecutorTurn:
             await self._send(Error(error=error_record(exc)))
             return
         self._built = channel
+        if self._cut is not None:
+            # Cut while its channel was being built (a steering Cancel): it
+            # never runs.
+            return
         if channel is None:
             missing = ChannelNotRegisteredError(
                 f"No channel {self._request.channel_id!r} on executor {self._executor_id}"

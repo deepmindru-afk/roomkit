@@ -31,10 +31,8 @@ from roomkit.turns.base import OwnerHost
 from roomkit.turns.host import (
     VERBS,
     AddObservation,
-    AnswerInput,
     Delegate,
     PostStatus,
-    RejectInput,
     SendEvent,
     UpdateRoomMetadata,
     WaitTask,
@@ -64,8 +62,6 @@ class KitHost(OwnerHost):
             "post_status": self._post_status,
             "update_room_metadata": self._update_room_metadata,
             "add_observation": self._add_observation,
-            "answer_input": self._answer_input,
-            "reject_input": self._reject_input,
         }
 
     async def call(self, request: TurnRequest, verb: str, arguments: dict[str, Any]) -> Any:
@@ -123,16 +119,6 @@ class KitHost(OwnerHost):
     async def _add_observation(self, request: TurnRequest, args: AddObservation) -> None:
         _same_room(request, args.observation.room_id)
         await self._kit.store.add_observation(args.observation)
-
-    async def _answer_input(self, request: TurnRequest, args: AnswerInput) -> bool:
-        return await self._kit._turns.inputs.answer(
-            args.request_id, args.value, room_id=request.room_id
-        )
-
-    async def _reject_input(self, request: TurnRequest, args: RejectInput) -> bool:
-        return await self._kit._turns.inputs.reject(
-            args.request_id, args.reason, room_id=request.room_id
-        )
 
     def _keep(self, task: DelegatedTask) -> None:
         """Keep *task* for ``wait_task``, letting go of the oldest ended ones

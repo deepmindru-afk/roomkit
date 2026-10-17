@@ -107,21 +107,6 @@ class UpdateRoomMetadata(_Verb):
     organization_id: str | None = None
 
 
-class AnswerInput(_Verb):
-    """``answer_input``: an answer the channel's human-input handler received
-    for a request of the turn, which the owner records."""
-
-    request_id: str
-    value: str
-
-
-class RejectInput(_Verb):
-    """``reject_input``: a rejection the channel's handler received."""
-
-    request_id: str
-    reason: str = ""
-
-
 class AddObservation(_Verb):
     """``add_observation``: an observation stored for its room (RFC §5.11)."""
 
@@ -135,8 +120,6 @@ VERBS: dict[str, type[_Verb]] = {
     "post_status": PostStatus,
     "update_room_metadata": UpdateRoomMetadata,
     "add_observation": AddObservation,
-    "answer_input": AnswerInput,
-    "reject_input": RejectInput,
 }
 """Every verb of a turn's host, by its name, with the record of its arguments."""
 

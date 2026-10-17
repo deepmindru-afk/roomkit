@@ -546,7 +546,7 @@ class RoomKit(
         """Answer the human-input request *request_id* of a turn this kit
         started, wherever the turn runs (RFC §10.6.5): the tool waiting on it
         reads *value*. An answer for a request not open yet is held for
-        ``input_hold`` seconds (60 by default). ``False`` for a request
+        ``input_hold_timeout`` seconds (60 by default). ``False`` for a request
         already answered or rejected."""
         return await self._turns.inputs.answer(request_id, value)
 

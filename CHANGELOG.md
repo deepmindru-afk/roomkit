@@ -11,15 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `RoomKit.answer_input(request_id, value)` and
   `RoomKit.reject_input(request_id, reason)` (RMK-811, RFC §10.6.5): a
-  human-input request of a turn is answered on the room owner, wherever the
-  turn runs. The executor sends the request (`input_request`) before
+  human-input request of a turn can be answered on the room owner, wherever
+  the turn runs. The executor sends the request (`input_request`) before
   `ON_USER_INPUT_REQUIRED` fires; the owner keeps its record, holds an answer
-  that comes before it for `TurnTimeouts.input_hold` (60 s), answers it once
-  (`input_answer`, a second answer returning `False`), and closes it when the
-  request settles where the tool runs (a hook's `BLOCK`, its timeout, a
-  release: `input_closed`) or its turn ends. `HumanInputHandler.resolve()` and
-  `reject()` forward a request of such a turn to the same record, so both
-  doors answer it once.
+  that comes before it for 60 s (`TurnTimeouts.input_hold_timeout`), and
+  sends it to the executor (`input_answer`), where it settles the request if
+  it is still open. The request settles where its tool waits, first come
+  first served, as it did: an answer the channel's own handler takes
+  (`HumanInputHandler.resolve()`), a hook's `BLOCK`, its timeout or a release
+  is never taken back by a later answer, and the owner closes its record
+  (`input_closed`), after which the kit's door answers `False`. A request
+  asked from a task that outlived its turn is the handler's alone. Answers
+  the kit holds are capped (1024); a request belongs to the turn that opened
+  it.
 
 - `RoomKit.steer(directive, channel_id, *, room_id=None, turn_id=None)`
   (RMK-811, RFC §21.3, §10.6.8): steering through the turn backend. The kit

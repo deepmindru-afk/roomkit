@@ -105,7 +105,7 @@ class TurnClient:
         # The owner-served calls running for this client's turns (RFC §10.6.5).
         self._calls: set[asyncio.Task[None]] = set()
         # The open human-input requests of its turns, answered here.
-        self.inputs = OwnerInputs(self._timeouts.input_hold)
+        self.inputs = OwnerInputs(self._timeouts.input_hold_timeout)
 
     async def run(
         self,

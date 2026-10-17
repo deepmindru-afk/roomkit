@@ -13,6 +13,7 @@ from roomkit import RoomKit, current_turn_id
 from roomkit.channels.agent import Agent
 from roomkit.channels.base import Channel
 from roomkit.core.exceptions import TurnLinkError
+from roomkit.core.task_utils import cancel_reason
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -442,3 +443,86 @@ async def test_a_turn_whose_frames_cannot_be_read_fails_rather_than_hangs() -> N
         await asyncio.wait_for(turn.output(), 2)
 
     assert raised.value.reason == "frame_invalid"
+
+
+async def test_a_call_left_open_ends_cancelled_for_a_reader_that_comes_late() -> None:
+    channel = HeldInACall()
+    client = _client(channel)
+    output = await _start(client)
+    assert output.response_stream is not None
+    stream = output.response_stream
+    start = await anext(stream)
+
+    assert await asyncio.wait_for(client.steer(Cancel(), "agent", room_id="room"), 2) == 1
+    async with asyncio.timeout(2):
+        while not client._started[0].over:
+            await asyncio.sleep(0.01)
+    # The reader was busy elsewhere while the turn ended.
+    rest = [item async for item in stream]
+
+    [end] = rest
+    assert isinstance(end, ToolCallEndMarker)
+    assert start.ended is end
+    await client.close()
+
+
+async def test_a_turn_cut_while_its_channel_is_built_never_runs() -> None:
+    built = asyncio.Event()
+    ran: list[str] = []
+
+    class Counting(Held):
+        async def on_event(
+            self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+        ) -> ChannelOutput:
+            ran.append("on_event")
+            return await super().on_event(event, binding, context)
+
+    channel = Counting()
+
+    async def build(channel_id: str) -> Channel | None:
+        await built.wait()
+        return channel
+
+    client = TurnClient(
+        InMemoryTurnBackend(),
+        executor=TurnExecutor(build, hosts={"agent"}.__contains__),
+    )
+    started = asyncio.create_task(_start(client))
+    async with asyncio.timeout(2):
+        while not client._started:
+            await asyncio.sleep(0.01)
+
+    assert await asyncio.wait_for(client.steer(Cancel(), "agent", room_id="room"), 2) == 1
+    built.set()
+    output = await asyncio.wait_for(started, 2)
+
+    assert ran == []
+    assert output.response_stream is None
+    await client.close()
+
+
+async def test_the_turns_own_work_reads_why_it_was_cancelled() -> None:
+    reasons: list[str | None] = []
+    begun = asyncio.Event()
+
+    class Waiting(Held):
+        async def on_event(
+            self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+        ) -> ChannelOutput:
+            begun.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError as cut:
+                reasons.append(cancel_reason(cut))
+                raise
+            return ChannelOutput.empty()
+
+    client = _client(Waiting())
+    turn = asyncio.create_task(_start(client))
+    await asyncio.wait_for(begun.wait(), 2)
+
+    turn.cancel("superseded")
+    await asyncio.gather(turn, return_exceptions=True)
+
+    assert reasons == ["superseded"]
+    await client.close()

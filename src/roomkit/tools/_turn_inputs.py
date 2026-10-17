@@ -1,13 +1,13 @@
 """The human-input requests of the turn the current code runs in (RFC §10.6.5).
 
 A leaf module. A tool waiting for a human's answer runs on the turn's
-executor, and the answer arrives on the room owner, which keeps the turn's
+executor, and an answer may arrive on the room owner, which keeps the turn's
 open requests. The executor sets, for every turn it runs, what carries a
 request's life to the owner: its opening (before ``ON_USER_INPUT_REQUIRED``
-fires), its close without an answer, and an answer or a rejection the
-channel's own handler receives, which the owner records so both doors answer
-the request once. Outside a turn the backend runs, there is none, and a
-handler settles its requests itself.
+fires), and its settling where the tool waits (an answer the channel's own
+handler received, a hook's block, its bound, a release), after which the
+owner answers it no more. Outside a turn the backend runs, there is none,
+and a handler settles its requests alone.
 """
 
 from __future__ import annotations
@@ -28,12 +28,13 @@ class TurnInputs(Protocol):
         ...
 
     def closed(self, pending_id: str, reason: str) -> None:
-        """The request settled here without the owner's answer."""
+        """The request settled here, not by the owner's answer."""
         ...
 
-    def forward(self, pending_id: str, *, value: str | None, reason: str | None) -> None:
-        """An answer (*value*) or a rejection (*reason*) the channel's handler
-        received: the owner records it and answers the request."""
+    @property
+    def open(self) -> bool:
+        """Whether the turn still runs: a request opened after it ended is
+        the handler's alone."""
         ...
 
 

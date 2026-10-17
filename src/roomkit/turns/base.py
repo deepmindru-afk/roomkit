@@ -35,7 +35,7 @@ class TurnTimeouts:
     """How long a silence lasts before its side is taken for lost."""
     cancel: float = 5.0
     """How long the owner waits for a cancelled turn's end."""
-    input_hold: float = 60.0
+    input_hold_timeout: float = 60.0
     """How long the owner holds an answer for a human-input request it does
     not know yet (RFC §10.6.5)."""
 
