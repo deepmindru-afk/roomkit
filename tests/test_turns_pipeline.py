@@ -105,3 +105,57 @@ async def test_an_injected_event_reaches_the_agent_as_a_turn_whose_stream_never_
     assert all(name.startswith("roomkit-turn-") for name in agent.turn_tasks)
     assert agent.streams_started == 0
     await kit.close()
+
+
+async def test_a_reentry_turn_runs_on_an_executor() -> None:
+    """An agent answering another agent's answer: a reentry pass's turn."""
+    kit, first = await _room()
+    second = RecordingAgent("second")
+    kit.register_channel(second)
+    await kit.attach_channel("room", "second", category=ChannelCategory.INTELLIGENCE)
+    await kit.process_inbound(
+        InboundMessage(channel_id="sms", sender_id="+15550000001", content=TextContent(body="hi")),
+        room_id="room",
+    )
+    assert len(second.turn_tasks) > 1  # the person's message, then the first agent's answer
+    assert all(n.startswith("roomkit-turn-") for n in first.turn_tasks + second.turn_tasks)
+    await kit.close()
+
+
+async def test_a_regenerated_turn_runs_on_an_executor() -> None:
+    kit, agent = await _room()
+    await kit.process_inbound(
+        InboundMessage(channel_id="sms", sender_id="+15550000001", content=TextContent(body="hi")),
+        room_id="room",
+    )
+    before = len(agent.turn_tasks)
+    await kit.regenerate_response("room")
+    assert len(agent.turn_tasks) > before
+    assert all(name.startswith("roomkit-turn-") for name in agent.turn_tasks)
+    await kit.close()
+
+
+async def test_a_delegated_workers_turn_runs_on_an_executor() -> None:
+    kit, _ = await _room()
+    worker = RecordingAgent("worker")
+    kit.register_channel(worker)
+    await kit.delegate("room", "worker", "Look into it.", wait=True)
+    assert worker.turn_tasks
+    assert all(name.startswith("roomkit-turn-") for name in worker.turn_tasks)
+    await kit.close()
+
+
+async def test_no_turn_task_outlives_the_kit() -> None:
+    kit, _ = await _room()
+    await kit.process_inbound(
+        InboundMessage(channel_id="sms", sender_id="+15550000001", content=TextContent(body="hi")),
+        room_id="room",
+    )
+    await kit.close()
+    await asyncio.sleep(0)
+    left = [
+        t.get_name()
+        for t in asyncio.all_tasks()
+        if t is not asyncio.current_task() and "turn" in (t.get_coro().__qualname__ or "").lower()
+    ]
+    assert left == []

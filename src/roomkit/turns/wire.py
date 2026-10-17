@@ -45,7 +45,11 @@ class ErrorRecord(BaseModel):
     message: str
     args: list[Any] = Field(default_factory=list)
     attributes: dict[str, Any] = Field(default_factory=dict)
+    """The error's attributes whose values JSON carries; the others stay
+    on the executor."""
     causes: list[ErrorRecord] = Field(default_factory=list)
+    traceback: str | None = None
+    """Where the error was raised on the executor, formatted."""
 
 
 class WireOutput(BaseModel):

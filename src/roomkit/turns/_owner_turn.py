@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import weakref
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.exceptions import TurnLinkError
@@ -40,6 +41,29 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.turns")
 
+# The closes of streams their reader dropped, held until they end.
+_DROPPED_CLOSES: set[asyncio.Task[None]] = set()
+
+
+def _cancel_reason(cancelled: asyncio.CancelledError) -> str:
+    """The reason a cancellation names, when its canceller gave one."""
+    reason = cancelled.args[0] if cancelled.args else None
+    return reason if isinstance(reason, str) and reason else "cancelled"
+
+
+def _close_dropped(turn: OwnerTurn, loop: asyncio.AbstractEventLoop) -> None:
+    """Close the stream of *turn*, which its reader dropped unclosed: the
+    executor closes the channel's, as a collected generator would be."""
+    if turn.over or loop.is_closed():
+        return
+
+    def start() -> None:
+        task = loop.create_task(turn.close_stream())
+        _DROPPED_CLOSES.add(task)
+        task.add_done_callback(_DROPPED_CLOSES.discard)
+
+    loop.call_soon_threadsafe(start)
+
 
 class OwnerTurn:
     """The owner's side of one turn, from its submission to its end."""
@@ -54,17 +78,27 @@ class OwnerTurn:
         self._early_ends: dict[int, ToolCallEndMarker] = {}
         self._beat = asyncio.get_running_loop().create_task(self._beat_while_open())
 
+    @property
+    def over(self) -> bool:
+        """Whether the turn is over for the owner."""
+        return self._over
+
+    def abandon(self) -> None:
+        """Stop holding the turn now (the owner closes): later frames are
+        dropped, and the executor, no longer hearing its owner, cuts it."""
+        self._finish()
+
     # -- Output and stream ---------------------------------------------------
 
     async def output(self) -> ChannelOutput:
         """The channel's output, its stream reading this turn when it has one."""
         try:
             frame = await self._next_main()
-        except asyncio.CancelledError:
-            await self._cancel("cancelled")
+        except asyncio.CancelledError as cancelled:
+            await self._cancel(_cancel_reason(cancelled))
             raise
         if isinstance(frame, Output):
-            output = decode_output(frame.output)
+            output = self._decoded(decode_output, frame.output)
             self._record = output.response_metadata
             if frame.streams:
                 output.response_stream = RemoteStream(self)
@@ -82,14 +116,14 @@ class OwnerTurn:
         await self._link.send(Pull())
         try:
             seq, frame = await self._next_main_with_seq()
-        except asyncio.CancelledError:
-            await self._cancel("cancelled")
+        except asyncio.CancelledError as cancelled:
+            await self._cancel(_cancel_reason(cancelled))
             raise
         if isinstance(frame, Item):
-            if frame.item["kind"] == "stream_end":
+            if frame.item.get("kind") == "stream_end":
                 await self._drain_to_end(None)
                 raise StopAsyncIteration
-            return self._item(seq, frame.item)
+            return self._decoded(self._item, seq, frame.item)
         if isinstance(frame, Error):
             await self._drain_to_end(None)
             raise rebuild_error(frame.error)
@@ -103,6 +137,17 @@ class OwnerTurn:
             return
         await self._link.send(Close())
         await self._drain_to_end(None)
+
+    def _decoded(self, decode: Any, *args: Any) -> Any:
+        """What *decode* builds of a frame's payload; a payload it cannot
+        read fails the turn as an invalid frame."""
+        try:
+            return decode(*args)
+        except (KeyError, TypeError, ValueError) as exc:
+            self._finish()
+            raise TurnLinkError(
+                "frame_invalid", f"A frame of the turn could not be read: {exc}"
+            ) from exc
 
     def _item(self, seq: int, data: dict[str, Any]) -> Any:
         """A new item, a call's end the same object as its start's ``ended``."""
@@ -159,7 +204,7 @@ class OwnerTurn:
             if (start := self._starts.get(frame.start)) is not None:
                 start.ran_with = frame.arguments
         elif isinstance(frame, ToolEnded):
-            end = decode_end(frame.end)
+            end = self._decoded(decode_end, frame.end)
             self._early_ends[frame.start] = end
             if (start := self._starts.get(frame.start)) is not None:
                 start.ended = end
@@ -248,6 +293,8 @@ class RemoteStream:
         self._turn = turn
         self._reading = False
         self._done = False
+        # A stream its reader drops without closing it is closed for it.
+        self._dropped = weakref.finalize(self, _close_dropped, turn, asyncio.get_running_loop())
 
     def __aiter__(self) -> RemoteStream:
         return self
@@ -262,9 +309,18 @@ class RemoteStream:
             return await self._turn.read_item()
         except BaseException:
             self._done = True
+            self._dropped.detach()
             raise
         finally:
             self._reading = False
+
+    def drop(self) -> None:
+        """Give the stream up unread: it is closed in the background, as its
+        collection would close it."""
+        if not self._done and not self._reading:
+            self._done = True
+            self._dropped.detach()
+            _close_dropped(self._turn, asyncio.get_running_loop())
 
     async def aclose(self) -> None:
         if self._done:
@@ -272,4 +328,5 @@ class RemoteStream:
         if self._reading:
             raise RuntimeError("aclose(): asynchronous generator is already running")
         self._done = True
+        self._dropped.detach()
         await self._turn.close_stream()

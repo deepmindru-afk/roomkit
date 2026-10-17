@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from roomkit.channels.base import hosts_realtime_model
 from roomkit.core._voice_delivery import active_sessions as _active_sessions
 from roomkit.core._voice_delivery import deliver_to_realtime_voice, replay_explicit_session
+from roomkit.core.exceptions import error_type_name
 from roomkit.models.delivery import (
     SYSTEM_SENDER_ID,
     DeliveryError,
@@ -153,7 +154,7 @@ def _text_outcome(result: InboundResult) -> DeliveryOutcome:
                 "status": "failed",
                 "reason": result.cancellation_reason or "inbound_failed",
                 "error": DeliveryError(
-                    code=type(error).__name__ if error else "turn_cancelled",
+                    code=error_type_name(error) if error else "turn_cancelled",
                     message=str(error) if error else str(result.cancellation_reason),
                     retryable=event is None,
                 ),

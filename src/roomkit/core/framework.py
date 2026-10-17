@@ -103,9 +103,7 @@ from roomkit.store.memory import InMemoryStore
 from roomkit.tasks.background import BackgroundSetup
 from roomkit.tasks.base import TaskRunner
 from roomkit.turns.base import TurnBackend
-from roomkit.turns.executor import TurnExecutor
-from roomkit.turns.memory import InMemoryTurnBackend
-from roomkit.turns.owner import TurnClient
+from roomkit.turns.owner import registry_turn_client
 
 logger = logging.getLogger("roomkit.framework")
 
@@ -329,14 +327,8 @@ class RoomKit(
         self._verification_timers: dict[str, asyncio.Task[None]] = {}
         self._process_timeout = process_timeout
         self._channels: dict[str, Channel] = {}
-        # Every intelligence turn runs through the turn backend (RFC §10.6),
-        # the kit's own executor serving the channels registered here.
-        self._turns = TurnClient(
-            turn_backend or InMemoryTurnBackend(),
-            executor=TurnExecutor(
-                self._channels.get, hosts=self._channels.__contains__, executor_id="kit"
-            ),
-        )
+        # Every intelligence turn runs through the turn backend (RFC §10.6).
+        self._turns = registry_turn_client(self._channels, turn_backend)
         # Explicit detaches (revocations, RFC §7.5-7) are recorded in room
         # metadata by detach_channel() — not here — so they survive restarts
         # and are visible to every process sharing the store.

@@ -289,10 +289,12 @@ from roomkit.tools.base import Tool
 from roomkit.tools.human_input import HumanInputHandler, HumanInputToolHandler
 from roomkit.tools.policy import RoleOverride, ToolPolicy
 from roomkit.turns import (
+    ExecutorLink,
     InMemoryTurnBackend,
     TurnBackend,
     TurnClient,
     TurnExecutor,
+    TurnLink,
     TurnRequest,
     TurnTimeouts,
 )
@@ -422,10 +424,12 @@ __all__ = [
     "Queued",
     "WaitForIdle",
     # Turn execution (RFC §10.6)
+    "ExecutorLink",
     "InMemoryTurnBackend",
     "TurnBackend",
     "TurnClient",
     "TurnExecutor",
+    "TurnLink",
     "TurnRequest",
     "TurnTimeouts",
     # Channels

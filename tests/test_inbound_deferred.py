@@ -268,7 +268,7 @@ async def test_consumer_crash_surfaces_on_result() -> None:
     assert result.delivery is not None
     await asyncio.wait_for(result.delivery.wait(), timeout=5.0)
 
-    assert same_error(result.error, boom)
+    assert result.error is boom
     await kit.close()
 
 

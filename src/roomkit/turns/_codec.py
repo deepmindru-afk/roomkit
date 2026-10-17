@@ -8,9 +8,12 @@ the executor holds is handed to the owner.
 from __future__ import annotations
 
 import dataclasses
-import importlib
 import json
+import sys
+import traceback
 from typing import Any
+
+from pydantic_core import to_jsonable_python
 
 from roomkit.core.exceptions import RemoteTurnError
 from roomkit.models.channel import ChannelOutput
@@ -25,10 +28,10 @@ from roomkit.models.streaming import (
 from roomkit.providers.ai.base import AIImagePart, AITextPart
 from roomkit.turns.wire import ErrorRecord, WireOutput
 
-# The modules whose exception classes an owner rebuilds by type. Anything else
-# comes back as a RemoteTurnError naming the class: a name read off the wire
-# never imports code from elsewhere.
-_REBUILT_MODULES = ("roomkit", "builtins")
+# The packages whose exception classes an owner rebuilds by type. Anything
+# else comes back as a RemoteTurnError naming the class: a name read off the
+# wire imports nothing and reaches only a class of an already loaded module.
+_REBUILT_PACKAGES = ("roomkit", "builtins")
 
 
 # -- Stream items ---------------------------------------------------------------
@@ -139,12 +142,19 @@ def _decode_result(data: dict[str, Any]) -> Any:
 # -- Channel output -------------------------------------------------------------
 
 
+def record_payload(record: Any) -> dict[str, Any]:
+    """A response-metadata record as it crosses: a deep copy JSON carries,
+    a value JSON has no form for written as its text. One rule for the
+    record wherever it crosses, at the output and on every later change."""
+    return to_jsonable_python(dict(record), fallback=str)
+
+
 def encode_output(output: ChannelOutput) -> WireOutput:
     """A channel's output without its stream; its error as a record."""
     return WireOutput(
         responded=output.responded,
         response_events=output.response_events,
-        response_metadata=dict(output.response_metadata),
+        response_metadata=record_payload(output.response_metadata),
         tasks=output.tasks,
         observations=output.observations,
         metadata_updates=output.metadata_updates,
@@ -177,6 +187,7 @@ def error_record(exc: BaseException) -> ErrorRecord:
         cause = cause.__cause__
     record = _one_record(exc)
     record.causes = causes
+    record.traceback = "".join(traceback.format_exception(exc))
     return record
 
 
@@ -199,6 +210,8 @@ def rebuild_error(record: ErrorRecord) -> BaseException:
         cause = _rebuild_one(cause_record)
         current.__cause__ = cause
         current = cause
+    if record.traceback:
+        exc.add_note(f"Raised on the turn's executor:\n{record.traceback.rstrip()}")
     return exc
 
 
@@ -215,17 +228,17 @@ def _rebuild_one(record: ErrorRecord) -> BaseException:
     return exc
 
 
-def _exception_class(kind: str) -> type[BaseException] | None:
-    module_name, _, qualname = kind.partition(":")
-    if module_name.split(".", 1)[0] not in _REBUILT_MODULES or not qualname:
+def _exception_class(kind: str) -> type[Exception] | None:
+    """The class *kind* names: an ``Exception`` defined at the top of a
+    loaded module of RoomKit or Python's builtins; ``None`` for any other
+    (an interpreter exit or a cancellation is never raised from a name)."""
+    module_name, _, name = kind.partition(":")
+    if module_name.split(".", 1)[0] not in _REBUILT_PACKAGES or not name.isidentifier():
         return None
-    try:
-        target: Any = importlib.import_module(module_name)
-        for part in qualname.split("."):
-            target = getattr(target, part)
-    except (ImportError, AttributeError):
+    target = getattr(sys.modules.get(module_name), name, None)
+    if not isinstance(target, type) or not issubclass(target, Exception):
         return None
-    return target if isinstance(target, type) and issubclass(target, BaseException) else None
+    return target if target.__module__ == module_name else None
 
 
 def _is_json(value: Any) -> bool:

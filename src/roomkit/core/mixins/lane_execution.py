@@ -82,7 +82,7 @@ def _delivery_results(result: BroadcastResult) -> dict[str, DeliveryResult]:
                 provider_result.provider_message_id if provider_result is not None else None
             ),
             error=DeliveryError(
-                code=str(getattr(exc, "code", None) or type(exc).__name__)
+                code=str(getattr(exc, "code", None) or error_type_name(exc))
                 if exc is not None
                 else "DeliveryFailed",
                 message=message,

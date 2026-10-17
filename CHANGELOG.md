@@ -25,7 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Heartbeats run both ways: a silent executor fails the turn with
   `TurnLinkError` (`executor_lost`, or `no_executor` when none took it), and
   an error of a class outside RoomKit and Python comes back as
-  `RemoteTurnError`, keeping its class name. Hooks, steering, human input,
+  `RemoteTurnError`, keeping its class name; every error keeps, as a note,
+  where the executor raised it. A frame the backend cannot carry (a tool
+  result JSON has no form for, an unknown stream item) fails the turn with a
+  `TypeError` naming it; a record value JSON has no form for crosses as its
+  text. A stream its reader drops, or a cancelled delivery set leaves unread,
+  is closed on the executor. Hooks, steering, human input,
   RoomKit's own tools and the strategies' turn runners still run on the
   channel the kit holds; their move to the executor side follows.
 

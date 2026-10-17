@@ -7,20 +7,25 @@ kit's own executor is served on first use.
 
 from __future__ import annotations
 
+import weakref
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes, discussion_turn
-from roomkit.turns._owner_turn import OwnerTurn
+from roomkit.turns._owner_turn import OwnerTurn, RemoteStream
 from roomkit.turns.base import TurnTimeouts
+from roomkit.turns.executor import TurnExecutor
+from roomkit.turns.memory import InMemoryTurnBackend
 from roomkit.turns.wire import TurnRequest
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from roomkit.channels.base import Channel
     from roomkit.models.channel import ChannelBinding, ChannelOutput
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
     from roomkit.turns.base import TurnBackend
-    from roomkit.turns.executor import TurnExecutor
 
 
 def turn_request(
@@ -70,6 +75,7 @@ class TurnClient:
         self.executor = executor
         self._timeouts = timeouts or TurnTimeouts()
         self._serving = executor is None
+        self._open: weakref.WeakSet[OwnerTurn] = weakref.WeakSet()
 
     async def run(
         self,
@@ -86,10 +92,34 @@ class TurnClient:
             assert self.executor is not None
             await self.backend.serve(self.executor)
         link = await self.backend.submit(turn_request(event, binding, context, answers=answers))
-        return await OwnerTurn(link, self._timeouts).output()
+        turn = OwnerTurn(link, self._timeouts)
+        self._open.add(turn)
+        return await turn.output()
 
     async def close(self) -> None:
-        """Cut the turns in flight and close the own executor, then the backend."""
+        """Close the own executor, which cuts its turns, stop holding every
+        turn still open (a stream nobody read), then close the backend."""
         if self.executor is not None:
             await self.executor.close()
+        for turn in list(self._open):
+            turn.abandon()
         await self.backend.close()
+
+
+def drop_unread(stream: object) -> None:
+    """Give up a turn's stream nobody will read: a stream of the turn
+    backend is closed in the background; a plain generator is left to its
+    collection, which closes it."""
+    if isinstance(stream, RemoteStream):
+        stream.drop()
+
+
+def registry_turn_client(
+    channels: Mapping[str, Channel], backend: TurnBackend | None = None
+) -> TurnClient:
+    """A client whose own executor serves the channels of a registry (a
+    kit's, a router's), on *backend* or an in-memory one."""
+    return TurnClient(
+        backend or InMemoryTurnBackend(),
+        executor=TurnExecutor(channels.get, hosts=channels.__contains__),
+    )

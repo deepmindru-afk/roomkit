@@ -33,6 +33,7 @@ from roomkit.providers.ai.base import AIImagePart, AITextPart
 from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, TurnTimeouts
 from roomkit.turns._codec import decode_item, encode_item, error_record, rebuild_error
 from roomkit.turns.base import MessageOrder
+from tests.turn_errors import same_error
 
 
 class _ForeignError(Exception):
@@ -164,9 +165,7 @@ def test_a_roomkit_error_is_rebuilt_by_type_with_its_attributes_and_causes() -> 
     error = ToolTimeoutError("search", 3.0)
     error.__cause__ = cause
     rebuilt = rebuild_error(error_record(error))
-    assert type(rebuilt) is ToolTimeoutError
-    assert vars(rebuilt) == vars(error)
-    assert str(rebuilt) == str(error)
+    assert same_error(rebuilt, error)
     assert type(rebuilt.__cause__) is ValueError
     assert str(rebuilt.__cause__) == "bad argument"
 

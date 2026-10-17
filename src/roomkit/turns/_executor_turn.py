@@ -14,14 +14,18 @@ import asyncio
 import contextvars
 import logging
 from collections.abc import AsyncIterator, Awaitable, Coroutine
-from typing import TYPE_CHECKING, Any
-
-from pydantic_core import to_jsonable_python
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, issue_mark, retire_mark
 from roomkit.core.exceptions import ChannelNotRegisteredError, TurnLinkError
-from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
-from roomkit.turns._codec import encode_end, encode_item, encode_output, error_record
+from roomkit.models.streaming import ThinkingDeltaMarker, ToolCallEndMarker, ToolCallStartMarker
+from roomkit.turns._codec import (
+    encode_end,
+    encode_item,
+    encode_output,
+    error_record,
+    record_payload,
+)
 from roomkit.turns.base import heartbeat_tick
 from roomkit.turns.wire import (
     Accepted,
@@ -64,10 +68,8 @@ def _enter_turn(turn_id: str) -> None:
         _TURNS_RUN_UNDER.set((*turns, turn_id))
 
 
-def _snapshot(record: Any) -> dict[str, Any]:
-    """A deep, JSON-ready copy of a record: a write into a nested map (an
-    ACP turn's ``acp`` entry) is a change too."""
-    return to_jsonable_python(dict(record), fallback=str)
+class _UncarriedError(Exception):
+    """A frame of the turn could not cross: the owner was told, the turn ends."""
 
 
 async def _next_item(stream: AsyncIterator[Any]) -> Any:
@@ -117,6 +119,8 @@ class ExecutorTurn:
         try:
             await self._send(Accepted(executor_id=self._executor_id))
             await self._turn()
+        except _UncarriedError:
+            pass
         finally:
             if self._mark is not None:
                 # The turn is over: the mark its notes rode reads as no mark.
@@ -130,7 +134,11 @@ class ExecutorTurn:
 
     async def _turn(self) -> None:
         """``on_event``, its output, then its stream as the owner pulls it."""
-        channel = await self._channel
+        try:
+            channel = await self._channel
+        except Exception as exc:
+            await self._send(Error(error=error_record(exc)))
+            return
         if channel is None:
             missing = ChannelNotRegisteredError(
                 f"No channel {self._request.channel_id!r} on executor {self._executor_id}"
@@ -151,9 +159,15 @@ class ExecutorTurn:
             await self._send(Error(error=error_record(exc)))
             return
         self._live_record = output.response_metadata
-        self._record = _snapshot(output.response_metadata)
         stream = output.response_stream
-        await self._send(Output(output=encode_output(output), streams=stream is not None))
+        try:
+            wire = encode_output(output)
+        except (TypeError, ValueError) as exc:
+            if stream is not None:
+                await self._close(stream, contextvars.Context())
+            await self._refuse("output", exc)
+        self._record = wire.response_metadata
+        await self._send(Output(output=wire, streams=stream is not None))
         if stream is not None:
             await self._serve_stream(stream)
 
@@ -168,33 +182,58 @@ class ExecutorTurn:
         return event.model_copy(update={"metadata": metadata})
 
     async def _serve_stream(self, stream: AsyncIterator[Any]) -> None:
-        """Advance *stream* one item per pull, until its end, a close or a cut."""
+        """Advance *stream* as the owner pulls it, until its end, a close or a
+        cut; a stream whose next frame cannot cross is closed."""
         context: contextvars.Context | None = None
         while True:
-            await self._wait_for_pull()
+            try:
+                await self._wait_for_pull()
+            except asyncio.CancelledError:
+                await self._close(stream, context or contextvars.Context())
+                raise
             if context is None:
                 context = self._link.stream_context() or contextvars.Context()
             if self._closing or self._cut is not None:
                 await self._close(stream, context)
                 return
-            self._credits -= 1
             try:
-                item = await self._run_work(_next_item(stream), context)
-            except StopAsyncIteration:
-                await self._report_changes()
-                await self._send(Item(item={"kind": "stream_end"}))
-                return
+                if not await self._step(stream, context):
+                    return
+            except _UncarriedError:
+                await self._close(stream, context)
+                raise
             except asyncio.CancelledError:
-                if self._cut is None:
-                    raise
-                await self._report_changes()
-                return
-            except Exception as exc:
-                await self._report_changes()
-                await self._send(Error(error=error_record(exc)))
-                return
+                # The executor closes: the channel's stream is closed, as a
+                # collected generator's would be, before the cut goes on.
+                await self._close(stream, context)
+                raise
+
+    async def _step(self, stream: AsyncIterator[Any], context: contextvars.Context) -> bool:
+        """Read one item and send it after what changed before it; whether
+        the stream goes on."""
+        self._credits -= 1
+        last: Frame | None = None
+        try:
+            item = await self._run_work(_next_item(stream), context)
+        except StopAsyncIteration:
+            last = Item(item={"kind": "stream_end"})
+        except asyncio.CancelledError:
+            if self._cut is None:
+                raise
+        except Exception as exc:
+            last = Error(error=error_record(exc))
+        else:
             await self._report_changes(before=item)
             await self._send_item(item)
+            if not isinstance(item, str | ThinkingDeltaMarker):
+                # Past a call's start, a round's break or the loop's end, only
+                # a later pull advances the stream (RFC §10.6.4).
+                self._credits = 0
+            return True
+        await self._report_changes()
+        if last is not None:
+            await self._send(last)
+        return False
 
     async def _close(self, stream: AsyncIterator[Any], context: contextvars.Context) -> None:
         """Close the stream as a local reader's close would."""
@@ -230,7 +269,7 @@ class ExecutorTurn:
         """Send what the channel changed since the last item: its record, a
         call's fixed arguments, a call's end (but the one *before* is)."""
         if self._live_record is not None:
-            snapshot = _snapshot(self._live_record)
+            snapshot = record_payload(self._live_record)
             if snapshot != self._record:
                 self._record = snapshot
                 await self._send(Record(record=snapshot))
@@ -245,11 +284,12 @@ class ExecutorTurn:
 
     async def _send_item(self, item: Any) -> None:
         """Send one item, a call's end naming the frame of its start."""
-        if isinstance(item, ToolCallEndMarker):
-            start = self._start_of(item)
-            await self._send(Item(item=encode_item(item, start=start)))
-            return
-        seq = await self._send(Item(item=encode_item(item)))
+        start = self._start_of(item) if isinstance(item, ToolCallEndMarker) else None
+        try:
+            data = encode_item(item, start=start)
+        except TypeError as exc:
+            await self._refuse("stream item", exc)
+        seq = await self._send(Item(item=data))
         if isinstance(item, ToolCallStartMarker):
             self._open[seq] = item
 
@@ -268,15 +308,34 @@ class ExecutorTurn:
     # -- The link -------------------------------------------------------------
 
     async def _send(self, frame: Frame) -> int:
-        return await self._link.send(frame)
+        """Send *frame*; one that cannot cross is refused to the owner as an
+        error naming it. An owner lost hears nothing more."""
+        if self._cut == "owner_lost":
+            return 0
+        try:
+            return await self._link.send(frame)
+        except (TypeError, ValueError) as exc:
+            if isinstance(frame, Error):
+                logger.exception("Turn %s could not report its error", self._request.turn_id)
+                raise _UncarriedError from exc
+            await self._refuse(frame.type, exc)
+
+    async def _refuse(self, what: str, exc: Exception) -> NoReturn:
+        """Tell the owner the turn's *what* cannot cross the backend, and end the turn."""
+        logger.warning(
+            "Turn %s: its %s cannot cross the turn backend: %s", self.turn_id, what, exc
+        )
+        refusal = TypeError(f"The turn's {what} cannot cross the turn backend: {exc}")
+        await self._send(Error(error=error_record(refusal)))
+        raise _UncarriedError from exc
 
     async def _read_controls(self) -> None:
         """Apply the owner's control messages as they come."""
         while True:
             try:
                 message = await self._link.receive()
-            except TurnLinkError:
-                self._cut_turn("owner_lost")
+            except TurnLinkError as lost:
+                self._cut_turn("frame_lost" if lost.reason == "frame_lost" else "owner_lost")
                 return
             self._heard = True
             if isinstance(message, Pull):

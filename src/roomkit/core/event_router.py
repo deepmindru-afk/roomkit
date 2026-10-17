@@ -47,9 +47,7 @@ from roomkit.models.event import (
 from roomkit.models.response_metadata import TurnEntries, turn_summary
 from roomkit.models.task import Observation, Task
 from roomkit.providers.utils import _aclose_stream
-from roomkit.turns.executor import TurnExecutor
-from roomkit.turns.memory import InMemoryTurnBackend
-from roomkit.turns.owner import TurnClient
+from roomkit.turns.owner import TurnClient, drop_unread, registry_turn_client
 
 logger = logging.getLogger("roomkit.event_router")
 
@@ -170,8 +168,9 @@ class StreamingResponse:
     source_channel_id: str
     source_channel_type: Any  # ChannelType
     trigger_event: RoomEvent
-    # The turn's live record (``ChannelOutput.response_metadata``), read by the
-    # persistence of each segment as it stands then — never copied here.
+    # The turn's record (``ChannelOutput.response_metadata``), read by the
+    # persistence of each segment as it stands then, never copied here; for a
+    # turn behind the turn backend, the owner's copy its frames update.
     response_metadata: Mapping[str, Any] = field(default_factory=dict)
     # How the turn's loop ended (``loop_end_reason``, ``ai_usage``), once its
     # reader read the ``LoopEndMarker``: this stream's own, kept off the
@@ -233,10 +232,11 @@ class BroadcastResult:
     metadata_updates: dict[str, Any] = field(default_factory=dict)
     blocked_events: list[RoomEvent] = field(default_factory=list)
     errors: dict[str, str] = field(default_factory=dict)
-    # Same failures as ``errors`` but the live exception object per channel, so a
+    # Same failures as ``errors`` but the exception object per channel, so a
     # caller (e.g. the inbound pipeline surfacing a non-streaming generation
     # failure on ``InboundResult.error``) can classify it with the cause chain
-    # intact — ``errors`` only carries ``str(exc)``.
+    # intact — ``errors`` only carries ``str(exc)``. An intelligence turn's is
+    # the one the owner rebuilt from the turn's error record (RFC §10.6.8).
     errors_exc: dict[str, Exception] = field(default_factory=dict)
 
 
@@ -277,10 +277,7 @@ class EventRouter:
         self._greeting_gate_fn = greeting_gate_fn
         # Every intelligence turn runs through a turn backend (RFC §10.6); a
         # router built without the kit's runs its own over its channels.
-        self._turns = turns or TurnClient(
-            InMemoryTurnBackend(),
-            executor=TurnExecutor(channels.get, hosts=channels.__contains__),
-        )
+        self._turns = turns or registry_turn_client(channels)
         # Set by RoomKit after construction — the router owns the breakers,
         # the framework owns the event surface (RFC §13.1 / §8.2).
         self._framework_emitter: Any = None
@@ -629,7 +626,15 @@ class EventRouter:
 
             target_results.append(tr)
 
-        await asyncio.gather(*[_process_target(t) for t in targets], return_exceptions=True)
+        try:
+            await asyncio.gather(*[_process_target(t) for t in targets], return_exceptions=True)
+        except asyncio.CancelledError:
+            # The caller gave up: the streams the targets already returned
+            # will not be read, and are closed rather than left open.
+            for tr in target_results:
+                if tr.streaming_response is not None:
+                    drop_unread(tr.streaming_response.stream)
+            raise
 
         # Merge per-target results into BroadcastResult (single-threaded)
         for tr in target_results:

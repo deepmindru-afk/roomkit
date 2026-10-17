@@ -10,10 +10,14 @@ from __future__ import annotations
 
 def same_error(received: BaseException | None, raised: BaseException) -> bool:
     """Whether *received* is *raised* as it crosses the backend: same class,
-    message and attributes."""
+    message and attributes, the note naming where it was raised aside."""
     return (
         received is not None
         and type(received) is type(raised)
         and str(received) == str(raised)
-        and vars(received) == vars(raised)
+        and _attributes(received) == _attributes(raised)
     )
+
+
+def _attributes(error: BaseException) -> dict[str, object]:
+    return {k: v for k, v in vars(error).items() if k != "__notes__"}

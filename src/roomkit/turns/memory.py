@@ -44,11 +44,14 @@ class _Pipe:
         """Queue *message*; its sequence number. A closed pipe drops it."""
         if not self.open:
             return self._sent
-        self._sent += 1
+        # Serialized before it is numbered: a message that cannot cross
+        # raises here and takes no number, so it is never a lost frame.
         envelope = self._envelope.model_validate(
-            {"turn_id": self._turn_id, "seq": self._sent, "message": message}
+            {"turn_id": self._turn_id, "seq": self._sent + 1, "message": message}
         )
-        self._queue.put_nowait(envelope.model_dump_json())
+        raw = envelope.model_dump_json()
+        self._sent += 1
+        self._queue.put_nowait(raw)
         return self._sent
 
     async def get(self) -> tuple[int, Any]:
@@ -75,6 +78,7 @@ class _MemoryTurn:
 
     def __init__(self, request: TurnRequest) -> None:
         self.request_json = request.model_dump_json()
+        self.channel_id = request.channel_id
         self.frames = _Pipe(request.turn_id, FrameEnvelope)
         self.controls = _Pipe(request.turn_id, ControlEnvelope)
         self.turn_context = contextvars.copy_context()
@@ -169,12 +173,11 @@ class InMemoryTurnBackend(TurnBackend):
 
     def _hand_over(self, turn: _MemoryTurn) -> bool:
         """Give *turn* to an executor that declares its channel, if one does."""
-        link = _ExecutorLink(turn)
-        executor = next((e for e in self._executors if e.declares(link.request.channel_id)), None)
+        executor = next((e for e in self._executors if e.declares(turn.channel_id)), None)
         if executor is None:
             return False
         turn.taken = True
-        executor.take(link)
+        executor.take(_ExecutorLink(turn))
         return True
 
     def _forget(self, turn: _MemoryTurn) -> None:
