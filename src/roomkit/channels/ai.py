@@ -44,6 +44,7 @@ from roomkit.channels._served_tools import (
 )
 from roomkit.channels._server_instructions import server_instructions_block
 from roomkit.channels._skill_activation import SkillActivationMemory
+from roomkit.channels._strategy_turn import in_strategy_turn
 from roomkit.channels._task_planner import TaskPlanner
 from roomkit.channels._tool_eviction import ToolEviction
 from roomkit.channels._tool_registry import ChannelRegistry, ToolSource
@@ -573,8 +574,11 @@ class AIChannel(
 
         A strategy that takes the agent's turns in a room (a loop, a
         supervisor's delegation passes) runs on the room's owner and asks each
-        generation as a strategy turn (:meth:`answer`, RFC §10.6.1).
+        generation as a strategy turn, which the channel answers past its
+        speak policy and its thinker (RFC §10.6.1).
         """
+        if in_strategy_turn():
+            return await self._respond(event, binding, context)
         room_id = context.room.id if context.room else event.room_id
         decision = await self._speak_decision(event, context, self._thought_of(room_id))
         if decision is None or decision.mode != "silent":
@@ -629,13 +633,6 @@ class AIChannel(
         finally:
             _current_loop_ctx.reset(token)
         return None if blocked else ai_context
-
-    async def answer(
-        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
-    ) -> ChannelOutput:
-        """The channel's answer to *event*, past its speak policy and its
-        thinker: a generation a strategy's runner asks (RFC §10.6.1)."""
-        return await self._respond(event, binding, context)
 
     @property
     def thinks_while_listening(self) -> bool:

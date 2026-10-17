@@ -4,8 +4,9 @@
 the strategy's agents as ``create_room`` does, runs its install, and records
 what the install added for the room. ``uninstall_strategy`` runs the
 strategy's own uninstall step, then takes back exactly what was recorded: the
-room hooks, the tools and turn runners set up on the room's agents, the
-agents the install attached and the room metadata it wrote. A room can then
+room hooks, the tools set up on the room's agents, the turn runners the kit
+keeps for them, the agents the install attached and the room metadata it
+wrote. A room can then
 take another strategy; its timeline stays. Recording what changed, rather
 than asking each strategy what it set up, holds for the host's own
 strategies too.

@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from roomkit.channels._strategy_turn import in_strategy_turn, strategy_turn
 from roomkit.channels.base import Channel
 from roomkit.core.exceptions import RemoteTurnError, ToolTimeoutError, TurnLinkError
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -202,6 +203,28 @@ async def test_the_owner_reads_new_objects_never_the_channels() -> None:
     assert items == channel.yielded
     assert all(a is not b for a, b in zip(items[1:], channel.yielded[1:], strict=True))
     assert output.response_metadata is not channel.record
+
+
+async def test_a_turn_says_whether_a_strategy_asked_it_and_never_inherits_it() -> None:
+    class Telling(ScriptedChannel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.asked: list[bool] = []
+
+        async def on_event(
+            self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+        ) -> ChannelOutput:
+            self.asked.append(in_strategy_turn())
+            return await super().on_event(event, binding, context)
+
+    channel = Telling()
+    client = _client(channel)
+    await client.run(_event(), _binding(), _context(), strategy_turn=True)
+    # A turn submitted from inside a strategy's generation runs in a copy of
+    # that context, and is still a turn of its own.
+    with strategy_turn(True):
+        await _run(client)
+    assert channel.asked == [True, False]
 
 
 async def test_an_error_on_event_raised_is_raised_on_the_owner() -> None:

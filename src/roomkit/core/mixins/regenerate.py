@@ -152,8 +152,8 @@ class RegenerateMixin(HelpersMixin):
         *without* ingesting a new inbound event — the triggering message keeps
         its identity, index, and timestamp. The re-broadcast runs in the
         room's delivery lane, off the room lock and unbounded, as an inbound
-        event's broadcast does (RFC §13.5, §13.6): a strategy that works in
-        ``on_event`` (a Loop, a Supervisor's delegation) goes to its end, and
+        event's broadcast does (RFC §13.5, §13.6): a strategy that takes the
+        agent's turn (a Loop, a Supervisor's delegation) goes to its end, and
         the room takes messages meanwhile. The new response re-enters like a
         first-time turn's (RFC §10.1 step 14): its BEFORE_BROADCAST hooks run,
         its source's right to write is checked, it counts against the reentry

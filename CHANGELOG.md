@@ -94,19 +94,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generation it asks of the agent is a turn of its own (RMK-814, RFC §10.6.1).
   The kit keeps the runners of a `Loop` and of a supervisor's delegation
   passes per room and agent, and an agent's solicited turn in such a room
-  reaches the runner before it reaches the turn backend; the runner's
-  generations (the loop's producer and reviewer rounds, the supervisor's
-  formulation and presentation passes) cross the backend as turns marked
-  `strategy_turn`, which the executor answers with the new
-  `AIChannel.answer(event, binding, context)`: the channel's answer past its
-  speak policy and its thinker. An injected event no longer runs a
-  strategy's runner, since an injected event is never answered. The pass-1
-  instruction rides the turn's binding (`_turn_instruction` in its metadata)
-  and the channel appends it after the prompt the turn resolves, where the
-  supervisor resolved that prompt itself. The workers' results reach the
-  supervisor's memory once, through the turn that presents them, where they
-  were also written to it directly. `AIChannel.thinks_while_listening` says
-  whether a channel carries a thinker, which a discussion refuses.
+  reaches the runner on the owner before it reaches the turn backend. The
+  generations the runner asks of the agent itself (a supervisor's formulation
+  and presentation passes; a loop producer's answer to an agent's or the
+  system's message, or to one the loop's tasks cannot carry) cross the backend
+  as turns marked `strategy_turn` and enter through the channel's `on_event`,
+  which answers them past its speak policy and its thinker: a subclass that
+  wraps `on_event` sees each of these generations, where it saw one call for
+  the runner's whole turn. A loop's produce and review rounds stay
+  delegations, turns of child rooms. The pass-1 instruction rides the turn's
+  binding (`_turn_instruction` in its metadata) and the channel appends it
+  after the prompt the turn resolves, where the supervisor resolved that
+  prompt itself. `AIChannel.thinks_while_listening` says whether a channel
+  carries a thinker, which a discussion refuses.
 
 - A discussion's default rules ask for the handle wherever someone must act
   next (RMK-806): "Whenever another agent must act next, end your message
@@ -125,6 +125,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its event now reads as that mention rather than as what
   `describe_empty_event` says, which still answers first for a captionless
   media that is no image. A document still reads as its label.
+
+### Fixed
+
+- An event a hook injects into a room where a strategy takes an agent's turns
+  no longer runs the strategy (RMK-814): its delivery to a supervisor ran the
+  whole delegation, its workers included, for an output nobody reads. It is
+  delivered as an injected event is to any agent, its stream closed unread.
+
+- A supervisor's workers' results reach its memory once (RMK-814): they were
+  written to it directly, then again by the turn that presents them.
 
 ## [0.105.0] — 2026-10-16
 

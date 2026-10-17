@@ -1,8 +1,9 @@
 """Framework-driven auto-delegate wiring for the supervisor.
 
-Mixin for :class:`Supervisor`: wraps the supervisor's ``on_event`` (sync) or
-injects a background ``delegate_workers`` tool on a ``RealtimeVoiceChannel``
-(async). Host attributes are declared as annotations; they are set in
+Mixin for :class:`Supervisor`: takes the supervisor's turns in the room on
+the room's owner (sync, RFC §10.6.1) or injects a background
+``delegate_workers`` tool on a ``RealtimeVoiceChannel`` (async). Host
+attributes are declared as annotations; they are set in
 ``Supervisor.__init__``.
 """
 

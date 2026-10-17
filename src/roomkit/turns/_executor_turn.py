@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator, Awaitable, Coroutine
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, issue_mark, retire_mark
+from roomkit.channels._strategy_turn import strategy_turn
 from roomkit.core.exceptions import ChannelNotRegisteredError, TurnLinkError
 from roomkit.models.streaming import ThinkingDeltaMarker, ToolCallEndMarker, ToolCallStartMarker
 from roomkit.turns._codec import (
@@ -74,14 +75,10 @@ class _UncarriedError(Exception):
 
 
 async def _reaction(channel: Channel, event: RoomEvent, request: TurnRequest) -> ChannelOutput:
-    """The channel's ``on_event``, or for a strategy's generation its answer
-    past its speak policy and its thinker (RFC §10.6.1)."""
-    if not request.strategy_turn:
+    """The channel's ``on_event``, told whether the turn is a strategy's
+    generation (RFC §10.6.1)."""
+    with strategy_turn(request.strategy_turn):
         return await channel.on_event(event, request.binding, request.context)
-    answer = getattr(channel, "answer", None)
-    if answer is None:
-        raise TypeError(f"Channel {channel.channel_id!r} cannot take a strategy's turn")
-    return await answer(event, request.binding, request.context)
 
 
 async def _next_item(stream: AsyncIterator[Any]) -> Any:
