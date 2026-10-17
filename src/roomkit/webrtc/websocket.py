@@ -1,6 +1,5 @@
 # Vendored from gradio-app/fastrtc@v0.0.34 (Apache-2.0); see LICENSE in this directory.
 import asyncio
-import audioop
 import base64
 import logging
 from collections.abc import Awaitable, Callable
@@ -11,6 +10,9 @@ import numpy as np
 from anyio.to_thread import run_sync
 from fastapi import WebSocket
 from fastapi.websockets import WebSocketDisconnect, WebSocketState
+
+# roomkit's G.711 tables match audioop's bytes; audioop left the stdlib in 3.13.
+from roomkit.voice._g711 import mulaw_to_pcm16, pcm16_to_mulaw
 
 from .tracks import AsyncStreamHandler, StreamHandlerImpl
 from .utils import (
@@ -46,7 +48,7 @@ def convert_to_mulaw(audio_data: np.ndarray, original_rate: int, target_rate: in
 
     audio_data = audio_to_int16(audio_data)
 
-    return audioop.lin2ulaw(audio_data, 2)  # type: ignore
+    return pcm16_to_mulaw(audio_data.tobytes())
 
 
 class WebSocketHandler:
@@ -169,7 +171,7 @@ class WebSocketHandler:
         """Return a media event's audio at the stream handler's input rate."""
         audio_payload = base64.b64decode(message["media"]["payload"])
 
-        audio_array = np.frombuffer(audioop.ulaw2lin(audio_payload, 2), dtype=np.int16)
+        audio_array = np.frombuffer(mulaw_to_pcm16(audio_payload), dtype=np.int16)
 
         if self.stream_handler.phone_mode and self.stream_handler.input_sample_rate != 8000:
             audio_array = audio_to_float32(audio_array)

@@ -93,7 +93,6 @@ fastrtc = [
     "librosa>=0.10",
     # Numba (via librosa) does not yet support NumPy 2.5.
     "numpy>=1.26,<2.5",
-    "pydub>=0.25",
     "anyio>=4.0",
     # roomkit.webrtc mounts its signalling routes on a FastAPI app, and the
     # examples serve it with uvicorn.

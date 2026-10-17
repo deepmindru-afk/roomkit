@@ -294,6 +294,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `roomkit[fastrtc]` imports on Python 3.13 (RMK-824). The vendored WebRTC
+  transport used `audioop`, which left the stdlib in 3.13: directly in
+  `roomkit.webrtc.websocket`, and through `pydub`. The extra installs no
+  `audioop-lts`, so `import roomkit.webrtc` failed with `No module named
+  'pyaudioop'`. The websocket's µ-law now goes through roomkit's own G.711
+  codec, which produces the same bytes as `audioop`. `pydub` leaves the extra
+  along with the two helpers that used it, `roomkit.webrtc.utils.audio_to_bytes`
+  and `audio_to_file`, which nothing called. A CI job installs the extra alone
+  on 3.13.
 - A cancelled delivery tells its turn's executor why (RMK-811, RFC §10.6.8):
   the cascade's reason (`superseded`, `caller_cancelled`, `kit_closed`...)
   rides its cancellation down to the turn and the turn's own work, a turn
