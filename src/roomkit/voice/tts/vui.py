@@ -271,12 +271,13 @@ class _VuiRow:
 
     def _load_prompt(self, voice: VuiVoice) -> _Prompt:
         """A voice's prompt: a preset baked for this checkpoint, or a clip encoded here."""
-        if voice.ref_audio is None:  # VuiVoice holds a preset whenever it has no clip
+        if voice.preset is not None:
             # The speaker token and the bias fit only the checkpoint they were baked for.
             text, codes, token, bias = self._official_prompt(
                 voice.preset, checkpoint=self._engine.checkpoint
             )
             return _Prompt(text=text, codes=codes, spk_emb=token, cond_bias=bias)
+        assert voice.ref_audio is not None  # VuiVoice holds a preset or a clip
         data, rate = self._soundfile.read(voice.ref_audio, dtype="int16", always_2d=True)
         mono = data.mean(axis=1).astype("int16")
         spk_emb = None
