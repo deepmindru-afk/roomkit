@@ -61,24 +61,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- RoomKit's own tools are served by the room owner (RMK-811, RFC §10.6.5).
-  A turn's request lists the tools orchestration set up for the channel in
-  the room (`owner_tools`: a delegation's `delegate_task`,
-  `work_in_background`, a handoff, a supervisor's `delegate_workers` and
-  `delegate_to_<worker>`, a delegation's `submit_result`); the channel
-  declares them from the request, not from its registry, and a call to one
-  crosses as a `tool_call` the owner answers with a `tool_result`. The
-  handler runs on the owner, on a task of its own, in a copy of the context
-  of the owner's task reading the turn, under the call's context (room, its
-  `Room`, chain depth, actor, allowed names, requester, the call's id and
-  channel); its `structured_content` comes back on the call. The call keeps
-  the channel's bound on the executor, and a call past it or in a turn cut is
-  withdrawn (`call_cancel`): the owner cancels the handler. A handler's error
-  keeps its class (`ON_TOOL_CALL`'s `error_detail`), and a structured copy
-  JSON has no form for fails the call with a `TypeError`. On the owner a
-  handler reads no response-metadata record: the turn's is the executor's.
-  The owner still keeps these tools in the registry of the channel it holds;
-  they move beside the channel's declaration with the distributed backend.
+- The tools orchestration sets up are served by the room owner (RMK-811, RFC
+  §10.6.5). A turn's request lists the ones set up for the channel in the
+  room (`owner_tools`: a delegation's `delegate_task`, `work_in_background`,
+  a handoff, a supervisor's `delegate_workers` and `delegate_to_<worker>`, a
+  delegation's `submit_result`); the channel declares them from the request,
+  not from its registry, and a call to one crosses as a `tool_call` the owner
+  answers once with a `tool_result`. The handler runs on the owner, on a task
+  of its own, in a copy of the context of the owner's task reading the turn
+  and under the turn's id, under the call's context: the room and the channel
+  of the request the owner submitted (a call naming others is refused), its
+  `Room`, chain depth, actor, allowed names, requester and the call's id. Its
+  `structured_content` comes back on the call. The call keeps the channel's
+  bound on the executor; a call past it, or in a turn cut, is withdrawn
+  (`call_cancel`) and the owner cancels the handler while the turn goes on.
+  A handler that ends on a cancellation of something it awaited fails its
+  call. A handler's error keeps its class's name (`ON_TOOL_CALL`'s
+  `error_detail`, and what the model reads), one of a class outside RoomKit
+  and Python included, and a structured copy JSON has no form for fails the
+  call with a `TypeError`. On the owner a handler reads no response-metadata
+  record: the turn's is the executor's. The kit's close waits for a handler
+  still running to unwind, and a close a handler calls runs to its end.
+  `TaskStatusTool` and `CancelTaskTool` stay host tools, and the owner still
+  keeps these tools in the registry of the channel it holds: both move
+  beside the channel's declaration with the distributed backend. `OwnerTools`
+  and `OwnerTool` are exported.
 
 - **BREAKING — the hooks of a turn register on the turn executor**
   (RMK-810, RFC §10.6.6): `BEFORE_AI_GENERATION`, `ON_AI_THINKING`,

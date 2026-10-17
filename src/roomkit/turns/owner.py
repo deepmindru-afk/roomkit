@@ -7,6 +7,7 @@ kit's own executor is served on first use.
 
 from __future__ import annotations
 
+import asyncio
 import weakref
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -90,6 +91,8 @@ class TurnClient:
         self._tools = tools
         self._serving = executor is None
         self._open: weakref.WeakSet[OwnerTurn] = weakref.WeakSet()
+        # The owner-served calls running for this client's turns (RFC §10.6.5).
+        self._calls: set[asyncio.Task[None]] = set()
 
     async def run(
         self,
@@ -107,7 +110,7 @@ class TurnClient:
             self._serving = True
             assert self.executor is not None
             await self.backend.serve(self.executor)
-        declared = self._tools.declared(binding.channel_id, context.room.id) if self._tools else []
+        declared = self._tools.declared(binding.channel_id, event.room_id) if self._tools else []
         request = turn_request(
             event,
             binding,
@@ -117,17 +120,25 @@ class TurnClient:
             owner_tools=declared,
         )
         link = await self.backend.submit(request)
-        turn = OwnerTurn(link, self._timeouts, self._tools)
+        turn = OwnerTurn(link, self._timeouts, self._tools, self._calls)
         self._open.add(turn)
         return await turn.output()
 
     async def close(self) -> None:
         """Close the own executor, which cuts its turns, stop holding every
-        turn still open (a stream nobody read), then close the backend."""
+        turn still open (a stream nobody read), wait for the calls its turns
+        made to end (but the one running this close), then close the backend."""
         if self.executor is not None:
             await self.executor.close()
         for turn in list(self._open):
             turn.abandon()
+        current = asyncio.current_task()
+        calls = [task for task in self._calls if task is not current]
+        for task in calls:
+            if not task.cancelling():
+                # One already cancelled is let finish its cleanup.
+                task.cancel()
+        await asyncio.gather(*calls, return_exceptions=True)
         await self.backend.close()
 
 

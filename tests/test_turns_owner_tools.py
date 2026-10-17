@@ -8,6 +8,7 @@ its own, under what the turn gave the call.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 
 import pytest
@@ -31,6 +32,8 @@ from roomkit.tools.context import (
     current_tool_actor_id,
     current_tool_allowed_names,
     current_tool_call,
+    current_tool_requester,
+    current_tool_room,
     current_tool_room_id,
 )
 from roomkit.turns._registry_tools import RegistryOwnerTools
@@ -120,6 +123,8 @@ async def test_a_handler_runs_on_the_owner_under_what_the_turn_gave_its_call(
             task=task.get_name() if task else "",
             arguments=arguments,
             room=current_tool_room_id(),
+            room_object=getattr(current_tool_room(), "id", None),
+            requester=current_tool_requester(),
             call=(record.tool_call_id, record.channel_id),
             depth=_current_turn_chain_depth(),
             actor=current_tool_actor_id(),
@@ -140,6 +145,9 @@ async def test_a_handler_runs_on_the_owner_under_what_the_turn_gave_its_call(
     assert seen["task"].startswith("roomkit-owner-call-")
     assert seen["arguments"] == {"q": "x"}
     assert seen["room"] == "r1"
+    assert seen["room_object"] == "r1"
+    # A one-to-one conversation names no requester, locally as here.
+    assert seen["requester"] is None
     assert seen["call"] == ("c1", "agent")
     assert seen["depth"] == 1
     assert seen["actor"] == "alice"
@@ -351,3 +359,177 @@ async def test_a_supervisors_per_worker_tool_is_served_on_the_owner(
 
     assert _on_owner(served, "delegate_to_worker")
     await kit.close()
+
+
+# -- Withdrawals, closes and failures -----------------------------------------
+
+
+class QuotaExceededError(Exception):
+    """A host's own error class, which the turn backend does not rebuild."""
+
+
+async def test_a_handlers_error_of_a_class_of_its_own_keeps_its_name() -> None:
+    async def serve(arguments: dict[str, Any]) -> str:
+        raise QuotaExceededError("over quota")
+
+    agent = _agent("agent", _call("probe", {}), "sorry")
+    agent._registry.register(orchestration_tool(PROBE, serve), room_id="r1", owner=object())
+    kit = await _kit(agent, attach=("agent",))
+    reports = _reports(kit)
+
+    await _say(kit, "go")
+
+    [report] = reports
+    assert report.error_detail == "QuotaExceededError: over quota"
+    assert "(QuotaExceededError)" in str(report.result)
+    await kit.close()
+
+
+async def test_a_call_past_its_bound_is_cancelled_on_the_owner_while_its_turn_goes_on() -> None:
+    cancelled = asyncio.Event()
+    committed: list[str] = []
+    seen_during_turn: list[bool] = []
+
+    async def slow(arguments: dict[str, Any]) -> str:
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        committed.append("side effect")
+        return "late"
+
+    async def after(arguments: dict[str, Any]) -> str:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(cancelled.wait(), 2)
+        seen_during_turn.append(cancelled.is_set())
+        return "checked"
+
+    later = AITool(name="later", description="Later.", parameters={"type": "object"})
+    agent = _agent(
+        "agent",
+        _call("probe", {}),
+        _call("later", {}, call_id="c2"),
+        "done",
+        tool_timeout_seconds=0.2,
+    )
+    owner = object()
+    agent._registry.register(orchestration_tool(PROBE, slow), room_id="r1", owner=owner)
+    agent._registry.register(
+        orchestration_tool(later, after, waits=True), room_id="r1", owner=owner
+    )
+    kit = await _kit(agent, attach=("agent",))
+
+    await _say(kit, "go")
+
+    # Withdrawn at its bound, while the turn's next round ran: the handler
+    # never committed what it was doing.
+    assert seen_during_turn == [True]
+    assert committed == []
+    await kit.close()
+
+
+async def test_a_handler_ended_by_a_cancellation_not_of_its_call_fails_the_call() -> None:
+    async def serve(arguments: dict[str, Any]) -> str:
+        job = asyncio.get_running_loop().create_future()
+        job.cancel()
+        return await job
+
+    agent = _agent("agent", _call("probe", {}), "moved on")
+    agent._registry.register(
+        orchestration_tool(PROBE, serve, waits=True), room_id="r1", owner=object()
+    )
+    kit = await _kit(agent, attach=("agent",))
+    reports = _reports(kit)
+
+    await asyncio.wait_for(_say(kit, "go"), 5)
+
+    [report] = reports
+    assert report.is_error
+    assert len(agent.provider.calls) == 2
+    await kit.close()
+
+
+async def test_parallel_calls_of_one_round_each_run_on_the_owner_at_once() -> None:
+    both = asyncio.Barrier(2)
+
+    async def serve(arguments: dict[str, Any]) -> str:
+        await asyncio.wait_for(both.wait(), 2)
+        return f"served {arguments['n']}"
+
+    two = AIResponse(
+        content="",
+        tool_calls=[
+            AIToolCall(id="c1", name="probe", arguments={"n": 1}),
+            AIToolCall(id="c2", name="probe", arguments={"n": 2}),
+        ],
+    )
+    agent = _agent("agent", two, "both")
+    agent._registry.register(orchestration_tool(PROBE, serve), room_id="r1", owner=object())
+    kit = await _kit(agent, attach=("agent",))
+    reports = _reports(kit)
+
+    await _say(kit, "go")
+
+    assert sorted(str(r.result) for r in reports) == ["served 1", "served 2"]
+    await kit.close()
+
+
+async def test_the_kits_close_waits_for_a_running_handler_to_unwind() -> None:
+    started = asyncio.Event()
+    order: list[str] = []
+
+    async def serve(arguments: dict[str, Any]) -> str:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # A cleanup that takes its time (a store write, say).
+            await asyncio.sleep(0.2)
+            order.append("handler unwound")
+            raise
+        return "never"
+
+    agent = _agent("agent", _call("probe", {}), "unread")
+    agent._registry.register(
+        orchestration_tool(PROBE, serve, waits=True), room_id="r1", owner=object()
+    )
+    kit = await _kit(agent, attach=("agent",))
+    turn = asyncio.create_task(_say(kit, "go"))
+    await asyncio.wait_for(started.wait(), 2)
+
+    await kit.close()
+    order.append("kit closed")
+
+    assert order == ["handler unwound", "kit closed"]
+    await asyncio.gather(turn, return_exceptions=True)
+
+
+async def test_a_handler_that_closes_the_kit_sees_the_close_through() -> None:
+    steps: list[str] = []
+    closed = asyncio.Event()
+
+    async def serve(arguments: dict[str, Any]) -> str:
+        steps.append("close called")
+        try:
+            await kit.close()
+        except asyncio.CancelledError:
+            steps.append("close cancelled")
+            raise
+        steps.append("close returned")
+        closed.set()
+        return "closed"
+
+    agent = _agent("agent", _call("probe", {}), "done")
+    agent._registry.register(
+        orchestration_tool(PROBE, serve, waits=True), room_id="r1", owner=object()
+    )
+    kit = await _kit(agent, attach=("agent",))
+
+    await asyncio.wait_for(asyncio.gather(_say(kit, "go"), return_exceptions=True), 5)
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(closed.wait(), 5)
+
+    # The close ran to its end: it spared the turn it was called from.
+    assert steps == ["close called", "close returned"]
+    assert kit._closed

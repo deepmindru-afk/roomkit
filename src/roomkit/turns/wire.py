@@ -138,7 +138,12 @@ class End(BaseModel):
 
 
 class CallContext(BaseModel):
-    """What a call's handler reads of the turn it serves (RFC §10.6.5, §21.4)."""
+    """What a call's handler reads of the turn it serves (RFC §10.6.5, §21.4).
+
+    The owner reads the room and the channel of the call from the request it
+    submitted; a call that names others is refused. An intelligence turn
+    serves no voice session, so none is carried.
+    """
 
     tool_call_id: str
     room_id: str
@@ -191,8 +196,9 @@ class ToolResult(BaseModel):
 
     type: Literal["tool_result"] = "tool_result"
     call_id: str
-    outcome: Literal["served", "failed", "unserved"]
-    """``unserved``: nothing on the owner serves the call (RFC §21.4)."""
+    outcome: Literal["served", "refused", "failed", "unserved"]
+    """``refused``: the handler refused the call (``ToolRefusedError``);
+    ``unserved``: nothing on the owner serves it (RFC §21.4)."""
     result: dict[str, Any] | None = None
     """The handler's answer as the model reads it, when served."""
     error: ErrorRecord | None = None

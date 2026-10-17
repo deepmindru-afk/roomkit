@@ -43,20 +43,27 @@ class RegistryOwnerTools(OwnerTools):
     async def serve(
         self, request: TurnRequest, call: ToolCall
     ) -> tuple[Any, dict[str, Any] | None]:
+        context = call.context
+        if (context.room_id, context.channel_id) != (request.room_id, request.channel_id):
+            # The room and the channel are the turn's, as the owner submitted
+            # it: a call never acts for another.
+            raise UnservedToolCallError(
+                f"A call of the turn in room {request.room_id!r} named room "
+                f"{context.room_id!r} and channel {context.channel_id!r}"
+            )
         registry = self._registry(request.channel_id)
         entry = registry.owner_lookup(call.name, request.room_id) if registry else None
         if entry is None or entry.serve is None:
             raise UnservedToolCallError(f"No tool {call.name!r} is served by the room owner")
-        context = call.context
         record = ToolCallContext(
-            room_id=context.room_id,
+            room_id=request.room_id,
             tool_call_id=context.tool_call_id,
-            channel_id=context.channel_id,
+            channel_id=request.channel_id,
         )
         room = request.context.room
         with owner_served_call(
             record,
-            room=room if room.id == context.room_id else None,
+            room=room if room.id == request.room_id else None,
             actor_id=context.actor_id,
             requester=context.requester,
             chain_depth=context.chain_depth,

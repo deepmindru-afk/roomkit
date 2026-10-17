@@ -292,6 +292,8 @@ from roomkit.tools.policy import RoleOverride, ToolPolicy
 from roomkit.turns import (
     ExecutorLink,
     InMemoryTurnBackend,
+    OwnerTool,
+    OwnerTools,
     TurnBackend,
     TurnClient,
     TurnExecutor,
@@ -428,6 +430,8 @@ __all__ = [
     "TURN_TRIGGERS",
     "ExecutorLink",
     "InMemoryTurnBackend",
+    "OwnerTool",
+    "OwnerTools",
     "TurnBackend",
     "TurnClient",
     "TurnExecutor",

@@ -3,10 +3,12 @@
 A ``tool_call`` runs the handler the owner keeps for the tool, as a task of
 its own, in a copy of the execution context of the owner task reading the turn
 when the call arrives (the delivery target awaiting the output, or the reader
-awaiting an item): the handler holds the reentrancy that task holds, as the
-call did when it ran in the owner's own code. Its answer goes back once, as a
-``tool_result``. A call the executor withdraws is cancelled, and so is every
-call of a turn that ends for the owner.
+awaiting an item), under the turn's id: the handler holds the reentrancy that
+task holds, and a close it calls spares the turn it serves, as when the call
+ran in the owner's own code. Its answer goes back once, as a ``tool_result``.
+A call the executor withdraws is cancelled, and so is every call of a turn
+that ends for the owner; the client that submitted the turn waits for them
+when it closes.
 """
 
 from __future__ import annotations
@@ -16,9 +18,10 @@ import contextvars
 import logging
 from typing import TYPE_CHECKING
 
-from roomkit.core.exceptions import UnservedToolCallError
+from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.tools.result import as_tool_result
 from roomkit.turns._codec import encode_result, error_record
+from roomkit.turns.base import enter_turn
 from roomkit.turns.wire import ToolResult
 
 if TYPE_CHECKING:
@@ -31,42 +34,66 @@ logger = logging.getLogger("roomkit.turns")
 
 
 class OwnerCalls:
-    """The owner-served calls of one turn, each a task the turn can cancel."""
+    """The owner-served calls of one turn, each a task the turn can cancel.
+
+    *held* is the set of the client's running calls, every turn's, which the
+    client waits for when it closes.
+    """
 
     def __init__(
         self,
         request: TurnRequest,
         tools: OwnerTools | None,
         send: Callable[[Control], Awaitable[None]],
+        held: set[asyncio.Task[None]],
     ) -> None:
         self._request = request
         self._tools = tools
         self._send = send
+        self._held = held
         self._running: dict[str, asyncio.Task[None]] = {}
 
     def start(self, call: ToolCall) -> None:
         """Run *call*'s handler in a copy of the current task's context."""
+        context = contextvars.copy_context()
+        context.run(enter_turn, self._request.turn_id)
         task = asyncio.get_running_loop().create_task(
-            self._answer(call),
-            context=contextvars.copy_context(),
-            name=f"roomkit-owner-call-{call.call_id}",
+            self._answer(call), context=context, name=f"roomkit-owner-call-{call.call_id}"
         )
         self._running[call.call_id] = task
-        task.add_done_callback(lambda _task: self._running.pop(call.call_id, None))
+        self._held.add(task)
+        task.add_done_callback(lambda _task: self._forget(call.call_id, task))
 
     def withdraw(self, call_id: str) -> None:
         """The executor withdrew the call: its handler is cancelled."""
         task = self._running.get(call_id)
-        if task is not None:
+        if task is not None and not task.cancelling():
             task.cancel()
 
     def cancel_all(self) -> None:
-        """The turn is over for the owner: every call still running is cancelled."""
+        """The turn is over for the owner: every call still running is
+        cancelled, but the one running this code (a close it called)."""
+        current = asyncio.current_task()
         for task in list(self._running.values()):
-            task.cancel()
+            if task is not current and not task.cancelling():
+                task.cancel()
+
+    def _forget(self, call_id: str, task: asyncio.Task[None]) -> None:
+        self._running.pop(call_id, None)
+        self._held.discard(task)
 
     async def _answer(self, call: ToolCall) -> None:
-        result = await self._result(call)
+        try:
+            result = await self._result(call)
+        except asyncio.CancelledError as cancelled:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise
+            # The handler ended on a cancellation of something it awaited,
+            # not of its call: the call failed, and the turn goes on.
+            result = ToolResult(
+                call_id=call.call_id, outcome="failed", error=error_record(cancelled)
+            )
         try:
             await self._send(result)
         except (TypeError, ValueError) as exc:
@@ -84,6 +111,8 @@ class OwnerCalls:
             answer, structured = await self._tools.serve(self._request, call)
         except UnservedToolCallError as exc:
             return ToolResult(call_id=call.call_id, outcome="unserved", error=error_record(exc))
+        except ToolRefusedError as exc:
+            return ToolResult(call_id=call.call_id, outcome="refused", error=error_record(exc))
         except Exception as exc:
             logger.debug("Owner-served call %s failed", call.name, exc_info=True)
             return ToolResult(call_id=call.call_id, outcome="failed", error=error_record(exc))

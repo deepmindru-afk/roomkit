@@ -74,11 +74,16 @@ class OwnerTurn:
     """The owner's side of one turn, from its submission to its end."""
 
     def __init__(
-        self, link: TurnLink, timeouts: TurnTimeouts, tools: OwnerTools | None = None
+        self,
+        link: TurnLink,
+        timeouts: TurnTimeouts,
+        tools: OwnerTools | None = None,
+        held_calls: set[asyncio.Task[None]] | None = None,
     ) -> None:
         self._link = link
         self._timeouts = timeouts
-        self._calls = OwnerCalls(link.request, tools, self._send_result)
+        held = held_calls if held_calls is not None else set()
+        self._calls = OwnerCalls(link.request, tools, self._send_result, held)
         self._accepted = False
         self._over = False
         self._record: ResponseMetadata | None = None

@@ -402,8 +402,9 @@ class TaskTurnFailedError(RoomKitError):
 
 
 class RemoteTurnError(RoomKitError):
-    """An error a turn raised on its executor, of a class the room owner does
-    not rebuild (RFC §10.6.8): only RoomKit's and Python's own are rebuilt by
+    """An error raised across the turn backend (by a turn on its executor, by
+    a handler the room owner serves) of a class the side reading it does not
+    rebuild (RFC §10.6.8): only RoomKit's and Python's own are rebuilt by
     type; any other comes back as this one, keeping the class it had.
 
     Attributes:

@@ -29,7 +29,7 @@ from roomkit.turns._codec import (
     record_payload,
 )
 from roomkit.turns._executor_calls import ExecutorCalls
-from roomkit.turns.base import heartbeat_tick
+from roomkit.turns.base import enter_turn, heartbeat_tick
 from roomkit.turns.wire import (
     Accepted,
     Cancel,
@@ -54,23 +54,6 @@ if TYPE_CHECKING:
     from roomkit.turns.wire import Frame, TurnRequest
 
 logger = logging.getLogger("roomkit.turns")
-
-_TURNS_RUN_UNDER: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
-    "roomkit_turns_run_under", default=()
-)
-"""The turns the current code runs under, outermost first: a close called
-from one of them must not cut it (the turns' :func:`held_runs`)."""
-
-
-def turns_run_under() -> tuple[str, ...]:
-    """The ids of the turns the current code runs under."""
-    return _TURNS_RUN_UNDER.get()
-
-
-def _enter_turn(turn_id: str) -> None:
-    turns = _TURNS_RUN_UNDER.get()
-    if turn_id not in turns:
-        _TURNS_RUN_UNDER.set((*turns, turn_id))
 
 
 class _UncarriedError(Exception):
@@ -262,7 +245,7 @@ class ExecutorTurn:
     async def _run_work(self, work: Coroutine[Any, Any, Any], context: contextvars.Context) -> Any:
         """Run one piece of the turn's work as a task the owner can cancel,
         the code under it knowing it runs under this turn."""
-        context.run(_enter_turn, self._request.turn_id)
+        context.run(enter_turn, self._request.turn_id)
         context.run(set_turn_owner_tools, self._calls.owner_tools)
         self._work = asyncio.get_running_loop().create_task(
             work, context=context, name=f"roomkit-turn-{self._request.turn_id}-work"
@@ -336,8 +319,8 @@ class ExecutorTurn:
 
     async def _send_call(self, frame: Frame) -> int:
         """Send a call of the turn to its owner; an owner lost answers none."""
-        if self._cut == "owner_lost":
-            raise TurnLinkError("owner_lost")
+        if self._cut in ("owner_lost", "frame_lost"):
+            raise TurnLinkError(self._cut)
         return await self._link.send(frame)
 
     async def _refuse(self, what: str, exc: Exception) -> NoReturn:

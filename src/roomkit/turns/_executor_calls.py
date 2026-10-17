@@ -81,7 +81,9 @@ class ExecutorCalls:
             try:
                 result = await future
             except asyncio.CancelledError:
-                if not future.done():
+                # Cut before its result came (its bound, its turn): the
+                # owner cancels the handler.
+                if future.cancelled() or not future.done():
                     with contextlib.suppress(Exception):
                         await self._send(CallCancel(call_id=call.call_id))
                 raise

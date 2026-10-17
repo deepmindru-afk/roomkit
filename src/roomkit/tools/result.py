@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from roomkit.core.exceptions import UnservedToolCallError
+from roomkit.core.exceptions import UnservedToolCallError, error_type_name
 from roomkit.models.tool_call import (
     ToolCallEvent,
     ToolCallVerdict,
@@ -168,12 +168,12 @@ def tool_failure(name: str, exc: BaseException) -> str:
     (:class:`~roomkit.core.exceptions.ToolRefusedError`) or a failure
     (:class:`~roomkit.core.exceptions.ToolFailedError`).
     """
-    return json.dumps({"error": f"Tool '{name}' failed ({type(exc).__name__})"})
+    return json.dumps({"error": f"Tool '{name}' failed ({error_type_name(exc)})"})
 
 
 def failure_detail(exc: BaseException) -> str:
     """A failure as logs and observers read it, never the model: class and message."""
-    return f"{type(exc).__name__}: {exc}"
+    return f"{error_type_name(exc)}: {exc}"
 
 
 def declined_answer(answer: Any, name: str) -> Any:
