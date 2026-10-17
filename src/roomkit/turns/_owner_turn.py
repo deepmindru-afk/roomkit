@@ -23,10 +23,10 @@ from roomkit.models.channel import ChannelOutput
 from roomkit.models.steering import Cancel as SteeringCancel
 from roomkit.models.steering import SteeringDirective
 from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
-from roomkit.realtime.base import EphemeralEvent
 from roomkit.turns._codec import decode_end, decode_item, decode_output, rebuild_error
 from roomkit.turns._owner_calls import OwnerCalls
 from roomkit.turns._owner_inputs import OwnerInputs
+from roomkit.turns._owner_publish import names_its_room, publish_frame
 from roomkit.turns._remote_stream import RemoteStream
 from roomkit.turns.base import heartbeat_tick
 from roomkit.turns.wire import (
@@ -79,23 +79,9 @@ def _cut_end(start: ToolCallStartMarker) -> ToolCallEndMarker:
     )
 
 
-TURN_FRAMEWORK_EVENTS = frozenset(
-    {
-        "tool_call",
-        "before_tool_use",
-        "user_input_required",
-        "ai_response",
-        "before_ai_generation",
-        "hook_timeout",
-    }
-)
-"""The framework events a turn's executor emits (RFC §8.2): the owner emits no
-other a ``framework_event`` frame names."""
-
-
 def _of_the_turn(request: TurnRequest, room_id: str | None, channel_id: str | None) -> bool:
     """Whether what a turn published names its room and channel (or none)."""
-    return room_id in (None, request.room_id) and channel_id in (None, request.channel_id)
+    return names_its_room(request.room_id, request.channel_id, room_id, channel_id)
 
 
 class OwnerTurn:
@@ -403,40 +389,20 @@ class OwnerTurn:
 
     async def _published(self, frame: Ephemeral | FrameworkEventFrame) -> None:
         """Publish on the owner what the turn published on its executor, as
-        the turn's channel in the turn's room, and only what the wiring emits;
-        anything else is dropped."""
+        the turn's channel in the turn's room (RFC §10.6.2)."""
         assert self._events is not None
         request = self._link.request
         try:
-            if isinstance(frame, Ephemeral):
-                event = EphemeralEvent.from_dict(frame.event)
-                if not _of_the_turn(request, event.room_id, event.channel_id) or (
-                    frame.channel != f"room:{request.room_id}"
-                ):
-                    logger.warning("Turn %s published outside its room: dropped", request.turn_id)
-                    return
-                await self._events.publish(frame.channel, event)
-                return
-            if frame.event_type not in TURN_FRAMEWORK_EVENTS or not _of_the_turn(
-                request, frame.room_id, frame.channel_id
-            ):
-                logger.warning(
-                    "Turn %s emitted %s outside its room or kind: dropped",
-                    request.turn_id,
-                    frame.event_type,
-                )
-                return
-            await self._events.emit(
-                frame.event_type,
-                room_id=request.room_id,
-                channel_id=request.channel_id,
-                event_id=frame.event_id,
-                data=frame.data,
+            await publish_frame(
+                self._events,
+                request.room_id,
+                request.channel_id,
+                frame,
+                label=f"Turn {request.turn_id}",
             )
         except Exception:
             # What the turn published never stops the turn.
-            turn_id = self._link.request.turn_id
-            logger.exception("Turn %s: a %s could not be published", turn_id, frame.type)
+            logger.exception("Turn %s: a %s could not be published", request.turn_id, frame.type)
 
     def _silence_limit(self) -> int:
         """How many silent intervals lose the turn: the accept bound until an

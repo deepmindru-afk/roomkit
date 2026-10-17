@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from roomkit.store.base import ConversationStore
     from roomkit.telemetry.base import TelemetryProvider
     from roomkit.turns._wiring_env import WiringEnv
-    from roomkit.turns.base import ExecutorLink
+    from roomkit.turns.base import ExecutorLink, RoomOwner
     from roomkit.turns.wire import ChannelControl, TurnRequest
 
 logger = logging.getLogger("roomkit.turns")
@@ -94,6 +94,7 @@ class TurnExecutor:
         self._room_hooks_from_owner = False
         self.store = store
         """The shared store the executor was given, ``None`` for none."""
+        self._owner: RoomOwner | None = None
         env = StoreWiringEnv(store, media_resolver=media_resolver, attached_media=attached_media)
         self._wiring = TurnWiring(self._hooks, env)
         self._channels = ExecutorChannels(
@@ -205,6 +206,12 @@ class TurnExecutor:
         """Whether this executor takes the turns of *channel_id*."""
         return not self._closed and (self._hosts is None or self._hosts(channel_id))
 
+    def reach_owner(self, owner: RoomOwner) -> None:
+        """Reach the room owner outside a turn through *owner*, which a backend
+        gives the executors it serves (RFC §10.6.3): work a turn began sends
+        its host verbs and publications there once the turn ended."""
+        self._owner = owner
+
     def takes(self, channel_id: str, room_hooks: Iterable[str] = ()) -> bool:
         """Whether this executor takes a turn of *channel_id* whose room has
         the hooks named *room_hooks* (RFC §10.6.7)."""
@@ -217,7 +224,11 @@ class TurnExecutor:
             request.channel_id, request.room_id, request.turn_id, request.previous_turn
         )
         turn = ExecutorTurn(
-            link, self.executor_id, self._turn_channel(link.request, stale), self._timeouts
+            link,
+            self.executor_id,
+            self._turn_channel(link.request, stale),
+            self._timeouts,
+            owner=self._owner,
         )
         task = asyncio.get_running_loop().create_task(
             turn.run(),

@@ -431,6 +431,46 @@ class ChannelControlEnvelope(BaseModel):
     message: ChannelControl
 
 
+# -- Outside a turn: executor to owner ---------------------------------------
+
+
+class RoomCall(BaseModel):
+    """A verb of a turn's host made after its turn ended (RFC §10.6.3,
+    §10.6.5), answered by a :class:`HostResult`: the turn it belongs to names
+    the room, and its chain depth bounds what it sends."""
+
+    type: Literal["room_call"] = "room_call"
+    call_id: str = Field(default_factory=lambda: f"call-{uuid4().hex}")
+    channel_id: str
+    room_id: str
+    executor_id: str
+    turn_id: str
+    """The turn the work making the call began in."""
+    chain_depth: int = 0
+    """The chain depth of that turn's response."""
+    verb: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class RoomPublication(BaseModel):
+    """A realtime publication or a framework event made after its turn ended
+    (RFC §10.6.3), answered by nothing."""
+
+    type: Literal["room_publication"] = "room_publication"
+    channel_id: str
+    room_id: str
+    executor_id: str
+    turn_id: str
+    frame: Annotated[Ephemeral | FrameworkEventFrame, Field(discriminator="type")]
+
+
+OwnerMessage = Annotated[RoomCall | RoomPublication, Field(discriminator="type")]
+
+
+class OwnerMessageEnvelope(BaseModel):
+    message: OwnerMessage
+
+
 class FrameEnvelope(BaseModel):
     turn_id: str
     seq: int

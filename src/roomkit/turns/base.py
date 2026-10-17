@@ -26,7 +26,10 @@ if TYPE_CHECKING:
         ChannelResult,
         Control,
         Frame,
+        HostResult,
         OwnerTool,
+        RoomCall,
+        RoomPublication,
         ToolCall,
         TurnRequest,
     )
@@ -155,6 +158,15 @@ class OwnerHost(ABC):
         carries. Raises what the verb raises; ``ValueError`` for a verb or
         arguments it does not know."""
 
+    async def call_between_turns(self, message: RoomCall) -> Any:
+        """Run the verb of *message*, made after its turn ended, for its room
+        (RFC §10.6.5): its result, as data JSON carries. Default: refused.
+
+        Raises:
+            ValueError: no verb is served between turns here.
+        """
+        raise ValueError(f"No verb {message.verb!r} is served between turns")
+
 
 class OwnerEvents(ABC):
     """Where a room owner publishes what its turns published on their
@@ -176,6 +188,20 @@ class OwnerEvents(ABC):
         data: dict[str, Any],
     ) -> None:
         """Emit the framework event *event_type*."""
+
+
+class RoomOwner(ABC):
+    """What reaches a room owner outside a turn (RFC §10.6.3): the owner
+    implements it, and an executor holds one its backend gave it."""
+
+    @abstractmethod
+    async def room_call(self, message: RoomCall) -> HostResult:
+        """Run a host verb made after its turn ended: the verb's result, or
+        its refusal as an error record."""
+
+    @abstractmethod
+    async def room_publication(self, message: RoomPublication) -> None:
+        """Publish what a channel published after its turn ended."""
 
 
 class TurnBackend(ABC):
@@ -202,6 +228,11 @@ class TurnBackend(ABC):
             TurnLinkError: ``no_executor`` for a ``channel_call`` no executor
                 declares.
         """
+
+    async def attend(self, owner: RoomOwner) -> None:  # noqa: B027
+        """Have what executors send outside a turn reach *owner* (RFC
+        §10.6.3). Default: nothing reaches an owner outside a turn, and an
+        executor's verbs made after their turn are refused."""
 
     @abstractmethod
     async def close(self) -> None:

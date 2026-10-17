@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-from collections.abc import Sequence
+from collections.abc import Coroutine, Sequence
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.exceptions import TurnLinkError
+from roomkit.turns._codec import error_record
 from roomkit.turns._rooms import RoomRecords
-from roomkit.turns.base import ExecutorLink, MessageOrder, TurnBackend, TurnLink
+from roomkit.turns.base import ExecutorLink, MessageOrder, RoomOwner, TurnBackend, TurnLink
 from roomkit.turns.wire import (
     ChannelCall,
     ChannelControlEnvelope,
@@ -26,8 +27,12 @@ from roomkit.turns.wire import (
     CommittedEvent,
     ControlEnvelope,
     FrameEnvelope,
+    HostResult,
+    OwnerMessageEnvelope,
     Pull,
+    RoomCall,
     RoomDetached,
+    RoomPublication,
     TurnRequest,
 )
 
@@ -161,6 +166,9 @@ class InMemoryTurnBackend(TurnBackend):
         self._holders: RoomRecords[TurnExecutor] = RoomRecords()
         self._turns: set[_MemoryTurn] = set()
         self._closed = False
+        # The owner what executors send outside a turn reaches (RFC §10.6.3).
+        self._owner: RoomOwner | None = None
+        self._port = _OwnerPort(self)
 
     async def submit(self, request: TurnRequest) -> TurnLink:
         if self._closed:
@@ -175,6 +183,10 @@ class InMemoryTurnBackend(TurnBackend):
     async def serve(self, executor: TurnExecutor) -> None:
         if executor not in self._executors:
             self._executors.append(executor)
+        executor.reach_owner(self._port)
+
+    async def attend(self, owner: RoomOwner) -> None:
+        self._owner = owner
 
     async def control(self, message: ChannelControl) -> ChannelResult | None:
         if self._closed:
@@ -236,3 +248,41 @@ class InMemoryTurnBackend(TurnBackend):
 def _crossed(raw: str) -> ChannelControl:
     """A channel control message as the executor parses it."""
     return ChannelControlEnvelope.model_validate_json(raw).message
+
+
+class _OwnerPort(RoomOwner):
+    """What an executor served here reaches the owner by outside a turn: each
+    message serialized and parsed again, as on any backend, the owner's side
+    run in a context of its own, never the executor's."""
+
+    def __init__(self, backend: InMemoryTurnBackend) -> None:
+        self._backend = backend
+
+    async def room_call(self, message: RoomCall) -> HostResult:
+        owner = self._backend._owner
+        if owner is None:
+            refusal = RuntimeError("No room owner is reached outside a turn on this backend")
+            return HostResult(call_id=message.call_id, error=error_record(refusal))
+        crossed = _crossed_to_owner(message)
+        assert isinstance(crossed, RoomCall)
+        answer = await _apart(owner.room_call(crossed))
+        return HostResult.model_validate_json(answer.model_dump_json())
+
+    async def room_publication(self, message: RoomPublication) -> None:
+        owner = self._backend._owner
+        if owner is None:
+            return
+        crossed = _crossed_to_owner(message)
+        assert isinstance(crossed, RoomPublication)
+        await _apart(owner.room_publication(crossed))
+
+
+def _crossed_to_owner(message: RoomCall | RoomPublication) -> RoomCall | RoomPublication:
+    raw = OwnerMessageEnvelope(message=message).model_dump_json()
+    return OwnerMessageEnvelope.model_validate_json(raw).message
+
+
+async def _apart[T](work: Coroutine[Any, Any, T]) -> T:
+    """Run *work* as a task of its own context: the owner's side shares no
+    context variable with the executor's."""
+    return await asyncio.get_running_loop().create_task(work, context=contextvars.Context())

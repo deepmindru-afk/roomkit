@@ -9,7 +9,9 @@ lent it, so its reentrancy is that task's.
 
 A host acts for its turn's room, in the room's organization: a verb naming
 another room, or another organization, is refused, and an event a turn sends
-is at least as deep as the turn's response (RFC §8.3).
+is at least as deep as the turn's response (RFC §8.3). After its turn ended,
+work the turn began sends the verbs ``BETWEEN_TURNS`` names, for the same room
+and at the depth its ``room_call`` carries (RFC §10.6.5).
 
 The tasks the room's hosts delegate are kept for ``wait_task`` as long as
 they run, and once ended until :data:`ENDED_TASKS_KEPT` more ended after them.
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
@@ -31,6 +34,7 @@ from roomkit.tools.context import _current_turn_chain_depth
 from roomkit.turns._codec import error_record
 from roomkit.turns.base import OwnerHost
 from roomkit.turns.host import (
+    BETWEEN_TURNS,
     VERBS,
     AddObservation,
     Delegate,
@@ -41,16 +45,35 @@ from roomkit.turns.host import (
     UpdateRoomMetadata,
     WaitTask,
 )
-from roomkit.turns.wire import TurnRequest
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
+    from roomkit.models.context import RoomContext
     from roomkit.tasks.models import DelegatedTask
+    from roomkit.turns.wire import RoomCall, TurnRequest
 
 ENDED_TASKS_KEPT = 1024
 """How many ended tasks the hosts keep for a ``wait_task`` that has not come."""
 
-Verb = Callable[[TurnRequest, Any], Awaitable[Any]]
+
+@dataclass(frozen=True, slots=True)
+class _Scope:
+    """What a verb acts for: its turn's room and organization, the turn's
+    context while it runs, and the depth an event it sends is at least
+    (``None``: the depth of the owner's turn it runs under)."""
+
+    room_id: str
+    organization_id: str | None
+    context: RoomContext | None
+    chain_depth: int | None
+
+    @classmethod
+    def of(cls, request: TurnRequest) -> _Scope:
+        room = request.context.room
+        return cls(request.room_id, room.organization_id, request.context, None)
+
+
+Verb = Callable[[_Scope, Any], Awaitable[Any]]
 
 
 class KitHost(OwnerHost):
@@ -71,6 +94,25 @@ class KitHost(OwnerHost):
         }
 
     async def call(self, request: TurnRequest, verb: str, arguments: dict[str, Any]) -> Any:
+        serve, args = self._parsed(verb, arguments)
+        return to_jsonable_python(await serve(_Scope.of(request), args), fallback=str)
+
+    async def call_between_turns(self, message: RoomCall) -> Any:
+        if message.verb not in BETWEEN_TURNS:
+            raise ValueError(f"{message.verb!r} needs a turn: it is not served between turns")
+        room = await self._kit.store.get_room(message.room_id)
+        if room is None:
+            raise ValueError(f"No room {message.room_id!r}")
+        serve, args = self._parsed(message.verb, message.arguments)
+        scope = _Scope(message.room_id, room.organization_id, None, message.chain_depth)
+        return to_jsonable_python(await serve(scope, args), fallback=str)
+
+    def _parsed(self, verb: str, arguments: dict[str, Any]) -> tuple[Verb, Any]:
+        """The kit's code serving *verb*, and its arguments validated.
+
+        Raises:
+            ValueError: a verb or arguments the host does not know.
+        """
         record = VERBS.get(verb)
         serve = self._verbs.get(verb)
         if record is None or serve is None:
@@ -79,26 +121,27 @@ class KitHost(OwnerHost):
             args = record.model_validate(arguments)
         except ValidationError as exc:
             raise ValueError(f"The arguments of verb {verb!r} are not valid: {exc}") from exc
-        return to_jsonable_python(await serve(request, args), fallback=str)
+        return serve, args
 
-    async def _send_event(self, request: TurnRequest, args: SendEvent) -> Any:
+    async def _send_event(self, scope: _Scope, args: SendEvent) -> Any:
         options = args.model_dump(exclude={"content", "chain_depth", "organization_id"})
+        floor = scope.chain_depth if scope.chain_depth is not None else _current_turn_chain_depth()
         return await self._kit.send_event(
             content=args.content,
-            chain_depth=max(args.chain_depth, _current_turn_chain_depth()),
-            organization_id=_organization(request, args.room_id, args.organization_id),
+            chain_depth=max(args.chain_depth, floor),
+            organization_id=_organization(scope, args.room_id, args.organization_id),
             **options,
         )
 
-    async def _delegate(self, request: TurnRequest, args: Delegate) -> str:
-        _same_room(request, args.room_id)
+    async def _delegate(self, scope: _Scope, args: Delegate) -> str:
+        _same_room(scope, args.room_id)
         task = await self._kit.delegate(**args.model_dump())
         self._keep(task)
         return task.id
 
-    async def _wait_task(self, request: TurnRequest, args: WaitTask) -> Any:
+    async def _wait_task(self, scope: _Scope, args: WaitTask) -> Any:
         task = self._tasks.get(args.task_id)
-        if task is None or task.parent_room_id != request.room_id:
+        if task is None or task.parent_room_id != scope.room_id:
             return None
         try:
             result = await task.wait(args.timeout)
@@ -110,34 +153,36 @@ class KitHost(OwnerHost):
             "exception": None if failure is None else error_record(failure),
         }
 
-    async def _post_status(self, request: TurnRequest, args: PostStatus) -> None:
+    async def _post_status(self, scope: _Scope, args: PostStatus) -> None:
         # A status names its room (RFC §19.8), whose hooks it fires: the
         # turn's, never another. A task's status is the framework's to post:
         # the room's task tools read it to know which tasks are the room's.
         if args.action == TASK_ACTION:
             raise ValueError(f"A turn's host posts no {TASK_ACTION!r} status: the framework does")
         metadata = dict(args.metadata or {})
-        _same_room(request, metadata.setdefault("room_id", request.room_id))
+        _same_room(scope, metadata.setdefault("room_id", scope.room_id))
         self._kit.status_bus.post(
             args.agent_id, args.action, args.status, detail=args.detail, metadata=metadata
         )
 
-    async def _update_room_metadata(self, request: TurnRequest, args: UpdateRoomMetadata) -> Any:
+    async def _update_room_metadata(self, scope: _Scope, args: UpdateRoomMetadata) -> Any:
         return await self._kit.update_room_metadata(
             args.room_id,
             args.metadata,
-            organization_id=_organization(request, args.room_id, args.organization_id),
+            organization_id=_organization(scope, args.room_id, args.organization_id),
         )
 
-    async def _room_tasks(self, request: TurnRequest, args: RoomTasks) -> list[dict[str, Any]]:
-        return await self._kit._build_room_tasks_loader()(request.room_id)
+    async def _room_tasks(self, scope: _Scope, args: RoomTasks) -> list[dict[str, Any]]:
+        return await self._kit._build_room_tasks_loader()(scope.room_id)
 
-    async def _room_vision(self, request: TurnRequest, args: RoomVision) -> str | None:
+    async def _room_vision(self, scope: _Scope, args: RoomVision) -> str | None:
         # What the room's cameras last saw lives in this process (RFC §12.8.7).
-        return room_vision_note(self._kit.channels, request.context)
+        if scope.context is None:
+            return None
+        return room_vision_note(self._kit.channels, scope.context)
 
-    async def _add_observation(self, request: TurnRequest, args: AddObservation) -> None:
-        _same_room(request, args.observation.room_id)
+    async def _add_observation(self, scope: _Scope, args: AddObservation) -> None:
+        _same_room(scope, args.observation.room_id)
         await self._kit.store.add_observation(args.observation)
 
     def _keep(self, task: DelegatedTask) -> None:
@@ -149,19 +194,17 @@ class KitHost(OwnerHost):
             del self._tasks[task_id]
 
 
-def _same_room(request: TurnRequest, room_id: str) -> None:
+def _same_room(scope: _Scope, room_id: str) -> None:
     """Refuse a verb for another room than its turn's."""
-    if room_id != request.room_id:
-        raise ValueError(
-            f"A turn's host acts for its room {request.room_id!r}, not for {room_id!r}"
-        )
+    if room_id != scope.room_id:
+        raise ValueError(f"A turn's host acts for its room {scope.room_id!r}, not for {room_id!r}")
 
 
-def _organization(request: TurnRequest, room_id: str, named: str | None) -> str | None:
+def _organization(scope: _Scope, room_id: str, named: str | None) -> str | None:
     """The organization a verb runs in: its turn's room's; one the verb names
     must be that one."""
-    _same_room(request, room_id)
-    organization = request.context.room.organization_id
+    _same_room(scope, room_id)
+    organization = scope.organization_id
     if named is not None and named != organization:
         raise ValueError(f"A turn's host acts in its room's organization, not in {named!r}")
     return organization

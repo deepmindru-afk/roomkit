@@ -47,16 +47,20 @@ class TurnOutlet:
     """Sends one turn's ephemeral events and framework events to its owner,
     until the turn ends."""
 
-    def __init__(self, send: Callable[[Frame], Awaitable[None]]) -> None:
+    def __init__(
+        self,
+        send: Callable[[Frame], Awaitable[None]],
+        *,
+        after: Callable[[Ephemeral | FrameworkEventFrame], Awaitable[None]] | None = None,
+    ) -> None:
         self._send = send
+        self._after = after
         self._open = True
 
     async def publish(self, channel: str, event: EphemeralEvent) -> bool:
-        """Send *event* published on *channel*; whether the turn still carries it."""
-        if not self._open:
-            return False
-        await self._send(Ephemeral(channel=channel, event=event.to_dict()))
-        return True
+        """Send *event* published on *channel*; whether it was carried, by the
+        turn or, after it, to the owner outside a turn."""
+        return await self._carry(Ephemeral(channel=channel, event=event.to_dict()))
 
     async def emit(
         self,
@@ -67,9 +71,8 @@ class TurnOutlet:
         event_id: str | None = None,
         data: dict[str, Any] | None = None,
     ) -> bool:
-        """Send a framework event; whether the turn still carries it."""
-        if not self._open:
-            return False
+        """Send a framework event; whether it was carried, by the turn or,
+        after it, to the owner outside a turn."""
         frame = FrameworkEventFrame(
             event_type=event_type,
             room_id=room_id,
@@ -77,11 +80,20 @@ class TurnOutlet:
             event_id=event_id,
             data=data or {},
         )
-        await self._send(frame)
+        return await self._carry(frame)
+
+    async def _carry(self, frame: Ephemeral | FrameworkEventFrame) -> bool:
+        if self._open:
+            await self._send(frame)
+            return True
+        if self._after is None:
+            return False
+        await self._after(frame)
         return True
 
     def close(self) -> None:
-        """The turn ended: what is published from now goes elsewhere."""
+        """The turn ended: what is published from now goes to the owner
+        outside a turn (RFC §10.6.3), else elsewhere."""
         self._open = False
 
 

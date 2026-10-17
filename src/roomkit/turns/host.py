@@ -154,19 +154,30 @@ READERS = frozenset({"room_tasks", "room_vision"})
 """The verbs that read the owner's process for the turn's room and act for no
 tool call: the owner serves them outside a call's context."""
 
+BETWEEN_TURNS = frozenset({"send_event", "post_status", "update_room_metadata", "add_observation"})
+"""The verbs a host still sends after its turn ended (RFC §10.6.5), for the
+turn's room and at its chain depth; the others need the turn."""
+
 
 class TurnHost:
     """What a host's tool or hook on a turn's executor may ask of the room
     owner, each verb one call across the turn backend (RFC §10.6.5)."""
 
-    def __init__(self, call: HostCaller) -> None:
+    def __init__(self, call: HostCaller, *, between_turns: HostCaller | None = None) -> None:
         self._call = call
+        self._between_turns = between_turns
         self._open = True
 
     @property
     def open(self) -> bool:
         """Whether the turn it serves still runs."""
         return self._open
+
+    @property
+    def reachable(self) -> bool:
+        """Whether a verb can still reach the owner: during the turn, or
+        after it for the verbs :data:`BETWEEN_TURNS` names."""
+        return self._open or self._between_turns is not None
 
     def _close(self) -> None:
         """The turn ended: the host answers no more verbs. The executor's."""
@@ -244,9 +255,16 @@ class TurnHost:
         return None if note is None else str(note)
 
     async def _verb(self, verb: str, args: _Verb) -> Any:
-        if not self._open:
+        if self._open:
+            return await self._call(verb, args.model_dump(mode="json"))
+        if self._between_turns is None:
             raise RuntimeError(f"The turn this host served has ended: {verb} is not sent")
-        return await self._call(verb, args.model_dump(mode="json"))
+        if verb not in BETWEEN_TURNS:
+            raise RuntimeError(
+                f"{verb} needs a turn: after its turn ended, a host sends "
+                f"{', '.join(sorted(BETWEEN_TURNS))} only (RFC §10.6.5)"
+            )
+        return await self._between_turns(verb, args.model_dump(mode="json"))
 
 
 _TURN_HOST: contextvars.ContextVar[TurnHost | None] = contextvars.ContextVar(
@@ -257,10 +275,12 @@ _TURN_HOST: contextvars.ContextVar[TurnHost | None] = contextvars.ContextVar(
 def current_turn_host() -> TurnHost | None:
     """The host of the turn the current code runs in (RFC §10.6.5): inside a
     call of a host tool during a turn and inside a hook its executor fires
-    during it; ``None`` anywhere else, after the turn ended and in a tool the
-    room owner serves included."""
+    during it; after the turn ended, in work it began (a background thinker),
+    for the verbs :data:`BETWEEN_TURNS` names, where the backend reaches the
+    owner outside a turn. ``None`` anywhere else, in a tool the room owner
+    serves included."""
     host = _TURN_HOST.get()
-    return host if host is not None and host.open else None
+    return host if host is not None and host.reachable else None
 
 
 def set_turn_host(host: TurnHost | None) -> None:

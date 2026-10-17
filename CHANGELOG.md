@@ -260,6 +260,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Work a turn began reaches the room owner after the turn ended (RMK-827,
+  RFC §10.6.3, §10.6.5). `current_turn_host()` keeps answering in it (a
+  background thinker's `ON_THOUGHT`, a task a tool started), its host's
+  `open` then false: `send_event`, `post_status`, `update_room_metadata` and
+  `add_observation` cross as a `room_call` at the turn's chain depth, through
+  a port the backend gives each executor it serves (`TurnBackend.attend`,
+  `RoomOwner`; `TurnExecutor.reach_owner`); `delegate`, `wait_task` and the
+  readers raise `RuntimeError` there. A realtime publication or framework
+  event made after its turn crosses as a `room_publication`, published by the
+  owner for the turn's room and kinds only, on the kit's executor as on a
+  host's, where it was dropped. The owner accepts both only from the
+  executor of the room's last turn of the channel, a host verb only for that
+  very turn (`PermissionError` otherwise). `ScoringHook` writes its scores
+  through the host, never the store itself, and drops one with no owner to
+  reach. Example: `examples/thought_after_turn.py`.
+
 - A discussion hands each committed message to its agents' memories through
   the turn backend, where each agent runs (RMK-827, RFC §10.6.3, §19.7.5 rule
   3): a `committed_event` channel control reaches the executor holding the

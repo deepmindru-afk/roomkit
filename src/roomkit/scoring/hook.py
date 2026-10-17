@@ -150,13 +150,16 @@ class ScoringHook:
                 },
             )
             try:
-                # A scorer writes through its turn's host while the turn runs
-                # (RFC §10.6.6), to the store it holds once the turn ended.
+                # A scorer writes through its turn's host, during the turn and
+                # after it (RFC §10.6.5): an executor never writes the owner's
+                # store itself.
                 host = current_turn_host()
-                if host is not None:
-                    await host.add_observation(obs)
-                else:
-                    await self._store.add_observation(obs)
+                if host is None:
+                    logger.warning(
+                        "No room owner to store a score of room %s: dropped", event.room_id
+                    )
+                    return
+                await host.add_observation(obs)
             except Exception:
                 logger.warning("Failed to store score observation", exc_info=True)
 

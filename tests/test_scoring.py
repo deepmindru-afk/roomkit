@@ -19,6 +19,7 @@ from roomkit.scoring import (
     ScoringHook,
 )
 from roomkit.store.memory import InMemoryStore
+from roomkit.turns.host import TurnHost, set_turn_host
 from tests.conftest import make_event as make_room_event
 
 # ---------------------------------------------------------------------------
@@ -165,21 +166,38 @@ class TestScoringHook:
         await hook._on_response(event, MagicMock(recent_events=[]))
         assert len(hook.recent_scores) == 0
 
-    async def test_on_response_persists_scores(self):
+    async def test_on_response_persists_scores_through_the_turn_s_host(self):
+        """A score reaches the room owner through the turn's host (RFC
+        §10.6.5): the executor never writes the owner's store itself."""
         store = InMemoryStore()
-        await store.create_room(
-            MagicMock(id="room-1", metadata={}, participants=[], channel_bindings=[])
-        )
+        sent: list[tuple[str, dict]] = []
+
+        async def to_owner(verb: str, arguments: dict) -> None:
+            sent.append((verb, arguments))
+
         scorer = MockScorer(scores=[Score(value=0.9, dimension="relevance", reason="good")])
         hook = ScoringHook(scorers=[scorer], store=store)
         event = _make_event()
 
-        await hook._on_response(event, MagicMock(recent_events=[]))
+        set_turn_host(TurnHost(to_owner))
+        try:
+            await hook._on_response(event, MagicMock(recent_events=[]))
+        finally:
+            set_turn_host(None)
 
-        obs = await store.list_observations("room-1")
-        assert len(obs) == 1
-        assert obs[0].category == "score:relevance"
-        assert obs[0].confidence == 0.9
+        [(verb, arguments)] = sent
+        assert verb == "add_observation"
+        assert arguments["observation"]["category"] == "score:relevance"
+        assert arguments["observation"]["confidence"] == 0.9
+
+    async def test_a_score_with_no_room_owner_to_reach_is_dropped(self):
+        store = InMemoryStore()
+        scorer = MockScorer(scores=[Score(value=0.9, dimension="relevance", reason="good")])
+        hook = ScoringHook(scorers=[scorer], store=store)
+
+        await hook._on_response(_make_event(), MagicMock(recent_events=[]))
+
+        assert await store.list_observations("room-1") == []
 
     async def test_on_response_no_persist_without_room(self):
         store = InMemoryStore()

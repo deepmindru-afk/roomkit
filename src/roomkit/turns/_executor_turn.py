@@ -26,6 +26,7 @@ from roomkit.core.hooks import set_turn_room_hooks
 from roomkit.models.streaming import ThinkingDeltaMarker, ToolCallEndMarker, ToolCallStartMarker
 from roomkit.telemetry.context import get_current_span, set_current_span
 from roomkit.tools._turn_inputs import set_turn_inputs
+from roomkit.turns._between_turns import BetweenTurns
 from roomkit.turns._codec import (
     encode_end,
     encode_item,
@@ -62,7 +63,7 @@ if TYPE_CHECKING:
     from roomkit.channels.base import Channel
     from roomkit.models.channel import ChannelOutput
     from roomkit.models.event import RoomEvent
-    from roomkit.turns.base import ExecutorLink, TurnTimeouts
+    from roomkit.turns.base import ExecutorLink, RoomOwner, TurnTimeouts
     from roomkit.turns.wire import Control, Frame, TurnRequest
 
 logger = logging.getLogger("roomkit.turns")
@@ -107,6 +108,7 @@ class ExecutorTurn:
         executor_id: str,
         channel: Awaitable[Channel | None],
         timeouts: TurnTimeouts,
+        owner: RoomOwner | None = None,
     ) -> None:
         self._link = link
         self._request = link.request
@@ -131,10 +133,17 @@ class ExecutorTurn:
         # The calls the turn makes to its owner: the tools it serves, and
         # the verbs of the turn's host (RFC §10.6.5).
         self._calls = ExecutorCalls(self._request, self._send_call)
-        self._host = TurnHost(self._calls.host_call)
+        # Work the turn began reaches the owner after it, where the backend
+        # carries that (RFC §10.6.3, §10.6.5).
+        after = BetweenTurns(owner, self._request, executor_id) if owner is not None else None
+        self._host = TurnHost(
+            self._calls.host_call, between_turns=after.call if after is not None else None
+        )
         self._inputs = ExecutorInputs(self._send_call)
         # What the turn's channel publishes and its hooks emit (RFC §10.6.2).
-        self._outlet = TurnOutlet(self._send_published)
+        self._outlet = TurnOutlet(
+            self._send_published, after=after.publish if after is not None else None
+        )
 
     async def run(self) -> None:
         """Run the turn to its end, which the owner is always told."""

@@ -109,8 +109,9 @@ async def test_a_host_tool_reads_the_turns_host_and_it_ends_with_the_turn() -> N
     host = seen["host"]
     assert seen["result"] is True
     assert not host.open
-    with pytest.raises(RuntimeError):
-        await host.post_status("agent", "late", "info")
+    # A verb that needs its turn is refused after it (RFC §10.6.5).
+    with pytest.raises(RuntimeError, match="needs a turn"):
+        await host.room_tasks()
     await kit.close()
 
 

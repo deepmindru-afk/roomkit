@@ -16,12 +16,13 @@ from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes,
 from roomkit.channels.declared import DeclaredChannel
 from roomkit.models.steering import Cancel as SteeringCancel
 from roomkit.telemetry.context import get_current_span
+from roomkit.turns._owner_between import answer_room_call, publish_between_turns
 from roomkit.turns._owner_inputs import OwnerInputs
 from roomkit.turns._owner_turn import OwnerTurn
 from roomkit.turns._registry_tools import OwnerToolStore, RegistryOwnerTools
 from roomkit.turns._remote_stream import RemoteStream
 from roomkit.turns._rooms import RoomRecords
-from roomkit.turns.base import TurnTimeouts
+from roomkit.turns.base import RoomOwner, TurnTimeouts
 from roomkit.turns.executor import TurnExecutor
 from roomkit.turns.memory import InMemoryTurnBackend
 from roomkit.turns.wire import ChannelCall, PreviousTurn, RoomDetached, TurnRequest
@@ -35,7 +36,14 @@ if TYPE_CHECKING:
     from roomkit.models.event import RoomEvent
     from roomkit.models.steering import SteeringDirective
     from roomkit.turns.base import OwnerEvents, OwnerHost, OwnerTools, TurnBackend
-    from roomkit.turns.wire import ChannelControl, ChannelResult, OwnerTool
+    from roomkit.turns.wire import (
+        ChannelControl,
+        ChannelResult,
+        HostResult,
+        OwnerTool,
+        RoomCall,
+        RoomPublication,
+    )
 
 
 def turn_request(
@@ -77,7 +85,7 @@ def turn_request(
     )
 
 
-class TurnClient:
+class TurnClient(RoomOwner):
     """Runs turns through a backend and reads them back (RFC §10.6).
 
     Args:
@@ -109,6 +117,7 @@ class TurnClient:
         self._host = host
         self._events = events
         self._serving = executor is None
+        self._attending = False
         if executor is not None:
             # Its rooms' hooks follow this client's names, at once (RFC §10.6.6).
             executor._room_hooks_from_owner = True
@@ -250,8 +259,20 @@ class TurnClient:
         else:
             self._previous.put(channel_id, room_id, previous)
 
+    async def room_call(self, message: RoomCall) -> HostResult:
+        """A host verb an executor made after its turn ended (RFC §10.6.5)."""
+        return await answer_room_call(self._previous, self._host, message)
+
+    async def room_publication(self, message: RoomPublication) -> None:
+        """What a channel published after its turn ended (RFC §10.6.3)."""
+        await publish_between_turns(self._previous, self._events, message)
+
     async def _serve_own(self) -> None:
-        """Serve the client's own executor on the backend, once."""
+        """Have the backend reach this client outside a turn, and serve the
+        client's own executor on it, once."""
+        if not self._attending:
+            self._attending = True
+            await self.backend.attend(self)
         if not self._serving:
             self._serving = True
             assert self.executor is not None

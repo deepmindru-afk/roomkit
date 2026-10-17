@@ -245,7 +245,8 @@ class TurnWiring:
 
         async def _load(room_id: str) -> list[dict[str, Any]]:
             host = current_turn_host()
-            if host is not None:
+            # A reader needs the turn: after it, the executor's own reads it.
+            if host is not None and host.open:
                 return await host.room_tasks()
             return await env.room_tasks(room_id)
 
@@ -259,7 +260,8 @@ class TurnWiring:
 
         async def _load(context: RoomContext) -> str | None:
             host = current_turn_host()
-            if host is not None:
+            # A reader needs the turn: after it, the executor's own reads it.
+            if host is not None and host.open:
                 return await host.room_vision()
             return env.room_vision(context)
 
