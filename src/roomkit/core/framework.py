@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 from roomkit.channels.base import Channel
 from roomkit.channels.websocket import SendFn, StreamSendFn, WebSocketChannel
+from roomkit.core._turn_host import KitHost
 from roomkit.core._turn_runners import TurnRunners
 from roomkit.core.admission import RoomAdmission
 from roomkit.core.delivery import DeliveryStrategy
@@ -333,7 +334,7 @@ class RoomKit(
         self._channels: dict[str, Channel] = {}
         # Every intelligence turn runs through the turn backend (RFC §10.6);
         # the triggers a turn fires are its executor's (RFC §10.6.6).
-        self._turns = registry_turn_client(self._channels, turn_backend)
+        self._turns = registry_turn_client(self._channels, turn_backend, host=KitHost(self))
         self._turn_hooks = self.turn_executor.hooks
         # A strategy's runner takes an agent's turns on this owner (RFC §10.6.1).
         self._turn_runners = TurnRunners()

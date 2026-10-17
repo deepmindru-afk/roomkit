@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from roomkit.turns.base import ExecutorLink, OwnerTools, TurnBackend, TurnLink, TurnTimeouts
 from roomkit.turns.executor import TurnExecutor
+from roomkit.turns.host import TurnHost, current_turn_host
 from roomkit.turns.memory import InMemoryTurnBackend
 from roomkit.turns.owner import TurnClient
 from roomkit.turns.wire import OwnerTool, TurnRequest
@@ -21,7 +22,9 @@ __all__ = [
     "TurnBackend",
     "TurnClient",
     "TurnExecutor",
+    "TurnHost",
     "TurnLink",
     "TurnRequest",
     "TurnTimeouts",
+    "current_turn_host",
 ]

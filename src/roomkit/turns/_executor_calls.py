@@ -2,7 +2,8 @@
 
 The tools the request lists are the turn's owner tools: the channel declares
 them with its own, and a call to one, past its gate, is a ``tool_call`` the
-owner answers once. The call keeps the bound the channel gives it; a call cut
+owner answers once. A verb of the turn's ``TurnHost`` is a ``host_call``,
+answered the same way. The call keeps the bound the channel gives it; a call cut
 (its bound expired, its turn cancelled) is withdrawn with ``call_cancel``.
 The handler on the owner reads what a local one would read of the turn,
 carried in the call's context.
@@ -26,7 +27,7 @@ from roomkit.tools.context import (
     current_tool_room_id,
 )
 from roomkit.turns._codec import decode_result, rebuild_error
-from roomkit.turns.wire import CallCancel, CallContext, ToolCall
+from roomkit.turns.wire import CallCancel, CallContext, HostCall, HostResult, ToolCall
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -40,7 +41,7 @@ class ExecutorCalls:
     def __init__(self, request: TurnRequest, send: Callable[[Frame], Awaitable[int]]) -> None:
         self._request = request
         self._send = send
-        self._pending: dict[str, asyncio.Future[ToolResult]] = {}
+        self._pending: dict[str, asyncio.Future[ToolResult | HostResult]] = {}
         self.owner_tools = TurnOwnerTools(
             channel_id=request.channel_id,
             room_id=request.room_id,
@@ -52,7 +53,7 @@ class ExecutorCalls:
             },
         )
 
-    def resolve(self, result: ToolResult) -> None:
+    def resolve(self, result: ToolResult | HostResult) -> None:
         """The owner answered a call."""
         future = self._pending.get(result.call_id)
         if future is not None and not future.done():
@@ -64,32 +65,47 @@ class ExecutorCalls:
             if not future.done():
                 future.set_exception(error)
 
+    async def host_call(self, verb: str, arguments: dict[str, Any]) -> Any:
+        """Run one verb of the turn's host on the owner: its result, as data."""
+        call = HostCall(call_id=uuid4().hex, verb=verb, arguments=arguments)
+        result = await self._ask(call, f"verb {verb!r}")
+        if not isinstance(result, HostResult):
+            raise RuntimeError("The room owner answered a verb with a tool's result")
+        if result.error is not None:
+            raise rebuild_error(result.error, where="the room owner")
+        return result.result
+
     async def _call(self, name: str, arguments: dict[str, Any]) -> Any:
         """Serve one call on the owner: its answer, or what the handler raised."""
         call = ToolCall(
             call_id=uuid4().hex, name=name, arguments=arguments, context=_call_context()
         )
-        future: asyncio.Future[ToolResult] = asyncio.get_running_loop().create_future()
+        result = await self._ask(call, f"tool {name!r}")
+        if isinstance(result, HostResult):
+            raise RuntimeError("The room owner answered a tool call with a verb's result")
+        return _answer(result)
+
+    async def _ask(self, call: ToolCall | HostCall, what: str) -> ToolResult | HostResult:
+        """Send *call* and wait for its one answer; a call cut before it
+        came (its bound, its turn) is withdrawn, and the owner cancels it."""
+        future: asyncio.Future[ToolResult | HostResult] = (
+            asyncio.get_running_loop().create_future()
+        )
         self._pending[call.call_id] = future
         try:
             try:
                 await self._send(call)
             except (TypeError, ValueError) as exc:
-                raise TypeError(
-                    f"The arguments of tool {name!r} cannot cross the turn backend"
-                ) from exc
+                raise TypeError(f"The arguments of {what} cannot cross the turn backend") from exc
             try:
-                result = await future
+                return await future
             except asyncio.CancelledError:
-                # Cut before its result came (its bound, its turn): the
-                # owner cancels the handler.
                 if future.cancelled() or not future.done():
                     with contextlib.suppress(Exception):
                         await self._send(CallCancel(call_id=call.call_id))
                 raise
         finally:
             del self._pending[call.call_id]
-        return _answer(result)
 
 
 def _call_context() -> CallContext:

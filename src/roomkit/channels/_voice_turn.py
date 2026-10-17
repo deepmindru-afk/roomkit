@@ -67,7 +67,7 @@ class DueTranscript:
 
 
 @runtime_checkable
-class TurnHost(Protocol):
+class VoiceTurnHost(Protocol):
     """Contract: capabilities a host class must provide for VoiceTurnMixin.
 
     Every attribute listed here is initialized by ``VoiceChannel.__init__``.
@@ -113,10 +113,10 @@ class TurnHost(Protocol):
 class VoiceTurnMixin:
     """Turn detection and text routing for VoiceChannel.
 
-    Host contract: :class:`TurnHost`.
+    Host contract: :class:`VoiceTurnHost`.
     """
 
-    # -- attributes provided by VoiceChannel.__init__ (see TurnHost) --
+    # -- attributes provided by VoiceChannel.__init__ (see VoiceTurnHost) --
     channel_id: str
     _framework: RoomKit | None
     _backend: VoiceBackend | None

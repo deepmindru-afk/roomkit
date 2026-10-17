@@ -156,6 +156,16 @@ class OwnerTools(ABC):
         ``UnservedToolCallError`` when nothing serves the call."""
 
 
+class OwnerHost(ABC):
+    """What a room owner runs for the ``TurnHost`` of its turns (RFC §10.6.5)."""
+
+    @abstractmethod
+    async def call(self, request: TurnRequest, verb: str, arguments: dict[str, Any]) -> Any:
+        """Run *verb* for the turn of *request*: its result, as data JSON
+        carries. Raises what the verb raises; ``ValueError`` for a verb or
+        arguments it does not know."""
+
+
 class TurnBackend(ABC):
     """Carries turns between room owners and executors (RFC §10.6)."""
 

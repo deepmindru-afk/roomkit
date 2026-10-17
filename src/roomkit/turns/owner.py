@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from roomkit.models.channel import ChannelBinding, ChannelOutput
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
-    from roomkit.turns.base import OwnerTools, TurnBackend
+    from roomkit.turns.base import OwnerHost, OwnerTools, TurnBackend
     from roomkit.turns.wire import OwnerTool
 
 
@@ -75,6 +75,8 @@ class TurnClient:
             first turn (the kit's own), or ``None``.
         timeouts: The bounds the owner keeps.
         tools: The tools the owner serves its turns (RFC §10.6.5), or ``None``.
+        host: What the owner runs for its turns' ``TurnHost`` (RFC §10.6.5),
+            or ``None``.
     """
 
     def __init__(
@@ -84,11 +86,13 @@ class TurnClient:
         executor: TurnExecutor | None = None,
         timeouts: TurnTimeouts | None = None,
         tools: OwnerTools | None = None,
+        host: OwnerHost | None = None,
     ) -> None:
         self.backend = backend
         self.executor = executor
         self._timeouts = timeouts or TurnTimeouts()
         self._tools = tools
+        self._host = host
         self._serving = executor is None
         self._open: weakref.WeakSet[OwnerTurn] = weakref.WeakSet()
         # The owner-served calls running for this client's turns (RFC §10.6.5).
@@ -120,7 +124,7 @@ class TurnClient:
             owner_tools=declared,
         )
         link = await self.backend.submit(request)
-        turn = OwnerTurn(link, self._timeouts, self._tools, self._calls)
+        turn = OwnerTurn(link, self._timeouts, self._tools, self._calls, self._host)
         self._open.add(turn)
         return await turn.output()
 
@@ -151,12 +155,17 @@ def drop_unread(stream: object) -> None:
 
 
 def registry_turn_client(
-    channels: Mapping[str, Channel], backend: TurnBackend | None = None
+    channels: Mapping[str, Channel],
+    backend: TurnBackend | None = None,
+    *,
+    host: OwnerHost | None = None,
 ) -> TurnClient:
     """A client whose own executor serves the channels of a registry (a
-    kit's, a router's), on *backend* or an in-memory one."""
+    kit's, a router's), on *backend* or an in-memory one, its turns' host
+    verbs run by *host*."""
     return TurnClient(
         backend or InMemoryTurnBackend(),
         executor=TurnExecutor(channels.get, hosts=channels.__contains__),
         tools=RegistryOwnerTools(channels.get),
+        host=host,
     )

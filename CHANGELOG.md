@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `TurnHost` and `current_turn_host()` (RMK-811, RFC §10.6.5): how a host's
+  tool, or a hook the executor fires, reaches a room from a turn wherever the
+  turn runs. `current_turn_host()` answers inside a tool call of a turn and
+  inside a hook its executor fires during it, and `None` anywhere else, after
+  the turn ended included (a host held past its turn refuses its verbs). Its
+  verbs are `send_event`, `delegate` (the task's id), `wait_task` (the
+  `DelegatedTaskResult`, `None` past its timeout or for a task the host did
+  not delegate), `post_status`, `update_room_metadata` and `add_observation`;
+  each crosses the turn backend as a `host_call` whose arguments are data,
+  validated on the owner against the verb's record, and runs there in a copy
+  of the context of the owner's task reading the turn: an event sent into
+  the room from a turn the room's lane reads comes back detached. An error a
+  verb raises is raised in the tool with its class. The owner keeps the
+  tasks its hosts delegated until `wait_task` read them, or, once ended,
+  until 1024 more ended after them. `DelegatedTaskResult` now lives in
+  `roomkit.models.task`; `roomkit.tasks.models` still exports it.
+
 - Every turn of an intelligence channel runs through a turn backend (RMK-809,
   RFC §10.6): `RoomKit(turn_backend=...)`, in memory by default
   (`InMemoryTurnBackend`), with the kit's own `TurnExecutor` reading the

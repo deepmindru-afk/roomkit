@@ -297,9 +297,11 @@ from roomkit.turns import (
     TurnBackend,
     TurnClient,
     TurnExecutor,
+    TurnHost,
     TurnLink,
     TurnRequest,
     TurnTimeouts,
+    current_turn_host,
 )
 from roomkit.video.events import VideoDetectionEvent
 from roomkit.video.pipeline.filter import (
@@ -435,9 +437,11 @@ __all__ = [
     "TurnBackend",
     "TurnClient",
     "TurnExecutor",
+    "TurnHost",
     "TurnLink",
     "TurnRequest",
     "TurnTimeouts",
+    "current_turn_host",
     # Channels
     "ACPChannel",
     "ACPContextContributor",

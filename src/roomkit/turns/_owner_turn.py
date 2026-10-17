@@ -29,6 +29,7 @@ from roomkit.turns.wire import (
     End,
     Error,
     Heartbeat,
+    HostCall,
     Item,
     Output,
     Pull,
@@ -41,7 +42,7 @@ from roomkit.turns.wire import (
 if TYPE_CHECKING:
     from roomkit.models.channel import ChannelOutput
     from roomkit.models.response_metadata import ResponseMetadata
-    from roomkit.turns.base import OwnerTools, TurnLink, TurnTimeouts
+    from roomkit.turns.base import OwnerHost, OwnerTools, TurnLink, TurnTimeouts
     from roomkit.turns.wire import Control, Frame
 
 logger = logging.getLogger("roomkit.turns")
@@ -79,11 +80,12 @@ class OwnerTurn:
         timeouts: TurnTimeouts,
         tools: OwnerTools | None = None,
         held_calls: set[asyncio.Task[None]] | None = None,
+        host: OwnerHost | None = None,
     ) -> None:
         self._link = link
         self._timeouts = timeouts
         held = held_calls if held_calls is not None else set()
-        self._calls = OwnerCalls(link.request, tools, self._send_result, held)
+        self._calls = OwnerCalls(link.request, tools, host, self._send_result, held)
         self._accepted = False
         self._over = False
         self._record: ResponseMetadata | None = None
@@ -221,8 +223,8 @@ class OwnerTurn:
             self._early_ends[frame.start] = end
             if (start := self._starts.get(frame.start)) is not None:
                 start.ended = end
-        elif isinstance(frame, ToolCall):
-            # Run by the task reading the turn now: its handler holds that
+        elif isinstance(frame, ToolCall | HostCall):
+            # Run by the task reading the turn now: the call holds that
             # task's reentrancy (RFC §10.6.5).
             self._calls.start(frame)
         elif isinstance(frame, CallCancel):

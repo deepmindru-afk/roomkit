@@ -167,6 +167,16 @@ class ToolCall(BaseModel):
     context: CallContext
 
 
+class HostCall(BaseModel):
+    """A verb of the turn's ``TurnHost`` (``roomkit.turns.host.VERBS``), run
+    on the owner with its arguments as data."""
+
+    type: Literal["host_call"] = "host_call"
+    call_id: str
+    verb: str
+    arguments: dict[str, Any]
+
+
 class CallCancel(BaseModel):
     """The executor withdraws a call: its turn was cut or its bound expired."""
 
@@ -206,6 +216,16 @@ class ToolResult(BaseModel):
     """The structured copy the handler wrote on its call (RFC §21.4)."""
 
 
+class HostResult(BaseModel):
+    """The owner's answer to one ``host_call``: the verb's result as data,
+    or what it raised."""
+
+    type: Literal["host_result"] = "host_result"
+    call_id: str
+    result: Any = None
+    error: ErrorRecord | None = None
+
+
 Frame = Annotated[
     Accepted
     | Heartbeat
@@ -217,10 +237,13 @@ Frame = Annotated[
     | Error
     | End
     | ToolCall
+    | HostCall
     | CallCancel,
     Field(discriminator="type"),
 ]
-Control = Annotated[Pull | Close | Cancel | Heartbeat | ToolResult, Field(discriminator="type")]
+Control = Annotated[
+    Pull | Close | Cancel | Heartbeat | ToolResult | HostResult, Field(discriminator="type")
+]
 
 
 class FrameEnvelope(BaseModel):

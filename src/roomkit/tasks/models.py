@@ -7,35 +7,13 @@ import logging
 import time
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
-from pydantic.json_schema import SkipJsonSchema
-
 from roomkit.core._failure_log import mark_reported, was_reported
 from roomkit.core.exceptions import TaskCutShortError, TaskTurnFailedError
 from roomkit.models.enums import TaskStatus
 from roomkit.models.response_metadata import TURNS_KEY, TurnEntries
+from roomkit.models.task import DelegatedTaskResult
 
 logger = logging.getLogger("roomkit.tasks")
-
-
-class DelegatedTaskResult(BaseModel):
-    """Result of a completed delegated task."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    task_id: str
-    child_room_id: str
-    parent_room_id: str
-    agent_id: str
-    status: TaskStatus = TaskStatus.COMPLETED
-    output: str | None = None
-    error: str | None = None
-    exception: SkipJsonSchema[Exception | None] = Field(default=None, exclude=True)
-    """The failure itself, its type kept (what the worker's turn raised),
-    for a caller that hands it on; held in memory, never serialized (RFC
-    §23.3 step 6)."""
-    duration_ms: float = 0.0
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class DelegatedTask:

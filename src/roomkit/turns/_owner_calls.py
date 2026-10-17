@@ -1,14 +1,15 @@
 """The calls a turn makes to its room owner, on the owner (RFC §10.6.5).
 
-A ``tool_call`` runs the handler the owner keeps for the tool, as a task of
-its own, in a copy of the execution context of the owner task reading the turn
-when the call arrives (the delivery target awaiting the output, or the reader
-awaiting an item), under the turn's id: the handler holds the reentrancy that
+A ``tool_call`` runs the handler the owner keeps for the tool, and a
+``host_call`` a verb of the turn's ``TurnHost``, each as a task of its own,
+in a copy of the execution context of the owner task reading the turn when
+the call arrives (the delivery target awaiting the output, or the reader
+awaiting an item), under the turn's id: the call holds the reentrancy that
 task holds, and a close it calls spares the turn it serves, as when the call
-ran in the owner's own code. Its answer goes back once, as a ``tool_result``.
-A call the executor withdraws is cancelled, and so is every call of a turn
-that ends for the owner; the client that submitted the turn waits for them
-when it closes.
+ran in the owner's own code. Its answer goes back once, as a ``tool_result``
+or a ``host_result``. A call the executor withdraws is cancelled, and so is
+every call of a turn that ends for the owner; the client that submitted the
+turn waits for them when it closes.
 """
 
 from __future__ import annotations
@@ -22,13 +23,13 @@ from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.tools.result import as_tool_result
 from roomkit.turns._codec import encode_result, error_record
 from roomkit.turns.base import enter_turn
-from roomkit.turns.wire import ToolResult
+from roomkit.turns.wire import HostCall, HostResult, ToolCall, ToolResult
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from roomkit.turns.base import OwnerTools
-    from roomkit.turns.wire import Control, ToolCall, TurnRequest
+    from roomkit.turns.base import OwnerHost, OwnerTools
+    from roomkit.turns.wire import Control, TurnRequest
 
 logger = logging.getLogger("roomkit.turns")
 
@@ -44,17 +45,19 @@ class OwnerCalls:
         self,
         request: TurnRequest,
         tools: OwnerTools | None,
+        host: OwnerHost | None,
         send: Callable[[Control], Awaitable[None]],
         held: set[asyncio.Task[None]],
     ) -> None:
         self._request = request
         self._tools = tools
+        self._host = host
         self._send = send
         self._held = held
         self._running: dict[str, asyncio.Task[None]] = {}
 
-    def start(self, call: ToolCall) -> None:
-        """Run *call*'s handler in a copy of the current task's context."""
+    def start(self, call: ToolCall | HostCall) -> None:
+        """Run *call* in a copy of the current task's context."""
         context = contextvars.copy_context()
         context.run(enter_turn, self._request.turn_id)
         task = asyncio.get_running_loop().create_task(
@@ -82,26 +85,37 @@ class OwnerCalls:
         self._running.pop(call_id, None)
         self._held.discard(task)
 
-    async def _answer(self, call: ToolCall) -> None:
+    async def _answer(self, call: ToolCall | HostCall) -> None:
         try:
-            result = await self._result(call)
+            if isinstance(call, HostCall):
+                result: Control = await self._host_result(call)
+            else:
+                result = await self._result(call)
         except asyncio.CancelledError as cancelled:
             task = asyncio.current_task()
             if task is not None and task.cancelling():
                 raise
-            # The handler ended on a cancellation of something it awaited,
-            # not of its call: the call failed, and the turn goes on.
-            result = ToolResult(
-                call_id=call.call_id, outcome="failed", error=error_record(cancelled)
-            )
+            # The call ended on a cancellation of something it awaited, not
+            # of the call: the call failed, and the turn goes on.
+            result = _failed(call, cancelled)
         try:
             await self._send(result)
         except (TypeError, ValueError) as exc:
-            refusal = TypeError(f"The result of tool {call.name!r} cannot cross the turn backend")
+            what = f"verb {call.verb!r}" if isinstance(call, HostCall) else f"tool {call.name!r}"
+            refusal = TypeError(f"The result of {what} cannot cross the turn backend")
             refusal.__cause__ = exc
-            await self._send(
-                ToolResult(call_id=call.call_id, outcome="failed", error=error_record(refusal))
-            )
+            await self._send(_failed(call, refusal))
+
+    async def _host_result(self, call: HostCall) -> HostResult:
+        """What the verb of *call* made, as it crosses back."""
+        try:
+            if self._host is None:
+                raise ValueError(f"No verb {call.verb!r} is served by the room owner")
+            value = await self._host.call(self._request, call.verb, call.arguments)
+        except Exception as exc:
+            logger.debug("Host call %s failed", call.verb, exc_info=True)
+            return HostResult(call_id=call.call_id, error=error_record(exc))
+        return HostResult(call_id=call.call_id, result=value)
 
     async def _result(self, call: ToolCall) -> ToolResult:
         """What the handler made of *call*, as it crosses back."""
@@ -122,3 +136,10 @@ class OwnerCalls:
             result=encode_result(as_tool_result(answer)),
             structured_content=structured,
         )
+
+
+def _failed(call: ToolCall | HostCall, exc: BaseException) -> Control:
+    """The answer of a call that failed with *exc*."""
+    if isinstance(call, HostCall):
+        return HostResult(call_id=call.call_id, error=error_record(exc))
+    return ToolResult(call_id=call.call_id, outcome="failed", error=error_record(exc))

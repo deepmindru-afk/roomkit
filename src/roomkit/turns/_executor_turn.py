@@ -30,6 +30,7 @@ from roomkit.turns._codec import (
 )
 from roomkit.turns._executor_calls import ExecutorCalls
 from roomkit.turns.base import enter_turn, heartbeat_tick
+from roomkit.turns.host import TurnHost, set_turn_host
 from roomkit.turns.wire import (
     Accepted,
     Cancel,
@@ -37,6 +38,7 @@ from roomkit.turns.wire import (
     End,
     Error,
     Heartbeat,
+    HostResult,
     Item,
     Output,
     Pull,
@@ -106,8 +108,10 @@ class ExecutorTurn:
         self._open: dict[int, ToolCallStartMarker] = {}
         self._args_sent: dict[int, Any] = {}
         self._ends_sent: set[int] = set()
-        # The calls the turn makes to tools its owner serves (RFC §10.6.5).
+        # The calls the turn makes to its owner: the tools it serves, and
+        # the verbs of the turn's host (RFC §10.6.5).
         self._calls = ExecutorCalls(self._request, self._send_call)
+        self._host = TurnHost(self._calls.host_call)
 
     async def run(self) -> None:
         """Run the turn to its end, which the owner is always told."""
@@ -119,8 +123,10 @@ class ExecutorTurn:
         except _UncarriedError:
             pass
         finally:
+            # The turn is over: its host answers no more verbs, and the mark
+            # its notes rode reads as no mark.
+            self._host.close()
             if self._mark is not None:
-                # The turn is over: the mark its notes rode reads as no mark.
                 retire_mark(self._mark)
             watch.cancel()
             beat.cancel()
@@ -247,6 +253,7 @@ class ExecutorTurn:
         the code under it knowing it runs under this turn."""
         context.run(enter_turn, self._request.turn_id)
         context.run(set_turn_owner_tools, self._calls.owner_tools)
+        context.run(set_turn_host, self._host)
         self._work = asyncio.get_running_loop().create_task(
             work, context=context, name=f"roomkit-turn-{self._request.turn_id}-work"
         )
@@ -347,7 +354,7 @@ class ExecutorTurn:
                 self._closing = True
             elif isinstance(message, Cancel):
                 self._cut_turn(message.reason)
-            elif isinstance(message, ToolResult):
+            elif isinstance(message, ToolResult | HostResult):
                 self._calls.resolve(message)
             self._wake.set()
 
