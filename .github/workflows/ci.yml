@@ -167,8 +167,16 @@ jobs:
       - name: Import the WebRTC transport
         run: .venv/bin/python -c "import roomkit.webrtc"
 
-      - name: Run the WebRTC websocket µ-law tests
-        run: .venv/bin/python -m pytest tests/test_webrtc_websocket_g711.py -v
+      # The tests of roomkit.webrtc's users that need nothing beyond the extra
+      # (the TestClient ones need httpx2 and run in the integration job).
+      - name: Run the WebRTC transport tests
+        run: >-
+          .venv/bin/python -m pytest -v
+          tests/test_webrtc_websocket_g711.py
+          tests/test_fastrtc_playback.py
+          tests/test_fastrtc_realtime_transport.py
+          tests/test_fastrtc_audio_session.py
+          tests/voice/realtime/test_fastrtc_transport.py
 
   test:
     name: Test (Python ${{ matrix.python-version }})

@@ -49,7 +49,7 @@ def convert_to_mulaw(audio_data: np.ndarray, original_rate: int, target_rate: in
 
     audio_data = audio_to_int16(audio_data)
 
-    return pcm16_to_mulaw(audio_data.tobytes())
+    return pcm16_to_mulaw(audio_data.astype("<i2", copy=False).tobytes())
 
 
 class WebSocketHandler:
@@ -178,7 +178,8 @@ class WebSocketHandler:
             return None
         audio_payload = base64.b64decode(payload)
 
-        audio_array = np.frombuffer(mulaw_to_pcm16(audio_payload), dtype=np.int16)
+        pcm = np.frombuffer(mulaw_to_pcm16(audio_payload), dtype="<i2")
+        audio_array = pcm.astype(np.int16, copy=False)
 
         if self.stream_handler.phone_mode and self.stream_handler.input_sample_rate != 8000:
             audio_array = audio_to_float32(audio_array)
