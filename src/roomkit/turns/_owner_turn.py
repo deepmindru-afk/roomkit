@@ -47,7 +47,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.turns")
 
-# The closes of streams their reader dropped, held until they end.
+# The closes of streams their reader dropped, and the reads of turns their
+# output ended, held until they end.
 _DROPPED_CLOSES: set[asyncio.Task[None]] = set()
 
 
@@ -118,7 +119,7 @@ class OwnerTurn:
             if frame.streams:
                 output.response_stream = RemoteStream(self)
             else:
-                self._finish()
+                self._read_to_end()
             return output
         if isinstance(frame, Error):
             self._finish()
@@ -144,6 +145,13 @@ class OwnerTurn:
             raise rebuild_error(frame.error)
         self._finish()
         raise TurnLinkError("executor_lost", "The turn ended in the middle of its stream")
+
+    def _read_to_end(self) -> None:
+        """Read the turn's last frames in the background until its end: a
+        call a task of its tools still makes is answered (RFC §10.6.5)."""
+        task = asyncio.get_running_loop().create_task(self._drain_to_end(None))
+        _DROPPED_CLOSES.add(task)
+        task.add_done_callback(_DROPPED_CLOSES.discard)
 
     async def close_stream(self) -> None:
         """Close the stream: the executor closes the channel's, a running

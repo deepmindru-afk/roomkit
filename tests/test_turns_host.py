@@ -11,11 +11,12 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from roomkit import RoomKit, TurnHost, current_turn_host
 from roomkit.channels.agent import Agent
 from roomkit.core._turn_host import KitHost
-from roomkit.core.exceptions import RoomNotFoundError
+from roomkit.core.exceptions import ChannelNotRegisteredError
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, HookExecution, HookTrigger
 from roomkit.models.event import TextContent
@@ -24,6 +25,7 @@ from roomkit.models.tool_call import ToolCallEvent
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tools.context import _current_turn_chain_depth
 from tests.test_framework import SimpleChannel
 
 USE = AITool(name="use_host", description="Use the host.", parameters={"type": "object"})
@@ -221,8 +223,8 @@ async def test_room_metadata_status_and_observations_are_written_on_the_owner(
 async def test_a_verb_that_raises_raises_in_the_tool_with_its_class() -> None:
     async def use(host: TurnHost) -> Any:
         try:
-            await host.update_room_metadata("no-such-room", {"x": 1})
-        except RoomNotFoundError as exc:
+            await host.delegate("r1", "nobody", "Look it up")
+        except ChannelNotRegisteredError as exc:
             return exc
         return None
 
@@ -230,7 +232,146 @@ async def test_a_verb_that_raises_raises_in_the_tool_with_its_class() -> None:
 
     await _say(kit)
 
-    assert isinstance(seen["result"], RoomNotFoundError)
+    assert isinstance(seen["result"], ChannelNotRegisteredError)
+    await kit.close()
+
+
+@pytest.mark.parametrize(
+    "verb",
+    [
+        lambda host: host.send_event("r2", "ops", TextContent(body="elsewhere")),
+        lambda host: host.delegate("r2", "worker", "Look"),
+        lambda host: host.update_room_metadata("r2", {"x": 1}),
+        lambda host: host.update_room_metadata("r1", {"x": 1}, organization_id="other"),
+        lambda host: host.add_observation(
+            Observation(id="o1", room_id="r2", channel_id="agent", content="noted")
+        ),
+    ],
+    ids=["send_event", "delegate", "metadata", "organization", "observation"],
+)
+async def test_a_host_acts_only_for_its_turns_room_and_organization(verb: Any) -> None:
+    async def use(host: TurnHost) -> Any:
+        try:
+            await verb(host)
+        except ValueError as exc:
+            return exc
+        return None
+
+    kit, _, seen = await _kit(use)
+    await kit.create_room(room_id="r2")
+
+    await _say(kit)
+
+    assert isinstance(seen["result"], ValueError)
+    assert (await kit.get_room("r2")).metadata == {}
+    await kit.close()
+
+
+async def test_an_option_a_verb_does_not_name_is_refused() -> None:
+    async def use(host: TurnHost) -> Any:
+        try:
+            await host.send_event("r1", "ops", TextContent(body="x"), addresed_to=[])
+        except ValidationError as exc:
+            return exc
+        return None
+
+    kit, _, seen = await _kit(use)
+
+    await _say(kit)
+
+    assert isinstance(seen["result"], ValidationError)
+    await kit.close()
+
+
+async def test_a_delegation_through_the_host_keeps_its_turns_chain_depth() -> None:
+    depths: list[int] = []
+    kit_holder: list[RoomKit] = []
+
+    async def use(host: TurnHost) -> Any:
+        task_id = await host.delegate("r1", "worker", "Look it up")
+        return await host.wait_task(task_id, timeout=5)
+
+    worker = Agent(
+        "worker",
+        provider=MockAIProvider(ai_responses=[AIResponse(content="found")]),
+        role="worker",
+    )
+    kit, _, seen = await _kit(use, worker)
+    kit_holder.append(kit)
+    run_background = type(kit)._run_background
+
+    async def spy(self: Any, *args: Any, **kwargs: Any) -> Any:
+        depths.append(_current_turn_chain_depth())
+        return await run_background(self, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(type(kit), "_run_background", spy)
+        await asyncio.wait_for(_say(kit), 10)
+
+    # The agent answers a human message: its turn's response is at depth 1,
+    # and so is what is delivered later on its behalf.
+    assert depths == [1]
+    assert seen["result"] is not None
+    await kit.close()
+
+
+async def test_wait_task_answers_none_past_its_timeout_and_the_result_after() -> None:
+    release = asyncio.Event()
+
+    async def slow(event: Any, binding: Any, context: Any) -> Any:
+        await release.wait()
+        return await original(event, binding, context)
+
+    async def use(host: TurnHost) -> Any:
+        task_id = await host.delegate("r1", "worker", "Look it up")
+        early = await host.wait_task(task_id, timeout=0.1)
+        release.set()
+        late = await host.wait_task(task_id, timeout=5)
+        again = await host.wait_task(task_id, timeout=5)
+        return early, late, again
+
+    worker = Agent(
+        "worker",
+        provider=MockAIProvider(ai_responses=[AIResponse(content="found")]),
+        role="worker",
+    )
+    original = worker.on_event
+    worker.on_event = slow  # type: ignore[method-assign]
+    kit, _, seen = await _kit(use, worker)
+
+    await asyncio.wait_for(_say(kit), 10)
+
+    early, late, again = seen["result"]
+    assert early is None
+    assert late is not None and late.output == "found"
+    # A result stays readable.
+    assert again is not None and again.task_id == late.task_id
+    await kit.close()
+
+
+async def test_a_verb_on_its_way_when_the_turn_ends_is_answered_first() -> None:
+    spawned: list[asyncio.Task[Any]] = []
+
+    async def use(host: TurnHost) -> Any:
+        observation = Observation(id="o1", room_id="r1", channel_id="agent", content="audited")
+        # A task of the tool's own, whose verb is still on its way when the
+        # turn has nothing left to do.
+        spawned.append(asyncio.create_task(host.add_observation(observation)))
+        return None
+
+    kit, _, _ = await _kit(use)
+    add_observation = kit.store.add_observation
+
+    async def slow_write(observation: Observation) -> None:
+        await asyncio.sleep(0.3)
+        await add_observation(observation)
+
+    kit.store.add_observation = slow_write  # type: ignore[method-assign]
+
+    await _say(kit)
+    await asyncio.wait_for(spawned[0], 5)
+
+    assert [o.content for o in await kit.store.list_observations("r1")] == ["audited"]
     await kit.close()
 
 

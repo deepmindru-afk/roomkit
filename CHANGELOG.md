@@ -11,19 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `TurnHost` and `current_turn_host()` (RMK-811, RFC §10.6.5): how a host's
   tool, or a hook the executor fires, reaches a room from a turn wherever the
-  turn runs. `current_turn_host()` answers inside a tool call of a turn and
-  inside a hook its executor fires during it, and `None` anywhere else, after
-  the turn ended included (a host held past its turn refuses its verbs). Its
-  verbs are `send_event`, `delegate` (the task's id), `wait_task` (the
-  `DelegatedTaskResult`, `None` past its timeout or for a task the host did
-  not delegate), `post_status`, `update_room_metadata` and `add_observation`;
-  each crosses the turn backend as a `host_call` whose arguments are data,
-  validated on the owner against the verb's record, and runs there in a copy
-  of the context of the owner's task reading the turn: an event sent into
-  the room from a turn the room's lane reads comes back detached. An error a
-  verb raises is raised in the tool with its class. The owner keeps the
-  tasks its hosts delegated until `wait_task` read them, or, once ended,
-  until 1024 more ended after them. `DelegatedTaskResult` now lives in
+  turn runs. `current_turn_host()` answers inside a call of a host tool during
+  a turn and inside a hook its executor fires during it, and `None` anywhere
+  else: after the turn ended (a host held past it refuses its verbs), and in
+  a tool the room owner serves. Its verbs are `send_event`, `delegate` (in the
+  background, its task's id), `wait_task` (the `DelegatedTaskResult`, its
+  failure kept in `exception`; `None` past its timeout or for a task the
+  room's hosts did not delegate), `post_status`, `update_room_metadata` and
+  `add_observation`. Each crosses the turn backend as a `host_call` carrying
+  what the turn gave the call (its chain depth, who asked), and runs on the
+  owner under it, in a copy of the context of the owner's task reading the
+  turn: an event sent into the room from a turn the room's lane reads comes
+  back detached, and a delegation inherits the turn's chain depth, so a cycle
+  of delegations still ends at `max_chain_depth`. A host acts for its turn's
+  room and in that room's organization: a verb naming another room, or
+  another organization, raises `ValueError`, and an event it sends is at
+  least as deep as the turn's response. The owner validates each verb's
+  arguments against its record and refuses one the record does not name. A
+  verb on its way when its turn ends is answered before the turn ends; an
+  error a verb raises is raised in the tool with its class. The owner keeps
+  the tasks its hosts delegated while they run, and once ended until 1024
+  more ended after them. `DelegatedTaskResult` now lives in
   `roomkit.models.task`; `roomkit.tasks.models` still exports it.
 
 - Every turn of an intelligence channel runs through a turn backend (RMK-809,

@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from roomkit.channels._tool_registry import ChannelRegistry, orchestration_tool
-from roomkit.core.exceptions import TurnLinkError, UnservedToolCallError
+from roomkit.core.exceptions import TurnLinkError
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelCategory, ChannelType
@@ -17,6 +17,7 @@ from roomkit.models.room import Room
 from roomkit.providers.ai.base import AITool
 from roomkit.tools.context import ToolCallContext, tool_turn_context
 from roomkit.turns._executor_calls import ExecutorCalls
+from roomkit.turns._owner_calls import OwnerCalls
 from roomkit.turns._registry_tools import RegistryOwnerTools
 from roomkit.turns.wire import (
     CallCancel,
@@ -144,22 +145,30 @@ async def test_the_owner_refuses_a_call_naming_another_room_or_channel(
     room_id: str, channel_id: str
 ) -> None:
     served: list[str] = []
+    answers: list[Any] = []
 
     async def serve(arguments: dict[str, Any]) -> str:
         served.append("ran")
         return "ran"
 
+    async def send(message: Any) -> None:
+        answers.append(message)
+
     registry = ChannelRegistry("agent", lambda: ())
     registry.register(orchestration_tool(PROBE, serve), room_id="r1", owner="s")
     channel = type("Holder", (), {"_registry": registry})()
-    owner = RegistryOwnerTools({"agent": channel}.get)
-    call = ToolCall(
-        call_id="x",
-        name="probe",
-        arguments={},
-        context=CallContext(tool_call_id="c1", room_id=room_id, channel_id=channel_id),
+    calls = OwnerCalls(_request(), RegistryOwnerTools({"agent": channel}.get), None, send, set())
+    calls.start(
+        ToolCall(
+            call_id="x",
+            name="probe",
+            arguments={},
+            context=CallContext(tool_call_id="c1", room_id=room_id, channel_id=channel_id),
+        )
     )
+    while not answers:
+        await asyncio.sleep(0)
 
-    with pytest.raises(UnservedToolCallError):
-        await owner.serve(_request(), call)
+    [answer] = answers
+    assert answer.outcome == "unserved"
     assert served == []

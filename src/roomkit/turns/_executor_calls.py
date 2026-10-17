@@ -42,6 +42,7 @@ class ExecutorCalls:
         self._request = request
         self._send = send
         self._pending: dict[str, asyncio.Future[ToolResult | HostResult]] = {}
+        self._settled = False
         self.owner_tools = TurnOwnerTools(
             channel_id=request.channel_id,
             room_id=request.room_id,
@@ -65,9 +66,18 @@ class ExecutorCalls:
             if not future.done():
                 future.set_exception(error)
 
+    async def settle(self) -> None:
+        """The turn ends: wait for the calls still on their way (a verb a
+        task of the turn's tools sent), and take no more."""
+        self._settled = True
+        if self._pending:
+            await asyncio.wait(list(self._pending.values()))
+
     async def host_call(self, verb: str, arguments: dict[str, Any]) -> Any:
         """Run one verb of the turn's host on the owner: its result, as data."""
-        call = HostCall(call_id=uuid4().hex, verb=verb, arguments=arguments)
+        call = HostCall(
+            call_id=uuid4().hex, verb=verb, arguments=arguments, context=_call_context()
+        )
         result = await self._ask(call, f"verb {verb!r}")
         if not isinstance(result, HostResult):
             raise RuntimeError("The room owner answered a verb with a tool's result")
@@ -88,6 +98,8 @@ class ExecutorCalls:
     async def _ask(self, call: ToolCall | HostCall, what: str) -> ToolResult | HostResult:
         """Send *call* and wait for its one answer; a call cut before it
         came (its bound, its turn) is withdrawn, and the owner cancels it."""
+        if self._settled:
+            raise RuntimeError(f"The turn has ended: {what} is not sent to the room owner")
         future: asyncio.Future[ToolResult | HostResult] = (
             asyncio.get_running_loop().create_future()
         )

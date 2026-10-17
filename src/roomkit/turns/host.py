@@ -3,16 +3,19 @@
 A host's tool, or a hook the executor fires, runs where the turn runs, which
 may be another process than the room owner's. It reads the room from the
 store, and changes it only through the turn's host, read with
-:func:`current_turn_host`: inside a tool call of a turn and inside a hook the
-executor fires during a turn; ``None`` anywhere else, between two turns
-included. Each verb is one ``host_call`` on the turn's link, every argument
-is data, and the owner runs it as its own code would, with the reentrancy of
-its task reading the turn: a ``send_event`` that would wait on the room's own
-delivery from a task that delivery needs returns with its completion
-detached.
+:func:`current_turn_host`: inside a call of a host tool during a turn and
+inside a hook the executor fires during it; ``None`` anywhere else, between
+two turns and on the owner included. Each verb is one ``host_call`` on the
+turn's link, every argument is data, and the owner runs it as its own code
+would, under what the turn gave the call (its room, its chain depth, who
+asked) and with the reentrancy of its task reading the turn: a
+``send_event`` that would wait on the room's own delivery from a task that
+delivery needs returns with its completion detached.
 
-The verbs are enumerated here, each with the record its arguments cross as;
-the owner validates what it receives against it.
+A host acts for its turn's room: a verb naming another room, or another
+organization than the room's, is refused. The verbs are enumerated here, each
+with the record its arguments cross as; the owner validates what it receives
+against it, and refuses an argument the record does not name.
 """
 
 from __future__ import annotations
@@ -22,19 +25,28 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from roomkit.models.enums import EventType, Visibility
 from roomkit.models.event import EventContent, RoomEvent
 from roomkit.models.room import Room
 from roomkit.models.task import DelegatedTaskResult, Observation
+from roomkit.turns._codec import rebuild_error
+from roomkit.turns.wire import ErrorRecord
 
 HostCaller = Callable[[str, dict[str, Any]], Awaitable[Any]]
 """Sends one verb and its arguments to the room owner; its result, as data."""
 
 
-class SendEvent(BaseModel):
-    """``send_event``: the arguments of ``RoomKit.send_event``."""
+class _Verb(BaseModel):
+    """A verb's arguments: an argument no record names is refused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class SendEvent(_Verb):
+    """``send_event``: the arguments of ``RoomKit.send_event``. The event is
+    at least as deep as the response of the turn that sends it (RFC §8.3)."""
 
     room_id: str
     channel_id: str
@@ -54,9 +66,9 @@ class SendEvent(BaseModel):
     standalone: bool = False
 
 
-class Delegate(BaseModel):
-    """``delegate``: the arguments of ``RoomKit.delegate`` that are data;
-    the task runs in the background, its id answered."""
+class Delegate(_Verb):
+    """``delegate``: the arguments of ``RoomKit.delegate`` a background task
+    reads, each data; the task's id answered."""
 
     room_id: str
     agent_id: str
@@ -64,22 +76,20 @@ class Delegate(BaseModel):
     context: dict[str, Any] | None = None
     share_channels: list[str] | None = None
     notify: str | None = None
-    require_structured_result: bool = False
-    max_result_retries: int = 3
     post_status: bool = True
     brief: str | None = None
     conversation: int = 0
     hand_back: str = "relay"
 
 
-class WaitTask(BaseModel):
-    """``wait_task``: a task this host delegated, and how long to wait."""
+class WaitTask(_Verb):
+    """``wait_task``: a task a host of the room delegated, and how long to wait."""
 
     task_id: str
     timeout: float | None = None
 
 
-class PostStatus(BaseModel):
+class PostStatus(_Verb):
     """``post_status``: an entry on the kit's status bus (RFC §19.8)."""
 
     agent_id: str
@@ -89,7 +99,7 @@ class PostStatus(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
-class UpdateRoomMetadata(BaseModel):
+class UpdateRoomMetadata(_Verb):
     """``update_room_metadata``: keys merged into a room's metadata."""
 
     room_id: str
@@ -97,13 +107,13 @@ class UpdateRoomMetadata(BaseModel):
     organization_id: str | None = None
 
 
-class AddObservation(BaseModel):
+class AddObservation(_Verb):
     """``add_observation``: an observation stored for its room (RFC §5.11)."""
 
     observation: Observation
 
 
-VERBS: dict[str, type[BaseModel]] = {
+VERBS: dict[str, type[_Verb]] = {
     "send_event": SendEvent,
     "delegate": Delegate,
     "wait_task": WaitTask,
@@ -127,8 +137,8 @@ class TurnHost:
         """Whether the turn it serves still runs."""
         return self._open
 
-    def close(self) -> None:
-        """The turn ended: the host answers no more verbs."""
+    def _close(self) -> None:
+        """The turn ended: the host answers no more verbs. The executor's."""
         self._open = False
 
     async def send_event(
@@ -148,10 +158,20 @@ class TurnHost:
     async def wait_task(
         self, task_id: str, timeout: float | None = None
     ) -> DelegatedTaskResult | None:
-        """The result of a task this host delegated, once it ends; ``None``
-        when *timeout* passes first, or for a task it does not know."""
+        """The result of a task a host of this room delegated, once it ends,
+        its failure kept (``exception``, RFC §23.3); ``None`` when *timeout*
+        passes first, or for a task the room's hosts did not delegate."""
         data = await self._verb("wait_task", WaitTask(task_id=task_id, timeout=timeout))
-        return None if data is None else DelegatedTaskResult.model_validate(data)
+        if data is None:
+            return None
+        result = DelegatedTaskResult.model_validate(data["result"])
+        if data.get("exception") is not None:
+            failure = rebuild_error(
+                ErrorRecord.model_validate(data["exception"]), where="the room owner"
+            )
+            if isinstance(failure, Exception):
+                result.exception = failure
+        return result
 
     async def post_status(
         self,
@@ -181,7 +201,7 @@ class TurnHost:
         """Store *observation* for its room."""
         await self._verb("add_observation", AddObservation(observation=observation))
 
-    async def _verb(self, verb: str, args: BaseModel) -> Any:
+    async def _verb(self, verb: str, args: _Verb) -> Any:
         if not self._open:
             raise RuntimeError(f"The turn this host served has ended: {verb} is not sent")
         return await self._call(verb, args.model_dump(mode="json"))
@@ -194,8 +214,9 @@ _TURN_HOST: contextvars.ContextVar[TurnHost | None] = contextvars.ContextVar(
 
 def current_turn_host() -> TurnHost | None:
     """The host of the turn the current code runs in (RFC §10.6.5): inside a
-    tool call of a turn and inside a hook its executor fires during it;
-    ``None`` anywhere else, after the turn ended included."""
+    call of a host tool during a turn and inside a hook its executor fires
+    during it; ``None`` anywhere else, after the turn ended and in a tool the
+    room owner serves included."""
     host = _TURN_HOST.get()
     return host if host is not None and host.open else None
 

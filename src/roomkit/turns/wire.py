@@ -175,10 +175,14 @@ class HostCall(BaseModel):
     call_id: str
     verb: str
     arguments: dict[str, Any]
+    context: CallContext
+    """What the verb reads of the turn: its chain depth, who asked; a call
+    made from a hook names no tool call."""
 
 
 class CallCancel(BaseModel):
-    """The executor withdraws a call: its turn was cut or its bound expired."""
+    """The executor withdraws a call (a ``tool_call`` or a ``host_call``):
+    its turn was cut or its bound expired."""
 
     type: Literal["call_cancel"] = "call_cancel"
     call_id: str

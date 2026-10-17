@@ -148,11 +148,9 @@ class OwnerTools(ABC):
         """The tools the owner serves *channel_id*'s turns in *room_id*."""
 
     @abstractmethod
-    async def serve(
-        self, request: TurnRequest, call: ToolCall
-    ) -> tuple[Any, dict[str, Any] | None]:
-        """Run *call*'s handler under the call's context: its answer and the
-        structured copy it wrote. Raises what the handler raises, and
+    async def serve(self, request: TurnRequest, call: ToolCall) -> Any:
+        """Run *call*'s handler, under the call's context already installed:
+        its answer. Raises what the handler raises, and
         ``UnservedToolCallError`` when nothing serves the call."""
 
 

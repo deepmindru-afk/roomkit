@@ -123,9 +123,15 @@ class ExecutorTurn:
         except _UncarriedError:
             pass
         finally:
-            # The turn is over: its host answers no more verbs, and the mark
-            # its notes rode reads as no mark.
-            self._host.close()
+            # The turn is over: its host answers no more verbs, the calls on
+            # their way are answered first, and the mark its notes rode reads
+            # as no mark.
+            self._host._close()
+            task = asyncio.current_task()
+            if self._cut is not None or (task is not None and task.cancelling()):
+                # Cut: nothing waits for an owner that may no longer answer.
+                self._calls.fail_all(TurnLinkError(self._cut or "cancelled"))
+            await self._calls.settle()
             if self._mark is not None:
                 retire_mark(self._mark)
             watch.cancel()
