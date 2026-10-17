@@ -10,9 +10,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from roomkit.channels.declared import held_agent, id_of
+from roomkit.channels.declared import id_of
 from roomkit.core.hooks import HookRegistration
 from roomkit.models.enums import HookExecution, HookTrigger
+from roomkit.orchestration._agents import held
 from roomkit.orchestration.base import Orchestration
 from roomkit.orchestration.handoff import (
     HandoffHandler,
@@ -95,7 +96,7 @@ class Pipeline(Orchestration):
     async def install(self, kit: RoomKit, room_id: str) -> None:
         """Wire pipeline routing and handoff into the room."""
         kit.claim_room_strategy(room_id, self)
-        agents = [held_agent(kit, a) for a in self._agents]
+        agents = [held(kit, a) for a in self._agents]
         stages = _build_stages(agents)
         cp = ConversationPipeline(
             stages=stages,
@@ -135,10 +136,6 @@ class Pipeline(Orchestration):
             active_agent_id=id_of(self._agents[0]),
         )
         await save_conversation_state(kit.store, room_id, initial_state)
-
-    def _build_stages(self) -> list[PipelineStage]:
-        """Build pipeline stages from agent list."""
-        return _build_stages(self._agents)
 
     def _wire_handoff(
         self,

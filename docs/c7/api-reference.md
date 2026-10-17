@@ -374,7 +374,7 @@ kit = RoomKit(
 |--------|-------------|
 | `delegate(room_id, agent_id, task, ...)` | Delegate to background agent |
 | `setup_background(agent, worker?, hand_back?)` | Give an agent (or the id of one the kit holds) the `work_in_background` tool: its long work runs as a task (RFC §23.4) |
-| `setup_task_tools(agent)` | Give an agent `task_status` and `cancel_task`, served by the room's owner: the room's own tasks only (RFC §23.4) |
+| `setup_task_tools(agent)` | Give an agent (or the id of one the kit holds) `task_status` and `cancel_task`, served by the room's owner: the room's own tasks only (RFC §23.4) |
 | `await start_task(room_id, agent_id, task, hand_back?)` | Start an agent's background task from the host, for any agent of the room |
 | `send_greeting(room_id, channel_id?, greeting?, ...)` | Send greeting |
 | `send_event(room_id, channel_id, content, ...)` | Send event directly |

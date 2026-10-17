@@ -18,7 +18,7 @@ from roomkit._text import CONVERSATION_SUMMARY_TAG, fence, identifier, quoted
 from roomkit.channels._mark_copies import without_mark_copies
 from roomkit.channels._runtime_record import HANDED_ON_CONTEXT, HANDOFF_OPENING, runtime_record
 from roomkit.channels._tool_registry import ToolEntry, orchestration_tool
-from roomkit.channels.declared import held_agent, id_of
+from roomkit.channels.declared import id_of, owner_tools_of
 from roomkit.memory._wrapper import _MemoryWrapper
 from roomkit.memory.base import MemoryProvider, MemoryResult
 from roomkit.models.channel import ChannelBinding
@@ -719,9 +719,8 @@ def setup_handoff(
         RuntimeError: The handoff is already set up where it would be declared.
         ChannelNotRegisteredError: An id names no channel of the kit.
     """
-    held_agent(handler._kit, channel)
+    registry = owner_tools_of(handler._kit, channel)
     channel_id = id_of(channel)
-    registry = handler._kit._owner_tools.of(channel_id)
     if registry.lookup(HANDOFF_TOOL_NAME, room_id) is not None:
         msg = f"setup_handoff() already called for channel '{channel_id}'"
         raise RuntimeError(msg)
@@ -738,11 +737,11 @@ def set_up_handoffs(
     """Serve each agent's handoff in *room_id* for the strategy *owner*, on
     *kit*: all of them, or none when one is refused. Installing *owner* again
     replaces its own (RFC §19.7, §21.1)."""
-    store = kit._owner_tools
-    for channel, entry in handoffs:
-        store.of(channel.channel_id).check(entry, room_id=room_id, owner=owner)
-    for channel, entry in handoffs:
-        store.of(channel.channel_id).register(entry, room_id=room_id, owner=owner)
+    registries = [(owner_tools_of(kit, channel), entry) for channel, entry in handoffs]
+    for registry, entry in registries:
+        registry.check(entry, room_id=room_id, owner=owner)
+    for registry, entry in registries:
+        registry.register(entry, room_id=room_id, owner=owner)
 
 
 def handoff_entry(

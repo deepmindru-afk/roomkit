@@ -9,7 +9,7 @@ from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.room import Room
 from roomkit.orchestration.state import get_conversation_state
-from roomkit.orchestration.strategies.pipeline import Pipeline
+from roomkit.orchestration.strategies.pipeline import Pipeline, _build_stages
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.turns._registry_tools import OwnerToolStore
 from tests.tool_room import room_tool_names
@@ -76,8 +76,7 @@ class TestPipelineAgents:
 class TestPipelineBuildStages:
     def test_linear_chain(self):
         agents = [_make_agent("a"), _make_agent("b"), _make_agent("c")]
-        p = Pipeline(agents=agents)
-        stages = p._build_stages()
+        stages = _build_stages(Pipeline(agents=agents).agents())
 
         assert len(stages) == 3
         assert stages[0].phase == "a"
@@ -89,8 +88,7 @@ class TestPipelineBuildStages:
 
     def test_single_agent(self):
         agents = [_make_agent("solo")]
-        p = Pipeline(agents=agents)
-        stages = p._build_stages()
+        stages = _build_stages(Pipeline(agents=agents).agents())
 
         assert len(stages) == 1
         assert stages[0].next is None

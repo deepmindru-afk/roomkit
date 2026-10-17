@@ -651,7 +651,12 @@ class AIChannel(
         return (
             super()
             .declaration()
-            .model_copy(update={"thinks_while_listening": self.thinks_while_listening})
+            .model_copy(
+                update={
+                    "thinks_while_listening": self.thinks_while_listening,
+                    "takes_owner_tools": True,
+                }
+            )
         )
 
     async def _respond(

@@ -152,7 +152,7 @@ class TestCollisions:
     def test_an_orchestration_tool_under_a_host_tool_s_name_is_refused(self) -> None:
         registry = _registry("delegate_task")
 
-        with pytest.raises(ToolNameCollisionError, match="a tool of the host"):
+        with pytest.raises(ToolNameCollisionError, match="one of the channel's own tools"):
             registry.register(orchestration_tool(_tool("delegate_task"), _serve), owner="d")
 
     def test_the_same_owner_replaces_its_own_entry(self) -> None:

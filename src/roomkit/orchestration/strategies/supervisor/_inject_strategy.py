@@ -15,6 +15,7 @@ import weakref
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import orchestration_tool
+from roomkit.channels.declared import owner_tools_of
 from roomkit.orchestration._background import start_background_run
 from roomkit.orchestration._call_room import in_call_room
 from roomkit.orchestration.strategies.supervisor._common import (
@@ -105,9 +106,7 @@ class _StrategyToolMixin:
         )
         serve = in_call_room(_STRATEGY_TOOL_NAME, server.serve)
         entry = orchestration_tool(self._strategy_tool(), serve, waits=True)
-        kit._owner_tools.of(self._supervisor.channel_id).register(
-            entry, room_id=room_id, owner=self
-        )
+        owner_tools_of(kit, self._supervisor).register(entry, room_id=room_id, owner=self)
 
 
 _SUBTASK_REFUSAL = json.dumps(

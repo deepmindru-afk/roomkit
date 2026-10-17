@@ -22,13 +22,20 @@ kit holds under the id it was named by."""
 
 
 def held(kit: RoomKit, agent: Agent | str) -> HeldAgent:
-    """*agent*, or the agent *kit* holds under the id it is named by.
+    """*agent* as given, or the agent *kit* holds under the id it is named by.
 
     Raises:
         ChannelNotRegisteredError: *kit* holds no channel under the id.
-        TypeError: the id names a channel that is no agent.
+        ValueError: the id names no intelligence channel.
+        TypeError: the id names an intelligence channel that is no agent (an
+            ``AIChannel``, an ACP agent): give the strategy the channel itself.
     """
+    if not isinstance(agent, str):
+        return agent
     channel = held_agent(kit, agent)
     if not isinstance(channel, Agent | DeclaredChannel):
-        raise TypeError(f"Channel {channel.channel_id!r} is not an Agent: a strategy runs Agents")
+        raise TypeError(
+            f"Channel {agent!r} is not an Agent nor a declared one: a strategy takes it "
+            "by its id only then"
+        )
     return channel

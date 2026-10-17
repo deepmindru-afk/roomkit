@@ -100,7 +100,17 @@ class Discussion(Orchestration):
         _check(agents, everyone, max_turns, max_depth, silent_token, rules)
         _check_dispatch(dispatch, dispatch_timeout, addressed_only=addressed_only)
         self._agents = list(agents)
-        self._handles = _handles(agents, handles or {})
+        self._given_handles = dict(handles or {})
+        _check_given(agents, self._given_handles)
+        # An agent named by an id that is no handle is addressed by the name
+        # its declaration gives, which only the kit's install reads.
+        named_later = any(
+            isinstance(a, str) and a not in self._given_handles and not is_handle(a)
+            for a in agents
+        )
+        self._handles: dict[str, str] | None = (
+            None if named_later else _handles(agents, self._given_handles, _names(agents))
+        )
         self.people = list(people) if people is not None else None
         self.addressed_only = addressed_only
         self.everyone = list(everyone) if everyone is not None else None
@@ -118,8 +128,9 @@ class Discussion(Orchestration):
         return list(self._agents)
 
     def handles(self) -> dict[str, str]:
-        """The name each agent is addressed by, by channel id."""
-        return dict(self._handles)
+        """The name each agent is addressed by, by channel id; an agent named
+        by an id that is no handle has one once the discussion is installed."""
+        return dict(self._handles or {})
 
     async def install(self, kit: RoomKit, room_id: str) -> None:
         """Give the room to the discussion: its agents attached, its stored
@@ -132,6 +143,8 @@ class Discussion(Orchestration):
                 router or another strategy is installed.
         """
         kit.claim_room_strategy(room_id, self)
+        if self._handles is None:
+            self._handles = _handles(self._agents, self._given_handles, _names(self._agents, kit))
         await kit._install_discussion(room_id, DiscussionRoom.installed(kit, room_id, self))
 
     async def uninstall(self, kit: RoomKit, room_id: str) -> None:
@@ -173,23 +186,42 @@ def _check(
         raise ValueError("rules must not be blank: None gives the default")
 
 
-def _handles(
-    agents: Sequence[AIChannel | ACPChannel | str], given: Mapping[str, str]
-) -> dict[str, str]:
-    """Each agent's handle, by channel id: the one *given*, else its channel
-    id, else its name kept to a name's characters, whichever can name it
-    (RFC §19.7.5 rule 4).
-
-    Raises:
-        ValueError: *given* names a channel that is not an agent or gives a
-            handle that cannot name one, an agent has no handle, or two
-            agents' handles read alike.
-    """
+def _check_given(agents: Sequence[AIChannel | ACPChannel | str], given: Mapping[str, str]) -> None:
+    """Refuse *given* handles naming a channel that is not an agent."""
     ids = [id_of(a) for a in agents]
     unknown = [channel_id for channel_id in given if channel_id not in ids]
     if unknown:
         raise ValueError(f"handles names channels that are not agents: {unknown}")
-    handles = {id_of(a): _handle_of(a, given.get(id_of(a))) for a in agents}
+
+
+def _names(
+    agents: Sequence[AIChannel | ACPChannel | str], kit: RoomKit | None = None
+) -> dict[str, str | None]:
+    """Each agent's name, by channel id: a live agent's own, an id's from the
+    channel *kit* holds under it, by its declaration alone included."""
+    names: dict[str, str | None] = {}
+    for agent in agents:
+        channel = kit.channels.get(agent) if isinstance(agent, str) and kit else agent
+        name = getattr(channel, "name", None)
+        names[id_of(agent)] = name if isinstance(name, str) else None
+    return names
+
+
+def _handles(
+    agents: Sequence[AIChannel | ACPChannel | str],
+    given: Mapping[str, str],
+    names: Mapping[str, str | None],
+) -> dict[str, str]:
+    """Each agent's handle, by channel id: the one *given*, else its channel
+    id, else its name (*names*) kept to a name's characters, whichever can
+    name it (RFC §19.7.5 rule 4).
+
+    Raises:
+        ValueError: *given* gives a handle that cannot name an agent, an agent
+            has no handle, or two agents' handles read alike.
+    """
+    ids = [id_of(a) for a in agents]
+    handles = {cid: _handle_of(cid, given.get(cid), names.get(cid)) for cid in ids}
     seen: dict[str, str] = {}
     for channel_id, handle in handles.items():
         other = seen.setdefault(handle.casefold(), channel_id)
@@ -201,11 +233,9 @@ def _handles(
     return handles
 
 
-def _handle_of(agent: AIChannel | ACPChannel | str, given: str | None) -> str:
-    """The handle *agent* is addressed by: *given*, else its channel id, else
-    its name kept to a name's characters. An agent named by its id has no name
-    here: the kit holds it."""
-    channel_id = id_of(agent)
+def _handle_of(channel_id: str, given: str | None, name: str | None) -> str:
+    """The handle the agent *channel_id* is addressed by: *given*, else its
+    channel id, else its *name* kept to a name's characters."""
     if given is not None:
         if not is_handle(given):
             raise ValueError(
@@ -215,8 +245,7 @@ def _handle_of(agent: AIChannel | ACPChannel | str, given: str | None) -> str:
         return given
     if is_handle(channel_id):
         return channel_id
-    name = None if isinstance(agent, str) else getattr(agent, "name", None)
-    derived = name_key(name) if isinstance(name, str) else ""
+    derived = name_key(name) if name is not None else ""
     if is_handle(derived):
         return derived
     raise ValueError(

@@ -153,7 +153,7 @@ class TestOneDeclarationPerName:
         kit = RoomKit()
         kit.register_channel(ch)
 
-        with pytest.raises(ToolNameCollisionError, match="a tool of the host"):
+        with pytest.raises(ToolNameCollisionError, match="one of the channel's own tools"):
             setup_delegation(ch, DelegateHandler(kit))
 
     async def test_a_turn_tool_under_an_orchestration_name_is_not_declared(

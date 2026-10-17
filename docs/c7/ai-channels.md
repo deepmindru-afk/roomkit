@@ -169,6 +169,11 @@ await kit.attach_channel(room_id, "meteo")  # an intelligence binding
   declaration and lists them in each turn; a strategy reads the agent's
   identity (`name`, `role`, `description`, `purpose`, `voice`, `greeting`)
   from it. An id the kit does not hold raises `ChannelNotRegisteredError`.
+- `takes_owner_tools` (true by default) says whether the channel's turns
+  declare the tools its owner serves; an `ACPChannel`'s declaration says
+  false. The owner refuses to set a tool up for one that takes none, and a
+  delegation to it returns its text rather than asking for `submit_result`.
+  `unregister_channel` drops the tools set up for the id.
 - Refused: a declaration that is not an intelligence channel's, a binding of
   it with another category, a strategy given a live agent whose id the kit
   holds by declaration (give it the id), and a realtime `ConversationPipeline`

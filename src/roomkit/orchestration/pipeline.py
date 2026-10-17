@@ -175,12 +175,7 @@ class ConversationPipeline:
         live = [a for a in held_agents if isinstance(a, Agent)]
         if is_realtime:
             # Refused before anything is installed.
-            if len(live) != len(held_agents):
-                raise ValueError(
-                    "A realtime voice channel runs each agent's prompt and tools in its "
-                    "session: give the pipeline the agents themselves, not ids the kit "
-                    "holds by declaration"
-                )
+            _refuse_declared_agents(held_agents, live)
             refuse_agents_with_unserved(live, voice_channel_id)  # ty: ignore[invalid-argument-type]
 
         router = self.to_router()
@@ -470,3 +465,15 @@ class ConversationPipeline:
                 if ctx.room.id in _handoff_pending:
                     return HookResult.block("handoff_transition")
                 return HookResult.allow()
+
+
+def _refuse_declared_agents(agents: Sequence[HeldAgent], live: Sequence[Agent]) -> None:
+    """Refuse a realtime pipeline any agent not given live: its session runs
+    each agent's prompt and tools (RFC §12.4), which a declaration does not
+    carry."""
+    if len(live) != len(agents):
+        raise ValueError(
+            "A realtime voice channel runs each agent's prompt and tools in its "
+            "session: give the pipeline the agents themselves, not ids the kit "
+            "holds by declaration"
+        )

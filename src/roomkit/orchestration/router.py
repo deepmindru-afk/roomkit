@@ -13,11 +13,13 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from roomkit.channels.declared import owner_tools_of
 from roomkit.core.hooks import mark_router_hook
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelCategory, ChannelType, HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent
 from roomkit.models.hook import HookResult
+from roomkit.orchestration._agents import held
 from roomkit.orchestration.handoff import HandoffHandler, setup_handoff
 from roomkit.orchestration.state import ConversationState, get_conversation_state
 
@@ -272,7 +274,15 @@ class ConversationRouter:
         by its declaration alone included (RFC §10.6.2).
 
         Returns the ``HandoffHandler`` for further customisation.
+
+        Raises:
+            ChannelNotRegisteredError: An id names no channel of the kit;
+                nothing is installed.
         """
+        # Every agent read before anything is installed: all of them, or none.
+        held_agents = [held(kit, agent) for agent in agents]
+        for agent in held_agents:
+            owner_tools_of(kit, agent)
         kit.hook(
             HookTrigger.BEFORE_BROADCAST,
             execution=HookExecution.SYNC,
@@ -285,7 +295,7 @@ class ConversationRouter:
             agent_aliases=agent_aliases,
             phase_map=phase_map,
         )
-        for agent in agents:
+        for agent in held_agents:
             setup_handoff(agent, handler)
 
         return handler

@@ -291,7 +291,7 @@ class ChannelRegistry:
         one of the channel's own names is refused where the host gives it.
         """
         if host and name in set(self._host_names()):
-            return "a tool of the host"
+            return "one of the channel's own tools"
         if name in self._channel:
             return "served by the channel"
         if room_id is None:

@@ -491,6 +491,7 @@ class Channel(ABC):
             channel_type=self.channel_type,
             category=self.category,
             capabilities=self.capabilities(),
+            takes_owner_tools=False,
             recent_events_window=self.recent_events_window,
         )
 

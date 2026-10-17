@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit._text import identifier
 from roomkit.channels._tool_registry import orchestration_tool
+from roomkit.channels.declared import owner_tools_of
 from roomkit.orchestration._background import (
     BackgroundRun,
     background_failure_text,
@@ -69,9 +70,7 @@ class _PerWorkerToolMixin:
             orchestration_tool(tool, in_call_room(tool.name, server.serve), waits=True)
             for tool in map(_worker_tool, self._workers)
         ]
-        kit._owner_tools.of(self._supervisor.channel_id).register_all(
-            entries, room_id=room_id, owner=self
-        )
+        owner_tools_of(kit, self._supervisor).register_all(entries, room_id=room_id, owner=self)
 
 
 class _PerWorkerToolServer:

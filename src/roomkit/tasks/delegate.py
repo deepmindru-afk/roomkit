@@ -14,7 +14,7 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import orchestration_tool
-from roomkit.channels.declared import held_agent, id_of
+from roomkit.channels.declared import id_of, owner_tools_of
 from roomkit.orchestration._call_room import in_call_room
 from roomkit.providers.ai.base import AITool
 from roomkit.tasks.cache import CompletedTaskCache
@@ -22,6 +22,7 @@ from roomkit.tasks.models import DelegatedTask, TaskStatus
 
 if TYPE_CHECKING:
     from roomkit.channels.ai import AIChannel
+    from roomkit.channels.declared import DeclaredChannel
     from roomkit.channels.realtime_voice import RealtimeVoiceChannel
     from roomkit.core.delivery import DeliveryStrategy
     from roomkit.core.framework import RoomKit
@@ -274,7 +275,7 @@ class DelegateHandler:
 
 
 def setup_delegation(
-    channel: AIChannel | str,
+    channel: AIChannel | DeclaredChannel | str,
     handler: DelegateHandler,
     *,
     tool: AITool | None = None,
@@ -296,9 +297,8 @@ def setup_delegation(
         RuntimeError: Delegation is already set up on the channel.
         ChannelNotRegisteredError: An id names no channel of the kit.
     """
-    held_agent(handler._kit, channel)
+    registry = owner_tools_of(handler._kit, channel)
     calling = id_of(channel)
-    registry = handler._kit._owner_tools.of(calling)
     if registry.lookup(DELEGATE_TOOL_NAME, None) is not None:
         msg = f"setup_delegation() already called for channel '{calling}'"
         raise RuntimeError(msg)

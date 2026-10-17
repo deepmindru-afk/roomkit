@@ -21,7 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a `DeclaredChannel` reads its identity as an `Agent` does (`name`,
   `role`, `description`, `scope`, `greeting`, `language`, `purpose`, `voice`,
   `thinks_while_listening`). A realtime `ConversationPipeline` takes live
-  agents only. Example: `examples/declared_supervisor.py`.
+  agents only. A Discussion addresses an agent named by an id that is no
+  handle by its declared name, as a live one by its own. A declaration says
+  whether its turns take the owner's tools (`takes_owner_tools`, true by
+  default; an `ACPChannel`'s says false): the owner refuses to set a tool up
+  for one that does not (`ValueError`), live or declared, and reads such a
+  worker's delegated result as its text. `unregister_channel` drops the
+  tools set up for the channel. Example: `examples/declared_supervisor.py`.
 
 - The kit holds an agent by its declaration alone (RMK-822, RFC §10.6.2).
   `kit.register_channel(ChannelDeclaration(channel_id=..., identity=

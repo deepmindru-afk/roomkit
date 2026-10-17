@@ -57,6 +57,11 @@ class OwnerToolStore:
         """Each channel's registry, by channel id."""
         return dict(self._registries)
 
+    def forget(self, channel_id: str) -> None:
+        """Drop every tool set up for *channel_id*: the channel left the
+        owner, and one registered again under its id gets its own setup."""
+        self._registries.pop(channel_id, None)
+
     def _own_names(self, channel_id: str) -> set[str]:
         registry = getattr(self._channel_of(channel_id), "_registry", None)
         return registry.own_names() if isinstance(registry, ChannelRegistry) else set()

@@ -20,6 +20,7 @@ from roomkit.models.enums import ChannelCategory
 from roomkit.models.event import RoomEvent
 
 if TYPE_CHECKING:
+    from roomkit.channels._tool_registry import ChannelRegistry
     from roomkit.core.framework import RoomKit
 
 
@@ -159,6 +160,25 @@ def held_agent[C: Channel](kit: RoomKit, agent: C | str) -> C | Channel:
     if channel.category is not ChannelCategory.INTELLIGENCE:
         raise ValueError(f"Channel {agent!r} is not an intelligence channel")
     return channel
+
+
+def owner_tools_of(kit: RoomKit, agent: Channel | str) -> ChannelRegistry:
+    """Where *kit* keeps the tools orchestration sets up for *agent*, given
+    live or named by its id, beside its declaration (RFC §10.6.2).
+
+    Raises:
+        ChannelNotRegisteredError: an id names no channel of the kit.
+        ValueError: an id names no intelligence channel, or *agent*'s turns
+            never declare the tools their owner serves (an external agent
+            over ACP, RFC §10.6.5): a tool set up for it would never be seen.
+    """
+    channel = held_agent(kit, agent)
+    if not channel.declaration().takes_owner_tools:
+        raise ValueError(
+            f"Channel {channel.channel_id!r} does not take the tools its room owner "
+            "serves (RFC §10.6.5): its turns would never declare them"
+        )
+    return kit._owner_tools.of(channel.channel_id)
 
 
 def register_strategy_agents(kit: RoomKit, agents: Iterable[Channel | str]) -> None:

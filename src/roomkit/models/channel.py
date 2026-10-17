@@ -127,6 +127,9 @@ class ChannelDeclaration(BaseModel):
     """An agent's identity; None for a channel that is no agent."""
     thinks_while_listening: bool = False
     """It carries a thinker (RFC §6.4), which a discussion refuses."""
+    takes_owner_tools: bool = True
+    """Its turns declare the tools its owner serves (RFC §10.6.5): an AI
+    channel's do, an external agent's over ACP do not."""
     recent_events_window: int = Field(default=AI_CHANNEL_CONTEXT_EVENTS, ge=0)
     """How many recent room events the owner loads for its turns."""
 

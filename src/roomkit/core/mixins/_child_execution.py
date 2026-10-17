@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, runtime_checkable
 from uuid import uuid4
 
-from roomkit.channels.declared import DeclaredChannel
+from roomkit.channels.base import Channel
 from roomkit.core._failure_log import mark_reported
 from roomkit.core.event_router import responder_turn_entries, stream_record
 from roomkit.core.exceptions import TaskCutShortError, TaskTurnFailedError, TurnCutShortError
@@ -584,10 +584,15 @@ class _InjectableToolChannel(Protocol):
 
 
 def _takes_owner_tools(channel: object) -> bool:
-    """Whether a delegation can set a result tool up for *channel*: a live
-    one whose turns declare its owner's tools, or one the kit holds by its
-    declaration, whose executor builds such a channel (RFC §10.6.5)."""
-    return isinstance(channel, DeclaredChannel | _InjectableToolChannel)
+    """Whether a delegation can set a result tool up for *channel*: one whose
+    turns declare its owner's tools, as its declaration says, live or held by
+    the declaration alone (RFC §10.6.5); a duck-typed one carrying a registry."""
+    if isinstance(channel, Channel):
+        return (
+            channel.category is ChannelCategory.INTELLIGENCE
+            and channel.declaration().takes_owner_tools
+        )
+    return isinstance(channel, _InjectableToolChannel)
 
 
 async def _run_with_structured_result(

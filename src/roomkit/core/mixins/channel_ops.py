@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from roomkit.store.base import ConversationStore
     from roomkit.telemetry.base import TelemetryProvider
     from roomkit.tools.external import ExternalToolHandler
+    from roomkit.turns._registry_tools import OwnerToolStore
     from roomkit.turns.owner import TurnClient
 
 logger = logging.getLogger("roomkit.framework")
@@ -108,6 +109,7 @@ class ChannelOpsHost(Protocol):
         _hook_engine: Engine for hook execution.
         _telemetry: Telemetry / tracing provider.
         _realtime: Ephemeral event backend (typing, presence).
+        _owner_tools: The tools orchestration sets up, per channel and room.
 
     Cross-mixin methods (provided by other mixins in the MRO):
         get_room: From :class:`RoomLifecycleMixin`.
@@ -127,6 +129,7 @@ class ChannelOpsHost(Protocol):
     _telemetry: TelemetryProvider
     _realtime: RealtimeBackend
     _turns: TurnClient
+    _owner_tools: OwnerToolStore
 
 
 class ChannelOpsMixin(HelpersMixin):
@@ -138,6 +141,7 @@ class ChannelOpsMixin(HelpersMixin):
     _store: ConversationStore
     _channels: dict[str, Channel]
     _turns: TurnClient
+    _owner_tools: OwnerToolStore
     _lock_manager: RoomLockManager
     _event_router: EventRouter | None
     _hook_engine: HookEngine
@@ -253,8 +257,10 @@ class ChannelOpsMixin(HelpersMixin):
         if channel is None:
             return None
         self._event_router = None  # Reset router cache
-        # A channel registered again under the id greets by its own setup.
+        # A channel registered again under the id greets and serves tools by
+        # its own setup.
         self._hook_engine.remove_global_hook(_auto_greet_hook_name(channel_id))
+        self._owner_tools.forget(channel_id)
         self._emit_framework_event_soon(
             "channel_unregistered",
             channel_id=channel_id,

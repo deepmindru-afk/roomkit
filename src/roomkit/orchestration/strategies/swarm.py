@@ -9,9 +9,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from roomkit.channels.declared import held_agent, id_of
+from roomkit.channels.declared import id_of
 from roomkit.core.hooks import HookRegistration
 from roomkit.models.enums import HookExecution, HookTrigger
+from roomkit.orchestration._agents import held
 from roomkit.orchestration.base import Orchestration
 from roomkit.orchestration.handoff import (
     HandoffHandler,
@@ -76,7 +77,7 @@ class Swarm(Orchestration):
     async def install(self, kit: RoomKit, room_id: str) -> None:
         """Wire swarm routing and bidirectional handoff into the room."""
         kit.claim_room_strategy(room_id, self)
-        agents = [held_agent(kit, a) for a in self._agents]
+        agents = [held(kit, a) for a in self._agents]
         router = ConversationRouter(
             default_agent_id=self._entry,
         )
