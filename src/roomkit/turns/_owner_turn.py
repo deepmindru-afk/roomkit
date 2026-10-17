@@ -3,8 +3,10 @@
 The owner reads the turn's frames back into the objects the pipeline reads
 locally: a ``ChannelOutput``, a stream whose every read pulls one item, the
 turn's one response-metadata record updated in place, and call markers whose
-fixed arguments and early ends are set on the owner's own copies. The turn is
-watched while it is read: an executor silent too long has lost the turn.
+fixed arguments and early ends are set on the owner's own copies. The calls
+the turn makes to tools the owner serves run here as they arrive (RFC
+§10.6.5). The turn is watched while it is read: an executor silent too long
+has lost the turn.
 """
 
 from __future__ import annotations
@@ -17,9 +19,11 @@ from typing import TYPE_CHECKING, Any
 from roomkit.core.exceptions import TurnLinkError
 from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
 from roomkit.turns._codec import decode_end, decode_item, decode_output, rebuild_error
+from roomkit.turns._owner_calls import OwnerCalls
 from roomkit.turns.base import heartbeat_tick
 from roomkit.turns.wire import (
     Accepted,
+    CallCancel,
     Cancel,
     Close,
     End,
@@ -30,13 +34,14 @@ from roomkit.turns.wire import (
     Pull,
     Record,
     ToolArgs,
+    ToolCall,
     ToolEnded,
 )
 
 if TYPE_CHECKING:
     from roomkit.models.channel import ChannelOutput
     from roomkit.models.response_metadata import ResponseMetadata
-    from roomkit.turns.base import TurnLink, TurnTimeouts
+    from roomkit.turns.base import OwnerTools, TurnLink, TurnTimeouts
     from roomkit.turns.wire import Control, Frame
 
 logger = logging.getLogger("roomkit.turns")
@@ -68,9 +73,12 @@ def _close_dropped(turn: OwnerTurn, loop: asyncio.AbstractEventLoop) -> None:
 class OwnerTurn:
     """The owner's side of one turn, from its submission to its end."""
 
-    def __init__(self, link: TurnLink, timeouts: TurnTimeouts) -> None:
+    def __init__(
+        self, link: TurnLink, timeouts: TurnTimeouts, tools: OwnerTools | None = None
+    ) -> None:
         self._link = link
         self._timeouts = timeouts
+        self._calls = OwnerCalls(link.request, tools, self._send_result)
         self._accepted = False
         self._over = False
         self._record: ResponseMetadata | None = None
@@ -208,6 +216,12 @@ class OwnerTurn:
             self._early_ends[frame.start] = end
             if (start := self._starts.get(frame.start)) is not None:
                 start.ended = end
+        elif isinstance(frame, ToolCall):
+            # Run by the task reading the turn now: its handler holds that
+            # task's reentrancy (RFC §10.6.5).
+            self._calls.start(frame)
+        elif isinstance(frame, CallCancel):
+            self._calls.withdraw(frame.call_id)
         else:
             return False
         return True
@@ -269,7 +283,13 @@ class OwnerTurn:
             return
         self._over = True
         self._beat.cancel()
+        self._calls.cancel_all()
         self._link.release()
+
+    async def _send_result(self, message: Control) -> None:
+        """Answer a call of the turn, while the turn is still the owner's."""
+        if not self._over:
+            await self._link.send(message)
 
     async def _send_best_effort(self, message: Control) -> None:
         try:

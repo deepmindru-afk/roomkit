@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes, discussion_turn
 from roomkit.turns._owner_turn import OwnerTurn, RemoteStream
+from roomkit.turns._registry_tools import RegistryOwnerTools
 from roomkit.turns.base import TurnTimeouts
 from roomkit.turns.executor import TurnExecutor
 from roomkit.turns.memory import InMemoryTurnBackend
@@ -25,7 +26,8 @@ if TYPE_CHECKING:
     from roomkit.models.channel import ChannelBinding, ChannelOutput
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
-    from roomkit.turns.base import TurnBackend
+    from roomkit.turns.base import OwnerTools, TurnBackend
+    from roomkit.turns.wire import OwnerTool
 
 
 def turn_request(
@@ -35,8 +37,10 @@ def turn_request(
     *,
     answers: bool = True,
     strategy_turn: bool = False,
+    owner_tools: list[OwnerTool] | None = None,
 ) -> TurnRequest:
-    """The request for one turn of *binding*'s channel on *event*.
+    """The request for one turn of *binding*'s channel on *event*, with the
+    tools the owner serves it (*owner_tools*).
 
     A discussion's turn mark is this process's: its notes travel in the
     request, and the event goes without it (RFC §10.6.3).
@@ -57,6 +61,7 @@ def turn_request(
         strategy_turn=strategy_turn,
         notes=notes,
         in_place=in_place,
+        owner_tools=owner_tools or [],
     )
 
 
@@ -68,6 +73,7 @@ class TurnClient:
         executor: An executor this client serves on the backend before its
             first turn (the kit's own), or ``None``.
         timeouts: The bounds the owner keeps.
+        tools: The tools the owner serves its turns (RFC §10.6.5), or ``None``.
     """
 
     def __init__(
@@ -76,10 +82,12 @@ class TurnClient:
         *,
         executor: TurnExecutor | None = None,
         timeouts: TurnTimeouts | None = None,
+        tools: OwnerTools | None = None,
     ) -> None:
         self.backend = backend
         self.executor = executor
         self._timeouts = timeouts or TurnTimeouts()
+        self._tools = tools
         self._serving = executor is None
         self._open: weakref.WeakSet[OwnerTurn] = weakref.WeakSet()
 
@@ -99,11 +107,17 @@ class TurnClient:
             self._serving = True
             assert self.executor is not None
             await self.backend.serve(self.executor)
+        declared = self._tools.declared(binding.channel_id, context.room.id) if self._tools else []
         request = turn_request(
-            event, binding, context, answers=answers, strategy_turn=strategy_turn
+            event,
+            binding,
+            context,
+            answers=answers,
+            strategy_turn=strategy_turn,
+            owner_tools=declared,
         )
         link = await self.backend.submit(request)
-        turn = OwnerTurn(link, self._timeouts)
+        turn = OwnerTurn(link, self._timeouts, self._tools)
         self._open.add(turn)
         return await turn.output()
 
@@ -133,4 +147,5 @@ def registry_turn_client(
     return TurnClient(
         backend or InMemoryTurnBackend(),
         executor=TurnExecutor(channels.get, hosts=channels.__contains__),
+        tools=RegistryOwnerTools(channels.get),
     )

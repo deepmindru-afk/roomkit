@@ -8,12 +8,18 @@ frames, never one of the channel's own objects.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
 
 from roomkit.channels._strategy_turn import in_strategy_turn, strategy_turn
+from roomkit.channels._tool_registry import (
+    _TURN_OWNER_TOOLS,
+    TurnOwnerTools,
+    set_turn_owner_tools,
+)
 from roomkit.channels.base import Channel
 from roomkit.core.exceptions import RemoteTurnError, ToolTimeoutError, TurnLinkError
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -30,10 +36,11 @@ from roomkit.models.streaming import (
     ToolCallEndMarker,
     ToolCallStartMarker,
 )
-from roomkit.providers.ai.base import AIImagePart, AITextPart
+from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
 from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, TurnTimeouts
 from roomkit.turns._codec import decode_item, encode_item, error_record, rebuild_error
-from roomkit.turns.base import MessageOrder
+from roomkit.turns.base import MessageOrder, OwnerTools
+from roomkit.turns.wire import OwnerTool
 from tests.turn_errors import same_error
 
 
@@ -225,6 +232,49 @@ async def test_a_turn_says_whether_a_strategy_asked_it_and_never_inherits_it() -
     with strategy_turn(True):
         await _run(client)
     assert channel.asked == [True, False]
+
+
+class _Declares(OwnerTools):
+    """An owner that serves the tools it is told to name."""
+
+    def __init__(self) -> None:
+        self.names: list[str] = []
+
+    def declared(self, channel_id: str, room_id: str) -> list[OwnerTool]:
+        return [OwnerTool(tool=AITool(name=n, description=n)) for n in self.names]
+
+    async def serve(self, request: Any, call: Any) -> tuple[Any, None]:
+        return "served", None
+
+
+async def test_a_turn_reads_the_owner_tools_of_its_own_request() -> None:
+    class Telling(ScriptedChannel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.declared: list[list[str]] = []
+
+        async def on_event(
+            self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+        ) -> ChannelOutput:
+            tools = _TURN_OWNER_TOOLS.get()
+            self.declared.append(sorted(tools.entries) if tools is not None else [])
+            return await super().on_event(event, binding, context)
+
+    channel = Telling()
+    owner = _Declares()
+    client = TurnClient(
+        InMemoryTurnBackend(),
+        executor=TurnExecutor({"agent": channel}.get, hosts={"agent"}.__contains__),
+        tools=owner,
+    )
+    owner.names = ["probe"]
+    await _run(client)
+    # Submitted from inside another turn, whose context it copies.
+    owner.names = []
+    inside = contextvars.copy_context()
+    inside.run(set_turn_owner_tools, TurnOwnerTools("agent", "room", {"stale": None}))  # type: ignore[dict-item]
+    await asyncio.get_running_loop().create_task(_run(client), context=inside)
+    assert channel.declared == [["probe"], []]
 
 
 async def test_an_error_on_event_raised_is_raised_on_the_owner() -> None:

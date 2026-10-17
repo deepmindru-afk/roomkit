@@ -14,13 +14,13 @@ import contextlib
 import contextvars
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from roomkit.core.exceptions import TurnLinkError
 
 if TYPE_CHECKING:
     from roomkit.turns.executor import TurnExecutor
-    from roomkit.turns.wire import Control, Frame, TurnRequest
+    from roomkit.turns.wire import Control, Frame, OwnerTool, ToolCall, TurnRequest
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +117,23 @@ class ExecutorLink(ABC):
         """The execution context the turn's stream advances in, once known;
         ``None`` means a fresh one, kept for the stream's life."""
         return None
+
+
+class OwnerTools(ABC):
+    """The tools a room owner serves its turns (RFC §10.6.5): what it lists in
+    a turn's request, and how it runs a call's handler."""
+
+    @abstractmethod
+    def declared(self, channel_id: str, room_id: str) -> list[OwnerTool]:
+        """The tools the owner serves *channel_id*'s turns in *room_id*."""
+
+    @abstractmethod
+    async def serve(
+        self, request: TurnRequest, call: ToolCall
+    ) -> tuple[Any, dict[str, Any] | None]:
+        """Run *call*'s handler under the call's context: its answer and the
+        structured copy it wrote. Raises what the handler raises, and
+        ``UnservedToolCallError`` when nothing serves the call."""
 
 
 class TurnBackend(ABC):

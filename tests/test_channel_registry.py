@@ -7,14 +7,18 @@ in a room: a second one is refused when it is given.
 
 from __future__ import annotations
 
+import contextvars
+
 import pytest
 
 from roomkit import ToolNameCollisionError
 from roomkit.channels._tool_registry import (
     ChannelRegistry,
     ToolSource,
+    TurnOwnerTools,
     channel_tool,
     orchestration_tool,
+    set_turn_owner_tools,
 )
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
@@ -79,6 +83,50 @@ class TestScopes:
             "find_tools",
             "delegate",
         }
+
+
+class TestTurnOwnerTools:
+    """Inside a turn the backend runs, the owner's tools are the request's
+    (RFC §10.6.5); the owner reads its own entries."""
+
+    def test_a_turn_declares_and_serves_the_owner_tools_its_request_lists(self) -> None:
+        registry = _registry()
+        own = channel_tool(_tool("plan_tasks"), _serve)
+        registry.register(own)
+        held = orchestration_tool(_tool("delegate"), _serve)
+        registry.register(held, room_id="A", owner="s1")
+        listed = orchestration_tool(_tool("delegate", "as the request lists it"), _serve)
+        turn = TurnOwnerTools(channel_id="ch", room_id="A", entries={"delegate": listed})
+        other = ChannelRegistry("other", lambda: ())
+        others = orchestration_tool(_tool("delegate", "another channel's"), _serve)
+        other.register(others, room_id="A", owner="s2")
+
+        def in_turn() -> None:
+            set_turn_owner_tools(turn)
+            assert registry.lookup("delegate", "A") is listed
+            assert registry.lookup("plan_tasks", "A") is own
+            assert registry.entries("A") == [own, listed]
+            # The owner's own reads are the registry's.
+            assert registry.owner_entries("A") == [held]
+            assert registry.owner_lookup("delegate", "A") is held
+            # Another room, or another channel, is not this turn's.
+            assert registry.lookup("delegate", "B") is None
+            assert other.lookup("delegate", "A") is others
+
+        contextvars.copy_context().run(in_turn)
+        assert registry.lookup("delegate", "A") is held
+
+    def test_a_turn_without_owner_tools_declares_none_of_the_registry_s(self) -> None:
+        registry = _registry()
+        registry.register(orchestration_tool(_tool("delegate"), _serve), owner="s1")
+        turn = TurnOwnerTools(channel_id="ch", room_id="A", entries={})
+
+        def in_turn() -> None:
+            set_turn_owner_tools(turn)
+            assert registry.lookup("delegate", "A") is None
+            assert registry.entries("A") == []
+
+        contextvars.copy_context().run(in_turn)
 
 
 class TestCollisions:

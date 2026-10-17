@@ -273,6 +273,10 @@ class _ToolLoopContext:
     # ``None`` when no policy applies. Read by ``current_tool_allowed_names()``
     # (RFC §21.4): the gate refuses what it denies, so it is not callable.
     admits: Callable[[str], bool] | None = None
+    # The names the turn admits, as an owner-served call carries them from the
+    # executor that resolved its toolset (RFC §10.6.5): what
+    # ``current_tool_allowed_names()`` answers on the owner.
+    allowed_names: frozenset[str] | None = None
 
     def offered_tools(self) -> list[Any]:
         """Every tool the turn offers the model: its resolved toolset, then
@@ -537,6 +541,8 @@ def current_tool_allowed_names() -> set[str] | None:
     hosts can fall back to their own allowlist.
     """
     ctx = _current_loop_ctx.get()
+    if ctx is not None and ctx.allowed_names is not None:
+        return set(ctx.allowed_names)
     if ctx is None or ctx.all_context_tools is None:
         return None
     admits = ctx.admits or (lambda _name: True)
@@ -595,6 +601,33 @@ def _installed(
     finally:
         _current_loop_ctx.reset(loop_token)
         _current_tool_call.reset(call_token)
+
+
+@contextmanager
+def owner_served_call(
+    call: ToolCallContext,
+    *,
+    room: Room | None,
+    actor_id: str | None,
+    requester: str | None,
+    chain_depth: int,
+    allowed_names: Iterable[str] | None,
+) -> Generator[None, None, None]:
+    """Run a call the room owner serves under what the turn on its executor
+    gave it (RFC §10.6.5): the accessors of this module answer for that turn.
+
+    The turn's response-metadata record is the executor's: a handler here
+    reads ``None`` from :func:`current_response_metadata`.
+    """
+    ctx = _ToolLoopContext.for_loop(None, call.room_id or None, room)
+    ctx.channel_id = call.channel_id
+    ctx.actor_id = actor_id
+    ctx.requester = requester
+    ctx.chain_depth = chain_depth
+    ctx.allowed_names = None if allowed_names is None else frozenset(allowed_names)
+    ctx.has_turn = False
+    with _installed(ctx, call):
+        yield
 
 
 def _check_one_room(room_id: str | None, room: Room | None, call: ToolCallContext | None) -> None:

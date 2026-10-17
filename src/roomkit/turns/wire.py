@@ -17,6 +17,15 @@ from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.event import RoomEvent
 from roomkit.models.task import Observation, Task
+from roomkit.providers.ai.base import AITool
+
+
+class OwnerTool(BaseModel):
+    """A tool the room owner serves a turn, as the request lists it (RFC §10.6.5)."""
+
+    tool: AITool
+    waits_by_design: bool = False
+    """Bounded by its own bound, not the channel's default call bound (RFC §21.6)."""
 
 
 class TurnRequest(BaseModel):
@@ -37,6 +46,9 @@ class TurnRequest(BaseModel):
     """The runtime's own blocks for the turn (a discussion's turn notes)."""
     in_place: bool = False
     """A discussion's turn: the event keeps its place in the history."""
+    owner_tools: list[OwnerTool] = Field(default_factory=list)
+    """The tools the owner serves for the channel in the room: the channel
+    declares them to its model, and a call to one is a ``tool_call``."""
     trace: dict[str, str] | None = None
 
 
@@ -122,6 +134,41 @@ class End(BaseModel):
     type: Literal["end"] = "end"
 
 
+# -- Calls: executor to owner, each answered once by its result --------------
+
+
+class CallContext(BaseModel):
+    """What a call's handler reads of the turn it serves (RFC §10.6.5, §21.4)."""
+
+    tool_call_id: str
+    room_id: str
+    channel_id: str
+    chain_depth: int = 0
+    actor_id: str | None = None
+    allowed_names: list[str] | None = None
+    """The names the turn admits; ``None`` before its toolset was resolved."""
+    requester: str | None = None
+
+
+class ToolCall(BaseModel):
+    """A call to a tool the owner serves: its handler runs there."""
+
+    type: Literal["tool_call"] = "tool_call"
+    call_id: str
+    """Unique on the link: two calls under one model id stay two calls."""
+    name: str
+    arguments: dict[str, Any]
+    """The arguments the call's gate left."""
+    context: CallContext
+
+
+class CallCancel(BaseModel):
+    """The executor withdraws a call: its turn was cut or its bound expired."""
+
+    type: Literal["call_cancel"] = "call_cancel"
+    call_id: str
+
+
 # -- Control: owner to executor -----------------------------------------------
 
 
@@ -139,11 +186,35 @@ class Cancel(BaseModel):
     reason: str
 
 
+class ToolResult(BaseModel):
+    """The owner's answer to one ``tool_call``."""
+
+    type: Literal["tool_result"] = "tool_result"
+    call_id: str
+    outcome: Literal["served", "failed", "unserved"]
+    """``unserved``: nothing on the owner serves the call (RFC §21.4)."""
+    result: dict[str, Any] | None = None
+    """The handler's answer as the model reads it, when served."""
+    error: ErrorRecord | None = None
+    structured_content: dict[str, Any] | None = None
+    """The structured copy the handler wrote on its call (RFC §21.4)."""
+
+
 Frame = Annotated[
-    Accepted | Heartbeat | Output | Item | ToolArgs | ToolEnded | Record | Error | End,
+    Accepted
+    | Heartbeat
+    | Output
+    | Item
+    | ToolArgs
+    | ToolEnded
+    | Record
+    | Error
+    | End
+    | ToolCall
+    | CallCancel,
     Field(discriminator="type"),
 ]
-Control = Annotated[Pull | Close | Cancel | Heartbeat, Field(discriminator="type")]
+Control = Annotated[Pull | Close | Cancel | Heartbeat | ToolResult, Field(discriminator="type")]
 
 
 class FrameEnvelope(BaseModel):

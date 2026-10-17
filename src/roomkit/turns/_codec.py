@@ -91,7 +91,7 @@ def encode_end(end: ToolCallEndMarker) -> dict[str, Any]:
         "tool_name": end.tool_name,
         "tool_id": end.tool_id,
         "arguments": end.arguments,
-        "result": _encode_result(end.result),
+        "result": encode_result(end.result),
         "status": end.status,
         "duration_ms": end.duration_ms,
         "error": end.error,
@@ -107,7 +107,7 @@ def decode_end(data: dict[str, Any]) -> ToolCallEndMarker:
         tool_name=data["tool_name"],
         tool_id=data["tool_id"],
         arguments=data["arguments"],
-        result=_decode_result(data["result"]),
+        result=decode_result(data["result"]),
         status=data["status"],
         duration_ms=data["duration_ms"],
         error=data["error"],
@@ -117,7 +117,7 @@ def decode_end(data: dict[str, Any]) -> ToolCallEndMarker:
     )
 
 
-def _encode_result(result: Any) -> dict[str, Any]:
+def encode_result(result: Any) -> dict[str, Any]:
     """A tool result: text, content parts, or a JSON value."""
     if (
         isinstance(result, list)
@@ -128,7 +128,7 @@ def _encode_result(result: Any) -> dict[str, Any]:
     return {"value": result}
 
 
-def _decode_result(data: dict[str, Any]) -> Any:
+def decode_result(data: dict[str, Any]) -> Any:
     if "parts" in data:
         return [
             AITextPart.model_validate(p)
@@ -201,9 +201,9 @@ def _one_record(exc: BaseException) -> ErrorRecord:
     )
 
 
-def rebuild_error(record: ErrorRecord) -> BaseException:
-    """One new exception per record, of the record's class when the owner
-    rebuilds it, with its causes chained."""
+def rebuild_error(record: ErrorRecord, *, where: str = "the turn's executor") -> BaseException:
+    """One new exception per record, of the record's class when this side
+    rebuilds it, with its causes chained; the note says *where* it was raised."""
     exc = _rebuild_one(record)
     current = exc
     for cause_record in record.causes:
@@ -211,7 +211,7 @@ def rebuild_error(record: ErrorRecord) -> BaseException:
         current.__cause__ = cause
         current = cause
     if record.traceback:
-        exc.add_note(f"Raised on the turn's executor:\n{record.traceback.rstrip()}")
+        exc.add_note(f"Raised on {where}:\n{record.traceback.rstrip()}")
     return exc
 
 

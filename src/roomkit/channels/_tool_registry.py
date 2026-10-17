@@ -14,17 +14,24 @@ The host's own tools stay the host's: its definitions and the handler it gave
 serve every name no entry serves. The registry reads their names only, to
 refuse an entry that would shadow one.
 
-Two more things orchestration installs live here rather than on the channel
-object: the runner that takes a room's turns in place of the agent's own (a
-loop, a supervisor's delegation passes), and the source a realtime channel
-reads a new session's configuration from (a pipeline's active agent). Nothing
-is ever written onto the shared channel for one room: a write made for one room
-would be read by every other room the channel serves.
+The tools orchestration sets up are the room owner's: the owner reads them
+here for each turn it submits (:meth:`ChannelRegistry.owner_entries`) and
+serves their calls (RFC §10.6.5). Inside a turn the turn backend runs, the
+channel declares and calls the ones the request lists instead
+(:class:`TurnOwnerTools`), so a channel an executor built elsewhere, whose
+registry holds none of them, runs the same turn.
+
+One more thing orchestration installs lives here rather than on the channel
+object: the source a realtime channel reads a new session's configuration from
+(a pipeline's active agent). Nothing is ever written onto the shared channel
+for one room: a write made for one room would be read by every other room the
+channel serves.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable
+import contextvars
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -192,6 +199,28 @@ def orchestration_tool(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class TurnOwnerTools:
+    """The tools the room owner serves one turn of *channel_id* in *room_id*,
+    as its request lists them, each served through the turn's link."""
+
+    channel_id: str
+    room_id: str
+    entries: Mapping[str, ToolEntry]
+
+
+_TURN_OWNER_TOOLS: contextvars.ContextVar[TurnOwnerTools | None] = contextvars.ContextVar(
+    "roomkit_turn_owner_tools", default=None
+)
+
+
+def set_turn_owner_tools(tools: TurnOwnerTools | None) -> None:
+    """Set the owner's tools of the turn the current context runs: an
+    executor sets them for every turn it runs, so a turn submitted from inside
+    another never reads that one's."""
+    _TURN_OWNER_TOOLS.set(tools)
+
+
 @dataclass(slots=True)
 class _Held:
     entry: ToolEntry
@@ -313,19 +342,57 @@ class ChannelRegistry:
                 self._rooms.pop(room_id, None)
 
     def lookup(self, name: str, room_id: str | None) -> ToolEntry | None:
-        """The entry serving *name* in *room_id* (the channel's, outside any room)."""
+        """The entry serving *name* in *room_id* (the channel's, outside any
+        room); in a turn the backend runs, the owner's tools are the turn's."""
+        turn = self._turn_owner_tools(room_id)
+        if turn is None:
+            return self._held_entry(name, room_id)
+        entry = self._held_entry(name, room_id)
+        if entry is not None and entry.source is not ToolSource.ORCHESTRATION:
+            return entry
+        return turn.entries.get(name)
+
+    def entries(self, room_id: str | None, *, source: ToolSource | None = None) -> list[ToolEntry]:
+        """The entries declared in *room_id*: the channel's, then the room's,
+        each in the order they were registered; in a turn the backend runs,
+        the owner's tools are the turn's, after the channel's own."""
+        found = self._held_entries(room_id)
+        turn = self._turn_owner_tools(room_id)
+        if turn is not None:
+            found = [e for e in found if e.source is not ToolSource.ORCHESTRATION]
+            found.extend(turn.entries.values())
+        return [e for e in found if source is None or e.source is source]
+
+    def owner_entries(self, room_id: str) -> list[ToolEntry]:
+        """The tools orchestration set up for *room_id*, which the room owner
+        lists in each turn's request and serves (RFC §10.6.5)."""
+        return [e for e in self._held_entries(room_id) if e.source is ToolSource.ORCHESTRATION]
+
+    def owner_lookup(self, name: str, room_id: str) -> ToolEntry | None:
+        """The tool orchestration set up under *name* for *room_id*, which
+        serves a turn's call on the owner."""
+        entry = self._held_entry(name, room_id)
+        return entry if entry is not None and entry.source is ToolSource.ORCHESTRATION else None
+
+    def _held_entry(self, name: str, room_id: str | None) -> ToolEntry | None:
         held = self._rooms.get(room_id, {}).get(name) if room_id is not None else None
         if held is None:
             held = self._channel.get(name)
         return held.entry if held is not None else None
 
-    def entries(self, room_id: str | None, *, source: ToolSource | None = None) -> list[ToolEntry]:
-        """The entries declared in *room_id*: the channel's, then the room's,
-        each in the order they were registered."""
+    def _held_entries(self, room_id: str | None) -> list[ToolEntry]:
         held = [*self._channel.values()]
         if room_id is not None:
             held.extend(self._rooms.get(room_id, {}).values())
-        return [h.entry for h in held if source is None or h.entry.source is source]
+        return [h.entry for h in held]
+
+    def _turn_owner_tools(self, room_id: str | None) -> TurnOwnerTools | None:
+        """The owner's tools of the turn running here, when it is this
+        channel's turn in *room_id*."""
+        turn = _TURN_OWNER_TOOLS.get()
+        if turn is None or turn.channel_id != self._channel_id or turn.room_id != room_id:
+            return None
+        return turn
 
     def names(
         self, room_id: str | None, where: Callable[[ToolTraits], bool] | None = None

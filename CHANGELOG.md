@@ -30,9 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   result JSON has no form for, an unknown stream item) fails the turn with a
   `TypeError` naming it; a record value JSON has no form for crosses as its
   text. A stream its reader drops, or a cancelled delivery set leaves unread,
-  is closed on the executor. Steering, human input and RoomKit's own tools
-  still run on the channel the kit holds; their move to the executor side
-  follows.
+  is closed on the executor. Steering and human input still run on the
+  channel the kit holds; their move across the backend follows.
 
 - `Discussion(rules=...)` gives each turn the host's rules for how the room
   works, in place of the default (RMK-806, RFC §19.7.5 rule 14). `{handle}` in
@@ -61,6 +60,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that raises names none for that event, and an instruction is read as it is.
 
 ### Changed
+
+- RoomKit's own tools are served by the room owner (RMK-811, RFC §10.6.5).
+  A turn's request lists the tools orchestration set up for the channel in
+  the room (`owner_tools`: a delegation's `delegate_task`,
+  `work_in_background`, a handoff, a supervisor's `delegate_workers` and
+  `delegate_to_<worker>`, a delegation's `submit_result`); the channel
+  declares them from the request, not from its registry, and a call to one
+  crosses as a `tool_call` the owner answers with a `tool_result`. The
+  handler runs on the owner, on a task of its own, in a copy of the context
+  of the owner's task reading the turn, under the call's context (room, its
+  `Room`, chain depth, actor, allowed names, requester, the call's id and
+  channel); its `structured_content` comes back on the call. The call keeps
+  the channel's bound on the executor, and a call past it or in a turn cut is
+  withdrawn (`call_cancel`): the owner cancels the handler. A handler's error
+  keeps its class (`ON_TOOL_CALL`'s `error_detail`), and a structured copy
+  JSON has no form for fails the call with a `TypeError`. On the owner a
+  handler reads no response-metadata record: the turn's is the executor's.
+  The owner still keeps these tools in the registry of the channel it holds;
+  they move beside the channel's declaration with the distributed backend.
 
 - **BREAKING — the hooks of a turn register on the turn executor**
   (RMK-810, RFC §10.6.6): `BEFORE_AI_GENERATION`, `ON_AI_THINKING`,

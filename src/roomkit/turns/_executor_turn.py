@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, issue_mark, retire_mark
 from roomkit.channels._strategy_turn import strategy_turn
+from roomkit.channels._tool_registry import set_turn_owner_tools
 from roomkit.core.exceptions import ChannelNotRegisteredError, TurnLinkError
 from roomkit.models.streaming import ThinkingDeltaMarker, ToolCallEndMarker, ToolCallStartMarker
 from roomkit.turns._codec import (
@@ -27,6 +28,7 @@ from roomkit.turns._codec import (
     error_record,
     record_payload,
 )
+from roomkit.turns._executor_calls import ExecutorCalls
 from roomkit.turns.base import heartbeat_tick
 from roomkit.turns.wire import (
     Accepted,
@@ -41,6 +43,7 @@ from roomkit.turns.wire import (
     Record,
     ToolArgs,
     ToolEnded,
+    ToolResult,
 )
 
 if TYPE_CHECKING:
@@ -120,6 +123,8 @@ class ExecutorTurn:
         self._open: dict[int, ToolCallStartMarker] = {}
         self._args_sent: dict[int, Any] = {}
         self._ends_sent: set[int] = set()
+        # The calls the turn makes to tools its owner serves (RFC §10.6.5).
+        self._calls = ExecutorCalls(self._request, self._send_call)
 
     async def run(self) -> None:
         """Run the turn to its end, which the owner is always told."""
@@ -258,6 +263,7 @@ class ExecutorTurn:
         """Run one piece of the turn's work as a task the owner can cancel,
         the code under it knowing it runs under this turn."""
         context.run(_enter_turn, self._request.turn_id)
+        context.run(set_turn_owner_tools, self._calls.owner_tools)
         self._work = asyncio.get_running_loop().create_task(
             work, context=context, name=f"roomkit-turn-{self._request.turn_id}-work"
         )
@@ -328,6 +334,12 @@ class ExecutorTurn:
                 raise _UncarriedError from exc
             await self._refuse(frame.type, exc)
 
+    async def _send_call(self, frame: Frame) -> int:
+        """Send a call of the turn to its owner; an owner lost answers none."""
+        if self._cut == "owner_lost":
+            raise TurnLinkError("owner_lost")
+        return await self._link.send(frame)
+
     async def _refuse(self, what: str, exc: Exception) -> NoReturn:
         """Tell the owner the turn's *what* cannot cross the backend, and end the turn."""
         logger.warning(
@@ -352,6 +364,8 @@ class ExecutorTurn:
                 self._closing = True
             elif isinstance(message, Cancel):
                 self._cut_turn(message.reason)
+            elif isinstance(message, ToolResult):
+                self._calls.resolve(message)
             self._wake.set()
 
     async def _beat(self) -> None:
@@ -379,6 +393,8 @@ class ExecutorTurn:
     def _cut_turn(self, reason: str) -> None:
         if self._cut is None:
             self._cut = reason
+        if reason in ("owner_lost", "frame_lost"):
+            self._calls.fail_all(TurnLinkError(reason))
         if not self._spared and self._work is not None and not self._work.done():
             self._work.cancel()
         self._wake.set()
