@@ -88,6 +88,9 @@ class TurnExecutor:
             self._hooks._telemetry = telemetry
         # A hook's timeout (RFC §8.2) is emitted where the turn's events go.
         self._hooks._framework_emitter = self._emit_framework_event
+        # The owner in this process sets the rooms' hooks itself (its own
+        # executor), so a request's copy never overwrites them.
+        self._room_hooks_from_owner = False
         self.store = store
         """The shared store the executor was given, ``None`` for none."""
         env = StoreWiringEnv(store, media_resolver=media_resolver, attached_media=attached_media)
@@ -263,7 +266,9 @@ class TurnExecutor:
                 "no_executor",
                 f"Executor {self.executor_id} defines no room hook among {request.room_hooks}",
             )
-        self._hooks.use_room_hooks(request.room_id, request.room_hooks)
+        if not self._room_hooks_from_owner:
+            # Between the room's turns, its hooks are those its last turn named.
+            self._hooks.use_room_hooks(request.room_id, request.room_hooks)
         channel = await self._channels.get(request.channel_id)
         if channel is not None:
             await self._rooms.prepare(channel, request, stale=stale)

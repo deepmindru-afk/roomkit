@@ -22,6 +22,7 @@ from roomkit.channels._strategy_turn import strategy_turn
 from roomkit.channels._tool_registry import set_turn_owner_tools
 from roomkit.core._turn_scope import enter_turn
 from roomkit.core.exceptions import ChannelNotRegisteredError, TurnLinkError
+from roomkit.core.hooks import set_turn_room_hooks
 from roomkit.models.streaming import ThinkingDeltaMarker, ToolCallEndMarker, ToolCallStartMarker
 from roomkit.telemetry.context import get_current_span, set_current_span
 from roomkit.tools._turn_inputs import set_turn_inputs
@@ -291,6 +292,7 @@ class ExecutorTurn:
         context.run(set_turn_host, self._host)
         context.run(set_turn_inputs, self._inputs)
         context.run(set_turn_outlet, self._outlet)
+        context.run(set_turn_room_hooks, self._request.room_id, self._request.room_hooks)
         trace = self._request.trace or {}
         if trace.get("span_id") and context.run(get_current_span) is None:
             # A context of its own: the turn continues the owner's span.

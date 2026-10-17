@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass, field
@@ -167,6 +168,19 @@ class SyncPipelineResult:
     failed_closed: bool = False
     """Whether a hook's failure (a raise, a timeout, an unusable result)
     blocked, as opposed to a hook's deliberate BLOCK (RFC §9.3)."""
+
+
+_TURN_ROOM_HOOKS: contextvars.ContextVar[tuple[str, tuple[str, ...]] | None] = (
+    contextvars.ContextVar("roomkit_turn_room_hooks", default=None)
+)
+"""The room of the turn the current code runs under and the names of the
+room hooks its request carries (RFC §10.6.6)."""
+
+
+def set_turn_room_hooks(room_id: str, names: Iterable[str]) -> None:
+    """Scope the room hooks of the current context to a turn's request: its
+    hooks run those names whatever the room's set becomes during it."""
+    _TURN_ROOM_HOOKS.set((room_id, tuple(names)))
 
 
 class HookEngine:
@@ -350,6 +364,15 @@ class HookEngine:
         self._room_hooks.setdefault(room_id, []).append(hook)
         self._trigger_index.add(hook.trigger)
 
+    def _hooks_of_room(self, room_id: str) -> list[HookRegistration]:
+        """*room_id*'s hooks: inside a turn of the room, those its request
+        named (RFC §10.6.6), whatever the room's set became meanwhile; else
+        the room's set."""
+        turn = _TURN_ROOM_HOOKS.get()
+        if self._turns and turn is not None and turn[0] == room_id:
+            return [hook for name in turn[1] for hook in self._named_room_hooks.get(name, ())]
+        return self._room_hooks.get(room_id, [])
+
     def define_room_hook(self, hook: HookRegistration) -> None:
         """Define a turn executor's room hook under its name: it applies to a
         room whose turn's request names it (RFC §10.6.6). A name carries a
@@ -468,7 +491,7 @@ class HookEngine:
         ]
         room_hooks = [
             h
-            for h in self._room_hooks.get(room_id, [])
+            for h in self._hooks_of_room(room_id)
             if h.trigger == trigger and (execution is None or h.execution == execution)
         ]
         all_hooks.extend(room_hooks)

@@ -580,3 +580,30 @@ async def test_a_view_that_cannot_be_read_costs_the_turn_its_view_only() -> None
     agent._room_vision_loader = failing
     context = RoomContext(room=Room(id="r1"))
     assert await agent._vision_notes(context, standalone=False) == []
+
+
+async def test_a_turn_runs_the_room_hooks_its_request_named_and_a_disable_holds() -> None:
+    """A turn built before a disable runs the hooks its request named; the
+    room's set, which doors outside a turn read, stays the owner's."""
+    kit = await _kit()
+    seen: list[str] = []
+
+    @kit.turn_executor.room_hook("audit", HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)
+    async def audit(event: Any, context: Any) -> None:
+        seen.append("audit")
+
+    kit.enable_room_hook("r1", "audit")
+    executor = kit.turn_executor
+    take = executor.take
+
+    def disable_once_taken(link: Any) -> None:
+        take(link)
+        kit.disable_room_hook("r1", "audit")
+
+    executor.take = disable_once_taken  # ty: ignore[invalid-assignment]
+    await _say(kit)
+    await _settle()
+
+    assert seen == ["audit"]  # the turn ran what its request named
+    assert executor.hooks.room_hook_names("r1") == []  # the room's set stays off
+    await kit.close()

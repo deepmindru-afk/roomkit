@@ -43,7 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only an executor that defines every name takes it (one given a turn
   anyway fails it with `no_executor`). Enabling or disabling applies to the
   kit's own executor at once, so realtime voice and conference tool calls in
-  the room run the room's hooks too. Defining a name on a trigger again
+  the room run the room's hooks too; a turn runs the hooks its request
+  named, scoped to the turn, never overwriting the room's set with its copy
+  (RMK-821 security review). Defining a name on a trigger again
   replaces it. A turn executor's engine refuses a room hook by callable.
 
 - `RoomKit.channel_call(channel_id, room_id, verb, *, organization_id=None,

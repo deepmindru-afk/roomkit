@@ -108,6 +108,9 @@ class TurnClient:
         self._host = host
         self._events = events
         self._serving = executor is None
+        if executor is not None:
+            # Its rooms' hooks follow this client's names, at once (RFC §10.6.6).
+            executor._room_hooks_from_owner = True
         self._open: weakref.WeakSet[OwnerTurn] = weakref.WeakSet()
         # The turns this client started and that still run, in start order:
         # what steering resolves its targets from (RFC §10.6.8).
