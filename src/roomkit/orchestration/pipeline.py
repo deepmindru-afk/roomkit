@@ -13,8 +13,10 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from roomkit.channels.agent import Agent
 from roomkit.core.task_utils import hold_task
 from roomkit.models.enums import EventType, HookExecution, HookTrigger
+from roomkit.orchestration._agents import held
 from roomkit.orchestration._realtime_pipeline import (
     RealtimePipeline,
     refuse_agents_with_unserved,
@@ -23,8 +25,10 @@ from roomkit.orchestration.handoff import HandoffHandler, build_handoff_tool, se
 from roomkit.orchestration.router import ConversationRouter, RoutingConditions, RoutingRule
 
 if TYPE_CHECKING:
-    from roomkit.channels.agent import Agent
+    from collections.abc import Sequence
+
     from roomkit.core.framework import RoomKit
+    from roomkit.orchestration._agents import HeldAgent
 
 logger = logging.getLogger("roomkit.orchestration")
 
@@ -128,7 +132,7 @@ class ConversationPipeline:
     def install(
         self,
         kit: RoomKit,
-        agents: list[Agent],
+        agents: Sequence[Agent | str],
         *,
         agent_aliases: dict[str, str] | None = None,
         hook_priority: int = -100,
@@ -142,7 +146,10 @@ class ConversationPipeline:
         Creates a router from this pipeline, registers it as a
         ``BEFORE_BROADCAST`` sync hook, builds a ``HandoffHandler``
         with the pipeline's phase map and transition constraints,
-        and calls ``setup_handoff`` on every agent.
+        and calls ``setup_handoff`` on every agent, each live or named by the
+        id of one the kit holds, by its declaration alone included (RFC
+        §10.6.2). A realtime voice channel runs each agent's prompt and tools
+        in its session: it takes live agents only.
 
         When *greet_on_handoff* is ``True``, two extra hooks are
         registered:
@@ -157,6 +164,7 @@ class ConversationPipeline:
         """
         if greet_on_handoff and not voice_channel_id:
             raise ValueError("greet_on_handoff=True requires voice_channel_id")
+        held_agents = [held(kit, a) for a in agents]
 
         # Detect speech-to-speech mode
         is_realtime = False
@@ -164,9 +172,16 @@ class ConversationPipeline:
             from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 
             is_realtime = isinstance(kit.channels.get(voice_channel_id), RealtimeVoiceChannel)
+        live = [a for a in held_agents if isinstance(a, Agent)]
         if is_realtime:
             # Refused before anything is installed.
-            refuse_agents_with_unserved(agents, voice_channel_id)  # ty: ignore[invalid-argument-type]
+            if len(live) != len(held_agents):
+                raise ValueError(
+                    "A realtime voice channel runs each agent's prompt and tools in its "
+                    "session: give the pipeline the agents themselves, not ids the kit "
+                    "holds by declaration"
+                )
+            refuse_agents_with_unserved(live, voice_channel_id)  # ty: ignore[invalid-argument-type]
 
         router = self.to_router()
 
@@ -182,30 +197,30 @@ class ConversationPipeline:
             agent_aliases=agent_aliases,
             phase_map=self.get_phase_map(),
             allowed_transitions=self.get_allowed_transitions(),
-            known_agents=({a.channel_id for a in agents} if is_realtime else None),
+            known_agents=({a.channel_id for a in held_agents} if is_realtime else None),
             event_channel_id=(voice_channel_id if is_realtime else None),
         )
 
         # Populate agent metadata from Agent fields
         handler.greeting_map = {
-            a.channel_id: g for a in agents if (g := getattr(a, "greeting", None)) is not None
+            a.channel_id: g for a in held_agents if (g := getattr(a, "greeting", None)) is not None
         }
-        handler.agents = {a.channel_id: a for a in agents}
+        handler.agents = {a.channel_id: a for a in held_agents}
 
         if is_realtime:
             self._wire_realtime(
                 kit,
-                agents,
+                live,
                 handler,
                 voice_channel_id,  # ty: ignore[invalid-argument-type]
                 greet_on_handoff=greet_on_handoff,
                 greeting_prompt=greeting_prompt,
             )
         else:
-            self._wire_handoff(agents, handler)
+            self._wire_handoff(held_agents, handler)
 
             if voice_channel_id:
-                self._wire_voice_map(kit, agents, voice_channel_id)
+                self._wire_voice_map(kit, held_agents, voice_channel_id)
 
             if greet_on_handoff:
                 self._register_greet_hooks(
@@ -220,7 +235,7 @@ class ConversationPipeline:
 
     def _wire_handoff(
         self,
-        agents: list[Agent],
+        agents: Sequence[HeldAgent],
         handler: HandoffHandler,
     ) -> None:
         """Set up per-agent handoff tools with constrained target enums.
@@ -229,7 +244,7 @@ class ConversationPipeline:
         only the reachable agent IDs (with descriptions derived from
         ``Agent.description`` or ``PipelineStage.description``).
         """
-        agent_map: dict[str, Agent] = {a.channel_id: a for a in agents}
+        agent_map: dict[str, HeldAgent] = {a.channel_id: a for a in agents}
         stage_by_agent: dict[str, PipelineStage] = {s.agent_id: s for s in self._stages}
 
         for agent in agents:
@@ -261,7 +276,7 @@ class ConversationPipeline:
     def _wire_voice_map(
         self,
         kit: RoomKit,
-        agents: list[Agent],
+        agents: Sequence[HeldAgent],
         voice_channel_id: str,
     ) -> None:
         """Auto-wire voice map entries from Agent.voice fields."""

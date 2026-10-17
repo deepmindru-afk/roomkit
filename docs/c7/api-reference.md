@@ -222,7 +222,7 @@ RoomKit exports **344 symbols** from `roomkit`. Providers and voice types import
 | `HandoffRequest` | Parsed from an agent's handoff tool call arguments |
 | `HandoffResult` | Result returned to the calling agent after a handoff |
 | `HANDOFF_TOOL` | AITool definition for transferring a conversation to another agent |
-| `setup_handoff` | Wires handoff into an AIChannel's tool chain |
+| `setup_handoff` | Wires handoff into an AIChannel's tool chain; takes the agent or the id of one the kit holds |
 
 ### Memory, Skills & Sandbox
 
@@ -373,7 +373,7 @@ kit = RoomKit(
 | Method | Description |
 |--------|-------------|
 | `delegate(room_id, agent_id, task, ...)` | Delegate to background agent |
-| `setup_background(agent, worker?, hand_back?)` | Give an agent the `work_in_background` tool: its long work runs as a task (RFC §23.4) |
+| `setup_background(agent, worker?, hand_back?)` | Give an agent (or the id of one the kit holds) the `work_in_background` tool: its long work runs as a task (RFC §23.4) |
 | `setup_task_tools(agent)` | Give an agent `task_status` and `cancel_task`, served by the room's owner: the room's own tasks only (RFC §23.4) |
 | `await start_task(room_id, agent_id, task, hand_back?)` | Start an agent's background task from the host, for any agent of the room |
 | `send_greeting(room_id, channel_id?, greeting?, ...)` | Send greeting |

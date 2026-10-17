@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from roomkit.channels.declared import held_agent, id_of
 from roomkit.core.hooks import HookRegistration
 from roomkit.models.enums import HookExecution, HookTrigger
 from roomkit.orchestration.base import Orchestration
@@ -25,6 +26,8 @@ from roomkit.orchestration.state import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
 
@@ -51,26 +54,29 @@ class Swarm(Orchestration):
 
     def __init__(
         self,
-        agents: list[Agent],
+        agents: Sequence[Agent | str],
         entry: str | None = None,
     ) -> None:
         """Initialise the swarm strategy.
 
         Args:
-            agents: All participating agents.
+            agents: All participating agents, each live or named by the
+                id of one the kit holds, by its declaration alone included
+                (RFC §10.6.2).
             entry: Channel ID of the entry-point agent. Defaults to
                 the first agent's channel ID.
         """
         self._agents = list(agents)
-        self._entry = entry or (agents[0].channel_id if agents else None)
+        self._entry = entry or (id_of(agents[0]) if agents else None)
 
-    def agents(self) -> list[Agent]:
+    def agents(self) -> list[Agent | str]:
         """Return all swarm agents."""
         return list(self._agents)
 
     async def install(self, kit: RoomKit, room_id: str) -> None:
         """Wire swarm routing and bidirectional handoff into the room."""
         kit.claim_room_strategy(room_id, self)
+        agents = [held_agent(kit, a) for a in self._agents]
         router = ConversationRouter(
             default_agent_id=self._entry,
         )
@@ -80,11 +86,9 @@ class Swarm(Orchestration):
             router=router,
         )
         handler.greeting_map = {
-            a.channel_id: g
-            for a in self._agents
-            if (g := getattr(a, "greeting", None)) is not None
+            a.channel_id: g for a in agents if (g := getattr(a, "greeting", None)) is not None
         }
-        handler.agents = {a.channel_id: a for a in self._agents}
+        handler.agents = {a.channel_id: a for a in agents}
 
         # Install router as room-scoped BEFORE_BROADCAST hook
         kit.hook_engine.add_room_hook(
@@ -101,10 +105,10 @@ class Swarm(Orchestration):
         # Wire bidirectional handoff — each agent can reach all others, in
         # this room, with this install's handler (RFC §19.7)
         handoffs = []
-        for agent in self._agents:
+        for agent in agents:
             targets = [
                 (a.channel_id, getattr(a, "description", None))
-                for a in self._agents
+                for a in agents
                 if a.channel_id != agent.channel_id
             ]
             tool = build_handoff_tool(targets)

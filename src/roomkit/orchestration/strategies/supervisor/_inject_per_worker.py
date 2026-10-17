@@ -34,16 +34,16 @@ from roomkit.providers.ai.base import AITool
 from roomkit.tasks.handback import CALLER_HANDS_BACK, bounded, result_text
 
 if TYPE_CHECKING:
-    from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
+    from roomkit.orchestration._agents import HeldAgent
     from roomkit.tasks.models import DelegatedTask
 
 
 class _PerWorkerToolMixin:
     """Inject per-worker ``delegate_to_<id>`` tools (the AI decides)."""
 
-    _supervisor: Agent
-    _workers: list[Agent]
+    _supervisor: HeldAgent
+    _workers: list[HeldAgent]
     _wait_for_result: bool
     _share_channels: list[str]
     _task_timeout: float
@@ -80,7 +80,7 @@ class _PerWorkerToolServer:
     def __init__(
         self,
         kit: RoomKit,
-        supervisor: Agent,
+        supervisor: HeldAgent,
         tool_to_worker: dict[str, str],
         *,
         wait: bool,
@@ -254,7 +254,7 @@ def _dispatched(worker_id: str, task_id: str) -> str:
     )
 
 
-def _worker_tool(worker: Agent) -> AITool:
+def _worker_tool(worker: HeldAgent) -> AITool:
     """The ``delegate_to_<id>`` declaration for one worker."""
     desc = getattr(worker, "description", None) or f"Worker agent {worker.channel_id}"
     return AITool(

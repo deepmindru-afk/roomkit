@@ -38,8 +38,8 @@ from roomkit.tasks.status import TASK_STATUS_TOOL
 from roomkit.tools.context import current_tool_allowed_names, current_tool_requester
 
 if TYPE_CHECKING:
-    from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
+    from roomkit.orchestration._agents import HeldAgent
 
 
 def _follow_hint(what: str) -> str:
@@ -53,8 +53,8 @@ def _follow_hint(what: str) -> str:
 class _StrategyToolMixin:
     """Inject the single ``delegate_workers`` tool (deterministic execution)."""
 
-    _supervisor: Agent
-    _workers: list[Agent]
+    _supervisor: HeldAgent
+    _workers: list[HeldAgent]
     _strategy: WorkerStrategy | None
     _share_channels: list[str]
     _async_delivery: bool
@@ -131,8 +131,8 @@ class _StrategyToolServer:
     def __init__(
         self,
         kit: RoomKit,
-        supervisor: Agent,
-        workers: list[Agent],
+        supervisor: HeldAgent,
+        workers: list[HeldAgent],
         strategy: WorkerStrategy | None,
         *,
         share_channels: list[str],

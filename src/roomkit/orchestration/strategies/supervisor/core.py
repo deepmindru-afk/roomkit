@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from roomkit.channels.declared import register_strategy_agents
+from roomkit.channels.declared import named_agent, register_strategy_agents
 from roomkit.core.hooks import HookRegistration
 from roomkit.models.enums import HookExecution, HookTrigger
+from roomkit.orchestration._agents import held
 from roomkit.orchestration.base import Orchestration
 from roomkit.orchestration.router import ConversationRouter
 from roomkit.orchestration.state import ConversationState, save_conversation_state
@@ -31,8 +32,11 @@ from roomkit.orchestration.strategies.supervisor._install_auto import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
+    from roomkit.orchestration._agents import HeldAgent
 
 
 class Supervisor(
@@ -79,8 +83,8 @@ class Supervisor(
 
     def __init__(
         self,
-        supervisor: Agent,
-        workers: list[Agent],
+        supervisor: Agent | str,
+        workers: Sequence[Agent | str],
         *,
         strategy: WorkerStrategy | str | None = None,
         auto_delegate: bool = False,
@@ -99,6 +103,9 @@ class Supervisor(
             supervisor: The agent that handles user interaction and
                 delegates tasks.
             workers: Agents that run delegated tasks in child rooms.
+                The supervisor and each worker may be named by the id of an
+                agent the kit holds, by its declaration alone included (RFC
+                §10.6.2).
             strategy: Deterministic execution pattern for workers.
 
                 - ``"sequential"``: workers run in order, each receiving
@@ -174,8 +181,10 @@ class Supervisor(
                 up to this many times. On exhaustion the step is
                 delivered flagged as unvalidated rather than looping.
         """
-        self._supervisor = supervisor
-        self._workers = list(workers)
+        # An agent named by its id is the kit's: the install reads it there.
+        self._named = [supervisor, *workers]
+        self._supervisor: HeldAgent = named_agent(supervisor)
+        self._workers: list[HeldAgent] = [named_agent(w) for w in workers]
         self._strategy = WorkerStrategy(strategy) if strategy else None
         self._auto_delegate = auto_delegate
         self._async_delivery = async_delivery
@@ -191,7 +200,7 @@ class Supervisor(
             msg = "auto_delegate=True requires strategy to be set"
             raise ValueError(msg)
 
-    def agents(self) -> list[Agent]:
+    def agents(self) -> list[Agent | str]:
         """Return agents to attach to the room.
 
         ``async_delivery`` removes the supervisor from the room ONLY
@@ -203,7 +212,7 @@ class Supervisor(
         """
         if self._async_delivery and self._auto_delegate:
             return []
-        return [self._supervisor]
+        return [self._named[0]]
 
     def _register_agents(self, kit: RoomKit, *, supervisor_in_room: bool) -> None:
         """Register the workers on the kit, not attached to the room, and a
@@ -216,6 +225,8 @@ class Supervisor(
     async def install(self, kit: RoomKit, room_id: str) -> None:
         """Wire supervisor routing and delegation tools."""
         kit.claim_room_strategy(room_id, self)
+        supervisor, *workers = (held(kit, a) for a in self._named)
+        self._supervisor, self._workers = supervisor, workers
         # Router only needed when the supervisor agent is in the room.
         # In voice async_delivery mode (auto_delegate=True), the voice
         # channel owns routing and the supervisor is not attached.

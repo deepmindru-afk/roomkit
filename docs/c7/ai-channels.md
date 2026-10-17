@@ -159,11 +159,22 @@ await kit.attach_channel(room_id, "meteo")  # an intelligence binding
 - `agent.declaration()` gives any channel's declaration; registering it reads
   on the kit as registering the agent does. An intelligence channel whose
   declaration is invalid (an empty id, a negative window) is never registered.
+- Strategies and the owner's tools take a declared agent by its id:
+  `Supervisor(supervisor="desk", workers=["meteo"])`, `Loop(agent="writer",
+  reviewer="critic")`, `Swarm(agents=[...])`, `Pipeline(agents=[...])`,
+  `Discussion(agents=[...])`, `ConversationRouter.install(kit, [...])`,
+  `ConversationPipeline.install(kit, [...])`, `setup_handoff("ana", handler)`,
+  `setup_delegation("ana", handler)`, `kit.setup_background("ana")`,
+  `kit.setup_task_tools("ana")`. The kit keeps the tools beside the
+  declaration and lists them in each turn; a strategy reads the agent's
+  identity (`name`, `role`, `description`, `purpose`, `voice`, `greeting`)
+  from it. An id the kit does not hold raises `ChannelNotRegisteredError`.
 - Refused: a declaration that is not an intelligence channel's, a binding of
-  it with another category, and a strategy (Supervisor, Loop, Discussion,
-  Pipeline, Swarm) given a live agent whose id the kit holds by declaration.
+  it with another category, a strategy given a live agent whose id the kit
+  holds by declaration (give it the id), and a realtime `ConversationPipeline`
+  given a declared agent (its session runs the agents' prompts and tools).
 
-Runnable: `examples/declared_agent.py`.
+Runnable: `examples/declared_agent.py`, `examples/declared_supervisor.py`.
 
 ## Steering a Running Turn
 

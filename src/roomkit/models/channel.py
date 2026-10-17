@@ -102,6 +102,10 @@ class AgentIdentity(BaseModel):
     scope: str | None = None
     greeting: str | None = None
     language: str | None = None
+    purpose: str | None = None
+    """What a supervisor's roster says of it as a worker (RFC §19.7.3)."""
+    voice: str | None = None
+    """Its TTS voice (RFC §19.1)."""
     auto_greet: bool = True
     """Whether the owner sends :attr:`greeting` when a session starts."""
 

@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Strategies and the owner's tools take an agent the kit holds by its
+  declaration alone, named by its channel id (RMK-826, RFC §10.6.2):
+  `Supervisor`, `Loop`, `Swarm`, `Pipeline`, `Discussion`,
+  `ConversationRouter.install`, `ConversationPipeline.install`,
+  `setup_handoff`, `setup_delegation`, `kit.setup_background` and
+  `kit.setup_task_tools` take `Agent | str`. An id is read on the kit at the
+  install, its tools kept beside its declaration and listed in its turns on
+  the executor that builds it; an id the kit does not hold raises
+  `ChannelNotRegisteredError`. `AgentIdentity` carries `purpose` and `voice`,
+  and a `DeclaredChannel` reads its identity as an `Agent` does (`name`,
+  `role`, `description`, `scope`, `greeting`, `language`, `purpose`, `voice`,
+  `thinks_while_listening`). A realtime `ConversationPipeline` takes live
+  agents only. Example: `examples/declared_supervisor.py`.
+
 - The kit holds an agent by its declaration alone (RMK-822, RFC §10.6.2).
   `kit.register_channel(ChannelDeclaration(channel_id=..., identity=
   AgentIdentity(...), capabilities=..., recent_events_window=...))` registers

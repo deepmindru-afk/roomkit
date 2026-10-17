@@ -17,10 +17,10 @@ from roomkit.tasks.handback import worker_block, workers_text
 from roomkit.tools.fence import fence
 
 if TYPE_CHECKING:
-    from roomkit.channels.agent import Agent
+    from roomkit.orchestration._agents import HeldAgent
 
 
-def _worker_label(worker: Agent) -> str:
+def _worker_label(worker: HeldAgent) -> str:
     """Human-readable label for a worker, used to attribute its output when
     composing the next worker's input and the supervisor's review brief."""
     return (
@@ -28,7 +28,7 @@ def _worker_label(worker: Agent) -> str:
     )
 
 
-def _worker_roles_csv(workers: list[Agent]) -> str:
+def _worker_roles_csv(workers: list[HeldAgent]) -> str:
     """Comma-separated worker roles (falling back to ``channel_id``), for the
     ``delegate_workers`` tool description listing the team."""
     return ", ".join(getattr(w, "role", None) or w.channel_id for w in workers)
@@ -37,7 +37,7 @@ def _worker_roles_csv(workers: list[Agent]) -> str:
 _PROFILE_CAP = 600
 
 
-def _worker_profile(worker: Agent) -> str:
+def _worker_profile(worker: HeldAgent) -> str:
     """Role + the agent's own configured instructions, so the supervisor frames
     tasks knowing each worker's real capabilities (e.g. that the report agent
     publishes HTML to the website) rather than just a label. Prefers ``purpose``
@@ -147,7 +147,7 @@ def _present_worker_results(worker_results: list[dict[str, Any]]) -> str:
     )
 
 
-def _format_supervisor_review(task_desc: str, result_json: str, workers: list[Agent]) -> str:
+def _format_supervisor_review(task_desc: str, result_json: str, workers: list[HeldAgent]) -> str:
     """Re-present the workers' combined results to the supervisor as a review
     brief: the original request, then each worker's labeled output, with an
     instruction to verify the work and deliver one final answer (or flag what's

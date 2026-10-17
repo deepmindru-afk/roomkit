@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import orchestration_tool
+from roomkit.channels.declared import held_agent, id_of
 from roomkit.orchestration._call_room import in_call_room
 from roomkit.providers.ai.base import AITool
 from roomkit.tasks.background import (
@@ -30,13 +31,15 @@ class BackgroundMixin:
     _owner_tools: OwnerToolStore
 
     def setup_background(
-        self, agent: AIChannel, *, worker: str | None = None, hand_back: str = "relay"
+        self, agent: AIChannel | str, *, worker: str | None = None, hand_back: str = "relay"
     ) -> None:
         """Give *agent* the ``work_in_background`` tool (RFC §23.4): it starts
         long work as a task and ends its turn, the work running apart.
 
         Args:
-            agent: The AI channel given the tool, in every room it serves.
+            agent: The AI channel given the tool, in every room it serves, or
+                the id of one the kit holds, by its declaration alone included
+                (RFC §10.6.2).
             worker: The channel that does its tasks (another agent, an
                 external agent over ACP); the agent itself when None.
             hand_back: How a task's result reaches the room: ``"relay"``, the
@@ -46,20 +49,23 @@ class BackgroundMixin:
         Raises:
             ValueError: An unknown *hand_back*.
             RuntimeError: The tool is already set up on the agent.
+            ChannelNotRegisteredError: An id names no channel of the kit.
         """
         setup = BackgroundSetup(worker=worker, hand_back=hand_back)
-        registry = self._owner_tools.of(agent.channel_id)
+        held_agent(self, agent)  # ty: ignore[invalid-argument-type]
+        channel_id = id_of(agent)
+        registry = self._owner_tools.of(channel_id)
         if registry.lookup(BACKGROUND_TOOL, None) is not None:
-            msg = f"setup_background() already called for channel '{agent.channel_id}'"
+            msg = f"setup_background() already called for channel '{channel_id}'"
             raise RuntimeError(msg)
-        serve = background_tool_server(self, agent.channel_id)  # ty: ignore[invalid-argument-type]
+        serve = background_tool_server(self, channel_id)  # ty: ignore[invalid-argument-type]
         registry.register(
             orchestration_tool(BACKGROUND_TOOL_DEF, in_call_room(BACKGROUND_TOOL, serve)),
             owner=self,
         )
-        self._background_setups[agent.channel_id] = setup
+        self._background_setups[channel_id] = setup
 
-    def setup_task_tools(self, agent: AIChannel) -> None:
+    def setup_task_tools(self, agent: AIChannel | str) -> None:
         """Give *agent* ``task_status`` and ``cancel_task`` (RFC §23.4), served
         by the room's owner wherever the agent's turns run (RFC §10.6.5): the
         tasks of the room of the call, and a cancel of one of them, never
@@ -71,10 +77,16 @@ class BackgroundMixin:
             RuntimeError: The tools are already set up on the agent.
             ToolNameCollisionError: The agent already serves a tool of one of
                 those names (its own ``CancelTaskTool``, say): neither is set up.
+            ChannelNotRegisteredError: An id names no channel of the kit.
+
+        *agent* may be the id of a channel the kit holds, by its declaration
+        alone included (RFC §10.6.2).
         """
-        registry = self._owner_tools.of(agent.channel_id)
+        held_agent(self, agent)  # ty: ignore[invalid-argument-type]
+        channel_id = id_of(agent)
+        registry = self._owner_tools.of(channel_id)
         if registry.lookup(TASK_STATUS_TOOL, None) is not None:
-            msg = f"setup_task_tools() already called for channel '{agent.channel_id}'"
+            msg = f"setup_task_tools() already called for channel '{channel_id}'"
             raise RuntimeError(msg)
         entries = []
         for tool in (TaskStatusTool(self), CancelTaskTool(self)):  # ty: ignore[invalid-argument-type]

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import orchestration_tool, schema_tool
-from roomkit.channels.declared import register_strategy_agents
+from roomkit.channels.declared import named_agent, register_strategy_agents
 from roomkit.core._failure_log import mark_reported
 from roomkit.core.exceptions import RoomKitError
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -23,6 +23,7 @@ from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType, TaskStatus
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.response_metadata import TURNS_KEY, ResponseMetadata
+from roomkit.orchestration._agents import held
 from roomkit.orchestration._background import (
     BackgroundRun,
     background_failure_text,
@@ -51,9 +52,12 @@ from roomkit.tasks.handback import bounded, result_text, worker_block
 from roomkit.tasks.models import task_cut_reason, task_work
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from roomkit.channels.agent import Agent
     from roomkit.channels.ai import ToolResult
     from roomkit.core.framework import RoomKit
+    from roomkit.orchestration._agents import HeldAgent
     from roomkit.tasks.models import DelegatedTaskResult
 
 logger = logging.getLogger("roomkit.orchestration.strategies.loop")
@@ -95,9 +99,9 @@ class Loop(Orchestration):
 
     def __init__(
         self,
-        agent: Agent,
-        reviewers: list[Agent] | None = None,
-        reviewer: Agent | None = None,
+        agent: Agent | str,
+        reviewers: Sequence[Agent | str] | None = None,
+        reviewer: Agent | str | None = None,
         max_iterations: int = 3,
         *,
         strategy: WorkerStrategy | str | None = None,
@@ -106,7 +110,9 @@ class Loop(Orchestration):
         """Initialise the loop strategy.
 
         Args:
-            agent: The producing agent.
+            agent: The producing agent. It and each reviewer may be named
+                by the id of an agent the kit holds, by its declaration alone
+                included (RFC §10.6.2).
             reviewers: List of reviewing agents. For multiple reviewers,
                 use *strategy* to control execution order.
             reviewer: Single reviewer (convenience, same as
@@ -126,33 +132,36 @@ class Loop(Orchestration):
                 started it when ready, as a background delegation's result
                 is. The conversation continues uninterrupted.
         """
-        self._agent = agent
-
         # Accept either reviewers=[...] or reviewer=single
         if reviewers and reviewer:
             msg = "Provide either 'reviewers' or 'reviewer', not both"
             raise ValueError(msg)
         if reviewer:
-            self._reviewers = [reviewer]
+            named = [reviewer]
         elif reviewers:
-            self._reviewers = list(reviewers)
+            named = list(reviewers)
         else:
             msg = "At least one reviewer is required"
             raise ValueError(msg)
+        # An agent named by its id is the kit's: the install reads it there.
+        self._named = [agent, *named]
+        self._agent: HeldAgent = named_agent(agent)
+        self._reviewers: list[HeldAgent] = [named_agent(r) for r in named]
 
         self._max_iterations = max_iterations
         self._strategy = WorkerStrategy(strategy) if strategy else None
         self._async_delivery = async_delivery
 
-    def agents(self) -> list[Agent]:
+    def agents(self) -> list[Agent | str]:
         """Return the producer — it presents results to the user."""
         if self._async_delivery:
             return []
-        return [self._agent]
+        return [self._named[0]]
 
     async def install(self, kit: RoomKit, room_id: str) -> None:
         """Wire the framework-driven loop."""
         kit.claim_room_strategy(room_id, self)
+        self._agent, *self._reviewers = (held(kit, a) for a in self._named)
         producer = self._agent
         reviewers = self._reviewers
         max_iter = self._max_iterations
@@ -215,8 +224,8 @@ class _LoopTurns:
     def __init__(
         self,
         kit: RoomKit,
-        producer: Agent,
-        reviewers: list[Agent],
+        producer: HeldAgent,
+        reviewers: list[HeldAgent],
         strategy: WorkerStrategy | None,
         max_iterations: int,
     ) -> None:
@@ -252,7 +261,7 @@ class _LoopTurns:
         )
 
 
-def _loop_tool(reviewers: list[Agent]) -> dict[str, Any]:
+def _loop_tool(reviewers: list[HeldAgent]) -> dict[str, Any]:
     """The ``delegate_loop`` declaration a voice channel carries."""
     reviewer_roles = ", ".join(getattr(r, "role", None) or r.channel_id for r in reviewers)
     return {
@@ -283,8 +292,8 @@ class _VoiceLoopServer:
     def __init__(
         self,
         kit: RoomKit,
-        producer: Agent,
-        reviewers: list[Agent],
+        producer: HeldAgent,
+        reviewers: list[HeldAgent],
         strategy: WorkerStrategy | None,
         max_iterations: int,
     ) -> None:
@@ -338,8 +347,8 @@ async def _run_loop(
     *,
     kit: RoomKit,
     room_id: str,
-    producer: Agent,
-    reviewers: list[Agent],
+    producer: HeldAgent,
+    reviewers: list[HeldAgent],
     strategy: WorkerStrategy | None,
     event: RoomEvent,
     task: str,
@@ -373,7 +382,7 @@ async def _run_loop(
 
 
 def _loop_answer(
-    event: RoomEvent, room_id: str, producer: Agent, outcome: _LoopOutcome
+    event: RoomEvent, room_id: str, producer: HeldAgent, outcome: _LoopOutcome
 ) -> RoomEvent:
     """The producer's response to *event*, one deeper, saying how the loop
     ended (RFC §8.3, §19.7.4)."""
@@ -499,8 +508,8 @@ async def _async_loop_and_deliver(
     kit: RoomKit,
     room_id: str,
     notify: str,
-    producer: Agent,
-    reviewers: list[Agent],
+    producer: HeldAgent,
+    reviewers: list[HeldAgent],
     strategy: WorkerStrategy | None,
     task_desc: str,
     max_iterations: int,
@@ -546,8 +555,8 @@ async def _execute_loop(
     *,
     kit: RoomKit,
     room_id: str,
-    producer: Agent,
-    reviewers: list[Agent],
+    producer: HeldAgent,
+    reviewers: list[HeldAgent],
     strategy: WorkerStrategy | None,
     task_desc: str,
     max_iterations: int,
@@ -583,7 +592,7 @@ async def _execute_loop(
 async def _produce(
     kit: RoomKit,
     room_id: str,
-    producer: Agent,
+    producer: HeldAgent,
     task: str,
     iteration: int,
     max_iterations: int,
@@ -641,7 +650,7 @@ async def _save_loop_state(kit: RoomKit, room_id: str, outcome: _LoopOutcome) ->
 async def _run_reviewers(
     kit: RoomKit,
     room_id: str,
-    reviewers: list[Agent],
+    reviewers: list[HeldAgent],
     strategy: WorkerStrategy | None,
     producer_output: str,
 ) -> list[dict[str, Any]]:
@@ -675,7 +684,7 @@ def _with_feedback(review_input: str, reviewer: str, feedback: str) -> str:
 async def _review_sequential(
     kit: RoomKit,
     room_id: str,
-    reviewers: list[Agent],
+    reviewers: list[HeldAgent],
     review_input: str,
 ) -> list[dict[str, Any]]:
     """Run reviewers sequentially — each sees previous feedback."""
@@ -697,7 +706,7 @@ async def _review_sequential(
 async def _review_parallel(
     kit: RoomKit,
     room_id: str,
-    reviewers: list[Agent],
+    reviewers: list[HeldAgent],
     review_input: str,
 ) -> list[dict[str, Any]]:
     """Run all reviewers in parallel on the same content."""
@@ -708,7 +717,7 @@ async def _review_parallel(
 
 
 async def _review(
-    kit: RoomKit, room_id: str, reviewer: Agent, review_input: str, strategy: str
+    kit: RoomKit, room_id: str, reviewer: HeldAgent, review_input: str, strategy: str
 ) -> dict[str, Any]:
     """One reviewer's review of *review_input*, with its status posts:
     ``{reviewer, approved, feedback}``."""

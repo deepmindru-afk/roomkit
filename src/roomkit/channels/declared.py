@@ -6,7 +6,9 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from roomkit.channels.base import Channel
+from roomkit.core.exceptions import ChannelNotRegisteredError
 from roomkit.models.channel import (
+    AgentIdentity,
     ChannelBinding,
     ChannelCapabilities,
     ChannelDeclaration,
@@ -19,6 +21,9 @@ from roomkit.models.event import RoomEvent
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
+
+
+_NO_IDENTITY = AgentIdentity(auto_greet=False)
 
 
 class DeclaredChannel(Channel):
@@ -59,6 +64,57 @@ class DeclaredChannel(Channel):
     def recent_events_window(self) -> int:
         return self._declaration.recent_events_window
 
+    # -- What a strategy reads of an agent, as it reads it of a live one --
+
+    @property
+    def thinks_while_listening(self) -> bool:
+        return self._declaration.thinks_while_listening
+
+    @property
+    def is_config_only(self) -> bool:
+        """Never: an executor builds it with its provider (RFC §19.1)."""
+        return False
+
+    @property
+    def name(self) -> str | None:
+        return self._identity.name
+
+    @property
+    def role(self) -> str | None:
+        return self._identity.role
+
+    @property
+    def description(self) -> str | None:
+        return self._identity.description
+
+    @property
+    def scope(self) -> str | None:
+        return self._identity.scope
+
+    @property
+    def greeting(self) -> str | None:
+        return self._identity.greeting
+
+    @property
+    def language(self) -> str | None:
+        return self._identity.language
+
+    @property
+    def purpose(self) -> str | None:
+        return self._identity.purpose
+
+    @property
+    def voice(self) -> str | None:
+        return self._identity.voice
+
+    @property
+    def auto_greet(self) -> bool:
+        return self._identity.auto_greet
+
+    @property
+    def _identity(self) -> AgentIdentity:
+        return self._declaration.identity or _NO_IDENTITY
+
     async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
         raise TypeError(self._absent("take a message"))
 
@@ -79,22 +135,61 @@ class DeclaredChannel(Channel):
         )
 
 
-def register_strategy_agents(kit: RoomKit, agents: Iterable[Channel]) -> None:
-    """Register on *kit* each of a strategy's *agents* it does not hold yet:
-    all of them, or none when one is refused.
+def id_of(agent: Channel | str) -> str:
+    """The channel id of a strategy's *agent*: the agent itself or its id."""
+    return agent if isinstance(agent, str) else agent.channel_id
+
+
+def held_agent[C: Channel](kit: RoomKit, agent: C | str) -> C | Channel:
+    """A strategy's *agent*: itself, or the intelligence channel *kit* holds
+    under the id it is named by, a declared one included (RFC §10.6.2).
 
     Raises:
-        ValueError: the kit holds one's id by its declaration alone: the
-            strategy would set its turns and tools up on an object the kit
-            never reads.
+        ChannelNotRegisteredError: *kit* holds no channel under the id.
+        ValueError: the channel under the id is not an intelligence channel.
+    """
+    if not isinstance(agent, str):
+        return agent
+    channel = kit.channels.get(agent)
+    if channel is None:
+        raise ChannelNotRegisteredError(
+            f"Channel {agent!r} is not registered: a strategy names by its id an agent "
+            "the kit holds, live or by its declaration"
+        )
+    if channel.category is not ChannelCategory.INTELLIGENCE:
+        raise ValueError(f"Channel {agent!r} is not an intelligence channel")
+    return channel
+
+
+def register_strategy_agents(kit: RoomKit, agents: Iterable[Channel | str]) -> None:
+    """Register on *kit* each of a strategy's *agents* given live that it does
+    not hold yet: all of them, or none when one is refused. An agent named by
+    its id is one the kit holds already.
+
+    Raises:
+        ChannelNotRegisteredError: an id names no channel of the kit.
+        ValueError: an id names no intelligence channel, or an agent is given
+            live under an id the kit holds by its declaration alone: that
+            object would never run.
     """
     agents = list(agents)
     for agent in agents:
-        if isinstance(kit.channels.get(agent.channel_id), DeclaredChannel):
+        held = kit.channels.get(id_of(agent))
+        if isinstance(agent, str):
+            held_agent(kit, agent)
+        elif isinstance(held, DeclaredChannel) and held is not agent:
             raise ValueError(
                 f"Channel {agent.channel_id!r} is registered by its declaration alone: "
-                "a strategy needs the agent itself registered on the kit"
+                f"give the strategy its id, {agent.channel_id!r}, not an agent object"
             )
     for agent in agents:
-        if agent.channel_id not in kit.channels:
+        if not isinstance(agent, str) and agent.channel_id not in kit.channels:
             kit.register_channel(agent)
+
+
+def named_agent[C: Channel](agent: C | str) -> C | DeclaredChannel:
+    """A strategy's *agent* until its install reads the kit's: itself, or for
+    one named by its id a bare declaration under that id."""
+    if isinstance(agent, str):
+        return DeclaredChannel(ChannelDeclaration(channel_id=agent))
+    return agent

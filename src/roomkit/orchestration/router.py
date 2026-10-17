@@ -22,6 +22,8 @@ from roomkit.orchestration.handoff import HandoffHandler, setup_handoff
 from roomkit.orchestration.state import ConversationState, get_conversation_state
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
 
@@ -256,7 +258,7 @@ class ConversationRouter:
     def install(
         self,
         kit: RoomKit,
-        agents: list[Agent],
+        agents: Sequence[Agent | str],
         *,
         agent_aliases: dict[str, str] | None = None,
         phase_map: dict[str, str] | None = None,
@@ -266,7 +268,8 @@ class ConversationRouter:
 
         Registers this router as a ``BEFORE_BROADCAST`` sync hook,
         builds a ``HandoffHandler``, and calls ``setup_handoff``
-        on every agent.
+        on every agent, each live or named by the id of one the kit holds,
+        by its declaration alone included (RFC §10.6.2).
 
         Returns the ``HandoffHandler`` for further customisation.
         """

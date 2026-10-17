@@ -34,8 +34,8 @@ from roomkit.tasks.handback import worker_block
 from roomkit.tools.fence import fence
 
 if TYPE_CHECKING:
-    from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
+    from roomkit.orchestration._agents import HeldAgent
     from roomkit.orchestration.result import ResultTool
 
 
@@ -79,7 +79,7 @@ def _step_ended(outcome: WorkerOutcome) -> WorkerEnd:
     return WorkerEnd(level, _render_result(outcome.output))
 
 
-def _dispatch_prompt(goal: str, workers: list[Agent]) -> str:
+def _dispatch_prompt(goal: str, workers: list[HeldAgent]) -> str:
     """What the supervisor is asked to frame the first worker's task from: its
     team, and the user's goal set apart as a ``<task>`` block."""
     roster = "\n".join(f"- {_worker_profile(w)}" for w in workers)
@@ -97,7 +97,7 @@ def _dispatch_prompt(goal: str, workers: list[Agent]) -> str:
     )
 
 
-def _review_brief(goal: str, worker: Agent, output: str, next_worker: Agent | None) -> str:
+def _review_brief(goal: str, worker: HeldAgent, output: str, next_worker: HeldAgent | None) -> str:
     """What the supervisor judges one step from: the user's goal as a ``<task>``
     block and the worker's output as a block of its own."""
     if next_worker is not None:
@@ -128,11 +128,11 @@ def _review_brief(goal: str, worker: Agent, output: str, next_worker: Agent | No
 
 async def _supervisor_dispatch(
     kit: RoomKit,
-    supervisor: Agent,
+    supervisor: HeldAgent,
     room_id: str,
     *,
     goal: str,
-    workers: list[Agent],
+    workers: list[HeldAgent],
     share_channels: list[str] | None,
     task_timeout: float,
 ) -> str:
@@ -154,13 +154,13 @@ async def _supervisor_dispatch(
 
 async def _supervisor_review(
     kit: RoomKit,
-    supervisor: Agent,
+    supervisor: HeldAgent,
     room_id: str,
     *,
     goal: str,
-    worker: Agent,
+    worker: HeldAgent,
     output: str,
-    next_worker: Agent | None,
+    next_worker: HeldAgent | None,
     share_channels: list[str] | None,
     task_timeout: float,
 ) -> dict[str, Any]:
@@ -184,8 +184,8 @@ async def _supervisor_review(
 async def _run_supervised_sequential(
     kit: RoomKit,
     room_id: str,
-    supervisor: Agent,
-    workers: list[Agent],
+    supervisor: HeldAgent,
+    workers: list[HeldAgent],
     task_desc: str,
     *,
     max_revisions: int,

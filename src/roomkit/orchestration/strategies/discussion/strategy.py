@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from roomkit.channels.acp import ACPChannel
 from roomkit.channels.ai import AIChannel
+from roomkit.channels.declared import id_of
 from roomkit.orchestration.base import Orchestration
 
 from ._names import is_handle, name_key
@@ -82,7 +83,7 @@ class Discussion(Orchestration):
 
     def __init__(
         self,
-        agents: Sequence[AIChannel | ACPChannel],
+        agents: Sequence[AIChannel | ACPChannel | str],
         *,
         handles: Mapping[str, str] | None = None,
         people: Sequence[str] | None = None,
@@ -111,8 +112,9 @@ class Discussion(Orchestration):
         self.dispatch = dispatch
         self.dispatch_timeout = dispatch_timeout
 
-    def agents(self) -> list[AIChannel | ACPChannel]:
-        """The agents of the discussion."""
+    def agents(self) -> list[AIChannel | ACPChannel | str]:
+        """The agents of the discussion, each live or named by the id of one
+        the kit holds (RFC §10.6.2)."""
         return list(self._agents)
 
     def handles(self) -> dict[str, str]:
@@ -139,7 +141,7 @@ class Discussion(Orchestration):
 
 
 def _check(
-    agents: Sequence[AIChannel | ACPChannel],
+    agents: Sequence[AIChannel | ACPChannel | str],
     everyone: Sequence[str] | None,
     max_turns: int | None,
     max_depth: int | None,
@@ -149,12 +151,12 @@ def _check(
     if not agents:
         raise ValueError("A discussion needs at least one agent")
     for agent in agents:
-        if not isinstance(agent, AIChannel | ACPChannel):
+        if not isinstance(agent, AIChannel | ACPChannel | str):
             raise TypeError(
                 f"{getattr(agent, 'channel_id', agent)!r} is neither an AI channel nor an "
-                "ACP agent channel: a discussion holds those only"
+                "ACP agent channel, nor the id of one: a discussion holds those only"
             )
-    ids = [a.channel_id for a in agents]
+    ids = [id_of(a) for a in agents]
     if len(set(ids)) != len(ids):
         raise ValueError("A discussion's agents need distinct channel ids")
     unknown = [a for a in everyone or () if a not in ids]
@@ -171,7 +173,9 @@ def _check(
         raise ValueError("rules must not be blank: None gives the default")
 
 
-def _handles(agents: Sequence[AIChannel | ACPChannel], given: Mapping[str, str]) -> dict[str, str]:
+def _handles(
+    agents: Sequence[AIChannel | ACPChannel | str], given: Mapping[str, str]
+) -> dict[str, str]:
     """Each agent's handle, by channel id: the one *given*, else its channel
     id, else its name kept to a name's characters, whichever can name it
     (RFC §19.7.5 rule 4).
@@ -181,11 +185,11 @@ def _handles(agents: Sequence[AIChannel | ACPChannel], given: Mapping[str, str])
             handle that cannot name one, an agent has no handle, or two
             agents' handles read alike.
     """
-    ids = [a.channel_id for a in agents]
+    ids = [id_of(a) for a in agents]
     unknown = [channel_id for channel_id in given if channel_id not in ids]
     if unknown:
         raise ValueError(f"handles names channels that are not agents: {unknown}")
-    handles = {a.channel_id: _handle_of(a, given.get(a.channel_id)) for a in agents}
+    handles = {id_of(a): _handle_of(a, given.get(id_of(a))) for a in agents}
     seen: dict[str, str] = {}
     for channel_id, handle in handles.items():
         other = seen.setdefault(handle.casefold(), channel_id)
@@ -197,24 +201,26 @@ def _handles(agents: Sequence[AIChannel | ACPChannel], given: Mapping[str, str])
     return handles
 
 
-def _handle_of(agent: AIChannel | ACPChannel, given: str | None) -> str:
+def _handle_of(agent: AIChannel | ACPChannel | str, given: str | None) -> str:
     """The handle *agent* is addressed by: *given*, else its channel id, else
-    its name kept to a name's characters."""
+    its name kept to a name's characters. An agent named by its id has no name
+    here: the kit holds it."""
+    channel_id = id_of(agent)
     if given is not None:
         if not is_handle(given):
             raise ValueError(
-                f"handles gives {agent.channel_id!r} {given!r}, which cannot name an agent: "
+                f"handles gives {channel_id!r} {given!r}, which cannot name an agent: "
                 "letters, digits, '_ . -', at most 32, no final '.', not 'all'"
             )
         return given
-    if is_handle(agent.channel_id):
-        return agent.channel_id
-    name = getattr(agent, "name", None)
+    if is_handle(channel_id):
+        return channel_id
+    name = None if isinstance(agent, str) else getattr(agent, "name", None)
     derived = name_key(name) if isinstance(name, str) else ""
     if is_handle(derived):
         return derived
     raise ValueError(
-        f"{agent.channel_id!r} cannot be addressed by its channel id and has no name that "
+        f"{channel_id!r} cannot be addressed by its channel id and has no name that "
         "can: give it a handle with handles="
     )
 

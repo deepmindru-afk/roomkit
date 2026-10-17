@@ -14,6 +14,7 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import orchestration_tool
+from roomkit.channels.declared import held_agent, id_of
 from roomkit.orchestration._call_room import in_call_room
 from roomkit.providers.ai.base import AITool
 from roomkit.tasks.cache import CompletedTaskCache
@@ -273,7 +274,7 @@ class DelegateHandler:
 
 
 def setup_delegation(
-    channel: AIChannel,
+    channel: AIChannel | str,
     handler: DelegateHandler,
     *,
     tool: AITool | None = None,
@@ -286,22 +287,26 @@ def setup_delegation(
     agent serving several rooms delegates from each.
 
     Args:
-        channel: The AI channel to wire delegation into.
+        channel: The AI channel to wire delegation into, or the id of one the
+            kit holds, by its declaration alone included (RFC §10.6.2).
         handler: The delegate handler that processes tool calls.
         tool: Optional custom delegate tool (e.g. from :func:`build_delegate_tool`).
 
     Raises:
         RuntimeError: Delegation is already set up on the channel.
+        ChannelNotRegisteredError: An id names no channel of the kit.
     """
-    registry = handler._kit._owner_tools.of(channel.channel_id)
+    held_agent(handler._kit, channel)
+    calling = id_of(channel)
+    registry = handler._kit._owner_tools.of(calling)
     if registry.lookup(DELEGATE_TOOL_NAME, None) is not None:
-        msg = f"setup_delegation() already called for channel '{channel.channel_id}'"
+        msg = f"setup_delegation() already called for channel '{calling}'"
         raise RuntimeError(msg)
 
     async def delegate(room_id: str, name: str, arguments: dict[str, Any]) -> str:
         result = await handler.handle(
             room_id=room_id,
-            calling_agent_id=channel.channel_id,
+            calling_agent_id=calling,
             arguments=arguments,
         )
         return json.dumps(result)

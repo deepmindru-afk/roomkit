@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from roomkit.channels.declared import held_agent, id_of
 from roomkit.core.hooks import HookRegistration
 from roomkit.models.enums import HookExecution, HookTrigger
 from roomkit.orchestration.base import Orchestration
@@ -26,7 +27,10 @@ from roomkit.orchestration.state import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from roomkit.channels.agent import Agent
+    from roomkit.channels.base import Channel
     from roomkit.core.framework import RoomKit
 
 logger = logging.getLogger("roomkit.orchestration.strategies.pipeline")
@@ -50,7 +54,7 @@ class Pipeline(Orchestration):
 
     def __init__(
         self,
-        agents: list[Agent],
+        agents: Sequence[Agent | str],
         routing: dict[str, list[str]] | None = None,
         *,
         supervisor_id: str | None = None,
@@ -62,9 +66,10 @@ class Pipeline(Orchestration):
         """Initialise the pipeline strategy.
 
         Args:
-            agents: Ordered list of agents. First agent is the entry
-                point. Stages chain linearly (each agent hands off to
-                the next).
+            agents: Ordered list of agents, each live or named by the id of
+                one the kit holds, by its declaration alone included (RFC
+                §10.6.2). First agent is the entry point. Stages chain
+                linearly (each agent hands off to the next).
             routing: Optional keyword hints injected into agent system
                 prompts (not runtime rules). Keys are agent channel IDs,
                 values are keyword lists describing when to route there.
@@ -83,14 +88,15 @@ class Pipeline(Orchestration):
         self._greeting_prompt = greeting_prompt
         self._farewell_prompt = farewell_prompt
 
-    def agents(self) -> list[Agent]:
+    def agents(self) -> list[Agent | str]:
         """Return all pipeline agents."""
         return list(self._agents)
 
     async def install(self, kit: RoomKit, room_id: str) -> None:
         """Wire pipeline routing and handoff into the room."""
         kit.claim_room_strategy(room_id, self)
-        stages = self._build_stages()
+        agents = [held_agent(kit, a) for a in self._agents]
+        stages = _build_stages(agents)
         cp = ConversationPipeline(
             stages=stages,
             supervisor_id=self._supervisor_id,
@@ -104,11 +110,9 @@ class Pipeline(Orchestration):
             allowed_transitions=cp.get_allowed_transitions(),
         )
         handler.greeting_map = {
-            a.channel_id: g
-            for a in self._agents
-            if (g := getattr(a, "greeting", None)) is not None
+            a.channel_id: g for a in agents if (g := getattr(a, "greeting", None)) is not None
         }
-        handler.agents = {a.channel_id: a for a in self._agents}
+        handler.agents = {a.channel_id: a for a in agents}
 
         # Install router as room-scoped BEFORE_BROADCAST hook
         kit.hook_engine.add_room_hook(
@@ -123,42 +127,30 @@ class Pipeline(Orchestration):
         )
 
         # Wire handoff tools per agent
-        self._wire_handoff(kit, self._agents, handler, cp, room_id)
+        self._wire_handoff(kit, agents, handler, cp, room_id)
 
         # Set initial conversation state
         initial_state = ConversationState(
             phase=stages[0].phase,
-            active_agent_id=self._agents[0].channel_id,
+            active_agent_id=id_of(self._agents[0]),
         )
         await save_conversation_state(kit.store, room_id, initial_state)
 
     def _build_stages(self) -> list[PipelineStage]:
         """Build pipeline stages from agent list."""
-        stages: list[PipelineStage] = []
-        for i, agent in enumerate(self._agents):
-            phase = agent.channel_id
-            next_phase = self._agents[i + 1].channel_id if i + 1 < len(self._agents) else None
-            stages.append(
-                PipelineStage(
-                    phase=phase,
-                    agent_id=agent.channel_id,
-                    next=next_phase,
-                    description=getattr(agent, "description", None),
-                )
-            )
-        return stages
+        return _build_stages(self._agents)
 
     def _wire_handoff(
         self,
         kit: RoomKit,
-        agents: list[Agent],
+        agents: Sequence[Channel],
         handler: HandoffHandler,
         cp: ConversationPipeline,
         room_id: str,
     ) -> None:
         """Set up per-agent handoff tools with constrained targets, in
         *room_id*, with this install's handler (RFC §19.7)."""
-        agent_map: dict[str, Agent] = {a.channel_id: a for a in agents}
+        agent_map: dict[str, Channel] = {a.channel_id: a for a in agents}
         stage_by_agent: dict[str, PipelineStage] = {s.agent_id: s for s in cp.stages}
 
         handoffs = []
@@ -177,7 +169,7 @@ class Pipeline(Orchestration):
             for s in cp.stages:
                 if s.phase in reachable_phases and s.agent_id != agent.channel_id:
                     target_agent = agent_map.get(s.agent_id)
-                    desc = target_agent.description if target_agent else None
+                    desc = getattr(target_agent, "description", None)
                     if desc is None:
                         desc = s.description
                     targets.append((s.agent_id, desc))
@@ -185,3 +177,20 @@ class Pipeline(Orchestration):
             tool = build_handoff_tool(targets)
             handoffs.append((agent, handoff_entry(agent, handler, tool)))
         set_up_handoffs(kit, handoffs, room_id=room_id, owner=self)
+
+
+def _build_stages(agents: Sequence[Channel | str]) -> list[PipelineStage]:
+    """Build pipeline stages from the agent list: each hands off to the next."""
+    stages: list[PipelineStage] = []
+    for i, agent in enumerate(agents):
+        phase = id_of(agent)
+        next_phase = id_of(agents[i + 1]) if i + 1 < len(agents) else None
+        stages.append(
+            PipelineStage(
+                phase=phase,
+                agent_id=id_of(agent),
+                next=next_phase,
+                description=getattr(agent, "description", None),
+            )
+        )
+    return stages

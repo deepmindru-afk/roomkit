@@ -28,13 +28,14 @@ class Orchestration(ABC):
     """
 
     @abstractmethod
-    def agents(self) -> Sequence[AIChannel | ACPChannel]:
+    def agents(self) -> Sequence[AIChannel | ACPChannel | str]:
         """Return agents to register and attach to the room.
 
         The framework calls this to determine which agents should be
         registered on the kit and attached to the room at creation time.
         An external agent over ACP is one where the strategy takes it (a
-        discussion does).
+        discussion does). An agent named by its channel id is one the kit
+        holds already, live or by its declaration alone (RFC §10.6.2).
         """
 
     @abstractmethod

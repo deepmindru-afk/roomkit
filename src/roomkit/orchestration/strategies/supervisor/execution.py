@@ -19,8 +19,8 @@ from roomkit.tasks.handback import worker_block
 from roomkit.tools.fence import fence
 
 if TYPE_CHECKING:
-    from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
+    from roomkit.orchestration._agents import HeldAgent
 
 
 def _compose_sequential_input(task_desc: str, prior_steps: list[tuple[str, str]]) -> str:
@@ -47,7 +47,7 @@ def _compose_sequential_input(task_desc: str, prior_steps: list[tuple[str, str]]
 async def _run_sequential(
     kit: RoomKit,
     room_id: str,
-    workers: list[Agent],
+    workers: list[HeldAgent],
     task_desc: str,
     *,
     share_channels: list[str] | None = None,
@@ -85,7 +85,7 @@ async def _run_sequential(
 async def _run_parallel(
     kit: RoomKit,
     room_id: str,
-    workers: list[Agent],
+    workers: list[HeldAgent],
     task_desc: str,
     *,
     share_channels: list[str] | None = None,
@@ -96,7 +96,7 @@ async def _run_parallel(
     its siblings. Each result says whether the worker's task ``completed``."""
     status = WorkerStatus({"room_id": room_id, "strategy": "parallel"})
 
-    async def _delegate_one(worker: Agent) -> dict[str, object]:
+    async def _delegate_one(worker: HeldAgent) -> dict[str, object]:
         outcome = await run_worker(
             kit,
             room_id,

@@ -117,7 +117,8 @@ class DiscussionRoom:
         """Route and queue by *config*, each agent the channel the kit runs
         under its id, else the host's strategy's."""
         self.config = config
-        own = {a.channel_id: a for a in self.strategy.agents()} if self.strategy else {}
+        given = self.strategy.agents() if self.strategy else []
+        own = {a.channel_id: a for a in given if not isinstance(a, str)}
         # The kit's channel runs the turns: a strategy installed over another
         # may bring new objects under ids the kit has registered already.
         self.agents: dict[str, Any] = {

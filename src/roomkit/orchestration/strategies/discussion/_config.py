@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field, ValidationError
 
 from roomkit.channels._discussion_turn import DISCUSSION_CONFIG
+from roomkit.channels.declared import id_of
 
 if TYPE_CHECKING:
     from .strategy import Discussion
@@ -54,7 +55,7 @@ class DiscussionConfig(BaseModel):
     @classmethod
     def of(cls, strategy: Discussion, default_depth: int) -> DiscussionConfig:
         return cls(
-            agents=[a.channel_id for a in strategy.agents()],
+            agents=[id_of(a) for a in strategy.agents()],
             handles=strategy.handles(),
             people=strategy.people,
             addressed_only=strategy.addressed_only,

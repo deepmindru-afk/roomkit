@@ -18,6 +18,7 @@ from roomkit._text import CONVERSATION_SUMMARY_TAG, fence, identifier, quoted
 from roomkit.channels._mark_copies import without_mark_copies
 from roomkit.channels._runtime_record import HANDED_ON_CONTEXT, HANDOFF_OPENING, runtime_record
 from roomkit.channels._tool_registry import ToolEntry, orchestration_tool
+from roomkit.channels.declared import held_agent, id_of
 from roomkit.memory._wrapper import _MemoryWrapper
 from roomkit.memory.base import MemoryProvider, MemoryResult
 from roomkit.models.channel import ChannelBinding
@@ -37,6 +38,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from roomkit.channels.ai import AIChannel
+    from roomkit.channels.base import Channel
+    from roomkit.channels.declared import DeclaredChannel
     from roomkit.core.framework import RoomKit
     from roomkit.orchestration.router import ConversationRouter
 
@@ -689,7 +692,7 @@ def _handoff_line(calling_agent_id: str, request: HandoffRequest) -> str:
 
 
 def setup_handoff(
-    channel: AIChannel,
+    channel: AIChannel | DeclaredChannel | str,
     handler: HandoffHandler,
     *,
     tool: AITool | None = None,
@@ -704,7 +707,8 @@ def setup_handoff(
       (RFC §19.6): one agent serves every room it is attached to
 
     Args:
-        channel: The AI channel to wire handoff into.
+        channel: The AI channel to wire handoff into, or the id of one the
+            kit holds, by its declaration alone included (RFC §10.6.2).
         handler: The handoff handler that processes tool calls.
         tool: Optional custom handoff tool (e.g. from :func:`build_handoff_tool`).
             Defaults to the generic :data:`HANDOFF_TOOL`.
@@ -713,17 +717,20 @@ def setup_handoff(
 
     Raises:
         RuntimeError: The handoff is already set up where it would be declared.
+        ChannelNotRegisteredError: An id names no channel of the kit.
     """
-    registry = handler._kit._owner_tools.of(channel.channel_id)
+    held_agent(handler._kit, channel)
+    channel_id = id_of(channel)
+    registry = handler._kit._owner_tools.of(channel_id)
     if registry.lookup(HANDOFF_TOOL_NAME, room_id) is not None:
-        msg = f"setup_handoff() already called for channel '{channel.channel_id}'"
+        msg = f"setup_handoff() already called for channel '{channel_id}'"
         raise RuntimeError(msg)
     registry.register(handoff_entry(channel, handler, tool), room_id=room_id, owner=handler)
 
 
 def set_up_handoffs(
     kit: RoomKit,
-    handoffs: Sequence[tuple[AIChannel, ToolEntry]],
+    handoffs: Sequence[tuple[Channel, ToolEntry]],
     *,
     room_id: str,
     owner: object,
@@ -738,13 +745,16 @@ def set_up_handoffs(
         store.of(channel.channel_id).register(entry, room_id=room_id, owner=owner)
 
 
-def handoff_entry(channel: AIChannel, handler: HandoffHandler, tool: AITool | None) -> ToolEntry:
+def handoff_entry(
+    channel: Channel | str, handler: HandoffHandler, tool: AITool | None
+) -> ToolEntry:
     """The handoff tool *channel* serves with *handler*, in the room of each call."""
+    calling = id_of(channel)
 
     async def hand_off(call_room_id: str, name: str, arguments: dict[str, Any]) -> str:
         result = await handler.handle(
             room_id=call_room_id,
-            calling_agent_id=channel.channel_id,
+            calling_agent_id=calling,
             arguments=arguments,
         )
         return result.model_dump_json()

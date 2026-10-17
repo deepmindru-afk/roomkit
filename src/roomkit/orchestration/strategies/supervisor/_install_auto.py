@@ -31,15 +31,15 @@ from roomkit.orchestration.strategies.supervisor.delegate import (
 from roomkit.orchestration.strategies.supervisor.results import _worker_roles_csv
 
 if TYPE_CHECKING:
-    from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
+    from roomkit.orchestration._agents import HeldAgent
 
 
 class _AutoDelegateInstallMixin:
     """Install framework-driven delegation (sync wrap or async voice tool)."""
 
-    _supervisor: Agent
-    _workers: list[Agent]
+    _supervisor: HeldAgent
+    _workers: list[HeldAgent]
     _strategy: WorkerStrategy | None
     _async_delivery: bool
     _refine_task: bool
@@ -115,8 +115,8 @@ class _DelegatingTurns:
     def __init__(
         self,
         kit: RoomKit,
-        supervisor: Agent,
-        workers: list[Agent],
+        supervisor: HeldAgent,
+        workers: list[HeldAgent],
         strategy: WorkerStrategy | None,
         *,
         refine: bool,
@@ -177,7 +177,9 @@ class _DelegatingTurns:
         )
 
 
-def _voice_delegate_tool(workers: list[Agent], strategy: WorkerStrategy | None) -> dict[str, Any]:
+def _voice_delegate_tool(
+    workers: list[HeldAgent], strategy: WorkerStrategy | None
+) -> dict[str, Any]:
     """The ``delegate_workers`` declaration a voice channel carries."""
     worker_roles = _worker_roles_csv(workers)
     return {
@@ -207,8 +209,8 @@ class _VoiceDelegateServer:
     def __init__(
         self,
         kit: RoomKit,
-        supervisor: Agent,
-        workers: list[Agent],
+        supervisor: HeldAgent,
+        workers: list[HeldAgent],
         strategy: WorkerStrategy | None,
         *,
         share_channels: list[str],

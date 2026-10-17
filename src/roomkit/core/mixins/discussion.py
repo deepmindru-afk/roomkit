@@ -250,7 +250,9 @@ class DiscussionMixin(HelpersMixin):
     ) -> RoomContext:
         """Refuse what the room cannot share with *discussion* (rule 1), the
         agents *leaving* it aside, its agents registered; the room's context."""
-        register_strategy_agents(self, discussion.agents.values())  # ty: ignore[invalid-argument-type]
+        # An agent named by an id the kit does not hold is refused by its id.
+        agents = [agent or agent_id for agent_id, agent in discussion.agents.items()]
+        register_strategy_agents(self, agents)  # ty: ignore[invalid-argument-type]
         context = await self._build_context(room_id)
         refusal = self._discussion_refusal(room_id, discussion, context, leaving=leaving)
         if refusal is not None:

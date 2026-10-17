@@ -117,6 +117,8 @@ class Agent(AIChannel):
             scope=self.scope,
             greeting=self.greeting,
             language=self.language,
+            purpose=self.purpose,
+            voice=self.voice,
             auto_greet=self.auto_greet,
         )
         return super().declaration().model_copy(update={"identity": identity})

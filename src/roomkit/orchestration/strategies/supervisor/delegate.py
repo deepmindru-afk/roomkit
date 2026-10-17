@@ -55,8 +55,8 @@ from roomkit.tasks.handback import bounded, workers_text
 from roomkit.tools.fence import fence
 
 if TYPE_CHECKING:
-    from roomkit.channels.agent import Agent
     from roomkit.core.framework import RoomKit
+    from roomkit.orchestration._agents import HeldAgent
 
 
 def _build_pass1_instruction() -> str:
@@ -73,9 +73,9 @@ async def _async_run_and_deliver(
     kit: RoomKit,
     room_id: str,
     supervisor_id: str,
-    supervisor: Agent,
+    supervisor: HeldAgent,
     strategy: WorkerStrategy | None,
-    workers: list[Agent],
+    workers: list[HeldAgent],
     task_desc: str,
     share_channels: list[str] | None = None,
     max_revisions: int = _DEFAULT_MAX_REVISIONS,
@@ -215,10 +215,10 @@ async def _run_workers(
     kit: RoomKit,
     room_id: str,
     strategy: WorkerStrategy | None,
-    workers: list[Agent],
+    workers: list[HeldAgent],
     task_desc: str,
     *,
-    supervisor: Agent | None = None,
+    supervisor: HeldAgent | None = None,
     max_revisions: int = _DEFAULT_MAX_REVISIONS,
     share_channels: list[str] | None = None,
     task_timeout: float = _DEFAULT_TASK_TIMEOUT_SECONDS,
@@ -266,7 +266,7 @@ async def _run_workers(
     return parsed.get("results", [])
 
 
-def _supervises(supervisor: Agent | None) -> TypeGuard[Agent]:
+def _supervises(supervisor: HeldAgent | None) -> TypeGuard[HeldAgent]:
     """Whether *supervisor* can frame and judge a sequential team's steps."""
     return supervisor is not None and not supervisor.is_config_only
 
@@ -274,7 +274,7 @@ def _supervises(supervisor: Agent | None) -> TypeGuard[Agent]:
 async def _formulate_task(
     kit: RoomKit,
     room_id: str,
-    supervisor: Agent,
+    supervisor: HeldAgent,
     original_on_event: Any,
     event: RoomEvent,
     binding: ChannelBinding,
@@ -311,7 +311,7 @@ class _Pass1:
 async def _pass1_task(
     kit: RoomKit,
     room_id: str,
-    supervisor: Agent,
+    supervisor: HeldAgent,
     event: RoomEvent,
     output: ChannelOutput,
     context: RoomContext,
@@ -342,7 +342,7 @@ async def _pass1_task(
 async def _report_pass1_failure(
     kit: RoomKit,
     exc: Exception,
-    supervisor: Agent,
+    supervisor: HeldAgent,
     stream: StreamingResponse,
     context: RoomContext,
     correlation_id: str,
@@ -376,7 +376,7 @@ def _read(output: ChannelOutput, *, error: Exception | None = None) -> ChannelOu
     return output.model_copy(update=update)
 
 
-def _pass1_answer(supervisor: Agent, event: RoomEvent, pass1: _Pass1) -> ChannelOutput:
+def _pass1_answer(supervisor: HeldAgent, event: RoomEvent, pass1: _Pass1) -> ChannelOutput:
     """What the room reads of a pass that handed on no task: the supervisor's
     fallback when the pass stopped short of its answer, so the message it
     answered gets one, the turn's record on it (RFC §19.7.3); else the pass's
@@ -406,13 +406,13 @@ def _pass1_answer(supervisor: Agent, event: RoomEvent, pass1: _Pass1) -> Channel
 async def _two_pass_delegate(
     kit: RoomKit,
     room_id: str,
-    supervisor: Agent,
+    supervisor: HeldAgent,
     original_on_event: Any,
     event: RoomEvent,
     binding: ChannelBinding,
     context: RoomContext,
     strategy: WorkerStrategy | None,
-    workers: list[Agent],
+    workers: list[HeldAgent],
     *,
     instruction: str | None = None,
     share_channels: list[str] | None = None,
@@ -453,13 +453,13 @@ async def _two_pass_delegate(
 async def _one_pass_delegate(
     kit: RoomKit,
     room_id: str,
-    supervisor: Agent,
+    supervisor: HeldAgent,
     original_on_event: Any,
     event: RoomEvent,
     binding: ChannelBinding,
     context: RoomContext,
     strategy: WorkerStrategy | None,
-    workers: list[Agent],
+    workers: list[HeldAgent],
     *,
     share_channels: list[str] | None = None,
     max_revisions: int = _DEFAULT_MAX_REVISIONS,
