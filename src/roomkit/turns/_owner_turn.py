@@ -39,6 +39,7 @@ from roomkit.turns.wire import (
     HostCall,
     InputClosed,
     InputRequest,
+    InputTaken,
     Item,
     Output,
     Pull,
@@ -339,6 +340,8 @@ class OwnerTurn:
             self._inputs.opened(self, frame)
         elif isinstance(frame, InputClosed):
             self._inputs.closed(self, frame.request_id)
+        elif isinstance(frame, InputTaken):
+            self._inputs.taken(self, frame.request_id, frame.taken)
         elif isinstance(frame, SteerResult):
             if (reached := self._steers.get(frame.steer_id)) is not None and not reached.done():
                 reached.set_result(frame.loops)

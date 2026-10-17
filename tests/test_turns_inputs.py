@@ -1,9 +1,11 @@
-"""A human-input request of a turn is answered on the room owner (RFC §10.6.5).
+"""A human-input request of a turn can be answered on the room owner (RFC §10.6.5).
 
-The tool waiting for the human runs on the turn's executor; the owner keeps
-the request's record, answers it (``kit.answer_input`` / ``kit.reject_input``,
-or the channel's handler, which forwards there), and holds an answer that
-comes before the request.
+The tool waiting for the human runs on the turn's executor, where the request
+settles first come first served (an answer the channel's handler took, a
+hook's block, a timeout, a release); the owner keeps the request's record,
+answers it (``kit.answer_input`` / ``kit.reject_input``) as long as it is open,
+learns whether its answer was taken, and holds an answer that comes before
+the request.
 """
 
 from __future__ import annotations
@@ -105,7 +107,7 @@ async def test_the_channels_handler_answers_where_the_tool_waits_first_come_firs
     assert human.handler.resolve(pending_id, "Green") is True
     assert human.handler.resolve(pending_id, "Red") is False
     # The kit's door, right after: the tool already has its answer.
-    await kit.answer_input(pending_id, "Blue")
+    assert await kit.answer_input(pending_id, "Blue") is False
     await asyncio.wait_for(turn, 5)
 
     [report] = reports
@@ -155,6 +157,67 @@ async def test_a_block_after_an_answer_does_not_take_it_back() -> None:
 
     [report] = reports
     assert report.result == "Blue"
+    await kit.close()
+
+
+async def test_the_kits_door_says_true_only_for_an_answer_the_tool_reads() -> None:
+    kit, _, _, _, reports = await _kit()
+    said: list[bool] = []
+
+    @kit.turn_executor.hook(
+        HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC, priority=-1
+    )
+    async def answer_then_block(event: PendingInputEvent, ctx: Any) -> HookResult:
+        said.append(await kit.answer_input(event.pending_id, "Blue"))
+        return HookResult.block("Too late to deny")
+
+    await asyncio.wait_for(_say(kit), 5)
+
+    [report] = reports
+    assert said == [True]
+    assert report.result == "Blue"
+    await kit.close()
+
+
+async def test_a_request_still_open_when_its_turn_ends_is_withdrawn() -> None:
+    outcomes: list[str] = []
+    spawned: list[asyncio.Task[Any]] = []
+    asked: list[str] = []
+    human = HumanInputToolHandler(tool_names={"ask_user"}, timeout=2, tool_definitions=[ASK])
+
+    async def waits_past_the_turn() -> None:
+        pending = await human.handler.create("ask_user", {"question": "Later?"}, room_id="r1")
+        asked.append(pending.pending_id)
+        try:
+            await human.handler.wait(pending.pending_id, timeout=2)
+        except RuntimeError as exc:
+            outcomes.append(str(exc))
+
+    async def tool(name: str, arguments: dict[str, Any]) -> str:
+        spawned.append(asyncio.create_task(waits_past_the_turn()))
+        await asyncio.sleep(0.05)
+        return "asked"
+
+    other = AITool(name="later_ask", description="Ask.", parameters={"type": "object"})
+    call = AIResponse(content="", tool_calls=[AIToolCall(id="c1", name="later_ask", arguments={})])
+    provider = MockAIProvider(ai_responses=[call, AIResponse(content="Done.")])
+    agent = AIChannel(
+        "agent", provider=provider, human_input_handler=human, tools=[other], tool_handler=tool
+    )
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("ops"))
+    kit.register_channel(agent)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "ops")
+    await kit.attach_channel("r1", "agent", category=ChannelCategory.INTELLIGENCE)
+
+    await asyncio.wait_for(_say(kit), 5)
+    await asyncio.wait_for(spawned[0], 5)
+
+    # Withdrawn on both sides: the waiter reads it given up, the kit's door
+    # answers it no more.
+    assert outcomes == ["Released before an answer arrived"]
+    assert await kit.answer_input(asked[0], "Too late") is False
     await kit.close()
 
 
@@ -262,34 +325,67 @@ async def _settle() -> None:
         await asyncio.sleep(0)
 
 
+def _request(request_id: str) -> InputRequest:
+    return InputRequest(request_id=request_id, tool_name="ask_user", arguments={})
+
+
 async def test_an_answer_that_comes_before_its_request_is_held_for_it() -> None:
     inputs = OwnerInputs(hold=60)
     turn = _Turn()
 
-    assert await inputs.answer("p1", "Early") is True
-    inputs.opened(turn, InputRequest(request_id="p1", tool_name="ask_user", arguments={}))  # type: ignore[arg-type]
+    answering = asyncio.create_task(inputs.answer("p1", "Early"))
     await _settle()
-
+    inputs.opened(turn, _request("p1"))  # type: ignore[arg-type]
+    await _settle()
     assert turn.sent == [InputAnswer(request_id="p1", outcome="answered", value="Early")]
+    assert not answering.done()
+
+    inputs.taken(turn, "p1", True)  # type: ignore[arg-type]
+    assert await answering is True
 
 
-async def test_an_answer_held_past_its_bound_is_let_go() -> None:
+async def test_an_answer_held_past_its_bound_is_not_taken() -> None:
     inputs = OwnerInputs(hold=0.05)
     turn = _Turn()
 
-    assert await inputs.answer("p1", "Early") is True
-    await asyncio.sleep(0.1)
-    inputs.opened(turn, InputRequest(request_id="p1", tool_name="ask_user", arguments={}))  # type: ignore[arg-type]
+    assert await inputs.answer("p1", "Early") is False
+    inputs.opened(turn, _request("p1"))  # type: ignore[arg-type]
     await _settle()
 
     assert turn.sent == []
+
+
+async def test_an_answer_the_request_settled_without_says_so() -> None:
+    inputs = OwnerInputs(hold=60)
+    turn = _Turn()
+    inputs.opened(turn, _request("p1"))  # type: ignore[arg-type]
+
+    answering = asyncio.create_task(inputs.answer("p1", "Second"))
+    await _settle()
+    # Settled first where the tool waits: the executor did not take it.
+    inputs.taken(turn, "p1", False)  # type: ignore[arg-type]
+
+    assert await answering is False
+    assert await inputs.answer("p1", "Third") is False
+
+
+async def test_an_answer_awaiting_its_verdict_when_the_turn_ends_was_not_taken() -> None:
+    inputs = OwnerInputs(hold=60)
+    turn = _Turn()
+    inputs.opened(turn, _request("p1"))  # type: ignore[arg-type]
+
+    answering = asyncio.create_task(inputs.answer("p1", "Answer"))
+    await _settle()
+    inputs.turn_ended(turn)  # type: ignore[arg-type]
+
+    assert await answering is False
 
 
 @pytest.mark.parametrize("ended", ["closed", "turn_ended"])
 async def test_a_request_closed_or_whose_turn_ended_takes_no_answer(ended: str) -> None:
     inputs = OwnerInputs(hold=60)
     turn = _Turn()
-    inputs.opened(turn, InputRequest(request_id="p1", tool_name="ask_user", arguments={}))  # type: ignore[arg-type]
+    inputs.opened(turn, _request("p1"))  # type: ignore[arg-type]
 
     if ended == "closed":
         inputs.closed(turn, "p1")  # type: ignore[arg-type]
@@ -304,14 +400,17 @@ async def test_a_request_closed_or_whose_turn_ended_takes_no_answer(ended: str) 
 async def test_a_request_belongs_to_the_turn_that_opened_it() -> None:
     inputs = OwnerInputs(hold=60)
     owner, other = _Turn(), _Turn()
-    inputs.opened(owner, InputRequest(request_id="p1", tool_name="ask_user", arguments={}))  # type: ignore[arg-type]
+    inputs.opened(owner, _request("p1"))  # type: ignore[arg-type]
 
-    # Another turn opening or closing the same id changes nothing.
-    inputs.opened(other, InputRequest(request_id="p1", tool_name="ask_user", arguments={}))  # type: ignore[arg-type]
+    # Another turn opening, closing or judging the same id changes nothing.
+    inputs.opened(other, _request("p1"))  # type: ignore[arg-type]
     inputs.closed(other, "p1")  # type: ignore[arg-type]
-
-    assert await inputs.answer("p1", "Mine") is True
+    answering = asyncio.create_task(inputs.answer("p1", "Mine"))
     await _settle()
+    inputs.taken(other, "p1", False)  # type: ignore[arg-type]
+    inputs.taken(owner, "p1", True)  # type: ignore[arg-type]
+
+    assert await answering is True
     assert [a.value for a in owner.sent] == ["Mine"]
     assert other.sent == []
 
@@ -319,13 +418,15 @@ async def test_a_request_belongs_to_the_turn_that_opened_it() -> None:
 async def test_early_answers_are_held_up_to_a_bound(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("roomkit.turns._owner_inputs.HELD_KEPT", 2)
     inputs = OwnerInputs(hold=60)
-    for request_id in ("p1", "p2", "p3"):
-        assert await inputs.answer(request_id, request_id) is True
-    turn = _Turn()
-
-    for request_id in ("p1", "p3"):
-        inputs.opened(turn, InputRequest(request_id=request_id, tool_name="t", arguments={}))  # type: ignore[arg-type]
+    answering = [asyncio.create_task(inputs.answer(rid, rid)) for rid in ("p1", "p2", "p3")]
     await _settle()
 
-    # The oldest was let go; the newest is still held.
+    # The oldest was let go, not taken; the others are still held.
+    assert await answering[0] is False
+    turn = _Turn()
+    inputs.opened(turn, _request("p3"))  # type: ignore[arg-type]
+    await _settle()
     assert [a.value for a in turn.sent] == ["p3"]
+    for task in answering[1:]:
+        task.cancel()
+    await asyncio.gather(*answering[1:], return_exceptions=True)

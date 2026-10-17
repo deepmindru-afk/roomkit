@@ -544,15 +544,16 @@ class RoomKit(
 
     async def answer_input(self, request_id: str, value: str) -> bool:
         """Answer the human-input request *request_id* of a turn this kit
-        started, wherever the turn runs (RFC §10.6.5): the tool waiting on it
-        reads *value*. An answer for a request not open yet is held for
-        ``input_hold_timeout`` seconds (60 by default). ``False`` for a request
-        already answered or rejected."""
+        started, wherever the turn runs (RFC §10.6.5): ``True`` when the tool
+        waiting on it reads *value*, ``False`` when the request was settled
+        otherwise first (answered, rejected, timed out, withdrawn). An answer
+        for a request not open yet waits for it, at most 60 seconds."""
         return await self._turns.inputs.answer(request_id, value)
 
     async def reject_input(self, request_id: str, reason: str = "") -> bool:
-        """Reject the human-input request *request_id*: the tool reads it as
-        a refusal (RFC §9.3). ``False`` for one already settled."""
+        """Reject the human-input request *request_id*: ``True`` when the tool
+        reads it as a refusal (RFC §9.3), ``False`` for one settled otherwise
+        first."""
         return await self._turns.inputs.reject(request_id, reason)
 
     def hooks_for(self, trigger: HookTrigger) -> HookEngine:

@@ -2,20 +2,22 @@
 
 A request the channel's handler opens is sent to the owner as an
 ``input_request`` before ``ON_USER_INPUT_REQUIRED`` fires; the owner's
-``input_answer`` settles it here while it is still open. A request settled
-here (an answer the channel's handler received, a hook's block, its bound, a
-release) is sent as an ``input_closed``, and the owner answers it no more.
-Once the turn ends, nothing more is sent.
+``input_answer`` settles it here while it is still open, and ``input_taken``
+says whether it did. A request settled here (an answer the channel's handler
+received, a hook's block, its bound, a release) is sent as an
+``input_closed``, and the owner answers it no more. When the turn ends, its
+requests still open are withdrawn, and nothing more is sent.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import TYPE_CHECKING
 
 from roomkit.core.exceptions import TurnLinkError
-from roomkit.turns.wire import InputClosed, InputRequest
+from roomkit.turns.wire import InputClosed, InputRequest, InputTaken
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -42,9 +44,12 @@ class ExecutorInputs:
         return self._running
 
     def close(self) -> None:
-        """The turn ended: its requests are the handler's alone."""
+        """The turn ended: its requests still open are withdrawn, on both
+        sides (RFC §10.6.5), and later ones are the handler's alone."""
         self._running = False
-        self._open.clear()
+        still_open, self._open = self._open, {}
+        for pending_id, settle in still_open.items():
+            settle.withdraw(pending_id)
 
     async def opened(self, pending: PendingInput, settle: InputSettler) -> None:
         if not self._running:
@@ -59,19 +64,24 @@ class ExecutorInputs:
         )
 
     def closed(self, pending_id: str, reason: str) -> None:
-        # The handler may be answered from another thread: the frame is
-        # sent from the turn's loop.
-        self._loop.call_soon_threadsafe(self._send_closed, pending_id, reason)
-
-    def answer(self, message: InputAnswer) -> None:
-        """The owner's outcome for a request: it settles here, if still open."""
-        settle = self._open.pop(message.request_id, None)
-        if settle is None:
+        if not self._running:
             return
-        if message.outcome == "answered":
-            settle.settle(message.request_id, value=message.value or "", reason=None)
-        else:
-            settle.settle(message.request_id, value=None, reason=message.reason or "")
+        # Sent from the turn's own loop, whatever loop or thread settled it;
+        # a closed loop has no owner left to tell.
+        with contextlib.suppress(RuntimeError):
+            self._loop.call_soon_threadsafe(self._send_closed, pending_id, reason)
+
+    async def answer(self, message: InputAnswer) -> None:
+        """The owner's outcome for a request: it settles here if still open,
+        and the owner learns whether it did."""
+        settle = self._open.pop(message.request_id, None)
+        taken = False
+        if settle is not None:
+            if message.outcome == "answered":
+                taken = settle.settle(message.request_id, value=message.value or "", reason=None)
+            else:
+                taken = settle.settle(message.request_id, value=None, reason=message.reason or "")
+        await self._send(InputTaken(request_id=message.request_id, taken=taken))
 
     def _send_closed(self, pending_id: str, reason: str) -> None:
         if not self._running or self._open.pop(pending_id, None) is None:

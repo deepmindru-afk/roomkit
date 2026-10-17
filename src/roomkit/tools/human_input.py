@@ -534,6 +534,12 @@ class HumanInputHandler:
             return self.resolve(pending_id, value)
         return self.reject(pending_id, reason or "")
 
+    def withdraw(self, pending_id: str) -> None:
+        """Withdraw a request whose turn ended while it was open (RFC §10.6.5):
+        its waiter reads it given up, as after a release."""
+        self._turn_of.pop(pending_id, None)
+        self.release(pending_id)
+
 
 class HumanInputToolHandler:
     """ToolHandler wrapper that blocks on human input for specified tools.

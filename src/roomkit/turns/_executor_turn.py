@@ -401,7 +401,7 @@ class ExecutorTurn:
         elif isinstance(message, ToolResult | HostResult):
             self._calls.resolve(message)
         elif isinstance(message, InputAnswer):
-            self._inputs.answer(message)
+            await self._inputs.answer(message)
         elif isinstance(message, Steer):
             await self._send(SteerResult(steer_id=message.steer_id, loops=self._steer(message)))
 

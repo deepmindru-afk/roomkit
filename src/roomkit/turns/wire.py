@@ -146,12 +146,22 @@ class InputRequest(BaseModel):
 
 
 class InputClosed(BaseModel):
-    """A request closed on the executor without the owner's answer (a hook's
-    block, its bound, a release)."""
+    """A request settled on the executor, where its tool waits, by other than
+    the owner's answer (an answer the channel's handler took, a hook's block,
+    its bound, a release)."""
 
     type: Literal["input_closed"] = "input_closed"
     request_id: str
     reason: str
+
+
+class InputTaken(BaseModel):
+    """Whether the owner's ``input_answer`` settled its request: one settled
+    first where its tool waits did not take it."""
+
+    type: Literal["input_taken"] = "input_taken"
+    request_id: str
+    taken: bool
 
 
 class SteerResult(BaseModel):
@@ -292,7 +302,8 @@ Frame = Annotated[
     | CallCancel
     | SteerResult
     | InputRequest
-    | InputClosed,
+    | InputClosed
+    | InputTaken,
     Field(discriminator="type"),
 ]
 Control = Annotated[

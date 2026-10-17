@@ -11,8 +11,8 @@ A request belongs to the turn that opened it: an id already open, or already
 settled, is not opened again, and only its turn closes it. The executor, where
 the tool waits, settles the request first come first served (an answer its
 channel's handler received, a hook's block, its bound, a release) and closes
-it here; an answer recorded here goes to the executor, where it settles the
-request if it is still open.
+it here; an answer given here goes to the executor, which says whether it
+settled the request (``input_taken``), and the kit's door answers that.
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ HELD_KEPT = 1024
 class _Held:
     answer: InputAnswer
     until: float
+    verdict: asyncio.Future[bool]
 
 
 class OwnerInputs:
@@ -52,6 +53,8 @@ class OwnerInputs:
         self._hold = hold
         self._open: dict[str, OwnerTurn] = {}
         self._held: dict[str, _Held] = {}
+        # Answers sent to a request's executor, awaiting whether they settled it.
+        self._awaiting: dict[str, tuple[OwnerTurn, asyncio.Future[bool]]] = {}
         self._settled: OrderedDict[str, None] = OrderedDict()
         self._sending: set[asyncio.Task[Any]] = set()
 
@@ -64,55 +67,84 @@ class OwnerInputs:
             return
         held = self._held.pop(request_id, None)
         if held is not None:
-            self._deliver(turn, held.answer)
+            self._deliver(turn, held.answer, held.verdict)
             return
         self._open[request_id] = turn
 
     def closed(self, turn: OwnerTurn, request_id: str) -> None:
-        """*turn*'s request settled on its executor without an answer from here."""
+        """*turn*'s request settled where its tool waits."""
         if self._open.get(request_id) is turn:
             del self._open[request_id]
             self._remember(request_id)
 
+    def taken(self, turn: OwnerTurn, request_id: str, taken: bool) -> None:
+        """Whether the answer sent to *turn*'s request settled it."""
+        awaited = self._awaiting.get(request_id)
+        if awaited is None or awaited[0] is not turn:
+            return
+        del self._awaiting[request_id]
+        _decide(awaited[1], taken)
+
     def turn_ended(self, turn: OwnerTurn) -> None:
-        """*turn* is over: its open requests are withdrawn."""
+        """*turn* is over: its open requests are withdrawn, and an answer
+        still awaiting its verdict was not taken."""
         for request_id in [rid for rid, open_turn in self._open.items() if open_turn is turn]:
             del self._open[request_id]
             self._remember(request_id)
+        for request_id, (awaited_turn, verdict) in list(self._awaiting.items()):
+            if awaited_turn is turn:
+                del self._awaiting[request_id]
+                _decide(verdict, False)
 
     async def answer(self, request_id: str, value: str) -> bool:
-        """Record *value* as the answer to *request_id*: whether it was taken."""
-        return self._record(InputAnswer(request_id=request_id, outcome="answered", value=value))
+        """Answer *request_id* with *value*: whether the waiting tool reads it."""
+        return await self._record(
+            InputAnswer(request_id=request_id, outcome="answered", value=value)
+        )
 
     async def reject(self, request_id: str, reason: str) -> bool:
-        """Record a rejection of *request_id*: whether it was taken."""
-        return self._record(InputAnswer(request_id=request_id, outcome="rejected", reason=reason))
+        """Reject *request_id*: whether the waiting tool reads the rejection."""
+        return await self._record(
+            InputAnswer(request_id=request_id, outcome="rejected", reason=reason)
+        )
 
-    def _record(self, answer: InputAnswer) -> bool:
-        """Send *answer* to the request's turn, or hold it until the request
-        arrives; ``False`` for a request already settled or answered."""
+    async def _record(self, answer: InputAnswer) -> bool:
+        """Send *answer* to the request's executor and wait for whether it
+        settled the request; for a request not open yet, hold it until it
+        opens, at most the hold bound. ``False`` for a request settled, or
+        answered, already."""
         self._prune()
         request_id = answer.request_id
         if request_id in self._settled or request_id in self._held:
             return False
-        turn = self._open.get(request_id)
-        if turn is None:
-            self._hold_early(answer)
-            return True
-        del self._open[request_id]
-        self._deliver(turn, answer)
-        return True
+        verdict: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        turn = self._open.pop(request_id, None)
+        if turn is not None:
+            self._deliver(turn, answer, verdict)
+            return await verdict
+        self._hold_early(answer, verdict)
+        try:
+            return await asyncio.wait_for(asyncio.shield(verdict), self._hold)
+        except TimeoutError:
+            if self._held.pop(request_id, None) is not None:
+                _decide(verdict, False)
+                return False
+            # Opened just now: its verdict follows.
+            return await verdict
 
-    def _hold_early(self, answer: InputAnswer) -> None:
+    def _hold_early(self, answer: InputAnswer, verdict: asyncio.Future[bool]) -> None:
         """Hold *answer* for its request, the oldest let go past the cap."""
         until = asyncio.get_running_loop().time() + self._hold
-        self._held[answer.request_id] = _Held(answer, until)
+        self._held[answer.request_id] = _Held(answer, until, verdict)
         while len(self._held) > HELD_KEPT:
-            del self._held[next(iter(self._held))]
+            _decide(self._held.pop(next(iter(self._held))).verdict, False)
 
-    def _deliver(self, turn: OwnerTurn, answer: InputAnswer) -> None:
+    def _deliver(
+        self, turn: OwnerTurn, answer: InputAnswer, verdict: asyncio.Future[bool]
+    ) -> None:
         self._remember(answer.request_id)
-        task = asyncio.get_running_loop().create_task(_sent(turn, answer))
+        self._awaiting[answer.request_id] = (turn, verdict)
+        task = asyncio.get_running_loop().create_task(_sent(turn, answer, verdict))
         self._sending.add(task)
         task.add_done_callback(self._sending.discard)
 
@@ -122,13 +154,18 @@ class OwnerInputs:
             self._settled.popitem(last=False)
 
     def _prune(self) -> None:
-        """Let go of the answers held past their bound."""
+        """Let go of the answers held past their bound: none was taken."""
         now = asyncio.get_running_loop().time()
         for request_id in [rid for rid, held in self._held.items() if held.until <= now]:
-            del self._held[request_id]
+            _decide(self._held.pop(request_id).verdict, False)
 
 
-async def _sent(turn: OwnerTurn, answer: InputAnswer) -> None:
+def _decide(verdict: asyncio.Future[bool], taken: bool) -> None:
+    if not verdict.done():
+        verdict.set_result(taken)
+
+
+async def _sent(turn: OwnerTurn, answer: InputAnswer, verdict: asyncio.Future[bool]) -> None:
     try:
         await turn.send_control(answer)
     except Exception:
@@ -137,3 +174,4 @@ async def _sent(turn: OwnerTurn, answer: InputAnswer) -> None:
             answer.request_id,
             exc_info=True,
         )
+        _decide(verdict, False)

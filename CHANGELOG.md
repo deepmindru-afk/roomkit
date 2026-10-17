@@ -16,14 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ON_USER_INPUT_REQUIRED` fires; the owner keeps its record, holds an answer
   that comes before it for 60 s (`TurnTimeouts.input_hold_timeout`), and
   sends it to the executor (`input_answer`), where it settles the request if
-  it is still open. The request settles where its tool waits, first come
-  first served, as it did: an answer the channel's own handler takes
-  (`HumanInputHandler.resolve()`), a hook's `BLOCK`, its timeout or a release
-  is never taken back by a later answer, and the owner closes its record
-  (`input_closed`), after which the kit's door answers `False`. A request
-  asked from a task that outlived its turn is the handler's alone. Answers
-  the kit holds are capped (1024); a request belongs to the turn that opened
-  it.
+  it is still open and says whether it did (`input_taken`): the kit's door
+  answers `True` only for an answer the waiting tool reads. The request
+  settles where its tool waits, first come first served, as it did: an
+  answer the channel's own handler takes (`HumanInputHandler.resolve()`), a
+  hook's `BLOCK`, its timeout or a release is never taken back by a later
+  answer, and the owner closes its record (`input_closed`). A request still
+  open when its turn ends is withdrawn on both sides (its waiter reads it
+  released); one asked from a task after its turn ended is the handler's
+  alone. Answers the kit holds are capped (1024); a request belongs to the
+  turn that opened it.
 
 - `RoomKit.steer(directive, channel_id, *, room_id=None, turn_id=None)`
   (RMK-811, RFC §21.3, §10.6.8): steering through the turn backend. The kit
@@ -89,8 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   result JSON has no form for, an unknown stream item) fails the turn with a
   `TypeError` naming it; a record value JSON has no form for crosses as its
   text. A stream its reader drops, or a cancelled delivery set leaves unread,
-  is closed on the executor. Steering and human input still run on the
-  channel the kit holds; their move across the backend follows.
+  is closed on the executor.
 
 - `Discussion(rules=...)` gives each turn the host's rules for how the room
   works, in place of the default (RMK-806, RFC §19.7.5 rule 14). `{handle}` in

@@ -45,6 +45,10 @@ class InputSettler(Protocol):
         """Settle *pending_id* with an answer, or a rejection; whether it was open."""
         ...
 
+    def withdraw(self, pending_id: str) -> None:
+        """Withdraw *pending_id*: its turn ended while it was open."""
+        ...
+
 
 _TURN_INPUTS: contextvars.ContextVar[TurnInputs | None] = contextvars.ContextVar(
     "roomkit_turn_inputs", default=None
