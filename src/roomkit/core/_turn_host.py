@@ -25,6 +25,7 @@ from pydantic import ValidationError
 from pydantic_core import to_jsonable_python
 
 from roomkit.models.enums import TaskStatus
+from roomkit.tasks.status import TASK_ACTION
 from roomkit.tools.context import _current_turn_chain_depth
 from roomkit.turns._codec import error_record
 from roomkit.turns.base import OwnerHost
@@ -106,7 +107,10 @@ class KitHost(OwnerHost):
 
     async def _post_status(self, request: TurnRequest, args: PostStatus) -> None:
         # A status names its room (RFC §19.8), whose hooks it fires: the
-        # turn's, never another.
+        # turn's, never another. A task's status is the framework's to post:
+        # the room's task tools read it to know which tasks are the room's.
+        if args.action == TASK_ACTION:
+            raise ValueError(f"A turn's host posts no {TASK_ACTION!r} status: the framework does")
         metadata = dict(args.metadata or {})
         _same_room(request, metadata.setdefault("room_id", request.room_id))
         self._kit.status_bus.post(

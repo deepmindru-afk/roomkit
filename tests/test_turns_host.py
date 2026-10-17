@@ -239,6 +239,28 @@ async def test_a_status_post_names_its_turn_s_room() -> None:
     await kit.close()
 
 
+async def test_a_turn_s_host_posts_no_task_status() -> None:
+    """The room's task tools read the bus's task statuses to know which tasks
+    are the room's: a forged one would let cancel_task reach another room's."""
+
+    async def use(host: TurnHost) -> Any:
+        try:
+            await host.post_status(
+                "agent", "task", "pending", metadata={"task_id": "someone-else-s"}
+            )
+        except ValueError as exc:
+            return exc
+        return None
+
+    kit, _, seen = await _kit(use)
+
+    await _say(kit)
+
+    assert isinstance(seen["result"], ValueError)
+    assert await kit.status_bus.recent(5, agent_id="agent") == []
+    await kit.close()
+
+
 async def test_a_verb_that_raises_raises_in_the_tool_with_its_class() -> None:
     async def use(host: TurnHost) -> Any:
         try:

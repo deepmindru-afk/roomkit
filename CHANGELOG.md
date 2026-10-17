@@ -114,9 +114,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   room and in that room's organization: a verb naming another room, or
   another organization, raises `ValueError` (a status post's
   `metadata["room_id"]` included, which is the turn's room when it names
-  none, RMK-820), and an event it sends is at least as deep as the turn's
-  response. The owner validates each verb's
-  arguments against its record and refuses one the record does not name. A
+  none, RMK-820; a `task` status, which only the framework posts, the room's
+  task tools reading it), and an event it sends is at least as deep as the
+  turn's response. The owner validates each verb's arguments against its
+  record and refuses one the record does not name. A
   verb on its way when its turn ends is answered before the turn ends; an
   error a verb raises is raised in the tool with its class. The owner keeps
   the tasks its hosts delegated while they run, and once ended until 1024
