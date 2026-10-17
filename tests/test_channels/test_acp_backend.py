@@ -35,6 +35,7 @@ from tests.test_channels.test_acp import (
     _sent,
 )
 from tests.test_channels.test_acp_discussion import _Hanging
+from tests.test_channels.test_acp_instruction import _instruction
 from tests.test_framework import SimpleChannel
 
 ROOM = "room-1"
@@ -421,4 +422,48 @@ async def test_a_failed_detach_message_still_forgets_the_room_s_values(tmp_path:
     room = await kit.get_room(ROOM)
     assert room_state_key(AGENT) not in room.metadata
     kit._turns.control = sent  # type: ignore[method-assign]
+    await kit.close()
+
+
+async def test_a_detach_during_a_standalone_turn_closes_the_room_s_session(
+    tmp_path: Any,
+) -> None:
+    channel, connection = _hanging(tmp_path)
+    connection.release.set()
+    first = make_event(room_id="room-1", body="hello", index=0)
+    output = await channel.on_event(first, _binding(), _context(first))
+    assert output.response_stream is not None
+    [chunk async for chunk in output.response_stream]
+    room_session = channel.session_id("room-1")
+    connection.release.clear()
+    connection.prompted.clear()
+
+    async def standalone() -> None:
+        output = await channel.on_event(_instruction(standalone=True), _binding(), _context(first))
+        assert output.response_stream is not None
+        [chunk async for chunk in output.response_stream]
+
+    running = asyncio.create_task(standalone())
+    await asyncio.wait_for(connection.prompted.wait(), 5)
+    await channel.on_room_detached("room-1")
+    connection.release.set()
+    await asyncio.wait_for(running, 5)
+
+    # The standalone turn closed its own session; the room's closes after it.
+    await _eventually(lambda: room_session in connection.closed_sessions)
+    assert channel.session_id("room-1") is None
+    await channel.close()
+
+
+async def test_a_value_set_on_the_channel_object_is_not_stored_by_a_read(
+    tmp_path: Any,
+) -> None:
+    channel, _connection, _ = _channel(tmp_path, emit_updates=False)
+    kit = await _room(channel)
+    await kit.channel_call(AGENT, ROOM, "set_config_option", config_id="model", value="sonnet")
+    await channel.set_config_option(ROOM, "model", "opus")  # this process's copy
+
+    assert (await kit.channel_call(AGENT, ROOM, "session_config"))["model"] == "opus"
+    room = await kit.get_room(ROOM)
+    assert room.metadata[room_state_key(AGENT)] == {"config": {"model": "sonnet"}}
     await kit.close()

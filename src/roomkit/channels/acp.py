@@ -455,14 +455,14 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         """The room's session, and the values the host set on it, go with the
         binding (RFC §10.6.3, §6.4): a later attachment opens a new session,
         caught up on the room. A detach never waits for the agent: the
-        session is closed off it, by the turn of the room running, at its
-        end, or else in the background; a turn started before the detach that
-        has not prompted yet ends without prompting, marked ``interrupted``."""
+        session is closed off it, in the background once the room's running
+        turn ended (which closes it itself when it prompted the room's
+        session); a turn started before the detach that has not prompted yet
+        ends without prompting, marked ``interrupted``."""
         self._room_config.pop(room_id, None)
         self._detached[room_id] = self._detached.get(room_id, 0) + 1
         session_id = self._sessions.get(room_id)
-        lock = self._room_locks.get(room_id)
-        if session_id is None or (lock is not None and lock.locked()):
+        if session_id is None:
             return
         closing = asyncio.get_running_loop().create_task(
             self._close_detached(room_id, session_id), name=f"roomkit-acp-close-{room_id}"

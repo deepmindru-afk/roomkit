@@ -23,10 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   channel before the room's next turn or channel call, so the values a host
   set on an ACP session are set on the session another executor opens for
   the room; a detach forgets them, even when the executors could not be told.
-  `kit.update_room_metadata` and `kit.create_room` refuse that key
-  (`ValueError`), and a turn's `TurnHost.update_room_metadata` refuses every
-  `roomkit:` key: what sets up an agent's next session (its mode) is written
-  by `channel_call` alone. A channel declares its verbs with
+  A value set on the channel object directly is this process's copy: a
+  later channel call stores it only when that call changes the room's
+  values (RMK-820). `kit.update_room_metadata` and `kit.create_room` refuse
+  that key (`ValueError`), and a turn's `TurnHost.update_room_metadata`
+  refuses every `roomkit:` key: what sets up an agent's next session (its
+  mode) is written by `channel_call` alone. A channel declares its verbs with
   `Channel.channel_call(room_id, verb, arguments)`, and what belongs to the
   room with `Channel.room_state(room_id)` /
   `Channel.restore_room_state(room_id, state)`. The ACP examples switch
@@ -110,8 +112,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back detached, and a delegation inherits the turn's chain depth, so a cycle
   of delegations still ends at `max_chain_depth`. A host acts for its turn's
   room and in that room's organization: a verb naming another room, or
-  another organization, raises `ValueError`, and an event it sends is at
-  least as deep as the turn's response. The owner validates each verb's
+  another organization, raises `ValueError` (a status post's
+  `metadata["room_id"]` included, which is the turn's room when it names
+  none, RMK-820), and an event it sends is at least as deep as the turn's
+  response. The owner validates each verb's
   arguments against its record and refuses one the record does not name. A
   verb on its way when its turn ends is answered before the turn ends; an
   error a verb raises is raised in the tool with its class. The owner keeps
@@ -181,9 +185,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the config values the host set on it (RMK-812, RFC §10.6.3, §6.4): a later
   attachment opens a new session, caught up on the room, where it used to
   resume the old conversation. The detach never waits for the agent: the
-  session is closed in the background, or by the room's running turn at
-  its end; a turn started before the detach that has not prompted yet ends
-  without prompting, marked `interrupted`.
+  session is closed in the background once the room's running turn ended
+  (a standalone turn's included, RMK-820), or by that turn itself when it
+  prompted the room's session; a turn started before the detach that has
+  not prompted yet ends without prompting, marked `interrupted`.
 
 - Detaching an `AIChannel` from a room drops everything it keeps for the
   room (RMK-812, RFC §10.6.3): its plan, the images its provider refused, and

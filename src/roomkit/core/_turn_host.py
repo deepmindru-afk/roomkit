@@ -105,8 +105,12 @@ class KitHost(OwnerHost):
         }
 
     async def _post_status(self, request: TurnRequest, args: PostStatus) -> None:
+        # A status names its room (RFC §19.8), whose hooks it fires: the
+        # turn's, never another.
+        metadata = dict(args.metadata or {})
+        _same_room(request, metadata.setdefault("room_id", request.room_id))
         self._kit.status_bus.post(
-            args.agent_id, args.action, args.status, detail=args.detail, metadata=args.metadata
+            args.agent_id, args.action, args.status, detail=args.detail, metadata=metadata
         )
 
     async def _update_room_metadata(self, request: TurnRequest, args: UpdateRoomMetadata) -> Any:

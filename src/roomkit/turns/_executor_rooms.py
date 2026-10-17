@@ -134,16 +134,18 @@ class ExecutorRooms:
             return ChannelResult(error=error_record(missing), executor_id=executor_id)
         room_id, channel_id = message.room_id, message.channel_id
         stale = self.enter(channel_id, room_id, message.call_id, message.previous_turn)
+        before: dict[str, object] | None = None
         try:
             await self._ready(channel, channel_id, room_id, message.room_state, stale=stale)
+            before = channel.room_state(room_id)
             result = await channel.channel_call(room_id, message.verb, message.arguments)
         except Exception as exc:
-            changed = _changed(channel, message)
+            changed = None if before is None else _changed(channel, room_id, before)
             return ChannelResult(
                 error=error_record(exc), room_state=changed, executor_id=executor_id
             )
         answer = ChannelResult(
-            result=result, room_state=_changed(channel, message), executor_id=executor_id
+            result=result, room_state=_changed(channel, room_id, before), executor_id=executor_id
         )
         try:
             answer.model_dump_json()
@@ -181,8 +183,12 @@ class ExecutorRooms:
             )
 
 
-def _changed(channel: Channel, message: ChannelCall) -> dict[str, object] | None:
-    """What the room keeps for the channel once *message* ran, when it is not
-    what the owner sent."""
-    state = channel.room_state(message.room_id)
-    return state if state != message.room_state else None
+def _changed(
+    channel: Channel, room_id: str, before: dict[str, object]
+) -> dict[str, object] | None:
+    """What the room keeps for the channel once a verb ran, when the verb
+    changed it from *before*: a copy the channel held apart from the room's
+    (a value set on the channel object directly) is not stored by a verb
+    that changed nothing."""
+    state = channel.room_state(room_id)
+    return state if state != before else None

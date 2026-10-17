@@ -220,6 +220,25 @@ async def test_room_metadata_status_and_observations_are_written_on_the_owner(
     await kit.close()
 
 
+async def test_a_status_post_names_its_turn_s_room() -> None:
+    async def use(host: TurnHost) -> Any:
+        await host.post_status("agent", "lookup", "info")
+        try:
+            await host.post_status("agent", "spoof", "info", metadata={"room_id": "elsewhere"})
+        except ValueError as exc:
+            return exc
+        return None
+
+    kit, _, seen = await _kit(use)
+
+    await _say(kit)
+
+    assert isinstance(seen["result"], ValueError)
+    [entry] = await kit.status_bus.recent(1, agent_id="agent")
+    assert (entry.action, (entry.metadata or {}).get("room_id")) == ("lookup", "r1")
+    await kit.close()
+
+
 async def test_a_verb_that_raises_raises_in_the_tool_with_its_class() -> None:
     async def use(host: TurnHost) -> Any:
         try:
