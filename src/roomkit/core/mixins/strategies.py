@@ -23,6 +23,7 @@ from roomkit.models.enums import ChannelCategory
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
+    from roomkit.core._turn_runners import TurnRunners
     from roomkit.core.hooks import HookEngine
     from roomkit.core.locks import RoomLockManager
     from roomkit.orchestration.base import Orchestration
@@ -65,6 +66,7 @@ class StrategyMixin(HelpersMixin):
     _lock_manager: RoomLockManager
     _hook_engine: HookEngine
     _turn_hooks: HookEngine  # the kit's turn executor's (RFC §10.6.6)
+    _turn_runners: TurnRunners  # the strategies' runners, kept by the owner (RFC §10.6.1)
     _channels: dict[str, Channel]
     _discussions: dict[str, Any]
     _room_strategies: dict[str, _Installed]
@@ -347,7 +349,7 @@ class StrategyMixin(HelpersMixin):
         return _Snapshot(
             hooks=self._room_hooks(room_id),
             tools={cid: reg.room_tool_names(room_id) for cid, reg in registries.items()},
-            runners={cid for cid, reg in registries.items() if reg.turn_runner(room_id)},
+            runners=self._turn_runners.channels(room_id),
             bindings={b.channel_id for b in await self._store.list_bindings(room_id)},
             keys=set(room.metadata) if room is not None else set(),
         )
@@ -377,9 +379,9 @@ class StrategyMixin(HelpersMixin):
         for cid in {*installed.tools, *installed.runners}:
             registry = registries.get(cid)
             if registry is not None:
-                registry.release(
-                    room_id, installed.tools.get(cid, ()), turn_runner=cid in installed.runners
-                )
+                registry.release(room_id, installed.tools.get(cid, ()))
+            if cid in installed.runners:
+                self._turn_runners.release(room_id, cid)
         installed.tools, installed.runners = {}, []
         stayed = await self._detach_agents(room_id, installed.attached)
         installed.attached = stayed

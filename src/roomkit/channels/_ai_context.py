@@ -113,6 +113,19 @@ else:
 logger = logging.getLogger("roomkit.channels.ai")
 
 
+TURN_INSTRUCTION = "_turn_instruction"
+"""The binding metadata key of an instruction a strategy gives one turn
+(a supervisor's task-formulation pass, RFC §19.7.3)."""
+
+
+def with_turn_instruction(prompt: str | None, binding: ChannelBinding) -> str | None:
+    """*prompt* followed by the instruction *binding* carries for its turn."""
+    instruction = binding.metadata.get(TURN_INSTRUCTION)
+    if not isinstance(instruction, str) or not instruction:
+        return prompt
+    return f"{prompt}\n\n{instruction}" if prompt else instruction
+
+
 # The settings a turn resolves binding metadata > config provider > channel
 # default, each read from ``_<name>`` on the channel. ``tools`` resolves apart.
 # The levels, most specific first.
@@ -206,8 +219,9 @@ class AIContextMixin(_AIChannelContract):
         binding = _without_former_vision(binding)
         turn, settings = await self._resolve_turn(binding, context)
         # The prompt grows below (skills, sandbox, planner, notes); the other
-        # settings reach the context as resolved.
-        system_prompt = settings.pop("system_prompt")
+        # settings reach the context as resolved. An instruction a strategy
+        # gives one turn follows the prompt the turn resolved (RFC §19.7.3).
+        system_prompt = with_turn_instruction(settings.pop("system_prompt"), binding)
 
         tools = self._turn_base_tools(turn, binding)
 

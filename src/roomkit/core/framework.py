@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 from roomkit.channels.base import Channel
 from roomkit.channels.websocket import SendFn, StreamSendFn, WebSocketChannel
+from roomkit.core._turn_runners import TurnRunners
 from roomkit.core.admission import RoomAdmission
 from roomkit.core.delivery import DeliveryStrategy
 from roomkit.core.event_router import EventRouter
@@ -79,7 +80,8 @@ from roomkit.core.mixins import (
 from roomkit.core.task_utils import cancel_and_wait, held_runs
 from roomkit.core.transcoder import DefaultContentTranscoder
 from roomkit.identity.base import IdentityResolver
-from roomkit.models.channel import RateLimit
+from roomkit.models.channel import ChannelBinding, ChannelOutput, RateLimit
+from roomkit.models.context import RoomContext
 from roomkit.models.delivery import STANDALONE, InboundResult
 from roomkit.models.enums import (
     AgentResponsePolicy,
@@ -333,6 +335,8 @@ class RoomKit(
         # the triggers a turn fires are its executor's (RFC §10.6.6).
         self._turns = registry_turn_client(self._channels, turn_backend)
         self._turn_hooks = self.turn_executor.hooks
+        # A strategy's runner takes an agent's turns on this owner (RFC §10.6.1).
+        self._turn_runners = TurnRunners()
         # Explicit detaches (revocations, RFC §7.5-7) are recorded in room
         # metadata by detach_channel() — not here — so they survive restarts
         # and are visible to every process sharing the store.
@@ -505,6 +509,14 @@ class RoomKit(
         """The hook engine of the room owner's triggers (RFC §10.6.6)."""
         return self._hook_engine
 
+    async def _strategy_turn(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        """A generation a strategy's runner asks of an agent: a turn of its
+        own through the turn backend, past the agent's speak policy and its
+        thinker (RFC §10.6.1)."""
+        return await self._turns.run(event, binding, context, strategy_turn=True)
+
     def hooks_for(self, trigger: HookTrigger) -> HookEngine:
         """The engine *trigger*'s hooks register on (RFC §10.6.6): the kit's
         turn executor's for a trigger a turn fires, the kit's own otherwise.
@@ -619,6 +631,7 @@ class RoomKit(
                 telemetry=self._telemetry,
                 greeting_gate_fn=self._wait_greeting_gate,
                 turns=self._turns,
+                runner_of=self._turn_runners.get,
             )
             self._event_router._framework_emitter = self._emit_framework_event
             self._event_router._defers = self._discussions.__contains__

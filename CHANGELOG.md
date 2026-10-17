@@ -30,9 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   result JSON has no form for, an unknown stream item) fails the turn with a
   `TypeError` naming it; a record value JSON has no form for crosses as its
   text. A stream its reader drops, or a cancelled delivery set leaves unread,
-  is closed on the executor. Steering, human input, RoomKit's own tools and
-  the strategies' turn runners still run on the channel the kit holds; their
-  move to the executor side follows.
+  is closed on the executor. Steering, human input and RoomKit's own tools
+  still run on the channel the kit holds; their move to the executor side
+  follows.
 
 - `Discussion(rules=...)` gives each turn the host's rules for how the room
   works, in place of the default (RMK-806, RFC §19.7.5 rule 14). `{handle}` in
@@ -89,6 +89,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `roomkit.TURN_TRIGGERS` serve code that registers on triggers of both sides.
   Only the kit's own executor fires these hooks today: an executor a host
   builds runs its turns without them until executors wire their own channels.
+
+- A strategy that takes an agent's turns runs on the room's owner, and each
+  generation it asks of the agent is a turn of its own (RMK-814, RFC §10.6.1).
+  The kit keeps the runners of a `Loop` and of a supervisor's delegation
+  passes per room and agent, and an agent's solicited turn in such a room
+  reaches the runner before it reaches the turn backend; the runner's
+  generations (the loop's producer and reviewer rounds, the supervisor's
+  formulation and presentation passes) cross the backend as turns marked
+  `strategy_turn`, which the executor answers with the new
+  `AIChannel.answer(event, binding, context)`: the channel's answer past its
+  speak policy and its thinker. An injected event no longer runs a
+  strategy's runner, since an injected event is never answered. The pass-1
+  instruction rides the turn's binding (`_turn_instruction` in its metadata)
+  and the channel appends it after the prompt the turn resolves, where the
+  supervisor resolved that prompt itself. The workers' results reach the
+  supervisor's memory once, through the turn that presents them, where they
+  were also written to it directly. `AIChannel.thinks_while_listening` says
+  whether a channel carries a thinker, which a discussion refuses.
 
 - A discussion's default rules ask for the handle wherever someone must act
   next (RMK-806): "Whenever another agent must act next, end your message

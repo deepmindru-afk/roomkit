@@ -220,8 +220,8 @@ async def test_a_sync_loop_in_two_rooms_takes_their_turns_and_wraps_nothing() ->
         )
 
     assert "on_event" not in vars(producer)
-    assert all(producer._registry.turn_runner(tenant) is not None for tenant in TENANTS)
-    assert producer._registry.turn_runner("tenant-C") is None
+    assert all(kit._turn_runners.get(tenant, producer.channel_id) for tenant in TENANTS)
+    assert kit._turn_runners.get("tenant-C", producer.channel_id) is None
     await kit.close()
 
 

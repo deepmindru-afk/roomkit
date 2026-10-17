@@ -12,6 +12,7 @@ import pytest
 from roomkit import HookExecution, HookResult, HookTrigger
 from roomkit.channels._tool_registry import ChannelRegistry
 from roomkit.channels.agent import Agent
+from roomkit.core._turn_runners import TurnRunners
 from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -25,6 +26,7 @@ from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.conference.test_conference_realtime import until
+from tests.strategy_turns import owner_turn
 from tests.test_framework import SimpleChannel
 from tests.tool_room import room_tool_names, tool_call_in
 
@@ -62,6 +64,8 @@ def _make_mock_kit(room: Room) -> MagicMock:
     # Pass 1's rows ride the room's lane, whose cascade the turn finishes.
     kit._max_chain_depth = 5
     kit._finish_cascade = AsyncMock(return_value=(None, None))
+    # The owner keeps the strategies' runners (RFC §10.6.1).
+    kit._turn_runners = TurnRunners()
     return kit
 
 
@@ -353,7 +357,7 @@ class TestSupervisorShareChannels:
         context = RoomContext(room=room, bindings=[], recent_events=[])
 
         # Invoke the wrapped on_event
-        await boss.on_event(event, binding, context)
+        await owner_turn(kit, boss, event, binding, context)
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["system"]
@@ -392,7 +396,7 @@ class TestSupervisorShareChannels:
         )
         context = RoomContext(room=room, bindings=[], recent_events=[])
 
-        await boss.on_event(event, binding, context)
+        await owner_turn(kit, boss, event, binding, context)
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["ws-status", "email-out"]
@@ -500,7 +504,9 @@ async def test_the_supervisors_turns_answer_at_the_depth_of_its_event(refine_tas
 
     boss._respond = spy  # type: ignore[method-assign]
 
-    output = await boss.on_event(
+    output = await owner_turn(
+        kit,
+        boss,
         RoomEvent(
             room_id="r1",
             type=EventType.MESSAGE,

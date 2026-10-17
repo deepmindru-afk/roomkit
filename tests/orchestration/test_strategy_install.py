@@ -261,11 +261,11 @@ async def test_a_strategy_that_runs_turns_gives_them_back(kind: str) -> None:
         )
     )
     await kit.install_strategy("r1", strategy)
-    assert writer._registry.turn_runner("r1") is not None
+    assert kit._turn_runners.get("r1", writer.channel_id) is not None
 
     await kit.uninstall_strategy("r1")
 
-    assert writer._registry.turn_runner("r1") is None
+    assert kit._turn_runners.get("r1", writer.channel_id) is None
     result = await _say(kit, "just answer")
     assert [
         e.source.channel_id for e in result.response_events if e.type == EventType.MESSAGE

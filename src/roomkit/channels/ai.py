@@ -569,16 +569,13 @@ class AIChannel(
     async def on_event(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:
-        """React to an event: the room's turn runner takes it, or the channel answers.
+        """React to an event: the channel answers, as its speak policy decides.
 
-        A strategy installed in a room (a loop, a supervisor's delegation
-        passes) may take that room's turns in place of the agent's own answer
-        (RFC §19.7); every other room gets the channel's (:meth:`_respond`).
+        A strategy that takes the agent's turns in a room (a loop, a
+        supervisor's delegation passes) runs on the room's owner and asks each
+        generation as a strategy turn (:meth:`answer`, RFC §10.6.1).
         """
         room_id = context.room.id if context.room else event.room_id
-        runner = self._registry.turn_runner(room_id)
-        if runner is not None:
-            return await runner(event, binding, context)
         decision = await self._speak_decision(event, context, self._thought_of(room_id))
         if decision is None or decision.mode != "silent":
             notes = await self._speaking_notes(room_id, decision)
@@ -632,6 +629,19 @@ class AIChannel(
         finally:
             _current_loop_ctx.reset(token)
         return None if blocked else ai_context
+
+    async def answer(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        """The channel's answer to *event*, past its speak policy and its
+        thinker: a generation a strategy's runner asks (RFC §10.6.1)."""
+        return await self._respond(event, binding, context)
+
+    @property
+    def thinks_while_listening(self) -> bool:
+        """Whether the channel carries a thinker (RFC §6.4), which a
+        discussion refuses (RFC §19.7.5)."""
+        return self._thinker is not None
 
     async def _respond(
         self,

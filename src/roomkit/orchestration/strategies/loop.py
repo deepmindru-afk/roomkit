@@ -191,7 +191,8 @@ class Loop(Orchestration):
         and limits, and the producer answers as itself everywhere else.
         """
         turns = _LoopTurns(kit, self._agent, self._reviewers, self._strategy, self._max_iterations)
-        self._agent._registry.set_turn_runner(room_id, turns.run, owner=self)
+        # Kept by the room's owner, never on the shared producer (RFC §10.6.1).
+        kit._turn_runners.take(room_id, self._agent.channel_id, turns.run, owner=self)
 
     # -- Async delivery (voice) -----------------------------------------------
 
@@ -237,12 +238,12 @@ class _LoopTurns:
         if event.source.channel_id == producer.channel_id:
             return ChannelOutput.empty()
         if event.source.channel_type in (ChannelType.AI, ChannelType.SYSTEM):
-            return await producer._respond(event, binding, context)
+            return await self._kit._strategy_turn(event, binding, context)
         task = task_input(event)
         if not task:
             # A message the loop's tasks cannot carry: the producer's own
             # channel reads it and answers (RFC §19.7.4).
-            return await producer._respond(event, binding, context)
+            return await self._kit._strategy_turn(event, binding, context)
         return await _run_loop(
             kit=self._kit,
             room_id=context.room.id if context.room else event.room_id,

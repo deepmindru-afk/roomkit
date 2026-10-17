@@ -16,6 +16,7 @@ import pytest
 
 from roomkit.channels.agent import Agent
 from roomkit.core._fallback import FALLBACK_FAILED
+from roomkit.core._turn_runners import TurnRunners
 from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
@@ -50,6 +51,7 @@ from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.handback import RESULT_TURN_NOTE
 from roomkit.tasks.models import DelegatedTaskResult
 from roomkit.tools.context import tool_turn_context
+from tests.strategy_turns import owner_turn
 from tests.tool_room import room_tool_names, tool_call_in
 
 # -- Helpers ------------------------------------------------------------------
@@ -95,6 +97,8 @@ def _make_mock_kit(room: Room) -> MagicMock:
     # Pass 1's rows ride the room's lane, whose cascade the turn finishes.
     kit._max_chain_depth = 5
     kit._finish_cascade = AsyncMock(return_value=(None, None))
+    # The owner keeps the strategies' runners (RFC §10.6.1).
+    kit._turn_runners = TurnRunners()
     return kit
 
 
@@ -1583,7 +1587,7 @@ class TestAutoDelegate:
 
         # Events from the supervisor itself should return empty
         event = _make_event(channel_id="boss", channel_type=ChannelType.AI)
-        result = await boss.on_event(event, _make_binding(), _make_context())
+        result = await owner_turn(kit, boss, event, _make_binding(), _make_context())
         assert not result.responded
 
     async def test_sync_auto_delegate_skips_ai_events(self) -> None:
@@ -1599,7 +1603,7 @@ class TestAutoDelegate:
         await s.install(kit, "r1")
 
         event = _make_event(channel_id="other-ai", channel_type=ChannelType.AI)
-        result = await boss.on_event(event, _make_binding(), _make_context())
+        result = await owner_turn(kit, boss, event, _make_binding(), _make_context())
         assert not result.responded
 
     async def test_sync_auto_delegate_with_refine(self) -> None:
@@ -1617,7 +1621,7 @@ class TestAutoDelegate:
         await s.install(kit, "r1")
 
         event = _make_event(body="Analyse quantum computing")
-        result = await boss.on_event(event, _make_binding(), _make_context())
+        result = await owner_turn(kit, boss, event, _make_binding(), _make_context())
         assert isinstance(result, ChannelOutput)
 
     async def test_sync_auto_delegate_without_refine(self) -> None:
@@ -1635,7 +1639,7 @@ class TestAutoDelegate:
         await s.install(kit, "r1")
 
         event = _make_event(body="Analyse quantum computing")
-        result = await boss.on_event(event, _make_binding(), _make_context())
+        result = await owner_turn(kit, boss, event, _make_binding(), _make_context())
         assert isinstance(result, ChannelOutput)
 
     async def test_sync_auto_delegate_custom_refine_instruction(self) -> None:
@@ -1655,7 +1659,7 @@ class TestAutoDelegate:
         await s.install(kit, "r1")
 
         event = _make_event(body="Tell me about quantum computing")
-        result = await boss.on_event(event, _make_binding(), _make_context())
+        result = await owner_turn(kit, boss, event, _make_binding(), _make_context())
         assert isinstance(result, ChannelOutput)
         # Supervised hub & spoke: the worker ran AND the supervisor reviewed it
         # (the worker's output returns to the supervisor before the next step).
@@ -1680,7 +1684,7 @@ class TestAutoDelegate:
         await s.install(kit, "r1")
 
         event = _make_event(body="Research AI")
-        result = await boss.on_event(event, _make_binding(), _make_context())
+        result = await owner_turn(kit, boss, event, _make_binding(), _make_context())
         assert isinstance(result, ChannelOutput)
 
     async def test_async_delivery_background_delegation(self) -> None:

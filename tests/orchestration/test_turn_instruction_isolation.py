@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from roomkit.channels._ai_context import with_turn_instruction
 from roomkit.channels._turn_config import AIChannelTurnConfig
 from roomkit.channels.agent import Agent
 from roomkit.core.framework import RoomKit
@@ -21,6 +22,13 @@ from roomkit.providers.ai.mock import MockAIProvider
 from tests.conftest import make_event
 
 PASS1 = "Formulate the task for the workers."
+
+
+async def _turn_prompt(agent: Agent, binding: ChannelBinding, context: RoomContext) -> str | None:
+    """The prompt *agent*'s turn starts from on *binding*: the one it
+    resolves, followed by the instruction the binding carries (RFC §19.7.3)."""
+    _, settings = await agent._resolve_turn(binding, context)
+    return with_turn_instruction(settings["system_prompt"], binding)
 
 
 def _binding(room_id: str, **metadata: Any) -> ChannelBinding:
@@ -40,7 +48,7 @@ async def test_two_rooms_in_parallel_never_share_the_instruction() -> None:
     started: list[str] = []
 
     async def on_event(event: Any, binding: ChannelBinding, context: RoomContext) -> ChannelOutput:
-        seen[binding.room_id] = binding.metadata["system_prompt"]
+        seen[binding.room_id] = await _turn_prompt(supervisor, binding, context)
         started.append(binding.room_id)
         if len(started) == 2:
             both_started.set()
@@ -77,7 +85,7 @@ async def test_the_instruction_follows_the_prompt_the_turn_would_have_had() -> N
     seen: list[str] = []
 
     async def on_event(event: Any, binding: ChannelBinding, context: RoomContext) -> ChannelOutput:
-        seen.append(binding.metadata["system_prompt"])
+        seen.append(await _turn_prompt(supervisor, binding, context))
         return ChannelOutput.empty()
 
     await _formulate_task(

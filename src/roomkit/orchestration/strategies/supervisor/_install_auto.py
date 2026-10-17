@@ -78,7 +78,8 @@ class _AutoDelegateInstallMixin:
             max_revisions=self._max_revisions,
             task_timeout=self._task_timeout,
         )
-        self._supervisor._registry.set_turn_runner(room_id, turns.run, owner=self)
+        # Kept by the room's owner, never on the shared supervisor (RFC §10.6.1).
+        kit._turn_runners.take(room_id, self._supervisor.channel_id, turns.run, owner=self)
 
     def _install_async_auto_delegate(self, kit: RoomKit, room_id: str) -> None:
         """Serve ``delegate_workers`` in *room_id*'s realtime sessions.
@@ -148,7 +149,7 @@ class _DelegatingTurns:
                 self._kit,
                 rid,
                 supervisor,
-                supervisor._respond,
+                self._kit._strategy_turn,
                 event,
                 binding,
                 context,
@@ -163,7 +164,7 @@ class _DelegatingTurns:
             self._kit,
             rid,
             supervisor,
-            supervisor._respond,
+            self._kit._strategy_turn,
             event,
             binding,
             context,

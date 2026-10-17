@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeGuard
 from uuid import uuid4
 
+from roomkit.channels._ai_context import TURN_INSTRUCTION
 from roomkit.core._failure_log import mark_reported
 from roomkit.core._fallback import FALLBACK_FAILED
 from roomkit.core._requester import asking_label, task_heading
@@ -283,17 +284,14 @@ async def _formulate_task(
     """Pass 1: the supervisor turns the request into a task for its workers.
 
     The task-formulation instruction rides this call only, on a copy of the
-    binding whose prompt is the one the turn would have had followed by the
-    instruction (RFC §19.7.3). The supervisor serves every room it is attached
-    to: its own prompt is never the carrier, so a room running meanwhile never
-    reads another's instruction.
+    binding the channel appends it from, after the prompt the turn resolves
+    (RFC §19.7.3). The supervisor serves every room it is attached to: its
+    own prompt is never the carrier, so a room running meanwhile never reads
+    another's instruction.
     """
     pass1_instruction = instruction or _build_pass1_instruction()
-    _, settings = await supervisor._resolve_turn(binding, context)
-    base = settings.get("system_prompt")
-    prompt = f"{base}\n\n{pass1_instruction}" if base else pass1_instruction
     pass1_binding = binding.model_copy(
-        update={"metadata": {**binding.metadata, "system_prompt": prompt}}
+        update={"metadata": {**binding.metadata, TURN_INSTRUCTION: pass1_instruction}}
     )
     pass1_output = await original_on_event(event, pass1_binding, context)
     return await _pass1_task(kit, room_id, supervisor, event, pass1_output, context)
@@ -447,16 +445,8 @@ async def _two_pass_delegate(
     )
 
     # Pass 2: inject worker results and generate final response
+    # (the presentation turn ingests the results as any answer does).
     results_event = _results_event(event, _present_worker_results(worker_results))
-
-    # Ingest the results so the supervisor sees them in context
-    try:
-        await supervisor._memory.ingest(
-            event.room_id, results_event, channel_id=supervisor.channel_id
-        )
-    except Exception:
-        logger.warning("Failed to ingest worker results", exc_info=True)
-
     return await original_on_event(results_event, binding, context)
 
 
@@ -499,13 +489,6 @@ async def _one_pass_delegate(
     results = _one_pass_results(user_message, worker_results, asked_by=asker)
 
     # Inject results into context and let supervisor present
+    # (the presentation turn ingests the results as any answer does).
     results_event = _results_event(event, results)
-
-    try:
-        await supervisor._memory.ingest(
-            event.room_id, results_event, channel_id=supervisor.channel_id
-        )
-    except Exception:
-        logger.warning("Failed to ingest worker results", exc_info=True)
-
     return await original_on_event(results_event, binding, context)

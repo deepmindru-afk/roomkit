@@ -10,6 +10,7 @@ from typing import Any
 
 from roomkit.channels.base import Channel
 from roomkit.core._failure_log import log_failure
+from roomkit.core._turn_runners import TurnRunner
 from roomkit.core.circuit_breaker import CircuitBreaker
 from roomkit.core.exceptions import NoRecipientError
 from roomkit.core.lanes import DeliveryPlan
@@ -267,6 +268,7 @@ class EventRouter:
         telemetry: Any = None,
         greeting_gate_fn: Callable[[str, float], Awaitable[None]] | None = None,
         turns: TurnClient | None = None,
+        runner_of: Callable[[str | None, str], TurnRunner | None] | None = None,
     ) -> None:
         self._channels = channels
         self._transcoder = transcoder or DefaultContentTranscoder()
@@ -278,6 +280,8 @@ class EventRouter:
         # Every intelligence turn runs through a turn backend (RFC §10.6); a
         # router built without the kit's runs its own over its channels.
         self._turns = turns or registry_turn_client(channels)
+        # A strategy's runner takes an agent's turns on the owner (RFC §10.6.1).
+        self._runner_of = runner_of
         # Set by RoomKit after construction — the router owns the breakers,
         # the framework owns the event surface (RFC §13.1 / §8.2).
         self._framework_emitter: Any = None
@@ -682,6 +686,12 @@ class EventRouter:
         event's) has its stream closed unread (RFC §10.6.1)."""
         if binding.category != ChannelCategory.INTELLIGENCE:
             return await channel.on_event(event, binding, context)
+        room_id = context.room.id if context.room else event.room_id
+        runner = self._runner_of(room_id, binding.channel_id) if self._runner_of else None
+        if runner is not None and answers:
+            # The strategy takes the turn here, on the owner; each generation it
+            # asks of the agent is a turn of its own.
+            return await runner(event, binding, context)
         output = await self._turns.run(event, binding, context, answers=answers)
         if not answers and output.response_stream is not None:
             await _aclose_stream(output.response_stream)

@@ -44,9 +44,10 @@ from roomkit.turns.wire import (
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
+    from roomkit.models.channel import ChannelOutput
     from roomkit.models.event import RoomEvent
     from roomkit.turns.base import ExecutorLink, TurnTimeouts
-    from roomkit.turns.wire import Frame
+    from roomkit.turns.wire import Frame, TurnRequest
 
 logger = logging.getLogger("roomkit.turns")
 
@@ -70,6 +71,17 @@ def _enter_turn(turn_id: str) -> None:
 
 class _UncarriedError(Exception):
     """A frame of the turn could not cross: the owner was told, the turn ends."""
+
+
+async def _reaction(channel: Channel, event: RoomEvent, request: TurnRequest) -> ChannelOutput:
+    """The channel's ``on_event``, or for a strategy's generation its answer
+    past its speak policy and its thinker (RFC §10.6.1)."""
+    if not request.strategy_turn:
+        return await channel.on_event(event, request.binding, request.context)
+    answer = getattr(channel, "answer", None)
+    if answer is None:
+        raise TypeError(f"Channel {channel.channel_id!r} cannot take a strategy's turn")
+    return await answer(event, request.binding, request.context)
 
 
 async def _next_item(stream: AsyncIterator[Any]) -> Any:
@@ -148,8 +160,7 @@ class ExecutorTurn:
         event = self._marked_event()
         try:
             output = await self._run_work(
-                channel.on_event(event, self._request.binding, self._request.context),
-                self._link.turn_context(),
+                _reaction(channel, event, self._request), self._link.turn_context()
             )
         except asyncio.CancelledError:
             if self._cut is None:

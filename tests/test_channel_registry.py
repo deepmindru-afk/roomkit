@@ -18,6 +18,7 @@ from roomkit.channels._tool_registry import (
 )
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+from roomkit.core._turn_runners import TurnRunners
 from roomkit.providers.ai.base import AITool
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
@@ -127,16 +128,20 @@ class TestCollisions:
 
 class TestInstalls:
     async def test_a_room_s_turns_are_taken_by_its_runner_only(self) -> None:
-        registry = _registry()
+        # The owner keeps the runners, per channel and room (RFC §10.6.1).
+        runners = TurnRunners()
 
         async def runner(*args: object) -> None:
             return None
 
-        registry.set_turn_runner("A", runner, owner="loop")  # ty: ignore[invalid-argument-type]
-        assert registry.turn_runner("A") is runner
-        assert registry.turn_runner("B") is None
+        runners.take("A", "agent", runner, owner="loop")  # ty: ignore[invalid-argument-type]
+        assert runners.get("A", "agent") is runner
+        assert runners.get("B", "agent") is None
+        assert runners.get("A", "other-agent") is None
         with pytest.raises(ValueError, match="another strategy"):
-            registry.set_turn_runner("A", runner, owner="other")  # ty: ignore[invalid-argument-type]
+            runners.take("A", "agent", runner, owner="other")  # ty: ignore[invalid-argument-type]
+        runners.release("A", "agent")
+        assert runners.channels("A") == set()
 
 
 class TestHostTools:

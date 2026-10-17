@@ -60,6 +60,7 @@ class DiscussionMixin(HelpersMixin):
     _channels: dict[str, Channel]
     _discussions: dict[str, Any]
     _installing_discussions: set[str]
+    _turn_runners: Any  # TurnRunners, the owner's (RFC §10.6.1)
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _get_router: Any  # RoomKit._get_router
@@ -397,11 +398,10 @@ class DiscussionMixin(HelpersMixin):
             if refusal is not None:
                 return refusal
         for agent in discussion.agents.values():
-            if getattr(agent, "_thinker", None) is not None:
+            if getattr(agent, "thinks_while_listening", False):
                 return f"{agent.channel_id} thinks while it listens"
-            # An external agent runs its own loop: no strategy runs its turns.
-            registry = getattr(agent, "_registry", None)
-            if registry is not None and registry.turn_runner(room_id) is not None:
+            # A strategy's runner already takes this agent's turns here.
+            if self._turn_runners.get(room_id, agent.channel_id) is not None:
                 return f"another strategy runs {agent.channel_id}'s turns"
         if self._hook_engine.has_router_hook(room_id):
             return "a router is installed"

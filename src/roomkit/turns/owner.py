@@ -29,7 +29,12 @@ if TYPE_CHECKING:
 
 
 def turn_request(
-    event: RoomEvent, binding: ChannelBinding, context: RoomContext, *, answers: bool = True
+    event: RoomEvent,
+    binding: ChannelBinding,
+    context: RoomContext,
+    *,
+    answers: bool = True,
+    strategy_turn: bool = False,
 ) -> TurnRequest:
     """The request for one turn of *binding*'s channel on *event*.
 
@@ -49,6 +54,7 @@ def turn_request(
         binding=binding,
         context=context,
         answers=answers,
+        strategy_turn=strategy_turn,
         notes=notes,
         in_place=in_place,
     )
@@ -84,14 +90,19 @@ class TurnClient:
         context: RoomContext,
         *,
         answers: bool = True,
+        strategy_turn: bool = False,
     ) -> ChannelOutput:
         """Run one turn of *binding*'s channel on *event*: its output, its
-        stream reading the executor's (RFC §10.6.4)."""
+        stream reading the executor's (RFC §10.6.4); a strategy's generation
+        when *strategy_turn* (RFC §10.6.1)."""
         if not self._serving:
             self._serving = True
             assert self.executor is not None
             await self.backend.serve(self.executor)
-        link = await self.backend.submit(turn_request(event, binding, context, answers=answers))
+        request = turn_request(
+            event, binding, context, answers=answers, strategy_turn=strategy_turn
+        )
+        link = await self.backend.submit(request)
         turn = OwnerTurn(link, self._timeouts)
         self._open.add(turn)
         return await turn.output()

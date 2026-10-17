@@ -30,6 +30,9 @@ class TurnRequest(BaseModel):
     context: RoomContext
     answers: bool = True
     """False for an injected event's delivery: its output is discarded."""
+    strategy_turn: bool = False
+    """A generation a strategy's runner asks: the channel answers, past its
+    speak policy and its thinker (RFC §10.6.1)."""
     notes: list[str] = Field(default_factory=list)
     """The runtime's own blocks for the turn (a discussion's turn notes)."""
     in_place: bool = False

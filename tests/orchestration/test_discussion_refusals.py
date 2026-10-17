@@ -66,7 +66,7 @@ async def test_an_agent_another_strategy_runs_is_refused() -> None:
     kit = RoomKit()
     a = _agent("a")
     await kit.create_room(room_id="r1")
-    a._registry.set_turn_runner("r1", lambda *args: None, owner=object())  # type: ignore[arg-type]
+    kit._turn_runners.take("r1", "a", lambda *args: None, owner=object())  # type: ignore[arg-type]
 
     with pytest.raises(ValueError, match="another strategy runs"):
         await Discussion([a]).install(kit, "r1")

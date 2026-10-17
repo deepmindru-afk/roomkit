@@ -44,18 +44,12 @@ from roomkit.core.exceptions import ToolNameCollisionError
 from roomkit.providers.ai.base import AITool
 
 if TYPE_CHECKING:
-    from roomkit.models.channel import ChannelBinding, ChannelOutput
-    from roomkit.models.context import RoomContext
-    from roomkit.models.event import RoomEvent
     from roomkit.tools.policy import ToolPolicy
     from roomkit.tools.timeout import ToolTimeouts
 
 ToolServe = Callable[[dict[str, Any]], Any]
 """Serves one call from its arguments; may return an awaitable. The room is the
 call's (``current_tool_room_id``, RFC §21.4)."""
-
-TurnRunner = Callable[["RoomEvent", "ChannelBinding", "RoomContext"], Awaitable["ChannelOutput"]]
-"""Takes one of a room's turns in place of the channel's own answer."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,7 +214,6 @@ class ChannelRegistry:
         self._host_names = host_names
         self._channel: dict[str, _Held] = {}
         self._rooms: dict[str, dict[str, _Held]] = {}
-        self._turn_runners: dict[str, _Slot[TurnRunner]] = {}
         self._session_source: _Slot[SessionSource] | None = None
 
     # -- Tools -------------------------------------------------------------
@@ -309,18 +302,15 @@ class ChannelRegistry:
         """The names of the tools served in *room_id* alone."""
         return frozenset(self._rooms.get(room_id, {}))
 
-    def release(self, room_id: str, names: Iterable[str], *, turn_runner: bool) -> None:
-        """Stop serving *names* in *room_id*, and the room's turn runner when
-        *turn_runner*: what a strategy's install set up there, which its
-        uninstall takes back (RFC §19.7)."""
+    def release(self, room_id: str, names: Iterable[str]) -> None:
+        """Stop serving *names* in *room_id*: what a strategy's install set up
+        there, which its uninstall takes back (RFC §19.7)."""
         scope = self._rooms.get(room_id)
         if scope is not None:
             for name in names:
                 scope.pop(name, None)
             if not scope:
                 self._rooms.pop(room_id, None)
-        if turn_runner:
-            self._turn_runners.pop(room_id, None)
 
     def lookup(self, name: str, room_id: str | None) -> ToolEntry | None:
         """The entry serving *name* in *room_id* (the channel's, outside any room)."""
@@ -357,21 +347,6 @@ class ChannelRegistry:
         return timeouts.for_call(name, waits=own or (traits is not None and traits.waits))
 
     # -- What orchestration installs per room ------------------------------
-
-    def set_turn_runner(self, room_id: str, runner: TurnRunner, *, owner: object) -> None:
-        """Take *room_id*'s turns with *runner*; one runner per room."""
-        held = self._turn_runners.get(room_id)
-        if held is not None and held.owner is not owner:
-            raise ValueError(
-                f"Room {room_id!r} already has its turns taken by another strategy "
-                f"on channel {self._channel_id!r}"
-            )
-        self._turn_runners[room_id] = _Slot(runner, owner)
-
-    def turn_runner(self, room_id: str | None) -> TurnRunner | None:
-        """The runner taking *room_id*'s turns, if one was installed there."""
-        held = self._turn_runners.get(room_id) if room_id is not None else None
-        return held.value if held is not None else None
 
     def set_session_source(self, source: SessionSource, *, owner: object) -> None:
         """Read a new realtime session's configuration from *source*."""
