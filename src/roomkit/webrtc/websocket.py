@@ -13,6 +13,7 @@ from fastapi.websockets import WebSocketDisconnect, WebSocketState
 
 # roomkit's G.711 tables match audioop's bytes; audioop left the stdlib in 3.13.
 from roomkit.voice._g711 import mulaw_to_pcm16, pcm16_to_mulaw
+from roomkit.voice._limits import MAX_INBOUND_AUDIO_FRAME_BYTES, b64_within_limit
 
 from .tracks import AsyncStreamHandler, StreamHandlerImpl
 from .utils import (
@@ -106,6 +107,8 @@ class WebSocketHandler:
 
                 if message["event"] == "media":
                     audio_array = self._media_audio(message)
+                    if audio_array is None:
+                        continue
                     try:
                         if isinstance(self.stream_handler, AsyncStreamHandler):
                             await self.stream_handler.receive(
@@ -167,9 +170,13 @@ class WebSocketHandler:
 
             self.clean_up(cast(str, self.stream_id))
 
-    def _media_audio(self, message: dict[str, Any]) -> np.ndarray:
-        """Return a media event's audio at the stream handler's input rate."""
-        audio_payload = base64.b64decode(message["media"]["payload"])
+    def _media_audio(self, message: dict[str, Any]) -> np.ndarray | None:
+        """Return a media event's audio at the stream handler's input rate (None: oversized)."""
+        payload = message["media"]["payload"]
+        if not b64_within_limit(payload, MAX_INBOUND_AUDIO_FRAME_BYTES):
+            logger.warning("Dropping oversized media frame (%d base64 chars)", len(payload))
+            return None
+        audio_payload = base64.b64decode(payload)
 
         audio_array = np.frombuffer(mulaw_to_pcm16(audio_payload), dtype=np.int16)
 
