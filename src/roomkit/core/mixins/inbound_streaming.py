@@ -17,6 +17,7 @@ from roomkit.core.mixins._response_reader import ResponseReader
 from roomkit.core.mixins._streaming_segments import LaneSink, SegmentWriter, TurnScope
 from roomkit.core.mixins.helpers import HelpersMixin, _source_block_reason
 from roomkit.core.mixins.lane_execution import DeliverySource
+from roomkit.core.task_utils import cancel_reason
 from roomkit.core.visibility import visibility_allows
 from roomkit.models.enums import (
     Access,
@@ -331,7 +332,7 @@ class InboundStreamingMixin(HelpersMixin):
             # the response unread: it is closed and stored cancelled.
             if not writer.read_to_end and writer.failure is None:
                 await self._stop_unread_stream(segments, sr, reader, writer, placeholder.room_id)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cut:
             # A turn interrupted on purpose (the console's Esc). What was
             # already streamed is on the user's screen, so the timeline
             # MUST hold it too: dropping it would leave the room
@@ -339,7 +340,7 @@ class InboundStreamingMixin(HelpersMixin):
             # context missing what it already said. Not an error — nobody
             # failed — so ON_ERROR stays silent and the cancellation
             # propagates untouched.
-            await writer.end_cancelled(reader)
+            await writer.end_cancelled(reader, cancel_reason(cut))
             raise
         except Exception as exc:
             return exc

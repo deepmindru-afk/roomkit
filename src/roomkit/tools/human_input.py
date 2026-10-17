@@ -70,6 +70,7 @@ from roomkit.core.task_utils import log_task_exception
 from roomkit.models.enums import ChannelType
 from roomkit.models.pending_input import PendingInput, PendingInputEvent, PendingInputStatus
 from roomkit.providers.ai.base import AITool
+from roomkit.tools._turn_inputs import TurnInputs, current_turn_inputs
 from roomkit.tools.context import _current_tool_call, current_tool_actor_id
 
 logger = logging.getLogger("roomkit.tools.human_input")
@@ -128,6 +129,9 @@ class HumanInputHandler:
         self._registrations: dict[str, int] = {}
         self._closed_channels: set[str] = set()
         self._closed = False
+        # The requests opened in a turn the turn backend runs: their owner
+        # keeps the record that answers them (RFC §10.6.5).
+        self._turn_of: dict[str, TurnInputs] = {}
 
     @property
     def pending(self) -> dict[str, PendingInput]:
@@ -297,8 +301,11 @@ class HumanInputHandler:
             detached=detached,
         )
         self._pending[pending_id] = pending
+        inputs = current_turn_inputs()
+        if inputs is not None:
+            self._turn_of[pending_id] = inputs
 
-        if self._callback_for(channel_id) is not None:
+        if self._callback_for(channel_id) is not None or inputs is not None:
             event = PendingInputEvent(
                 pending_id=pending_id,
                 tool_name=tool_name,
@@ -350,9 +357,11 @@ class HumanInputHandler:
         self._notify_channels.pop(task, None)
 
     async def _notify(self, event: PendingInputEvent) -> None:
-        """Run the ON_USER_INPUT_REQUIRED callback off the waiting path."""
+        """Run the ON_USER_INPUT_REQUIRED callback off the waiting path, the
+        turn's owner told first of a request it answers (RFC §10.6.5)."""
         if self._closed or event.channel_id in self._closed_channels:
             return
+        await self._open_on_owner(event.pending_id)
         callback = self._callback_for(event.channel_id)
         if callback is None:
             return
@@ -364,7 +373,18 @@ class HumanInputHandler:
             logger.exception("_on_input_required callback failed for pending %s", event.pending_id)
             return
         if not allowed:
-            self.reject(event.pending_id, "Denied by ON_USER_INPUT_REQUIRED hook")
+            self._reject_here(event.pending_id, "Denied by ON_USER_INPUT_REQUIRED hook")
+
+    async def _open_on_owner(self, pending_id: str) -> None:
+        """Tell the owner of the request's turn that it is open, when it is."""
+        inputs = self._turn_of.get(pending_id)
+        pending = self._pending.get(pending_id)
+        if inputs is None or pending is None or pending.status != PendingInputStatus.PENDING:
+            return
+        try:
+            await inputs.opened(pending, self)
+        except Exception:
+            logger.exception("Pending %s could not be opened on its room owner", pending_id)
 
     async def wait(self, pending_id: str, *, timeout: float = 300) -> str:
         """Block until the request is resolved, rejected, or times out.
@@ -445,6 +465,10 @@ class HumanInputHandler:
         ``resolve()`` must not be able to turn the answer it just recorded
         into a failure for whoever asked the question.
         """
+        inputs = self._turn_of.pop(pending.pending_id, None)
+        if inputs is not None:
+            # Settled here, not by the owner's answer: the owner closes it.
+            inputs.closed(pending.pending_id, pending.status.value)
         if self._retention == 0:
             return
         self._recent[pending.pending_id] = pending
@@ -473,8 +497,47 @@ class HumanInputHandler:
     def resolve(self, pending_id: str, result: str) -> bool:
         """Resolve a pending request with a result.
 
-        Returns ``True`` if the request was found and resolved.
+        A request of a turn the turn backend runs is answered by its owner,
+        which records the answer once whichever door it came through
+        (RFC §10.6.5): it is forwarded there.
+
+        Returns ``True`` if the request was found and resolved, or forwarded.
         """
+        if self._forwarded(pending_id, value=result, reason=None):
+            return True
+        return self._resolve_here(pending_id, result)
+
+    def reject(self, pending_id: str, reason: str = "") -> bool:
+        """Reject a pending request.
+
+        A request of a turn the turn backend runs is forwarded to its owner,
+        as :meth:`resolve` forwards an answer.
+
+        Returns ``True`` if the request was found and rejected, or forwarded.
+        """
+        if self._forwarded(pending_id, value=None, reason=reason):
+            return True
+        return self._reject_here(pending_id, reason)
+
+    def settle(self, pending_id: str, *, value: str | None, reason: str | None) -> bool:
+        """Settle a request with the outcome its turn's owner recorded: an
+        answer (*value*) or a rejection (*reason*)."""
+        self._turn_of.pop(pending_id, None)
+        if value is not None:
+            return self._resolve_here(pending_id, value)
+        return self._reject_here(pending_id, reason or "")
+
+    def _forwarded(self, pending_id: str, *, value: str | None, reason: str | None) -> bool:
+        """Forward an outcome to the owner of the request's turn; whether it
+        is such a request, still open."""
+        inputs = self._turn_of.get(pending_id)
+        pending = self._pending.get(pending_id)
+        if inputs is None or pending is None or pending.status != PendingInputStatus.PENDING:
+            return False
+        inputs.forward(pending_id, value=value, reason=reason)
+        return True
+
+    def _resolve_here(self, pending_id: str, result: str) -> bool:
         pending = self._pending.get(pending_id)
         if pending is None or pending.status != PendingInputStatus.PENDING:
             return False
@@ -484,11 +547,7 @@ class HumanInputHandler:
         self._retain(pending)
         return True
 
-    def reject(self, pending_id: str, reason: str = "") -> bool:
-        """Reject a pending request.
-
-        Returns ``True`` if the request was found and rejected.
-        """
+    def _reject_here(self, pending_id: str, reason: str) -> bool:
         pending = self._pending.get(pending_id)
         if pending is None or pending.status != PendingInputStatus.PENDING:
             return False

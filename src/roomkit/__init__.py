@@ -302,6 +302,7 @@ from roomkit.turns import (
     TurnRequest,
     TurnTimeouts,
     current_turn_host,
+    current_turn_id,
 )
 from roomkit.video.events import VideoDetectionEvent
 from roomkit.video.pipeline.filter import (
@@ -442,6 +443,7 @@ __all__ = [
     "TurnRequest",
     "TurnTimeouts",
     "current_turn_host",
+    "current_turn_id",
     # Channels
     "ACPChannel",
     "ACPContextContributor",

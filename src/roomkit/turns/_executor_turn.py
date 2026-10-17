@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import inspect
 import logging
-from collections.abc import AsyncIterator, Awaitable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, issue_mark, retire_mark
@@ -22,6 +23,7 @@ from roomkit.channels._tool_registry import set_turn_owner_tools
 from roomkit.core._turn_scope import enter_turn
 from roomkit.core.exceptions import ChannelNotRegisteredError, TurnLinkError
 from roomkit.models.streaming import ThinkingDeltaMarker, ToolCallEndMarker, ToolCallStartMarker
+from roomkit.tools._turn_inputs import set_turn_inputs
 from roomkit.turns._codec import (
     encode_end,
     encode_item,
@@ -30,6 +32,7 @@ from roomkit.turns._codec import (
     record_payload,
 )
 from roomkit.turns._executor_calls import ExecutorCalls
+from roomkit.turns._executor_inputs import ExecutorInputs
 from roomkit.turns.base import heartbeat_tick
 from roomkit.turns.host import TurnHost, set_turn_host
 from roomkit.turns.wire import (
@@ -40,6 +43,7 @@ from roomkit.turns.wire import (
     Error,
     Heartbeat,
     HostResult,
+    InputAnswer,
     Item,
     Output,
     Pull,
@@ -56,7 +60,7 @@ if TYPE_CHECKING:
     from roomkit.models.channel import ChannelOutput
     from roomkit.models.event import RoomEvent
     from roomkit.turns.base import ExecutorLink, TurnTimeouts
-    from roomkit.turns.wire import Frame, TurnRequest
+    from roomkit.turns.wire import Control, Frame, TurnRequest
 
 logger = logging.getLogger("roomkit.turns")
 
@@ -70,6 +74,15 @@ async def _reaction(channel: Channel, event: RoomEvent, request: TurnRequest) ->
     generation (RFC §10.6.1)."""
     with strategy_turn(request.strategy_turn):
         return await channel.on_event(event, request.binding, request.context)
+
+
+def _takes(function: Callable[..., Any], name: str) -> bool:
+    """Whether *function* takes the keyword argument *name*."""
+    try:
+        parameters = inspect.signature(function).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == name or p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
 
 
 async def _next_item(stream: AsyncIterator[Any]) -> Any:
@@ -116,6 +129,7 @@ class ExecutorTurn:
         # the verbs of the turn's host (RFC §10.6.5).
         self._calls = ExecutorCalls(self._request, self._send_call)
         self._host = TurnHost(self._calls.host_call)
+        self._inputs = ExecutorInputs(self._send_call, self._calls.host_call)
 
     async def run(self) -> None:
         """Run the turn to its end, which the owner is always told."""
@@ -265,6 +279,7 @@ class ExecutorTurn:
         context.run(enter_turn, self._request.turn_id)
         context.run(set_turn_owner_tools, self._calls.owner_tools)
         context.run(set_turn_host, self._host)
+        context.run(set_turn_inputs, self._inputs)
         self._work = asyncio.get_running_loop().create_task(
             work, context=context, name=f"roomkit-turn-{self._request.turn_id}-work"
         )
@@ -359,19 +374,31 @@ class ExecutorTurn:
                 self._cut_turn("frame_lost" if lost.reason == "frame_lost" else "owner_lost")
                 return
             self._heard = True
-            if isinstance(message, Pull):
-                self._credits += message.count
-            elif isinstance(message, Close):
-                self._closing = True
-            elif isinstance(message, Cancel):
-                self._cut_turn(message.reason)
-            elif isinstance(message, ToolResult | HostResult):
-                self._calls.resolve(message)
-            elif isinstance(message, Steer):
-                await self._send(
-                    SteerResult(steer_id=message.steer_id, loops=self._steer(message))
+            try:
+                await self._apply_control(message)
+            except _UncarriedError:
+                raise
+            except Exception:
+                # One message failing to apply never stops the turn's controls.
+                logger.exception(
+                    "Turn %s: a %s control failed to apply", self.turn_id, message.type
                 )
             self._wake.set()
+
+    async def _apply_control(self, message: Control) -> None:
+        """Apply one control message of the owner's."""
+        if isinstance(message, Pull):
+            self._credits += message.count
+        elif isinstance(message, Close):
+            self._closing = True
+        elif isinstance(message, Cancel):
+            self._cut_turn(message.reason)
+        elif isinstance(message, ToolResult | HostResult):
+            self._calls.resolve(message)
+        elif isinstance(message, InputAnswer):
+            self._inputs.answer(message)
+        elif isinstance(message, Steer):
+            await self._send(SteerResult(steer_id=message.steer_id, loops=self._steer(message)))
 
     async def _beat(self) -> None:
         """Tell the owner the turn runs; cut it when the owner falls silent."""
@@ -392,13 +419,24 @@ class ExecutorTurn:
 
     def _steer(self, message: Steer) -> int | None:
         """Apply a steering directive to this turn's loops: how many it
-        reached; ``None`` for a channel without steering (RFC §10.6.8)."""
-        if self._built is None:
-            return 0
+        reached; ``None`` for a channel without steering, or not built yet,
+        whose owner cuts the turn on a ``Cancel`` (RFC §10.6.8)."""
         steer = getattr(self._built, "steer", None)
         if steer is None:
             return None
-        return int(steer(message.directive, turn_id=self._request.turn_id))
+        # A steer() of the channel's own from before turns were addressed
+        # takes the turn's room instead.
+        address = (
+            {"turn_id": self._request.turn_id}
+            if _takes(steer, "turn_id")
+            else {"room_id": self._request.room_id}
+        )
+        try:
+            reached = steer(message.directive, **address)
+        except Exception:
+            logger.exception("Turn %s: the channel's steer() failed", self.turn_id)
+            return 0
+        return reached if isinstance(reached, int) else 0
 
     def spare(self) -> None:
         """Let the turn's work run on whatever ends its link: a close called
@@ -411,5 +449,5 @@ class ExecutorTurn:
         if reason in ("owner_lost", "frame_lost"):
             self._calls.fail_all(TurnLinkError(reason))
         if not self._spared and self._work is not None and not self._work.done():
-            self._work.cancel()
+            self._work.cancel(reason)
         self._wake.set()

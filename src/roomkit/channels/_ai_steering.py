@@ -75,10 +75,10 @@ class AISteeringMixin(_AIChannelContract):
             raise ValueError("steer() addresses a loop_id, a room_id or a turn_id, not several")
         targets = self._steering_targets(directive, loop_id, room_id, turn_id)
         if not targets:
-            if room_id is None:
+            if room_id is None and turn_id is None:
                 logger.warning("steer() called with no active tool loop")
             else:
-                logger.info("steer(): no active tool loop in room %s", room_id)
+                logger.info("steer(): no active tool loop for %s", room_id or turn_id)
             return 0
         for ctx in targets:
             ctx.steering_queue.put_nowait(directive)

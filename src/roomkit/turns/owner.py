@@ -14,8 +14,10 @@ from uuid import uuid4
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes, discussion_turn
 from roomkit.models.steering import Cancel as SteeringCancel
-from roomkit.turns._owner_turn import OwnerTurn, RemoteStream
+from roomkit.turns._owner_inputs import OwnerInputs
+from roomkit.turns._owner_turn import OwnerTurn
 from roomkit.turns._registry_tools import RegistryOwnerTools
+from roomkit.turns._remote_stream import RemoteStream
 from roomkit.turns.base import TurnTimeouts
 from roomkit.turns.executor import TurnExecutor
 from roomkit.turns.memory import InMemoryTurnBackend
@@ -102,6 +104,8 @@ class TurnClient:
         self._started: list[OwnerTurn] = []
         # The owner-served calls running for this client's turns (RFC §10.6.5).
         self._calls: set[asyncio.Task[None]] = set()
+        # The open human-input requests of its turns, answered here.
+        self.inputs = OwnerInputs(self._timeouts.input_hold)
 
     async def run(
         self,
@@ -129,7 +133,7 @@ class TurnClient:
             owner_tools=declared,
         )
         link = await self.backend.submit(request)
-        turn = OwnerTurn(link, self._timeouts, self._tools, self._calls, self._host)
+        turn = OwnerTurn(link, self._timeouts, self._tools, self._calls, self._host, self.inputs)
         self._open.add(turn)
         self._started = [*(t for t in self._started if not t.over), turn]
         return await turn.output()
@@ -178,6 +182,7 @@ class TurnClient:
                 # One already cancelled is let finish its cleanup.
                 task.cancel()
         await asyncio.gather(*calls, return_exceptions=True)
+        self._started.clear()
         await self.backend.close()
 
 

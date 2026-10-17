@@ -14,17 +14,19 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-import weakref
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from roomkit.core.exceptions import TurnLinkError
+from roomkit.core.task_utils import cancel_reason
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.steering import Cancel as SteeringCancel
 from roomkit.models.steering import SteeringDirective
 from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
 from roomkit.turns._codec import decode_end, decode_item, decode_output, rebuild_error
 from roomkit.turns._owner_calls import OwnerCalls
+from roomkit.turns._owner_inputs import OwnerInputs
+from roomkit.turns._remote_stream import RemoteStream
 from roomkit.turns.base import heartbeat_tick
 from roomkit.turns.wire import (
     Accepted,
@@ -35,6 +37,8 @@ from roomkit.turns.wire import (
     Error,
     Heartbeat,
     HostCall,
+    InputClosed,
+    InputRequest,
     Item,
     Output,
     Pull,
@@ -53,28 +57,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.turns")
 
-# The closes of streams their reader dropped, held until they end.
-_DROPPED_CLOSES: set[asyncio.Task[None]] = set()
-
 
 def _cancel_reason(cancelled: asyncio.CancelledError) -> str:
-    """The reason a cancellation names, when its canceller gave one."""
-    reason = cancelled.args[0] if cancelled.args else None
-    return reason if isinstance(reason, str) and reason else "cancelled"
+    """The reason a cancellation names, ``cancelled`` when it names none."""
+    return cancel_reason(cancelled) or "cancelled"
 
 
-def _close_dropped(turn: OwnerTurn, loop: asyncio.AbstractEventLoop) -> None:
-    """Close the stream of *turn*, which its reader dropped unclosed: the
-    executor closes the channel's, as a collected generator would be."""
-    if turn.over or loop.is_closed():
-        return
-
-    def start() -> None:
-        task = loop.create_task(turn.close_stream())
-        _DROPPED_CLOSES.add(task)
-        task.add_done_callback(_DROPPED_CLOSES.discard)
-
-    loop.call_soon_threadsafe(start)
+def _cut_end(start: ToolCallStartMarker) -> ToolCallEndMarker:
+    """The end of a call its turn's cut left open."""
+    return ToolCallEndMarker(
+        tool_name=start.tool_name,
+        tool_id=start.tool_id,
+        arguments=start.ran_with if start.ran_with is not None else start.arguments,
+        status="failed",
+        error="cancelled",
+        outcome="cancelled",
+    )
 
 
 class OwnerTurn:
@@ -96,11 +94,13 @@ class OwnerTurn:
         tools: OwnerTools | None = None,
         held_calls: set[asyncio.Task[None]] | None = None,
         host: OwnerHost | None = None,
+        inputs: OwnerInputs | None = None,
     ) -> None:
         self._link = link
         self._timeouts = timeouts
         held = held_calls if held_calls is not None else set()
         self._calls = OwnerCalls(link.request, tools, host, self._send_result, held)
+        self._inputs = inputs if inputs is not None else OwnerInputs(timeouts.input_hold)
         self._accepted = False
         self._over = False
         self._record: ResponseMetadata | None = None
@@ -110,6 +110,7 @@ class OwnerTurn:
         self._waiting: contextvars.Context | None = None
         self._steers: dict[str, asyncio.Future[int | None]] = {}
         self._steer_cut = False
+        self._cut_ends: list[ToolCallEndMarker] = []
         loop = asyncio.get_running_loop()
         self._beat = loop.create_task(self._beat_while_open())
         self._pump = loop.create_task(self._read_frames(), context=contextvars.Context())
@@ -155,6 +156,10 @@ class OwnerTurn:
 
     async def read_item(self) -> Any:
         """The stream's next item; ``StopAsyncIteration`` at its end."""
+        if self._cut_ends:
+            return self._cut_ends.pop(0)
+        if self._over and self._steer_cut:
+            raise StopAsyncIteration
         await self._link.send(Pull())
         try:
             seq, frame = await self._next_main_with_seq()
@@ -171,8 +176,24 @@ class OwnerTurn:
             raise rebuild_error(frame.error)
         self._finish()
         if self._steer_cut:
+            # Cut by a steering Cancel: the calls it left open end cancelled,
+            # one per read, then the stream (RFC §10.6.4).
+            self._cut_ends = self._open_call_ends()
+            if self._cut_ends:
+                return self._cut_ends.pop(0)
             raise StopAsyncIteration
         raise TurnLinkError("executor_lost", "The turn ended in the middle of its stream")
+
+    def _open_call_ends(self) -> list[ToolCallEndMarker]:
+        """The end of every call the stream started and never ended: its own
+        when the executor sent it early, else a cut one."""
+        ends = []
+        for seq in sorted(self._starts):
+            start = self._starts.pop(seq)
+            end = self._early_ends.pop(seq, None) or start.ended or _cut_end(start)
+            start.ended = end
+            ends.append(end)
+        return ends
 
     async def close_stream(self) -> None:
         """Close the stream: the executor closes the channel's, a running
@@ -278,6 +299,14 @@ class OwnerTurn:
                     return
         except TurnLinkError as lost:
             self._main.put_nowait(lost)
+        except Exception as exc:
+            logger.exception("Turn %s: its frames could not be read", self._link.request.turn_id)
+            broken = TurnLinkError("frame_invalid", f"The turn's frames could not be read: {exc}")
+            broken.__cause__ = exc
+            self._main.put_nowait(broken)
+            await self._send_best_effort(Cancel(reason="frame_invalid"))
+        finally:
+            # However the reading ends, the turn is over for the owner.
             self._finish()
 
     def _apply(self, seq: int, frame: Frame) -> bool:
@@ -302,6 +331,10 @@ class OwnerTurn:
             self._calls.start(frame, self._waiting)
         elif isinstance(frame, CallCancel):
             self._calls.withdraw(frame.call_id)
+        elif isinstance(frame, InputRequest):
+            self._inputs.opened(self, frame)
+        elif isinstance(frame, InputClosed):
+            self._inputs.closed(frame.request_id)
         elif isinstance(frame, SteerResult):
             if (reached := self._steers.get(frame.steer_id)) is not None and not reached.done():
                 reached.set_result(frame.loops)
@@ -371,6 +404,7 @@ class OwnerTurn:
         if self._pump is not asyncio.current_task():
             self._pump.cancel()
         self._calls.cancel_all()
+        self._inputs.turn_ended(self)
         for reached in self._steers.values():
             if not reached.done():
                 reached.set_result(0)
@@ -382,6 +416,10 @@ class OwnerTurn:
         """Answer a call of the turn, while the turn is still the owner's."""
         if not self._over:
             await self._link.send(message)
+
+    async def send_control(self, message: Control) -> None:
+        """Send *message* to the turn's executor while the turn is the owner's."""
+        await self._send_result(message)
 
     async def _send_best_effort(self, message: Control) -> None:
         try:
@@ -395,50 +433,3 @@ class OwnerTurn:
             await heartbeat_tick(self._timeouts.heartbeat_interval)
             if not self._over:
                 await self._send_best_effort(Heartbeat())
-
-
-class RemoteStream:
-    """The owner's copy of a turn's response stream: each read pulls one
-    item from the executor, closing it closes the channel's (RFC §10.6.4)."""
-
-    def __init__(self, turn: OwnerTurn) -> None:
-        self._turn = turn
-        self._reading = False
-        self._done = False
-        # A stream its reader drops without closing it is closed for it.
-        self._dropped = weakref.finalize(self, _close_dropped, turn, asyncio.get_running_loop())
-
-    def __aiter__(self) -> RemoteStream:
-        return self
-
-    async def __anext__(self) -> Any:
-        if self._done:
-            raise StopAsyncIteration
-        if self._reading:
-            raise RuntimeError("anext(): asynchronous generator is already running")
-        self._reading = True
-        try:
-            return await self._turn.read_item()
-        except BaseException:
-            self._done = True
-            self._dropped.detach()
-            raise
-        finally:
-            self._reading = False
-
-    def drop(self) -> None:
-        """Give the stream up unread: it is closed in the background, as its
-        collection would close it."""
-        if not self._done and not self._reading:
-            self._done = True
-            self._dropped.detach()
-            _close_dropped(self._turn, asyncio.get_running_loop())
-
-    async def aclose(self) -> None:
-        if self._done:
-            return
-        if self._reading:
-            raise RuntimeError("aclose(): asynchronous generator is already running")
-        self._done = True
-        self._dropped.detach()
-        await self._turn.close_stream()

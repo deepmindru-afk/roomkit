@@ -7,6 +7,7 @@ The default :class:`InMemoryTurnBackend` keeps it in the owner's process.
 
 from __future__ import annotations
 
+from roomkit.core._turn_scope import current_turn_id
 from roomkit.turns.base import ExecutorLink, OwnerTools, TurnBackend, TurnLink, TurnTimeouts
 from roomkit.turns.executor import TurnExecutor
 from roomkit.turns.host import TurnHost, current_turn_host
@@ -27,4 +28,5 @@ __all__ = [
     "TurnRequest",
     "TurnTimeouts",
     "current_turn_host",
+    "current_turn_id",
 ]

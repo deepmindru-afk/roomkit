@@ -93,7 +93,7 @@ class OwnerCalls:
         """The executor withdrew the call: it is cancelled."""
         task = self._running.get(call_id)
         if task is not None and not task.cancelling():
-            task.cancel()
+            task.cancel("withdrawn")
 
     def cancel_all(self) -> None:
         """The turn is over for the owner: every call still running is
@@ -101,7 +101,7 @@ class OwnerCalls:
         current = asyncio.current_task()
         for task in list(self._running.values()):
             if task is not current and not task.cancelling():
-                task.cancel()
+                task.cancel("turn_ended")
 
     def _forget(self, call_id: str, task: asyncio.Task[None]) -> None:
         self._running.pop(call_id, None)

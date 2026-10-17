@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `RoomKit.answer_input(request_id, value)` and
+  `RoomKit.reject_input(request_id, reason)` (RMK-811, RFC §10.6.5): a
+  human-input request of a turn is answered on the room owner, wherever the
+  turn runs. The executor sends the request (`input_request`) before
+  `ON_USER_INPUT_REQUIRED` fires; the owner keeps its record, holds an answer
+  that comes before it for `TurnTimeouts.input_hold` (60 s), answers it once
+  (`input_answer`, a second answer returning `False`), and closes it when the
+  request settles where the tool runs (a hook's `BLOCK`, its timeout, a
+  release: `input_closed`) or its turn ends. `HumanInputHandler.resolve()` and
+  `reject()` forward a request of such a turn to the same record, so both
+  doors answer it once.
+
 - `RoomKit.steer(directive, channel_id, *, room_id=None, turn_id=None)`
   (RMK-811, RFC §21.3, §10.6.8): steering through the turn backend. The kit
   resolves the turns of the channel it started and that still run (the turn
@@ -17,11 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directive as a `steer` on each turn's link, and answers the sum of the
   loops each reached (`steer_result`). The executor applies it to the loops
   of that turn (`AIChannel.steer(..., turn_id=...)`, a loop knowing its
-  turn); a channel without steering takes a `Cancel` as its turn's cancel,
-  counted as one, and its reader reads the end as a closed stream's. The
-  owner now reads a turn's frames as they come, so a steering result or a
-  call is heard while nobody reads the turn's stream. A discussion cuts an
-  AI agent's turn through it.
+  turn; a `steer()` a channel overrides without `turn_id` is given the
+  turn's room instead, and one that raises reaches nothing). A channel
+  without steering takes a `Cancel` as its turn's cancel, counted as one: its
+  reader reads the end as a closed stream's, each call left open ending
+  cancelled. `current_turn_id()` gives a turn's tools and hooks the id
+  `turn_id` addresses. The owner now reads a turn's frames as they come, so
+  a steering result or a call is heard while nobody reads the turn's stream,
+  and a frame it cannot read fails the turn. A discussion cuts an AI agent's
+  turn through it.
 
 - `TurnHost` and `current_turn_host()` (RMK-811, RFC §10.6.5): how a host's
   tool, or a hook the executor fires, reaches a room from a turn wherever the
@@ -194,8 +210,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A cancelled delivery tells its turn's executor why (RMK-811, RFC §10.6.8):
   the cascade's reason (`superseded`, `caller_cancelled`, `kit_closed`...)
-  rides its cancellation down to the turn, where every turn read
-  `cancelled`.
+  rides its cancellation down to the turn and the turn's own work, a turn
+  streamed to a transport included, where every turn read `cancelled`.
 
 - An event a hook injects into a room where a strategy takes an agent's turns
   no longer runs the strategy (RMK-814): its delivery to a supervisor ran the

@@ -162,6 +162,13 @@ _HELD_RUNS: contextvars.ContextVar[tuple[list[asyncio.Task[Any]], ...]] = contex
 the cell :func:`hold_task` fills once it has created the run's task."""
 
 
+def cancel_reason(cancelled: BaseException) -> str | None:
+    """The reason a cancellation names, when its canceller gave one
+    (``task.cancel(reason)``): what a turn tells its executor (RFC §10.6.8)."""
+    reason = cancelled.args[0] if cancelled.args else None
+    return reason if isinstance(reason, str) and reason else None
+
+
 def held_runs() -> tuple[asyncio.Task[Any], ...]:
     """The kit-held runs (:func:`hold_task`) the current code runs under: a
     ``close()`` called from one of them must not wait for it."""

@@ -9,9 +9,10 @@ from typing import Any
 
 import pytest
 
-from roomkit import RoomKit
+from roomkit import RoomKit, current_turn_id
 from roomkit.channels.agent import Agent
 from roomkit.channels.base import Channel
+from roomkit.core.exceptions import TurnLinkError
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -19,10 +20,13 @@ from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.room import Room
 from roomkit.models.steering import Cancel, InjectMessage, SteeringDirective
+from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor
+from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, TurnTimeouts
 from roomkit.turns._executor_turn import ExecutorTurn
+from roomkit.turns._owner_turn import OwnerTurn
+from roomkit.turns.owner import turn_request
 from tests.test_framework import SimpleChannel
 
 WAIT = AITool(name="wait_here", description="Wait.", parameters={"type": "object"})
@@ -237,3 +241,204 @@ async def test_a_directive_other_than_cancel_reaches_no_channel_without_steering
     assert output.response_stream is not None
     assert [item async for item in output.response_stream] == ["first", "second"]
     await client.close()
+
+
+# -- What the review of the first steering commit found -------------------------
+
+
+class Rendering(SimpleChannel):
+    """A streaming transport that renders everything it is handed."""
+
+    @property
+    def supports_streaming_delivery(self) -> bool:
+        return True
+
+    async def deliver_stream(
+        self, stream: Any, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        async for _ in stream:
+            pass
+        return ChannelOutput.empty()
+
+
+async def test_a_cancelled_delivery_streamed_to_a_transport_tells_the_executor_why(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reasons: list[str] = []
+    cut = ExecutorTurn._cut_turn
+
+    def spy(self: ExecutorTurn, reason: str) -> None:
+        reasons.append(reason)
+        cut(self, reason)
+
+    monkeypatch.setattr(ExecutorTurn, "_cut_turn", spy)
+    tool = Paused()
+    call = AIResponse(content="", tool_calls=[AIToolCall(id="c1", name="wait_here", arguments={})])
+    provider = MockAIProvider(ai_responses=[call, AIResponse(content="never")])
+    agent = Agent("agent", provider=provider, role="agent", tools=[WAIT], tool_handler=tool)
+    kit = RoomKit()
+    kit.register_channel(Rendering("ops"))
+    kit.register_channel(agent)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "ops")
+    await kit.attach_channel("r1", "agent", category=ChannelCategory.INTELLIGENCE)
+    first = await kit.process_inbound(_message(), room_id="r1", defer_delivery=True)
+    await asyncio.wait_for(tool.started.wait(), 2)
+
+    assert first.delivery is not None
+    await first.delivery.cancel(reason="superseded")
+
+    assert reasons and set(reasons) == {"superseded"}
+    await kit.close()
+
+
+async def test_a_turn_addressed_by_the_id_its_tool_reads() -> None:
+    tool = Paused()
+    turn_ids: list[str | None] = []
+
+    async def handler(name: str, arguments: dict[str, Any]) -> str:
+        turn_ids.append(current_turn_id())
+        return await tool(name, arguments)
+
+    kit, agent = await _kit(tool, "done")
+    agent._user_tool_handler = handler  # type: ignore[assignment]
+    turn = asyncio.create_task(kit.process_inbound(_message(), room_id="r1"))
+    await asyncio.wait_for(tool.started.wait(), 2)
+
+    [turn_id] = turn_ids
+    assert turn_id is not None
+    reached = await kit.steer(InjectMessage(content="Mind the budget."), "agent", turn_id=turn_id)
+    tool.release.set()
+    await asyncio.wait_for(turn, 5)
+
+    assert reached == 1
+    assert any("Mind the budget." in str(m.content) for m in agent.provider.calls[1].messages)
+    await kit.close()
+
+
+async def test_a_cancel_reaches_every_turn_of_the_room_another_directive_the_latest() -> None:
+    channel = Steerable()
+    client = _client(channel)
+    first = await _start(client)
+    second = await _start(client)
+    turn_ids = [turn.request.turn_id for turn in client._started]
+
+    assert await client.steer(InjectMessage(content="x"), "agent", room_id="room") == 1
+    assert channel.steered[-1][1] == turn_ids[1]
+    assert await client.steer(Cancel(), "agent", room_id="room") == 2
+    channel.release.set()
+    for output in (first, second):
+        assert output.response_stream is not None
+        await output.response_stream.aclose()
+    await client.close()
+
+
+class OldSteerable(Held):
+    """A steer() of the channel's own, from before turns were addressed."""
+
+    def steer(
+        self,
+        directive: SteeringDirective,
+        *,
+        loop_id: str | None = None,
+        room_id: str | None = None,
+    ) -> int:
+        self.steered.append((directive, room_id))
+        return 1
+
+
+class BrokenSteerable(Held):
+    def steer(self, directive: SteeringDirective, *, turn_id: str | None = None) -> int:
+        raise RuntimeError("steering broke")
+
+
+async def test_a_steer_of_the_channels_own_older_shape_takes_the_turns_room() -> None:
+    channel = OldSteerable()
+    client = _client(channel)
+    output = await _start(client)
+
+    assert await asyncio.wait_for(client.steer(Cancel(), "agent", room_id="room"), 2) == 1
+    assert channel.steered == [(Cancel(), "room")]
+    # The turn's controls still run: its stream reads to its end.
+    channel.release.set()
+    assert output.response_stream is not None
+    assert [item async for item in output.response_stream] == ["first", "second"]
+    await client.close()
+
+
+async def test_a_steer_that_fails_reaches_nothing_and_the_turn_goes_on() -> None:
+    channel = BrokenSteerable()
+    client = _client(channel)
+    output = await _start(client)
+
+    assert await asyncio.wait_for(client.steer(Cancel(), "agent", room_id="room"), 2) == 0
+    channel.release.set()
+    assert output.response_stream is not None
+    assert [item async for item in output.response_stream] == ["first", "second"]
+    await client.close()
+
+
+class HeldInACall(Held):
+    """A stream that starts a call, then waits."""
+
+    async def _stream(self) -> AsyncIterator[Any]:
+        yield ToolCallStartMarker(tool_name="lookup", tool_id="c1", arguments={"q": "x"})
+        await self.release.wait()
+
+
+async def test_a_call_a_steering_cancel_left_open_ends_cancelled() -> None:
+    channel = HeldInACall()
+    client = _client(channel)
+    output = await _start(client)
+    assert output.response_stream is not None
+    stream = output.response_stream
+    start = await anext(stream)
+
+    assert await asyncio.wait_for(client.steer(Cancel(), "agent", room_id="room"), 2) == 1
+    rest = [item async for item in stream]
+
+    [end] = rest
+    assert isinstance(end, ToolCallEndMarker)
+    assert (end.tool_id, end.outcome, end.status) == ("c1", "cancelled", "failed")
+    assert start.ended is end
+    await client.close()
+
+
+class _BrokenLink:
+    """A link whose transport breaks on the first read."""
+
+    def __init__(self, request: Any) -> None:
+        self.request = request
+        self.taken = True
+
+    async def receive(self) -> Any:
+        raise RuntimeError("transport broke")
+
+    async def send(self, message: Any) -> None:
+        return None
+
+    def release(self) -> None:
+        return None
+
+
+async def test_a_turn_whose_frames_cannot_be_read_fails_rather_than_hangs() -> None:
+    request = turn_request(
+        RoomEvent(
+            room_id="room",
+            source=EventSource(channel_id="sms", channel_type=ChannelType.SMS),
+            content=TextContent(body="hello"),
+        ),
+        ChannelBinding(
+            channel_id="agent",
+            room_id="room",
+            channel_type=ChannelType.AI,
+            category=ChannelCategory.INTELLIGENCE,
+        ),
+        RoomContext(room=Room(id="room")),
+    )
+    turn = OwnerTurn(_BrokenLink(request), TurnTimeouts())  # type: ignore[arg-type]
+
+    with pytest.raises(TurnLinkError) as raised:
+        await asyncio.wait_for(turn.output(), 2)
+
+    assert raised.value.reason == "frame_invalid"

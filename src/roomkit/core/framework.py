@@ -542,6 +542,19 @@ class RoomKit(
         """
         return await self._turns.steer(directive, channel_id, room_id=room_id, turn_id=turn_id)
 
+    async def answer_input(self, request_id: str, value: str) -> bool:
+        """Answer the human-input request *request_id* of a turn this kit
+        started, wherever the turn runs (RFC §10.6.5): the tool waiting on it
+        reads *value*. An answer for a request not open yet is held for
+        ``input_hold`` seconds (60 by default). ``False`` for a request
+        already answered or rejected."""
+        return await self._turns.inputs.answer(request_id, value)
+
+    async def reject_input(self, request_id: str, reason: str = "") -> bool:
+        """Reject the human-input request *request_id*: the tool reads it as
+        a refusal (RFC §9.3). ``False`` for one already settled."""
+        return await self._turns.inputs.reject(request_id, reason)
+
     def hooks_for(self, trigger: HookTrigger) -> HookEngine:
         """The engine *trigger*'s hooks register on (RFC §10.6.6): the kit's
         turn executor's for a trigger a turn fires, the kit's own otherwise.

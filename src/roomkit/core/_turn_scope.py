@@ -29,6 +29,9 @@ def enter_turn(turn_id: str) -> None:
 
 
 def current_turn_id() -> str | None:
-    """The id of the innermost turn the current code runs under, if any."""
+    """The id of the turn the current code runs in (the innermost, when a
+    turn runs inside another): inside a turn's work on its executor, its
+    tools and hooks included, and inside a call its room owner serves for
+    it. What ``RoomKit.steer(turn_id=...)`` addresses. ``None`` outside a turn."""
     turns = _TURNS_RUN_UNDER.get()
     return turns[-1] if turns else None

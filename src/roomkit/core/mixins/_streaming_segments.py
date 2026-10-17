@@ -13,6 +13,7 @@ from roomkit.channels._tool_event_result import tool_event_payload
 from roomkit.core.event_router import stream_record
 from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT
 from roomkit.core.mixins.inbound_locked import _Blocked
+from roomkit.core.task_utils import cancel_reason
 from roomkit.models.enums import EventStatus, EventType, Visibility
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.response_metadata import recorded_turn_end
@@ -320,13 +321,13 @@ class SegmentWriter:
                 async for _ in items:
                     pass
         except asyncio.CancelledError as cut:
-            await self.end_cancelled(reader, cut.args[0] if cut.args else None)
+            await self.end_cancelled(reader, cancel_reason(cut))
             raise
         except Exception:
             await self.end_failed(reader)
             raise
 
-    async def end_cancelled(self, reader: ResponseReader, reason: Any = None) -> None:
+    async def end_cancelled(self, reader: ResponseReader, reason: str | None = None) -> None:
         """Write what a cancelled turn leaves: open calls closed, text kept as
         cancelled, and its record ``cancelled``, as a turn its reader stopped.
 
@@ -334,8 +335,7 @@ class SegmentWriter:
         call closed ``failed``, so no start row stays pending (RFC §12.2 step
         13s).
         """
-        why = reason if isinstance(reason, str) else None
-        await self.close_calls(await reader.abandon(reason=why))
+        await self.close_calls(await reader.abandon(reason=reason))
         self.end_stopped()
         await self.flush_text(cancelled=True)
         # Text already written at a call's boundary carries no record of its

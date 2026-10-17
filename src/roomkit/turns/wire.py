@@ -135,6 +135,25 @@ class End(BaseModel):
     type: Literal["end"] = "end"
 
 
+class InputRequest(BaseModel):
+    """A tool of the turn asked a human for input (RFC §10.6.5): sent before
+    ``ON_USER_INPUT_REQUIRED`` fires, so the owner can answer it at once."""
+
+    type: Literal["input_request"] = "input_request"
+    request_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+
+
+class InputClosed(BaseModel):
+    """A request closed on the executor without the owner's answer (a hook's
+    block, its bound, a release)."""
+
+    type: Literal["input_closed"] = "input_closed"
+    request_id: str
+    reason: str
+
+
 class SteerResult(BaseModel):
     """How many loops a ``steer`` reached; ``None`` for a channel without
     steering, whose owner then cuts the turn on a ``Cancel``."""
@@ -223,6 +242,16 @@ class Steer(BaseModel):
     directive: SteeringDirective = Field(discriminator="type")
 
 
+class InputAnswer(BaseModel):
+    """The outcome the owner recorded for an ``input_request``."""
+
+    type: Literal["input_answer"] = "input_answer"
+    request_id: str
+    outcome: Literal["answered", "rejected"]
+    value: str | None = None
+    reason: str | None = None
+
+
 class ToolResult(BaseModel):
     """The owner's answer to one ``tool_call``."""
 
@@ -261,11 +290,13 @@ Frame = Annotated[
     | ToolCall
     | HostCall
     | CallCancel
-    | SteerResult,
+    | SteerResult
+    | InputRequest
+    | InputClosed,
     Field(discriminator="type"),
 ]
 Control = Annotated[
-    Pull | Close | Cancel | Heartbeat | Steer | ToolResult | HostResult,
+    Pull | Close | Cancel | Heartbeat | Steer | InputAnswer | ToolResult | HostResult,
     Field(discriminator="type"),
 ]
 
