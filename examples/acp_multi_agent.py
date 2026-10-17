@@ -261,7 +261,6 @@ async def main(args: argparse.Namespace) -> None:
     )
     kit.register_channel(cli)
 
-    agents: dict[str, ACPChannel] = {}
     for spec in AGENTS:
         env: dict[str, str] = {}
         if spec.channel_id == "claude-code":
@@ -293,7 +292,6 @@ async def main(args: argparse.Namespace) -> None:
             context_contributor=team_rules,
         )
         kit.register_channel(channel)
-        agents[spec.channel_id] = channel
 
     room_id = "coding-agents"
     await kit.create_room(room_id=room_id)
@@ -341,10 +339,12 @@ async def main(args: argparse.Namespace) -> None:
             f" · {event.latency_ms}ms{spend}\n"
         )
 
-    def agent_options() -> list[tuple[str, str]]:
+    async def agent_options() -> list[tuple[str, str]]:
         options = []
         for spec in AGENTS:
-            model = agents[spec.channel_id].session_config(room_id).get("model")
+            # A channel call reaches the room's session wherever it runs.
+            config = await kit.channel_call(spec.channel_id, room_id, "session_config")
+            model = config.get("model")
             state = f" · {model}" if model else " · no session yet"
             options.append((spec.channel_id, f"@{spec.channel_id}{state}"))
         return options
@@ -360,7 +360,7 @@ async def main(args: argparse.Namespace) -> None:
             print(f"\nNow talking to @{target}.\n")
             return
         chosen = await terminal_select(
-            agent_options(),
+            await agent_options(),
             title="Address which agent?",
             default=addressed.agent_id,
         )
@@ -370,19 +370,22 @@ async def main(args: argparse.Namespace) -> None:
         print(f"\nNow talking to @{chosen}.\n")
 
     async def switch_model(requested: str) -> None:
-        channel = agents[addressed.agent_id]
+        agent_id = addressed.agent_id
         if not requested:
-            options = next(
-                (item for item in channel.config_options(room_id) if item.get("id") == "model"),
-                None,
-            )
-            current = channel.session_config(room_id).get("model", "unknown")
+            listed = await kit.channel_call(agent_id, room_id, "config_options")
+            options = next((item for item in listed if item.get("id") == "model"), None)
+            config = await kit.channel_call(agent_id, room_id, "session_config")
+            current = config.get("model", "unknown")
             choices = ", ".join(entry["value"] for entry in (options or {}).get("options", []))
             print(f"\n@{addressed.agent_id} model: {current}")
             print(f"Available: {choices or 'unknown until the first turn'}\n")
             return
         try:
-            values = await channel.set_config_option(room_id, "model", requested)
+            # Through the kit, the value belongs to the room: a session the
+            # agent reopens later is set to it again.
+            values = await kit.channel_call(
+                agent_id, room_id, "set_config_option", config_id="model", value=requested
+            )
         except Exception as exc:  # the agent rejects unknown values
             print(f"\nCould not switch model: {exc}\n")
             return

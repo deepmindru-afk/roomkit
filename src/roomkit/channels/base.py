@@ -441,6 +441,37 @@ class Channel(ABC):
         Nothing is rolled back if this raises — the binding is already gone and
         the detach already announced — but the error reaches the caller instead
         of disappearing into a log.  Default: no-op.
+
+        An intelligence channel is attached and detached through the turn
+        backend (RFC §10.6.3): its executor calls these two, and logs what
+        they raise, which no longer reaches the caller.  It also calls
+        ``on_room_detached`` to drop a room's state a turn elsewhere made
+        stale (RFC §10.6.2), so it lets go of everything kept for the room.
+        """
+
+    async def channel_call(self, room_id: str, verb: str, arguments: dict[str, Any]) -> Any:
+        """Run one of the channel's per-room verbs for *room_id* (RFC §10.6.3).
+
+        What ``kit.channel_call(channel_id, room_id, verb, **arguments)``
+        reaches, on the executor holding the room's state: an ACP agent's
+        ``set_config_option``.  The result must be data JSON carries.  A
+        channel documents its verbs.  Default: none, every verb raises
+        ``ValueError``.
+        """
+        raise ValueError(f"Channel {self.channel_id!r} has no per-room verb {verb!r}")
+
+    def room_state(self, room_id: str) -> dict[str, Any]:
+        """What the channel keeps for *room_id* that belongs to the room (RFC
+        §6.4): the owner stores it with the room when a channel call changes
+        it, so the room's next executor finds it.  JSON data.  Default:
+        nothing.
+        """
+        return {}
+
+    def restore_room_state(self, room_id: str, state: dict[str, Any]) -> None:  # noqa: B027
+        """Take back what the room keeps for the channel (*state*, as
+        :meth:`room_state` gave it), before a turn or a channel call for
+        *room_id*.  A channel holding its own copy keeps it.  Default: no-op.
         """
 
     def capabilities(self) -> ChannelCapabilities:

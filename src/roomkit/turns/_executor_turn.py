@@ -403,7 +403,8 @@ class ExecutorTurn:
         elif isinstance(message, InputAnswer):
             await self._inputs.answer(message)
         elif isinstance(message, Steer):
-            await self._send(SteerResult(steer_id=message.steer_id, loops=self._steer(message)))
+            loops = await self._steer(message)
+            await self._send(SteerResult(steer_id=message.steer_id, loops=loops))
 
     async def _beat(self) -> None:
         """Tell the owner the turn runs; cut it when the owner falls silent."""
@@ -422,10 +423,11 @@ class ExecutorTurn:
     def turn_id(self) -> str:
         return self._request.turn_id
 
-    def _steer(self, message: Steer) -> int | None:
-        """Apply a steering directive to this turn's loops: how many it
-        reached; ``None`` for a channel without steering, or not built yet,
-        whose owner cuts the turn on a ``Cancel`` (RFC §10.6.8)."""
+    async def _steer(self, message: Steer) -> int | None:
+        """Apply a steering directive to this turn's loops, through the
+        channel's ``steer()``, sync or async: how many it reached; ``None``
+        for a channel without steering, or not built yet, whose owner cuts
+        the turn on a ``Cancel`` (RFC §10.6.8)."""
         steer = getattr(self._built, "steer", None)
         if steer is None:
             return None
@@ -438,6 +440,8 @@ class ExecutorTurn:
         )
         try:
             reached = steer(message.directive, **address)
+            if inspect.isawaitable(reached):
+                reached = await reached
         except Exception:
             logger.exception("Turn %s: the channel's steer() failed", self.turn_id)
             return 0

@@ -13,16 +13,25 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-from collections import deque
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.exceptions import TurnLinkError
+from roomkit.turns._rooms import RoomRecords
 from roomkit.turns.base import ExecutorLink, MessageOrder, TurnBackend, TurnLink
-from roomkit.turns.wire import ControlEnvelope, FrameEnvelope, Pull, TurnRequest
+from roomkit.turns.wire import (
+    ChannelCall,
+    ChannelControlEnvelope,
+    ChannelResult,
+    ControlEnvelope,
+    FrameEnvelope,
+    Pull,
+    RoomDetached,
+    TurnRequest,
+)
 
 if TYPE_CHECKING:
     from roomkit.turns.executor import TurnExecutor
-    from roomkit.turns.wire import Control, Frame
+    from roomkit.turns.wire import ChannelControl, Control, Frame
 
 # Put on a pipe when the backend closes: whoever waits on it learns the turn
 # will not end.
@@ -137,50 +146,71 @@ class _ExecutorLink(ExecutorLink):
 class InMemoryTurnBackend(TurnBackend):
     """Turns carried in this process, serialized like any other (RFC §10.6).
 
-    A turn no executor declares waits for one to serve; the owner fails it
-    once its accept timeout passes.
+    A room's turns of a channel go to the executor that took its last turn
+    or channel call while it serves and declares the channel, else to the
+    first that declares it (RFC §10.6.7). Every executor is in this process,
+    so a turn none declares fails at once with ``no_executor``.
     """
 
     def __init__(self) -> None:
         self._executors: list[TurnExecutor] = []
-        self._waiting: deque[_MemoryTurn] = deque()
+        # Where each room's state of a channel is: the executor that took its
+        # last turn or channel call.
+        self._holders: RoomRecords[TurnExecutor] = RoomRecords()
         self._turns: set[_MemoryTurn] = set()
         self._closed = False
 
     async def submit(self, request: TurnRequest) -> TurnLink:
         if self._closed:
             raise TurnLinkError("backend_closed")
+        executor = self._place(request.channel_id, request.room_id)
         turn = _MemoryTurn(request)
         self._turns.add(turn)
-        if not self._hand_over(turn):
-            self._waiting.append(turn)
+        turn.taken = True
+        executor.take(_ExecutorLink(turn))
         return _OwnerLink(turn, request, self)
 
     async def serve(self, executor: TurnExecutor) -> None:
         if executor not in self._executors:
             self._executors.append(executor)
-        waiting, self._waiting = self._waiting, deque()
-        for turn in waiting:
-            if not self._hand_over(turn):
-                self._waiting.append(turn)
+
+    async def control(self, message: ChannelControl) -> ChannelResult | None:
+        if self._closed:
+            raise TurnLinkError("backend_closed")
+        raw = ChannelControlEnvelope(message=message).model_dump_json()
+        if isinstance(message, ChannelCall):
+            executor = self._place(message.channel_id, message.room_id)
+            answer = await executor.control(_crossed(raw))
+            if answer is None:
+                return ChannelResult()
+            return ChannelResult.model_validate_json(answer.model_dump_json())
+        if isinstance(message, RoomDetached):
+            self._holders.pop(message.channel_id, message.room_id)
+        for executor in [e for e in self._executors if e.declares(message.channel_id)]:
+            await executor.control(_crossed(raw))
+        return None
 
     async def close(self) -> None:
         self._closed = True
         for turn in list(self._turns):
             turn.shut()
         self._turns.clear()
-        self._waiting.clear()
 
-    def _hand_over(self, turn: _MemoryTurn) -> bool:
-        """Give *turn* to an executor that declares its channel, if one does."""
-        executor = next((e for e in self._executors if e.declares(turn.channel_id)), None)
-        if executor is None:
-            return False
-        turn.taken = True
-        executor.take(_ExecutorLink(turn))
-        return True
+    def _place(self, channel_id: str, room_id: str) -> TurnExecutor:
+        """The executor a room's turn or channel call of *channel_id* goes to,
+        recorded as the one holding the room's state from now."""
+        holder = self._holders.get(channel_id, room_id)
+        if holder is None or not holder.declares(channel_id):
+            holder = next((e for e in self._executors if e.declares(channel_id)), None)
+        if holder is None:
+            raise TurnLinkError("no_executor", f"No executor serves channel {channel_id!r}")
+        self._holders.put(channel_id, room_id, holder)
+        return holder
 
     def _forget(self, turn: _MemoryTurn) -> None:
         self._turns.discard(turn)
-        if turn in self._waiting:
-            self._waiting.remove(turn)
+
+
+def _crossed(raw: str) -> ChannelControl:
+    """A channel control message as the executor parses it."""
+    return ChannelControlEnvelope.model_validate_json(raw).message

@@ -290,10 +290,16 @@ from roomkit.tools.base import Tool
 from roomkit.tools.human_input import HumanInputHandler, HumanInputToolHandler
 from roomkit.tools.policy import RoleOverride, ToolPolicy
 from roomkit.turns import (
+    ChannelCall,
+    ChannelControl,
+    ChannelResult,
     ExecutorLink,
     InMemoryTurnBackend,
     OwnerTool,
     OwnerTools,
+    PreviousTurn,
+    RoomAttached,
+    RoomDetached,
     TurnBackend,
     TurnClient,
     TurnExecutor,
@@ -431,10 +437,16 @@ __all__ = [
     "WaitForIdle",
     # Turn execution (RFC §10.6)
     "TURN_TRIGGERS",
+    "ChannelCall",
+    "ChannelControl",
+    "ChannelResult",
     "ExecutorLink",
     "InMemoryTurnBackend",
     "OwnerTool",
     "OwnerTools",
+    "PreviousTurn",
+    "RoomAttached",
+    "RoomDetached",
     "TurnBackend",
     "TurnClient",
     "TurnExecutor",

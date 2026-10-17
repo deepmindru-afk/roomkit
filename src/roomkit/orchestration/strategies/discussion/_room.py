@@ -21,7 +21,6 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from roomkit._media import content_words
-from roomkit.channels.acp import ACPChannel
 from roomkit.core.hooks import HookRegistration
 from roomkit.core.locks import _has_room_lock
 from roomkit.core.task_utils import hold_task
@@ -438,15 +437,13 @@ class DiscussionRoom:
         not started yet has no loop a Cancel reaches and is abandoned."""
         # An agent the discussion no longer holds still has its channel here.
         channel = self.agents.get(agent) or self.kit.channels.get(agent)
-        if isinstance(channel, ACPChannel):
-            # An external agent's turn: its prompt cancelled (RFC §6.4). Idle,
-            # it has none, and the turn given is abandoned below.
-            reached = channel._prompting(self.room_id) and await channel.cancel(self.room_id)
-        elif channel is not None:
-            # Its turn runs through the turn backend: the owner steers it.
-            reached = await self.kit.steer(Cancel(reason=reason), agent, room_id=self.room_id)
-        else:
-            reached = 0
+        # Its turn runs through the turn backend: the owner steers it, an
+        # external agent's prompt cancelled as its own cancel does (RFC §6.4).
+        reached = (
+            await self.kit.steer(Cancel(reason=reason), agent, room_id=self.room_id)
+            if channel is not None
+            else 0
+        )
         if not reached and self.driver is not None:
             await self.driver.cut(agent, reason)
 

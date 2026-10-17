@@ -252,17 +252,20 @@ async def main(args: argparse.Namespace) -> None:
         the session config RoomKit tracks (and the status bar reading it)
         would go stale. Routing the switch through ACP keeps both honest.
         """
-        options = next(
-            (item for item in claude.config_options(room_id) if item.get("id") == "model"),
-            None,
-        )
+        listed = await kit.channel_call(claude.channel_id, room_id, "config_options")
+        options = next((item for item in listed if item.get("id") == "model"), None)
         if not requested:
-            current = claude.session_config(room_id).get("model", "unknown")
+            config = await kit.channel_call(claude.channel_id, room_id, "session_config")
+            current = config.get("model", "unknown")
             choices = ", ".join(entry["value"] for entry in (options or {}).get("options", []))
             print(f"\nModel: {current}\nAvailable: {choices or 'unknown until the first turn'}\n")
             return
         try:
-            values = await claude.set_config_option(room_id, "model", requested)
+            # Through the kit, the value belongs to the room: a session the
+            # agent reopens later is set to it again.
+            values = await kit.channel_call(
+                claude.channel_id, room_id, "set_config_option", config_id="model", value=requested
+            )
         except Exception as exc:  # the agent rejects unknown values
             print(f"\nCould not switch model: {exc}\n")
             return

@@ -135,7 +135,8 @@ async def ask_each_room(
         )
         answer = await asyncio.wait_for(answers.get(), timeout=180)
         print(f"[{room_id}] Claude Code: {answer.response_content.strip()}")
-        print(f"[{room_id}] session mode: {agent.session_config(room_id).get('mode')}")
+        config = await kit.channel_call(agent.channel_id, room_id, "session_config")
+        print(f"[{room_id}] session mode: {config.get('mode')}")
 
 
 if __name__ == "__main__":

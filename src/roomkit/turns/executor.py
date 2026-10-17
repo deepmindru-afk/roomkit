@@ -19,14 +19,18 @@ from roomkit.core._turn_scope import turns_run_under
 from roomkit.core.hooks import HookEngine, HookRegistration, hook_decorator
 from roomkit.core.task_utils import cancel_and_wait
 from roomkit.models.enums import HookExecution
+from roomkit.turns._codec import error_record
+from roomkit.turns._executor_rooms import ExecutorRooms
 from roomkit.turns._executor_turn import ExecutorTurn
 from roomkit.turns.base import TurnTimeouts
+from roomkit.turns.wire import ChannelCall, ChannelResult
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
     from roomkit.core.hooks import AsyncHookFn, SyncHookFn
     from roomkit.models.enums import ChannelDirection, ChannelType, EventType, HookTrigger
     from roomkit.turns.base import ExecutorLink
+    from roomkit.turns.wire import ChannelControl, TurnRequest
 
 logger = logging.getLogger("roomkit.turns")
 
@@ -62,6 +66,7 @@ class TurnExecutor:
         self._turns: dict[asyncio.Task[None], ExecutorTurn] = {}
         self._closed = False
         self._hooks = HookEngine(turns=True)
+        self._rooms = ExecutorRooms(self.executor_id)
 
     @property
     def hooks(self) -> HookEngine:
@@ -139,8 +144,9 @@ class TurnExecutor:
 
     def take(self, link: ExecutorLink) -> None:
         """Start the turn *link* brought; it runs on its own task."""
+        stale = self._rooms.enter(link.request)
         turn = ExecutorTurn(
-            link, self.executor_id, self._channel(link.request.channel_id), self._timeouts
+            link, self.executor_id, self._turn_channel(link.request, stale), self._timeouts
         )
         task = asyncio.get_running_loop().create_task(
             turn.run(),
@@ -164,8 +170,28 @@ class TurnExecutor:
         if running:
             await cancel_and_wait(*running, log_errors_to=logger)
 
+    async def control(self, message: ChannelControl) -> ChannelResult | None:
+        """Apply a channel control message of the owner's (RFC §10.6.3): a
+        ``channel_call``'s result; nothing for ``room_attached`` and
+        ``room_detached``."""
+        try:
+            channel = await self._channel(message.channel_id)
+        except Exception as exc:
+            if isinstance(message, ChannelCall):
+                return ChannelResult(error=error_record(exc))
+            logger.exception("The factory failed to build channel %s", message.channel_id)
+            return None
+        return await self._rooms.apply(channel, message)
+
     def _forget(self, task: asyncio.Task[None]) -> None:
         self._turns.pop(task, None)
+
+    async def _turn_channel(self, request: TurnRequest, stale: bool) -> Channel | None:
+        """The channel of *request*'s turn, readied for its room (RFC §10.6.2)."""
+        channel = await self._channel(request.channel_id)
+        if channel is not None:
+            await self._rooms.prepare(channel, request, stale=stale)
+        return channel
 
     def _channel(self, channel_id: str) -> Awaitable[Channel | None]:
         """The channel the factory gives for *channel_id*, awaited by the turn."""

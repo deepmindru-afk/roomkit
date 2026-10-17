@@ -103,6 +103,8 @@ class OwnerTurn:
         self._calls = OwnerCalls(link.request, tools, host, self._send_result, held)
         self._inputs = inputs if inputs is not None else OwnerInputs(timeouts.input_hold_timeout)
         self._accepted = False
+        self.executor_id: str | None = None
+        """The executor that took the turn, once it said so."""
         self._over = False
         self._record: ResponseMetadata | None = None
         self._starts: dict[int, ToolCallStartMarker] = {}
@@ -319,6 +321,8 @@ class OwnerTurn:
         whether it was one."""
         if isinstance(frame, Accepted | Heartbeat):
             self._accepted = True
+            if isinstance(frame, Accepted):
+                self.executor_id = frame.executor_id
         elif isinstance(frame, Record):
             if self._record is not None:
                 self._record.clear()

@@ -18,10 +18,11 @@ from roomkit.turns._owner_inputs import OwnerInputs
 from roomkit.turns._owner_turn import OwnerTurn
 from roomkit.turns._registry_tools import RegistryOwnerTools
 from roomkit.turns._remote_stream import RemoteStream
+from roomkit.turns._rooms import RoomRecords
 from roomkit.turns.base import TurnTimeouts
 from roomkit.turns.executor import TurnExecutor
 from roomkit.turns.memory import InMemoryTurnBackend
-from roomkit.turns.wire import TurnRequest
+from roomkit.turns.wire import PreviousTurn, RoomDetached, TurnRequest
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
     from roomkit.models.event import RoomEvent
     from roomkit.models.steering import SteeringDirective
     from roomkit.turns.base import OwnerHost, OwnerTools, TurnBackend
-    from roomkit.turns.wire import OwnerTool
+    from roomkit.turns.wire import ChannelControl, ChannelResult, OwnerTool
 
 
 def turn_request(
@@ -43,9 +44,11 @@ def turn_request(
     answers: bool = True,
     strategy_turn: bool = False,
     owner_tools: list[OwnerTool] | None = None,
+    previous_turn: PreviousTurn | None = None,
 ) -> TurnRequest:
     """The request for one turn of *binding*'s channel on *event*, with the
-    tools the owner serves it (*owner_tools*).
+    tools the owner serves it (*owner_tools*) and the room's previous turn
+    of the channel (*previous_turn*).
 
     A discussion's turn mark is this process's: its notes travel in the
     request, and the event goes without it (RFC §10.6.3).
@@ -67,6 +70,7 @@ def turn_request(
         notes=notes,
         in_place=in_place,
         owner_tools=owner_tools or [],
+        previous_turn=previous_turn,
     )
 
 
@@ -106,6 +110,8 @@ class TurnClient:
         self._calls: set[asyncio.Task[None]] = set()
         # The open human-input requests of its turns, answered here.
         self.inputs = OwnerInputs(self._timeouts.input_hold_timeout)
+        # Each room's last turn of a channel submitted here (RFC §10.6.2).
+        self._previous: RoomRecords[PreviousTurn] = RoomRecords()
 
     async def run(
         self,
@@ -119,11 +125,10 @@ class TurnClient:
         """Run one turn of *binding*'s channel on *event*: its output, its
         stream reading the executor's (RFC §10.6.4); a strategy's generation
         when *strategy_turn* (RFC §10.6.1)."""
-        if not self._serving:
-            self._serving = True
-            assert self.executor is not None
-            await self.backend.serve(self.executor)
-        declared = self._tools.declared(binding.channel_id, event.room_id) if self._tools else []
+        await self._serve_own()
+        channel_id = binding.channel_id
+        declared = self._tools.declared(channel_id, event.room_id) if self._tools else []
+        previous = self._previous.get(channel_id, event.room_id)
         request = turn_request(
             event,
             binding,
@@ -131,12 +136,37 @@ class TurnClient:
             answers=answers,
             strategy_turn=strategy_turn,
             owner_tools=declared,
+            previous_turn=previous.model_copy() if previous is not None else None,
         )
         link = await self.backend.submit(request)
+        submitted = PreviousTurn(turn_id=request.turn_id)
+        self._previous.put(channel_id, request.room_id, submitted)
         turn = OwnerTurn(link, self._timeouts, self._tools, self._calls, self._host, self.inputs)
         self._open.add(turn)
         self._started = [*(t for t in self._started if not t.over), turn]
-        return await turn.output()
+        try:
+            return await turn.output()
+        finally:
+            # Known once the executor took the turn, which its output follows.
+            submitted.executor_id = turn.executor_id
+
+    async def control(self, message: ChannelControl) -> ChannelResult | None:
+        """Send a channel control message (RFC §10.6.3): a ``channel_call``'s
+        result; nothing for ``room_attached`` and ``room_detached``. After a
+        ``room_detached``, the room's next turn of the channel names no
+        previous turn, so an executor that missed the message still drops
+        the room's state (RFC §10.6.3)."""
+        await self._serve_own()
+        if isinstance(message, RoomDetached):
+            self._previous.pop(message.channel_id, message.room_id)
+        return await self.backend.control(message)
+
+    async def _serve_own(self) -> None:
+        """Serve the client's own executor on the backend, once."""
+        if not self._serving:
+            self._serving = True
+            assert self.executor is not None
+            await self.backend.serve(self.executor)
 
     async def steer(
         self,

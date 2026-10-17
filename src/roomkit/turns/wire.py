@@ -29,6 +29,15 @@ class OwnerTool(BaseModel):
     """Bounded by its own bound, not the channel's default call bound (RFC §21.6)."""
 
 
+class PreviousTurn(BaseModel):
+    """The room's previous turn of the channel, the one the owner submitted
+    last, ended or not (RFC §10.6.2)."""
+
+    turn_id: str
+    executor_id: str | None = None
+    """The executor that took it; ``None`` when none had said so yet."""
+
+
 class TurnRequest(BaseModel):
     """What the owner sends an executor to start one turn."""
 
@@ -50,6 +59,11 @@ class TurnRequest(BaseModel):
     owner_tools: list[OwnerTool] = Field(default_factory=list)
     """The tools the owner serves for the channel in the room: the channel
     declares them to its model, and a call to one is a ``tool_call``."""
+    previous_turn: PreviousTurn | None = None
+    """The room's previous turn of the channel; ``None`` for its first, or
+    its first since the channel was detached from the room. An executor
+    holding the room's state for the channel that this turn did not leave
+    drops it before the turn runs (RFC §10.6.2)."""
     trace: dict[str, str] | None = None
 
 
@@ -287,6 +301,53 @@ class HostResult(BaseModel):
     error: ErrorRecord | None = None
 
 
+# -- Channel control: owner to executor, outside any turn ----------------------
+
+
+class RoomAttached(BaseModel):
+    """The channel was attached to the room (RFC §10.6.3)."""
+
+    type: Literal["room_attached"] = "room_attached"
+    channel_id: str
+    room_id: str
+    binding: ChannelBinding
+
+
+class RoomDetached(BaseModel):
+    """The channel was detached from the room: its state for the room is
+    dropped (RFC §10.6.3)."""
+
+    type: Literal["room_detached"] = "room_detached"
+    channel_id: str
+    room_id: str
+
+
+class ChannelCall(BaseModel):
+    """A per-room verb of the channel (an ACP session's ``set_config_option``),
+    answered by a :class:`ChannelResult` (RFC §10.6.3)."""
+
+    type: Literal["channel_call"] = "channel_call"
+    channel_id: str
+    room_id: str
+    verb: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    room_state: dict[str, Any] = Field(default_factory=dict)
+    """What the room keeps for the channel, as the owner stores it: the
+    channel takes it back when it holds none for the room."""
+
+
+class ChannelResult(BaseModel):
+    """The executor's answer to one ``channel_call``: the verb's result as
+    data, or what it raised."""
+
+    type: Literal["channel_result"] = "channel_result"
+    result: Any = None
+    error: ErrorRecord | None = None
+    room_state: dict[str, Any] | None = None
+    """What the room keeps for the channel once the verb ran, when it
+    changed (empty: nothing); ``None`` when it did not."""
+
+
 Frame = Annotated[
     Accepted
     | Heartbeat
@@ -310,6 +371,16 @@ Control = Annotated[
     Pull | Close | Cancel | Heartbeat | Steer | InputAnswer | ToolResult | HostResult,
     Field(discriminator="type"),
 ]
+
+
+ChannelControl = Annotated[
+    RoomAttached | RoomDetached | ChannelCall,
+    Field(discriminator="type"),
+]
+
+
+class ChannelControlEnvelope(BaseModel):
+    message: ChannelControl
 
 
 class FrameEnvelope(BaseModel):

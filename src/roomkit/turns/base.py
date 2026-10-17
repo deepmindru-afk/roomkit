@@ -20,7 +20,15 @@ from roomkit.core.exceptions import TurnLinkError
 
 if TYPE_CHECKING:
     from roomkit.turns.executor import TurnExecutor
-    from roomkit.turns.wire import Control, Frame, OwnerTool, ToolCall, TurnRequest
+    from roomkit.turns.wire import (
+        ChannelControl,
+        ChannelResult,
+        Control,
+        Frame,
+        OwnerTool,
+        ToolCall,
+        TurnRequest,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +166,19 @@ class TurnBackend(ABC):
     async def serve(self, executor: TurnExecutor) -> None:
         """Have *executor* take the turns of the channels it declares, from
         now until the backend closes or the executor does."""
+
+    @abstractmethod
+    async def control(self, message: ChannelControl) -> ChannelResult | None:
+        """Carry a channel control message (RFC §10.6.3): ``room_attached``
+        and ``room_detached`` to every executor that declares the channel,
+        answered by none; a ``channel_call`` to the executor that holds the
+        room's state for the channel, else one that declares it, answered
+        by its result.
+
+        Raises:
+            TurnLinkError: ``no_executor`` for a ``channel_call`` no executor
+                declares.
+        """
 
     @abstractmethod
     async def close(self) -> None:

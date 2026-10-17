@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -60,6 +61,7 @@ from roomkit.channels._mark_copies import compile_mark_patterns
 from roomkit.channels._turn_notes import turn_notes
 from roomkit.channels.acp_transport import ACPTransport, _agent_transport
 from roomkit.channels.base import Channel
+from roomkit.core.task_utils import log_task_exception
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -72,6 +74,7 @@ from roomkit.models.enums import (
 )
 from roomkit.models.event import RoomEvent, is_tool_call_record
 from roomkit.models.response_metadata import ResponseMetadata
+from roomkit.models.steering import Cancel, SteeringDirective
 from roomkit.models.tool_call import AfterResponseCallback, ToolCallObserver
 
 if TYPE_CHECKING:
@@ -85,6 +88,11 @@ _SHUTDOWN_TIMEOUT = 5.0
 
 _DEFAULT_ROOM_HISTORY = 20
 """Room messages an agent catches up on when it is asked to act (RFC §19.3.2)."""
+
+_CHANNEL_VERBS = frozenset(
+    {"set_config_option", "close_session", "session_config", "config_options"}
+)
+"""The per-room verbs a host reaches through ``kit.channel_call`` (RFC §10.6.3)."""
 
 
 class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMixin, Channel):
@@ -290,6 +298,8 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         self._closed = False
         self._realtime: RealtimeBackend | None = None
         self._after_response_hook: AfterResponseCallback | None = None
+        # The closes of detached rooms' sessions waiting for a turn to end.
+        self._closings: set[asyncio.Task[bool]] = set()
 
     @property
     def info(self) -> dict[str, Any]:
@@ -379,6 +389,74 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         self._room_config.setdefault(room_id, {})[config_id] = values.get(config_id, value)
         await self._publish_config_options(session_id, options, values)
         return values
+
+    async def channel_call(self, room_id: str, verb: str, arguments: dict[str, Any]) -> Any:
+        """The room's session verbs, wherever its session is (RFC §10.6.3).
+
+        What ``kit.channel_call`` reaches: ``set_config_option``
+        (``config_id``, ``value``), ``close_session``, ``session_config``
+        and ``config_options``, each answered as the method of that name
+        answers it. Through the kit, the values the host sets belong to
+        the room: the room's next executor sets them on the session it
+        opens. A call made on this object directly changes this process's
+        copy alone.
+
+        ``await kit.channel_call("claude", room.id, "set_config_option",
+        config_id="model", value="opus")``
+        """
+        if verb not in _CHANNEL_VERBS:
+            raise ValueError(
+                f"ACP channel {self.channel_id!r} has no per-room verb {verb!r}: "
+                f"it has {', '.join(sorted(_CHANNEL_VERBS))}"
+            )
+        answer = getattr(self, verb)(room_id, **arguments)
+        return await answer if inspect.isawaitable(answer) else answer
+
+    def room_state(self, room_id: str) -> dict[str, Any]:
+        """The config values the host set on the room's session, which belong
+        to the room until :meth:`close_session` (RFC §6.4)."""
+        config = self._room_config.get(room_id)
+        return {"config": dict(config)} if config else {}
+
+    def restore_room_state(self, room_id: str, state: dict[str, Any]) -> None:
+        """Take back the config values the room keeps when this channel holds
+        none for it: the room's next session is set to them (RFC §6.4)."""
+        config = state.get("config")
+        if room_id in self._room_config or not isinstance(config, dict):
+            return
+        values = {
+            key: value
+            for key, value in config.items()
+            if isinstance(key, str) and isinstance(value, str | bool)
+        }
+        if values:
+            self._room_config[room_id] = values
+
+    async def steer(self, directive: SteeringDirective, *, room_id: str) -> int:
+        """Steer the room's running turn (RFC §21.3): an external agent takes
+        a ``Cancel`` alone, sent as :meth:`cancel` sends it, so the turn ends
+        as a cancelled prompt ends (RFC §6.4). How many turns it reached:
+        ``0`` for another directive, or for a room with no turn running."""
+        if not isinstance(directive, Cancel) or not self._prompting(room_id):
+            return 0
+        return 1 if await self.cancel(room_id) else 0
+
+    async def on_room_detached(self, room_id: str) -> None:
+        """The room's session, and the values the host set on it, go with the
+        binding (RFC §10.6.3, §6.4): a later attachment opens a new session,
+        caught up on the room. A turn of the room still running keeps its
+        session to its end, closed then: a detach never waits for a turn."""
+        self._room_config.pop(room_id, None)
+        lock = self._room_locks.get(room_id)
+        if lock is None or not lock.locked():
+            await self.close_session(room_id)
+            return
+        closing = asyncio.get_running_loop().create_task(
+            self.close_session(room_id), name=f"roomkit-acp-close-{room_id}"
+        )
+        self._closings.add(closing)
+        closing.add_done_callback(self._closings.discard)
+        closing.add_done_callback(log_task_exception)
 
     def capabilities(self) -> ChannelCapabilities:
         return ChannelCapabilities(
@@ -595,6 +673,8 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
             with contextlib.suppress(Exception):
                 await self._external_tool_handler.stop()
 
+        for closing in list(self._closings):
+            closing.cancel()
         self._turns.clear()
         self._sessions.clear()
         self._turn_sessions.clear()

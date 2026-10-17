@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `RoomKit.channel_call(channel_id, room_id, verb, **arguments)` (RMK-812, RFC
+  §10.6.3, §6.4): a channel's per-room verb, run on the executor that holds
+  the room's state for the channel (`ChannelCall`, answered by a
+  `ChannelResult`), wherever the channel's turns run. An `ACPChannel`'s are
+  its session's: `set_config_option` (`config_id`, `value`),
+  `close_session`, `session_config` and `config_options`, each answering as
+  the method of that name; another verb raises `ValueError`. What the room
+  keeps for the channel, when a verb changes it, is stored with the room
+  (room metadata `roomkit:channel_state:<channel_id>`) and handed to the
+  channel before the room's next turn or channel call, so the values a host
+  set on an ACP session are set on the session another executor opens for
+  the room; a detach forgets them. A channel declares its verbs with
+  `Channel.channel_call(room_id, verb, arguments)`, and what belongs to the
+  room with `Channel.room_state(room_id)` /
+  `Channel.restore_room_state(room_id, state)`. The ACP examples switch
+  models through it. `TurnBackend.control(message)` carries it, with
+  `RoomAttached` and `RoomDetached`.
+
+- A turn's request names the room's previous turn of its channel
+  (`TurnRequest.previous_turn`, `PreviousTurn{turn_id, executor_id}`; RMK-812,
+  RFC §10.6.2): the one the owner submitted last, `None` for the first and
+  after the channel was detached from the room. An executor whose state for
+  the room was not left by that turn drops it, by the channel's
+  `on_room_detached`, before the turn runs: the room's turns ran elsewhere
+  since. The in-memory backend places a room's turns and channel calls of a
+  channel on the executor that took the last one while it serves and
+  declares the channel, else on the first that declares it (RFC §10.6.7).
+
+- `ACPChannel.steer(directive, *, room_id)` (RMK-812, RFC §21.3): a steering
+  `Cancel` cancels the room's running prompt as `cancel()` does, so the turn
+  ends as its prompt returns (its calls stored, `ON_AI_RESPONSE` fired); it
+  answers 1, and 0 for another directive or a room with no turn running. A
+  discussion holding an ACP agent cuts its turn through `kit.steer`, as it
+  cuts an AI channel's, wherever the turn runs. An executor awaits a
+  channel's `steer()` that is a coroutine.
+
 - `RoomKit.answer_input(request_id, value)` and
   `RoomKit.reject_input(request_id, reason)` (RMK-811, RFC §10.6.5): a
   human-input request of a turn can be answered on the room owner, wherever
@@ -120,6 +156,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that raises names none for that event, and an instruction is read as it is.
 
 ### Changed
+
+- Attaching an intelligence channel to a room, and detaching it, reach every
+  executor that declares the channel through the turn backend (RMK-812, RFC
+  §10.6.3: `RoomAttached`, `RoomDetached`). The executor calls the channel's
+  `on_room_attached` / `on_room_detached` and logs what they raise: such an
+  exception no longer cancels the attachment, nor reaches the caller of
+  `detach_channel`. A channel of another category is called as before.
+
+- Detaching an `ACPChannel` from a room closes the room's session and forgets
+  the config values the host set on it (RMK-812, RFC §10.6.3, §6.4): a later
+  attachment opens a new session, caught up on the room, where it used to
+  resume the old conversation. A turn of the room still running keeps its
+  session to its end, closed then; the detach does not wait for it.
+
+- A turn the in-memory turn backend has no executor for fails at once with
+  `TurnLinkError("no_executor")` (RMK-812, RFC §10.6.7), where it waited the
+  accept timeout (10 s) for one to serve.
 
 - The tools orchestration sets up are served by the room owner (RMK-811, RFC
   §10.6.5). A turn's request lists the ones set up for the channel in the

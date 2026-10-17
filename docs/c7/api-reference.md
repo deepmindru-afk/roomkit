@@ -174,7 +174,11 @@ RoomKit exports **255 symbols** from `roomkit`. Providers and voice types import
 | `TurnHost` | What a host's tool or hook on a turn's executor asks of the room owner: `send_event`, `delegate`, `wait_task`, `post_status`, `update_room_metadata`, `add_observation` |
 | `current_turn_host()` | The `TurnHost` of the turn the current code runs in; `None` outside a turn |
 | `current_turn_id()` | The id of the turn the current code runs in, which `kit.steer(turn_id=...)` addresses; `None` outside a turn |
-| `TurnLinkError` | A turn the backend could not carry to its end (`no_executor`, `executor_lost`, `frame_lost`) |
+| `PreviousTurn` | A request's `previous_turn`: the room's last turn of the channel (`turn_id`, `executor_id`), `None` after a detach; an executor drops a room's state another turn left (RFC §10.6.2) |
+| `RoomAttached` / `RoomDetached` | Channel control to every executor declaring the channel: it calls `on_room_attached` / `on_room_detached` and logs what they raise (RFC §10.6.3) |
+| `ChannelCall` / `ChannelResult` | A channel's per-room verb, sent to the executor holding the room's state, and its answer (`result`, `error`, the changed `room_state`) |
+| `ChannelControl` | The union of `RoomAttached`, `RoomDetached` and `ChannelCall` that `TurnBackend.control()` carries |
+| `TurnLinkError` | A turn the backend could not carry to its end (`no_executor`, at once when no executor declares the channel; `executor_lost`, `frame_lost`) |
 | `RemoteTurnError` | An error raised across the turn backend of a class outside RoomKit and Python, keeping its class name |
 | `DeliveryResult` | Result of delivering a message |
 | `DeliveryStatus` | Delivery status from provider webhook |
@@ -370,6 +374,7 @@ kit = RoomKit(
 | `send_greeting(room_id, channel_id?, greeting?, ...)` | Send greeting |
 | `send_event(room_id, channel_id, content, ...)` | Send event directly |
 | `await steer(directive, channel_id, *, room_id=None, turn_id=None)` | Steer the running turns of an intelligence channel the kit started, wherever they run; answers the loops reached (RFC §21.3, §10.6.8) |
+| `await channel_call(channel_id, room_id, verb, **arguments)` | Run a channel's per-room verb on the executor holding the room's state (an ACP agent's `set_config_option`, `close_session`, `session_config`, `config_options`); what the room keeps for the channel is stored in its metadata (RFC §10.6.3, §6.4) |
 | `await answer_input(request_id, value)` / `await reject_input(request_id, reason)` | Answer or reject a turn's human-input request, wherever its tool runs; an early answer is held 60 s, a second one returns `False` (RFC §10.6.5) |
 | `commit_event(room_id, event, organization_id?)` | Commit a record no member receives, outside the pipeline: its index counted delivered, no hook, no broadcast (RFC §10.5) |
 | `await start_room_recording(room_id, recorders, *, organization_id=None)` | Start recorders on an existing room, all or nothing, each announced (ON_RECORDING_STARTED) before any media |

@@ -13,13 +13,28 @@ from roomkit.turns.executor import TurnExecutor
 from roomkit.turns.host import TurnHost, current_turn_host
 from roomkit.turns.memory import InMemoryTurnBackend
 from roomkit.turns.owner import TurnClient
-from roomkit.turns.wire import OwnerTool, TurnRequest
+from roomkit.turns.wire import (
+    ChannelCall,
+    ChannelControl,
+    ChannelResult,
+    OwnerTool,
+    PreviousTurn,
+    RoomAttached,
+    RoomDetached,
+    TurnRequest,
+)
 
 __all__ = [
+    "ChannelCall",
+    "ChannelControl",
+    "ChannelResult",
     "ExecutorLink",
     "InMemoryTurnBackend",
     "OwnerTool",
     "OwnerTools",
+    "PreviousTurn",
+    "RoomAttached",
+    "RoomDetached",
     "TurnBackend",
     "TurnClient",
     "TurnExecutor",
