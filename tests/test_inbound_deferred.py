@@ -34,6 +34,7 @@ from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.context import get_current_span, reset_span, set_current_span
 from roomkit.telemetry.mock import MockTelemetryProvider
 from tests.test_framework import SimpleChannel
+from tests.turn_errors import same_error
 
 
 class _GatedAIProvider(MockAIProvider):
@@ -175,7 +176,7 @@ async def test_stream_error_surfaces_on_result_after_wait() -> None:
     assert result.delivery is not None
     await asyncio.wait_for(result.delivery.wait(), timeout=5.0)
 
-    assert result.error is exc
+    assert same_error(result.error, exc)
     await kit.close()
 
 
@@ -267,7 +268,7 @@ async def test_consumer_crash_surfaces_on_result() -> None:
     assert result.delivery is not None
     await asyncio.wait_for(result.delivery.wait(), timeout=5.0)
 
-    assert result.error is boom
+    assert same_error(result.error, boom)
     await kit.close()
 
 

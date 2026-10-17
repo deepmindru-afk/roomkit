@@ -47,6 +47,9 @@ from roomkit.models.event import (
 from roomkit.models.response_metadata import TurnEntries, turn_summary
 from roomkit.models.task import Observation, Task
 from roomkit.providers.utils import _aclose_stream
+from roomkit.turns.executor import TurnExecutor
+from roomkit.turns.memory import InMemoryTurnBackend
+from roomkit.turns.owner import TurnClient
 
 logger = logging.getLogger("roomkit.event_router")
 
@@ -263,6 +266,7 @@ class EventRouter:
         rate_limiter: TokenBucketRateLimiter | None = None,
         telemetry: Any = None,
         greeting_gate_fn: Callable[[str, float], Awaitable[None]] | None = None,
+        turns: TurnClient | None = None,
     ) -> None:
         self._channels = channels
         self._transcoder = transcoder or DefaultContentTranscoder()
@@ -271,6 +275,12 @@ class EventRouter:
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
         self._telemetry = telemetry
         self._greeting_gate_fn = greeting_gate_fn
+        # Every intelligence turn runs through a turn backend (RFC §10.6); a
+        # router built without the kit's runs its own over its channels.
+        self._turns = turns or TurnClient(
+            InMemoryTurnBackend(),
+            executor=TurnExecutor(channels.get, hosts=channels.__contains__),
+        )
         # Set by RoomKit after construction — the router owns the breakers,
         # the framework owns the event surface (RFC §13.1 / §8.2).
         self._framework_emitter: Any = None
@@ -476,8 +486,9 @@ class EventRouter:
                 ):
                     await self._greeting_gate_fn(transcoded_event.room_id, 30.0)
 
-                # on_event — all channels react.
-                output = await channel.on_event(transcoded_event, binding, context)
+                # on_event — all channels react; an intelligence channel's
+                # call is a turn, run through the turn backend (RFC §10.6).
+                output = await self.react(channel, transcoded_event, binding, context)
                 tr.output = output
                 if output.error is not None:
                     # Delivered and failed at once: the output goes on, and
@@ -651,6 +662,25 @@ class EventRouter:
         )
 
         return result
+
+    async def react(
+        self,
+        channel: Channel,
+        event: RoomEvent,
+        binding: ChannelBinding,
+        context: RoomContext,
+        *,
+        answers: bool = True,
+    ) -> ChannelOutput:
+        """*channel*'s ``on_event``, an intelligence channel's as a turn
+        through the turn backend; a turn that answers nothing (an injected
+        event's) has its stream closed unread (RFC §10.6.1)."""
+        if binding.category != ChannelCategory.INTELLIGENCE:
+            return await channel.on_event(event, binding, context)
+        output = await self._turns.run(event, binding, context, answers=answers)
+        if not answers and output.response_stream is not None:
+            await _aclose_stream(output.response_stream)
+        return output
 
     def _unasked_result(
         self,

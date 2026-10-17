@@ -38,6 +38,7 @@ from roomkit.providers.ai.base import (
 )
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.test_framework import SimpleChannel
+from tests.turn_errors import same_error
 
 
 def _provider_error_from_connect() -> ProviderError:
@@ -103,7 +104,7 @@ async def test_provider_error_propagates_and_still_fires_on_error() -> None:
         AIChannel("ai1", provider=_StreamRaisingProvider(exc))
     )
 
-    assert result.error is exc
+    assert same_error(result.error, exc)
     assert isinstance(result.error.__cause__, ConnectionError)
     assert len(errors) == 1  # ON_ERROR still fires (interactive contract intact)
     # Named by the exception's type, as every intelligence ON_ERROR is.
@@ -117,7 +118,7 @@ async def test_non_provider_error_also_propagates() -> None:
         AIChannel("ai1", provider=_StreamRaisingProvider(exc))
     )
 
-    assert result.error is exc
+    assert same_error(result.error, exc)
 
 
 async def test_successful_turn_has_no_error() -> None:
@@ -184,7 +185,7 @@ async def test_non_streaming_provider_error_propagates_with_cause() -> None:
         AIChannel("ai1", provider=_GenerateRaisingProvider(exc))
     )
 
-    assert result.error is exc
+    assert same_error(result.error, exc)
     assert isinstance(result.error.__cause__, ConnectionError)
     assert len(errors) == 1  # ON_ERROR card still fires
 
@@ -245,7 +246,7 @@ async def test_a_turn_failing_before_any_round_is_one_warning_for_a_streaming_ta
             AIChannel("ai1", provider=_raising_provider(streams, exc))
         )
 
-    assert result.error is exc
+    assert same_error(result.error, exc)
     warnings = _roomkit_records(caplog, logging.WARNING)
     assert [r.levelno for r in warnings] == [logging.WARNING]
     assert "connection refused" in warnings[0].getMessage()
@@ -264,7 +265,7 @@ async def test_a_turn_failing_before_any_round_is_no_roomkit_warning_when_headle
             AIChannel("ai1", provider=_raising_provider(streams, exc))
         )
 
-    assert result.error is exc
+    assert same_error(result.error, exc)
     assert _roomkit_records(caplog, logging.WARNING) == []
 
 
@@ -346,7 +347,7 @@ async def test_a_turn_failing_after_a_round_is_one_line_too(caplog, streams: boo
     with caplog.at_level(logging.DEBUG):
         result = await _run_targeted_turn(agent)
 
-    assert result.error is exc
+    assert same_error(result.error, exc)
     warnings = _roomkit_records(caplog, logging.WARNING)
     assert [r.levelno for r in warnings] == [logging.WARNING]
     assert warnings[0].exc_info is None
@@ -361,7 +362,7 @@ async def test_a_headless_turn_failing_after_a_round_is_no_roomkit_warning(
     with caplog.at_level(logging.DEBUG):
         result, _errors = await _run_headless_turn(agent)
 
-    assert result.error is exc
+    assert same_error(result.error, exc)
     assert _roomkit_records(caplog, logging.WARNING) == []
 
 

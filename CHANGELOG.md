@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Every turn of an intelligence channel runs through a turn backend (RMK-809,
+  RFC §10.6): `RoomKit(turn_backend=...)`, in memory by default
+  (`InMemoryTurnBackend`), with the kit's own `TurnExecutor` reading the
+  channels registered on it. The lane submits a `TurnRequest` and reads the
+  turn back as the channel's `ChannelOutput`, from serialized messages only,
+  the in-memory backend included: the output, a stream whose every read pulls
+  one item, the turn's response-metadata record updated as the channel writes
+  it, a call's fixed arguments and its end before its end item. The three
+  places that call an intelligence channel's `on_event` (a solicited turn and
+  the two deliveries of an injected event) go through it; an injected event's
+  stream is closed unread, so it never reaches the provider. A turn runs on a
+  task of its own, in a copy of the context of the task that submitted it, so
+  a tool that calls the kit finds the reentrancy guards it finds today.
+  Heartbeats run both ways: a silent executor fails the turn with
+  `TurnLinkError` (`executor_lost`, or `no_executor` when none took it), and
+  an error of a class outside RoomKit and Python comes back as
+  `RemoteTurnError`, keeping its class name. Hooks, steering, human input,
+  RoomKit's own tools and the strategies' turn runners still run on the
+  channel the kit holds; their move to the executor side follows.
+
 - `Discussion(rules=...)` gives each turn the host's rules for how the room
   works, in place of the default (RMK-806, RFC §19.7.5 rule 14). `{handle}` in
   them stands for another agent's `@handle`, an example the agent can follow,

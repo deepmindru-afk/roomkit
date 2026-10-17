@@ -102,6 +102,10 @@ from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
 from roomkit.tasks.background import BackgroundSetup
 from roomkit.tasks.base import TaskRunner
+from roomkit.turns.base import TurnBackend
+from roomkit.turns.executor import TurnExecutor
+from roomkit.turns.memory import InMemoryTurnBackend
+from roomkit.turns.owner import TurnClient
 
 logger = logging.getLogger("roomkit.framework")
 
@@ -199,6 +203,7 @@ class RoomKit(
         verification_policy: VerificationPolicy | None = None,
         media_resolver: MediaResolver | None = None,
         attached_media: AttachedMedia | None = None,
+        turn_backend: TurnBackend | None = None,
     ) -> None:
         """Initialise the RoomKit orchestrator.
 
@@ -253,6 +258,10 @@ class RoomKit(
                 content, as a composite; a reference among them is resolved
                 by ``media_resolver``. The store and broadcasts keep the event
                 as stored. A reader that raises names none for that event.
+            turn_backend: What carries the turns of the intelligence channels
+                (RFC §10.6). Defaults to ``InMemoryTurnBackend``: every turn
+                runs in this process, as serialized messages, on the kit's own
+                executor, which reads the channels registered here.
             process_timeout: Timeout in seconds for the locked processing phase.
             stt: Optional speech-to-text provider for transcription.
             tts: Optional text-to-speech provider for synthesis.
@@ -320,6 +329,14 @@ class RoomKit(
         self._verification_timers: dict[str, asyncio.Task[None]] = {}
         self._process_timeout = process_timeout
         self._channels: dict[str, Channel] = {}
+        # Every intelligence turn runs through the turn backend (RFC §10.6),
+        # the kit's own executor serving the channels registered here.
+        self._turns = TurnClient(
+            turn_backend or InMemoryTurnBackend(),
+            executor=TurnExecutor(
+                self._channels.get, hosts=self._channels.__contains__, executor_id="kit"
+            ),
+        )
         # Explicit detaches (revocations, RFC §7.5-7) are recorded in room
         # metadata by detach_channel() — not here — so they survive restarts
         # and are visible to every process sharing the store.
@@ -576,6 +593,7 @@ class RoomKit(
                 max_chain_depth=self._max_chain_depth,
                 telemetry=self._telemetry,
                 greeting_gate_fn=self._wait_greeting_gate,
+                turns=self._turns,
             )
             self._event_router._framework_emitter = self._emit_framework_event
             self._event_router._defers = self._discussions.__contains__
@@ -664,6 +682,9 @@ class RoomKit(
         # them. Whatever outlives the budget is aborted with its cascade
         # cancelled — no waiter hangs.
         await self._lanes.aclose()
+        # A turn still running after the lanes (a stream nobody reads) is cut
+        # before its channel closes.
+        await self._turns.close()
         # Then close the channels. In sequence, but shielded from one another:
         # they close one at a time, so a close that raises would leave every
         # channel behind it holding its media — for a conference channel, a

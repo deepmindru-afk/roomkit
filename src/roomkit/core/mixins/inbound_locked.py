@@ -876,7 +876,9 @@ class InboundLockedMixin(HelpersMixin):
                 binding = await self._store.get_binding(room_id, target_id)
                 if channel is not None and binding is not None:
                     try:
-                        await channel.on_event(stored, binding, context)
+                        await self._get_router().react(
+                            channel, stored, binding, context, answers=False
+                        )
                         if binding.category == ChannelCategory.TRANSPORT:
                             await channel.deliver(stored, binding, context)
                     except Exception:

@@ -111,6 +111,7 @@ from roomkit.core.exceptions import (
     NoRecipientError,
     ParticipantNotAdmittedError,
     ProviderDeliveryError,
+    RemoteTurnError,
     RoomNotAttachedError,
     TaskCutShortError,
     TaskTurnFailedError,
@@ -119,6 +120,7 @@ from roomkit.core.exceptions import (
     ToolRefusedError,
     ToolTimeoutError,
     TurnCutShortError,
+    TurnLinkError,
     UnservedToolCallError,
     VerificationRefusedError,
     VoiceSessionEndedError,
@@ -286,6 +288,14 @@ from roomkit.telemetry.redaction import content_logging_enabled, set_content_log
 from roomkit.tools.base import Tool
 from roomkit.tools.human_input import HumanInputHandler, HumanInputToolHandler
 from roomkit.tools.policy import RoleOverride, ToolPolicy
+from roomkit.turns import (
+    InMemoryTurnBackend,
+    TurnBackend,
+    TurnClient,
+    TurnExecutor,
+    TurnRequest,
+    TurnTimeouts,
+)
 from roomkit.video.events import VideoDetectionEvent
 from roomkit.video.pipeline.filter import (
     FaceTouchConfig,
@@ -396,6 +406,8 @@ __all__ = [
     "TaskCutShortError",
     "TaskTurnFailedError",
     "TurnCutShortError",
+    "TurnLinkError",
+    "RemoteTurnError",
     "ToolTimeoutError",
     "ChannelRefusalError",
     "UnservedToolCallError",
@@ -409,6 +421,13 @@ __all__ = [
     "InMemoryDeliveryBackend",
     "Queued",
     "WaitForIdle",
+    # Turn execution (RFC §10.6)
+    "InMemoryTurnBackend",
+    "TurnBackend",
+    "TurnClient",
+    "TurnExecutor",
+    "TurnRequest",
+    "TurnTimeouts",
     # Channels
     "ACPChannel",
     "ACPContextContributor",

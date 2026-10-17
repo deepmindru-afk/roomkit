@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from roomkit.core._failure_log import log_failure
 from roomkit.core.event_router import stream_turn_entry, unanswered
+from roomkit.core.exceptions import error_type_name
 from roomkit.core.lanes import DeliveryCascade
 from roomkit.core.mixins._response_reader import ResponseReader
 from roomkit.core.mixins._streaming_segments import LaneSink, SegmentWriter, TurnScope
@@ -429,7 +430,7 @@ class InboundStreamingMixin(HelpersMixin):
             context,
             EventSource(channel_id=sr.source_channel_id, channel_type=sr.source_channel_type),
             error=str(exc),
-            error_type=type(exc).__name__,
+            error_type=error_type_name(exc),
             error_category="streaming",
             chain_depth=sr.trigger_event.chain_depth + 1,
             visibility=sr.trigger_event.response_visibility or "all",

@@ -1,0 +1,348 @@
+"""The turn backend carries a turn as serialized messages (RFC §10.6).
+
+These drive a turn through :class:`TurnClient`, the in-memory backend and an
+executor directly: what the owner reads is the channel's turn, rebuilt from
+frames, never one of the channel's own objects.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from typing import Any
+
+import pytest
+
+from roomkit.channels.base import Channel
+from roomkit.core.exceptions import RemoteTurnError, ToolTimeoutError, TurnLinkError
+from roomkit.models.channel import ChannelBinding, ChannelOutput
+from roomkit.models.context import RoomContext
+from roomkit.models.delivery import InboundMessage
+from roomkit.models.enums import ChannelCategory, ChannelType
+from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.response_metadata import ResponseMetadata
+from roomkit.models.room import Room
+from roomkit.models.streaming import (
+    LoopEndMarker,
+    SegmentBreakMarker,
+    ThinkingDeltaMarker,
+    ToolCallEndMarker,
+    ToolCallStartMarker,
+)
+from roomkit.providers.ai.base import AIImagePart, AITextPart
+from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, TurnTimeouts
+from roomkit.turns._codec import decode_item, encode_item, error_record, rebuild_error
+from roomkit.turns.base import MessageOrder
+
+
+class _ForeignError(Exception):
+    """An exception class the owner does not rebuild by type."""
+
+
+class ScriptedChannel(Channel):
+    """An intelligence channel whose stream runs a script given per test."""
+
+    channel_type = ChannelType.AI
+    category = ChannelCategory.INTELLIGENCE
+
+    def __init__(self, script: Any = None, *, raises: BaseException | None = None) -> None:
+        super().__init__("agent")
+        self.script = script
+        self.raises = raises
+        self.record = ResponseMetadata()
+        self.yielded: list[Any] = []
+        self.stream_started = False
+        self.stream_closed = False
+        self.on_event_task: asyncio.Task[Any] | None = None
+
+    async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
+        raise NotImplementedError
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        self.on_event_task = asyncio.current_task()
+        if self.raises is not None:
+            raise self.raises
+        if self.script is None:
+            return ChannelOutput(responded=True, response_metadata=self.record)
+        return ChannelOutput(
+            responded=True, response_stream=self._stream(), response_metadata=self.record
+        )
+
+    async def _stream(self) -> AsyncIterator[Any]:
+        self.stream_started = True
+        try:
+            async for item in self.script(self):
+                self.yielded.append(item)
+                yield item
+        finally:
+            self.stream_closed = True
+
+    async def deliver(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        return ChannelOutput.empty()
+
+
+def _event() -> RoomEvent:
+    return RoomEvent(
+        room_id="room",
+        source=EventSource(channel_id="sms", channel_type=ChannelType.SMS),
+        content=TextContent(body="hello"),
+    )
+
+
+def _binding() -> ChannelBinding:
+    return ChannelBinding(
+        channel_id="agent",
+        room_id="room",
+        channel_type=ChannelType.AI,
+        category=ChannelCategory.INTELLIGENCE,
+    )
+
+
+def _context() -> RoomContext:
+    return RoomContext(room=Room(id="room"), bindings=[_binding()])
+
+
+def _client(channel: Channel | None, timeouts: TurnTimeouts | None = None) -> TurnClient:
+    channels = {} if channel is None else {channel.channel_id: channel}
+    return TurnClient(
+        InMemoryTurnBackend(),
+        executor=TurnExecutor(channels.get, hosts=channels.__contains__, timeouts=timeouts),
+        timeouts=timeouts,
+    )
+
+
+async def _run(client: TurnClient) -> ChannelOutput:
+    return await client.run(_event(), _binding(), _context())
+
+
+async def _read_all(output: ChannelOutput) -> list[Any]:
+    return [item async for item in output.response_stream]
+
+
+# -- The wire ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        "a text delta",
+        ThinkingDeltaMarker(thinking="hmm"),
+        ToolCallStartMarker(tool_name="search", tool_id="c1", arguments={"q": "x"}),
+        ToolCallEndMarker(
+            tool_name="search",
+            tool_id="c1",
+            arguments={"q": "x"},
+            result=[AITextPart(text="found"), AIImagePart(url="data:image/png;base64,AA")],
+            status="completed",
+            duration_ms=12,
+            structured_content={"hits": 1},
+            outcome="served",
+            refused_but_ran=True,
+        ),
+        SegmentBreakMarker(),
+        LoopEndMarker(reason="max_rounds", rounds=3, usage={"input_tokens": 5}, max_rounds=3),
+    ],
+)
+def test_every_stream_item_crosses_as_a_new_equal_object(item: Any) -> None:
+    rebuilt = decode_item(encode_item(item))
+    assert rebuilt == item
+    if not isinstance(item, str):
+        assert rebuilt is not item
+
+
+def test_a_stream_item_the_protocol_cannot_carry_is_refused() -> None:
+    with pytest.raises(TypeError, match="cannot carry"):
+        encode_item(object())
+
+
+def test_a_roomkit_error_is_rebuilt_by_type_with_its_attributes_and_causes() -> None:
+    cause = ValueError("bad argument")
+    error = ToolTimeoutError("search", 3.0)
+    error.__cause__ = cause
+    rebuilt = rebuild_error(error_record(error))
+    assert type(rebuilt) is ToolTimeoutError
+    assert vars(rebuilt) == vars(error)
+    assert str(rebuilt) == str(error)
+    assert type(rebuilt.__cause__) is ValueError
+    assert str(rebuilt.__cause__) == "bad argument"
+
+
+def test_an_error_of_a_foreign_class_comes_back_naming_it() -> None:
+    rebuilt = rebuild_error(error_record(_ForeignError("boom")))
+    assert isinstance(rebuilt, RemoteTurnError)
+    assert rebuilt.kind.endswith(":_ForeignError")
+    assert str(rebuilt) == "boom"
+
+
+def test_a_duplicate_is_dropped_and_a_gap_fails_the_turn() -> None:
+    order = MessageOrder()
+    assert order.admit(1)
+    assert not order.admit(1)
+    assert order.admit(2)
+    with pytest.raises(TurnLinkError) as raised:
+        order.admit(4)
+    assert raised.value.reason == "frame_lost"
+
+
+# -- A turn through the in-memory backend -----------------------------------
+
+
+async def test_the_owner_reads_new_objects_never_the_channels() -> None:
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        yield "Hello"
+        yield ToolCallStartMarker(tool_name="t", tool_id="c1", arguments={})
+        yield LoopEndMarker(reason="completed")
+
+    channel = ScriptedChannel(script)
+    output = await _run(_client(channel))
+    items = await _read_all(output)
+    assert items == channel.yielded
+    assert all(a is not b for a, b in zip(items[1:], channel.yielded[1:], strict=True))
+    assert output.response_metadata is not channel.record
+
+
+async def test_an_error_on_event_raised_is_raised_on_the_owner() -> None:
+    channel = ScriptedChannel(raises=_ForeignError("provider down"))
+    with pytest.raises(RemoteTurnError, match="provider down"):
+        await _run(_client(channel))
+
+
+async def test_a_stream_that_raises_raises_on_the_owner_after_its_items() -> None:
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        yield "partial"
+        raise ValueError("cut")
+
+    output = await _run(_client(ScriptedChannel(script)))
+    stream = output.response_stream
+    assert await anext(stream) == "partial"
+    with pytest.raises(ValueError, match="cut"):
+        await anext(stream)
+
+
+async def test_a_stream_closed_unread_never_starts() -> None:
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        yield "never"
+
+    channel = ScriptedChannel(script)
+    output = await _run(_client(channel))
+    await output.response_stream.aclose()
+    assert not channel.stream_started
+
+
+async def test_the_executor_reads_no_item_the_owner_did_not_pull() -> None:
+    reached: list[str] = []
+
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        reached.append("first")
+        yield "one"
+        reached.append("second")
+        yield "two"
+
+    channel = ScriptedChannel(script)
+    output = await _run(_client(channel))
+    assert await anext(output.response_stream) == "one"
+    await asyncio.sleep(0.05)
+    assert reached == ["first"]
+    await output.response_stream.aclose()
+    assert channel.stream_closed
+    assert reached == ["first"]
+
+
+async def test_a_record_written_mid_stream_reaches_the_owner_before_the_next_item() -> None:
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        yield "before"
+        channel.record["acp"] = {"stop_reason": None}
+        channel.record["acp"]["stop_reason"] = "max_tokens"
+        yield "after"
+
+    output = await _run(_client(ScriptedChannel(script)))
+    stream = output.response_stream
+    await anext(stream)
+    assert "acp" not in output.response_metadata
+    await anext(stream)
+    assert output.response_metadata["acp"] == {"stop_reason": "max_tokens"}
+
+
+async def test_fixed_arguments_and_an_early_end_reach_the_owners_start() -> None:
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        start = ToolCallStartMarker(tool_name="t", tool_id="c1", arguments={"q": "raw"})
+        yield start
+        start.ran_with = {"q": "fixed"}
+        end = ToolCallEndMarker(tool_name="t", tool_id="c1", arguments={"q": "fixed"}, result="ok")
+        start.ended = end
+        yield "text after the round"
+        yield end
+
+    output = await _run(_client(ScriptedChannel(script)))
+    stream = output.response_stream
+    start = await anext(stream)
+    await anext(stream)
+    assert start.ran_with == {"q": "fixed"}
+    assert start.ended is not None and start.ended.result == "ok"
+    end = await anext(stream)
+    assert end is start.ended
+
+
+async def test_a_call_that_ended_before_a_close_keeps_its_end() -> None:
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        start = ToolCallStartMarker(tool_name="t", tool_id="c1", arguments={})
+        yield start
+        start.ended = ToolCallEndMarker(tool_name="t", tool_id="c1", result="done")
+        yield "more"
+
+    output = await _run(_client(ScriptedChannel(script)))
+    stream = output.response_stream
+    start = await anext(stream)
+    await anext(stream)
+    await stream.aclose()
+    assert start.ended is not None and start.ended.result == "done"
+
+
+async def test_cancelling_the_owner_cancels_the_turns_work() -> None:
+    started = asyncio.Event()
+
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        started.set()
+        await asyncio.Event().wait()
+        yield "never"
+
+    channel = ScriptedChannel(script)
+    output = await _run(_client(channel))
+    reader = asyncio.create_task(anext(output.response_stream))
+    await started.wait()
+    reader.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await reader
+    assert channel.stream_closed
+
+
+async def test_a_turn_no_executor_takes_fails_no_executor() -> None:
+    timeouts = TurnTimeouts(accept=0.2, heartbeat_interval=0.05, heartbeat_timeout=0.2)
+    with pytest.raises(TurnLinkError) as raised:
+        await _run(_client(None, timeouts))
+    assert raised.value.reason == "no_executor"
+
+
+async def test_a_silent_executor_loses_its_turn() -> None:
+    timeouts = TurnTimeouts(accept=0.5, heartbeat_interval=0.05, heartbeat_timeout=0.2)
+
+    class Mute(TurnExecutor):
+        def take(self, link: Any) -> None:
+            pass  # takes the turn and never answers
+
+    channels: dict[str, Channel] = {"agent": ScriptedChannel()}
+    client = TurnClient(InMemoryTurnBackend(), executor=Mute(channels.get), timeouts=timeouts)
+    with pytest.raises(TurnLinkError) as raised:
+        await _run(client)
+    assert raised.value.reason == "executor_lost"
+
+
+async def test_a_turn_runs_on_a_task_of_its_own() -> None:
+    channel = ScriptedChannel()
+    caller = asyncio.current_task()
+    await _run(_client(channel))
+    assert channel.on_event_task is not None and channel.on_event_task is not caller

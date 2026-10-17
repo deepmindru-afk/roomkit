@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._failure_log import needs_reporting
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT, BroadcastResult, reply_turn_entry
-from roomkit.core.exceptions import RoomNotFoundError
+from roomkit.core.exceptions import RoomNotFoundError, error_type_name
 from roomkit.core.mixins.helpers import (
     _RECENT_EVENTS_LIMIT,
     HelpersMixin,
@@ -713,7 +713,9 @@ class LaneExecutionMixin(HelpersMixin):
                 # §19.7.5); an injected event answers nothing anyway.
                 continue
             try:
-                await channel.on_event(plan.event, binding, plan.context)
+                await self._get_router().react(
+                    channel, plan.event, binding, plan.context, answers=False
+                )
                 if binding.category == ChannelCategory.TRANSPORT:
                     await channel.deliver(plan.event, binding, plan.context)
             except Exception:
@@ -913,7 +915,7 @@ class LaneExecutionMixin(HelpersMixin):
                 ),
                 error=error_msg,
                 # As the streaming path names it: the exception's type.
-                error_type=type(exc).__name__ if exc is not None else "unknown",
+                error_type=error_type_name(exc) if exc is not None else "unknown",
                 error_category="generation",
                 chain_depth=event.chain_depth + 1,
                 visibility=event.response_visibility or "all",

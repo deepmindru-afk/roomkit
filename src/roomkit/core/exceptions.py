@@ -399,3 +399,39 @@ class TaskTurnFailedError(RoomKitError):
     def __reduce__(self) -> tuple[Any, ...]:
         cause = self.__cause__ if self.__cause__ is not None else RoomKitError(str(self))
         return type(self), (cause, self.reason, self.narration), self.__dict__
+
+
+class RemoteTurnError(RoomKitError):
+    """An error a turn raised on its executor, of a class the room owner does
+    not rebuild (RFC §10.6.8): only RoomKit's and Python's own are rebuilt by
+    type; any other comes back as this one, keeping the class it had.
+
+    Attributes:
+        kind: The class the error had, ``module:qualname``.
+    """
+
+    def __init__(self, message: str, *, kind: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+class TurnLinkError(RoomKitError):
+    """A turn the turn backend could not carry to its end (RFC §10.6.8).
+
+    Attributes:
+        reason: ``no_executor`` (no executor that hosts the channel took the
+            turn), ``executor_lost`` (the executor fell silent),
+            ``frame_lost`` (the link lost a message) or ``backend_closed``.
+    """
+
+    def __init__(self, reason: str, message: str | None = None) -> None:
+        super().__init__(message or f"The turn ended without its executor: {reason}")
+        self.reason = reason
+
+
+def error_type_name(error: BaseException) -> str:
+    """The name an error is reported under (ON_ERROR's ``error_type``): its
+    class's, or for one rebuilt from a turn's executor, the class it had there."""
+    if isinstance(error, RemoteTurnError):
+        return error.kind.rpartition(":")[2].rpartition(".")[2] or type(error).__name__
+    return type(error).__name__
