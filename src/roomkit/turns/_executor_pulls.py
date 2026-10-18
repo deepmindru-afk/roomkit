@@ -12,16 +12,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from roomkit.models.streaming import ThinkingDeltaMarker
+from roomkit.turns._codec import is_delta
 
 if TYPE_CHECKING:
     from roomkit.turns.wire import Pull
-
-
-def is_delta(item: Any) -> bool:
-    """Whether *item* is a text or reasoning delta, which the executor reads
-    ahead of the owner's reader."""
-    return isinstance(item, str | ThinkingDeltaMarker)
 
 
 class PullGate:

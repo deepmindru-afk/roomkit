@@ -14,8 +14,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
-from roomkit.turns._codec import encode_end, encode_item, record_payload
-from roomkit.turns._executor_pulls import is_delta
+from roomkit.turns._codec import encode_end, encode_item, is_delta, record_payload
 from roomkit.turns.wire import Item, Record, ToolArgs, ToolEnded
 
 if TYPE_CHECKING:

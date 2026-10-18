@@ -39,6 +39,8 @@ class _ItemKind:
     encode: Callable[[Any, int | None], dict[str, Any]]
     """The item's fields; the second argument is a call end's start frame."""
     decode: Callable[[dict[str, Any]], Any]
+    delta: bool = False
+    """Read ahead of the owner's reader within a pull (RFC §10.6.4)."""
 
 
 def _encode_start(item: ToolCallStartMarker, start: int | None) -> dict[str, Any]:
@@ -65,12 +67,15 @@ def _decode_loop_end(data: dict[str, Any]) -> LoopEndMarker:
 
 
 _ITEM_KINDS = (
-    _ItemKind("text", str, lambda item, start: {"text": item}, lambda data: data["text"]),
+    _ItemKind(
+        "text", str, lambda item, start: {"text": item}, lambda data: data["text"], delta=True
+    ),
     _ItemKind(
         "thinking",
         ThinkingDeltaMarker,
         lambda item, start: {"thinking": item.thinking},
         lambda data: ThinkingDeltaMarker(thinking=data["thinking"]),
+        delta=True,
     ),
     _ItemKind("tool_start", ToolCallStartMarker, _encode_start, _decode_start),
     _ItemKind(
@@ -91,6 +96,19 @@ _ITEM_KINDS = (
 )
 _KIND_OF_TYPE = {kind.type: kind for kind in _ITEM_KINDS}
 _KIND_NAMED = {kind.name: kind for kind in _ITEM_KINDS}
+_DELTA_TYPES = tuple(kind.type for kind in _ITEM_KINDS if kind.delta)
+_DELTA_NAMES = frozenset(kind.name for kind in _ITEM_KINDS if kind.delta)
+
+
+def is_delta(item: Any) -> bool:
+    """Whether *item* is a text or reasoning delta, which the executor reads
+    ahead of the owner's reader (RFC §10.6.4)."""
+    return isinstance(item, _DELTA_TYPES)
+
+
+def carries_deltas(data: dict[str, Any]) -> bool:
+    """Whether the wire item *data* carries deltas: one, or a joined burst."""
+    return data.get("kind") in _DELTA_NAMES
 
 
 def encode_item(item: Any, *, start: int | None = None) -> dict[str, Any]:

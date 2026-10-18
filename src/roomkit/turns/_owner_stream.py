@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
-from roomkit.turns._codec import decode_end, decode_item
+from roomkit.turns._codec import carries_deltas, decode_end, decode_item
 from roomkit.turns.wire import Pull
 
 if TYPE_CHECKING:
@@ -23,8 +23,6 @@ PULL_WINDOW = 64
 """How many stream items a pull grants the executor at once (RFC §10.6.4):
 text and thinking deltas run ahead of their reader up to this many; any
 other item waits for a later pull, which the reader sends when it reads on."""
-
-_DELTAS = frozenset({"text", "thinking"})
 
 
 def _deltas_in(item: dict[str, Any]) -> int:
@@ -78,7 +76,7 @@ class StreamCopies:
     def count_read(self, item: dict[str, Any]) -> None:
         """Count an item the reader reads: past one that is no delta, the
         executor waits for a pull; a burst counts as the deltas it carries."""
-        if item.get("kind") in _DELTAS:
+        if carries_deltas(item):
             deltas = _deltas_in(item)
             self._granted -= deltas
             self._read += deltas
