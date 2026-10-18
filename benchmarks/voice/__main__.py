@@ -36,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.cpu is not None:
         os.sched_setaffinity(0, {args.cpu})
+    store = "postgres" if args.dsn else "memory"
     for _ in range(args.repeat):
         cost = asyncio.run(
             measure(
@@ -46,7 +47,6 @@ def main(argv: list[str] | None = None) -> int:
                 dsn=args.dsn,
             )
         )
-        store = "postgres" if args.dsn else "memory"
         sys.stdout.write(
             f"store={store} vad={args.vad} stt={args.stt} calls={cost.calls} "
             f"frames={cost.frames}: "

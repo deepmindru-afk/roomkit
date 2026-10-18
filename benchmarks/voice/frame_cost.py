@@ -130,6 +130,7 @@ async def measure(
     )
     kit = RoomKit(store=await _store(dsn))
     kit.register_channel(channel)
+    sessions: list[VoiceSession] = []
     try:
         sessions = await _join_calls(kit, calls)
         frames = seconds * FRAMES_PER_SECOND
@@ -137,5 +138,8 @@ async def measure(
         await _feed(backend, sessions, frames)
         cpu = _cpu_seconds() - start
     finally:
+        if dsn is not None:  # a database outlives the run: leave it as found
+            for session in sessions:
+                await kit.store.delete_room(session.room_id)
         await kit.close()
     return FrameCost(calls, frames * calls, cpu, len(stt.languages_requested))

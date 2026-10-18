@@ -14,14 +14,15 @@ if TYPE_CHECKING:
 
 
 class RoomHooks:
-    """A room's hooks for one voice event: an utterance, a speech boundary, a say().
+    """A room's hooks for one voice event: an utterance, a speech boundary, a partial.
 
     A context is store reads (the room, its bindings, its participants), and
     an utterance announces up to four triggers while most rooms register a
     hook on none of them: the context is read for the first trigger a hook is
-    registered on, shared by the triggers after it, and never read when none
-    is. Sharing is what one event's triggers did before; a hook that must see
-    the state after another event's work gets its own ``RoomHooks``.
+    registered on, shared by the event's later triggers, and never read when
+    none is. A hook that must see the room after other work, as AFTER_TTS
+    does after the synthesis, gets a ``RoomHooks`` of its own. A read that
+    fails raises to the caller, which knows what the failure costs its event.
     """
 
     def __init__(self, framework: RoomKit, room_id: str) -> None:

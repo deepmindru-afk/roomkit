@@ -382,7 +382,8 @@ class RealtimeSpeechMixin:
         # during teardown carries nothing — skip without the alarm bell.
         if getattr(self._framework, "_resource_leases_sealed", False):
             return
-        # Skip expensive _build_context (4 DB queries) when no hooks are registered
+        # Return before the span and the event when no hook listens: levels
+        # arrive once per frame.
         if not self._framework.hook_engine.has_hooks(trigger):
             return
         from roomkit.core.exceptions import RoomKitError

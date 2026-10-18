@@ -2,8 +2,9 @@
 registered on one of its triggers, and once for the whole event (RMK-797).
 
 Every door that announces voice hooks is a case: an utterance in VAD,
-continuous and batch mode, a streaming partial, a say(), and a realtime
-session's transcription and speech boundaries. The inbound pipeline's own
+continuous and batch mode, a turn completed after its wait, a streaming
+partial, a barge-in, a say(), and a realtime session's transcription and
+speech boundaries. The inbound pipeline's own
 reads (RFC §10.1 steps 3 and 6) are not counted: they happen with or without
 a hook, and this is about the reads the voice side adds.
 """
@@ -19,13 +20,14 @@ from typing import Any
 import pytest
 
 from roomkit import HookExecution, HookResult, HookTrigger, RealtimeVoiceChannel, RoomKit
-from roomkit.channels.voice import VoiceChannel
+from roomkit.channels.voice import TTSPlaybackState, VoiceChannel
 from roomkit.models.context import RoomContext
 from roomkit.models.event import TextContent
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.base import AudioChunk, TranscriptionResult
 from roomkit.voice.pipeline import AudioPipelineConfig, MockVADProvider
+from roomkit.voice.pipeline.turn.base import TurnDecision
 from roomkit.voice.pipeline.turn.mock import MockTurnDetector
 from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
@@ -111,6 +113,34 @@ async def _vad_utterance() -> tuple[RoomKit, str, Act]:
     channel = VoiceChannel("voice-1", stt=stt, backend=backend, pipeline=pipeline)
     kit, session, room_id = await _voice_room(channel, backend)
     return kit, room_id, lambda: _speak(backend, session)
+
+
+async def _turn_after_wait() -> tuple[RoomKit, str, Act]:
+    """The turn detector holds the utterance; the turn completes after the wait."""
+    backend = MockVoiceBackend()
+    held = TurnDecision(is_complete=False, confidence=0.3, suggested_wait_ms=50)
+    pipeline = AudioPipelineConfig(
+        vad=MockVADProvider(events=list(_UTTERANCE)), turn_detector=MockTurnDetector([held])
+    )
+    stt = MockSTTProvider(transcripts=["hello there"])
+    channel = VoiceChannel("voice-1", stt=stt, backend=backend, pipeline=pipeline)
+    kit, session, room_id = await _voice_room(channel, backend)
+
+    async def act() -> None:
+        await _speak(backend, session)
+        await asyncio.sleep(0.3)
+
+    return kit, room_id, act
+
+
+async def _barge_in() -> tuple[RoomKit, str, Act]:
+    """The user speaks over a playback: ON_BARGE_IN, then the cut's ON_TTS_CANCELLED."""
+    backend = MockVoiceBackend()
+    channel = VoiceChannel("voice-1", tts=MockTTSProvider(), backend=backend)
+    kit, session, room_id = await _voice_room(channel, backend)
+    playback = TTSPlaybackState(session_id=session.id, text="let me explain")
+    channel._playing_sessions[session.id] = playback  # noqa: SLF001
+    return kit, room_id, lambda: channel._handle_barge_in(session, playback, room_id)  # noqa: SLF001
 
 
 async def _partial() -> tuple[RoomKit, str, Act]:
@@ -211,7 +241,20 @@ DOORS = {
         events=2,  # the speech start, then the utterance
         routes=True,
     ),
+    # The utterance's read crosses into the wait's task: ON_TURN_COMPLETE shares it.
+    "turn_after_wait": Door(
+        _turn_after_wait,
+        (HookTrigger.ON_TURN_INCOMPLETE, HookTrigger.ON_TURN_COMPLETE),
+        events=1,
+        routes=True,
+    ),
     "partial": Door(_partial, (HookTrigger.ON_PARTIAL_TRANSCRIPTION,), events=1, routes=True),
+    "barge_in": Door(
+        _barge_in,
+        (HookTrigger.ON_BARGE_IN, HookTrigger.ON_TTS_CANCELLED),
+        events=2,
+        routes=False,
+    ),
     "continuous_final": Door(
         _continuous_final,
         (HookTrigger.ON_SPEECH_END, HookTrigger.ON_TRANSCRIPTION),

@@ -179,9 +179,8 @@ class RealtimeTranscriptionMixin:
             except Exception:
                 logger.exception("Error sending partial transcription for session %s", session.id)
 
-            # Skip expensive _build_context when no hooks are registered —
-            # partials stream continuously while the AI speaks, so this path
-            # runs many times per second on the event loop.
+            # Return before building the event when no hook listens: partials
+            # stream continuously while the AI speaks, many times per second.
             if not self._framework.hook_engine.has_hooks(HookTrigger.ON_PARTIAL_TRANSCRIPTION):
                 return
 
