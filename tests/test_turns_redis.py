@@ -9,6 +9,7 @@ began reaching its owner.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import time
@@ -41,8 +42,9 @@ from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import SQLiteStore
 from roomkit.turns import TurnExecutor, TurnTimeouts
 from roomkit.turns._redis_links import RedisExecutorLink
+from roomkit.turns._redis_presence import Keys, Registry
 from roomkit.turns.redis import RedisTurnBackend
-from roomkit.turns.wire import CommittedEvent, End
+from roomkit.turns.wire import CommittedEvent, End, RoomCall
 from tests import redis_turn_mode
 from tests.test_framework import SimpleChannel
 
@@ -478,12 +480,12 @@ async def test_a_frame_redis_refuses_fails_the_turn_rather_than_waits(
     post = host._outbox.post
     refused: list[str] = []
 
-    def refusing(node: str, envelope: Any, failed: Any = None) -> None:
+    def refusing(node: str, envelope: Any, failed: Any = None, **kwargs: Any) -> None:
         if envelope.kind == "frame" and f'"type":"{frame}"' in envelope.body and not refused:
             refused.append(frame)
             failed(ConnectionError("OOM command not allowed"))
             return
-        post(node, envelope, failed)
+        post(node, envelope, failed, **kwargs)
 
     host._outbox.post = refusing  # type: ignore[method-assign]
     kit = await _owner(prefix, "worker", store=store)
@@ -741,11 +743,11 @@ async def test_a_request_redis_refuses_leaves_no_link(prefix: str, redis_client:
     backend = kit._turns.backend
     post = backend._outbox.post
 
-    def refusing(node: str, envelope: Any, failed: Any = None) -> None:
+    def refusing(node: str, envelope: Any, failed: Any = None, **kwargs: Any) -> None:
         if envelope.kind == "request":
             failed(ConnectionError("READONLY You can't write against a read only replica."))
             return
-        post(node, envelope, failed)
+        post(node, envelope, failed, **kwargs)
 
     backend._outbox.post = refusing
     try:
@@ -1004,12 +1006,12 @@ async def test_a_turn_whose_control_redis_refused_stops_on_its_executor_at_once(
     post = backend._outbox.post
     refusing = {"armed": False}
 
-    def refused(node: str, envelope: Any, failed: Any = None) -> None:
+    def refused(node: str, envelope: Any, failed: Any = None, **kwargs: Any) -> None:
         if refusing["armed"] and envelope.kind == "control" and failed is not None:
             refusing["armed"] = False
             failed(ConnectionError("OOM command not allowed"))
             return
-        post(node, envelope, failed)
+        post(node, envelope, failed, **kwargs)
 
     backend._outbox.post = refused
     try:
@@ -1055,7 +1057,8 @@ async def test_a_closed_process_is_neither_an_owner_nor_an_executor_in_redis(
     prefix: str, redis_client: Any
 ) -> None:
     """Closing withdraws the process as an owner and as its executors, and
-    no later beat writes them again: the others stop waiting for it at once."""
+    no later beat writes them again: the others stop counting it alive at
+    their next read."""
     store = InMemoryStore()
     worker = _Worker("worker", MockAIProvider(responses=["Hi."] * 5, streaming=True))
     host, executor = await _hosted(prefix, store, worker)
@@ -1081,3 +1084,135 @@ async def test_the_redis_mode_deletes_only_its_own_session_s_keys(redis_client: 
         assert await redis_client.get(other) == b"kept"
     finally:
         await redis_client.delete(other)
+
+
+# -- What the review of 0e328a19 found -----------------------------------------------
+
+
+def _slow_beat_stop(backend: RedisTurnBackend, delay: float) -> None:
+    """Widen the window in which *backend* closes but is still a member."""
+    stop = backend._beat.stop
+
+    def slow() -> None:
+        time.sleep(delay)
+        stop()
+
+    backend._beat.stop = slow  # type: ignore[method-assign]
+
+
+async def test_a_request_reaching_a_closing_process_goes_to_another_executor(
+    prefix: str, redis_client: Any
+) -> None:
+    """The room's holder closes while the owner places the room's turn on
+    it: its process refuses the turn, which another executor takes."""
+    store = InMemoryStore()
+    closing_host = _backend(prefix)
+    first = _agent_executor("host-a", store, hosts={"worker"}, answer="From A.")
+    await closing_host.serve(first)
+    other_host = _backend(prefix)
+    second = _agent_executor("host-b", store, hosts={"worker"}, answer="From B.")
+    await other_host.serve(second)
+    kit = await _owner(prefix, "worker", store=store)
+    await redis_client.set(f"{prefix}:holder:worker:r", f"{closing_host.node_id}:host-a")
+    try:
+        _slow_beat_stop(closing_host, 0.5)
+        closing = asyncio.ensure_future(closing_host.close())
+        await asyncio.sleep(0.05)
+        result = await kit.process_inbound(_said("Hi."), room_id="r")
+        await closing
+
+        assert result.error is None
+        assert await _answers(kit) == ["From B."]
+    finally:
+        await kit.close()
+        await closing_host.close()
+        await other_host.close()
+        await first.close()
+        await second.close()
+
+
+async def test_a_channel_call_being_applied_when_its_process_closes_is_answered(
+    prefix: str, redis_client: Any
+) -> None:
+    store = InMemoryStore()
+    worker = _Worker("worker", MockAIProvider(responses=["Hi."] * 5, streaming=True))
+    host, executor = await _hosted(prefix, store, worker)
+    kit = await _owner(prefix, "worker", store=store)
+    control = executor.control
+    applying = asyncio.Event()
+
+    async def slow_control(message: Any) -> Any:
+        applying.set()
+        await asyncio.sleep(0.3)
+        return await control(message)
+
+    executor.control = slow_control  # type: ignore[method-assign]
+    try:
+        _slow_beat_stop(host, 1.0)
+        call = asyncio.ensure_future(kit.channel_call("worker", "r", "set_mode", mode="fast"))
+        await asyncio.wait_for(applying.wait(), 5)
+        closing = asyncio.ensure_future(host.close())
+        answer = await asyncio.wait_for(call, 5)
+        await closing
+
+        assert answer == {"verb": "set_mode", "room": "r", "mode": "fast"}
+    finally:
+        await kit.close()
+        await host.close()
+        await executor.close()
+
+
+async def test_work_after_a_turn_asking_from_a_closing_process_is_answered_at_once(
+    prefix: str, redis_client: Any
+) -> None:
+    """An executor's process closes while the work its turn began asks the
+    owner: the work learns it at once, rather than wait on a view no
+    longer read."""
+    store = InMemoryStore()
+    worker = _Worker("worker", MockAIProvider(responses=["Hi."] * 5, streaming=True))
+    host, executor = await _hosted(prefix, store, worker)
+    kit = await _owner(prefix, "worker", store=store)
+    try:
+        await kit.process_inbound(_said("Hi."), room_id="r")
+        turn_id = next(iter(host._routes._turn_owners))
+        _slow_beat_stop(host, 0.5)
+        closing = asyncio.ensure_future(host.close())
+        await asyncio.sleep(0.05)
+        call = RoomCall(
+            channel_id="worker", room_id="r", executor_id="host-a", turn_id=turn_id, verb="send"
+        )
+        result = await asyncio.wait_for(host._routes.port.room_call(call), 1)
+        await closing
+
+        assert result.error is not None
+    finally:
+        await kit.close()
+        await host.close()
+        await executor.close()
+
+
+async def test_a_beat_built_before_an_executor_was_served_again_does_not_withdraw_it(
+    prefix: str, redis_client: Any
+) -> None:
+    """The beat thread built its beat from the closed executor's set just
+    before the new one of its id was served, and wrote it after."""
+    registry = Registry(redis_client, Keys(prefix))
+    member = "node-a:host-a"
+    declared = '{"node":"node-a","executor_id":"host-a","channels":["worker"],"room_hooks":[]}'
+
+    def beat(generation: int, *, gone: bool) -> str:
+        return json.dumps(
+            {
+                "node": "node-a",
+                "generation": generation,
+                "declared": {} if gone else {member: declared},
+                "gone": [member] if gone else [],
+                "running": [],
+                "owner": False,
+            }
+        )
+
+    await registry.beat("node-a", beat(2, gone=False), 60_000)
+    await registry.beat("node-a", beat(1, gone=True), 60_000)
+
+    assert await redis_client.zscore(f"{prefix}:alive", member) is not None

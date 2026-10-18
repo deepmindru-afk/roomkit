@@ -4,11 +4,15 @@ Each destination has one writer task: what is posted to a node reaches its
 inbox in the order it was posted, a batch per round trip, whatever task posted
 it and whether that task is cancelled meanwhile. Posting never waits, so a
 message is numbered and queued in one step, and two messages of one turn can
-never reach the other side in the other order (RFC §10.6.3). A batch Redis
-refuses is not retried: each message's sender is told, and its turn fails
-rather than wait for what will not come. A writer left idle goes, and the
-next message to its node starts another; closing writes what is queued
-(a turn's ``end`` among it) within a bound, and tells the senders of the rest.
+never reach the other side in the other order (RFC §10.6.3). A message of a
+batch Redis refuses is written again a moment later, before what was posted
+after it, when it may be (an answer, work after a turn, written until they
+are); one that may not (a turn's message, whose order its turn counts) is
+not, and its sender is told: its turn fails rather than wait for what will
+not come. A
+writer left idle goes, and the next message to its node starts another;
+closing writes what is queued (a turn's ``end`` among it) within a bound, and
+tells the senders of the rest.
 """
 
 from __future__ import annotations
@@ -25,11 +29,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger("roomkit.turns")
 
 _BATCH = 256
+# How long a writer waits before writing again what Redis refused.
+RETRY_DELAY = 1.0
 
 Failed = Callable[[Exception], None]
-"""Told when Redis refused the batch a message was in."""
+"""Told when Redis refused the batch a message was in, for its last write."""
 
-_Queued = tuple["Envelope", Failed | None]
+# A message, who to tell when it cannot be written, and its writes left
+# (None: until it is written).
+_Queued = tuple["Envelope", Failed | None, int | None]
 # Put on each queue on closing: its writer stops once it wrote what came before.
 _CLOSING = None
 
@@ -41,19 +49,37 @@ class Outbox:
         client: The ``redis.asyncio`` client.
         inbox_key: The inbox stream of a node.
         ttl_ms: How long an inbox nobody writes to lives, and a writer idle.
+        retry_delay: How long a writer waits before writing again what
+            Redis refused.
     """
 
-    def __init__(self, client: Any, inbox_key: Callable[[str], str], ttl_ms: int) -> None:
+    def __init__(
+        self,
+        client: Any,
+        inbox_key: Callable[[str], str],
+        ttl_ms: int,
+        retry_delay: float = RETRY_DELAY,
+    ) -> None:
         self._client = client
         self._inbox_key = inbox_key
         self._ttl_ms = ttl_ms
+        self._retry_delay = retry_delay
         self._queues: dict[str, asyncio.Queue[_Queued | None]] = {}
         self._writers: dict[str, asyncio.Task[None]] = {}
         self._closed = False
 
-    def post(self, node: str, envelope: Envelope, failed: Failed | None = None) -> None:
+    def post(
+        self,
+        node: str,
+        envelope: Envelope,
+        failed: Failed | None = None,
+        *,
+        writes: int | None = 1,
+    ) -> None:
         """Queue *envelope* for *node*'s inbox, after what was posted to it
-        before; *failed* is told if Redis refuses it."""
+        before, written up to *writes* times while Redis refuses it (None:
+        until it is written, while the outbox runs); *failed* is told if it
+        is never written."""
         if self._closed:
             if failed is not None:
                 failed(ConnectionError("The turn backend closed"))
@@ -67,7 +93,7 @@ class Outbox:
                 name=f"roomkit-turns-outbox-{node}",
                 context=contextvars.Context(),
             )
-        queue.put_nowait((envelope, failed))
+        queue.put_nowait((envelope, failed, writes))
 
     async def close(self, drain: float) -> None:
         """Take no more messages, write what is queued within *drain*
@@ -87,27 +113,43 @@ class Outbox:
         self._writers.clear()
 
     async def _write(self, node: str, queue: asyncio.Queue[_Queued | None]) -> None:
+        """Write what *node* is posted, in order, until the closing mark or
+        an idle while; what Redis refused and may be written again goes
+        first, a moment later."""
         key = self._inbox_key(node)
-        while True:
-            try:
-                async with asyncio.timeout(self._ttl_ms / 1000):
-                    first = await queue.get()
-            except TimeoutError:
-                if queue.empty():
-                    # Idle: the writer goes; the next message starts another.
-                    del self._queues[node], self._writers[node]
-                    return
-                continue
-            batch, closing = _batch(first, queue)
-            if batch:
-                await self._send(key, node, batch)
-            if closing:
-                return
+        again: list[_Queued] = []
+        closing = False
+        try:
+            while again or not closing:
+                if again:
+                    await asyncio.sleep(self._retry_delay)
+                    start, again = again, []
+                else:
+                    try:
+                        async with asyncio.timeout(self._ttl_ms / 1000):
+                            first = await queue.get()
+                    except TimeoutError:
+                        if queue.empty():
+                            # Idle: the writer goes; the next message starts another.
+                            del self._queues[node], self._writers[node]
+                            return
+                        continue
+                    if first is _CLOSING:
+                        closing = True
+                        continue
+                    start = [first]
+                batch, closing = _batch(start, queue, closing)
+                again = await self._send(key, node, batch)
+        except asyncio.CancelledError:
+            _tell(again, ConnectionError("The turn backend closed before writing it"))
+            raise
 
-    async def _send(self, key: str, node: str, batch: list[_Queued]) -> None:
+    async def _send(self, key: str, node: str, batch: list[_Queued]) -> list[_Queued]:
+        """Write *batch*: what Redis refused and has writes left, to write
+        again; the senders of the rest are told."""
         try:
             pipe = self._client.pipeline(transaction=False)
-            for envelope, _ in batch:
+            for envelope, _, _ in batch:
                 pipe.xadd(key, envelope.fields())
             pipe.pexpire(key, self._ttl_ms)
             await pipe.execute()
@@ -115,23 +157,36 @@ class Outbox:
             _tell(batch, ConnectionError("The turn backend closed before writing it"))
             raise
         except Exception as exc:
-            logger.warning("Writing %d turn message(s) to %s failed: %s", len(batch), node, exc)
-            _tell(batch, exc)
+            again = [
+                (envelope, failed, None if left is None else left - 1)
+                for envelope, failed, left in batch
+                if left is None or left > 1
+            ]
+            logger.warning(
+                "Writing %d turn message(s) to %s failed (%d written again): %s",
+                len(batch),
+                node,
+                len(again),
+                exc,
+            )
+            _tell([item for item in batch if item[2] is not None and item[2] <= 1], exc)
+            return again
+        return []
 
 
 def _batch(
-    first: _Queued | None, queue: asyncio.Queue[_Queued | None]
+    start: list[_Queued], queue: asyncio.Queue[_Queued | None], closing: bool
 ) -> tuple[list[_Queued], bool]:
-    """*first* and what follows it in *queue*, up to a batch, and whether
-    the closing mark ended it."""
-    batch: list[_Queued] = []
-    item = first
-    while item is not _CLOSING:
-        batch.append(item)
-        if len(batch) == _BATCH or queue.empty():
-            return batch, False
+    """*start* and what follows it in *queue*, up to a batch, and whether
+    the closing mark came (nothing is taken after it)."""
+    batch = list(start)
+    while not closing and len(batch) < _BATCH and not queue.empty():
         item = queue.get_nowait()
-    return batch, True
+        if item is _CLOSING:
+            closing = True
+        else:
+            batch.append(item)
+    return batch, closing
 
 
 def _emptied(queue: asyncio.Queue[_Queued | None]) -> list[_Queued | None]:
@@ -142,7 +197,7 @@ def _emptied(queue: asyncio.Queue[_Queued | None]) -> list[_Queued | None]:
 
 
 def _tell(batch: list[_Queued], error: Exception) -> None:
-    for envelope, failed in batch:
+    for envelope, failed, _ in batch:
         if failed is None:
             continue
         try:

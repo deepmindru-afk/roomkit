@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import sys
+import time
 from typing import Any
 from unittest.mock import patch
 
@@ -26,7 +27,7 @@ from roomkit.turns._redis_inbox import Envelope
 from roomkit.turns._redis_outbox import Outbox
 from roomkit.turns._redis_placement import Placement
 from roomkit.turns._redis_presence import Declaration, View, member_of
-from roomkit.turns._redis_routes import TAKEN, Routes
+from roomkit.turns._redis_routes import REFUSED, TAKEN, Routes
 from roomkit.turns.owner import registry_turn_client, turn_request
 from roomkit.turns.redis import RedisTurnBackend
 from roomkit.turns.wire import (
@@ -207,20 +208,26 @@ def test_a_backend_given_a_client_needs_the_url_its_beat_connects_to() -> None:
 
 
 class _Posted:
-    """What a process posted: (node, kind, body, ref), each sender's failure
-    callback kept."""
+    """What a process posted: (node, kind, body, ref), and how many times
+    each may be written."""
 
     def __init__(self) -> None:
         self.messages: list[tuple[str, str, str, str]] = []
-        self.refuse: set[str] = set()
+        self.writes: list[int | None] = []
 
     def __call__(
-        self, node: str, kind: str, body: str, target: str, ref: str = "", *, failed: Any = None
+        self,
+        node: str,
+        kind: str,
+        body: str,
+        target: str,
+        ref: str = "",
+        *,
+        failed: Any = None,
+        writes: int | None = 1,
     ) -> None:
         self.messages.append((node, kind, body, ref))
-        if kind in self.refuse and failed is not None:
-            self.refuse.discard(kind)
-            failed(ConnectionError("OOM command not allowed"))
+        self.writes.append(writes)
 
     def of(self, kind: str) -> list[tuple[str, str, str, str]]:
         return [m for m in self.messages if m[1] == kind]
@@ -324,15 +331,11 @@ async def test_work_after_a_turn_written_twice_reaches_its_owner_once() -> None:
     assert owner.publications == ["t-1"]
 
 
-async def test_work_after_a_turn_redis_refused_is_written_again(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(_redis_routes, "_WRITE_RETRY_DELAY", 0.01)
+async def test_answers_and_work_after_a_turn_are_written_until_they_are() -> None:
     routes, posted, _ = _routes()
     routes.shared["host-a"] = _Taker()  # type: ignore[assignment]
     request = _request()
     routes.route(Envelope("request", "node-a", request.model_dump_json(), "host-a", "ref-5"))
-    posted.refuse.add("owner")
 
     await routes.port.room_publication(
         RoomPublication(
@@ -343,10 +346,82 @@ async def test_work_after_a_turn_redis_refused_is_written_again(
             frame=Ephemeral(channel="room:room", event={}),
         )
     )
-    await asyncio.sleep(0.1)
 
-    written = posted.of("owner")
-    assert len(written) == 2 and written[0][3] == written[1][3] != ""
+    assert [m[1] for m in posted.messages] == ["answer", "owner"]
+    assert posted.writes == [None, None]
+    assert posted.of("owner")[0][3] != ""  # a reference: handled once on arrival
+
+
+def test_a_request_reaching_a_closing_process_is_refused_to_be_placed_again() -> None:
+    routes, posted, _ = _routes()
+    taker = _Taker()
+    routes.shared["host-a"] = taker  # type: ignore[assignment]
+    routes.close()
+
+    routes.route(Envelope("request", "node-a", _request().model_dump_json(), "host-a", "ref-6"))
+
+    assert taker.taken == []
+    assert posted.of("answer") == [("node-a", "answer", REFUSED, "ref-6")]
+
+
+async def test_a_closing_process_asks_nothing() -> None:
+    routes, posted, _ = _routes()
+    routes.close()
+
+    with pytest.raises(TurnLinkError) as raised:
+        await routes.ask("node-a", "owner", "{}", "")
+
+    assert raised.value.reason == "backend_closed"
+    assert posted.messages == []
+
+
+class _Raises(_Taker):
+    async def control(self, message: Any) -> None:
+        raise RuntimeError("the channel's factory is broken")
+
+
+class _OwnerRaises(_Owner):
+    async def room_call(self, message: RoomCall) -> HostResult:
+        raise RuntimeError("the store is down")
+
+
+async def test_a_channel_control_that_raised_is_answered_with_its_error() -> None:
+    """Its owner waits for the answer while this process beats."""
+    routes, posted, tasks = _routes()
+    routes.shared["host-a"] = _Raises()  # type: ignore[assignment]
+    raw = ChannelControlEnvelope(message=RoomDetached(channel_id="agent", room_id="room"))
+    routes.route(Envelope("channel", "node-a", raw.model_dump_json(), "host-a", "ref-7"))
+    await asyncio.gather(*tasks)
+
+    (answer,) = posted.of("answer")
+    assert "the channel's factory is broken" in answer[2]
+
+
+async def test_a_room_call_that_raised_is_answered_with_its_error() -> None:
+    routes, posted, tasks = _routes()
+    routes.owner = _OwnerRaises()  # type: ignore[assignment]
+    call = RoomCall(
+        channel_id="agent", room_id="room", executor_id="host-a", turn_id="t-1", verb="send"
+    )
+    body = OwnerMessageEnvelope(message=call).model_dump_json()
+    routes.route(Envelope("owner", "node-a", body, "", "ref-8"))
+    await asyncio.gather(*tasks)
+
+    (answer,) = posted.of("answer")
+    assert HostResult.model_validate_json(answer[2]).error is not None
+
+
+def test_a_question_handled_long_ago_is_forgotten(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_redis_routes, "_HANDLED_FOR", 0.0)
+    routes, posted, _ = _routes()
+    taker = _Taker()
+    routes.shared["host-a"] = taker  # type: ignore[assignment]
+    first, second = _request(), _request()
+
+    routes.route(Envelope("request", "node-a", first.model_dump_json(), "host-a", "ref-9"))
+    routes.route(Envelope("request", "node-a", second.model_dump_json(), "host-a", "ref-10"))
+
+    assert list(routes._handled) == ["ref-10"]
 
 
 # -- The view of the others ---------------------------------------------------------
@@ -355,9 +430,16 @@ async def test_work_after_a_turn_redis_refused_is_written_again(
 class _Registry:
     def __init__(self) -> None:
         self.down = False
+        self.silent = False
+        self.fail_once = False
+        self.failed = asyncio.Event()
 
     async def view(self, forget_after_ms: int) -> View:
-        if self.down:
+        if self.silent:  # the host stopped answering without a reset
+            await asyncio.Event().wait()
+        if self.down or self.fail_once:
+            self.fail_once = False
+            self.failed.set()
             raise ConnectionError("Connection refused")
         return View(now=1_000, beats={"node-a:w": 1_000}, owners={"node-a": 1_000})
 
@@ -478,3 +560,69 @@ async def test_closing_tells_the_senders_of_what_it_could_not_write() -> None:
 
     assert client.written == []
     assert told == ["m1", "m2", "m3"]
+
+
+async def test_the_others_read_by_a_read_that_hangs_are_not_alive() -> None:
+    registry = _Registry()
+    live = LiveExecutors(registry, 0.01, 0.1, dict)  # type: ignore[arg-type]
+    live.start()
+    try:
+        await asyncio.sleep(0.05)
+        registry.silent = True
+        await asyncio.sleep(0.3)
+
+        assert not live.alive("node-a:w")
+    finally:
+        await live.close()
+
+
+async def test_a_stall_of_this_process_after_one_failed_read_is_not_the_others_silence() -> None:
+    """RFC §10.6.8: silence is counted only while the side counting it runs."""
+    registry = _Registry()
+    live = LiveExecutors(registry, 0.01, 0.1, dict)  # type: ignore[arg-type]
+    live.start()
+    try:
+        await asyncio.sleep(0.05)
+        registry.fail_once = True
+        await registry.failed.wait()  # a read failed, and the next is not made yet
+        time.sleep(0.3)  # noqa: ASYNC251 - this process's event loop stalls
+
+        assert live.alive("node-a:w")
+    finally:
+        await live.close()
+
+
+class _RefusesFirst(_Client):
+    """Refuses its first write."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.refused = False
+
+    def pipeline(self, transaction: bool) -> _Pipe:
+        if not self.refused:
+            self.refused = True
+            return _RefusedPipe(self)
+        return _Pipe(self)
+
+
+class _RefusedPipe(_Pipe):
+    async def execute(self) -> None:
+        raise ConnectionError("OOM command not allowed")
+
+
+async def test_a_message_written_again_keeps_its_place_before_later_ones() -> None:
+    """A typing indicator's start refused once still reaches the room
+    before its stop."""
+    client = _RefusesFirst()
+    outbox = Outbox(client, lambda node: f"inbox:{node}", ttl_ms=60_000, retry_delay=0.02)
+    told: list[str] = []
+    outbox.post("a", _message("start"), writes=None)
+    outbox.post("a", _message("frame"), lambda error: told.append("frame"))
+    await asyncio.sleep(0.005)
+    outbox.post("a", _message("stop"), writes=None)
+    await asyncio.sleep(0.1)
+
+    assert client.written == ["start", "stop"]
+    assert told == ["frame"]  # a turn's message is not written again
+    await outbox.close(drain=1.0)

@@ -141,6 +141,7 @@ class RedisTurnBackend(TurnBackend):
         self._routes = Routes(self.node_id, self._post, self._spawn, self._live, self._here._port)
         self._payload = BeatPayload(self.node_id, self._routes)
         self._started = False
+        self._routing = True
         self._closed = False
 
     async def submit(self, request: TurnRequest) -> TurnLink:
@@ -186,7 +187,6 @@ class RedisTurnBackend(TurnBackend):
         self._start()
         kept = [e for e in _others(self._placement.here, executor) if not e.closed]
         self._placement.here = [*kept, executor]
-        await self._here.serve(executor)
         if executor.timeouts != self._timeouts:
             logger.warning(
                 "Executor %s keeps other timeouts than its turn backend: give both the same "
@@ -245,17 +245,19 @@ class RedisTurnBackend(TurnBackend):
         if self._closed:
             return
         self._closed = True
+        # From now a request is refused, to be placed again, and none asked.
         self._routes.close()
         # The beat stops first, so none declares again what is withdrawn.
         await asyncio.to_thread(self._beat.stop)
-        try:
-            owner = self.node_id if self._routes.owner is not None else None
-            await self._registry.withdraw(self._payload.members, owner=owner)
-        except Exception:
-            logger.debug("Withdrawing this process from Redis failed", exc_info=True)
+        await self._withdraw()
+        # What arrived until now is routed; the answers it gets (and a
+        # turn's end) are written before the process goes.
+        await self._inbox.close()
+        self._routing = False
+        if self._tasks:
+            await asyncio.wait(set(self._tasks), timeout=self._timeouts.cancel)
         await self._outbox.close(drain=self._timeouts.cancel)
         await self._live.close()
-        await self._inbox.close()
         await self._here.close()
         if self._tasks:
             await cancel_and_wait(*self._tasks, log_errors_to=logger)
@@ -291,6 +293,14 @@ class RedisTurnBackend(TurnBackend):
             self._inbox.start()
             self._live.start()
 
+    async def _withdraw(self) -> None:
+        """Withdraw this process's executors, and it as a room owner."""
+        try:
+            owner = self.node_id if self._routes.owner is not None else None
+            await self._registry.withdraw(self._payload.members, owner=owner)
+        except Exception:
+            logger.debug("Withdrawing this process from Redis failed", exc_info=True)
+
     async def _beat_for(self, executor: TurnExecutor) -> None:
         """Beat for *executor* from now, in place of one of its id served
         before; the executors that closed are withdrawn, then let go."""
@@ -318,12 +328,14 @@ class RedisTurnBackend(TurnBackend):
         ref: str = "",
         *,
         failed: Failed | None = None,
+        writes: int | None = 1,
     ) -> None:
-        self._outbox.post(node, Envelope(kind, self.node_id, body, target=target, ref=ref), failed)
+        envelope = Envelope(kind, self.node_id, body, target=target, ref=ref)
+        self._outbox.post(node, envelope, failed, writes=writes)
 
     def _spawn(self, work: Coroutine[Any, Any, None]) -> None:
         """Run *work* on a task the backend holds until it closes."""
-        if self._closed:
+        if not self._routing:
             work.close()
             return
         task = asyncio.get_running_loop().create_task(work, context=contextvars.Context())

@@ -26,11 +26,18 @@ from typing import Any
 logger = logging.getLogger("roomkit.turns")
 
 # KEYS: alive executors, declarations, alive owners, this node's inbox, this
-# node's running turns. ARGV: the ttl in ms, the beat as JSON.
+# node's running turns, this node's generation. ARGV: the ttl in ms, the beat
+# as JSON. A beat built from an older set of executors than one written
+# already writes nothing.
 BEAT_SCRIPT = """
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 local beat = cjson.decode(ARGV[2])
+local generation = tonumber(redis.call('GET', KEYS[6]) or '0')
+if beat.generation < generation then
+  return now
+end
+redis.call('SET', KEYS[6], beat.generation, 'PX', ARGV[1])
 for member, declared in pairs(beat.declared) do
   redis.call('ZADD', KEYS[1], now, member)
   redis.call('HSET', KEYS[2], member, declared)
@@ -181,6 +188,7 @@ class Keys:
             self.owners,
             self.inbox(node),
             self.running(node),
+            f"{self.prefix}:generation:{node}",
         ]
 
 

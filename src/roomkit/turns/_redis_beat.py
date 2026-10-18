@@ -35,25 +35,37 @@ class BeatPayload:
     def __init__(self, node: str, routes: Routes) -> None:
         self._node = node
         self._routes = routes
-        self.executors: tuple[TurnExecutor, ...] = ()
-        """The executors it beats for: replaced, never changed."""
+        # The executors it beats for, numbered each time they change: a beat
+        # built from an older set never undoes one built from a newer.
+        self._served: tuple[int, tuple[TurnExecutor, ...]] = (0, ())
         self._declared: dict[str, str] = {}
+
+    @property
+    def executors(self) -> tuple[TurnExecutor, ...]:
+        return self._served[1]
+
+    @executors.setter
+    def executors(self, executors: tuple[TurnExecutor, ...]) -> None:
+        # Replaced whole, never changed, so the beat thread reads it whole.
+        self._served = (self._served[0] + 1, executors)
 
     @property
     def members(self) -> list[str]:
         return [member_of(self._node, executor.executor_id) for executor in self.executors]
 
     def __call__(self) -> str:
+        generation, executors = self._served
         declared = {
             member_of(self._node, e.executor_id): self._declaration(e)
-            for e in self.executors
+            for e in executors
             if not e.closed
         }
         # A closed executor's member another of its id now declares stays.
-        closed = (member_of(self._node, e.executor_id) for e in self.executors if e.closed)
+        closed = (member_of(self._node, e.executor_id) for e in executors if e.closed)
         gone = [member for member in closed if member not in declared]
         payload = {
             "node": self._node,
+            "generation": generation,
             "declared": declared,
             "gone": gone,
             "running": sorted(self._routes.running),
@@ -102,7 +114,9 @@ class LiveExecutors:
         self._open_turns = open_turns
         self._view = View()
         self._running: dict[str, frozenset[str]] = {}
+        # The first and the last of the reads failing in a row.
         self._failing_since: float | None = None
+        self._failed_at = 0.0
         self._refresher: asyncio.Task[None] | None = None
 
     def start(self) -> None:
@@ -153,22 +167,26 @@ class LiveExecutors:
         }
 
     def _unread(self) -> bool:
-        """Whether reading the others failed for the heartbeat timeout: none
-        of them is then known alive. Only reads this process made count, so a
-        stall of its own event loop is not the others' silence."""
+        """Whether the reads of the others kept failing (or hanging) over the
+        heartbeat timeout: none of them is then known alive. Only the reads
+        this process made count, so a stall of its own event loop is not the
+        others' silence."""
         failing = self._failing_since
-        return failing is not None and time.monotonic() - failing >= self._timeout
+        return failing is not None and self._failed_at - failing >= self._timeout
 
     async def _refresh_each_interval(self) -> None:
         while True:
             try:
-                await self.refresh()
-                self._running = await self._registry.running(self._open_turns())
+                # A read that hangs fails as one that raises.
+                async with asyncio.timeout(self.interval):
+                    await self.refresh()
+                    self._running = await self._registry.running(self._open_turns())
             except asyncio.CancelledError:
                 raise
             except Exception:
+                self._failed_at = time.monotonic()
                 if self._failing_since is None:
-                    self._failing_since = time.monotonic()
+                    self._failing_since = self._failed_at
                 logger.warning("Reading the turn processes alive failed", exc_info=True)
             await asyncio.sleep(self.interval)
 
