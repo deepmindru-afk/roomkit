@@ -218,13 +218,16 @@ class RedisTurnBackend(TurnBackend):
         self._start()
         raw = ChannelControlEnvelope(message=message).model_dump_json()
         if isinstance(message, ChannelCall):
-            placed = await self._placement.place(message.channel_id, message.room_id)
-            return await self._apply(placed, raw)
-        if isinstance(message, CommittedEvent):
-            held = await self._placement.hold(
-                message.channel_id, message.room_id, message.room_hooks
+            channel_id, room_id = message.channel_id, message.room_id
+            return await self._applied_once(
+                raw, lambda refused: self._placement.place(channel_id, room_id, excluded=refused)
             )
-            await self._apply(held, raw)
+        if isinstance(message, CommittedEvent):
+            channel_id, room_id, hooks = message.channel_id, message.room_id, message.room_hooks
+            await self._applied_once(
+                raw,
+                lambda refused: self._placement.hold(channel_id, room_id, hooks, excluded=refused),
+            )
             return None
         if isinstance(message, RoomDetached):
             await self._placement.forget(message.channel_id, message.room_id)
@@ -235,11 +238,30 @@ class RedisTurnBackend(TurnBackend):
             *(self._apply(executor, raw) for executor in elsewhere), return_exceptions=True
         )
         for executor, result in zip(elsewhere, results, strict=True):
-            if isinstance(result, Exception):
+            if isinstance(result, Exception) or result is None:
                 logger.warning(
-                    "Executor %s did not apply %s: %s", executor.member, message.type, result
+                    "Executor %s did not apply %s: %s",
+                    executor.member,
+                    message.type,
+                    result or "its process is closing",
                 )
         return None
+
+    async def _applied_once(
+        self,
+        raw: str,
+        choose: Callable[[set[str]], Coroutine[Any, Any, TurnExecutor | Elsewhere]],
+    ) -> ChannelResult:
+        """Apply a channel control on the executor *choose* places it on,
+        placed again, never twice, while a closing process refuses it."""
+        refused: set[str] = set()
+        while True:
+            placed = await choose(refused)
+            result = await self._apply(placed, raw)
+            if result is not None:
+                return result
+            assert isinstance(placed, Elsewhere)
+            refused.add(placed.member)
 
     async def close(self) -> None:
         if self._closed:
@@ -265,9 +287,10 @@ class RedisTurnBackend(TurnBackend):
         if self._owns_client:
             await self._client.aclose()
 
-    async def _apply(self, placed: TurnExecutor | Elsewhere, raw: str) -> ChannelResult:
+    async def _apply(self, placed: TurnExecutor | Elsewhere, raw: str) -> ChannelResult | None:
         """Apply a channel control on *placed*, here or across Redis: its
-        result once applied, waited for while the executor lives."""
+        result once applied, waited for while the executor lives; None when
+        a closing process refused it, having applied nothing."""
         if not isinstance(placed, Elsewhere):
             answer = await placed.control(_crossed(raw))
             if answer is None:
@@ -276,7 +299,7 @@ class RedisTurnBackend(TurnBackend):
         body = await self._routes.ask(
             placed.node, "channel", raw, placed.executor_id, alive=self._lives(placed)
         )
-        return ChannelResult.model_validate_json(body)
+        return None if body == REFUSED else ChannelResult.model_validate_json(body)
 
     def _lives(self, placed: Elsewhere) -> Callable[[], bool]:
         """Whether *placed* still lives: by its beat, or (the tests' loop

@@ -1316,3 +1316,50 @@ async def test_work_reaching_a_closing_owner_is_refused_at_once(
         await kit.close()
         await host.close()
         await executor.close()
+
+
+async def test_a_channel_call_and_an_event_for_a_closing_holder_go_to_another_executor(
+    prefix: str, redis_client: Any
+) -> None:
+    """Placed from a view read just before the room's holder began closing:
+    the closing process applies neither and refuses both, which the other
+    executor applies (RFC §10.6.3)."""
+    store = InMemoryStore()
+    workers = {
+        name: _Worker("worker", MockAIProvider(responses=["Hi."] * 5, streaming=True))
+        for name in ("host-a", "host-b")
+    }
+    closing_host, first = await _hosted(prefix, store, workers["host-a"], "host-a")
+    other_host, second = await _hosted(prefix, store, workers["host-b"], "host-b")
+    kit = await _owner(prefix, "worker", store=store)
+    await redis_client.set(f"{prefix}:holder:worker:r", f"{closing_host.node_id}:host-a")
+    live = kit._turns.backend._live
+    older = await live.current()
+    try:
+        _slow_beat_stop(closing_host, 0.5)
+        closing = asyncio.ensure_future(closing_host.close())
+        await asyncio.sleep(0.05)
+
+        async def as_read_before() -> Any:
+            return older
+
+        live.current = as_read_before  # type: ignore[method-assign]
+        answer = await kit.channel_call("worker", "r", "set_mode", mode="fast")
+        event = RoomEvent(
+            room_id="r",
+            source=EventSource(channel_id="tx", channel_type=ChannelType.SMS),
+            content=TextContent(body="Remember this."),
+        )
+        await kit._turns.backend.control(
+            CommittedEvent(channel_id="worker", room_id="r", event=event)
+        )
+        await closing
+
+        assert answer == {"verb": "set_mode", "room": "r", "mode": "fast"}
+        assert workers["host-a"].handed == [] and workers["host-b"].handed == ["Remember this."]
+    finally:
+        await kit.close()
+        await closing_host.close()
+        await other_host.close()
+        await first.close()
+        await second.close()

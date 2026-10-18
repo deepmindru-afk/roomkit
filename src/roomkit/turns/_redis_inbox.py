@@ -32,7 +32,8 @@ class Envelope:
 
     kind: str
     """``request``, ``frame``, ``control``, ``released``, ``channel``,
-    ``channel_result``, ``owner`` or ``host_result``."""
+    ``owner`` (a room call), ``work`` (work after a turn nothing answers)
+    or ``answer``."""
     sender: str
     """The node that sent it, where an answer goes."""
     body: str

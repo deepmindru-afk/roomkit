@@ -258,12 +258,11 @@ class Routes:
 
     def _refuse_closing(self, envelope: Envelope) -> None:
         """Answer what reaches this closing process at once, applying
-        nothing: a request is placed again, a question learns it failed."""
+        nothing: a request or a channel control is placed again, a room call
+        learns it failed."""
         closing = error_record(TurnLinkError("backend_closed"))
-        if envelope.kind == "request":
+        if envelope.kind in ("request", "channel"):
             self._answer_back(envelope, REFUSED)
-        elif envelope.kind == "channel":
-            self._answer_back(envelope, ChannelResult(error=closing).model_dump_json())
         elif envelope.kind == "owner":
             self._answer_back(envelope, HostResult(call_id="", error=closing).model_dump_json())
         else:

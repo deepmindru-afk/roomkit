@@ -134,6 +134,7 @@ class LiveExecutors:
         self._failures = 0
         self._failing_since: float | None = None
         self._failed_at = 0.0
+        self._read_at = 0.0
         self._refresher: asyncio.Task[None] | None = None
 
     def start(self) -> None:
@@ -167,6 +168,7 @@ class LiveExecutors:
 
     async def refresh(self) -> None:
         self._view = await self._registry.view(forget_after_ms=10 * self._timeout_ms)
+        self._read_at = time.monotonic()
         self._failures = 0
         self._failing_since = None
 
@@ -198,6 +200,7 @@ class LiveExecutors:
 
     async def _refresh_each_interval(self) -> None:
         while True:
+            started = time.monotonic()
             try:
                 # A read that hangs fails as one that raises.
                 async with asyncio.timeout(self._timeout):
@@ -205,18 +208,23 @@ class LiveExecutors:
                     self._running = await self._registry.running(self._open_turns())
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                self._failed()
+            except Exception as exc:
+                self._failed(started, hung=isinstance(exc, TimeoutError))
                 logger.warning("Reading the turn processes alive failed", exc_info=True)
             await asyncio.sleep(self.interval)
 
-    def _failed(self) -> None:
-        """A read failed: counted from when it failed, so neither a stall of
-        this process nor a read that succeeded before it counts."""
+    def _failed(self, started: float, *, hung: bool) -> None:
+        """A read begun at *started* failed. One that hung failed from its
+        start, or from the last read that succeeded since; one that took
+        longer than it may (this process's own loop stalled meanwhile), and
+        one that raised, from now."""
+        now = time.monotonic()
+        stalled = now - started > self._timeout + self.interval
+        since = max(started, self._read_at) if hung and not stalled else now
         self._failures += 1
-        self._failed_at = time.monotonic()
+        self._failed_at = now
         if self._failing_since is None:
-            self._failing_since = self._failed_at
+            self._failing_since = since
 
 
 class BeatThread:

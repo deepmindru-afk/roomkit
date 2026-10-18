@@ -714,7 +714,7 @@ async def test_what_reaches_a_closing_process_is_refused_without_being_applied()
 
     assert taker.applied == [] and owner.calls == [] and owner.publications == []
     channel_answer, call_answer = (m[2] for m in posted.of("answer"))
-    assert ChannelResult.model_validate_json(channel_answer).error is not None
+    assert channel_answer == REFUSED  # placed again by its owner
     assert HostResult.model_validate_json(call_answer).error is not None
 
 
@@ -749,3 +749,36 @@ async def test_a_message_written_again_for_a_while_is_given_up_after_it() -> Non
 
     assert told == ["work"]
     await outbox.close(drain=0.05)
+
+
+class _HangsThenRefuses(_Registry):
+    """Redis freezes (a read hangs), then refuses every connection."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.frozen = False
+        self.hung = 0
+
+    async def view(self, forget_after_ms: int) -> View:
+        if self.frozen and not self.hung:
+            self.hung += 1
+            await asyncio.Event().wait()
+        if self.frozen:
+            raise ConnectionError("Connection refused")
+        return await super().view(forget_after_ms)
+
+
+async def test_a_read_that_hung_counts_from_its_start() -> None:
+    """A read that hung then one refused: the others are unread within
+    about a heartbeat timeout of Redis freezing, not two."""
+    registry = _HangsThenRefuses()
+    live = LiveExecutors(registry, 0.02, 0.2, dict)  # type: ignore[arg-type]
+    live.start()
+    try:
+        await asyncio.sleep(0.05)
+        registry.frozen = True
+        await asyncio.sleep(0.32)
+
+        assert not live.alive("node-a:w")
+    finally:
+        await live.close()
