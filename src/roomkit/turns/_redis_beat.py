@@ -215,11 +215,12 @@ class LiveExecutors:
 
     def _failed(self, started: float, *, hung: bool) -> None:
         """A read begun at *started* failed. One that hung failed from its
-        start, or from the last read that succeeded since; one that took
-        longer than it may (this process's own loop stalled meanwhile), and
-        one that raised, from now."""
+        start, or from the last read that succeeded since; one whose timeout
+        fired late (this process's own loop stalled meanwhile), and one that
+        raised, from now."""
         now = time.monotonic()
-        stalled = now - started > self._timeout + self.interval
+        # A timeout that fired late fired after a stall of this process.
+        stalled = now - started > self._timeout + min(0.1, self.interval / 4)
         since = max(started, self._read_at) if hung and not stalled else now
         self._failures += 1
         self._failed_at = now

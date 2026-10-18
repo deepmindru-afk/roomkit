@@ -307,6 +307,10 @@ class Routes:
         """A channel control for an executor here, applied, then answered,
         with what it raised if it did: its owner waits for the answer."""
         executor = self.shared.get(envelope.target)
+        if executor is not None and executor.closed:
+            # Placed from a view older than its close: placed again elsewhere.
+            self._answer_back(envelope, REFUSED)
+            return
         result: ChannelResult | None = ChannelResult()
         if executor is None:
             logger.warning(

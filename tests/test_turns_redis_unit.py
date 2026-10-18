@@ -438,9 +438,11 @@ class _Registry:
         self.silent = False
         self.fail_once = False
         self.failed = asyncio.Event()
+        self.hanging = asyncio.Event()
 
     async def view(self, forget_after_ms: int) -> View:
         if self.silent:  # the host stopped answering without a reset
+            self.hanging.set()
             await asyncio.Event().wait()
         if self.down or self.fail_once:
             self.fail_once = False
@@ -772,13 +774,82 @@ async def test_a_read_that_hung_counts_from_its_start() -> None:
     """A read that hung then one refused: the others are unread within
     about a heartbeat timeout of Redis freezing, not two."""
     registry = _HangsThenRefuses()
-    live = LiveExecutors(registry, 0.02, 0.2, dict)  # type: ignore[arg-type]
+    live = LiveExecutors(registry, 0.1, 0.5, dict)  # type: ignore[arg-type]
     live.start()
     try:
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.15)
         registry.frozen = True
-        await asyncio.sleep(0.32)
+        await asyncio.sleep(0.9)
 
         assert not live.alive("node-a:w")
     finally:
         await live.close()
+
+
+async def test_a_stall_just_over_the_timeout_with_a_read_in_flight_is_not_silence() -> None:
+    """The read in flight across a stall a little longer than the timeout
+    times out late, the next fails once: not the others' silence."""
+    registry = _Registry()
+    live = LiveExecutors(registry, 0.4, 1.0, dict)  # type: ignore[arg-type]
+    live.start()
+    try:
+        await asyncio.sleep(0.1)
+        registry.silent = True
+        await registry.hanging.wait()  # a read is in flight
+        time.sleep(1.25)  # noqa: ASYNC251 - this process's event loop stalls
+        registry.silent = False
+        registry.fail_once = True
+        registry.failed.clear()
+        await registry.failed.wait()
+
+        assert live.alive("node-a:w")
+    finally:
+        await live.close()
+
+
+async def test_a_channel_control_for_a_closed_executor_is_refused_to_be_placed_again() -> None:
+    routes, posted, tasks = _routes()
+    closed = _Taker()
+    closed.closed = True  # type: ignore[misc]
+    routes.shared["host-a"] = closed  # type: ignore[assignment]
+    raw = ChannelControlEnvelope(message=RoomDetached(channel_id="agent", room_id="room"))
+
+    routes.route(Envelope("channel", "node-a", raw.model_dump_json(), "host-a", "ref-15"))
+    await asyncio.gather(*tasks)
+
+    assert closed.applied == []
+    assert posted.of("answer") == [("node-a", "answer", REFUSED, "ref-15")]
+
+
+class _Holders:
+    """No room has a holder yet."""
+
+    async def get(self, key: str) -> None:
+        return None
+
+    async def set(self, key: str, value: str, ex: int) -> None:
+        return None
+
+
+class _Alive:
+    def __init__(self, members: list[str]) -> None:
+        self._declared = {
+            member: Declaration(member.split(":")[0], "w", frozenset({"agent"}), frozenset())
+            for member in members
+        }
+
+    async def current(self) -> dict[str, Declaration]:
+        return self._declared
+
+
+async def test_an_event_held_for_a_room_no_one_holds_goes_where_its_next_turn_goes() -> None:
+    """RFC §10.6.3: a committed event goes where the room's turns would."""
+    placement = Placement(
+        _Holders(), "p", "node-a", _Alive(["node-b:w", "node-c:w"]), loop_back=False
+    )  # type: ignore[arg-type]
+
+    for _ in range(3):
+        held = await placement.hold("agent", "room")
+        placed = await placement.place("agent", "room")
+
+        assert held == placed

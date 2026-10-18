@@ -72,7 +72,7 @@ class Placement:
         """The executor a room's turn or channel call of *channel_id* goes
         to, but the members *excluded* (refused it), recorded as the one
         holding the room's state from now."""
-        placed = await self.hold(channel_id, room_id, room_hooks, excluded=excluded)
+        placed = await self._chosen(channel_id, room_id, room_hooks, excluded, spread=True)
         holder = placed.member if isinstance(placed, Elsewhere) else self._here_member(placed)
         await self._client.set(self._holder_key(channel_id, room_id), holder, ex=_HOLDER_TTL_S)
         return placed
@@ -86,8 +86,23 @@ class Placement:
         excluded: Collection[str] = (),
     ) -> TurnExecutor | Elsewhere:
         """The executor holding the room's state of *channel_id* while it
-        lives and takes it, else one that takes it, one of this process
-        first; the holder is left as it was (RFC §10.6.3)."""
+        lives and takes it, else the one the room's next turn would go to;
+        the holder is left as it was (RFC §10.6.3)."""
+        return await self._chosen(channel_id, room_id, room_hooks, excluded, spread=False)
+
+    async def _chosen(
+        self,
+        channel_id: str,
+        room_id: str,
+        room_hooks: Sequence[str],
+        excluded: Collection[str],
+        *,
+        spread: bool,
+    ) -> TurnExecutor | Elsewhere:
+        """The holder while it lives and takes the turn, else one that takes
+        it, one of this process first, else one elsewhere: a room no
+        executor holds yet goes to the next of them, the spread moving on
+        only when *spread* (a turn or call placed, not an event held)."""
         here = {
             self._here_member(e): e
             for e in self.here
@@ -112,8 +127,10 @@ class Placement:
             )
         # A room no executor holds yet: its turns spread over the takers.
         members = sorted(elsewhere)
-        self._next = (self._next + 1) % len(members)
-        return elsewhere[members[self._next]]
+        following = (self._next + 1) % len(members)
+        if spread:
+            self._next = following
+        return elsewhere[members[following]]
 
     async def forget(self, channel_id: str, room_id: str) -> None:
         """The room detached the channel: nothing holds its state any more."""
