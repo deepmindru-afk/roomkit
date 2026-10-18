@@ -8,12 +8,13 @@ SPEECH_START events and pre-roll buffering.
 from __future__ import annotations
 
 import logging
+import math
 from collections import deque
 from dataclasses import dataclass, field, fields, replace
 from typing import TYPE_CHECKING, Any
 
 from roomkit.voice.pipeline.vad.base import VADConfig, VADEvent, VADEventType, VADProvider
-from roomkit.voice.utils import _get_np
+from roomkit.voice.utils import _get_np, pcm16_energy_numpy
 
 if TYPE_CHECKING:
     from roomkit.voice.audio_frame import AudioFrame
@@ -31,11 +32,7 @@ def _rms_int16(data: bytes) -> float:
     sherpa-onnx already guarantees numpy is installed.
     """
     n_samples = len(data) // 2
-    if n_samples == 0:
-        return 0.0
-    np = _get_np()
-    samples = np.frombuffer(data[: n_samples * 2], dtype="<i2").astype(np.int64)
-    return float(np.sqrt((samples @ samples) / n_samples))
+    return math.sqrt(pcm16_energy_numpy(data) / n_samples) if n_samples else 0.0
 
 
 def _pcm_s16le_to_float32(data: bytes) -> Any:

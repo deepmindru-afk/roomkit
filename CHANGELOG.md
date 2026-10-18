@@ -331,8 +331,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   160-sample frame (8 kHz, 20 ms), and a frame through the energy VAD costs
   RoomKit about 13 µs instead of 16 µs. `pcm16_energy` and `pcm16_rms` in
   `roomkit.voice.utils` are the one standard-library implementation, since a
-  base install has no NumPy; the paths whose extras bring NumPy keep it, as it
-  is faster on all but the smallest frames.
+  base install has no NumPy; the paths whose extras bring NumPy share
+  `pcm16_energy_numpy`, an int64 dot that is faster on all but the smallest
+  frames. `rms_db`, behind the audio-level hooks, moves to it from a float64
+  mean: 1.3 µs instead of 2.7 µs on 160 samples, 2.2 µs instead of 4.1 µs on
+  2400, the same values to 1e-9 dB; Sherpa's VAD and WebRTC's AEC already
+  summed that way.
 
 - A turn's stream costs the room's owner little per item across the turn
   backend (RMK-823, RFC §10.6.3, §10.6.4). Each `pull` grants a window of

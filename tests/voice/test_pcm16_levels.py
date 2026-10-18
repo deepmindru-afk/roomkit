@@ -1,14 +1,20 @@
-"""The stdlib PCM16 level helpers every base-install frame path shares (RMK-796)."""
+"""The PCM16 sums of squares the voice paths share: stdlib, and NumPy for extras (RMK-796)."""
 
 from __future__ import annotations
 
 import math
 import random
 import struct
+from collections.abc import Callable
 
 import pytest
 
-from roomkit.voice.utils import pcm16_energy, pcm16_has_activity, pcm16_rms
+from roomkit.voice.utils import (
+    pcm16_energy,
+    pcm16_energy_numpy,
+    pcm16_has_activity,
+    pcm16_rms,
+)
 
 
 def _pcm(*samples: int) -> bytes:
@@ -28,15 +34,19 @@ def test_energy_is_the_exact_sum_the_generator_gave(count: int) -> None:
     data = _pcm(*samples, -32768, 32767, 0, -1, 1)
 
     assert pcm16_energy(data) == _generator_energy(data)
+    assert pcm16_energy_numpy(data) == _generator_energy(data)
     assert type(pcm16_energy(data)) is int
+    assert type(pcm16_energy_numpy(data)) is int
 
 
-def test_full_scale_frames_do_not_overflow() -> None:
-    assert pcm16_energy(_pcm(*[-32768] * 960)) == 960 * 32768**2
+@pytest.mark.parametrize("energy", [pcm16_energy, pcm16_energy_numpy])
+def test_full_scale_frames_do_not_overflow(energy: Callable[[bytes], int]) -> None:
+    assert energy(_pcm(*[-32768] * 48000)) == 48000 * 32768**2
 
 
-def test_samples_are_little_endian_whatever_the_host() -> None:
-    assert pcm16_energy(b"\x00\x01") == 256**2  # 0x0100, not 0x0001
+@pytest.mark.parametrize("energy", [pcm16_energy, pcm16_energy_numpy])
+def test_samples_are_little_endian_whatever_the_host(energy: Callable[[bytes], int]) -> None:
+    assert energy(b"\x00\x01") == 256**2  # 0x0100, not 0x0001
 
 
 @pytest.mark.parametrize(
@@ -53,7 +63,7 @@ def test_samples_are_little_endian_whatever_the_host() -> None:
 )
 def test_rms(data: bytes, rms: float) -> None:
     assert pcm16_rms(data) == pytest.approx(rms)
-    assert pcm16_energy(data) == _generator_energy(data)
+    assert pcm16_energy(data) == pcm16_energy_numpy(data) == _generator_energy(data)
 
 
 def test_activity_threshold_is_minus_60_dbfs() -> None:

@@ -25,6 +25,7 @@ from typing import Any
 
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.pipeline.aec.base import AECProvider
+from roomkit.voice.utils import pcm16_energy_numpy
 
 logger = logging.getLogger("roomkit.voice.pipeline.aec.webrtc")
 
@@ -156,8 +157,9 @@ class WebRTCAECProvider(AECProvider):
 
         # Resolved once: streams are created lazily on the audio thread, and
         # re-importing there would put a module lookup in the realtime path.
+        # NumPy is only checked here, so a missing one fails at construction.
         self._ap_cls = _import_webrtc()
-        self._np = _import_numpy()
+        _import_numpy()
 
         self._sample_rate = sample_rate
         self._channels = channels
@@ -299,10 +301,8 @@ class WebRTCAECProvider(AECProvider):
         # blocks on this lock in feed_reference(), and computing it inside
         # delayed the realtime audio thread. Only the integer sums take it.
         if in_processed:
-            np = self._np
-            in_s = np.frombuffer(b"".join(in_processed), dtype="<i2").astype(np.int64)
-            out_s = np.frombuffer(b"".join(out_processed), dtype="<i2").astype(np.int64)
-            in_energy, out_energy = int(in_s @ in_s), int(out_s @ out_s)
+            in_energy = pcm16_energy_numpy(b"".join(in_processed))
+            out_energy = pcm16_energy_numpy(b"".join(out_processed))
             window: _Levels | None = None
             with st.lock:
                 if st.stats_reset_pending:
