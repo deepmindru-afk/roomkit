@@ -338,21 +338,7 @@ class RoomKit(
         self._verification_timers: dict[str, asyncio.Task[None]] = {}
         self._process_timeout = process_timeout
         self._channels: dict[str, Channel] = {}
-        # Every intelligence turn runs through the turn backend (RFC §10.6);
-        # the triggers a turn fires are its executor's (RFC §10.6.6).
-        # The tools orchestration sets up for a channel, kept beside its
-        # declaration, never on the live object (RFC §10.6.2).
-        self._owner_tools = OwnerToolStore(self._channels.get)
-        self._turns = registry_turn_client(
-            self._channels,
-            turn_backend,
-            host=KitHost(self),
-            events=KitEvents(self),
-            owner_tools=self._owner_tools,
-        )
-        # The kit's executor wires each channel the kit registers from the kit.
-        self.turn_executor.use_wiring(KitWiringEnv(self))
-        self._turn_hooks = self.turn_executor.hooks
+        self._start_turns(turn_backend)
         # A strategy's runner takes an agent's turns on this owner (RFC §10.6.1).
         self._turn_runners = TurnRunners()
         # Explicit detaches (revocations, RFC §7.5-7) are recorded in room
@@ -512,6 +498,25 @@ class RoomKit(
         from roomkit.recorder._room_recorder_manager import RoomRecorderManager
 
         self._room_recorder_mgr = RoomRecorderManager()
+
+    def _start_turns(self, backend: TurnBackend | None) -> None:
+        """Set up the client every intelligence turn runs through (RFC §10.6),
+        on *backend* or an in-memory one, with the kit's own executor wired
+        from the kit; the triggers a turn fires are that executor's (RFC
+        §10.6.6)."""
+        # The tools orchestration sets up for a channel, kept beside its
+        # declaration, never on the live object (RFC §10.6.2).
+        self._owner_tools = OwnerToolStore(self._channels.get)
+        self._turns = registry_turn_client(
+            self._channels,
+            backend,
+            host=KitHost(self),
+            events=KitEvents(self),
+            owner_tools=self._owner_tools,
+        )
+        # The kit's executor wires each channel the kit registers from the kit.
+        self.turn_executor.use_wiring(KitWiringEnv(self))
+        self._turn_hooks = self.turn_executor.hooks
 
     # -- Properties --
 
