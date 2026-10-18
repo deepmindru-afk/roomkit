@@ -21,7 +21,11 @@ _DROPPED_CLOSES: set[asyncio.Task[None]] = set()
 def _close_dropped(turn: OwnerTurn, loop: asyncio.AbstractEventLoop) -> None:
     """Close the stream of *turn*, which its reader dropped unclosed: the
     executor closes the channel's, as a collected generator would be."""
-    if turn.over or loop.is_closed():
+    if loop.is_closed():
+        return
+    if turn.over:
+        # Ended before its reader dropped it: the record is still the turn's last.
+        loop.call_soon_threadsafe(turn.reader_stopped)
         return
 
     def start() -> None:

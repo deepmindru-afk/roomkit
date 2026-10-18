@@ -391,7 +391,8 @@ def drop_unread_streams(responses: Iterable[Any]) -> None:
 @contextmanager
 def unread_dropped_on_failure(responses: Iterable[Any]) -> Generator[None]:
     """Within it, a failure (a cancellation included) gives up the streams of
-    *responses* nobody will then read; one read already is left as it is."""
+    *responses* nobody will then read; one being read at that moment, or read
+    to its end, is left to its reader."""
     try:
         yield
     except BaseException:

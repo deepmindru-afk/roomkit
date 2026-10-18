@@ -445,10 +445,13 @@ class ExecutorTurn:
         self._spared = True
 
     def _cut_turn(self, reason: str) -> None:
-        if self._cut is None:
+        """Cut the turn: its work is cancelled once, so a later cut never
+        cancels the close the first one runs (the channel's own cleanup)."""
+        first = self._cut is None
+        if first:
             self._cut = reason
         if reason in ("owner_lost", "frame_lost"):
             self._calls.fail_all(TurnLinkError(reason))
-        if not self._spared and self._work is not None and not self._work.done():
+        if first and not self._spared and self._work is not None and not self._work.done():
             self._work.cancel(reason)
         self._wake.set()

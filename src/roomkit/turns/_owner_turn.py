@@ -182,6 +182,7 @@ class OwnerTurn:
         if self._over and self._steer_cut:
             # Read after a steering Cancel ended the turn: the calls it left
             # open end cancelled first.
+            self.reader_stopped()
             self._cut_ends.extend(self._copies.open_call_ends())
         if self._cut_ends:
             return self._cut_ends.pop(0)
@@ -203,8 +204,8 @@ class OwnerTurn:
         if isinstance(frame, Error):
             await self._drain_to_end(None)
             raise rebuild_error(frame.error)
-        # The turn ended with every item read: the record is its last.
-        self._copies.apply_records()
+        # The turn ended with every item read.
+        self.reader_stopped()
         self._finish()
         if self._steer_cut:
             # Cut by a steering Cancel: the calls it left open end cancelled,
@@ -226,9 +227,15 @@ class OwnerTurn:
         """Close the stream: the executor closes the channel's, a running
         call let finish (RFC §12.2 step 13s), and its end is waited for."""
         if self._over:
+            self.reader_stopped()
             return
         await self._link.send(Close())
         await self._drain_to_end(None)
+
+    def reader_stopped(self) -> None:
+        """The reader stops, however: the record is the turn's last, every
+        record the executor sent applied (RFC §10.6.4)."""
+        self._copies.apply_records()
 
     def _decoded(self, decode: Any, *args: Any) -> Any:
         """What *decode* builds of a frame's payload; a payload it cannot
@@ -369,6 +376,7 @@ class OwnerTurn:
         """Cut the turn and wait for its end within the cancel bound; a
         second cancellation does not cut the wait short."""
         if self._over:
+            self.reader_stopped()
             return
         await self._send_best_effort(Cancel(reason=reason))
         drain = asyncio.get_running_loop().create_task(self._drain_to_end(self._timeouts.cancel))
@@ -398,8 +406,7 @@ class OwnerTurn:
         except TurnLinkError:
             pass
         finally:
-            # The reader stops: the record is the turn's last.
-            self._copies.apply_records()
+            self.reader_stopped()
             self._finish()
 
     def _finish(self) -> None:

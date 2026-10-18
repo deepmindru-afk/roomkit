@@ -23,9 +23,14 @@ from roomkit.providers.ai.base import (
     StreamToolCall,
 )
 from roomkit.voice.backends.mock import MockVoiceBackend
+from roomkit.voice.pipeline import AudioPipelineConfig, MockVADProvider
+from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.mock import MockTTSProvider
+from tests.test_turns_backend import ScriptedChannel
 from tests.test_voice_stream_barge_in import _SentenceTTS, _StoppableBackend
+from tests.test_voice_streaming_ai_tts import _speech_events
 from tests.voice.streamed_replies import StreamedReply, ask, said, voice_rooms
+from tests.voice.test_voice_tts_filter import _StreamingMockTTS
 
 SIX = [
     "The invoice has three parts. ",
@@ -257,3 +262,54 @@ async def test_say_has_no_budget() -> None:
 def test_a_budget_below_one_is_refused(budget: int) -> None:
     with pytest.raises(ValueError, match="max_sentences"):
         VoiceChannel("voice-1", max_sentences=budget)
+
+
+class _SlowTTS(_StreamingMockTTS):
+    """Speaks each chunk in its time: the reply is read slower than it came."""
+
+    async def synthesize_stream_input(self, text_stream: Any, *, voice: str | None = None) -> Any:
+        async def slow() -> AsyncIterator[str]:
+            async for text in text_stream:
+                await asyncio.sleep(0.05)
+                yield text
+
+        async for chunk in super().synthesize_stream_input(slow(), voice=voice):
+            yield chunk
+
+
+async def test_a_reply_its_budget_stopped_keeps_the_record_its_turn_ended_with() -> None:
+    """An agent whose stream is text only (an ACP agent's shape) ends before
+    the voice stops reading: the stored reply still carries how it ended."""
+
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        for text in ("One is here. ", "Two is here. ", "Three is here. ", "Four."):
+            yield text
+            await asyncio.sleep(0)
+        channel.record["prompt_returned"] = True  # the agent's prompt came back
+
+    tts, backend = _SlowTTS(), MockVoiceBackend()
+    stt = MockSTTProvider(transcripts=["A question."])
+    voice = VoiceChannel(
+        "voice-1",
+        stt=stt,
+        tts=tts,
+        backend=backend,
+        pipeline=AudioPipelineConfig(vad=MockVADProvider(events=_speech_events())),
+        max_sentences=1,
+    )
+    kit = RoomKit(stt=stt, voice=backend)
+    kit.register_channel(voice)
+    kit.register_channel(ScriptedChannel(script))
+    room = await kit.create_room()
+    await kit.attach_channel(room.id, "voice-1")
+    await kit.attach_channel(room.id, "agent")
+    session = await kit.join(room.id, "voice-1", participant_id="user-0")
+
+    await ask(backend, session)
+    await said(tts, 1)
+    await asyncio.sleep(0.3)
+    [reply] = [e for e in await kit.store.list_events(room.id) if e.source.channel_id == "agent"]
+    await kit.close()
+
+    assert reply.metadata.get("cancelled") is True
+    assert reply.metadata.get("prompt_returned") is True

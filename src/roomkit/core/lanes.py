@@ -367,8 +367,8 @@ class DeliveryCascade:
 
     def _cleanup_ended(self, task: asyncio.Task[None]) -> None:
         """Read how the cleanup ended, so one nobody waits for is no
-        unretrieved task error: its waiter, if any, is told; a turn that did
-        not end was already reported by its owner (RFC §10.6.8)."""
+        unretrieved task error. Its waiter, if any, is told; with none,
+        nothing reports the cleanup done (RFC §10.6.8)."""
         if task.cancelled() or (error := task.exception()) is None:
             return
         logger.debug("Delivery cleanup for room %s ended: %s", self.room_id, error)

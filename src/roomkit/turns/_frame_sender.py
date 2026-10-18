@@ -31,6 +31,8 @@ class FrameSender:
         self._lock = asyncio.Lock()
         self._text: list[str] = []
         self._flush: asyncio.Task[None] | None = None
+        # A burst the link failed to carry: the next send raises it.
+        self._failure: Exception | None = None
 
     def add_text(self, text: str) -> None:
         """Keep *text* for the burst, sent once the stream waits; a text no
@@ -43,8 +45,13 @@ class FrameSender:
             self._flush = asyncio.get_running_loop().create_task(self._flush_burst())
 
     async def send(self, frame: Frame) -> int:
-        """Send *frame* after the text kept before it: its sequence number."""
+        """Send *frame* after the text kept before it: its sequence number. A
+        burst the link failed to carry raises here, its deltas being lost:
+        the turn fails as it would on any frame that cannot cross."""
         async with self._lock:
+            if (failure := self._failure) is not None:
+                self._failure = None
+                raise failure
             await self._send_text()
             return await self._send(frame)
 
@@ -55,8 +62,9 @@ class FrameSender:
                 # scheduled for it.
                 while self._text:
                     await self._send_text()
-        except Exception:
+        except Exception as exc:
             logger.debug("A burst of text deltas could not be sent", exc_info=True)
+            self._failure = exc
         finally:
             self._flush = None
 
