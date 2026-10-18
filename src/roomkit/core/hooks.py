@@ -1046,8 +1046,14 @@ class HookEngine:
         merely hide the side effect instead of preventing it. Only a SYNC hook
         can serve a call (it is the one that returns a result), so dispatching
         the ASYNC hooks alone makes the distinction structural rather than a
-        rule each hook author has to remember.
+        rule each hook author has to remember. A kit's engine runs a trigger
+        a turn fires on its own executor's.
         """
+        if (engine := self._turn_engine(trigger)) is not None:
+            await engine.run_observers(
+                room_id, trigger, event, context, skip_event_filter=skip_event_filter
+            )
+            return
         hooks = self._get_hooks(
             room_id,
             trigger,

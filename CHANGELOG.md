@@ -421,7 +421,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agent the kit holds by its declaration alone runs its turns on another
   executor, where such a hook would never fire, so the kit refuses with a
   `ValueError` naming the executor-side call a turn hook that agent could
-  fire (its `channel_ids` or `channel_types` can leave it out), and that
+  fire (its `channel_ids` can leave it out, and on a tool call or an input
+  request its `channel_types`), and that
   agent's declaration while such a hook is registered; a room hook on a turn
   trigger is refused while the kit holds any declared agent. For agents run
   elsewhere, register on their executor: `executor.hook(...)` takes

@@ -305,7 +305,7 @@ class ToolHooks:
         if not event.room_id:
             return
         context: RoomContext | None = None
-        if self._hooks.has_hooks(HookTrigger.ON_TOOL_CALL):
+        if self._hooks.has_hooks_for(event.room_id, HookTrigger.ON_TOOL_CALL, event):
             context = await self._context(event.room_id, HookTrigger.ON_TOOL_CALL)
             if context is None:
                 # The observers need the context that failed; the framework

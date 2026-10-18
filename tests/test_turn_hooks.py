@@ -484,3 +484,43 @@ async def test_the_kit_s_engine_runs_the_turn_hooks_registered_through_it() -> N
     await kit.close()
 
     assert seen == ["ai"]
+
+
+async def test_the_kit_s_engine_runs_the_turn_observers_registered_through_it() -> None:
+    kit = RoomKit()
+    await kit.create_room(room_id="r1")
+    seen: list[str] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+    async def audit(event: Any, ctx: Any) -> None:
+        seen.append(event.channel_id)
+
+    context = await kit._build_context("r1")
+    await kit.hook_engine.run_observers("r1", HookTrigger.ON_TOOL_CALL, _call("ai"), context)
+    await asyncio.sleep(0.05)
+    await kit.close()
+
+    assert seen == ["ai"]
+
+
+async def test_a_failed_call_of_an_agent_no_hook_covers_builds_no_context() -> None:
+    kit = RoomKit()
+    await kit.create_room(room_id="r1")
+    built: list[str] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, channel_ids={"ai"})
+    async def audit(event: Any, ctx: Any) -> None: ...
+
+    tools = kit.turn_executor.wiring.tools
+    context = tools._context
+
+    async def counted(room_id: str, trigger: HookTrigger, **kwargs: Any) -> Any:
+        built.append(room_id)
+        return await context(room_id, trigger, **kwargs)
+
+    tools._context = counted  # type: ignore[method-assign]
+    failed = dataclasses.replace(_call("other"), is_error=True, result='{"error": "boom"}')
+    await tools.observe_failed_tool_call(failed, "other")
+    await kit.close()
+
+    assert built == []
