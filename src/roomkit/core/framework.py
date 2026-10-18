@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 from roomkit.channels.base import Channel
 from roomkit.channels.websocket import SendFn, StreamSendFn, WebSocketChannel
+from roomkit.core._kit_turn_hooks import KitTurnHooks
 from roomkit.core._kit_wiring import KitEvents, KitWiringEnv
 from roomkit.core._turn_host import KitHost
 from roomkit.core._turn_runners import TurnRunners
@@ -359,6 +360,10 @@ class RoomKit(
         # and are visible to every process sharing the store.
         self._closed = False
         self._hook_engine = HookEngine()
+        # A hook on a trigger a turn fires registered on the kit is its own
+        # executor's (RFC §10.6.6).
+        self._kit_turn_hooks = KitTurnHooks(self._turn_hooks, self._channels)
+        self._hook_engine.turn_side = self._kit_turn_hooks
         self._lock_manager = lock_manager or InMemoryLockManager()
         # Admission tickets for off-lock BEFORE_BROADCAST checks (RFC §9.5.1).
         self._admission = RoomAdmission(self._hook_engine, self._lock_manager, self._build_context)
@@ -529,7 +534,8 @@ class RoomKit(
 
     @property
     def hook_engine(self) -> HookEngine:
-        """The hook engine of the room owner's triggers (RFC §10.6.6)."""
+        """The kit's hook engine (RFC §10.6.6): a hook on a trigger a turn
+        fires registered here is the kit's own executor's."""
         return self._hook_engine
 
     async def _strategy_turn(
@@ -585,8 +591,8 @@ class RoomKit(
 
     @property
     def turn_executor(self) -> TurnExecutor:
-        """The kit's own turn executor (RFC §10.6): where the hooks of the
-        triggers a turn fires register (``kit.turn_executor.hook(...)``)."""
+        """The kit's own turn executor (RFC §10.6), where the hooks of the
+        triggers a turn fires that the kit registers go."""
         executor = self._turns.executor
         assert executor is not None
         return executor

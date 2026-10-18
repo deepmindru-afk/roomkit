@@ -79,7 +79,7 @@ async def _say(kit: RoomKit, body: str) -> Any:
 def _reports(kit: RoomKit) -> list[ToolCallEvent]:
     reports: list[ToolCallEvent] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
     async def report(event: ToolCallEvent, ctx: Any) -> None:
         reports.append(event)
 

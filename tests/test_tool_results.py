@@ -80,9 +80,7 @@ class _Round:
         channel = AIChannel("ai-1", provider=self.provider, **kwargs)
         self.kit.register_channel(channel)
 
-        @self.kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="spy"
-        )
+        @self.kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="spy")
         async def spy(event: ToolCallEvent, ctx: RoomContext) -> None:
             self.observed.append(event)
 
@@ -165,11 +163,11 @@ async def test_a_realtime_call_a_hook_serves_is_reported_once() -> None:
     observed: list[ToolCallEvent] = []
     framework_events: list[Any] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
     async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult(action="allow", metadata={"result": {"temp": 22}})
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="spy")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="spy")
     async def spy(event: ToolCallEvent, ctx: RoomContext) -> None:
         observed.append(event)
 
@@ -203,9 +201,7 @@ async def test_a_hooks_replacement_outside_the_contract_does_not_fail_the_turn(
     u = AITool(name="u", description="another tool", parameters=SCHEMA)
     channel = round_.channel(tools=[T, u], tool_handler=handler)
 
-    @round_.kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="rewrite"
-    )
+    @round_.kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="rewrite")
     async def rewrite(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         if event.name == "t":
             return HookResult(action="allow", metadata={"result": {"temp": 99}})
@@ -221,9 +217,7 @@ async def test_a_declared_tool_nothing_serves_fails_once(streaming: bool) -> Non
     round_ = _Round(_call(), streaming=streaming)
     channel = round_.channel(tools=[T])
 
-    @round_.kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="look"
-    )
+    @round_.kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="look")
     async def look(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         round_.hook_saw.append(event.result)
         return HookResult.allow()
@@ -241,9 +235,7 @@ async def test_a_hook_serves_a_declared_tool_nothing_else_serves(streaming: bool
     round_ = _Round(_call(), streaming=streaming)
     channel = round_.channel(tools=[T])
 
-    @round_.kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve"
-    )
+    @round_.kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
     async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         round_.hook_saw.append(event.result)
         if event.result is None:
@@ -273,9 +265,7 @@ async def test_the_channels_own_outcomes_are_refusals_no_sync_hook_serves(
     round_ = _Round(*same, unavailable, streaming=streaming)
     channel = round_.channel(tools=[T], tool_handler=handler)
 
-    @round_.kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="look"
-    )
+    @round_.kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="look")
     async def look(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         round_.hook_saw.append(event.tool_call_id)
         return HookResult.allow()
@@ -331,9 +321,7 @@ async def test_a_tool_object_chain_that_answers_unknown_served_nothing(
     weather = AITool(name="weather", description="The weather", parameters=SCHEMA)
     channel = round_.channel(tools=[ListWebcamsTool(), weather])
 
-    @round_.kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="look"
-    )
+    @round_.kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="look")
     async def look(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         round_.hook_saw.append(event.result)
         return HookResult.allow()

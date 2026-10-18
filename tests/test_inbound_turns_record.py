@@ -126,9 +126,7 @@ async def test_an_acp_turn_names_its_stop_reason(stop: str, end: str) -> None:
         kit.register_channel(channel)
         seen: list[Any] = []
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="seen"
-        )
+        @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="seen")
         async def on_response(event: Any, ctx: Any) -> None:
             seen.append(event.loop_end_reason)
 

@@ -538,7 +538,7 @@ async def test_request_names_the_speaker_through_the_framework(streaming: bool) 
 
     seen: list[Any] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC)
+    @kit.hook(HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC)
     async def capture(event: Any, ctx: Any) -> HookResult:
         seen.append(event)
         human.handler.resolve(event.pending_id, json.dumps({"answer": "yes"}))
@@ -910,7 +910,7 @@ async def test_hook_deny_blocks_tool_via_framework(streaming: bool) -> None:
     kit.register_channel(ai)
 
     # Hook that denies the input request
-    @kit.turn_executor.hook(HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC)
+    @kit.hook(HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC)
     async def deny_input(event, ctx):
         return HookResult.block(reason="Questions not allowed in this room")
 

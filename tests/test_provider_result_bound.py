@@ -56,7 +56,7 @@ async def test_a_provider_served_result_is_bounded_like_a_served_one(streaming: 
     await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
     heard: dict[str, int] = {}
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def _audit(event: Any, ctx: Any) -> None:
         heard[event.tool_call_id] = len(str(event.result))
 

@@ -85,9 +85,7 @@ class _Turn:
         await self.kit.attach_channel("r1", "sms1")
         await self.kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
 
-        @self.kit.turn_executor.hook(
-            HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="spy"
-        )
+        @self.kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="spy")
         async def spy(event: Any, ctx: Any) -> None:
             self.reports.append(event)
 

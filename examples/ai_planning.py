@@ -54,7 +54,7 @@ async def main() -> None:
     kit.register_channel(cli)
     kit.register_channel(ai)
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL)
+    @kit.hook(HookTrigger.ON_TOOL_CALL)
     async def show_tool_call(event, _ctx):
         return log_tool_call(event, tool_names=["plan_tasks"], label="plan")
 

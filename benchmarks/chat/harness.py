@@ -103,12 +103,12 @@ class Harness:
         self.turns: list[dict[str, Any]] = []
         self.start = self.end = 0.0
 
-        @self.kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
+        @self.kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
         async def on_tool(event: ToolCallEvent, context: RoomContext) -> HookResult:
             self.tool_events.append(event)
             return HookResult.allow()
 
-        @self.kit.turn_executor.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
+        @self.kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
         async def on_response(event: AIResponseEvent, context: RoomContext) -> HookResult:
             self.responses.append(event)
             return HookResult.allow()

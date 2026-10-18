@@ -41,7 +41,7 @@ class _Executor(ScriptExecutor):
 def _audit(kit: RoomKit) -> list[Any]:
     reports: list[Any] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
         reports.append(event)
 

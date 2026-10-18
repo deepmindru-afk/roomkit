@@ -78,13 +78,11 @@ async def test_the_channel_tells_a_backend_how_the_gate_and_the_hooks_ended_a_ca
     tools = [_tool("denied"), _tool("withheld"), _tool("nobody")]
     kit, provider, session = await _channel(handler, reasoning_backend=backend, tools=tools)
 
-    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
     async def deny(event: Any, ctx: Any) -> HookResult:
         return HookResult.block("no") if event.name == "denied" else HookResult.allow()
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="withhold"
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="withhold")
     async def withhold(event: Any, ctx: Any) -> HookResult:
         return HookResult.block("held") if event.name == "withheld" else HookResult.allow()
 

@@ -182,7 +182,7 @@ async def run(api_key: str, workdir: str) -> None:
     kit.register_channel(ai)
 
     # Show sandbox tool invocations in the terminal
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL)
+    @kit.hook(HookTrigger.ON_TOOL_CALL)
     async def show_tool_call(event, _ctx):
         return log_tool_call(event, label="sandbox")
 

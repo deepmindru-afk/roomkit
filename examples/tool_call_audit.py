@@ -96,7 +96,7 @@ async def main() -> None:
     kit.register_channel(ai)
     kit.register_channel(ws)
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, _ctx: RoomContext) -> HookResult:
         if event.result is None:
             # A dispatch, not an outcome: a realtime channel with no handler
@@ -112,7 +112,7 @@ async def main() -> None:
         )
         return HookResult.allow()
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="servant")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="servant")
     async def servant(event: ToolCallEvent, _ctx: RoomContext) -> HookResult:
         served.append(event.name)
         return HookResult.allow()

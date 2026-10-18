@@ -27,7 +27,7 @@ TOOLS = [
 def _audit(kit: RoomKit) -> list[tuple[str, bool]]:
     seen: list[tuple[str, bool]] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
         seen.append((event.name, event.cancelled))
 

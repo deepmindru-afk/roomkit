@@ -215,7 +215,7 @@ async def main(args: argparse.Namespace) -> None:
         category=ChannelCategory.INTELLIGENCE,
     )
 
-    @kit.turn_executor.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
+    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
     async def turn_finished(event: Any, _ctx: Any) -> None:
         """What a host learns when the agent has finished answering.
 

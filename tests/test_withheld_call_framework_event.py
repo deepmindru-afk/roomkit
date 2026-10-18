@@ -32,7 +32,7 @@ def _fail_closed(*, context_fails: bool) -> Any:
     build for the call."""
 
     def setup(kit: RoomKit) -> None:
-        @kit.turn_executor.hook(
+        @kit.hook(
             HookTrigger.ON_TOOL_CALL,
             execution=HookExecution.SYNC,
             name="redact",

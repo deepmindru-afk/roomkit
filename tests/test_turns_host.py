@@ -122,7 +122,7 @@ async def test_a_hook_the_executor_fires_during_a_turn_reads_its_host() -> None:
     kit, _, _ = await _kit(use)
     hosts: list[TurnHost | None] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
     async def report(event: ToolCallEvent, ctx: Any) -> None:
         hosts.append(current_turn_host())
 

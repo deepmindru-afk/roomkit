@@ -242,7 +242,7 @@ async def test_a_room_hook_withdraws_a_tool_an_external_handler_would_have_decid
     )
     room = await _Room(ai).open()
 
-    @room.kit.turn_executor.hook(HookTrigger.AFTER_TOOL_ROUND, name="no_shell")
+    @room.kit.hook(HookTrigger.AFTER_TOOL_ROUND, name="no_shell")
     async def no_shell(event: ToolRoundEvent, ctx: Any) -> HookResult:
         event.withdraw("Bash")
         return HookResult.allow()
@@ -277,11 +277,11 @@ async def test_a_block_stops_the_hooks_after_it_and_changes_nothing_of_the_round
         AIChannel("ai1", provider=provider, tools=[lookup], tool_handler=local)
     ).open()
 
-    @room.kit.turn_executor.hook(HookTrigger.AFTER_TOOL_ROUND, name="judge", priority=0)
+    @room.kit.hook(HookTrigger.AFTER_TOOL_ROUND, name="judge", priority=0)
     async def judge(event: ToolRoundEvent, ctx: Any) -> HookResult:
         return HookResult.block("seen enough")
 
-    @room.kit.turn_executor.hook(HookTrigger.AFTER_TOOL_ROUND, name="withdraw", priority=10)
+    @room.kit.hook(HookTrigger.AFTER_TOOL_ROUND, name="withdraw", priority=10)
     async def withdraw(event: ToolRoundEvent, ctx: Any) -> HookResult:
         event.withdraw("lookup")
         return HookResult.allow()

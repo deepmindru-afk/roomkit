@@ -122,7 +122,7 @@ async def test_a_host_s_executor_fires_its_own_hooks() -> None:
     async def response(event: Any, context: Any) -> None:
         seen.append(f"response:{event.response_content}")
 
-    @kit.turn_executor.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
+    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
     async def kits(event: Any, context: Any) -> None:
         seen.append("kit's executor")
 

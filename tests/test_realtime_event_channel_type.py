@@ -48,8 +48,8 @@ async def test_every_event_names_the_channel_s_own_type(kind: ChannelType) -> No
         return hook
 
     kit.hook(HookTrigger.ON_SESSION_STARTED, HookExecution.ASYNC)(record("started"))
-    kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, HookExecution.ASYNC)(record("before"))
-    kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)(record("report"))
+    kit.hook(HookTrigger.BEFORE_TOOL_USE, HookExecution.ASYNC)(record("before"))
+    kit.hook(HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)(record("report"))
     kit.hook(HookTrigger.ON_ERROR, HookExecution.ASYNC)(
         record("error", lambda event: event.source.channel_type)
     )

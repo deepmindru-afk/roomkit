@@ -49,13 +49,13 @@ async def _conference_answer(room_id: str, name: str, arguments: dict[str, Any])
 def _empties_then_serves(kit: RoomKit, *, by_modify: bool) -> None:
     """Hook A empties the served result; hook B serves any call it reads as unserved."""
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, name="a-empties", priority=0)
+    @kit.hook(HookTrigger.ON_TOOL_CALL, name="a-empties", priority=0)
     async def empties(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         if by_modify:
             return HookResult.modify(replace(event, result=None))
         return HookResult(action="allow", metadata={"result": None})
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, name="b-serves", priority=1)
+    @kit.hook(HookTrigger.ON_TOOL_CALL, name="b-serves", priority=1)
     async def serves(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         if event.result is None:
             return HookResult.modify(replace(event, result="B-SERVED"))
@@ -142,7 +142,7 @@ async def test_a_hook_engine_fold_keeps_its_two_argument_signature() -> None:
     kit = RoomKit()
     await kit.create_room(room_id="r1")
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, name="rewrites")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, name="rewrites")
     async def rewrites(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult.modify(replace(event, result="rewritten"))
 
@@ -177,7 +177,7 @@ async def test_a_blocked_call_is_remembered_with_its_reason_not_its_eviction() -
     kit.register_channel(channel)
     await kit.create_room(room_id="r1")
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, name="block")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, name="block")
     async def block(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult.block("withheld: " + "policy says no. " * 20)
 
@@ -196,7 +196,7 @@ async def test_a_conference_withholds_a_blocked_result() -> None:
     provider = MockRealtimeProvider()
     kit, session = await _conference(provider)
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, name="redact")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, name="redact")
     async def redact(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult.block("contains a secret")
 
@@ -220,7 +220,7 @@ async def _context_fails(kit: RoomKit, monkeypatch: pytest.MonkeyPatch) -> list[
     async def on_report(event: Any) -> None:
         reported.append(event.data)
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, name="allows")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, name="allows")
     async def allows(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult.allow()
 

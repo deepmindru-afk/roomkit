@@ -365,7 +365,7 @@ class TestBackendToolGate:
         kit, _, provider, session = await _channel(backend, tools=[LOOKUP], tool_handler=handler)
         observed: list[ToolCallEvent] = []
 
-        @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, HookExecution.SYNC)
+        @kit.hook(HookTrigger.ON_TOOL_CALL, HookExecution.SYNC)
         async def observe(event: ToolCallEvent, ctx: Any) -> HookResult:
             observed.append(event)
             return HookResult.allow()
@@ -394,7 +394,7 @@ class TestBackendToolGate:
         )
         kit, _, provider, session = await _channel(backend, tools=[LOOKUP], tool_handler=handler)
 
-        @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, HookExecution.SYNC)
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, HookExecution.SYNC)
         async def deny(event: ToolCallEvent, ctx: Any) -> HookResult:
             return HookResult.block("outside business hours")
 
@@ -938,13 +938,13 @@ class TestAgentBackendOnTheChannel:
         await kit.attach_channel("r1", "rt-1")
         observed: list[ToolCallEvent] = []
 
-        @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)
+        @kit.hook(HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)
         async def observe(event: ToolCallEvent, ctx: Any) -> None:
             observed.append(event)
 
         if deny:
 
-            @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, HookExecution.SYNC)
+            @kit.hook(HookTrigger.BEFORE_TOOL_USE, HookExecution.SYNC)
             async def refuse(event: ToolCallEvent, ctx: Any) -> HookResult:
                 return HookResult.block("outside business hours")
 
@@ -1050,7 +1050,7 @@ class TestAgentBackendCutOnTheChannel:
         await kit.attach_channel("r1", "rt-1")
         observed: list[ToolCallEvent] = []
 
-        @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)
+        @kit.hook(HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)
         async def observe(event: ToolCallEvent, ctx: Any) -> None:
             observed.append(event)
 
@@ -1193,7 +1193,7 @@ class TestBackendCallBound:
             )
         observed: list[ToolCallEvent] = []
 
-        @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)
+        @kit.hook(HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)
         async def observe(event: ToolCallEvent, ctx: Any) -> None:
             observed.append(event)
 

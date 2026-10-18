@@ -113,7 +113,7 @@ async def test_the_generation_hook_is_told_what_the_turn_answers() -> None:
     await _room(kit, AIChannel("ai", provider=MockAIProvider(["ok"])))
     triggers: list[RoomEvent | None] = []
 
-    @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION)
+    @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
     async def seen(event: Any, ctx: Any) -> HookResult:
         triggers.append(event.trigger)
         return HookResult.allow()

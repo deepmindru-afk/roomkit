@@ -417,7 +417,7 @@ async def _gated_kit(
     )
     observed: list[ToolCallEvent] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         observed.append(event)
 
@@ -472,9 +472,7 @@ class TestToolCallGate:
         kit, channel, provider, observed = await _gated_kit(_never_run)
         sent_when_observed: list[int] = []
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="order"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="order")
         async def order(event: ToolCallEvent, ctx: RoomContext) -> None:
             sent_when_observed.append(len(provider.tool_results))
 
@@ -486,9 +484,7 @@ class TestToolCallGate:
     async def test_on_tool_call_rewrites_and_observers_see_the_final_result(self) -> None:
         kit, channel, provider, observed = await _gated_kit(_found)
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="redact"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="redact")
         async def redact(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult(action="allow", metadata={"result": '{"ssn": "[REDACTED]"}'})
 
@@ -519,9 +515,7 @@ class TestToolCallGate:
         )
         observed: list[ToolCallEvent] = []
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
         async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
             observed.append(event)
 
@@ -535,9 +529,7 @@ class TestToolCallGate:
         """RMK-292: the conference reads a cleared result as every channel does."""
         kit, channel, provider, observed = await _gated_kit(_found)
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="clear"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="clear")
         async def clear(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult(action="allow", metadata={"result": None})
 
@@ -550,9 +542,7 @@ class TestToolCallGate:
     async def test_a_block_withholds_the_result_and_is_observed(self) -> None:
         kit, channel, provider, observed = await _gated_kit(_found)
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="withhold"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="withhold")
         async def withhold(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult.block("restricted")
 
@@ -565,9 +555,7 @@ class TestToolCallGate:
     async def test_before_tool_use_denies_before_the_handler(self) -> None:
         kit, channel, provider, observed = await _gated_kit(_never_run)
 
-        @kit.turn_executor.hook(
-            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny"
-        )
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
         async def deny(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult.block("not here")
 
@@ -579,9 +567,7 @@ class TestToolCallGate:
     async def test_arguments_before_tool_use_edited_in_place_are_validated_again(self) -> None:
         kit, channel, provider, observed = await _gated_kit(_never_run)
 
-        @kit.turn_executor.hook(
-            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="edit"
-        )
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="edit")
         async def edit(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             event.arguments["email"] = 3
             return HookResult.allow()
@@ -622,9 +608,7 @@ class TestToolCallGate:
         kit, channel, provider, observed = await _gated_kit(handler)
         reported: list[dict[str, Any]] = []
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="slow"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="slow")
         async def slow(event: ToolCallEvent, ctx: RoomContext) -> None:
             await released.wait()
 

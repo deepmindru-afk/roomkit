@@ -7,7 +7,7 @@ import contextvars
 import logging
 from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, Protocol, cast
 
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import (
@@ -92,6 +92,26 @@ TURN_TRIGGERS: frozenset[HookTrigger] = frozenset(
 """The triggers that fire on the turn executor hosting the channel, during a
 turn or between turns (RFC §10.6.6); every other trigger fires on the room
 owner."""
+
+
+class TurnSide(Protocol):
+    """Where a kit's engine sends a hook on a trigger a turn fires: the
+    kit's own turn executor (RFC §10.6.6)."""
+
+    def register(self, hook: HookRegistration) -> None: ...
+
+    def add_room_hook(self, room_id: str, hook: HookRegistration) -> None: ...
+
+    def remove_global_hook(self, name: str) -> bool: ...
+
+    def remove_room_hook(self, room_id: str, name: str) -> bool: ...
+
+    def room_hook_names(self, room_id: str) -> list[str]: ...
+
+    @property
+    def fail_closed(self) -> frozenset[HookTrigger]: ...
+
+    def set_fail_closed(self, triggers: frozenset[HookTrigger]) -> None: ...
 
 
 def hook_decorator(
@@ -188,8 +208,10 @@ class HookEngine:
 
     An engine sits on one side of the turn backend (RFC §10.6.6): a kit's
     takes the room owner's triggers, a turn executor's (*turns*) the
-    triggers a turn fires; each refuses the other's at registration, where
-    the hook would never fire.
+    triggers a turn fires. A kit's engine hands a hook on a trigger a turn
+    fires to its own executor (its ``turn_side``); otherwise each engine
+    refuses the other side's at registration, where the hook would never
+    fire.
     """
 
     def __init__(self, *, turns: bool = False) -> None:
@@ -202,7 +224,13 @@ class HookEngine:
         # A turn executor's room hooks, defined by name: a request names those
         # of its room (RFC §10.6.6), and they apply to the room from its turn.
         self._named_room_hooks: dict[str, list[HookRegistration]] = {}
+        # The kit's own executor's room hooks the kit gave it, by room: they
+        # apply to the room's turns there, beside those a request names.
+        self._owner_room_hooks: dict[str, list[HookRegistration]] = {}
         self._trigger_index: set[HookTrigger] = set()
+        self.turn_side: TurnSide | None = None
+        """Set by RoomKit on its engine: its own executor, where a hook on a
+        trigger a turn fires registered here goes."""
         self._telemetry: Any = None  # Set by RoomKit after init
         # Set by RoomKit after init — RFC §8.2 mandates a ``hook_timeout``
         # framework event, which the engine alone knows how to raise.
@@ -294,8 +322,12 @@ class HookEngine:
         )
 
     def room_hook_names(self, room_id: str) -> list[str]:
-        """The names of the hooks registered for *room_id* alone."""
-        return [h.name for h in self._room_hooks.get(room_id, [])]
+        """The names of the hooks registered for *room_id* alone, those a
+        kit's engine gave its own executor included."""
+        names = [h.name for h in self._room_hooks.get(room_id, [])]
+        if self.turn_side is not None and not self._turns:
+            names += self.turn_side.room_hook_names(room_id)
+        return names
 
     def has_router_hook(self, room_id: str) -> bool:
         """Whether a conversation router's hook applies to *room_id*."""
@@ -336,8 +368,17 @@ class HookEngine:
             f"register it with {call}"
         )
 
+    def _to_turn_side(self, hook: HookRegistration) -> TurnSide | None:
+        """The executor a kit's engine hands *hook* to, when it fires there."""
+        if self._turns or hook.trigger not in TURN_TRIGGERS:
+            return None
+        return self.turn_side
+
     def register(self, hook: HookRegistration) -> None:
         """Register a global hook."""
+        if (turn_side := self._to_turn_side(hook)) is not None:
+            turn_side.register(hook)
+            return
         self._check_side(hook, room=False)
         self._check_router_placement(hook, None)
         self._check_lock_placement(hook, None)
@@ -352,11 +393,14 @@ class HookEngine:
         turns' requests (RFC §10.6.6): a hook held for a room on one executor
         would never fire for the room's turns on another.
         """
+        if (turn_side := self._to_turn_side(hook)) is not None:
+            turn_side.add_room_hook(room_id, hook)
+            return
         if self._turns:
             raise ValueError(
                 f"Hook {hook.name!r}: a turn executor's room hook is defined by name, "
-                "kit.turn_executor.room_hook(name, ...), and enabled for a room on its "
-                "owner, kit.enable_room_hook(room_id, name) (RFC §10.6.6)"
+                "executor.room_hook(name, ...), and enabled for a room on its owner, "
+                "kit.enable_room_hook(room_id, name) (RFC §10.6.6)"
             )
         self._check_side(hook, room=True)
         self._check_router_placement(hook, room_id)
@@ -364,14 +408,28 @@ class HookEngine:
         self._room_hooks.setdefault(room_id, []).append(hook)
         self._trigger_index.add(hook.trigger)
 
+    def add_owner_room_hook(self, room_id: str, hook: HookRegistration) -> None:
+        """Register on the kit's own executor a room hook the kit gave it
+        for *room_id* (RFC §10.6.6): it applies to the room's turns here,
+        beside the room hooks a request names."""
+        if not self._turns:
+            raise ValueError("A room hook the kit gives its executor registers on an executor")
+        self._check_side(hook, room=True)
+        self._check_lock_placement(hook, room_id)
+        self._owner_room_hooks.setdefault(room_id, []).append(hook)
+        self._trigger_index.add(hook.trigger)
+
     def _hooks_of_room(self, room_id: str) -> list[HookRegistration]:
         """*room_id*'s hooks: inside a turn of the room, those its request
         named (RFC §10.6.6), whatever the room's set became meanwhile; else
-        the room's set."""
+        the room's set; with, on the kit's own executor, those the kit gave
+        it for the room."""
+        given = self._owner_room_hooks.get(room_id, [])
         turn = _TURN_ROOM_HOOKS.get()
         if self._turns and turn is not None and turn[0] == room_id:
-            return [hook for name in turn[1] for hook in self._named_room_hooks.get(name, ())]
-        return self._room_hooks.get(room_id, [])
+            named = [hook for name in turn[1] for hook in self._named_room_hooks.get(name, ())]
+            return [*named, *given]
+        return [*self._room_hooks.get(room_id, []), *given]
 
     def define_room_hook(self, hook: HookRegistration) -> None:
         """Define a turn executor's room hook under its name: it applies to a
@@ -421,17 +479,37 @@ class HookEngine:
             self._room_hooks.pop(room_id, None)
 
     def remove_global_hook(self, name: str) -> bool:
-        """Remove a global hook by name."""
-        for i, h in enumerate(self._global_hooks):
-            if h.name == name:
-                self._global_hooks.pop(i)
+        """Remove a global hook by name, one a kit's engine gave its own
+        executor included."""
+        if self._removed(self._global_hooks, name):
+            return True
+        return self.turn_side is not None and self.turn_side.remove_global_hook(name)
+
+    def remove_room_hook(self, room_id: str, name: str) -> bool:
+        """Remove a room hook by name, one a kit's engine gave its own
+        executor included."""
+        for hooks in (self._room_hooks.get(room_id, []), self._owner_room_hooks.get(room_id, [])):
+            if self._removed(hooks, name):
+                return True
+        return self.turn_side is not None and self.turn_side.remove_room_hook(room_id, name)
+
+    def holds(self, hook: HookRegistration) -> bool:
+        """Whether the registration *hook* itself is registered here."""
+        return any(any(h is hook for h in listed) for listed in self._registrations())
+
+    def remove_hook(self, hook: HookRegistration) -> bool:
+        """Remove the registration *hook* itself, global or a room's."""
+        for listed in self._registrations():
+            if any(h is hook for h in listed):
+                listed[:] = [h for h in listed if h is not hook]
                 self._rebuild_trigger_index()
                 return True
         return False
 
-    def remove_room_hook(self, room_id: str, name: str) -> bool:
-        """Remove a room hook by name."""
-        hooks = self._room_hooks.get(room_id, [])
+    def _registrations(self) -> list[list[HookRegistration]]:
+        return [self._global_hooks, *self._room_hooks.values(), *self._owner_room_hooks.values()]
+
+    def _removed(self, hooks: list[HookRegistration], name: str) -> bool:
         for i, h in enumerate(hooks):
             if h.name == name:
                 hooks.pop(i)
@@ -457,7 +535,11 @@ class HookEngine:
     def _rebuild_trigger_index(self) -> None:
         """Rebuild the trigger index from all registered hooks."""
         self._trigger_index = {h.trigger for h in self._global_hooks}
-        for hooks in [*self._room_hooks.values(), *self._named_room_hooks.values()]:
+        for hooks in [
+            *self._room_hooks.values(),
+            *self._named_room_hooks.values(),
+            *self._owner_room_hooks.values(),
+        ]:
             self._trigger_index.update(h.trigger for h in hooks)
 
     def _hook_matches_event(self, hook: HookRegistration, event: RoomEvent) -> bool:
@@ -521,13 +603,21 @@ class HookEngine:
     @property
     def FAIL_CLOSED_TRIGGERS(self) -> frozenset[HookTrigger]:  # noqa: N802 - kept the public name
         """This engine's fail-closed triggers: the defaults that fire on its
-        side of the turn backend (RFC §10.6.6), or the set a host gave it."""
+        side of the turn backend (RFC §10.6.6), or the set a host gave it;
+        a kit's engine reads its own executor's with them."""
+        if self.turn_side is not None and not self._turns:
+            return self._fail_closed | self.turn_side.fail_closed
         return self._fail_closed
 
     @FAIL_CLOSED_TRIGGERS.setter
     def FAIL_CLOSED_TRIGGERS(self, triggers: frozenset[HookTrigger]) -> None:  # noqa: N802
-        """Set the fail-closed triggers; one that fires on the other side
-        is refused, since this engine never runs its hooks."""
+        """Set the fail-closed triggers: a kit's engine gives its own
+        executor those a turn fires; another engine refuses a trigger of the
+        other side, since it never runs its hooks."""
+        if self.turn_side is not None and not self._turns:
+            self.turn_side.set_fail_closed(frozenset(t for t in triggers if t in TURN_TRIGGERS))
+            self._fail_closed = frozenset(t for t in triggers if t not in TURN_TRIGGERS)
+            return
         elsewhere = sorted(str(t) for t in triggers if (t in TURN_TRIGGERS) != self._turns)
         if elsewhere:
             where = "kit.hook_engine" if self._turns else "kit.turn_executor.hooks"

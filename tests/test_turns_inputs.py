@@ -58,12 +58,12 @@ async def _kit(
     asked: list[PendingInputEvent] = []
     reports: list[Any] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC)
+    @kit.hook(HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC)
     async def on_input(event: PendingInputEvent, ctx: Any) -> HookResult:
         asked.append(event)
         return HookResult.allow()
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
     async def on_call(event: ToolCallEvent, ctx: Any) -> None:
         reports.append(event)
 
@@ -119,7 +119,7 @@ async def test_an_answer_the_handler_took_closes_the_owners_record_while_the_tur
     kit, _, human, asked, _ = await _kit()
     still_open: list[bool] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
     async def after_the_answer(event: ToolCallEvent, ctx: Any) -> None:
         # The turn still runs; the owner learnt the request settled.
         for _ in range(100):
@@ -146,9 +146,7 @@ async def test_an_answer_the_handler_took_closes_the_owners_record_while_the_tur
 async def test_a_block_after_an_answer_does_not_take_it_back() -> None:
     kit, _, human, _, reports = await _kit()
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC, priority=-1
-    )
+    @kit.hook(HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC, priority=-1)
     async def answer_then_block(event: PendingInputEvent, ctx: Any) -> HookResult:
         human.handler.resolve(event.pending_id, "Blue")
         return HookResult.block("Too late to deny")
@@ -164,9 +162,7 @@ async def test_the_kits_door_says_true_only_for_an_answer_the_tool_reads() -> No
     kit, _, _, _, reports = await _kit()
     said: list[bool] = []
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC, priority=-1
-    )
+    @kit.hook(HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC, priority=-1)
     async def answer_then_block(event: PendingInputEvent, ctx: Any) -> HookResult:
         said.append(await kit.answer_input(event.pending_id, "Blue"))
         return HookResult.block("Too late to deny")
@@ -289,9 +285,7 @@ async def test_a_request_a_hook_blocks_is_closed_on_the_owner() -> None:
     kit, _, _, _, reports = await _kit()
     denied: list[str] = []
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC, priority=-1
-    )
+    @kit.hook(HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC, priority=-1)
     async def deny(event: PendingInputEvent, ctx: Any) -> HookResult:
         denied.append(event.pending_id)
         return HookResult.block("No humans today")

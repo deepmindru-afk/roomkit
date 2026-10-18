@@ -163,7 +163,7 @@ async def test_the_agents_own_policy_composes_with_the_channels(
         )
     seen: list[ToolCallEvent] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
     async def observe(event: ToolCallEvent, ctx: Any) -> None:
         seen.append(event)
 

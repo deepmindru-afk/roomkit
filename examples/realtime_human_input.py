@@ -67,7 +67,7 @@ async def main() -> None:
     await kit.create_room(room_id="front-desk")
     await kit.attach_channel("front-desk", "voice")
 
-    @kit.turn_executor.hook(HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC)
+    @kit.hook(HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC)
     async def notify_operator(event: Any, ctx: Any) -> HookResult:
         logger.info(
             "operator asked on a %s door: %s %s (caller %s)",

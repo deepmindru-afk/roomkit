@@ -410,35 +410,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   beside the channel's declaration with the distributed backend. `OwnerTools`
   and `OwnerTool` are exported.
 
-- **BREAKING — the hooks of a turn register on the turn executor**
-  (RMK-810, RFC §10.6.6): `BEFORE_AI_GENERATION`, `ON_AI_THINKING`,
-  `ON_AI_RESPONSE`, `BEFORE_TOOL_USE`, `AFTER_TOOL_ROUND`, `ON_TOOL_CALL`,
+- **The hooks of a turn fire on the turn executor** (RMK-810, RMK-833, RFC
+  §10.6.6): `BEFORE_AI_GENERATION`, `ON_AI_THINKING`, `ON_AI_RESPONSE`,
+  `BEFORE_TOOL_USE`, `AFTER_TOOL_ROUND`, `ON_TOOL_CALL`,
   `ON_USER_INPUT_REQUIRED`, `ON_SPEAK_DECISION`, `ON_THOUGHT` and
-  `ON_PLAN_UPDATED` fire where the turn runs, so `kit.hook(...)`,
-  `kit.add_room_hook(...)` and `kit.hook_engine.register(...)` refuse them with
-  a `ValueError` naming the right call: a hook registered there would never
-  fire for a turn another process runs. Migration: `@kit.hook(HookTrigger.ON_TOOL_CALL, ...)`
-  becomes `@kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, ...)` (same
-  options), `kit.hook_engine.register(...)` becomes
-  `kit.turn_executor.hooks.register(...)`, and `kit.add_room_hook(...)` becomes
-  a room hook defined by name on the executor,
-  `kit.turn_executor.room_hook(name, ...)`, enabled for the room with
-  `kit.enable_room_hook(room_id, name)` (RMK-821). An executor refuses the owner's
-  triggers the same way. Realtime voice, conference and external tool calls,
-  which run in the kit's process, fire the hooks of the kit's own executor:
-  one registration covers every door. `ScoringHook.attach` and the console
-  register there. The removal doors follow: `kit.remove_room_hook` and
-  `kit.hook_engine.remove_global_hook` find no turn hook (they answer `False`);
-  remove it with `kit.disable_room_hook(room_id, name)` or
-  `kit.turn_executor.hooks.remove_global_hook`. `FAIL_CLOSED_TRIGGERS` is
-  per side as well: the kit's engine keeps `BEFORE_TTS` and `ON_TRANSCRIPTION`,
-  the executor's `BEFORE_TOOL_USE`, and setting a trigger of the other side
-  raises, so a fail-closed redaction hook on `ON_TOOL_CALL` is set on
-  `kit.turn_executor.hooks.FAIL_CLOSED_TRIGGERS`. A bare `HookEngine()` is
-  the kit's side and refuses the turn triggers. `kit.hooks_for(trigger)` and
-  `roomkit.TURN_TRIGGERS` serve code that registers on triggers of both sides.
-  Only the kit's own executor fires these hooks today: an executor a host
-  builds runs its turns without them until executors wire their own channels.
+  `ON_PLAN_UPDATED` fire where the turn runs. Registered on the kit
+  (`kit.hook(...)`, `kit.add_room_hook(...)`, `kit.hook_engine.register(...)`)
+  they are the kit's own executor's, as before: they fire for the agents the
+  kit runs, realtime voice, conference and external tool calls included. An
+  agent the kit holds by its declaration alone runs its turns on another
+  executor, where such a hook would never fire, so the kit refuses with a
+  `ValueError` naming the executor-side call a turn hook that agent could
+  fire (its `channel_ids` or `channel_types` can leave it out), and that
+  agent's declaration while such a hook is registered; a room hook on a turn
+  trigger is refused while the kit holds any declared agent. For agents run
+  elsewhere, register on their executor: `executor.hook(...)` takes
+  `kit.hook`'s options, and a room hook is defined by name,
+  `executor.room_hook(name, ...)`, and enabled for a room with
+  `kit.enable_room_hook(room_id, name)` (RMK-821); `kit.turn_executor` is the
+  kit's own. An executor refuses the owner's triggers. `kit.remove_room_hook`,
+  `kit.hook_engine.remove_global_hook` and
+  `kit.hook_engine.FAIL_CLOSED_TRIGGERS` reach the kit's turn hooks too; a
+  bare `HookEngine()` refuses the turn triggers. `ScoringHook.attach` and the
+  console register on the kit's executor. `kit.hooks_for(trigger)` and
+  `roomkit.TURN_TRIGGERS` serve code that registers on triggers of both
+  sides.
 
 - A strategy that takes an agent's turns runs on the room's owner, and each
   generation it asks of the agent is a turn of its own (RMK-814, RFC §10.6.1).

@@ -60,7 +60,7 @@ def _mcp_handler() -> Any:
 def _observe(kit: RoomKit) -> list[ToolCallEvent]:
     seen: list[ToolCallEvent] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: Any) -> None:
         seen.append(event)
 

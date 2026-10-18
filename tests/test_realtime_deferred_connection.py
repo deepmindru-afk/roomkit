@@ -172,7 +172,7 @@ async def test_prepared_tool_waits_for_authorization_and_cannot_outlive_start(
 
     kit = RoomKit()
 
-    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE)
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE)
     async def deny(event: Any, context: Any) -> HookResult:
         hooks.append(event.name)
         authorized.set()

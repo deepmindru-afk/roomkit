@@ -231,11 +231,11 @@ async def test_every_decision_reaches_on_speak_decision(advance: Any) -> None:
     )
     seen: list[SpeakDecisionEvent] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
+    @kit.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
     async def on_decision(event: SpeakDecisionEvent, ctx: Any) -> None:
         seen.append(event)
 
-    @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION)
+    @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
     async def before(event: Any, ctx: Any) -> None:
         raise AssertionError("a silent decision runs no turn")
 
@@ -258,7 +258,7 @@ async def test_without_a_policy_nothing_is_decided(advance: Any) -> None:
     kit, provider = await _kit(None)
     seen: list[Any] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
+    @kit.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
     async def on_decision(event: Any, ctx: Any) -> None:
         seen.append(event)
 
@@ -276,7 +276,7 @@ async def test_always_speak_answers_and_reports_each_decision(advance: Any) -> N
     kit, provider = await _kit(AlwaysSpeak())
     seen: list[SpeakDecisionEvent] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
+    @kit.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
     async def on_decision(event: SpeakDecisionEvent, ctx: Any) -> None:
         seen.append(event)
 

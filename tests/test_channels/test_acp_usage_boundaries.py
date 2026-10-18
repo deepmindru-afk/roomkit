@@ -87,7 +87,7 @@ async def test_two_real_sdk_sessions_in_one_room_reach_framework_hooks(
     writers: list[Any] = []
     received = asyncio.Event()
 
-    @kit.turn_executor.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
+    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
     async def observe(event: AIResponseEvent, ctx: Any) -> None:
         reports.append(event)
         if len(reports) == 2:

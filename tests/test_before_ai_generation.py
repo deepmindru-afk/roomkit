@@ -193,7 +193,7 @@ class TestBeforeGenerationHookIntegration:
         kit, ai_provider = await self._setup_kit()
         captured: list[AIGenerationEvent] = []
 
-        @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION)
+        @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
         async def observe(event, ctx):
             captured.append(event)
             return HookResult.allow()
@@ -214,7 +214,7 @@ class TestBeforeGenerationHookIntegration:
     async def test_hook_blocks_via_framework(self, advance):
         kit, ai_provider = await self._setup_kit()
 
-        @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION)
+        @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
         async def block_gen(event, ctx):
             return HookResult.block(reason="over budget")
 
@@ -232,7 +232,7 @@ class TestBeforeGenerationHookIntegration:
     async def test_hook_modifies_via_framework(self, advance):
         kit, ai_provider = await self._setup_kit()
 
-        @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION)
+        @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
         async def modify_prompt(event, ctx):
             event.ai_context.system_prompt = "You are a pirate"
             return HookResult.allow()
@@ -254,7 +254,7 @@ class TestBeforeGenerationHookIntegration:
         content it replaced."""
         kit, ai_provider = await self._setup_kit()
 
-        @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION)
+        @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
         async def redact(event, ctx):
             messages = [
                 m.model_copy(update={"content": str(m.content).replace("4417", "[redacted]")})
@@ -279,7 +279,7 @@ class TestBeforeGenerationHookIntegration:
         kit, ai_provider = await self._setup_kit()
         observed: list[AIGenerationEvent] = []
 
-        @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION, execution=HookExecution.ASYNC)
+        @kit.hook(HookTrigger.BEFORE_AI_GENERATION, execution=HookExecution.ASYNC)
         async def log_gen(event, ctx):
             observed.append(event)
 
@@ -297,14 +297,14 @@ class TestBeforeGenerationHookIntegration:
         kit, ai_provider = await self._setup_kit()
         order: list[str] = []
 
-        @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION, priority=10)
+        @kit.hook(HookTrigger.BEFORE_AI_GENERATION, priority=10)
         async def second(event, ctx):
             order.append("second")
             # Should see modification from first hook
             assert event.ai_context.metadata.get("first") is True
             return HookResult.allow()
 
-        @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION, priority=0)
+        @kit.hook(HookTrigger.BEFORE_AI_GENERATION, priority=0)
         async def first(event, ctx):
             order.append("first")
             event.ai_context.metadata["first"] = True

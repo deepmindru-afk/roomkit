@@ -180,7 +180,7 @@ class TestTriggersThatReachHooks:
 
         thinking: list[object] = []
 
-        @kit.turn_executor.hook(HookTrigger.ON_AI_THINKING, HookExecution.ASYNC)
+        @kit.hook(HookTrigger.ON_AI_THINKING, HookExecution.ASYNC)
         async def on_thinking(event, context):  # noqa: ANN001
             thinking.append(event)
 

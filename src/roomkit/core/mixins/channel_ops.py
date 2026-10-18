@@ -161,6 +161,7 @@ class ChannelOpsMixin(HelpersMixin):
     _refuse_discussion_binding: Any  # see DiscussionMixin
     _on_room_detached: Any  # see ChannelStateMixin
     turn_executor: Any  # see RoomKit
+    _kit_turn_hooks: Any  # see RoomKit
 
     def register_channel(self, channel: Channel | ChannelDeclaration) -> None:
         """Register a channel implementation by its ID.
@@ -181,7 +182,9 @@ class ChannelOpsMixin(HelpersMixin):
             ChannelAlreadyRegisteredError: a channel with this ID is
                 already registered.
             ValueError: a declaration of a channel that is not an
-                intelligence channel.
+                intelligence channel, or of one a turn hook registered on
+                the kit could fire (its turns run on another executor, RFC
+                §10.6.6).
             pydantic.ValidationError: an intelligence channel whose own
                 declaration is invalid (an empty id, a negative window).
         """
@@ -193,6 +196,9 @@ class ChannelOpsMixin(HelpersMixin):
                 f"Call unregister_channel({channel.channel_id!r}) first to "
                 f"replace it deliberately."
             )
+        if isinstance(channel, DeclaredChannel):
+            # Its turns run elsewhere: a turn hook on the kit would not fire.
+            self._kit_turn_hooks.refuse_declaration(channel)
         # The kit reads an intelligence channel through its declaration (RFC
         # §10.6.2): one it cannot give is refused before anything is set up.
         declaration = (

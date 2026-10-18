@@ -63,7 +63,7 @@ class _Hangs:
 def _observe(kit: RoomKit) -> list[ToolCallEvent]:
     reports: list[ToolCallEvent] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: Any) -> None:
         reports.append(event)
 

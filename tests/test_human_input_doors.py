@@ -58,9 +58,7 @@ def _on_request(decide: Callable[[Any], HookResult], seen: list[Any]) -> Callabl
     what *decide* says of it."""
 
     def setup(kit: RoomKit) -> None:
-        @kit.turn_executor.hook(
-            HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC, name="ask"
-        )
+        @kit.hook(HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC, name="ask")
         async def ask(event: Any, ctx: Any) -> HookResult:
             seen.append(event)
             return decide(event)

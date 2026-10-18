@@ -1490,7 +1490,7 @@ class TestEndOfTurnReport:
 
         seen: list[Any] = []
 
-        @kit.turn_executor.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
+        @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
         async def observe(event: Any, ctx: Any) -> None:
             seen.append(event)
 

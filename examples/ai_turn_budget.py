@@ -72,9 +72,7 @@ async def main() -> None:
     kit.register_channel(WebSocketChannel("ws-user"))
     kit.register_channel(assistant(env["ANTHROPIC_API_KEY"]))
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="budget"
-    )
+    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, name="budget")
     async def on_response(event: AIResponseEvent, ctx: RoomContext) -> None:
         logger.info(
             "Turn ended: %s after %d tool call(s), usage %s",

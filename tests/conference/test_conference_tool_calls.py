@@ -54,9 +54,7 @@ async def _conference(handler: _Handler) -> tuple[RoomKit, Any, MockRealtimeProv
     )
     observed: list[ToolCallEvent] = []
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe"
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
     async def observe(event: ToolCallEvent, ctx: RoomContext) -> None:
         observed.append(event)
 
@@ -113,7 +111,7 @@ async def test_a_call_cancelled_while_judged_is_reported_cancelled_once() -> Non
     handler.release.set()
     kit, _, provider, session, observed = await _conference(handler)
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, name="slow-judge")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, name="slow-judge")
     async def slow_judge(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         judging.set()
         await release.wait()
@@ -136,9 +134,7 @@ async def test_a_cancellation_while_the_observers_run_adds_no_second_report() ->
     kit, _, provider, session, observed = await _conference(handler)
     in_observer, release = asyncio.Event(), asyncio.Event()
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="slow-audit"
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="slow-audit")
     async def slow_audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         in_observer.set()
         await release.wait()

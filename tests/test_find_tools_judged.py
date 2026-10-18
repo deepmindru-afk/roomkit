@@ -46,7 +46,7 @@ FOUND = {"spotify_play", "spotify_search"}
 def _judge_search(kit: RoomKit, verdict: str) -> list[ToolCallEvent]:
     """Block or replace every Tool Search call; the observers' reports."""
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="judge")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="judge")
     async def judge(event: ToolCallEvent, ctx: Any) -> HookResult:
         if event.name not in ("find_tools", "list_tools"):
             return HookResult.allow()
@@ -56,7 +56,7 @@ def _judge_search(kit: RoomKit, verdict: str) -> list[ToolCallEvent]:
 
     seen: list[ToolCallEvent] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: Any) -> None:
         seen.append(event)
 
@@ -307,9 +307,7 @@ class TestRealtimeReview:
         provider = _InBand()
         kit, channel, session = await _realtime_kit(provider)
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="handoff"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="handoff")
         async def handoff(event: ToolCallEvent, ctx: Any) -> HookResult:
             if event.name == "find_tools":
                 tools = [_schema(n) for n in AFTER_HANDOFF]
@@ -326,9 +324,7 @@ class TestRealtimeReview:
         provider = MockRealtimeProvider()
         kit, channel, session = await _realtime_kit(provider)
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="handoff"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="handoff")
         async def handoff(event: ToolCallEvent, ctx: Any) -> HookResult:
             if event.name == "find_tools":
                 await channel.reconfigure_session(session, system_prompt="New agent")
@@ -358,9 +354,7 @@ class TestRealtimeReview:
         kit, session = await _session(channel)
         judged: list[int] = []
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="size"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="size")
         async def size(event: ToolCallEvent, ctx: Any) -> HookResult:
             judged.append(len(str(event.result)))
             return HookResult.allow()

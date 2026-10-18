@@ -93,7 +93,7 @@ def _redact(event: ToolCallEvent) -> ToolCallEvent:
 async def test_a_modify_that_redacts_reaches_the_model_redacted(streaming: bool) -> None:
     kit, provider = await _kit(streaming)
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="redact")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="redact")
     async def redact(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult.modify(_redact(event))
 
@@ -107,21 +107,17 @@ async def test_sync_hooks_chain_and_observers_see_the_final_result(streaming: bo
     kit, provider = await _kit(streaming)
     observed: list[Any] = []
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="redact", priority=1
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="redact", priority=1)
     async def redact(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult(action="allow", metadata={"result": _redact(event).result})
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="cite", priority=2
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="cite", priority=2)
     async def cite(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult.modify(
             dataclasses.replace(event, result=f"{event.result} (source: CRM)")
         )
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         observed.append(event.result)
 
@@ -138,11 +134,11 @@ async def test_a_hook_that_clears_the_result_withholds_it(streaming: bool) -> No
     kit, provider = await _kit(streaming)
     observed: list[Any] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="clear")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="clear")
     async def clear(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult(action="allow", metadata={"result": None})
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         observed.append(event.result)
 
@@ -159,11 +155,11 @@ async def test_observers_see_a_replacement_as_the_model_reads_it(streaming: bool
     kit, provider = await _kit(streaming)
     observed: list[Any] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="shape")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="shape")
     async def shape(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult.modify(dataclasses.replace(event, result={"n": 1}))
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         observed.append(event.result)
 
@@ -178,13 +174,11 @@ async def test_observers_fire_after_a_block_with_the_failure(streaming: bool) ->
     kit, provider = await _kit(streaming)
     observed: list[ToolCallEvent] = []
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="withhold"
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="withhold")
     async def withhold(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult.block("restricted")
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         observed.append(event)
 
@@ -201,13 +195,11 @@ async def test_observers_fire_after_a_fail_closed_hook_fails(streaming: bool) ->
     kit, provider = await _kit(streaming)
     observed: list[ToolCallEvent] = []
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="pii", fail_closed=True
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="pii", fail_closed=True)
     async def pii(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         raise RuntimeError("classifier down")
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         observed.append(event)
 
@@ -227,9 +219,7 @@ async def test_the_next_prompt_keeps_the_model_s_arguments(streaming: bool) -> N
         AIResponse(content="again", finish_reason="stop"),
     )
 
-    @kit.turn_executor.hook(
-        HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="detokenize"
-    )
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="detokenize")
     async def detokenize(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult(action="allow", metadata={"arguments": {"email": "alice@real.example"}})
 
@@ -251,9 +241,7 @@ async def test_a_cold_digest_keeps_the_model_s_arguments_too(streaming: bool) ->
         AIResponse(content="again", finish_reason="stop"),
     )
 
-    @kit.turn_executor.hook(
-        HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="detokenize"
-    )
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="detokenize")
     async def detokenize(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult(action="allow", metadata={"arguments": {"email": "alice@real.example"}})
 
@@ -275,15 +263,11 @@ async def test_a_modify_the_chain_cannot_use_keeps_the_previous_rewrite(
     §9.3): the chain carries on from the previous hook's redaction."""
     kit, provider = await _kit(streaming)
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="redact", priority=1
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="redact", priority=1)
     async def redact(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult(action="allow", metadata={"result": _redact(event).result})
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="broken", priority=2
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="broken", priority=2)
     async def broken(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult.modify(f"{event.result} (source: CRM)")  # a str, not the event
 
@@ -297,15 +281,11 @@ async def test_the_structured_copy_chains_too(streaming: bool) -> None:
     kit, provider = await _kit(streaming)
     seen: list[Any] = []
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="publish", priority=1
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="publish", priority=1)
     async def publish(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult(action="allow", metadata={"structured_content": {"rows": 1}})
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="read", priority=2
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="read", priority=2)
     async def read(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         seen.append(event.structured_content)
         return HookResult.allow()
@@ -326,11 +306,9 @@ async def _external_report(
     )
     await kit.create_room(room_id="r1")
     observed: list[ToolCallEvent] = []
-    kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="sync")(
-        sync_hook
-    )
+    kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="sync")(sync_hook)
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         observed.append(event)
 
@@ -375,15 +353,11 @@ async def test_realtime_modify_reaches_the_model_and_the_observers(tmp_path) -> 
         handler.return_value = {"ssn": "123-45-6789"}
         observed: list[ToolCallEvent] = []
 
-        @channel._framework.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC
-        )
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
         async def redact(event: ToolCallEvent, context: RoomContext) -> HookResult:
             return HookResult.modify(_redact(event))
 
-        @channel._framework.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC
-        )
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
         async def audit(event: ToolCallEvent, context: RoomContext) -> None:
             observed.append(event)
 
@@ -401,15 +375,11 @@ async def test_realtime_observers_fire_after_a_block(tmp_path) -> None:
         handler.return_value = {"ssn": "123-45-6789"}
         observed: list[ToolCallEvent] = []
 
-        @channel._framework.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC
-        )
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
         async def withhold(event: ToolCallEvent, context: RoomContext) -> HookResult:
             return HookResult.block("restricted")
 
-        @channel._framework.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC
-        )
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
         async def audit(event: ToolCallEvent, context: RoomContext) -> None:
             observed.append(event)
 
@@ -429,15 +399,11 @@ async def test_realtime_a_cleared_result_reads_null(tmp_path) -> None:
         handler.return_value = "SECRET-TOKEN-123"
         observed: list[ToolCallEvent] = []
 
-        @channel._framework.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC
-        )
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
         async def clear(event: ToolCallEvent, context: RoomContext) -> HookResult:
             return HookResult(action="allow", metadata={"result": None})
 
-        @channel._framework.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC
-        )
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
         async def audit(event: ToolCallEvent, context: RoomContext) -> None:
             observed.append(event)
 
@@ -454,15 +420,11 @@ async def test_realtime_observers_see_a_replacement_as_the_model_reads_it(tmp_pa
         channel, provider, session, handler = ctx
         observed: list[ToolCallEvent] = []
 
-        @channel._framework.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC
-        )
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
         async def shape(event: ToolCallEvent, context: RoomContext) -> HookResult:
             return HookResult.modify(dataclasses.replace(event, result={"n": 1}))
 
-        @channel._framework.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC
-        )
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
         async def audit(event: ToolCallEvent, context: RoomContext) -> None:
             observed.append(event)
 

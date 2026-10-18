@@ -228,7 +228,7 @@ async def _thoughts_posted(kit: RoomKit, messages: list[str]) -> tuple[list[str]
     posted: list[str] = []
     refused: list[str] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_THOUGHT, execution=HookExecution.ASYNC)
+    @kit.hook(HookTrigger.ON_THOUGHT, execution=HookExecution.ASYNC)
     async def post(event: ThoughtEvent, ctx: Any) -> None:
         host = current_turn_host()
         assert host is not None

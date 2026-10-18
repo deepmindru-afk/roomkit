@@ -135,9 +135,12 @@ class HooksApiMixin(HelpersMixin):
                 room's state. Raises ``ValueError`` on another trigger, or when
                 a locked hook would be ordered before it by priority.
 
-        A trigger a turn fires (``ON_TOOL_CALL``, ``BEFORE_TOOL_USE``...,
-        RFC §10.6.6) registers on the turn executor instead,
-        ``kit.turn_executor.hook(...)``; this raises ``ValueError`` for it.
+        A hook on a trigger a turn fires (``ON_TOOL_CALL``,
+        ``BEFORE_TOOL_USE``..., RFC §10.6.6) is the kit's own executor's: it
+        fires for the agents the kit runs. One that a channel the kit holds
+        by its declaration alone could fire (its turns run on another
+        executor) raises ``ValueError``: register it on that executor,
+        ``executor.hook(...)``, or leave the channel out of ``channel_ids``.
         """
 
         return hook_decorator(
@@ -370,10 +373,11 @@ class HooksApiMixin(HelpersMixin):
         """Add a hook for a specific room.
 
         ``fail_closed`` and ``needs_lock`` have the meaning they have on
-        :meth:`hook`. A trigger a turn fires (RFC §10.6.6) raises
-        ``ValueError``: define it by name on the executors,
-        ``kit.turn_executor.room_hook(name, trigger)(fn)``, and enable the
-        name for the room with :meth:`enable_room_hook`.
+        :meth:`hook`. A hook on a trigger a turn fires (RFC §10.6.6) is the
+        kit's own executor's for the room; while the kit holds a channel by
+        its declaration alone it raises ``ValueError``: define it by name on
+        the executors, ``executor.room_hook(name, trigger)(fn)``, and enable
+        the name for the room with :meth:`enable_room_hook`.
         """
         self._hook_engine.add_room_hook(
             room_id,
@@ -389,8 +393,9 @@ class HooksApiMixin(HelpersMixin):
         )
 
     def remove_room_hook(self, room_id: str, name: str) -> bool:
-        """Remove a room hook of the kit by name; a hook on a trigger a turn
-        fires is disabled for the room with :meth:`disable_room_hook`."""
+        """Remove a room hook the kit registered, by name; one defined by
+        name on the executors is disabled for the room with
+        :meth:`disable_room_hook`."""
         return self._hook_engine.remove_room_hook(room_id, name)
 
     def enable_room_hook(self, room_id: str, name: str) -> None:

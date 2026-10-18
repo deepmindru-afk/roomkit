@@ -309,7 +309,7 @@ async def main(args: argparse.Namespace) -> None:
 
     billed_so_far: dict[str, float] = {}
 
-    @kit.turn_executor.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
+    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
     async def turn_finished(event: Any, _ctx: Any) -> None:
         """One report per finished turn, naming the agent that produced it.
 

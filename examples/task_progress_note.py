@@ -89,7 +89,7 @@ async def main() -> None:
     await kit.attach_channel("chat", "nova", category=ChannelCategory.INTELLIGENCE)
     await kit.attach_channel("chat", "sms")
 
-    @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION)
+    @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
     async def show_notes(event: AIGenerationEvent, ctx: object) -> HookResult:
         if event.channel_id != "nova":  # the worker's own turns, in its task's room
             return HookResult.allow()

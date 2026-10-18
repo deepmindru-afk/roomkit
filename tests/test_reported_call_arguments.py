@@ -103,12 +103,10 @@ async def test_a_call_its_turn_cut_is_reported_with_the_arguments_it_ran_with(
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "sms1")
     await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
-    kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="gate")(
-        detokenise
-    )
+    kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="gate")(detokenise)
     reports: list[Any] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def _audit(event: Any, ctx: Any) -> None:
         reports.append(event)
 

@@ -267,9 +267,7 @@ async def test_search_observer_can_reconfigure_without_deadlock(tmp_path):
         channel, provider, session, _ = ctx
         await call(channel, provider, session, "activate_skill", {"name": "test-skill"})
 
-        @channel._framework.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC
-        )
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
         async def observer(event, context):
             if event.name == "find_tools":
                 await channel.reconfigure_session(session, system_prompt="Observer role")
@@ -340,9 +338,7 @@ async def test_a_blocked_activation_is_refused_and_opens_no_gate(tmp_path):
     async with running(registry, provider=MockRealtimeProvider()) as ctx:
         channel, provider, session, _ = ctx
 
-        @channel._framework.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC
-        )
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
         async def refuse(event, context):
             if event.name == "activate_skill":
                 return HookResult.block(reason="skill not allowed for this user")
@@ -360,9 +356,7 @@ async def test_a_hook_rewrites_a_skill_tool_result_before_it_is_sent(tmp_path):
     async with running(registry, provider=MockRealtimeProvider()) as ctx:
         channel, provider, session, _ = ctx
 
-        @channel._framework.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC
-        )
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
         async def redact(event, context):
             if event.name == "read_skill_reference":
                 return HookResult(action="allow", metadata={"result": '{"content": "[redacted]"}'})
@@ -386,9 +380,7 @@ async def test_a_hook_may_reconfigure_the_session_during_an_activation(tmp_path)
     async with running(registry, provider=MockRealtimeProvider()) as ctx:
         channel, provider, session, _ = ctx
 
-        @channel._framework.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC
-        )
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
         async def observer(event, context):
             if event.name == "activate_skill":
                 await channel.reconfigure_session(session, system_prompt="Observer role")
@@ -410,9 +402,7 @@ async def test_an_activation_rechecks_its_required_tools_before_delivery(tmp_pat
     async with running(registry, provider=MockRealtimeProvider()) as ctx:
         channel, provider, session, _ = ctx
 
-        @channel._framework.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC
-        )
+        @channel._framework.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC)
         async def handoff(event, context):
             if event.name == "activate_skill":
                 await channel.reconfigure_session(session, tools=[tool("agenda")])

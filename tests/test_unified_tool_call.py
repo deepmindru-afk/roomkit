@@ -134,9 +134,7 @@ class TestRealtimeVoiceToolCallHook:
         await kit_with_rt.attach_channel(room_id, "rt-voice")
         session = await rt_channel.start_session(room_id, "u1", "ws")
 
-        @kit_with_rt.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="provide"
-        )
+        @kit_with_rt.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="provide")
         async def provide(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             assert event.channel_type == ChannelType.REALTIME_VOICE
             assert event.name == "get_weather"
@@ -181,9 +179,7 @@ class TestRealtimeVoiceToolCallHook:
 
         observed: list[ToolCallEvent] = []
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
         async def observe(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             observed.append(event)
             return HookResult.allow()
@@ -261,9 +257,7 @@ class TestRealtimeVoiceToolCallHook:
         await kit.attach_channel(room.id, "rt-both")
         session = await ch.start_session(room.id, "u1", "ws")
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="observe"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="observe")
         async def observe(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             # Handler already ran — event.result contains its output
             assert event.result is not None
@@ -288,9 +282,7 @@ class TestRealtimeVoiceToolCallHook:
         await kit_with_rt.attach_channel(room.id, "rt-voice")
         session = await rt_channel.start_session(room.id, "u1", "ws")
 
-        @kit_with_rt.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="block"
-        )
+        @kit_with_rt.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="block")
         async def block(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult.block("not allowed")
 
@@ -319,9 +311,7 @@ class TestRealtimeVoiceToolCallHook:
         session = await rt_channel.start_session(room.id, "u1", "ws")
 
         # Register a hook that just allows (no result override)
-        @kit_with_rt.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="noop"
-        )
+        @kit_with_rt.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="noop")
         async def noop(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult.allow()
 
@@ -358,9 +348,7 @@ class TestAIChannelToolCallHook:
 
         observed: list[ToolCallEvent] = []
 
-        @kit_with_ai.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="spy"
-        )
+        @kit_with_ai.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="spy")
         async def spy(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             observed.append(event)
             return HookResult.allow()
@@ -418,9 +406,7 @@ class TestAIChannelToolCallHook:
         room = await kit_with_ai.create_room()
         await kit_with_ai.attach_channel(room.id, "ai-1")
 
-        @kit_with_ai.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="override"
-        )
+        @kit_with_ai.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="override")
         async def override(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             result = '{"temp": 99, "override": true}'
             return HookResult(action="allow", metadata={"result": result})
@@ -539,9 +525,7 @@ class TestToolAuthorizationH1:
         kit = RoomKit()
         callback = kit._build_before_tool_call_hook("ch-1")
 
-        @kit.turn_executor.hook(
-            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="approve"
-        )
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="approve")
         async def approve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult.allow()
 
@@ -741,9 +725,7 @@ class TestToolAuthorizationH1:
         await kit.attach_channel(room.id, "rt-gate")
         session = await ch.start_session(room.id, "u1", "ws")
 
-        @kit.turn_executor.hook(
-            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny"
-        )
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
         async def deny(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult.block("not allowed")
 
@@ -793,15 +775,11 @@ class TestToolAuthorizationH1:
         await kit.attach_channel(room.id, "rt-rewrite")
         session = await ch.start_session(room.id, "u1", "ws")
 
-        @kit.turn_executor.hook(
-            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="restore"
-        )
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="restore")
         async def restore(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult(action="allow", metadata={"arguments": {"city": "Montreal"}})
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="observe"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="observe")
         async def observe(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             observed.append(event.arguments)
             return HookResult.allow()
@@ -842,9 +820,7 @@ class TestToolAuthorizationH1:
         await kit.attach_channel(room.id, "rt-invalid-rewrite")
         session = await ch.start_session(room.id, "u1", "ws")
 
-        @kit.turn_executor.hook(
-            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="bad"
-        )
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="bad")
         async def bad_rewrite(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult(action="allow", metadata={"arguments": {"city": 42}})
 
@@ -936,9 +912,7 @@ class TestRealtimeGateWithoutToolHandler:
         )
         served: list[dict[str, Any]] = []
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
         async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             served.append(event.arguments)
             return HookResult(action="allow", metadata={"result": "sunny"})
@@ -960,9 +934,7 @@ class TestRealtimeGateWithoutToolHandler:
         )
         served: list[dict[str, Any]] = []
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
         async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             served.append(event.arguments)
             return HookResult.allow()
@@ -987,16 +959,12 @@ class TestRealtimeGateWithoutToolHandler:
         served: list[dict[str, Any]] = []
         gated: list[str | None] = []
 
-        @kit.turn_executor.hook(
-            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny"
-        )
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
         async def deny(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             gated.append(event.session.id if event.session else None)
             return HookResult.block("not allowed")
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
         async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             served.append(event.arguments)
             return HookResult(action="allow", metadata={"result": "sunny"})
@@ -1022,15 +990,11 @@ class TestRealtimeGateWithoutToolHandler:
         )
         served: list[dict[str, Any]] = []
 
-        @kit.turn_executor.hook(
-            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="restore"
-        )
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="restore")
         async def restore(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult(action="allow", metadata={"arguments": {"city": "Montreal"}})
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
         async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             served.append(event.arguments)
             return HookResult(action="allow", metadata={"result": "sunny"})
@@ -1051,9 +1015,7 @@ class TestRealtimeGateWithoutToolHandler:
         )
         served: list[dict[str, Any]] = []
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
         async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             served.append(event.arguments)
             return HookResult(action="allow", metadata={"result": "sunny"})
@@ -1075,9 +1037,7 @@ class TestRealtimeGateWithoutToolHandler:
         )
         served: list[str] = []
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
         async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             served.append(event.name)
             return HookResult(action="allow", metadata={"result": "done"})
@@ -1109,15 +1069,11 @@ class TestRealtimeGateSharesItsContext:
         await kit.attach_channel(room.id, "rt-carry")
         session = await ch.start_session(room.id, "u1", "ws")
 
-        @kit.turn_executor.hook(
-            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="gate"
-        )
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="gate")
         async def gate(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult.allow()
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
         async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult.allow()
 
@@ -1207,9 +1163,7 @@ class TestRealtimeGateParityWithTheAIPath:
 
         seen: list[str] = []
 
-        @kit.turn_executor.hook(
-            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="audit"
-        )
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="audit")
         async def audit(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             seen.append(event.name)
             return HookResult.allow()
@@ -1330,9 +1284,7 @@ class TestRealtimeGateParityWithTheAIPath:
 
         kit._emit_framework_event = capture  # type: ignore[method-assign]
 
-        @kit.turn_executor.hook(
-            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny"
-        )
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="deny")
         async def deny(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             return HookResult.block("nope")
 
@@ -1382,14 +1334,12 @@ async def _ai_room(
     observed: list[ToolCallEvent] = []
     served: list[ToolCallEvent] = []
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe"
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
     async def observe(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         observed.append(event)
         return HookResult.allow()
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
     async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         served.append(event)
         return HookResult.allow()
@@ -1619,16 +1569,12 @@ class TestRefusedRealtimeToolCallsAreObserved:
         observed: list[ToolCallEvent] = []
         served: list[ToolCallEvent] = []
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
         async def observe(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             observed.append(event)
             return HookResult.allow()
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
         async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             served.append(event)
             return HookResult.allow()
@@ -1692,16 +1638,12 @@ class TestCancelledRealtimeToolCallsAreObserved:
         observed: list[ToolCallEvent] = []
         served: list[ToolCallEvent] = []
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
         async def observe(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             observed.append(event)
             return HookResult.allow()
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
         async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             served.append(event)
             return HookResult.allow()

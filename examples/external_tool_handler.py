@@ -246,14 +246,14 @@ class SimulatedAgent:
 
 
 def install_hooks(kit: RoomKit) -> None:
-    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, name="no-secrets")
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="no-secrets")
     async def no_secrets(event: ToolCallEvent, _ctx: RoomContext) -> HookResult:
         if not str(event.arguments.get("path", "")).endswith(".env"):
             return HookResult.allow()
         print("   [BEFORE_TOOL_USE] no-secrets blocks the call")
         return HookResult.block("secret files stay out of the agent's reach")
 
-    @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, name="cap-search")
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE, name="cap-search")
     async def cap_search(event: ToolCallEvent, _ctx: RoomContext) -> HookResult:
         if event.name != "Grep" or "max_results" in event.arguments:
             return HookResult.allow()
@@ -265,7 +265,7 @@ def install_hooks(kit: RoomKit) -> None:
 
     # A report: the agent already holds the result, so what this returns is
     # discarded. is_error is the agent's own verdict on the call.
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, name="report")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, name="report")
     async def report(event: ToolCallEvent, _ctx: RoomContext) -> HookResult:
         outcome = "failed" if event.is_error else "ok"
         preview = str(event.result).replace("\n", " | ")
@@ -276,9 +276,7 @@ def install_hooks(kit: RoomKit) -> None:
         return HookResult.allow()
 
     # A call the turn cut never ran: only the observers hear of it.
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="cut-audit"
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="cut-audit")
     async def cut_audit(event: ToolCallEvent, _ctx: RoomContext) -> None:
         if event.cancelled:
             print(f"   [ON_TOOL_CALL observer] {event.name} {_show(event.arguments)} cancelled")

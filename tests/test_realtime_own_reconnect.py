@@ -102,9 +102,7 @@ async def _channel(
     started = [await ch.start_session(room.id, f"u{i}", "ws") for i in range(sessions)]
     observed: list[ToolCallEvent] = []
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe"
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
     async def observe(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         observed.append(event)
         return HookResult.allow()
@@ -363,9 +361,7 @@ class TestSpeechToSpeechHandoff:
         listener = await ch.start_session(room.id, "u2", "ws")
         observed: list[ToolCallEvent] = []
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="observe")
         async def observe(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
             observed.append(event)
             return HookResult.allow()

@@ -135,7 +135,7 @@ async def main() -> None:
     def elapsed() -> str:
         return f"t={time.perf_counter() - started:.2f}s"
 
-    @kit.turn_executor.hook(HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC)
+    @kit.hook(HookTrigger.ON_USER_INPUT_REQUIRED, execution=HookExecution.SYNC)
     async def on_input_needed(event, ctx):
         logger.info(
             # ``actor_id`` is who to ask: the participant whose turn raised the

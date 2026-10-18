@@ -91,9 +91,7 @@ async def run() -> Ledger:
     kit = RoomKit()
     kit.register_channel(channel)
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="tool_auditor"
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="tool_auditor")
     async def tool_auditor(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         # The outcome is stated on the event: a cancelled call is not a
         # refusal, and a refusal is not a served call.

@@ -105,22 +105,18 @@ def _install(kit: RoomKit, seen: Seen, hooks: Hooks) -> None:
     judge, before = hooks.judge, hooks.before
     if hooks.sync_hook:
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="judge"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="judge")
         async def _judge(event: ToolCallEvent, ctx: Any) -> HookResult:
             seen.sync.append(event)
             return await judge(event, ctx) if judge is not None else HookResult.allow()
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def _audit(event: ToolCallEvent, ctx: Any) -> None:
         seen.reports.append(event)
 
     if before is not None:
 
-        @kit.turn_executor.hook(
-            HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="gate"
-        )
+        @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC, name="gate")
         async def _gate(event: Any, ctx: Any) -> HookResult:
             seen.before.append(event)
             return await before(event, ctx)

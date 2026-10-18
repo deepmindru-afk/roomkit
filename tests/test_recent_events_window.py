@@ -238,7 +238,7 @@ async def test_a_hook_on_the_turn_executor_gets_the_floor_too() -> None:
     room = await kit.create_room()
     await _seed(kit, room.id, _RECENT_EVENTS_FLOOR + 10)
 
-    @kit.turn_executor.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
+    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
     async def observe(event: object, ctx: RoomContext) -> None:
         return None
 

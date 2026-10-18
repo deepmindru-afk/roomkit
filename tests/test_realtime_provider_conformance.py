@@ -531,7 +531,7 @@ class _Observed:
     def __init__(self, kit: RoomKit) -> None:
         self.events: list[Any] = []
 
-        @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
         async def observe(event: Any, ctx: Any) -> None:
             self.events.append(event)
 

@@ -253,7 +253,7 @@ async def test_a_steering_cancel_cancels_the_prompt_as_its_own_cancel_does(
     kit = await _room(channel)
     responses: list[Any] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
+    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
     async def observe(event: Any, ctx: Any) -> None:
         responses.append(event)
 

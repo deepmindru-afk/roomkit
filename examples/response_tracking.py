@@ -58,7 +58,7 @@ async def main() -> None:
     await kit.attach_channel(ROOM, "assistant", category=ChannelCategory.INTELLIGENCE)
 
     # Each turn is told what it answers: a host can brief the model with it.
-    @kit.turn_executor.hook(HookTrigger.BEFORE_AI_GENERATION)
+    @kit.hook(HookTrigger.BEFORE_AI_GENERATION)
     async def what_this_turn_answers(event: Any, ctx: Any) -> HookResult:
         trigger = event.trigger
         logger.info(

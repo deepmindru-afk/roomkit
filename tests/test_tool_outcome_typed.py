@@ -115,7 +115,7 @@ async def test_a_conference_reports_a_declined_call_as_failed(handler: Any) -> N
     kit, session = await _conference(provider, handler)
     observed: list[ToolCallEvent] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         observed.append(event)
 
@@ -131,7 +131,7 @@ async def test_a_conference_hook_may_serve_a_call_its_handler_declined() -> None
     provider = MockRealtimeProvider()
     kit, session = await _conference(provider)
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, name="fallback")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, name="fallback")
     async def fallback(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         if event.result is None:
             return HookResult.modify(replace(event, result='{"served_by": "hook"}'))
@@ -192,7 +192,7 @@ async def test_a_realtime_call_its_handler_declined_failed() -> None:
     kit, provider, session = await _realtime(_declines)
     observed: list[ToolCallEvent] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         observed.append(event)
 
@@ -293,7 +293,7 @@ async def test_a_conference_without_a_handler_reads_a_call_as_unserved() -> None
     session = await channel._realtime.ensure_session(ROOM)  # noqa: SLF001
     observed: list[ToolCallEvent] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: RoomContext) -> None:
         observed.append(event)
 
@@ -312,7 +312,7 @@ async def test_a_conference_hook_may_serve_a_call_no_handler_serves() -> None:
     )
     session = await channel._realtime.ensure_session(ROOM)  # noqa: SLF001
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="serve")
     async def serve(event: ToolCallEvent, ctx: RoomContext) -> HookResult:
         return HookResult.modify(replace(event, result='{"found": true}'))
 

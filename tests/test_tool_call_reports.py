@@ -71,7 +71,7 @@ async def until(predicate: Any, timeout: float = 5.0) -> None:
 def _observe(kit: RoomKit) -> list[ToolCallEvent]:
     seen: list[ToolCallEvent] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, ctx: Any) -> None:
         seen.append(event)
 
@@ -257,17 +257,13 @@ async def test_a_report_chain_shows_the_next_hook_each_rewrite(form: str) -> Non
     await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
     second: list[Any] = []
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="redact", priority=0
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="redact", priority=0)
     async def redact(event: ToolCallEvent, ctx: Any) -> HookResult:
         if form == "modify":
             return HookResult.modify(dataclasses.replace(event, result="[REDACTED]"))
         return HookResult(action="allow", metadata={"result": "[REDACTED]"})
 
-    @kit.turn_executor.hook(
-        HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="cite", priority=1
-    )
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="cite", priority=1)
     async def cite(event: ToolCallEvent, ctx: Any) -> HookResult:
         second.append(event.result)
         return HookResult.allow()
@@ -323,9 +319,7 @@ async def test_a_realtime_activation_missing_its_tools_is_refused_for_all(
 
     if missing == "while-the-hooks-run":
 
-        @kit.turn_executor.hook(
-            HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="handoff"
-        )
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="handoff")
         async def handoff(event: ToolCallEvent, ctx: Any) -> HookResult:
             # Stands for a handoff reconfiguring the session meanwhile.
             channel._session_tools[session.id] = []
@@ -521,7 +515,7 @@ async def test_an_acp_call_whose_report_is_cut_is_still_reported_once(
     await kit.attach_channel("room-1", "acp-agent", category=ChannelCategory.INTELLIGENCE)
     held = asyncio.Event()
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="hold")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="hold")
     async def hold(event: ToolCallEvent, ctx: Any) -> HookResult:
         held.set()
         await asyncio.sleep(0.2)
@@ -591,7 +585,7 @@ async def test_a_claimed_report_is_made_though_its_call_is_cut_meanwhile() -> No
     release = asyncio.Event()
     observed: list[str] = []
 
-    @kit.turn_executor.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
         observed.append(event.tool_call_id)
 

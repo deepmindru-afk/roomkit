@@ -155,7 +155,7 @@ async def test_realtime_access_refusals_do_not_retain_a_hidden_tool(gate: str) -
     try:
         if gate == "hook":
 
-            @kit.turn_executor.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC)
+            @kit.hook(HookTrigger.BEFORE_TOOL_USE, execution=HookExecution.SYNC)
             async def block(event: Any, ctx: Any) -> HookResult:
                 return HookResult.block("not allowed")
 
