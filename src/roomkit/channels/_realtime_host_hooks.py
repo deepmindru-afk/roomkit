@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Literal
 
 from roomkit._text import quoted
 from roomkit.channels._mark_copies import compile_mark_patterns, without_mark_copies
+from roomkit.channels._room_hooks import RoomHooks
 from roomkit.channels._runtime_record import written_by_runtime
 from roomkit.channels._speaker import channel_label, turn_labels
 from roomkit.core.visibility import visible_events
@@ -116,13 +117,8 @@ async def fire_text_injected(
         metadata=metadata,
     )
     try:
-        context = await framework._build_context(session.room_id)
-        await framework.hook_engine.run_async_hooks(
-            session.room_id,
-            HookTrigger.ON_REALTIME_TEXT_INJECTED,
-            event,
-            context,
-            skip_event_filter=True,
+        await RoomHooks(framework, session.room_id).run_async(
+            HookTrigger.ON_REALTIME_TEXT_INJECTED, event
         )
     except Exception:
         logger.warning(
@@ -175,14 +171,7 @@ async def fire_delegation(
     kind: Literal["hosted", "integrator"] = "hosted" if target == "hosted" else "integrator"
     event = RealtimeDelegationEvent(session=session, delegation_id=delegation_id, target=kind)
     try:
-        context = await framework._build_context(room_id)
-        await framework.hook_engine.run_async_hooks(
-            room_id,
-            HookTrigger.ON_REALTIME_DELEGATION,
-            event,
-            context,
-            skip_event_filter=True,
-        )
+        await RoomHooks(framework, room_id).run_async(HookTrigger.ON_REALTIME_DELEGATION, event)
     except Exception:
         logger.warning("ON_REALTIME_DELEGATION failed for session %s", session.id, exc_info=True)
 

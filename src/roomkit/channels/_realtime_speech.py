@@ -8,6 +8,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.channels._room_hooks import RoomHooks
 from roomkit.models.enums import HookTrigger
 from roomkit.voice.events import SpeakerChangeEvent
 
@@ -219,19 +220,12 @@ class RealtimeSpeechMixin:
         try:
             from roomkit.voice.events import BargeInEvent
 
-            context = await self._framework._build_context(room_id)
             event = BargeInEvent(
                 session=session,
                 interrupted_text=interrupted_text,
                 audio_position_ms=0,
             )
-            await self._framework.hook_engine.run_async_hooks(
-                room_id,
-                HookTrigger.ON_BARGE_IN,
-                event,
-                context,
-                skip_event_filter=True,
-            )
+            await RoomHooks(self._framework, room_id).run_async(HookTrigger.ON_BARGE_IN, event)
         except Exception:
             logger.exception("Error firing ON_BARGE_IN hook")
 
@@ -276,13 +270,8 @@ class RealtimeSpeechMixin:
 
         _, _tok = self._rt_span_ctx(session.id)
         try:
-            context = await self._framework._build_context(room_id)
-            await self._framework.hook_engine.run_async_hooks(
-                room_id,
-                HookTrigger.ON_SPEAKER_CHANGE,
-                event,
-                context,
-                skip_event_filter=True,
+            await RoomHooks(self._framework, room_id).run_async(
+                HookTrigger.ON_SPEAKER_CHANGE, event
             )
         except Exception:
             logger.exception("Error firing ON_SPEAKER_CHANGE hook for session %s", session.id)
@@ -308,17 +297,7 @@ class RealtimeSpeechMixin:
                 HookTrigger.ON_SPEECH_START if event_type == "start" else HookTrigger.ON_SPEECH_END
             )
 
-            # Skip expensive _build_context when no hooks are registered —
-            # speech events fire on every user turn boundary.
-            if self._framework.hook_engine.has_hooks(trigger):
-                context = await self._framework._build_context(room_id)
-                await self._framework.hook_engine.run_async_hooks(
-                    room_id,
-                    trigger,
-                    session,
-                    context,
-                    skip_event_filter=True,
-                )
+            await RoomHooks(self._framework, room_id).run_async(trigger, session)
 
             await self._send_client_message(
                 session,
@@ -413,15 +392,8 @@ class RealtimeSpeechMixin:
         try:
             from roomkit.voice.events import AudioLevelEvent
 
-            context = await self._framework._build_context(room_id)
             event = AudioLevelEvent(session=session, level_db=level_db)
-            await self._framework.hook_engine.run_async_hooks(
-                room_id,
-                trigger,
-                event,
-                context,
-                skip_event_filter=True,
-            )
+            await RoomHooks(self._framework, room_id).run_async(trigger, event)
         except RoomKitError:
             # The seal check above races close(): an event past the check
             # can still find the store sealed inside _build_context.

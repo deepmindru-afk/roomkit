@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._realtime_tool_calls import transcript_starts_answer
+from roomkit.channels._room_hooks import RoomHooks
 from roomkit.core.exceptions import ChannelNotFoundError
 from roomkit.models.enums import HookTrigger
 from roomkit.models.event import TextContent
@@ -193,13 +194,8 @@ class RealtimeTranscriptionMixin:
                 is_stable=False,
                 role=role,
             )
-            context = await self._framework._build_context(room_id)
-            await self._framework.hook_engine.run_async_hooks(
-                room_id,
-                HookTrigger.ON_PARTIAL_TRANSCRIPTION,
-                partial_event,
-                context,
-                skip_event_filter=True,
+            await RoomHooks(self._framework, room_id).run_async(
+                HookTrigger.ON_PARTIAL_TRANSCRIPTION, partial_event
             )
             return
 
@@ -216,8 +212,6 @@ class RealtimeTranscriptionMixin:
 
         _, _tok = self._rt_span_ctx(session.id)
         try:
-            context = await self._framework._build_context(room_id)
-
             from roomkit.voice.realtime.events import RealtimeTranscriptionEvent
 
             # Check and clear barge-in state for user transcriptions.
@@ -233,12 +227,8 @@ class RealtimeTranscriptionMixin:
                 was_barge_in=was_barge_in,
             )
 
-            hook_result = await self._framework.hook_engine.run_sync_hooks(
-                room_id,
-                HookTrigger.ON_TRANSCRIPTION,
-                transcription_event,
-                context,
-                skip_event_filter=True,
+            hook_result = await RoomHooks(self._framework, room_id).run_sync(
+                HookTrigger.ON_TRANSCRIPTION, transcription_event
             )
 
             if not hook_result.allowed:

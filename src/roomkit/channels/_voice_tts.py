@@ -14,6 +14,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.channels._room_hooks import RoomHooks
 from roomkit.channels._stream_fanout import StreamBranch, StreamFanOut
 from roomkit.channels._tts_sentence_budget import SentenceBudget, first_sentences
 from roomkit.channels._tts_sentence_gate import SentenceHookGate
@@ -1293,13 +1294,8 @@ class VoiceTTSMixin:
 
             # Run BEFORE_TTS sync hook (can block or modify text)
             if self._framework and room_id:
-                context = await self._framework._build_context(room_id)
-                before_result = await self._framework.hook_engine.run_sync_hooks(
-                    room_id,
-                    HookTrigger.BEFORE_TTS,
-                    text,
-                    context,
-                    skip_event_filter=True,
+                before_result = await RoomHooks(self._framework, room_id).run_sync(
+                    HookTrigger.BEFORE_TTS, text
                 )
                 if not before_result.allowed:
                     logger.info("say() blocked by hook: %s", before_result.reason)
@@ -1316,13 +1312,8 @@ class VoiceTTSMixin:
 
             # Run AFTER_TTS async hook
             if self._framework and room_id:
-                context = await self._framework._build_context(room_id)
-                await self._framework.hook_engine.run_async_hooks(
-                    room_id,
-                    HookTrigger.AFTER_TTS,
-                    final_text,
-                    context,
-                    skip_event_filter=True,
+                await RoomHooks(self._framework, room_id).run_async(
+                    HookTrigger.AFTER_TTS, final_text
                 )
 
         except (VoiceNotConfiguredError, VoiceBackendNotConfiguredError):

@@ -50,6 +50,7 @@ from roomkit.channels._realtime_tool_gate import RealtimeToolGateMixin
 from roomkit.channels._realtime_tool_recovery import RealtimeToolRecoveryMixin
 from roomkit.channels._realtime_tools import RealtimeToolsMixin
 from roomkit.channels._realtime_transcription import RealtimeTranscriptionMixin
+from roomkit.channels._room_hooks import RoomHooks
 from roomkit.channels._served_execution import ServedExecutionGate
 from roomkit.channels._served_tools import (
     CollisionLog,
@@ -1208,7 +1209,6 @@ class RealtimeVoiceChannel(
             try:
                 from roomkit.models.session_event import SessionStartedEvent
 
-                context = await self._framework._build_context(room_id)
                 ready_event = SessionStartedEvent(
                     room_id=room_id,
                     channel_id=self.channel_id,
@@ -1216,12 +1216,8 @@ class RealtimeVoiceChannel(
                     participant_id=session.participant_id,
                     session=session,
                 )
-                await self._framework.hook_engine.run_async_hooks(
-                    room_id,
-                    HookTrigger.ON_SESSION_STARTED,
-                    ready_event,
-                    context,
-                    skip_event_filter=True,
+                await RoomHooks(self._framework, room_id).run_async(
+                    HookTrigger.ON_SESSION_STARTED, ready_event
                 )
                 await self._framework._emit_framework_event(
                     "session_started",

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from roomkit.channels._room_hooks import RoomHooks
 from roomkit.channels._tts_sentence_budget import checked_budget
 from roomkit.channels._voice_hooks import VoiceHooksMixin
 from roomkit.channels._voice_pipeline import VoicePipelineMixin
@@ -954,14 +955,9 @@ class VoiceChannel(
             from roomkit.voice.events import BridgeAudioEvent
 
             with self._voice_span_ctx(session):
-                context = await self._framework._build_context(room_id)
                 event = BridgeAudioEvent(session=session, frame=frame, room_id=room_id)
-                result = await self._framework.hook_engine.run_sync_hooks(
-                    room_id,
-                    HookTrigger.BEFORE_BRIDGE_AUDIO,
-                    event,
-                    context,
-                    skip_event_filter=True,
+                result = await RoomHooks(self._framework, room_id).run_sync(
+                    HookTrigger.BEFORE_BRIDGE_AUDIO, event
                 )
                 if not result.allowed:
                     return
@@ -1970,19 +1966,12 @@ class VoiceChannel(
         try:
             from roomkit.voice.events import BargeInEvent
 
-            context = await self._framework._build_context(room_id)
             event = BargeInEvent(
                 session=session,
                 interrupted_text=playback.text,
                 audio_position_ms=playback.played_ms,
             )
-            await self._framework.hook_engine.run_async_hooks(
-                room_id,
-                HookTrigger.ON_BARGE_IN,
-                event,
-                context,
-                skip_event_filter=True,
-            )
+            await RoomHooks(self._framework, room_id).run_async(HookTrigger.ON_BARGE_IN, event)
         except Exception:
             logger.exception("Error firing ON_BARGE_IN for session %s", session.id)
         # The playback is claimed: it is cut even when the hooks could not
@@ -2103,19 +2092,14 @@ class VoiceChannel(
                 try:
                     from roomkit.voice.events import TTSCancelledEvent
 
-                    context = await self._framework._build_context(room_id)
                     event = TTSCancelledEvent(
                         session=session,
                         reason=reason,  # ty: ignore[invalid-argument-type]
                         text=playback.text,
                         audio_position_ms=playback.played_ms,
                     )
-                    await self._framework.hook_engine.run_async_hooks(
-                        room_id,
-                        HookTrigger.ON_TTS_CANCELLED,
-                        event,
-                        context,
-                        skip_event_filter=True,
+                    await RoomHooks(self._framework, room_id).run_async(
+                        HookTrigger.ON_TTS_CANCELLED, event
                     )
                 except Exception:
                     logger.exception("Error firing ON_TTS_CANCELLED hook")

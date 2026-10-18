@@ -15,6 +15,7 @@ from collections.abc import Coroutine, Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.channels._room_hooks import RoomHooks
 from roomkit.models.enums import HookTrigger
 from roomkit.telemetry.context import reset_span, set_current_span
 from roomkit.voice.events import RecordingStartedEvent, RecordingStoppedEvent
@@ -109,14 +110,9 @@ class VoiceRecordingHooksMixin:
             return
         try:
             with self._recording_span_ctx(session):
-                context = await self._framework._build_context(room_id)
                 event = RecordingStartedEvent(session=session, id=handle.id, room_id=room_id)
-                await self._framework.hook_engine.run_async_hooks(
-                    room_id,
-                    HookTrigger.ON_RECORDING_STARTED,
-                    event,
-                    context,
-                    skip_event_filter=True,
+                await RoomHooks(self._framework, room_id).run_async(
+                    HookTrigger.ON_RECORDING_STARTED, event
                 )
                 await self._emit_recording_started(session, handle.id, room_id)
         except Exception:
@@ -129,7 +125,6 @@ class VoiceRecordingHooksMixin:
             return
         try:
             with self._recording_span_ctx(session):
-                context = await self._framework._build_context(room_id)
                 event = RecordingStoppedEvent(
                     session=session,
                     id=result.id,
@@ -137,12 +132,8 @@ class VoiceRecordingHooksMixin:
                     duration_seconds=result.duration_seconds,
                     room_id=room_id,
                 )
-                await self._framework.hook_engine.run_async_hooks(
-                    room_id,
-                    HookTrigger.ON_RECORDING_STOPPED,
-                    event,
-                    context,
-                    skip_event_filter=True,
+                await RoomHooks(self._framework, room_id).run_async(
+                    HookTrigger.ON_RECORDING_STOPPED, event
                 )
                 await self._emit_recording_stopped(
                     session, result.id, room_id, duration_seconds=result.duration_seconds

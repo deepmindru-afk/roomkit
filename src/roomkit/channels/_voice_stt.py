@@ -10,6 +10,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.channels._room_hooks import RoomHooks
 from roomkit.channels._voice_speakers import (
     PipelineSpeakerTally,
     SpeakerAttribution,
@@ -40,7 +41,6 @@ if TYPE_CHECKING:
     from roomkit.channels._voice_turn import DueTranscript
     from roomkit.core.framework import RoomKit
     from roomkit.models.channel import ChannelBinding
-    from roomkit.models.context import RoomContext
     from roomkit.voice.audio_frame import AudioFrame
     from roomkit.voice.backends.base import VoiceBackend
     from roomkit.voice.base import VoiceSession
@@ -1271,24 +1271,17 @@ class VoiceSTTMixin:
             # Broadcast to other bridged participants
             await self._broadcast_bridge_transcription(session, text, room_id)
 
-            context = await self._framework._build_context(room_id)
-
+            hooks = RoomHooks(self._framework, room_id)
             # Fire ON_SPEECH_END hooks (continuous mode synthesises speech events)
-            await self._framework.hook_engine.run_async_hooks(
-                room_id,
-                HookTrigger.ON_SPEECH_END,
-                session,
-                context,
-                skip_event_filter=True,
-            )
+            await hooks.run_async(HookTrigger.ON_SPEECH_END, session)
 
             if segments is None:
-                await self._deliver_transcript(session, text, room_id, context, language, speaker)
+                await self._deliver_transcript(session, text, room_id, hooks, language, speaker)
                 return
             for segment in segments:
                 labelled = SpeakerAttribution.of(segment.speaker, epoch)
                 await self._deliver_transcript(
-                    session, segment.text, room_id, context, language, labelled, ordered=True
+                    session, segment.text, room_id, hooks, language, labelled, ordered=True
                 )
 
         except Exception as exc:
@@ -1317,7 +1310,7 @@ class VoiceSTTMixin:
         session: VoiceSession,
         text: str,
         room_id: str,
-        context: RoomContext,
+        hooks: RoomHooks,
         language: str | None,
         speaker: SpeakerAttribution | None,
         *,
@@ -1335,13 +1328,7 @@ class VoiceSTTMixin:
         if not self._framework or not text.strip():
             return
         tx_event = _transcription_event(session, text, language, speaker)
-        transcription_result = await self._framework.hook_engine.run_sync_hooks(
-            room_id,
-            HookTrigger.ON_TRANSCRIPTION,
-            tx_event,
-            context,
-            skip_event_filter=True,
-        )
+        transcription_result = await hooks.run_sync(HookTrigger.ON_TRANSCRIPTION, tx_event)
         if not transcription_result.allowed:
             logger.info("Transcription blocked by hook: %s", transcription_result.reason)
             return
@@ -1361,7 +1348,7 @@ class VoiceSTTMixin:
                 session,
                 final_text,
                 room_id,
-                context,
+                hooks,
                 speaker=speaker,
                 await_delivery=await_delivery,
             )
@@ -1504,16 +1491,8 @@ class VoiceSTTMixin:
         # Whether this segment settled the response it held (RFC §12.3.12).
         settled = False
         try:
-            context = await self._framework._build_context(room_id)
-
-            # Fire ON_SPEECH_END hooks
-            await self._framework.hook_engine.run_async_hooks(
-                room_id,
-                HookTrigger.ON_SPEECH_END,
-                session,
-                context,
-                skip_event_filter=True,
-            )
+            hooks = RoomHooks(self._framework, room_id)
+            await hooks.run_async(HookTrigger.ON_SPEECH_END, session)
 
             # Transcribe if STT is configured
             if not self._stt:
@@ -1654,13 +1633,7 @@ class VoiceSTTMixin:
             tx_event = _transcription_event(
                 session, text, result.language if result else None, speaker
             )
-            transcription_result = await self._framework.hook_engine.run_sync_hooks(
-                room_id,
-                HookTrigger.ON_TRANSCRIPTION,
-                tx_event,
-                context,
-                skip_event_filter=True,
-            )
+            transcription_result = await hooks.run_sync(HookTrigger.ON_TRANSCRIPTION, tx_event)
 
             if not transcription_result.allowed:
                 logger.info("Transcription blocked by hook: %s", transcription_result.reason)
@@ -1692,7 +1665,7 @@ class VoiceSTTMixin:
                     session,
                     final_text,
                     room_id,
-                    context,
+                    hooks,
                     audio_bytes=audio,
                     speaker=speaker,
                     transcript=transcript,
@@ -1796,28 +1769,14 @@ class VoiceSTTMixin:
                 binding_info = self._session_bindings.get(session.id)
             if binding_info:
                 room_id, _ = binding_info
-                context = await self._framework._build_context(room_id)
-
-                # Fire ON_SPEECH_END hooks
-                await self._framework.hook_engine.run_async_hooks(
-                    room_id,
-                    HookTrigger.ON_SPEECH_END,
-                    session,
-                    context,
-                    skip_event_filter=True,
-                )
+                hooks = RoomHooks(self._framework, room_id)
+                await hooks.run_async(HookTrigger.ON_SPEECH_END, session)
 
                 # Fire ON_TRANSCRIPTION hooks (sync, can modify/block)
                 tx_event = TranscriptionEvent(
                     session=session, text=result.text, language=result.language
                 )
-                transcription_result = await self._framework.hook_engine.run_sync_hooks(
-                    room_id,
-                    HookTrigger.ON_TRANSCRIPTION,
-                    tx_event,
-                    context,
-                    skip_event_filter=True,
-                )
+                transcription_result = await hooks.run_sync(HookTrigger.ON_TRANSCRIPTION, tx_event)
 
                 if transcription_result.allowed:
                     final_text = _extract_transcription_text(

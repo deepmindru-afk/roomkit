@@ -358,6 +358,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A voice event reads the room's context for its hooks only when a hook is
+  registered on one of its triggers, once for the whole event (RMK-797). An
+  utterance announces ON_SPEECH_END, ON_TRANSCRIPTION and, with a turn
+  detector, ON_TURN_COMPLETE or ON_TURN_INCOMPLETE: it read the room, its
+  bindings and its participants before the STT whatever was registered, and
+  its speech start read them again for ON_SPEECH_START. Partial
+  transcriptions, VAD silences, barge-ins, DTMF, `say()` and recordings of
+  `VoiceChannel`, and final transcriptions, barge-ins and speaker changes of
+  `RealtimeVoiceChannel`, read them on every event too. Now the first trigger
+  with a registered hook reads the context, the event's later triggers share
+  it, and an event with no hook reads nothing. A voice turn with no voice hook
+  reads the context twice instead of four times (the inbound pipeline's own
+  reads, RFC §10.1 steps 3 and 6, are unchanged): on `benchmarks/voice`,
+  12.9 µs per frame becomes 11.4 µs on `InMemoryStore` and 23.8 µs becomes
+  20.8 µs on `PostgresStore`, two round trips fewer per turn.
+  `InMemoryStore.binding_exists` no longer deep-copies the binding it checks.
+  One difference: with no hook registered, an utterance whose room has gone
+  from the store reaches the inbound pipeline, which creates the room as it
+  does for any message naming one that does not exist, instead of failing on
+  the voice side's context read.
+
 - The energy VAD, the energy barge-in check, the simple AGC, the realtime
   output-activity check and Speex's DEBUG statistics square a frame's samples
   with `math.sumprod` instead of a per-sample generator (RMK-796). The sums

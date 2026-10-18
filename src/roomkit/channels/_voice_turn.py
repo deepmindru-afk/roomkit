@@ -15,10 +15,10 @@ from roomkit.models.delivery import SUPERSEDED, InboundResult
 from roomkit.models.enums import EventType, HookTrigger
 
 if TYPE_CHECKING:
+    from roomkit.channels._room_hooks import RoomHooks
     from roomkit.channels._voice_speakers import SpeakerAttribution
     from roomkit.core.framework import RoomKit
     from roomkit.models.channel import ChannelBinding
-    from roomkit.models.context import RoomContext
     from roomkit.voice.backends.base import VoiceBackend
     from roomkit.voice.base import VoiceSession
     from roomkit.voice.pipeline.config import AudioPipelineConfig
@@ -143,7 +143,7 @@ class VoiceTurnMixin:
         session: VoiceSession,
         text: str,
         room_id: str,
-        context: RoomContext,
+        hooks: RoomHooks,
         *,
         audio_bytes: bytes | None = None,
         speaker: SpeakerAttribution | None = None,
@@ -170,7 +170,7 @@ class VoiceTurnMixin:
 
         from roomkit.voice.pipeline.turn.base import TurnContext, TurnEntry
 
-        await self._close_turn_of_another_speaker(session, room_id, context, speaker)
+        await self._close_turn_of_another_speaker(session, room_id, hooks, speaker)
         # Accumulate entry
         entries = self._pending_turns.setdefault(session.id, [])
         entries.append(TurnEntry(text=text, role="user"))
@@ -213,10 +213,10 @@ class VoiceTurnMixin:
             # The user resumed while the turn was judged: it goes on, and the new
             # speech joins it (RFC §12). The wait still routes it after silence.
             logger.debug("Turn judged complete, but the user is speaking again: holding it")
-            self._arm_turn_wait(session, room_id, context, None)
+            self._arm_turn_wait(session, room_id, hooks, None)
         elif decision.is_complete:
             await self._complete_turn(
-                session, room_id, context, decision.confidence, await_delivery=await_delivery
+                session, room_id, hooks, decision.confidence, await_delivery=await_delivery
             )
         else:
             # Fire ON_TURN_INCOMPLETE hook
@@ -229,22 +229,16 @@ class VoiceTurnMixin:
                     text=combined_so_far,
                     confidence=decision.confidence,
                 )
-                await self._framework.hook_engine.run_async_hooks(
-                    room_id,
-                    HookTrigger.ON_TURN_INCOMPLETE,
-                    incomplete_event,
-                    context,
-                    skip_event_filter=True,
-                )
+                await hooks.run_async(HookTrigger.ON_TURN_INCOMPLETE, incomplete_event)
             except Exception:
                 logger.exception("Error firing ON_TURN_INCOMPLETE hook")
-            self._arm_turn_wait(session, room_id, context, decision.suggested_wait_ms)
+            self._arm_turn_wait(session, room_id, hooks, decision.suggested_wait_ms)
 
     async def _close_turn_of_another_speaker(
         self,
         session: VoiceSession,
         room_id: str,
-        context: RoomContext,
+        hooks: RoomHooks,
         speaker: SpeakerAttribution | None,
     ) -> None:
         """Route the pending turn now if someone else said it (RFC §12.2.3).
@@ -259,13 +253,13 @@ class VoiceTurnMixin:
         task = self._turn_wait_tasks.pop(session.id, None)
         if task is not None:
             task.cancel()
-        await self._complete_turn(session, room_id, context, confidence=0.0, await_delivery=False)
+        await self._complete_turn(session, room_id, hooks, confidence=0.0, await_delivery=False)
 
     async def _complete_turn(
         self,
         session: VoiceSession,
         room_id: str,
-        context: RoomContext,
+        hooks: RoomHooks,
         confidence: float,
         *,
         await_delivery: bool = True,
@@ -283,13 +277,7 @@ class VoiceTurnMixin:
             from roomkit.voice.events import TurnCompleteEvent
 
             event = TurnCompleteEvent(session=session, text=combined, confidence=confidence)
-            await self._framework.hook_engine.run_async_hooks(
-                room_id,
-                HookTrigger.ON_TURN_COMPLETE,
-                event,
-                context,
-                skip_event_filter=True,
-            )
+            await hooks.run_async(HookTrigger.ON_TURN_COMPLETE, event)
         except Exception:
             logger.exception("Error firing ON_TURN_COMPLETE hook")
 
@@ -301,7 +289,7 @@ class VoiceTurnMixin:
         self,
         session: VoiceSession,
         room_id: str,
-        context: RoomContext,
+        hooks: RoomHooks,
         suggested_wait_ms: float | None,
     ) -> None:
         """Wait for more speech on an incomplete turn, then route it (RFC §12).
@@ -315,7 +303,7 @@ class VoiceTurnMixin:
         if previous is not None:
             previous.cancel()
         task = asyncio.get_running_loop().create_task(
-            self._route_turn_after_wait(session, room_id, context, wait_ms),
+            self._route_turn_after_wait(session, room_id, hooks, wait_ms),
             name=f"turn_wait:{session.id}",
         )
         task.add_done_callback(self._task_done)
@@ -323,7 +311,7 @@ class VoiceTurnMixin:
         self._turn_wait_tasks[session.id] = task
 
     async def _route_turn_after_wait(
-        self, session: VoiceSession, room_id: str, context: RoomContext, wait_ms: float
+        self, session: VoiceSession, room_id: str, hooks: RoomHooks, wait_ms: float
     ) -> None:
         await self._wait_out_turn_silence(session.id, max(wait_ms, 0) / 1000)
         if self._turn_wait_tasks.get(session.id) is asyncio.current_task():
@@ -336,9 +324,9 @@ class VoiceTurnMixin:
         try:
             lock = self._transcript_locks.get(session.id)
             if lock is None:
-                await self._complete_turn(session, room_id, context, confidence=0.0)
+                await self._complete_turn(session, room_id, hooks, confidence=0.0)
             else:
-                await self._complete_waited_turn_in_order(session, room_id, context, lock)
+                await self._complete_waited_turn_in_order(session, room_id, hooks, lock)
         except Exception:
             logger.exception("Error routing the turn after its wait")
 
@@ -379,7 +367,7 @@ class VoiceTurnMixin:
         return DueTranscript(self._turn_transcripts_due, self._state_lock, session_id)
 
     async def _complete_waited_turn_in_order(
-        self, session: VoiceSession, room_id: str, context: RoomContext, lock: asyncio.Lock
+        self, session: VoiceSession, room_id: str, hooks: RoomHooks, lock: asyncio.Lock
     ) -> None:
         """Route a waited turn in its place among a diarized session's finals.
 
@@ -393,7 +381,7 @@ class VoiceTurnMixin:
             if waited is None or self._pending_turns.get(session.id) is not waited:
                 return
             await self._complete_turn(
-                session, room_id, context, confidence=0.0, await_delivery=False
+                session, room_id, hooks, confidence=0.0, await_delivery=False
             )
 
     def _user_speaking_again(self, session_id: str) -> bool:
