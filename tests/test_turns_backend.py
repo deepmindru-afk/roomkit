@@ -305,18 +305,21 @@ async def test_a_stream_closed_unread_never_starts() -> None:
     assert not channel.stream_started
 
 
-async def test_the_executor_reads_no_item_the_owner_did_not_pull() -> None:
+async def test_the_executor_reads_past_no_item_but_a_delta_until_the_owner_pulls() -> None:
+    """A pull grants several items, and deltas run ahead of their reader; past
+    an item that is no delta (a call's start), the executor waits for the
+    reader to pull again (RFC §10.6.4)."""
     reached: list[str] = []
 
     async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
         reached.append("first")
-        yield "one"
+        yield ToolCallStartMarker(tool_name="t", tool_id="c1", arguments={})
         reached.append("second")
         yield "two"
 
     channel = ScriptedChannel(script)
     output = await _run(_client(channel))
-    assert await anext(output.response_stream) == "one"
+    assert isinstance(await anext(output.response_stream), ToolCallStartMarker)
     await asyncio.sleep(0.05)
     assert reached == ["first"]
     await output.response_stream.aclose()

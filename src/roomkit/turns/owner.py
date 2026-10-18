@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import weakref
+from collections.abc import Iterable
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes, discussion_turn
@@ -377,6 +378,13 @@ def drop_unread(stream: object) -> None:
     collection, which closes it."""
     if isinstance(stream, RemoteStream):
         stream.drop()
+
+
+def drop_unread_streams(responses: Iterable[Any]) -> None:
+    """Give up the streams of *responses* (each a ``StreamingResponse``) that
+    a failure leaves nobody to read: none is left to the garbage collector."""
+    for response in responses:
+        drop_unread(response.stream)
 
 
 def registry_turn_client(

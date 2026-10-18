@@ -12,6 +12,20 @@ from roomkit.models.streaming import SegmentBreakMarker
 _SENTENCE_END = re.compile(r"[.!?][\s]|\n")
 
 
+def sentence_pieces(text: str) -> list[str]:
+    """*text* cut after each place a sentence may end, the pieces joined
+    giving it back: a reader that decides between deltas whether a reply
+    goes on decides the same however its deltas were cut (RFC §10.6.4)."""
+    pieces: list[str] = []
+    start = 0
+    for match in _SENTENCE_END.finditer(text):
+        pieces.append(text[start : match.end()])
+        start = match.end()
+    if start < len(text) or not pieces:
+        pieces.append(text[start:])
+    return pieces
+
+
 async def split_sentences(
     token_stream: AsyncIterator[str | SegmentBreakMarker],
     min_chunk_chars: int = 20,

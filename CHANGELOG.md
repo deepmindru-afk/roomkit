@@ -260,6 +260,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A turn's stream costs the room's owner little per item across the turn
+  backend (RMK-823, RFC §10.6.3, §10.6.4). Each `pull` grants a window of
+  items, so the executor reads text and reasoning deltas ahead of the
+  owner's reader, never past a call's start, a segment break or a round's
+  end without a later pull; text deltas the channel yields without a wait
+  between them cross as one `item`, their text joined and their number
+  given (`deltas`). 2000 deltas yielded at once cost the owner's loop about
+  3 ms of CPU instead of 68 ms. A reader sees the same text cut differently:
+  a voice channel's sentence budget reads a joined burst a sentence at a
+  time, so it still stops before a call its next sentence would announce.
+  Deltas read ahead that the reader had not read when the turn was
+  cancelled or its stream closed are dropped, so the room keeps what was
+  shown; a close that finds the executor reading ahead cuts that read at
+  once, while a running call still finishes.
+
 - Work a turn began reaches the room owner after the turn ended (RMK-827,
   RFC §10.6.3, §10.6.5). `current_turn_host()` keeps answering in it (a
   background thinker's `ON_THOUGHT`, a task a tool started), its host's
@@ -430,6 +445,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or called, and with them `pydub` from the `fastrtc` extra (RMK-824).
 
 ### Fixed
+
+- A cancelled delivery no longer reports its cleanup done while a turn it
+  read still owes its end (RMK-823, RFC §10.6.8): once the owner's drain
+  gave up at `cancel_timeout`, `cancel_and_wait` raises `TimeoutError`
+  ("did not end on their executor") instead of returning. A delivery that
+  stops between its turns and their reader (cancelled once its plan ran, a
+  root pass or a delegated turn's commit that fails) closes the turns'
+  streams itself, rather than leaving them to the garbage collector while
+  something still holds its result.
 
 - A delegation requiring a structured result from a worker the kit holds by
   its declaration alone fell back to the worker's text: the result tool was

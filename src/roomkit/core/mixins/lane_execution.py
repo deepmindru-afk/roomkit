@@ -37,6 +37,7 @@ from roomkit.models.response_metadata import (
 )
 from roomkit.telemetry.base import SpanKind
 from roomkit.telemetry.context import get_current_span, restored_span
+from roomkit.turns.owner import drop_unread_streams
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -786,15 +787,20 @@ class LaneExecutionMixin(HelpersMixin):
         if plan.injected:
             return
 
-        if plan.emit_processed:
-            # Root pass only: delivery tracking, partial-failure
-            # reporting and the caller-facing error all describe the
-            # trigger's own delivery set, never a reentry's.
-            await self._report_root_pass(plan, result, cascade)
-        elif plan.rerun:
-            # A regeneration's delivery set was reported on its first pass;
-            # its replies are the caller's (RFC §10.1 step 18).
-            await self._settle_buffered_replies(cascade, event, context, result, root=True)
+        try:
+            if plan.emit_processed:
+                # Root pass only: delivery tracking, partial-failure
+                # reporting and the caller-facing error all describe the
+                # trigger's own delivery set, never a reentry's.
+                await self._report_root_pass(plan, result, cascade)
+            elif plan.rerun:
+                # A regeneration's delivery set was reported on its first pass;
+                # its replies are the caller's (RFC §10.1 step 18).
+                await self._settle_buffered_replies(cascade, event, context, result, root=True)
+        except BaseException:
+            # The caller never gets these streams: nobody else reads them.
+            drop_unread_streams(result.streaming_responses)
+            raise
 
         # A stream any pass started is read by the caller (RFC §8.3); one a
         # reentry pass or a streamed segment's delivery started answers an

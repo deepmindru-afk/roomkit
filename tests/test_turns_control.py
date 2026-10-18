@@ -211,7 +211,7 @@ async def test_a_directive_for_a_turn_reaches_that_turns_loop_even_unread() -> N
     assert channel.steered == [(InjectMessage(content="x"), turn_id)]
     channel.release.set()
     assert output.response_stream is not None
-    assert [item async for item in output.response_stream] == ["first", "second"]
+    assert "".join([item async for item in output.response_stream]) == "firstsecond"
     await client.close()
 
 
@@ -240,7 +240,7 @@ async def test_a_directive_other_than_cancel_reaches_no_channel_without_steering
     assert await client.steer(InjectMessage(content="x"), "agent", room_id="room") == 0
     channel.release.set()
     assert output.response_stream is not None
-    assert [item async for item in output.response_stream] == ["first", "second"]
+    assert "".join([item async for item in output.response_stream]) == "firstsecond"
     await client.close()
 
 
@@ -363,7 +363,7 @@ async def test_a_steer_of_the_channels_own_older_shape_takes_the_turns_room() ->
     # The turn's controls still run: its stream reads to its end.
     channel.release.set()
     assert output.response_stream is not None
-    assert [item async for item in output.response_stream] == ["first", "second"]
+    assert "".join([item async for item in output.response_stream]) == "firstsecond"
     await client.close()
 
 
@@ -375,7 +375,7 @@ async def test_a_steer_that_fails_reaches_nothing_and_the_turn_goes_on() -> None
     assert await asyncio.wait_for(client.steer(Cancel(), "agent", room_id="room"), 2) == 0
     channel.release.set()
     assert output.response_stream is not None
-    assert [item async for item in output.response_stream] == ["first", "second"]
+    assert "".join([item async for item in output.response_stream]) == "firstsecond"
     await client.close()
 
 

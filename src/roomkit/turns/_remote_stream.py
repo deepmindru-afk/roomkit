@@ -1,8 +1,8 @@
 """The owner's copy of a turn's response stream (RFC §10.6.4).
 
-Each read pulls one item from the executor; closing it closes the channel's
-stream. A stream its reader drops unclosed is closed for it, as a collected
-generator would be.
+Its reads grant the executor a window of items; closing it closes the
+channel's stream. A stream its reader drops unclosed is closed for it, as a
+collected generator would be.
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ def _close_dropped(turn: OwnerTurn, loop: asyncio.AbstractEventLoop) -> None:
 
 
 class RemoteStream:
-    """The owner's copy of a turn's response stream: each read pulls one
-    item from the executor, closing it closes the channel's (RFC §10.6.4)."""
+    """The owner's copy of a turn's response stream: its reads grant the
+    executor items, closing it closes the channel's (RFC §10.6.4)."""
 
     def __init__(self, turn: OwnerTurn) -> None:
         self._turn = turn
@@ -45,6 +45,12 @@ class RemoteStream:
 
     def __aiter__(self) -> RemoteStream:
         return self
+
+    @property
+    def end_owed(self) -> bool:
+        """Whether its turn ended for the owner without the executor's end:
+        its cleanup is not known to be done (RFC §10.6.8)."""
+        return self._turn.end_owed
 
     async def __anext__(self) -> Any:
         if self._done:

@@ -89,6 +89,8 @@ class _HeldAI(AIProvider):
     async def _first_round(self) -> AsyncIterator[StreamEvent]:
         for sentence in HEARD:
             yield StreamTextDelta(text=sentence)
+        # The reader reads what came before the test hears it (RFC §10.6.4).
+        await asyncio.sleep(0.05)
         self.held.set()
         await self.release.wait()
         yield StreamTextDelta(text=AFTER)

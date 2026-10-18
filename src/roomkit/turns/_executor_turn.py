@@ -1,11 +1,12 @@
 """One turn on its executor (RFC §10.6.3, §10.6.4, §10.6.8).
 
 The turn runs the channel's ``on_event``, sends its output, then advances its
-stream one item per item the owner pulls. The channel changes some of what it
-already yielded (its response-metadata record, a call's arguments once its
-gate fixed them, a call's end before the end itself is read): after each step
-the turn sends what changed, before the item it read, so the owner's copies
-read as the channel's own.
+stream as far as the owner's pulls grant: deltas ahead of the owner's reader,
+never past any other item without a later pull. The channel changes some of
+what it already yielded (its response-metadata record, a call's arguments
+once its gate fixed them, a call's end before the end itself is read): after
+each step the turn sends what changed, before the item it read, so the
+owner's copies read as the channel's own.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from roomkit.turns._codec import (
 )
 from roomkit.turns._executor_calls import ExecutorCalls
 from roomkit.turns._executor_inputs import ExecutorInputs
+from roomkit.turns._frame_sender import FrameSender
 from roomkit.turns._outlet import TurnOutlet, set_turn_outlet
 from roomkit.turns.base import heartbeat_tick
 from roomkit.turns.host import TurnHost, set_turn_host
@@ -89,10 +91,6 @@ def _takes(function: Callable[..., Any], name: str) -> bool:
     return any(p.name == name or p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
 
 
-async def _next_item(stream: AsyncIterator[Any]) -> Any:
-    return await anext(stream)
-
-
 async def _close_stream(stream: AsyncIterator[Any]) -> None:
     aclose = getattr(stream, "aclose", None)
     if aclose is not None:
@@ -117,6 +115,11 @@ class ExecutorTurn:
         self._timeouts = timeouts
         self._credits = 0
         self._closing = False
+        # The stream is reading an item, and whether ahead of its reader: a
+        # read that follows a delta, which a close cuts (RFC §10.6.4).
+        self._reading = False
+        self._ahead = False
+        self._close_cut = False
         self._cut: str | None = None
         self._wake = asyncio.Event()
         self._heard = True
@@ -132,6 +135,8 @@ class ExecutorTurn:
         self._ends_sent: set[int] = set()
         # The calls the turn makes to its owner: the tools it serves, and
         # the verbs of the turn's host (RFC §10.6.5).
+        # Every frame goes in order, the stream's text deltas by burst.
+        self._frames = FrameSender(link.send)
         self._calls = ExecutorCalls(self._request, self._send_call)
         # Work the turn began reaches the owner after it, where the backend
         # carries that (RFC §10.6.3, §10.6.5).
@@ -230,56 +235,83 @@ class ExecutorTurn:
 
     async def _serve_stream(self, stream: AsyncIterator[Any]) -> None:
         """Advance *stream* as the owner pulls it, until its end, a close or a
-        cut; a stream whose next frame cannot cross is closed."""
-        context: contextvars.Context | None = None
-        while True:
-            try:
-                await self._wait_for_pull()
-            except asyncio.CancelledError:
-                await self._close(stream, context or contextvars.Context())
-                raise
-            if context is None:
-                context = self._link.stream_context() or contextvars.Context()
-            if self._closing or self._cut is not None:
+        cut; a stream whose next frame cannot cross is closed. The stream is
+        read by one task of the turn's work, never one task per item."""
+        try:
+            await self._wait_for_pull()
+        except asyncio.CancelledError:
+            await self._close(stream, contextvars.Context())
+            raise
+        # The first pull lends the stream its context (RFC §10.6.4).
+        context = self._link.stream_context() or contextvars.Context()
+        if self._closing or self._cut is not None:
+            await self._close(stream, context)
+            return
+        try:
+            ended = await self._run_work(self._pump(stream), context)
+        except _UncarriedError:
+            await self._close(stream, context)
+            raise
+        except asyncio.CancelledError:
+            if self._close_cut:
+                # A close cut the read ahead of the reader: the stream is
+                # closed, the turn goes on to its end.
                 await self._close(stream, context)
                 return
-            try:
-                if not await self._step(stream, context):
-                    return
-            except _UncarriedError:
-                await self._close(stream, context)
-                raise
-            except asyncio.CancelledError:
+            if self._cut is None:
                 # The executor closes: the channel's stream is closed, as a
                 # collected generator's would be, before the cut goes on.
                 await self._close(stream, context)
                 raise
+            # Cut while an item was read: what changed before it still crosses.
+            await self._report_changes()
+            return
+        if not ended:
+            await self._close(stream, context)
 
-    async def _step(self, stream: AsyncIterator[Any], context: contextvars.Context) -> bool:
+    async def _pump(self, stream: AsyncIterator[Any]) -> bool:
+        """Read *stream* as the owner's pulls allow, each item sent after what
+        changed before it: ``True`` once it ended (or failed), ``False`` when
+        a close or a cut stops it first."""
+        while True:
+            await self._wait_for_pull()
+            if self._closing or self._cut is not None:
+                return False
+            if not await self._step(stream):
+                return True
+
+    async def _step(self, stream: AsyncIterator[Any]) -> bool:
         """Read one item and send it after what changed before it; whether
         the stream goes on."""
         self._credits -= 1
         last: Frame | None = None
+        self._reading = True
         try:
-            item = await self._run_work(_next_item(stream), context)
+            item = await anext(stream)
         except StopAsyncIteration:
             last = Item(item={"kind": "stream_end"})
-        except asyncio.CancelledError:
-            if self._cut is None:
-                raise
         except Exception as exc:
             last = Error(error=error_record(exc))
         else:
+            # What follows a delta is read ahead of the reader.
+            self._ahead = isinstance(item, str | ThinkingDeltaMarker)
+            if self._closing or self._cut is not None:
+                # Read, then closed: the reader asked for nothing more.
+                return True
             await self._report_changes(before=item)
-            await self._send_item(item)
+            if isinstance(item, str):
+                self._frames.add_text(item)
+            else:
+                await self._send_item(item)
             if not isinstance(item, str | ThinkingDeltaMarker):
                 # Past a call's start, a round's break or the loop's end, only
                 # a later pull advances the stream (RFC §10.6.4).
                 self._credits = 0
             return True
+        finally:
+            self._reading = False
         await self._report_changes()
-        if last is not None:
-            await self._send(last)
+        await self._send(last)
         return False
 
     async def _close(self, stream: AsyncIterator[Any], context: contextvars.Context) -> None:
@@ -369,7 +401,7 @@ class ExecutorTurn:
         if self._cut == "owner_lost":
             return 0
         try:
-            return await self._link.send(frame)
+            return await self._frames.send(frame)
         except (TypeError, ValueError) as exc:
             if isinstance(frame, Error):
                 logger.exception("Turn %s could not report its error", self._request.turn_id)
@@ -382,7 +414,7 @@ class ExecutorTurn:
         if self._cut in ("owner_lost", "frame_lost"):
             return
         try:
-            await self._link.send(frame)
+            await self._frames.send(frame)
         except (TypeError, ValueError) as exc:
             logger.warning(
                 "Turn %s: a %s cannot cross the turn backend, dropped: %s",
@@ -395,7 +427,7 @@ class ExecutorTurn:
         """Send a call of the turn to its owner; an owner lost answers none."""
         if self._cut in ("owner_lost", "frame_lost"):
             raise TurnLinkError(self._cut)
-        return await self._link.send(frame)
+        return await self._frames.send(frame)
 
     async def _refuse(self, what: str, exc: Exception) -> NoReturn:
         """Tell the owner the turn's *what* cannot cross the backend, and end the turn."""
@@ -426,12 +458,23 @@ class ExecutorTurn:
                 )
             self._wake.set()
 
+    def _cut_read(self) -> None:
+        """A close found the stream reading ahead of its reader: the read is
+        cut, as the reader's close would end the channel's stream."""
+        if self._reading and self._work is not None and not self._work.done():
+            self._close_cut = True
+            self._work.cancel("closed")
+
     async def _apply_control(self, message: Control) -> None:
         """Apply one control message of the owner's."""
         if isinstance(message, Pull):
             self._credits += message.count
         elif isinstance(message, Close):
             self._closing = True
+            if self._reading and self._ahead:
+                # A read ahead of the reader is cut at once; one it asked for
+                # (a running call) finishes first (RFC §10.6.4, §12.2).
+                self._cut_read()
         elif isinstance(message, Cancel):
             self._cut_turn(message.reason)
         elif isinstance(message, ToolResult | HostResult):

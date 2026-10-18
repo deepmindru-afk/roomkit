@@ -1,8 +1,9 @@
 """One turn on its room owner (RFC §10.6.4, §10.6.8).
 
 The owner reads the turn's frames back into the objects the pipeline reads
-locally: a ``ChannelOutput``, a stream whose every read pulls one item, the
-turn's one response-metadata record updated in place, and call markers whose
+locally: a ``ChannelOutput``, a stream whose reads grant the executor a
+window of items, the turn's one response-metadata record updated in place as
+the reader reaches the item it was sent before, and call markers whose
 fixed arguments and early ends are set on the owner's own copies. The calls
 the turn makes to its owner run here as they arrive (RFC §10.6.5), and the
 owner steers the turn's loop (RFC §10.6.8). The turn is watched from its
@@ -86,6 +87,14 @@ def _of_the_turn(request: TurnRequest, room_id: str | None, channel_id: str | No
     return names_its_room(request.room_id, request.channel_id, room_id, channel_id)
 
 
+PULL_WINDOW = 64
+"""How many stream items a pull grants the executor at once (RFC §10.6.4):
+text and thinking deltas run ahead of their reader up to this many; any
+other item waits for a later pull, which the reader sends when it reads on."""
+
+_DELTAS = frozenset({"text", "thinking"})
+
+
 class OwnerTurn:
     """The owner's side of one turn, from its submission to its end.
 
@@ -112,6 +121,8 @@ class OwnerTurn:
         self._link = link
         self._timeouts = timeouts
         self._events = events
+        # The items the executor may still send unasked (RFC §10.6.4).
+        self._granted = 0
         # Told the executor's id as soon as it took the turn: work the turn
         # began may reach the owner before its output does (RFC §10.6.3).
         self._on_accepted = accepted
@@ -128,6 +139,9 @@ class OwnerTurn:
         """The executor that took the turn, once it said so."""
         self._over = False
         self._record: ResponseMetadata | None = None
+        # Records the executor sent ahead of the reader, by frame number:
+        # each applies as the reader reaches the item after it (RFC §10.6.4).
+        self._records: list[tuple[int, dict[str, Any]]] = []
         self._starts: dict[int, ToolCallStartMarker] = {}
         self._early_ends: dict[int, ToolCallEndMarker] = {}
         self._main: asyncio.Queue[tuple[int, Frame] | BaseException] = asyncio.Queue()
@@ -135,6 +149,12 @@ class OwnerTurn:
         self._steers: dict[str, asyncio.Future[int | None]] = {}
         self._steer_cut = False
         self._cut_ends: list[ToolCallEndMarker] = []
+        # Whether a frame came since the last heartbeat interval, and how many
+        # intervals passed with none (RFC §10.6.8).
+        self._heard = False
+        self._silent = 0
+        # The executor's end of the turn came: what it cleaned up is done.
+        self._ended = False
         loop = asyncio.get_running_loop()
         self._beat = loop.create_task(self._beat_while_open())
         self._pump = loop.create_task(self._read_frames(), context=contextvars.Context())
@@ -143,6 +163,13 @@ class OwnerTurn:
     def request(self) -> TurnRequest:
         """The request the turn was submitted with."""
         return self._link.request
+
+    @property
+    def end_owed(self) -> bool:
+        """Whether the turn is over for the owner without the executor's end:
+        a drain past its bound, a lost executor. What the executor cleans up
+        is then not known to be done (RFC §10.6.8)."""
+        return self._over and not self._ended
 
     @property
     def over(self) -> bool:
@@ -188,13 +215,20 @@ class OwnerTurn:
             return self._cut_ends.pop(0)
         if self._over and self._steer_cut:
             raise StopAsyncIteration
-        await self._link.send(Pull())
+        await self._pull()
         try:
             seq, frame = await self._next_main_with_seq()
         except asyncio.CancelledError as cancelled:
             await self._cancel(_cancel_reason(cancelled))
             raise
         if isinstance(frame, Item):
+            # Past an item that is no delta, the executor waits for a pull; a
+            # burst of text deltas counts as the deltas it carries.
+            if frame.item.get("kind") in _DELTAS:
+                self._granted -= int(frame.item.get("deltas", 1))
+            else:
+                self._granted = 0
+            self._apply_records(before=seq)
             if frame.item.get("kind") == "stream_end":
                 await self._drain_to_end(None)
                 raise StopAsyncIteration
@@ -211,6 +245,13 @@ class OwnerTurn:
                 return self._cut_ends.pop(0)
             raise StopAsyncIteration
         raise TurnLinkError("executor_lost", "The turn ended in the middle of its stream")
+
+    async def _pull(self) -> None:
+        """Grant the executor the window again once half of it was read: one
+        pull per many deltas, never one per item."""
+        if self._granted <= PULL_WINDOW // 2:
+            await self._link.send(Pull(count=PULL_WINDOW - self._granted))
+            self._granted = PULL_WINDOW
 
     def _open_call_ends(self) -> list[ToolCallEndMarker]:
         """The end of every call the stream started and never ended: its own
@@ -305,20 +346,11 @@ class OwnerTurn:
     async def _read_frames(self) -> None:
         """Read every frame of the turn until its end, applying those that
         change what the owner holds, queueing the others; watch the executor."""
-        silent = 0
         try:
             while not self._over:
-                try:
-                    seq, frame = await asyncio.wait_for(
-                        self._link.receive(), self._timeouts.heartbeat_interval
-                    )
-                except TimeoutError:
-                    silent += 1
-                    if silent >= self._silence_limit():
-                        await self._lost()
-                        return
-                    continue
-                silent = 0
+                # The beat counts the silent intervals: no timer per frame.
+                seq, frame = await self._link.receive()
+                self._heard = True
                 if isinstance(frame, Ephemeral | FrameworkEventFrame):
                     self._publish_later(frame)
                     continue
@@ -326,6 +358,7 @@ class OwnerTurn:
                     continue
                 self._main.put_nowait((seq, frame))
                 if isinstance(frame, End):
+                    self._ended = True
                     self._finish()
                     return
         except TurnLinkError as lost:
@@ -350,9 +383,7 @@ class OwnerTurn:
                 if self._on_accepted is not None:
                     self._on_accepted(frame.executor_id)
         elif isinstance(frame, Record):
-            if self._record is not None:
-                self._record.clear()
-                self._record.update(frame.record)
+            self._records.append((seq, frame.record))
         elif isinstance(frame, ToolArgs):
             if (start := self._starts.get(frame.start)) is not None:
                 start.ran_with = frame.arguments
@@ -464,11 +495,22 @@ class OwnerTurn:
         finally:
             self._finish()
 
+    def _apply_records(self, *, before: int | None = None) -> None:
+        """Apply the records sent before frame *before* (every one when
+        ``None``): the record a reader reads is the one sent before the item
+        it reads, however far the executor read ahead."""
+        while self._records and (before is None or self._records[0][0] < before):
+            _, record = self._records.pop(0)
+            if self._record is not None:
+                self._record.clear()
+                self._record.update(record)
+
     def _finish(self) -> None:
         """The turn is over for the owner: stop beating and reading, cancel
         its calls, answer its steering, drop later frames."""
         if self._over:
             return
+        self._apply_records()
         self._over = True
         # What the turn published is still published; nothing is added after.
         self._to_publish.put_nowait(None)
@@ -500,8 +542,16 @@ class OwnerTurn:
             logger.debug("Could not send %s to turn %s", message.type, self._link.request.turn_id)
 
     async def _beat_while_open(self) -> None:
-        """Tell the executor its owner still holds the turn."""
+        """Tell the executor its owner still holds the turn, each heartbeat
+        interval, and lose the turn once the executor was silent for the
+        limit's intervals."""
         while not self._over:
             await heartbeat_tick(self._timeouts.heartbeat_interval)
-            if not self._over:
-                await self._send_best_effort(Heartbeat())
+            if self._over:
+                return
+            self._silent = 0 if self._heard else self._silent + 1
+            self._heard = False
+            if self._silent >= self._silence_limit():
+                await self._lost()
+                return
+            await self._send_best_effort(Heartbeat())

@@ -51,6 +51,8 @@ class _SlowWords(MockAIProvider):
             yield StreamDone(finish_reason="stop", usage={"input_tokens": 1, "output_tokens": 1})
             return
         yield StreamTextDelta(text="The ")
+        # The reader reads what came before the test hears it (RFC §10.6.4).
+        await asyncio.sleep(0.05)
         self.started.set()
         for i in range(2000):
             await asyncio.sleep(0.01)

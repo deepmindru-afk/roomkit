@@ -29,6 +29,7 @@ from roomkit.telemetry.base import Attr, SpanKind, TelemetryProvider
 from roomkit.telemetry.noop import NoopTelemetryProvider
 from roomkit.telemetry.redaction import redact
 from roomkit.voice.base import AudioChunk, VoiceCapability, require_pcm16
+from roomkit.voice.tts.sentence_splitter import sentence_pieces
 
 _NOOP = NoopTelemetryProvider()
 
@@ -1506,8 +1507,9 @@ class _ResponseText:
         hands on its last partial sentence, so the sessions speak all the
         text the response produced (step 15s). Once *said* (a sentence budget
         spent, step 12s.e), reading stops at the next text or tool call: the
-        reply goes on past the budget, and nothing more of it is generated, no
-        call it would make next starts.
+        reply goes on past the budget, so its stream is closed, and no call
+        it would make next starts. Text is read a sentence at a time, however
+        the turn backend cut its deltas (RFC §10.6.4).
         """
 
         def past_budget(delta: Any) -> bool:
@@ -1518,13 +1520,19 @@ class _ResponseText:
 
         try:
             async for delta in text_stream:
+                if isinstance(delta, str):
+                    # A burst of deltas is read a sentence at a time, so the
+                    # budget stops where the model's own cuts would have.
+                    for piece in sentence_pieces(delta):
+                        if past_budget(piece):
+                            return
+                        self.accumulated.append(piece)
+                        self._segments[-1].append(piece)
+                        yield piece
+                    continue
                 if past_budget(delta):
                     return
-                if isinstance(delta, str):
-                    self.accumulated.append(delta)
-                    self._segments[-1].append(delta)
-                    yield delta
-                elif not isinstance(delta, ThinkingDeltaMarker) and self._segments[-1]:
+                if not isinstance(delta, ThinkingDeltaMarker) and self._segments[-1]:
                     self._segments.append([])
                     yield SegmentBreakMarker()
                     # The sentence the break let out may be the budget's last.

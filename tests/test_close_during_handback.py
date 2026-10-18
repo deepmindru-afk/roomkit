@@ -44,6 +44,8 @@ class _Answering(MockAIProvider):
     async def generate_structured_stream(self, context: AIContext) -> Any:  # type: ignore[override]
         self.calls.append(context)
         yield StreamTextDelta(text="Thanks, ")
+        # The reader reads what came before the test hears it (RFC §10.6.4).
+        await asyncio.sleep(0.05)
         self.started.set()
         try:
             await asyncio.sleep(30)

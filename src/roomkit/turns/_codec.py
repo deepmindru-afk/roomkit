@@ -11,6 +11,7 @@ import dataclasses
 import json
 import sys
 import traceback
+from collections.abc import Callable
 from typing import Any
 
 from pydantic_core import to_jsonable_python
@@ -37,52 +38,86 @@ _REBUILT_PACKAGES = ("roomkit", "builtins")
 # -- Stream items ---------------------------------------------------------------
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class _ItemKind:
+    """One kind of stream item: its type, and its wire form both ways."""
+
+    name: str
+    type: type
+    encode: Callable[[Any, int | None], dict[str, Any]]
+    """The item's fields; the second argument is a call end's start frame."""
+    decode: Callable[[dict[str, Any]], Any]
+
+
+def _encode_start(item: ToolCallStartMarker, start: int | None) -> dict[str, Any]:
+    return {
+        "tool_name": item.tool_name,
+        "tool_id": item.tool_id,
+        "arguments": item.arguments,
+        "ran_with": item.ran_with,
+    }
+
+
+def _decode_start(data: dict[str, Any]) -> ToolCallStartMarker:
+    return ToolCallStartMarker(
+        tool_name=data["tool_name"],
+        tool_id=data["tool_id"],
+        arguments=data["arguments"],
+        ran_with=data["ran_with"],
+    )
+
+
+def _decode_loop_end(data: dict[str, Any]) -> LoopEndMarker:
+    fields = {f.name for f in dataclasses.fields(LoopEndMarker)}
+    return LoopEndMarker(**{k: v for k, v in data.items() if k in fields})
+
+
+_ITEM_KINDS = (
+    _ItemKind("text", str, lambda item, start: {"text": item}, lambda data: data["text"]),
+    _ItemKind(
+        "thinking",
+        ThinkingDeltaMarker,
+        lambda item, start: {"thinking": item.thinking},
+        lambda data: ThinkingDeltaMarker(thinking=data["thinking"]),
+    ),
+    _ItemKind("tool_start", ToolCallStartMarker, _encode_start, _decode_start),
+    _ItemKind(
+        "tool_end",
+        ToolCallEndMarker,
+        lambda item, start: {"start": start, **encode_end(item)},
+        lambda data: decode_end(data),
+    ),
+    _ItemKind(
+        "segment_break",
+        SegmentBreakMarker,
+        lambda item, start: {},
+        lambda data: SegmentBreakMarker(),
+    ),
+    _ItemKind(
+        "loop_end", LoopEndMarker, lambda item, start: dataclasses.asdict(item), _decode_loop_end
+    ),
+)
+_KIND_OF_TYPE = {kind.type: kind for kind in _ITEM_KINDS}
+_KIND_NAMED = {kind.name: kind for kind in _ITEM_KINDS}
+
+
 def encode_item(item: Any, *, start: int | None = None) -> dict[str, Any]:
     """The wire form of one stream item; *start* is the sequence number of the
     frame that carried a call end's start."""
-    if isinstance(item, str):
-        return {"kind": "text", "text": item}
-    if isinstance(item, ThinkingDeltaMarker):
-        return {"kind": "thinking", "thinking": item.thinking}
-    if isinstance(item, ToolCallStartMarker):
-        return {
-            "kind": "tool_start",
-            "tool_name": item.tool_name,
-            "tool_id": item.tool_id,
-            "arguments": item.arguments,
-            "ran_with": item.ran_with,
-        }
-    if isinstance(item, ToolCallEndMarker):
-        return {"kind": "tool_end", "start": start, **encode_end(item)}
-    if isinstance(item, SegmentBreakMarker):
-        return {"kind": "segment_break"}
-    if isinstance(item, LoopEndMarker):
-        return {"kind": "loop_end", **dataclasses.asdict(item)}
-    raise TypeError(f"A turn's stream cannot carry a {type(item).__name__} across the backend")
+    kind = _KIND_OF_TYPE.get(type(item)) or next(
+        (k for k in _ITEM_KINDS if isinstance(item, k.type)), None
+    )
+    if kind is None:
+        raise TypeError(f"A turn's stream cannot carry a {type(item).__name__} across the backend")
+    return {"kind": kind.name, **kind.encode(item, start)}
 
 
 def decode_item(data: dict[str, Any]) -> Any:
     """A new stream item from its wire form (a call end without its start link)."""
-    kind = data["kind"]
-    if kind == "text":
-        return data["text"]
-    if kind == "thinking":
-        return ThinkingDeltaMarker(thinking=data["thinking"])
-    if kind == "tool_start":
-        return ToolCallStartMarker(
-            tool_name=data["tool_name"],
-            tool_id=data["tool_id"],
-            arguments=data["arguments"],
-            ran_with=data["ran_with"],
-        )
-    if kind == "tool_end":
-        return decode_end(data)
-    if kind == "segment_break":
-        return SegmentBreakMarker()
-    if kind == "loop_end":
-        fields = {f.name for f in dataclasses.fields(LoopEndMarker)}
-        return LoopEndMarker(**{k: v for k, v in data.items() if k in fields})
-    raise ValueError(f"Unknown stream item kind {kind!r}")
+    kind = _KIND_NAMED.get(data["kind"])
+    if kind is None:
+        raise ValueError(f"Unknown stream item kind {data['kind']!r}")
+    return kind.decode(data)
 
 
 def encode_end(end: ToolCallEndMarker) -> dict[str, Any]:

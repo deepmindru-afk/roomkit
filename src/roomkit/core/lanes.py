@@ -41,6 +41,7 @@ from roomkit.core.task_utils import start_named
 from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.providers.utils import _aclose_stream
 from roomkit.telemetry.context import restored_span
+from roomkit.turns.owner import drop_unread_streams
 
 if TYPE_CHECKING:
     from roomkit.core.event_router import StreamingResponse
@@ -256,6 +257,14 @@ class DeliveryCascade:
         # step. No generator is closed concurrently with its running task.
         for response in self.streams:
             await _aclose_stream(response.stream)
+        # A turn whose end its executor still owes has not finished cleaning
+        # up: nothing reports it done (RFC §10.6.8).
+        owed = [r.source_channel_id for r in self.streams if getattr(r.stream, "end_owed", False)]
+        if owed:
+            raise TimeoutError(
+                f"Delivery cleanup incomplete for room {self.room_id}: the turns of "
+                f"{owed} did not end on their executor"
+            )
 
     async def abandon(self, reason: str) -> None:
         """Stop the delivery tail of a cascade its caller left (cancelled or
@@ -815,7 +824,10 @@ class RoomDeliveryLane:
         send_event span that started the turn.
         """
         try:
-            if result is not None and entry.cascade.cancelled is None:
+            if result is not None and entry.cascade.cancelled is not None:
+                # Cancelled once the plan ran: nobody reads what it started.
+                drop_unread_streams(getattr(result, "streaming_responses", ()))
+            elif result is not None:
                 await entry.cascade.run(self._finish_effects(entry, result))
         except asyncio.CancelledError:
             if entry.cascade.cancelled is None:

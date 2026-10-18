@@ -19,7 +19,7 @@ from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
 from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.base import TTSProvider
 from roomkit.voice.tts.mock import MockTTSProvider
-from roomkit.voice.tts.sentence_splitter import split_sentences
+from roomkit.voice.tts.sentence_splitter import sentence_pieces, split_sentences
 from tests.tool_loop_modes import read_reply
 
 # ---------------------------------------------------------------------------
@@ -84,6 +84,18 @@ class TestSentenceSplitter:
         result = [s async for s in split_sentences(_aiter(tokens), min_chunk_chars=20)]
         assert result[0].startswith("- a\n- b\n- c")
         assert result[-1] == "end"
+
+    async def test_a_burst_splits_into_the_sentences_the_tokens_held(self) -> None:
+        """The deltas a turn backend joined cut back at each sentence end: the
+        splitter says the same sentences either way (RFC §10.6.4)."""
+        burst = "First sentence. Second one!\n- an item\nPartial end"
+        tokens = ["First sentence. ", "Second one!\n", "- an item\n", "Partial end"]
+
+        assert sentence_pieces(burst) == tokens
+        assert sentence_pieces("no end") == ["no end"]
+        assert sentence_pieces("") == [""]
+        split = [s async for s in split_sentences(_aiter(sentence_pieces(burst)), 5)]
+        assert split == [s async for s in split_sentences(_aiter(tokens), 5)]
 
 
 # ---------------------------------------------------------------------------

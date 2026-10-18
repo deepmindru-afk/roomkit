@@ -43,6 +43,7 @@ from roomkit.models.event import (
 from roomkit.models.response_metadata import TurnEntries, recorded_turn_end
 from roomkit.models.store_filter import EventFilter
 from roomkit.providers.utils import _aclose_stream
+from roomkit.turns.owner import drop_unread_streams
 
 if TYPE_CHECKING:
     from roomkit.channels._tool_registry import ChannelRegistry
@@ -298,17 +299,22 @@ async def _broadcast_and_collect(
         channel_type=ChannelType.SYSTEM,
     )
     result = await router.broadcast(msg_event, source_binding, context)
-    # What the broadcast blocked is stored and announced, and its side effects
-    # kept, whichever path broadcast the trigger (RFC §8.3).
-    await kit._commit_blocked_events(child_room_id, result)
-    await kit._persist_side_effects(
-        child_room_id, result.tasks, result.observations, msg_event, context
-    )
-    # A responder that failed answering (raised, or returned its error) fires
-    # ON_ERROR once, by the reporter a room's turn uses, whichever path the
-    # answer then takes (RFC §23.3 step 6); a stream that fails later fires
-    # it where it is read.
-    await kit._report_intelligence_errors(msg_event, context, result)
+    try:
+        # What the broadcast blocked is stored and announced, and its side
+        # effects kept, whichever path broadcast the trigger (RFC §8.3).
+        await kit._commit_blocked_events(child_room_id, result)
+        await kit._persist_side_effects(
+            child_room_id, result.tasks, result.observations, msg_event, context
+        )
+        # A responder that failed answering (raised, or returned its error)
+        # fires ON_ERROR once, by the reporter a room's turn uses, whichever
+        # path the answer then takes (RFC §23.3 step 6); a stream that fails
+        # later fires it where it is read.
+        await kit._report_intelligence_errors(msg_event, context, result)
+    except BaseException:
+        # The answer is never read: nobody reads the streams either.
+        drop_unread_streams(result.streaming_responses)
+        raise
     return await _answer_of_broadcast(
         kit, child_room_id, result, bindings, msg_event.chain_depth + 1, turns
     )

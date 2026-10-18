@@ -258,7 +258,9 @@ async def test_thinking_markers_stream_inline_before_text() -> None:
     text_indices = [i for i, c in enumerate(display) if isinstance(c, str)]
 
     assert len(thinking_indices) == 3, f"expected 3 thinking markers, got {display!r}"
-    assert len(text_indices) == 3, f"expected 3 text chunks, got {display!r}"
+    # Text deltas yielded without a wait between them may cross the turn
+    # backend as one burst (RFC §10.6.4): the text, not its cuts, is kept.
+    assert text_indices, f"expected text chunks, got {display!r}"
     # Every thinking marker arrives before every text chunk.
     assert max(thinking_indices) < min(text_indices)
     assert [c.thinking for c in display if isinstance(c, ThinkingDeltaMarker)] == [
@@ -266,7 +268,7 @@ async def test_thinking_markers_stream_inline_before_text() -> None:
         "think.",
         " 1+1=2.",
     ]
-    assert [c for c in display if isinstance(c, str)] == ["The ", "answer ", "is 2."]
+    assert "".join(c for c in display if isinstance(c, str)) == "The answer is 2."
 
     await kit.close()
 

@@ -43,6 +43,8 @@ async def _forever(channel: ScriptedChannel) -> AsyncIterator[Any]:
 
 
 async def test_a_stream_its_reader_drops_is_closed_on_the_executor() -> None:
+    """The executor reads ahead past "first"; the reader's drop closes the
+    turn, and the close cuts that read at once (RFC §10.6.4)."""
     channel = ScriptedChannel(_forever)
     output = await _run(_client(channel))
     assert await anext(output.response_stream) == "first"
@@ -55,6 +57,62 @@ async def test_a_stream_its_reader_drops_is_closed_on_the_executor() -> None:
     assert channel.stream_closed
     await asyncio.sleep(0.01)
     assert _turn_tasks() == []
+
+
+async def test_a_close_cuts_the_read_ahead_of_its_reader_at_once() -> None:
+    """Past a delta the executor reads on without a pull; a close that finds
+    it reading cuts the read, as a local reader's close would have found the
+    stream suspended, and never waits for the model's next item."""
+    seen: list[str] = []
+
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        try:
+            yield "first"
+            await asyncio.sleep(5)
+            yield "second"
+        except asyncio.CancelledError:
+            seen.append("cancelled")
+            raise
+
+    channel = ScriptedChannel(script)
+    output = await _run(_client(channel))
+    stream = output.response_stream
+    assert await anext(stream) == "first"
+    await asyncio.sleep(0.01)
+    await asyncio.wait_for(stream.aclose(), timeout=1.0)
+
+    assert channel.stream_closed
+    assert seen == ["cancelled"]
+    assert channel.yielded == ["first"]
+
+
+async def test_a_close_past_a_call_s_start_closes_the_stream_it_holds() -> None:
+    """Past a call's start the executor reads nothing until a pull, so a
+    close finds the stream suspended at that item and closes it: the channel
+    sees a close, not a cancellation (RFC §10.6.4)."""
+    seen: list[str] = []
+
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        try:
+            yield ToolCallStartMarker(tool_name="t", tool_id="c1", arguments={})
+            yield "never read"
+        except GeneratorExit:
+            seen.append("closed")
+            raise
+        except asyncio.CancelledError:
+            seen.append("cancelled")
+            raise
+
+    channel = ScriptedChannel(script)
+    output = await _run(_client(channel))
+    stream = output.response_stream
+    assert isinstance(await anext(stream), ToolCallStartMarker)
+    await asyncio.sleep(0.01)
+    await stream.aclose()
+
+    assert channel.stream_closed
+    assert seen == ["closed"]
+    assert len(channel.yielded) == 1
 
 
 async def test_closing_the_client_ends_every_turn_in_flight() -> None:

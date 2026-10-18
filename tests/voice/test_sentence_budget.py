@@ -43,7 +43,8 @@ async def _stored(kit: RoomKit, room_id: str) -> Any:
 
 
 async def test_a_reply_past_its_budget_ends_at_the_first_sentence_over_it() -> None:
-    kit, _, backend, tts, [session] = await voice_rooms(SIX, max_sentences=2)
+    # A model's tokens come apart in time: the turn reads ahead only what came.
+    kit, _, backend, tts, [session] = await voice_rooms(SIX, gap=0.05, max_sentences=2)
 
     await ask(backend, session)
     [heard] = await said(tts, 1)

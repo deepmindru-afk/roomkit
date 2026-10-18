@@ -68,8 +68,9 @@ class _Thinks(MockAIProvider):
 
 
 class _StopsReading(SimpleChannel):
-    """Renders a stream and stops, as a barge-in does: after two chunks of
-    text (*pause* later), or at the first thinking delta."""
+    """Renders a stream and stops, as a barge-in does: after two words of
+    text (*pause* later), however its chunks cut them, or at the first
+    thinking delta."""
 
     def __init__(self, channel_id: str, *, on_thinking: bool = False, pause: float = 0) -> None:
         super().__init__(channel_id)
@@ -92,8 +93,8 @@ class _StopsReading(SimpleChannel):
             if isinstance(chunk, ThinkingDeltaMarker) and self._on_thinking:
                 return ChannelOutput.empty()
             if isinstance(chunk, str):
-                seen += 1
-                if seen == 2:
+                seen += len(chunk.split())
+                if seen >= 2:
                     await asyncio.sleep(self._pause)
                     return ChannelOutput.empty()
         return ChannelOutput.empty()

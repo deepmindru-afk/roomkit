@@ -64,6 +64,8 @@ class _Slow(MockAIProvider):
     async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         for word in ("The ", "partial "):
             yield StreamTextDelta(text=word)
+        # The reader reads what came before the test hears it (RFC §10.6.4).
+        await asyncio.sleep(0.05)
         self.started.set()
         await asyncio.sleep(5)
         yield StreamTextDelta(text="rest.")
