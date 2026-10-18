@@ -4,22 +4,30 @@ The channel keeps writing into objects the owner holds copies of: its
 response-metadata record, a call's arguments once its gate fixed them, a
 call's end before the end itself is read. Before each item the executor
 sends, it sends what changed, so the owner's copies read as the channel's own.
-Before a delta, the record counts as changed only once one of its keys was
-written: a stream of deltas that leaves it alone costs no copy of it.
+Before a delta, a record that counts its writes counts as changed only once
+one of its keys was written: a stream of deltas that leaves it alone costs no
+copy of it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, NoReturn
 
+from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
 from roomkit.turns._codec import encode_end, encode_item, is_delta, record_payload
 from roomkit.turns.wire import Item, Record, ToolArgs, ToolEnded
 
 if TYPE_CHECKING:
-    from roomkit.models.response_metadata import ResponseMetadata
     from roomkit.turns.wire import Frame
+
+
+def _writes_of(record: Mapping[str, Any]) -> int | None:
+    """The writes *record* took; ``None`` for a mapping that does not count
+    them (a bare dict a channel set past the output's validation), which is
+    then compared before every item."""
+    return record.writes if isinstance(record, ResponseMetadata) else None
 
 
 class ChannelChanges:
@@ -32,16 +40,16 @@ class ChannelChanges:
     ) -> None:
         self._send = send
         self._refuse = refuse
-        self._live: ResponseMetadata | None = None
+        self._live: Mapping[str, Any] | None = None
         # The record as last sent, and the writes it had taken when copied.
         self._record: dict[str, Any] = {}
-        self._writes = 0
+        self._writes: int | None = None
         # The calls the stream started and has not ended, by their start's frame.
         self._open: dict[int, ToolCallStartMarker] = {}
         self._args_sent: dict[int, Any] = {}
         self._ends_sent: set[int] = set()
 
-    def watch(self, record: ResponseMetadata) -> None:
+    def watch(self, record: Mapping[str, Any]) -> None:
         """Watch the channel's live record, its output's."""
         self._live = record
 
@@ -49,7 +57,7 @@ class ChannelChanges:
         """The record as the output carried it: a change is one from it."""
         self._record = record
         if self._live is not None:
-            self._writes = self._live.writes
+            self._writes = _writes_of(self._live)
 
     async def report(self, *, before: Any = None) -> None:
         """Send what the channel changed since the last item: its record, a
@@ -69,9 +77,12 @@ class ChannelChanges:
         delta, only a write to one of its keys since says it may: a copy per
         delta would cost the record's size on each (RFC §10.6.4)."""
         live = self._live
-        if live is None or (is_delta(before) and live.writes == self._writes):
+        if live is None:
             return
-        self._writes = live.writes
+        writes = _writes_of(live)
+        if is_delta(before) and writes is not None and writes == self._writes:
+            return
+        self._writes = writes
         snapshot = record_payload(live)
         if snapshot != self._record:
             self._record = snapshot

@@ -115,6 +115,86 @@ async def test_a_change_inside_a_value_between_deltas_reaches_the_owner_before_i
     assert seen[-1] == ("SegmentBreakMarker", ["a", "b"])
 
 
+async def _waits_after_a_change_inside_a_value(channel: ScriptedChannel) -> AsyncIterator[Any]:
+    channel.record["sources"] = ["a"]
+    yield "One, "
+    await asyncio.sleep(0)
+    channel.record["sources"].append("b")
+    yield "two, "
+    await asyncio.Event().wait()  # a model that says no more: its reader stops it
+
+
+async def _fails_after_a_change_inside_a_value(channel: ScriptedChannel) -> AsyncIterator[Any]:
+    channel.record["sources"] = ["a"]
+    yield "One, "
+    await asyncio.sleep(0)
+    channel.record["sources"].append("b")
+    yield "two, "
+    await asyncio.sleep(0)
+    raise RuntimeError("the model went away")
+
+
+@pytest.mark.parametrize("stop", ["close", "drop", "error"])
+async def test_a_change_inside_a_value_reaches_the_owner_however_the_stream_stops(
+    backend: TurnBackend, stop: str
+) -> None:
+    """No item that is no delta follows the change: the stream's close, or
+    its error, carries it."""
+    failing = stop == "error"
+    script = (
+        _fails_after_a_change_inside_a_value if failing else _waits_after_a_change_inside_a_value
+    )
+    client = _client(backend, ScriptedChannel(script))
+    output = await _run(client)
+    stream = output.response_stream
+    assert [await anext(stream), await anext(stream)] == ["One, ", "two, "]
+    if stop == "close":
+        await stream.aclose()
+    elif stop == "drop":
+        stream.drop()
+    else:
+        with pytest.raises(RuntimeError):
+            await anext(stream)
+    async with asyncio.timeout(5):
+        while output.response_metadata["sources"] != ["a", "b"]:
+            await asyncio.sleep(0.01)
+    await client.close()
+
+
+class _BareRecordChannel(ScriptedChannel):
+    """A channel whose output holds a bare dict as its record: ``model_copy``
+    skips the validation that would wrap it."""
+
+    def __init__(self, script: Any) -> None:
+        super().__init__(script)
+        self.bare: dict[str, Any] = {"source": "bare"}
+
+    async def on_event(self, *args: Any) -> Any:
+        output = await super().on_event(*args)
+        return output.model_copy(update={"response_metadata": self.bare})
+
+
+async def test_a_record_left_a_bare_dict_still_reaches_the_owner_before_each_item(
+    backend: TurnBackend,
+) -> None:
+    async def script(channel: _BareRecordChannel) -> AsyncIterator[Any]:
+        yield "One, "
+        await asyncio.sleep(0)
+        channel.bare["sources"] = ["a"]
+        yield "two."
+
+    client = _client(backend, _BareRecordChannel(script))
+    output = await _run(client)
+    seen = [
+        (_name(item), output.response_metadata.get("sources"))
+        async for item in output.response_stream
+    ]
+    await client.close()
+
+    assert output.response_metadata["source"] == "bare"
+    assert seen == [("One, ", None), ("two.", ["a"])]
+
+
 def _streams(deltas: int, delta: Callable[[int], Any]) -> Any:
     """A stream writing its record before its first delta and before its
     last, a frame per delta between them."""
