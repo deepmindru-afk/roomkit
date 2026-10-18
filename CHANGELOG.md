@@ -23,10 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses, fails the turn within `heartbeat_timeout`. A request reaches one
   executor at most: its process acknowledges it, a closed executor's refusal
   places it again, and one a client writes twice (a pipeline it retries) is
-  taken once. A process that closes withdraws as owner and executor, refuses
-  a turn still reaching it (placed on another executor), answers what it was
-  applying, and writes what it queued (a turn's end) within
-  `cancel_timeout`. A room's turns stay on the executor that holds its state
+  taken once. A process that closes stops declaring its executors (nothing
+  new is placed there), refuses a turn still reaching it (placed on another
+  executor), and beats on while it answers what it was applying and writes
+  what it queued (a turn's end), within `cancel_timeout`; then it withdraws.
+  A room's turns stay on the executor that holds its state
   while it lives (the holder is shared by every owner process), else go to
   one that takes them; a turn no executor declares fails at once with
   `no_executor`. Channel controls are applied on the executor before the

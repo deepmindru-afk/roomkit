@@ -42,6 +42,10 @@ for member, declared in pairs(beat.declared) do
   redis.call('ZADD', KEYS[1], now, member)
   redis.call('HSET', KEYS[2], member, declared)
 end
+for _, member in ipairs(beat.undeclared) do
+  redis.call('ZADD', KEYS[1], now, member)
+  redis.call('HDEL', KEYS[2], member)
+end
 for _, member in ipairs(beat.gone) do
   redis.call('ZREM', KEYS[1], member)
   redis.call('HDEL', KEYS[2], member)

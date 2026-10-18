@@ -30,14 +30,17 @@ logger = logging.getLogger("roomkit.turns")
 class BeatPayload:
     """What this process's next beat writes: what each executor it serves
     declares (its room hooks read live), the ones that closed, the turns it
-    runs for owners elsewhere, and whether it is a room owner."""
+    runs for owners elsewhere, and whether it is a room owner. A process
+    closing beats for its executors without declaring them: none is placed
+    there any more, while what they were doing is answered."""
 
     def __init__(self, node: str, routes: Routes) -> None:
         self._node = node
         self._routes = routes
-        # The executors it beats for, numbered each time they change: a beat
-        # built from an older set never undoes one built from a newer.
-        self._served: tuple[int, tuple[TurnExecutor, ...]] = (0, ())
+        # The executors it beats for and whether the process closes, numbered
+        # each time they change: a beat built from an older state never
+        # undoes one built from a newer.
+        self._served: tuple[int, tuple[TurnExecutor, ...], bool] = (0, (), False)
         self._declared: dict[str, str] = {}
 
     @property
@@ -47,26 +50,38 @@ class BeatPayload:
     @executors.setter
     def executors(self, executors: tuple[TurnExecutor, ...]) -> None:
         # Replaced whole, never changed, so the beat thread reads it whole.
-        self._served = (self._served[0] + 1, executors)
+        generation, _, closing = self._served
+        self._served = (generation + 1, executors, closing)
+
+    def close(self) -> None:
+        """Beat from now without declaring the executors."""
+        generation, executors, _ = self._served
+        self._served = (generation + 1, executors, True)
 
     @property
     def members(self) -> list[str]:
         return [member_of(self._node, executor.executor_id) for executor in self.executors]
 
     def __call__(self) -> str:
-        generation, executors = self._served
-        declared = {
-            member_of(self._node, e.executor_id): self._declaration(e)
-            for e in executors
-            if not e.closed
-        }
-        # A closed executor's member another of its id now declares stays.
+        generation, executors, closing = self._served
+        serving = [member_of(self._node, e.executor_id) for e in executors if not e.closed]
+        declared = (
+            {}
+            if closing
+            else {
+                member_of(self._node, e.executor_id): self._declaration(e)
+                for e in executors
+                if not e.closed
+            }
+        )
+        # A closed executor's member another of its id now serves stays.
         closed = (member_of(self._node, e.executor_id) for e in executors if e.closed)
-        gone = [member for member in closed if member not in declared]
+        gone = [member for member in closed if member not in serving]
         payload = {
             "node": self._node,
             "generation": generation,
             "declared": declared,
+            "undeclared": serving if closing else [],
             "gone": gone,
             "running": sorted(self._routes.running),
             "owner": self._routes.owner is not None,
@@ -114,7 +129,9 @@ class LiveExecutors:
         self._open_turns = open_turns
         self._view = View()
         self._running: dict[str, frozenset[str]] = {}
-        # The first and the last of the reads failing in a row.
+        # The reads failing in a row: how many, from the first one's start
+        # to the last one's end.
+        self._failures = 0
         self._failing_since: float | None = None
         self._failed_at = 0.0
         self._refresher: asyncio.Task[None] | None = None
@@ -150,6 +167,7 @@ class LiveExecutors:
 
     async def refresh(self) -> None:
         self._view = await self._registry.view(forget_after_ms=10 * self._timeout_ms)
+        self._failures = 0
         self._failing_since = None
 
     async def close(self) -> None:
@@ -168,27 +186,36 @@ class LiveExecutors:
 
     def _unread(self) -> bool:
         """Whether the reads of the others kept failing (or hanging) over the
-        heartbeat timeout: none of them is then known alive. Only the reads
-        this process made count, so a stall of its own event loop is not the
-        others' silence."""
+        heartbeat timeout, two of them at least: none of them is then known
+        alive. Only the reads this process made count, so a stall of its own
+        event loop (one read at most) is not the others' silence."""
         failing = self._failing_since
-        return failing is not None and self._failed_at - failing >= self._timeout
+        return (
+            self._failures >= 2
+            and failing is not None
+            and self._failed_at - failing >= self._timeout
+        )
 
     async def _refresh_each_interval(self) -> None:
         while True:
+            started = time.monotonic()
             try:
-                # A read that hangs fails as one that raises.
-                async with asyncio.timeout(self.interval):
+                # A read that hangs fails as one that raises, from its start.
+                async with asyncio.timeout(self._timeout):
                     await self.refresh()
                     self._running = await self._registry.running(self._open_turns())
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                self._failed_at = time.monotonic()
-                if self._failing_since is None:
-                    self._failing_since = self._failed_at
+            except Exception as exc:
+                self._failed(started if isinstance(exc, TimeoutError) else time.monotonic())
                 logger.warning("Reading the turn processes alive failed", exc_info=True)
             await asyncio.sleep(self.interval)
+
+    def _failed(self, since: float) -> None:
+        self._failures += 1
+        self._failed_at = time.monotonic()
+        if self._failing_since is None:
+            self._failing_since = since
 
 
 class BeatThread:

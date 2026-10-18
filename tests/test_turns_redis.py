@@ -44,7 +44,7 @@ from roomkit.turns import TurnExecutor, TurnTimeouts
 from roomkit.turns._redis_links import RedisExecutorLink
 from roomkit.turns._redis_presence import Keys, Registry
 from roomkit.turns.redis import RedisTurnBackend
-from roomkit.turns.wire import CommittedEvent, End, RoomCall
+from roomkit.turns.wire import CommittedEvent, End, HostResult, RoomCall
 from tests import redis_turn_mode
 from tests.test_framework import SimpleChannel
 
@@ -1143,12 +1143,11 @@ async def test_a_channel_call_being_applied_when_its_process_closes_is_answered(
 
     async def slow_control(message: Any) -> Any:
         applying.set()
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.6)  # within cancel_timeout: answered, not given up
         return await control(message)
 
     executor.control = slow_control  # type: ignore[method-assign]
     try:
-        _slow_beat_stop(host, 1.0)
         call = asyncio.ensure_future(kit.channel_call("worker", "r", "set_mode", mode="fast"))
         await asyncio.wait_for(applying.wait(), 5)
         closing = asyncio.ensure_future(host.close())
@@ -1206,6 +1205,7 @@ async def test_a_beat_built_before_an_executor_was_served_again_does_not_withdra
                 "node": "node-a",
                 "generation": generation,
                 "declared": {} if gone else {member: declared},
+                "undeclared": [],
                 "gone": [member] if gone else [],
                 "running": [],
                 "owner": False,
@@ -1216,3 +1216,56 @@ async def test_a_beat_built_before_an_executor_was_served_again_does_not_withdra
     await registry.beat("node-a", beat(1, gone=True), 60_000)
 
     assert await redis_client.zscore(f"{prefix}:alive", member) is not None
+
+
+# -- What the review of 1f40351d found -----------------------------------------------
+
+
+class _SlowOwner:
+    """A room owner whose room calls take *delay*, the calls it ran kept."""
+
+    def __init__(self, inner: Any, delay: float) -> None:
+        self._inner = inner
+        self._delay = delay
+        self.ran: list[str] = []
+
+    async def room_call(self, message: RoomCall) -> HostResult:
+        await asyncio.sleep(self._delay)
+        self.ran.append(message.verb)
+        return HostResult(call_id=message.call_id, result="sent")
+
+    async def room_publication(self, message: Any) -> None:
+        await self._inner.room_publication(message)
+
+
+async def test_a_room_call_its_owner_runs_while_closing_is_answered(
+    prefix: str, redis_client: Any
+) -> None:
+    """The owner's process closes while it runs a room call of work after
+    a turn: the work reads the call's result, not a lost owner it would
+    retry (a message sent twice)."""
+    store = InMemoryStore()
+    worker = _Worker("worker", MockAIProvider(responses=["Hi."] * 5, streaming=True))
+    host, executor = await _hosted(prefix, store, worker)
+    kit = await _owner(prefix, "worker", store=store)
+    owner_backend = kit._turns.backend
+    try:
+        await kit.process_inbound(_said("Hi."), room_id="r")
+        turn_id = next(iter(host._routes._turn_owners))
+        slow = _SlowOwner(owner_backend._routes.owner, delay=0.6)
+        owner_backend._routes.owner = slow
+        call = RoomCall(
+            channel_id="worker", room_id="r", executor_id="host-a", turn_id=turn_id, verb="send"
+        )
+        asking = asyncio.ensure_future(host._routes.port.room_call(call))
+        await asyncio.sleep(0.05)
+        closing = asyncio.ensure_future(owner_backend.close())
+        result = await asyncio.wait_for(asking, 5)
+        await closing
+
+        assert slow.ran == ["send"]
+        assert result.error is None and result.result == "sent"
+    finally:
+        await kit.close()
+        await host.close()
+        await executor.close()

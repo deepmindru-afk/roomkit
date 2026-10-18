@@ -52,9 +52,12 @@ logger = logging.getLogger("roomkit.turns")
 # How many turns' owners are remembered for the work they began (RFC §10.6.3).
 _TURN_OWNERS = 10_000
 # How many questions handled are remembered, and for how long, so one written
-# twice is not handled twice: a pipeline runs again within moments.
+# twice is not handled twice: a pipeline runs again within moments, and work
+# after a turn is written again for less than the window (_WORK_WRITES
+# writes, each at most the pool's wait and the outbox's retry delay).
 _HANDLED = 10_000
-_HANDLED_FOR = 60.0
+_HANDLED_FOR = 600.0
+_WORK_WRITES = 20
 # The entries handled once by their reference.
 _QUESTIONS = frozenset({"request", "channel", "owner"})
 TAKEN = "taken"
@@ -273,6 +276,8 @@ class Routes:
             logger.warning(
                 "A channel control came for executor %s, which no longer serves", envelope.target
             )
+            gone = TurnLinkError("no_executor", f"Executor {envelope.target} no longer serves")
+            result = ChannelResult(error=error_record(gone))
         else:
             try:
                 result = await executor.control(_crossed(envelope.body))
@@ -331,7 +336,7 @@ class Routes:
         def lost(error: Exception) -> None:
             logger.warning("Work after a turn could not reach its owner %s: %s", node, error)
 
-        self._post(node, "owner", body, "", uuid4().hex, failed=lost, writes=None)
+        self._post(node, "owner", body, "", uuid4().hex, failed=lost, writes=_WORK_WRITES)
 
 
 class _OwnerPort(RoomOwner):

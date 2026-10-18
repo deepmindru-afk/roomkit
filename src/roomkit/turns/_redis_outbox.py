@@ -177,15 +177,18 @@ class Outbox:
 def _batch(
     start: list[_Queued], queue: asyncio.Queue[_Queued | None], closing: bool
 ) -> tuple[list[_Queued], bool]:
-    """*start* and what follows it in *queue*, up to a batch, and whether
-    the closing mark came (nothing is taken after it)."""
+    """*start* and up to a batch of what follows it in *queue* (what is
+    written again never keeps the rest from its one write), and whether the
+    closing mark came (nothing is taken after it)."""
     batch = list(start)
-    while not closing and len(batch) < _BATCH and not queue.empty():
+    taken = 0
+    while not closing and taken < _BATCH and not queue.empty():
         item = queue.get_nowait()
         if item is _CLOSING:
             closing = True
         else:
             batch.append(item)
+            taken += 1
     return batch, closing
 
 

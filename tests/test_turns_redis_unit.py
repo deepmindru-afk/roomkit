@@ -33,6 +33,7 @@ from roomkit.turns.redis import RedisTurnBackend
 from roomkit.turns.wire import (
     Accepted,
     ChannelControlEnvelope,
+    ChannelResult,
     Ephemeral,
     HostResult,
     OwnerMessageEnvelope,
@@ -348,7 +349,10 @@ async def test_answers_and_work_after_a_turn_are_written_until_they_are() -> Non
     )
 
     assert [m[1] for m in posted.messages] == ["answer", "owner"]
-    assert posted.writes == [None, None]
+    # An answer until it is written; work after a turn within the window its
+    # receiver remembers it for (written twice, handled once).
+    assert posted.writes == [None, _redis_routes._WORK_WRITES]
+    assert _redis_routes._WORK_WRITES * 21 < _redis_routes._HANDLED_FOR
     assert posted.of("owner")[0][3] != ""  # a reference: handled once on arrival
 
 
@@ -569,7 +573,7 @@ async def test_the_others_read_by_a_read_that_hangs_are_not_alive() -> None:
     try:
         await asyncio.sleep(0.05)
         registry.silent = True
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.5)  # two reads hang a heartbeat timeout each
 
         assert not live.alive("node-a:w")
     finally:
@@ -626,3 +630,53 @@ async def test_a_message_written_again_keeps_its_place_before_later_ones() -> No
     assert client.written == ["start", "stop"]
     assert told == ["frame"]  # a turn's message is not written again
     await outbox.close(drain=1.0)
+
+
+class _SlowRegistry(_Registry):
+    """Every read answers, a little later than a heartbeat interval."""
+
+    async def view(self, forget_after_ms: int) -> View:
+        await asyncio.sleep(0.25)
+        return await super().view(forget_after_ms)
+
+
+async def test_the_others_read_slower_than_an_interval_are_still_alive() -> None:
+    live = LiveExecutors(_SlowRegistry(), 0.2, 1.0, dict)  # type: ignore[arg-type]
+    await live.refresh()
+    live.start()
+    try:
+        await asyncio.sleep(2.0)
+
+        assert live.alive("node-a:w")
+    finally:
+        await live.close()
+
+
+class _RefusesAll(_Client):
+    def pipeline(self, transaction: bool) -> _Pipe:
+        return _RefusedPipe(self)
+
+
+async def test_a_turn_s_message_gets_its_write_behind_a_batch_written_again() -> None:
+    """Redis refusing: answers kept to be written again never keep a turn's
+    message from its one write, nor its sender from learning it failed."""
+    outbox = Outbox(_RefusesAll(), lambda node: f"inbox:{node}", ttl_ms=60_000, retry_delay=0.01)
+    told: list[str] = []
+    for i in range(300):
+        outbox.post("a", _message(f"answer-{i}"), writes=None)
+    await asyncio.sleep(0.02)
+    outbox.post("a", _message("frame"), lambda error: told.append("frame"))
+    await asyncio.sleep(0.1)
+
+    assert told == ["frame"]
+    await outbox.close(drain=0.05)
+
+
+async def test_a_channel_control_for_an_executor_this_process_never_served_fails() -> None:
+    routes, posted, tasks = _routes()
+    raw = ChannelControlEnvelope(message=RoomDetached(channel_id="agent", room_id="room"))
+    routes.route(Envelope("channel", "node-a", raw.model_dump_json(), "host-x", "ref-11"))
+    await asyncio.gather(*tasks)
+
+    (answer,) = posted.of("answer")
+    assert ChannelResult.model_validate_json(answer[2]).error is not None

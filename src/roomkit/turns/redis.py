@@ -247,16 +247,17 @@ class RedisTurnBackend(TurnBackend):
         self._closed = True
         # From now a request is refused, to be placed again, and none asked.
         self._routes.close()
-        # The beat stops first, so none declares again what is withdrawn.
-        await asyncio.to_thread(self._beat.stop)
-        await self._withdraw()
-        # What arrived until now is routed; the answers it gets (and a
-        # turn's end) are written before the process goes.
+        # Nothing is placed here any more; the process beats on while what
+        # it was doing is answered and written (a turn's end among it).
+        await self._undeclare()
         await self._inbox.close()
         self._routing = False
         if self._tasks:
             await asyncio.wait(set(self._tasks), timeout=self._timeouts.cancel)
         await self._outbox.close(drain=self._timeouts.cancel)
+        # The beat stops first, so none declares again what is withdrawn.
+        await asyncio.to_thread(self._beat.stop)
+        await self._withdraw()
         await self._live.close()
         await self._here.close()
         if self._tasks:
@@ -292,6 +293,16 @@ class RedisTurnBackend(TurnBackend):
             self._started = True
             self._inbox.start()
             self._live.start()
+
+    async def _undeclare(self) -> None:
+        """Beat from now without declaring this process's executors."""
+        self._payload.close()
+        if not self._payload.executors and self._routes.owner is None:
+            return  # it never beat
+        try:
+            await self._registry.beat(self.node_id, self._payload(), self._ttl_ms)
+        except Exception:
+            logger.debug("Withdrawing this process's declarations failed", exc_info=True)
 
     async def _withdraw(self) -> None:
         """Withdraw this process's executors, and it as a room owner."""
