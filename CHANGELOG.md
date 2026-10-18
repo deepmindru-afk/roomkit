@@ -531,6 +531,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A turn's response-metadata record is copied when it may have changed, not
+  before every streamed delta (RMK-841, RFC §10.6.3, §10.6.4): the turn's
+  executor took a full JSON copy of the record before each text or reasoning
+  delta to see whether it changed, so a turn cost more CPU the larger its
+  record (2000 deltas with 30 `rag_sources`: 13 ms in 0.105.0, 40 ms since
+  the turn backend, 17 ms now, as with no record). `ResponseMetadata.writes`
+  counts the writes to its keys; before a delta the record is copied only
+  when that count moved, before any other item and at the stream's end
+  always. A change made inside a value the record holds
+  (`record["sources"].append(...)`) between two deltas reaches the owner
+  before the next item that is no delta, the one ending the segment stored
+  with it.
+
 - The router skips a transport binding whose channel is not registered in the
   process without a warning (RMK-828). A transport reaches its client from the
   process the client connected to, and its binding outlives that connection:

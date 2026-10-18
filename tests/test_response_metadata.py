@@ -293,6 +293,21 @@ class TestLiveRecord:
         assert bare_dict.response_metadata == {"rag_sources": _SOURCES}
         assert ChannelOutput.empty().response_metadata == {}
 
+    def test_a_record_counts_the_writes_to_its_keys(self) -> None:
+        record = ResponseMetadata({"rag_sources": []})
+        assert record.writes == 0
+        record["cited"] = 1
+        record.update(cited=2, credential="c")
+        record.setdefault("cited", 3)  # present: nothing written
+        record.setdefault("read", [])
+        record.pop("credential")
+        assert dict(record) and record.get("cited") == 2 and record != {}  # reads write nothing
+        assert record.writes == 5
+        record["read"].append("doc-1")  # inside a value: no key written
+        assert record.writes == 5
+        record.clear()
+        assert record.writes == 8
+
     def test_accessor_is_none_outside_a_turn(self) -> None:
         assert current_response_metadata() is None
 

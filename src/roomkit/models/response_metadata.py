@@ -48,19 +48,29 @@ class ResponseMetadata(MutableMapping[str, Any]):
     non-streaming path builds all its events at the end, so they read alike.
     """
 
-    __slots__ = ("_data",)
+    __slots__ = ("_data", "_writes")
 
     def __init__(self, initial: Mapping[str, Any] | None = None) -> None:
         self._data: dict[str, Any] = dict(initial or {})
+        self._writes = 0
+
+    @property
+    def writes(self) -> int:
+        """How many times one of its keys was written or removed. A change
+        made inside a value it holds (``record["sources"].append(...)``) is
+        no write of a key: a reader comparing counts sees writes, not changes."""
+        return self._writes
 
     def __getitem__(self, key: str) -> Any:
         return self._data[key]
 
     def __setitem__(self, key: str, value: Any) -> None:
         self._data[key] = value
+        self._writes += 1
 
     def __delitem__(self, key: str) -> None:
         del self._data[key]
+        self._writes += 1
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._data)

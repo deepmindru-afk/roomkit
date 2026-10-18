@@ -18,6 +18,12 @@ if TYPE_CHECKING:
     from roomkit.turns.wire import Pull
 
 
+def is_delta(item: Any) -> bool:
+    """Whether *item* is a text or reasoning delta, which the executor reads
+    ahead of the owner's reader."""
+    return isinstance(item, str | ThinkingDeltaMarker)
+
+
 class PullGate:
     """The reads one turn's pulls allow, and the read under way."""
 
@@ -53,7 +59,7 @@ class PullGate:
 
     def item_read(self, item: Any) -> None:
         """*item* came: past one that is no delta, only a later pull reads on."""
-        self._ahead = isinstance(item, str | ThinkingDeltaMarker)
+        self._ahead = is_delta(item)
         if not self._ahead:
             self._credits = 0
             self._barrier = self._read
