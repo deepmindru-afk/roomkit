@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `benchmarks/voice/` measures the CPU RoomKit spends per inbound 20 ms voice
+  frame once a transport has decoded it (RMK-796): `python -m benchmarks.voice`
+  feeds N sessions, one room each, through a mock backend's audio callback,
+  with the energy VAD or none and a batch or streaming mock STT, and reports
+  µs per frame, calls per core for that layer and the STT requests, so two
+  runs can be checked to have detected the same turns. RTP, codecs and models
+  are excluded.
+
 - `RedisTurnBackend` (RMK-813, RFC §10.6.7 to §10.6.9, `pip install
   roomkit[redis]`): an agent's turns run on an executor in another process
   or on another machine, while the kit keeps the room. One backend per
