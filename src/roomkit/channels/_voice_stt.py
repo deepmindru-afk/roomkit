@@ -1273,7 +1273,7 @@ class VoiceSTTMixin:
 
             hooks = RoomHooks(self._framework, room_id)
             # Fire ON_SPEECH_END hooks (continuous mode synthesises speech events)
-            await hooks.run_async(HookTrigger.ON_SPEECH_END, session)
+            await self._announce_speech_end(session, hooks)
 
             if segments is None:
                 await self._deliver_transcript(session, text, room_id, hooks, language, speaker)
@@ -1356,6 +1356,19 @@ class VoiceSTTMixin:
             await self._route_text(
                 session, final_text, room_id, speaker=speaker, await_delivery=await_delivery
             )
+
+    async def _announce_speech_end(self, session: VoiceSession, hooks: RoomHooks) -> None:
+        """Run ON_SPEECH_END's observers, whose failure never costs the utterance.
+
+        An ASYNC hook cannot block (RFC §9.3): a context that does not read
+        (the room gone from the store, the store failing) skips the observers
+        and the utterance goes on to the STT and the room, as it does when no
+        hook is registered.
+        """
+        try:
+            await hooks.run_async(HookTrigger.ON_SPEECH_END, session)
+        except Exception:
+            logger.warning("ON_SPEECH_END hooks skipped for session %s", session.id, exc_info=True)
 
     def _pipeline_speaker(self, session_id: str) -> SpeakerAttribution | None:
         """The pipeline stage's speaker for the transcript at hand, when asked for."""
@@ -1492,7 +1505,7 @@ class VoiceSTTMixin:
         settled = False
         try:
             hooks = RoomHooks(self._framework, room_id)
-            await hooks.run_async(HookTrigger.ON_SPEECH_END, session)
+            await self._announce_speech_end(session, hooks)
 
             # Transcribe if STT is configured
             if not self._stt:
@@ -1770,7 +1783,7 @@ class VoiceSTTMixin:
             if binding_info:
                 room_id, _ = binding_info
                 hooks = RoomHooks(self._framework, room_id)
-                await hooks.run_async(HookTrigger.ON_SPEECH_END, session)
+                await self._announce_speech_end(session, hooks)
 
                 # Fire ON_TRANSCRIPTION hooks (sync, can modify/block)
                 tx_event = TranscriptionEvent(

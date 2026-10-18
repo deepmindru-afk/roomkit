@@ -347,3 +347,35 @@ async def test_hooks_read_once_per_event(door: Door) -> None:
         assert len(reads) == door.events
     finally:
         await kit.close()
+
+
+@pytest.mark.parametrize("observer", [False, True], ids=["no_hook", "async_observer"])
+async def test_an_utterance_whose_room_is_gone_reaches_the_inbound(observer: bool) -> None:
+    """An ASYNC hook cannot block (RFC §9.3): its context failing to read costs
+    it its run, never the utterance, which the inbound pipeline routes to a
+    room it opens under the same id (RFC §10.1 step 2)."""
+    kit, room_id, act = await _vad_utterance()
+    try:
+        seen: list[tuple] = []
+        if observer:
+            _register(kit, (HookTrigger.ON_SPEECH_END,), seen)
+        await kit.store.delete_room(room_id)
+        await act()
+        assert seen == []
+        assert await _transcript_reached(kit, room_id)
+    finally:
+        await kit.close()
+
+
+async def test_a_sync_hook_whose_context_fails_to_read_drops_the_utterance() -> None:
+    """ON_TRANSCRIPTION fails closed: a chain that cannot run lets nothing pass."""
+    kit, room_id, act = await _vad_utterance()
+    try:
+        seen: list[tuple] = []
+        _register(kit, (HookTrigger.ON_TRANSCRIPTION,), seen)
+        await kit.store.delete_room(room_id)
+        await act()
+        assert seen == []
+        assert await kit.store.get_room(room_id) is None
+    finally:
+        await kit.close()
