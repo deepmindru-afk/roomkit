@@ -300,8 +300,8 @@ jobs:
       # Every kit built without a turn backend gets one across Redis, its own
       # executor reached there as one elsewhere (tests/redis_turn_mode.py); a
       # test that assumes the kit's process is marked in_process and skipped.
+      # The Postgres files ran above; unset, their DSN skips them here.
       - name: Run the suite with the kit's turns across Redis
         env:
           ROOMKIT_TEST_TURN_BACKEND: redis
-          POSTGRES_DSN: ""
-        run: uv run --with fastapi --with httpx2 pytest -q
+        run: env -u POSTGRES_DSN uv run --with fastapi --with httpx2 pytest -q

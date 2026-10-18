@@ -178,23 +178,34 @@ async def test_a_cascade_whose_turn_its_owner_gave_up_reports_its_cleanup_done()
 @pytest.mark.wallclock
 async def test_two_thousand_deltas_cost_the_owner_s_loop_little() -> None:
     """A turn's text deltas cross the in-memory backend at a cost close to
-    reading them directly (RFC §10.6.4): a pull grants many of them."""
+    reading them directly (RFC §10.6.4): a pull grants many of them.
 
-    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+    Measured against a direct read on the same machine, so a slower one
+    reads the same: about 12 times a direct read with a pull's window,
+    about 240 times when each delta crossed on its own."""
+
+    async def deltas() -> AsyncIterator[str]:
         for i in range(2000):
             yield f"tok{i} "
 
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        async for delta in deltas():
+            yield delta
+
     client = registry_turn_client({"agent": ScriptedChannel(script)})
-    costs = []
-    for _ in range(3):
+    expected = "".join(f"tok{i} " for i in range(2000))
+    costs, direct = [], []
+    for _ in range(5):
         output = await client.run(_event(), _binding(), _context())
         started = time.process_time()
-        text = "".join([item async for item in output.response_stream])
-        costs.append((time.process_time() - started) * 1000)
-        assert text == "".join(f"tok{i} " for i in range(2000))
+        assert "".join([item async for item in output.response_stream]) == expected
+        costs.append(time.process_time() - started)
+        started = time.process_time()
+        assert "".join([delta async for delta in deltas()]) == expected
+        direct.append(time.process_time() - started)
     await client.close()
 
-    assert min(costs) < 10.0, costs
+    assert min(costs) < 50 * min(direct), (costs, direct)
 
 
 # -- a delivery that stops between its turns and their reader -------------------
