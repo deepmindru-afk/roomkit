@@ -24,7 +24,7 @@ from roomkit.models.streaming import (
     ToolCallStartMarker,
 )
 from roomkit.providers.ai.base import AIImagePart, AITextPart
-from roomkit.turns._error_codec import error_record, rebuild_error
+from roomkit.turns._error_codec import ErrorClasses, error_record
 from roomkit.turns.wire import WireOutput
 
 # -- Stream items ---------------------------------------------------------------
@@ -189,8 +189,9 @@ def encode_output(output: ChannelOutput) -> WireOutput:
     )
 
 
-def decode_output(wire: WireOutput) -> ChannelOutput:
-    """A new channel output; its record is the one the turn's frames update."""
+def decode_output(wire: WireOutput, errors: ErrorClasses) -> ChannelOutput:
+    """A new channel output, its error of a class *errors* rebuilds; its
+    record is the one the turn's frames update."""
     return ChannelOutput(
         responded=wire.responded,
         response_events=wire.response_events,
@@ -198,5 +199,5 @@ def decode_output(wire: WireOutput) -> ChannelOutput:
         tasks=wire.tasks,
         observations=wire.observations,
         metadata_updates=wire.metadata_updates,
-        error=None if wire.error is None else rebuild_error(wire.error),
+        error=None if wire.error is None else errors.rebuild(wire.error),
     )

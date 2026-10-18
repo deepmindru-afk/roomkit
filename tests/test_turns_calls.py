@@ -16,6 +16,7 @@ from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.room import Room
 from roomkit.providers.ai.base import AITool
 from roomkit.tools.context import ToolCallContext, tool_turn_context
+from roomkit.turns._error_codec import ROOMKIT_ERRORS
 from roomkit.turns._executor_calls import ExecutorCalls
 from roomkit.turns._owner_calls import OwnerCalls
 from roomkit.turns._registry_tools import OwnerToolStore, RegistryOwnerTools
@@ -80,7 +81,7 @@ async def _calling(calls: ExecutorCalls, link: _Link) -> asyncio.Task[Any]:
 
 async def test_a_call_cut_before_its_result_is_withdrawn() -> None:
     link = _Link()
-    calls = ExecutorCalls(_request(), link.send)
+    calls = ExecutorCalls(_request(), link.send, ROOMKIT_ERRORS)
     task = await _calling(calls, link)
     [call] = link.sent
 
@@ -93,7 +94,7 @@ async def test_a_call_cut_before_its_result_is_withdrawn() -> None:
 
 async def test_a_call_answered_is_not_withdrawn() -> None:
     link = _Link()
-    calls = ExecutorCalls(_request(), link.send)
+    calls = ExecutorCalls(_request(), link.send, ROOMKIT_ERRORS)
     task = await _calling(calls, link)
     [call] = link.sent
 
@@ -105,7 +106,7 @@ async def test_a_call_answered_is_not_withdrawn() -> None:
 
 async def test_an_owner_lost_fails_the_calls_it_will_never_answer() -> None:
     link = _Link()
-    calls = ExecutorCalls(_request(), link.send)
+    calls = ExecutorCalls(_request(), link.send, ROOMKIT_ERRORS)
     task = await _calling(calls, link)
 
     calls.fail_all(TurnLinkError("owner_lost"))
@@ -116,7 +117,7 @@ async def test_an_owner_lost_fails_the_calls_it_will_never_answer() -> None:
 
 async def test_a_result_for_a_call_no_longer_awaited_is_dropped() -> None:
     link = _Link()
-    calls = ExecutorCalls(_request(), link.send)
+    calls = ExecutorCalls(_request(), link.send, ROOMKIT_ERRORS)
     task = await _calling(calls, link)
     [call] = link.sent
     task.cancel()
@@ -130,7 +131,7 @@ async def test_a_call_the_link_refuses_fails() -> None:
     async def refusing(frame: Any) -> int:
         raise TurnLinkError("owner_lost")
 
-    calls = ExecutorCalls(_request(), refusing)
+    calls = ExecutorCalls(_request(), refusing, ROOMKIT_ERRORS)
     serve = calls.owner_tools.entries["probe"].serve
     assert serve is not None
 

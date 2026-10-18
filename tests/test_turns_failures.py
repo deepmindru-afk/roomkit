@@ -18,7 +18,7 @@ from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
-from roomkit.turns._error_codec import error_record, rebuild_error
+from roomkit.turns._error_codec import ROOMKIT_ERRORS, error_record
 from roomkit.turns.wire import ErrorRecord
 from tests.test_framework import SimpleChannel
 from tests.test_turns_backend import ScriptedChannel, _client, _run
@@ -188,7 +188,7 @@ async def test_an_error_keeps_where_the_executor_raised_it() -> None:
     try:
         _raise_deep()
     except KeyError as exc:
-        rebuilt = rebuild_error(error_record(exc))
+        rebuilt = ROOMKIT_ERRORS.rebuild(error_record(exc))
     notes = "\n".join(getattr(rebuilt, "__notes__", []))
     assert "_raise_deep" in notes
 
@@ -204,7 +204,7 @@ async def test_an_error_keeps_where_the_executor_raised_it() -> None:
     ],
 )
 def test_a_name_off_the_wire_reaches_no_class_but_a_loaded_exception(kind: str) -> None:
-    rebuilt = rebuild_error(ErrorRecord(kind=kind, message="m"))
+    rebuilt = ROOMKIT_ERRORS.rebuild(ErrorRecord(kind=kind, message="m"))
     assert isinstance(rebuilt, RemoteTurnError)
 
 

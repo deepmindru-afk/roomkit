@@ -19,7 +19,7 @@ from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes,
 from roomkit.channels.declared import DeclaredChannel
 from roomkit.models.steering import Cancel as SteeringCancel
 from roomkit.telemetry.context import get_current_span
-from roomkit.turns._error_codec import error_record
+from roomkit.turns._error_codec import ErrorClasses, error_record
 from roomkit.turns._owner_between import answer_room_call, publish_between_turns
 from roomkit.turns._owner_inputs import OwnerInputs
 from roomkit.turns._owner_turn import OwnerTurn
@@ -108,6 +108,13 @@ class TurnClient(RoomOwner):
             or ``None``.
         events: Where the owner publishes what its turns published on their
             executors (RFC §10.6.3), or ``None``.
+        error_classes: The host's exception classes an error raised on an
+            executor is rebuilt as here, with their subclasses, beyond
+            RoomKit's and Python's own (RFC §10.6.8). Any other comes back as
+            a ``RemoteTurnError``.
+
+    Raises:
+        TypeError: An entry of *error_classes* is not an ``Exception`` class.
     """
 
     def __init__(
@@ -119,9 +126,12 @@ class TurnClient(RoomOwner):
         tools: OwnerTools | None = None,
         host: OwnerHost | None = None,
         events: OwnerEvents | None = None,
+        error_classes: Iterable[type[Exception]] = (),
     ) -> None:
         self.backend = backend
         self.executor = executor
+        self.errors = ErrorClasses(error_classes)
+        """The classes this owner rebuilds an error as (RFC §10.6.8)."""
         self._timeouts = timeouts or TurnTimeouts()
         self._tools = tools
         self._host = host
@@ -190,6 +200,7 @@ class TurnClient(RoomOwner):
         turn = OwnerTurn(
             link,
             self._timeouts,
+            self.errors,
             self._tools,
             self._calls,
             self._host,
@@ -436,12 +447,14 @@ def registry_turn_client(
     host: OwnerHost | None = None,
     events: OwnerEvents | None = None,
     owner_tools: OwnerToolStore | None = None,
+    error_classes: Iterable[type[Exception]] = (),
 ) -> TurnClient:
     """A client whose own executor serves the channels of a registry (a
     kit's, a router's), on *backend* or an in-memory one, its turns' host
     verbs run by *host*, what they publish published by *events*, the tools
     orchestration set up for them kept in *owner_tools* (a store of its own
-    when None). The registry's owner wires and closes its channels; one it
+    when None), the host's *error_classes* rebuilt by both. The registry's
+    owner wires and closes its channels; one it
     holds by its declaration alone is a host executor's to build (RFC
     §10.6.2)."""
 
@@ -453,12 +466,17 @@ def registry_turn_client(
     return TurnClient(
         backend,
         executor=TurnExecutor(
-            channels.get, hosts=runs_here, owns_channels=False, timeouts=backend.timeouts
+            channels.get,
+            hosts=runs_here,
+            owns_channels=False,
+            timeouts=backend.timeouts,
+            error_classes=error_classes,
         ),
         tools=RegistryOwnerTools(owner_tools or OwnerToolStore(channels.get)),
         host=host,
         events=events,
         timeouts=backend.timeouts,
+        error_classes=error_classes,
     )
 
 

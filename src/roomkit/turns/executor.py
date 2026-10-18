@@ -21,7 +21,7 @@ from roomkit.core.exceptions import ToolNameCollisionError, TurnLinkError
 from roomkit.core.hooks import HookEngine, HookRegistration, hook_decorator
 from roomkit.core.task_utils import cancel_and_wait
 from roomkit.models.enums import HookExecution
-from roomkit.turns._error_codec import error_record
+from roomkit.turns._error_codec import ErrorClasses, error_record
 from roomkit.turns._executor_channels import ChannelFactory, ExecutorChannels
 from roomkit.turns._executor_rooms import ExecutorRooms
 from roomkit.turns._executor_turn import ExecutorTurn
@@ -66,6 +66,13 @@ class TurnExecutor:
         telemetry: The telemetry its hooks and channels report to.
         owns_channels: ``False`` when *build_channel* reads a registry whose
             owner wires and closes its channels (the kit's own executor).
+        error_classes: The host's exception classes an error raised on the
+            room owner is rebuilt as here, with their subclasses, beyond
+            RoomKit's and Python's own (RFC §10.6.8). Any other comes back as
+            a ``RemoteTurnError``.
+
+    Raises:
+        TypeError: An entry of *error_classes* is not an ``Exception`` class.
     """
 
     def __init__(
@@ -80,8 +87,10 @@ class TurnExecutor:
         attached_media: AttachedMedia | None = None,
         telemetry: TelemetryProvider | None = None,
         owns_channels: bool = True,
+        error_classes: Iterable[type[Exception]] = (),
     ) -> None:
         self.executor_id = executor_id or f"executor-{uuid4().hex[:12]}"
+        self._errors = ErrorClasses(error_classes)
         if isinstance(hosts, str):
             raise TypeError("hosts is a collection of channel ids or a predicate, not one id")
         self._hosted: frozenset[str] | None = None
@@ -254,6 +263,7 @@ class TurnExecutor:
             self.executor_id,
             self._turn_channel(link.request, stale),
             self._timeouts,
+            self._errors,
             owner=self._owner,
         )
         task = asyncio.get_running_loop().create_task(

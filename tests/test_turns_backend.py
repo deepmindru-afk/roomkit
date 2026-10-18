@@ -39,7 +39,7 @@ from roomkit.models.streaming import (
 from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
 from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, TurnTimeouts
 from roomkit.turns._codec import decode_item, encode_item
-from roomkit.turns._error_codec import error_record, rebuild_error
+from roomkit.turns._error_codec import ROOMKIT_ERRORS, error_record
 from roomkit.turns.base import MessageOrder, OwnerTools
 from roomkit.turns.wire import OwnerTool
 from tests.turn_errors import same_error
@@ -173,14 +173,14 @@ def test_a_roomkit_error_is_rebuilt_by_type_with_its_attributes_and_causes() -> 
     cause = ValueError("bad argument")
     error = ToolTimeoutError("search", 3.0)
     error.__cause__ = cause
-    rebuilt = rebuild_error(error_record(error))
+    rebuilt = ROOMKIT_ERRORS.rebuild(error_record(error))
     assert same_error(rebuilt, error)
     assert type(rebuilt.__cause__) is ValueError
     assert str(rebuilt.__cause__) == "bad argument"
 
 
 def test_an_error_of_a_foreign_class_comes_back_naming_it() -> None:
-    rebuilt = rebuild_error(error_record(_ForeignError("boom")))
+    rebuilt = ROOMKIT_ERRORS.rebuild(error_record(_ForeignError("boom")))
     assert isinstance(rebuilt, RemoteTurnError)
     assert rebuilt.kind.endswith(":_ForeignError")
     assert str(rebuilt) == "boom"

@@ -21,6 +21,7 @@ from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.room import Room
 from roomkit.turns import InMemoryTurnBackend, TurnExecutor, TurnTimeouts, _redis_routes
+from roomkit.turns._error_codec import ROOMKIT_ERRORS
 from roomkit.turns._owner_turn import OwnerTurn
 from roomkit.turns._redis_beat import LiveExecutors
 from roomkit.turns._redis_inbox import Envelope
@@ -141,7 +142,7 @@ def _request() -> Any:
 
 
 async def test_a_turn_whose_executor_beats_outside_its_messages_is_not_lost() -> None:
-    turn = OwnerTurn(_SilentLink(_request(), beats=True), QUICK)  # type: ignore[arg-type]
+    turn = OwnerTurn(_SilentLink(_request(), beats=True), QUICK, ROOMKIT_ERRORS)  # type: ignore[arg-type]
     output = asyncio.ensure_future(turn.output())
     await asyncio.sleep(5 * QUICK.heartbeat_timeout)
 
@@ -152,7 +153,7 @@ async def test_a_turn_whose_executor_beats_outside_its_messages_is_not_lost() ->
 
 
 async def test_a_turn_whose_executor_stopped_beating_is_lost() -> None:
-    turn = OwnerTurn(_SilentLink(_request(), beats=False), QUICK)  # type: ignore[arg-type]
+    turn = OwnerTurn(_SilentLink(_request(), beats=False), QUICK, ROOMKIT_ERRORS)  # type: ignore[arg-type]
 
     with pytest.raises(TurnLinkError) as raised:
         await asyncio.wait_for(turn.output(), 5 * QUICK.heartbeat_timeout)
@@ -168,7 +169,7 @@ class _NeverAccepted(_SilentLink):
 
 
 async def test_a_beat_before_an_executor_took_the_turn_does_not_hold_it() -> None:
-    turn = OwnerTurn(_NeverAccepted(_request(), beats=True), QUICK)  # type: ignore[arg-type]
+    turn = OwnerTurn(_NeverAccepted(_request(), beats=True), QUICK, ROOMKIT_ERRORS)  # type: ignore[arg-type]
 
     with pytest.raises(TurnLinkError):
         await asyncio.wait_for(turn.output(), 5 * QUICK.accept)

@@ -25,7 +25,6 @@ from roomkit.models.steering import Cancel as SteeringCancel
 from roomkit.models.steering import SteeringDirective
 from roomkit.models.streaming import ToolCallEndMarker
 from roomkit.turns._codec import decode_end, decode_output
-from roomkit.turns._error_codec import rebuild_error
 from roomkit.turns._owner_calls import OwnerCalls
 from roomkit.turns._owner_inputs import OwnerInputs
 from roomkit.turns._owner_publish import TurnPublisher, names_its_room
@@ -59,6 +58,7 @@ from roomkit.turns.wire import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from roomkit.turns._error_codec import ErrorClasses
     from roomkit.turns.base import OwnerEvents, OwnerHost, OwnerTools, TurnLink, TurnTimeouts
     from roomkit.turns.wire import Control, Frame, TurnRequest
 
@@ -91,6 +91,7 @@ class OwnerTurn:
         self,
         link: TurnLink,
         timeouts: TurnTimeouts,
+        errors: ErrorClasses,
         tools: OwnerTools | None = None,
         held_calls: set[asyncio.Task[None]] | None = None,
         host: OwnerHost | None = None,
@@ -100,6 +101,8 @@ class OwnerTurn:
     ) -> None:
         self._link = link
         self._timeouts = timeouts
+        # The classes the turn's errors are rebuilt as (RFC §10.6.8).
+        self._errors = errors
         # The owner's copies of what the stream yielded, and its reads.
         self._copies = StreamCopies()
         # Told the executor's id as soon as it took the turn: work the turn
@@ -164,14 +167,14 @@ class OwnerTurn:
             await self._cancel(_cancel_reason(cancelled))
             raise
         if isinstance(frame, Output):
-            output = self._decoded(decode_output, frame.output)
+            output = self._decoded(decode_output, frame.output, self._errors)
             self._copies.record = output.response_metadata
             if frame.streams:
                 output.response_stream = RemoteStream(self)
             return output
         if isinstance(frame, Error):
             self._finish()
-            raise rebuild_error(frame.error)
+            raise self._errors.rebuild(frame.error)
         self._finish()
         if self._steer_cut:
             # Cut by a steering Cancel before it answered (RFC §10.6.8).
@@ -204,7 +207,7 @@ class OwnerTurn:
             return self._decoded(self._copies.item, seq, frame.item)
         if isinstance(frame, Error):
             await self._drain_to_end(None)
-            raise rebuild_error(frame.error)
+            raise self._errors.rebuild(frame.error)
         # The turn ended with every item read.
         self.reader_stopped()
         self._finish()

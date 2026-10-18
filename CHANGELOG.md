@@ -259,13 +259,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a tool that calls the kit finds the reentrancy guards it finds today.
   Heartbeats run both ways: a silent executor fails the turn with
   `TurnLinkError` (`executor_lost`, or `no_executor` when none took it), and
-  an error of a class outside RoomKit and Python comes back as
-  `RemoteTurnError`, keeping its class name; every error keeps, as a note,
-  where the executor raised it. A frame the backend cannot carry (a tool
+  an error of a class outside RoomKit, Python and the classes the host
+  declares (`error_classes`, below) comes back as `RemoteTurnError`, keeping
+  its class name; every error keeps, as a note, where the executor raised it. A frame the backend cannot carry (a tool
   result JSON has no form for, an unknown stream item) fails the turn with a
   `TypeError` naming it; a record value JSON has no form for crosses as its
   text. A stream its reader drops, or a cancelled delivery set leaves unread,
   is closed on the executor.
+
+- `RoomKit(error_classes=...)` and `TurnExecutor(error_classes=...)` (and
+  `TurnClient`) name the application's exception classes that cross the turn
+  backend as themselves (RMK-838, RFC §10.6.8). Since every turn runs through
+  the backend, an error a turn raised reached `InboundResult.error`,
+  `ON_ERROR` and its chain of causes as a `RemoteTurnError` without its
+  attributes whenever its class was not RoomKit's or Python's: an
+  application's classified provider error lost its type, its code and its
+  verdicts, and a transport error among its causes (`httpx.ReadTimeout`) its
+  type. A declared class and its subclasses come back as themselves, with
+  their arguments and the attributes JSON carries, causes included, on the
+  kit and on an executor in another process, each reading with its own
+  declaration: `RoomKit(error_classes=(AppError, httpx.HTTPError))`. Any other
+  class comes back as a `RemoteTurnError` that keeps its JSON attributes and
+  its class's ancestors (`RemoteTurnError.bases`), and that is also an
+  instance of the nearest of them the side rebuilds: an application's
+  subclass of `ProviderError` still reads as a `ProviderError` (its log line,
+  `ON_ERROR`, the resilience layer), and `str()` gives its message unchanged.
+  A `RemoteTurnError` that crosses again (a delegated task's failure read by
+  `wait_task`) crosses as the error it stands for. An entry that is not an
+  `Exception` class raises `TypeError`. A class named on the wire is looked up
+  among the names a loaded module defines: it never imports a module nor runs
+  a module's `__getattr__` (a frame naming `roomkit.sources:WebSocketSource`
+  imported `roomkit.sources.websocket`). Example:
+  `examples/turn_error_classes.py`.
 
 - `Discussion(rules=...)` gives each turn the host's rules for how the room
   works, in place of the default (RMK-806, RFC §19.7.5 rule 14). `{handle}` in

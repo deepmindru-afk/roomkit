@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from roomkit.channels.base import Channel
     from roomkit.models.channel import ChannelOutput
     from roomkit.models.event import RoomEvent
+    from roomkit.turns._error_codec import ErrorClasses
     from roomkit.turns.base import ExecutorLink, RoomOwner, TurnTimeouts
     from roomkit.turns.wire import Control, Frame, TurnRequest
 
@@ -90,6 +91,7 @@ class ExecutorTurn:
         executor_id: str,
         channel: Awaitable[Channel | None],
         timeouts: TurnTimeouts,
+        errors: ErrorClasses,
         owner: RoomOwner | None = None,
     ) -> None:
         self._link = link
@@ -114,12 +116,16 @@ class ExecutorTurn:
         self._changes = ChannelChanges(self._send, self._refuse)
         # The calls the turn makes to its owner: the tools it serves, and
         # the verbs of the turn's host (RFC §10.6.5).
-        self._calls = ExecutorCalls(self._request, self._send_call)
+        self._calls = ExecutorCalls(self._request, self._send_call, errors)
         # Work the turn began reaches the owner after it, where the backend
         # carries that (RFC §10.6.3, §10.6.5).
-        after = BetweenTurns(owner, self._request, executor_id) if owner is not None else None
+        after = (
+            BetweenTurns(owner, self._request, executor_id, errors) if owner is not None else None
+        )
         self._host = TurnHost(
-            self._calls.host_call, between_turns=after.call if after is not None else None
+            self._calls.host_call,
+            between_turns=after.call if after is not None else None,
+            errors=errors,
         )
         self._inputs = ExecutorInputs(self._send_call)
         # What the turn's channel publishes and its hooks emit (RFC §10.6.2).

@@ -25,6 +25,7 @@ from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, TurnTimeouts
+from roomkit.turns._error_codec import ROOMKIT_ERRORS
 from roomkit.turns._executor_turn import ExecutorTurn
 from roomkit.turns._owner_turn import OwnerTurn
 from roomkit.turns.owner import turn_request
@@ -437,7 +438,7 @@ async def test_a_turn_whose_frames_cannot_be_read_fails_rather_than_hangs() -> N
         ),
         RoomContext(room=Room(id="room")),
     )
-    turn = OwnerTurn(_BrokenLink(request), TurnTimeouts())  # type: ignore[arg-type]
+    turn = OwnerTurn(_BrokenLink(request), TurnTimeouts(), ROOMKIT_ERRORS)  # type: ignore[arg-type]
 
     with pytest.raises(TurnLinkError) as raised:
         await asyncio.wait_for(turn.output(), 2)

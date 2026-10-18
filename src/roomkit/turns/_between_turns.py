@@ -14,10 +14,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from roomkit.turns._error_codec import rebuild_error
 from roomkit.turns.wire import RoomCall, RoomPublication
 
 if TYPE_CHECKING:
+    from roomkit.turns._error_codec import ErrorClasses
     from roomkit.turns.base import RoomOwner
     from roomkit.turns.wire import Ephemeral, FrameworkEventFrame, TurnRequest
 
@@ -27,10 +27,13 @@ logger = logging.getLogger("roomkit.turns")
 class BetweenTurns:
     """One turn's way to its owner once the turn ended."""
 
-    def __init__(self, owner: RoomOwner, request: TurnRequest, executor_id: str) -> None:
+    def __init__(
+        self, owner: RoomOwner, request: TurnRequest, executor_id: str, errors: ErrorClasses
+    ) -> None:
         self._owner = owner
         self._request = request
         self._executor_id = executor_id
+        self._errors = errors
 
     async def call(self, verb: str, arguments: dict[str, Any]) -> Any:
         """Send a host verb for the turn's room: its result.
@@ -52,7 +55,7 @@ class BetweenTurns:
             )
         )
         if answer.error is not None:
-            raise rebuild_error(answer.error, where="the room owner")
+            raise self._errors.rebuild(answer.error, where="the room owner")
         return answer.result
 
     async def publish(self, frame: Ephemeral | FrameworkEventFrame) -> None:

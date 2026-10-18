@@ -86,6 +86,10 @@ class ErrorRecord(BaseModel):
     causes: list[ErrorRecord] = Field(default_factory=list)
     traceback: str | None = None
     """Where the error was raised on the executor, formatted."""
+    bases: list[str] = Field(default_factory=list)
+    """The classes the error's class derives from below ``Exception``,
+    nearest first: a side that does not rebuild the class reads the error as
+    the nearest of these it rebuilds."""
 
 
 class WireOutput(BaseModel):

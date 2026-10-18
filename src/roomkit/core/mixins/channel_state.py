@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.core.exceptions import ChannelNotFoundError, ChannelNotRegisteredError
 from roomkit.models.enums import ChannelCategory
-from roomkit.turns._error_codec import rebuild_error
 from roomkit.turns._rooms import room_state_key, stored_room_state
 from roomkit.turns.wire import ChannelCall, RoomDetached
 
@@ -76,7 +75,7 @@ class ChannelStateMixin:
         if answer.room_state is not None:
             await self._store_room_state(room_id, channel_id, answer.room_state)
         if answer.error is not None:
-            raise rebuild_error(answer.error)
+            raise self._turns.errors.rebuild(answer.error)
         return answer.result
 
     async def _store_room_state(

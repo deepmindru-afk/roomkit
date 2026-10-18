@@ -32,7 +32,7 @@ from roomkit.models.enums import EventType, Visibility
 from roomkit.models.event import EventContent, RoomEvent
 from roomkit.models.room import Room
 from roomkit.models.task import DelegatedTaskResult, Observation
-from roomkit.turns._error_codec import rebuild_error
+from roomkit.turns._error_codec import ROOMKIT_ERRORS, ErrorClasses
 from roomkit.turns.wire import ErrorRecord
 
 HostCaller = Callable[[str, dict[str, Any]], Awaitable[Any]]
@@ -164,9 +164,16 @@ class TurnHost:
     """What a host's tool or hook on a turn's executor may ask of the room
     owner, each verb one call across the turn backend (RFC §10.6.5)."""
 
-    def __init__(self, call: HostCaller, *, between_turns: HostCaller | None = None) -> None:
+    def __init__(
+        self,
+        call: HostCaller,
+        *,
+        between_turns: HostCaller | None = None,
+        errors: ErrorClasses = ROOMKIT_ERRORS,
+    ) -> None:
         self._call = call
         self._between_turns = between_turns
+        self._errors = errors
         self._open = True
 
     @property
@@ -209,7 +216,7 @@ class TurnHost:
             return None
         result = DelegatedTaskResult.model_validate(data["result"])
         if data.get("exception") is not None:
-            failure = rebuild_error(
+            failure = self._errors.rebuild(
                 ErrorRecord.model_validate(data["exception"]), where="the room owner"
             )
             if isinstance(failure, Exception):

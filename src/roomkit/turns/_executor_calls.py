@@ -27,21 +27,27 @@ from roomkit.tools.context import (
     current_tool_room_id,
 )
 from roomkit.turns._codec import decode_result
-from roomkit.turns._error_codec import rebuild_error
 from roomkit.turns.wire import CallCancel, CallContext, HostCall, HostResult, ToolCall
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from roomkit.turns._error_codec import ErrorClasses
     from roomkit.turns.wire import Frame, ToolResult, TurnRequest
 
 
 class ExecutorCalls:
     """The owner-served calls of one turn, each awaiting its result."""
 
-    def __init__(self, request: TurnRequest, send: Callable[[Frame], Awaitable[int]]) -> None:
+    def __init__(
+        self,
+        request: TurnRequest,
+        send: Callable[[Frame], Awaitable[int]],
+        errors: ErrorClasses,
+    ) -> None:
         self._request = request
         self._send = send
+        self._errors = errors
         self._pending: dict[str, asyncio.Future[ToolResult | HostResult]] = {}
         self._settled = False
         self.owner_tools = TurnOwnerTools(
@@ -83,7 +89,7 @@ class ExecutorCalls:
         if not isinstance(result, HostResult):
             raise RuntimeError("The room owner answered a verb with a tool's result")
         if result.error is not None:
-            raise rebuild_error(result.error, where="the room owner")
+            raise self._errors.rebuild(result.error, where="the room owner")
         return result.result
 
     async def _call(self, name: str, arguments: dict[str, Any]) -> Any:
@@ -94,7 +100,7 @@ class ExecutorCalls:
         result = await self._ask(call, f"tool {name!r}")
         if isinstance(result, HostResult):
             raise RuntimeError("The room owner answered a tool call with a verb's result")
-        return _answer(result)
+        return _answer(result, self._errors)
 
     async def _ask(self, call: ToolCall | HostCall, what: str) -> ToolResult | HostResult:
         """Send *call* and wait for its one answer; a call cut before it
@@ -136,13 +142,13 @@ def _call_context() -> CallContext:
     )
 
 
-def _answer(result: ToolResult) -> Any:
+def _answer(result: ToolResult, errors: ErrorClasses) -> Any:
     """The handler's answer, its structured copy written on the call as the
     handler would have written it; what it raised, raised here."""
     if result.outcome != "served" or result.result is None:
         if result.error is None:
             raise RuntimeError("The room owner answered a call without its result")
-        raise rebuild_error(result.error, where="the room owner")
+        raise errors.rebuild(result.error, where="the room owner")
     record = current_tool_call()
     if record is not None and result.structured_content is not None:
         record.structured_content = result.structured_content

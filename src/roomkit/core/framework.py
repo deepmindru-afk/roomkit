@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -213,6 +213,7 @@ class RoomKit(
         media_resolver: MediaResolver | None = None,
         attached_media: AttachedMedia | None = None,
         turn_backend: TurnBackend | None = None,
+        error_classes: Iterable[type[Exception]] = (),
     ) -> None:
         """Initialise the RoomKit orchestrator.
 
@@ -271,6 +272,17 @@ class RoomKit(
                 (RFC §10.6). Defaults to ``InMemoryTurnBackend``: every turn
                 runs in this process, as serialized messages, on the kit's own
                 executor, which reads the channels registered here.
+            error_classes: The application's exception classes, with their
+                subclasses, that an error crossing the turn backend is
+                rebuilt as (RFC §10.6.8), on this kit and on its own
+                executor, beyond RoomKit's and Python's own: an error a
+                turn raised reaches ``InboundResult.error``, ``ON_ERROR``
+                and the chain of causes as the class it was raised as, its
+                attributes kept. Any other class comes back as a
+                ``RemoteTurnError`` that keeps its JSON attributes and reads
+                as the nearest ancestor rebuilt here (a ``ProviderError``
+                subclass, a ``TimeoutError``). An executor in another process
+                declares its own (``TurnExecutor(error_classes=...)``).
             process_timeout: Timeout in seconds for the locked processing phase.
             stt: Optional speech-to-text provider for transcription.
             tts: Optional text-to-speech provider for synthesis.
@@ -338,7 +350,7 @@ class RoomKit(
         self._verification_timers: dict[str, asyncio.Task[None]] = {}
         self._process_timeout = process_timeout
         self._channels: dict[str, Channel] = {}
-        self._start_turns(turn_backend)
+        self._start_turns(turn_backend, error_classes)
         # A strategy's runner takes an agent's turns on this owner (RFC §10.6.1).
         self._turn_runners = TurnRunners()
         # Explicit detaches (revocations, RFC §7.5-7) are recorded in room
@@ -499,11 +511,13 @@ class RoomKit(
 
         self._room_recorder_mgr = RoomRecorderManager()
 
-    def _start_turns(self, backend: TurnBackend | None) -> None:
+    def _start_turns(
+        self, backend: TurnBackend | None, error_classes: Iterable[type[Exception]]
+    ) -> None:
         """Set up the client every intelligence turn runs through (RFC §10.6),
         on *backend* or an in-memory one, with the kit's own executor wired
         from the kit; the triggers a turn fires are that executor's (RFC
-        §10.6.6)."""
+        §10.6.6), the host's *error_classes* rebuilt by both (RFC §10.6.8)."""
         # The tools orchestration sets up for a channel, kept beside its
         # declaration, never on the live object (RFC §10.6.2).
         self._owner_tools = OwnerToolStore(self._channels.get)
@@ -513,6 +527,7 @@ class RoomKit(
             host=KitHost(self),
             events=KitEvents(self),
             owner_tools=self._owner_tools,
+            error_classes=error_classes,
         )
         # The kit's executor wires each channel the kit registers from the kit.
         self.turn_executor.use_wiring(KitWiringEnv(self))
