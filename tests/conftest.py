@@ -86,6 +86,11 @@ def pytest_configure(config: pytest.Config) -> None:
         redis_turn_mode.install(config)
 
 
+def pytest_unconfigure(config: pytest.Config) -> None:
+    if redis_turn_mode.ENABLED:
+        redis_turn_mode.clean_up()
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """A divergence mark needs its reason and the ``streaming`` fixture.
 

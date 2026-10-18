@@ -11,6 +11,7 @@ import asyncio
 import contextvars
 import logging
 from collections.abc import Callable, Collection, Iterable
+from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -222,6 +223,11 @@ class TurnExecutor:
         return self._hosted
 
     @property
+    def timeouts(self) -> TurnTimeouts:
+        """The heartbeat bounds its turns keep (RFC §10.6.8)."""
+        return self._timeouts
+
+    @property
     def closed(self) -> bool:
         """Whether the executor closed: it takes no more turns."""
         return self._closed
@@ -257,6 +263,7 @@ class TurnExecutor:
         )
         self._turns[task] = turn
         task.add_done_callback(self._forget)
+        task.add_done_callback(partial(_let_go, link))
 
     async def close(self) -> None:
         """Take no more turns, and cut the ones running, but the turns this
@@ -325,6 +332,14 @@ class TurnExecutor:
                 f"{request.channel_id!r} on executor {self.executor_id}: rename one of them "
                 "(RFC §10.6.5)"
             )
+
+
+def _let_go(link: ExecutorLink, task: asyncio.Task[None]) -> None:
+    """The turn's task ended: its link lets go of it, whatever its end."""
+    try:
+        link.turn_ended()
+    except Exception:
+        logger.exception("Turn %s: its link failed to let go", link.request.turn_id)
 
 
 async def _hand_event(channel: Channel | None, message: CommittedEvent) -> None:

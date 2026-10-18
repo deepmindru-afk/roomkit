@@ -11,11 +11,17 @@ process is marked ``in_process`` (naming why) and skipped in this mode.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from uuid import uuid4
 
 import pytest
 
 import roomkit.turns.owner as turns_owner
+
+try:
+    import redis
+except ImportError:  # this mode only runs with the redis extra
+    redis = None  # type: ignore[assignment]
 from roomkit.turns.redis import RedisTurnBackend
 
 ENABLED = os.environ.get("ROOMKIT_TEST_TURN_BACKEND") == "redis"
@@ -25,6 +31,28 @@ def _backend() -> RedisTurnBackend:
     return RedisTurnBackend(
         os.environ["REDIS_URL"], key_prefix=f"roomkit:test:{uuid4().hex[:12]}", _loop_back=True
     )
+
+
+def clean_up() -> None:
+    """Delete the keys this mode's backends left (their holders live a week)."""
+    assert redis is not None
+    client = redis.Redis.from_url(os.environ["REDIS_URL"])
+    try:
+        for keys in _batches(client.scan_iter("roomkit:test:*", count=1000)):
+            client.delete(*keys)
+    finally:
+        client.close()
+
+
+def _batches(keys: Iterator[bytes], size: int = 500) -> Iterator[list[bytes]]:
+    batch: list[bytes] = []
+    for key in keys:
+        batch.append(key)
+        if len(batch) == size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
 
 
 def install(config: pytest.Config) -> None:

@@ -135,6 +135,10 @@ class TurnClient(RoomOwner):
         # The turns this client started and that still run, in start order:
         # what steering resolves its targets from (RFC §10.6.8).
         self._started: list[OwnerTurn] = []
+        # The turns being handed to an executor (a distributed backend waits
+        # for its acknowledgement): one may already run there, so a steer
+        # waits for its hand-over before it chooses its targets.
+        self._handing: dict[str, tuple[TurnRequest, asyncio.Future[None]]] = {}
         # The owner-served calls running for this client's turns (RFC §10.6.5).
         self._calls: set[asyncio.Task[None]] = set()
         # The open human-input requests of its turns, answered here.
@@ -175,10 +179,13 @@ class TurnClient(RoomOwner):
             channel_id, request.room_id, request.turn_id
         )
         self._depths.put(channel_id, request.room_id, (request.turn_id, event.chain_depth + 1))
+        handed: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._handing[request.turn_id] = (request, handed)
         try:
             link = await self.backend.submit(request)
         except BaseException:
             self._unleave(channel_id, request.room_id, submitted, request.previous_turn)
+            self._handed(request, handed)
             raise
         turn = OwnerTurn(
             link,
@@ -192,7 +199,13 @@ class TurnClient(RoomOwner):
         )
         self._open.add(turn)
         self._started = [*(t for t in self._started if not t.over), turn]
+        # Steerable from now: a steer that waited for the hand-over finds it.
+        self._handed(request, handed)
         return await turn.output()
+
+    def _handed(self, request: TurnRequest, handed: asyncio.Future[None]) -> None:
+        self._handing.pop(request.turn_id, None)
+        handed.set_result(None)
 
     def enable_room_hook(self, room_id: str, name: str) -> None:
         """Name *name* among *room_id*'s hooks on executor triggers: its
@@ -341,6 +354,7 @@ class TurnClient(RoomOwner):
         """
         if room_id is not None and turn_id is not None:
             raise ValueError("steer() addresses a room_id or a turn_id, not both")
+        await self._handed_over(channel_id, room_id, turn_id)
         running = [t for t in self._started if not t.over and t.request.channel_id == channel_id]
         if turn_id is not None:
             targets = [t for t in running if t.request.turn_id == turn_id]
@@ -351,6 +365,21 @@ class TurnClient(RoomOwner):
             targets = running[-1:]
         reached = await asyncio.gather(*(turn.steer(directive) for turn in targets))
         return sum(reached)
+
+    async def _handed_over(
+        self, channel_id: str, room_id: str | None, turn_id: str | None
+    ) -> None:
+        """Wait for the turns of *channel_id* (in *room_id*, or *turn_id*)
+        still being handed to an executor: each may already run there."""
+        pending = [
+            handed
+            for request, handed in self._handing.values()
+            if request.channel_id == channel_id
+            and (room_id is None or request.room_id == room_id)
+            and (turn_id is None or request.turn_id == turn_id)
+        ]
+        if pending:
+            await asyncio.wait(pending, timeout=self._timeouts.accept)
 
     async def close(self) -> None:
         """Close the own executor, which cuts its turns, stop holding every

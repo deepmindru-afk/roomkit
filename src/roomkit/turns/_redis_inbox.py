@@ -1,8 +1,9 @@
 """A process's inbox on Redis for the turn backend (RFC §10.6).
 
 Each process that runs a :class:`~roomkit.turns.redis.RedisTurnBackend` has
-one stream, its inbox, which every other process writes to and it alone
-reads, with one blocking read for all its turns. An entry carries one message
+one stream, its inbox, which every other process writes to (through its
+outbox, :mod:`~roomkit.turns._redis_outbox`) and it alone reads, with one
+blocking read for all its turns, on a connection of its own. An entry carries one message
 of the turn protocol as its JSON (a request, a frame, a control message, a
 channel control, a message outside a turn, an answer), with the transport's
 fields only: its kind, the node that sent it (the answer's address), the
@@ -68,50 +69,32 @@ def _text(value: Any) -> str:
 
 
 class Inbox:
-    """This process's inbox: what it sends to others, and the reader of its own.
+    """The reader of this process's inbox.
 
     Args:
-        client: The ``redis.asyncio`` client.
-        prefix: The keys' prefix.
-        node: This process's node id.
+        client: The ``redis.asyncio`` client its blocking read holds a
+            connection of.
+        key: This process's inbox stream.
         handle: Called with each entry read, in order, on the reader's task;
             it must not wait.
-        ttl_ms: How long an inbox nobody refreshes lives.
+        owns_client: Whether the reader closes *client* when it closes.
     """
 
     def __init__(
-        self,
-        client: Any,
-        prefix: str,
-        node: str,
-        handle: Callable[[Envelope], None],
-        ttl_ms: int,
+        self, client: Any, key: str, handle: Callable[[Envelope], None], *, owns_client: bool
     ) -> None:
         self._client = client
-        self._prefix = prefix
-        self.node = node
+        self._key = key
         self._handle = handle
-        self._ttl_ms = ttl_ms
+        self._owns_client = owns_client
         self._reader: asyncio.Task[None] | None = None
-
-    def key(self, node: str) -> str:
-        """The inbox stream of *node*."""
-        return f"{self._prefix}:inbox:{node}"
 
     def start(self) -> None:
         """Start reading this process's inbox, once."""
         if self._reader is None:
             self._reader = asyncio.get_running_loop().create_task(
-                self._read(), name=f"roomkit-turns-inbox-{self.node}"
+                self._read(), name=f"roomkit-turns-inbox-{self._key}"
             )
-
-    async def send(self, node: str, envelope: Envelope) -> None:
-        """Append *envelope* to *node*'s inbox, which lives on while written."""
-        key = self.key(node)
-        pipe = self._client.pipeline(transaction=False)
-        pipe.xadd(key, envelope.fields())
-        pipe.pexpire(key, self._ttl_ms)
-        await pipe.execute()
 
     async def close(self) -> None:
         """Stop reading; what is left in the inbox expires with it."""
@@ -119,11 +102,13 @@ class Inbox:
             self._reader.cancel()
             await asyncio.gather(self._reader, return_exceptions=True)
             self._reader = None
+        if self._owns_client:
+            await self._client.aclose()
 
     async def _read(self) -> None:
         """Read the inbox from its start, each entry handed on and deleted;
         a failed read is retried, the entries waiting where they are."""
-        key = self.key(self.node)
+        key = self._key
         last = "0-0"
         while True:
             try:

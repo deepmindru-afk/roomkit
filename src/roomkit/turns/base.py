@@ -135,6 +135,11 @@ class ExecutorLink(ABC):
         the backend shares the owner's process (RFC §10.6.5)."""
         return contextvars.Context()
 
+    def turn_ended(self) -> None:  # noqa: B027
+        """Called by the executor once the turn's task ended, however it
+        ended (its end sent or not): the link lets go of the turn. Default:
+        nothing to let go of."""
+
     def stream_context(self) -> contextvars.Context | None:
         """The execution context the turn's stream advances in, once known;
         ``None`` means a fresh one, kept for the stream's life."""

@@ -526,3 +526,32 @@ async def test_the_turns_own_work_reads_why_it_was_cancelled() -> None:
 
     assert reasons == ["superseded"]
     await client.close()
+
+
+class _AckedLate(InMemoryTurnBackend):
+    """A backend that, as a distributed one, hands a turn over and then
+    waits for its acknowledgement: the turn already runs meanwhile."""
+
+    async def submit(self, request: Any) -> Any:
+        link = await super().submit(request)
+        await asyncio.sleep(0.2)
+        return link
+
+
+async def test_a_steer_reaches_a_turn_still_being_handed_over() -> None:
+    channel = Steerable()
+    channels = {channel.channel_id: channel}
+    client = TurnClient(
+        _AckedLate(), executor=TurnExecutor(channels.get, hosts=channels.__contains__)
+    )
+    output = asyncio.ensure_future(_start(client))
+    await asyncio.sleep(0.05)  # the turn runs on its executor; not yet handed over
+
+    reached = await asyncio.wait_for(
+        client.steer(InjectMessage(content="x"), "agent", room_id="room"), 2
+    )
+
+    assert reached == 1
+    channel.release.set()
+    await output
+    await client.close()

@@ -4,7 +4,9 @@ Each kind of entry has its route: a frame to the owner's end of its turn, a
 control message to the executor's, a request to the executor it names, a
 channel control to that executor, an answer to the question waiting for it,
 and the work a turn began after it ended to the room owner that submitted the
-turn (RFC §10.6.3), whichever process that owner runs in.
+turn (RFC §10.6.3), whichever process that owner runs in. A request and a
+channel control are answered, so the owner goes on only once the executor's
+process took them, in order, as the in-memory backend does.
 """
 
 from __future__ import annotations
@@ -24,9 +26,6 @@ from roomkit.turns.base import RoomOwner
 from roomkit.turns.wire import (
     ChannelControlEnvelope,
     ChannelResult,
-    End,
-    Error,
-    FrameEnvelope,
     HostResult,
     OwnerMessageEnvelope,
     RoomCall,
@@ -35,20 +34,24 @@ from roomkit.turns.wire import (
 )
 
 if TYPE_CHECKING:
+    from roomkit.turns._redis_beat import LiveExecutors
     from roomkit.turns._redis_inbox import Envelope
-    from roomkit.turns._redis_presence import LiveExecutors
+    from roomkit.turns._redis_links import Post
     from roomkit.turns.executor import TurnExecutor
     from roomkit.turns.wire import ChannelControl
 
 logger = logging.getLogger("roomkit.turns")
 
-Post = Callable[..., Coroutine[Any, Any, None]]
-
 # How many turns' owners are remembered for the work they began (RFC §10.6.3).
 _TURN_OWNERS = 10_000
-# How long an executor waits for its room owner to answer a verb made after
-# its turn: owners beat in no registry.
-_OWNER_ANSWER_TIMEOUT = 30.0
+# An answer Redis refused is written again, so its question, waiting while
+# this process beats, is not left waiting for good.
+_ANSWER_ATTEMPTS = 5
+_ANSWER_RETRY_DELAY = 1.0
+TAKEN = "taken"
+"""What an executor's process answers a request it handed to its executor."""
+REFUSED = "refused"
+"""What it answers a request for an executor that no longer serves."""
 
 
 class Routes:
@@ -57,9 +60,9 @@ class Routes:
 
     Args:
         node: This process's node id.
-        post: Writes to a node's inbox: ``post(node, kind, body, target, ref)``.
+        post: Queues a message for a node's inbox (it never waits).
         spawn: Runs a coroutine on a task the backend holds.
-        live: The executors alive, as the owner reads them.
+        live: The processes alive, as this one reads them.
         local_owner: What the owner of this process is reached by for a turn
             it submitted to an executor here.
     """
@@ -81,6 +84,9 @@ class Routes:
         """The executors of this process other processes reach, by id."""
         self.owner: RoomOwner | None = None
         """The room owner of this process, once it attends."""
+        self.running: frozenset[str] = frozenset()
+        """The turns of other processes this one runs: replaced, never
+        changed, so the beat thread reads it whole."""
         self._owner_links: dict[str, RedisTurnLink] = {}
         self._executor_links: dict[str, RedisExecutorLink] = {}
         self._answers: dict[str, asyncio.Future[str]] = {}
@@ -92,10 +98,9 @@ class Routes:
             "request": self._request,
             "channel": lambda envelope: self._spawn(self._channel(envelope)),
             "owner": lambda envelope: self._spawn(self._owner_message(envelope)),
-            "channel_result": self._answer,
-            "host_result": self._answer,
+            "answer": self._answer,
         }
-        self.port = _OwnerPort(self)
+        self.port: RoomOwner = _OwnerPort(self)
         """What this process's executors reach a room owner by outside a turn."""
 
     def route(self, envelope: Envelope) -> None:
@@ -106,33 +111,44 @@ class Routes:
             return
         route(envelope)
 
-    def owner_link(self, request: TurnRequest, executor_id: str, node: str) -> RedisTurnLink:
+    def owner_link(
+        self, request: TurnRequest, member: str, executor_id: str, node: str
+    ) -> RedisTurnLink:
         """The owner's end of a turn submitted to *executor_id* at *node*."""
         link = RedisTurnLink(
-            request,
-            executor_id,
-            node,
-            self._post,
-            self._live,
-            self._forget_owner_link,
-            self._spawn,
+            request, member, executor_id, node, self._post, self._live, self.forget_owner_link
         )
         self._owner_links[request.turn_id] = link
         return link
 
+    def forget_owner_link(self, link: RedisTurnLink) -> None:
+        self._owner_links.pop(link.request.turn_id, None)
+
     async def ask(
-        self, node: str, kind: str, body: str, target: str, *, while_alive: str | None = None
+        self,
+        node: str,
+        kind: str,
+        body: str,
+        target: str,
+        *,
+        alive: Callable[[], bool] | None = None,
+        bound: float | None = None,
     ) -> str:
-        """Post a question to *node* and wait for its answer's body: while the
-        executor *while_alive* beats, else within the owner answer bound."""
+        """Post a question to *node* and wait for its answer's body, while
+        *alive* says the other side lives (checked each heartbeat interval),
+        and within *bound* when there is one."""
         ref = uuid4().hex
         answer: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._answers[ref] = answer
+
+        def failed(error: Exception) -> None:
+            if not answer.done():
+                answer.set_exception(TurnLinkError("frame_lost", f"Not written: {error}"))
+
         try:
-            await self._post(node, kind, body, target, ref)
-            if while_alive is None:
-                return await asyncio.wait_for(answer, _OWNER_ANSWER_TIMEOUT)
-            return await self._answered_while_alive(answer, while_alive)
+            self._post(node, kind, body, target, ref, failed=failed)
+            async with asyncio.timeout(bound):
+                return await self._answered_while_alive(answer, alive)
         finally:
             self._answers.pop(ref, None)
 
@@ -150,19 +166,19 @@ class Routes:
         """The node of the owner that submitted *turn_id* to an executor here."""
         return self._turn_owners.get(turn_id)
 
-    def _forget_owner_link(self, link: RedisTurnLink) -> None:
-        self._owner_links.pop(link.request.turn_id, None)
-
-    def _forget_executor_link(self, link: RedisExecutorLink) -> None:
-        self._executor_links.pop(link.request.turn_id, None)
-
-    async def _answered_while_alive(self, answer: asyncio.Future[str], executor_id: str) -> str:
+    async def _answered_while_alive(
+        self, answer: asyncio.Future[str], alive: Callable[[], bool] | None
+    ) -> str:
         while True:
             done, _ = await asyncio.wait({answer}, timeout=self._live.interval)
             if done:
                 return answer.result()
-            if executor_id not in await self._live.declared():
-                raise TurnLinkError("executor_lost", f"Executor {executor_id} stopped beating")
+            if alive is not None and not alive():
+                raise TurnLinkError("executor_lost", "The other side stopped beating")
+
+    def _forget_executor_link(self, link: RedisExecutorLink) -> None:
+        if self._executor_links.pop(link.request.turn_id, None) is not None:
+            self.running = frozenset(self._executor_links)
 
     # -- Routes ---------------------------------------------------------------------
 
@@ -183,44 +199,33 @@ class Routes:
             answer.set_result(envelope.body)
 
     def _request(self, envelope: Envelope) -> None:
-        """A request of an owner elsewhere, for an executor of this process; one
-        that no longer serves answers at once, as no executor would."""
-        request = TurnRequest.model_validate_json(envelope.body)
+        """A request of an owner elsewhere, for an executor of this process,
+        answered at once: taken, or refused by an executor that closed."""
         executor = self.shared.get(envelope.target)
         if executor is None or executor.closed:
-            self._spawn(self._refuse(request, envelope.sender, envelope.target))
+            self._answer_back(envelope, REFUSED)
             return
-        link = RedisExecutorLink(
-            request,
-            envelope.sender,
-            self._post,
-            self._forget_executor_link,
-        )
+        request = TurnRequest.model_validate_json(envelope.body)
+        link = RedisExecutorLink(request, envelope.sender, self._post, self._forget_executor_link)
         self._executor_links[request.turn_id] = link
+        self.running = frozenset(self._executor_links)
         self._turn_owners[request.turn_id] = envelope.sender
         while len(self._turn_owners) > _TURN_OWNERS:
             self._turn_owners.popitem(last=False)
         executor.take(link)
-
-    async def _refuse(self, request: TurnRequest, owner_node: str, executor_id: str) -> None:
-        refusal = TurnLinkError("no_executor", f"Executor {executor_id} no longer serves")
-        for seq, frame in enumerate((Error(error=error_record(refusal)), End()), start=1):
-            body = FrameEnvelope(turn_id=request.turn_id, seq=seq, message=frame)
-            await self._post(owner_node, "frame", body.model_dump_json(), request.turn_id)
+        self._answer_back(envelope, TAKEN)
 
     async def _channel(self, envelope: Envelope) -> None:
+        """A channel control for an executor here, applied, then answered."""
         executor = self.shared.get(envelope.target)
+        result: ChannelResult | None = ChannelResult()
         if executor is None:
             logger.warning(
                 "A channel control came for executor %s, which no longer serves", envelope.target
             )
-            return
-        answer = await executor.control(_crossed(envelope.body))
-        if envelope.ref:
-            result = answer if answer is not None else ChannelResult()
-            await self._post(
-                envelope.sender, "channel_result", result.model_dump_json(), "", envelope.ref
-            )
+        else:
+            result = await executor.control(_crossed(envelope.body))
+        self._answer_back(envelope, (result or ChannelResult()).model_dump_json())
 
     async def _owner_message(self, envelope: Envelope) -> None:
         """Work an executor elsewhere began in a turn of this owner (RFC §10.6.3)."""
@@ -235,36 +240,52 @@ class Routes:
             answer = HostResult(call_id=message.call_id, error=error_record(refusal))
         else:
             answer = await _apart(owner.room_call(message))
-        await self._post(
-            envelope.sender, "host_result", answer.model_dump_json(), "", envelope.ref
-        )
+        self._answer_back(envelope, answer.model_dump_json())
+
+    def _answer_back(self, question: Envelope, body: str, attempt: int = 1) -> None:
+        """Answer *question*, again a little later while Redis refuses it."""
+
+        def failed(error: Exception) -> None:
+            if attempt >= _ANSWER_ATTEMPTS:
+                logger.error("An answer to %s could not be written: %s", question.sender, error)
+                return
+            asyncio.get_running_loop().call_later(
+                _ANSWER_RETRY_DELAY, self._answer_back, question, body, attempt + 1
+            )
+
+        self._post(question.sender, "answer", body, "", question.ref, failed=failed)
 
 
 class _OwnerPort(RoomOwner):
     """What an executor served here reaches a room owner by outside a turn:
-    the owner that submitted the turn the work began in, here or elsewhere."""
+    the owner that submitted the turn the work began in, here or elsewhere,
+    waited for while that owner's process beats."""
 
     def __init__(self, routes: Routes) -> None:
         self._routes = routes
 
     async def room_call(self, message: RoomCall) -> HostResult:
-        node = self._routes.turn_owner(message.turn_id)
+        routes = self._routes
+        node = routes.turn_owner(message.turn_id)
         if node is None:
-            return await self._routes._local_owner.room_call(message)
+            return await routes._local_owner.room_call(message)
         body = OwnerMessageEnvelope(message=message).model_dump_json()
         try:
-            answer = await self._routes.ask(node, "owner", body, "")
-        except (TimeoutError, TurnLinkError) as exc:
+            answer = await routes.ask(
+                node, "owner", body, "", alive=lambda: routes._live.owner_alive(node)
+            )
+        except TurnLinkError as exc:
             return HostResult(call_id=message.call_id, error=error_record(exc))
         return HostResult.model_validate_json(answer)
 
     async def room_publication(self, message: RoomPublication) -> None:
-        node = self._routes.turn_owner(message.turn_id)
+        routes = self._routes
+        node = routes.turn_owner(message.turn_id)
         if node is None:
-            await self._routes._local_owner.room_publication(message)
+            await routes._local_owner.room_publication(message)
             return
         body = OwnerMessageEnvelope(message=message).model_dump_json()
-        await self._routes._post(node, "owner", body, "")
+        routes._post(node, "owner", body, "")
 
 
 def _crossed(raw: str) -> ChannelControl:

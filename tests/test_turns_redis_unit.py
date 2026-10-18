@@ -21,8 +21,10 @@ from roomkit.models.room import Room
 from roomkit.turns import InMemoryTurnBackend, TurnExecutor, TurnTimeouts
 from roomkit.turns._owner_turn import OwnerTurn
 from roomkit.turns._redis_inbox import Envelope
-from roomkit.turns._redis_presence import Declaration
+from roomkit.turns._redis_placement import Placement
+from roomkit.turns._redis_presence import Declaration, member_of
 from roomkit.turns.owner import registry_turn_client, turn_request
+from roomkit.turns.redis import RedisTurnBackend
 from roomkit.turns.wire import Accepted
 from tests.private_module import load_private_copy
 
@@ -38,7 +40,7 @@ def test_an_inbox_entry_reads_back_from_bytes_or_text() -> None:
 
 
 def test_a_declaration_takes_its_channels_with_every_room_hook_it_defines() -> None:
-    declared = Declaration("node-a", frozenset({"meteo"}), frozenset({"audit"}))
+    declared = Declaration("node-a", "host-a", frozenset({"meteo"}), frozenset({"audit"}))
 
     assert declared.takes("meteo", [])
     assert declared.takes("meteo", ["audit"])
@@ -166,3 +168,23 @@ def test_the_backend_without_redis_names_the_extra() -> None:
         module = load_private_copy("roomkit.turns.redis", fakes)
         with pytest.raises(ImportError, match=r"pip install roomkit\[redis\]"):
             module.RedisTurnBackend()
+
+
+def test_two_rooms_whose_ids_read_alike_hold_apart() -> None:
+    """``support:fr`` in ``acme`` and ``support`` in ``fr:acme`` are two holders."""
+    placement = Placement(None, "p", "node", None, loop_back=False)  # type: ignore[arg-type]
+
+    assert placement._holder_key("support:fr", "acme") != placement._holder_key(
+        "support", "fr:acme"
+    )
+
+
+def test_an_executor_restarted_elsewhere_is_another_member() -> None:
+    assert member_of("node-a", "host-1") != member_of("node-b", "host-1")
+
+
+def test_a_backend_given_a_client_needs_the_url_its_beat_connects_to() -> None:
+    pytest.importorskip("redis.asyncio")
+
+    with pytest.raises(ValueError, match="needs url"):
+        RedisTurnBackend(client=object())

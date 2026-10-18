@@ -15,16 +15,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   process on a shared Redis and a shared store: `RoomKit(store=...,
   turn_backend=RedisTurnBackend(url))` on the owner, `await
   backend.serve(TurnExecutor(build, hosts={"meteo"}, store=...))` on the
-  executor. Each process reads one inbox stream; executors register what
-  they declare and beat from a thread of their own, on Redis's clock, so a
-  turn busy with its CPU is slow, never lost, and a killed executor fails
-  its turn with `executor_lost` within `heartbeat_timeout`. A room's turns
-  stay on the executor that holds its state while it lives (the holder is
-  shared by every owner process), else go to one that takes them; a turn no
-  executor declares fails at once with `no_executor`. The agents the kit
-  registers live stay in its process. Work a turn began reaches the owner
-  that submitted it. Redis is the trust boundary (ACL, TLS). Example:
-  `examples/turns_redis.py`; guide: Agent Turns in Another Process (Redis).
+  executor. Each process reads one inbox stream and writes to the others in
+  order, one writer per destination; each beats from a thread of its own, on
+  Redis's clock, declaring its executors again at every beat. A turn counts
+  alive while its executor beats and its process still runs it: a turn busy
+  with its CPU is slow, never lost; a killed executor, or a write Redis
+  refuses, fails the turn within `heartbeat_timeout`. A request reaches one
+  executor at most: its process acknowledges it, a closed executor's refusal
+  places it again. A room's turns stay on the executor that holds its state
+  while it lives (the holder is shared by every owner process), else go to
+  one that takes them; a turn no executor declares fails at once with
+  `no_executor`. Channel controls are applied on the executor before the
+  owner goes on. The agents the kit registers live stay in its process. Work
+  a turn began reaches the owner that submitted it, while that owner lives.
+  `client=` needs `url=` too (the beat connects with it). Redis is the trust
+  boundary (ACL, TLS). Example: `examples/turns_redis.py`; guide: Agent
+  Turns in Another Process (Redis).
 - `TurnExecutor(hosts=...)` also takes the set of channel ids the executor
   runs (RMK-813, RFC §10.6.7); only an executor declared with a set takes
   turns from other processes, one given a predicate those of its own

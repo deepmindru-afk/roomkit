@@ -5,18 +5,21 @@ channel, while it lives and takes the turn, else one that takes it, one of
 the owner's own process first (carried in the process), else one alive
 elsewhere, the rooms no executor holds yet spread over them. The holder is a
 key every owner process reads, so a room's turns follow its session state
-whichever owner submits them.
+whichever owner submits them. An executor elsewhere is one process's: its id
+restarted in another process is another executor.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple
+from urllib.parse import quote
 
 from roomkit.core.exceptions import TurnLinkError
+from roomkit.turns._redis_presence import Declaration, member_of
 
 if TYPE_CHECKING:
-    from roomkit.turns._redis_presence import LiveExecutors
+    from roomkit.turns._redis_beat import LiveExecutors
     from roomkit.turns.executor import TurnExecutor
 
 # How long a room's holder is kept once no turn renews it.
@@ -24,10 +27,14 @@ _HOLDER_TTL_S = 7 * 24 * 3600
 
 
 class Elsewhere(NamedTuple):
-    """An executor of another process."""
+    """An executor of another process (of this one, in the tests' loop back)."""
 
     executor_id: str
     node: str
+
+    @property
+    def member(self) -> str:
+        return member_of(self.node, self.executor_id)
 
 
 class Placement:
@@ -37,7 +44,7 @@ class Placement:
         client: The ``redis.asyncio`` client.
         prefix: The keys' prefix.
         node: This process's node id.
-        live: The executors alive, as the owner reads them.
+        live: The processes alive, as this one reads them.
         loop_back: Tests only: this process's executors are reached across
             Redis too, as executors elsewhere would be.
     """
@@ -55,34 +62,47 @@ class Placement:
         self._next = 0
 
     async def place(
-        self, channel_id: str, room_id: str, room_hooks: Sequence[str] = ()
+        self,
+        channel_id: str,
+        room_id: str,
+        room_hooks: Sequence[str] = (),
+        *,
+        excluded: Collection[str] = (),
     ) -> TurnExecutor | Elsewhere:
         """The executor a room's turn or channel call of *channel_id* goes
-        to, recorded as the one holding the room's state from now."""
-        placed = await self.hold(channel_id, room_id, room_hooks)
-        executor_id = placed.executor_id
-        await self._client.set(
-            self._holder_key(channel_id, room_id), executor_id, ex=_HOLDER_TTL_S
-        )
+        to, but the members *excluded* (refused it), recorded as the one
+        holding the room's state from now."""
+        placed = await self.hold(channel_id, room_id, room_hooks, excluded=excluded)
+        holder = placed.member if isinstance(placed, Elsewhere) else self._here_member(placed)
+        await self._client.set(self._holder_key(channel_id, room_id), holder, ex=_HOLDER_TTL_S)
         return placed
 
     async def hold(
-        self, channel_id: str, room_id: str, room_hooks: Sequence[str] = ()
+        self,
+        channel_id: str,
+        room_id: str,
+        room_hooks: Sequence[str] = (),
+        *,
+        excluded: Collection[str] = (),
     ) -> TurnExecutor | Elsewhere:
         """The executor holding the room's state of *channel_id* while it
         lives and takes it, else one that takes it, one of this process
         first; the holder is left as it was (RFC §10.6.3)."""
-        here = {e.executor_id: e for e in self.here if e.takes(channel_id, room_hooks)}
-        elsewhere = await self._takers_elsewhere(channel_id, room_hooks, set(here))
-        holder = await self._client.get(self._holder_key(channel_id, room_id))
-        holder_id = _text(holder) if holder is not None else None
+        here = {
+            self._here_member(e): e
+            for e in self.here
+            if e.takes(channel_id, room_hooks) and self._here_member(e) not in excluded
+        }
+        elsewhere = await self._takers_elsewhere(channel_id, room_hooks, set(here) | set(excluded))
+        stored = await self._client.get(self._holder_key(channel_id, room_id))
+        holder = _text(stored) if stored is not None else None
         if self._loop_back and here:
-            chosen = here[holder_id] if holder_id in here else next(iter(here.values()))
+            chosen = here[holder] if holder in here else next(iter(here.values()))
             return Elsewhere(chosen.executor_id, self._node)
-        if holder_id in here:
-            return here[holder_id]
-        if holder_id in elsewhere:
-            return Elsewhere(holder_id, elsewhere[holder_id])
+        if holder in here:
+            return here[holder]
+        if holder in elsewhere:
+            return elsewhere[holder]
         if here:
             return next(iter(here.values()))
         if not elsewhere:
@@ -91,9 +111,9 @@ class Placement:
                 "no_executor", f"No executor serves channel {channel_id!r}{missing}"
             )
         # A room no executor holds yet: its turns spread over the takers.
-        ids = sorted(elsewhere)
-        self._next = (self._next + 1) % len(ids)
-        return Elsewhere(ids[self._next], elsewhere[ids[self._next]])
+        members = sorted(elsewhere)
+        self._next = (self._next + 1) % len(members)
+        return elsewhere[members[self._next]]
 
     async def forget(self, channel_id: str, room_id: str) -> None:
         """The room detached the channel: nothing holds its state any more."""
@@ -102,27 +122,41 @@ class Placement:
     async def declaring_elsewhere(self, channel_id: str) -> list[Elsewhere]:
         """The executors of other processes alive that declare *channel_id*."""
         return [
-            Elsewhere(executor_id, declared.node)
-            for executor_id, declared in (await self._live.current()).items()
+            Elsewhere(declared.executor_id, declared.node)
+            for declared in (await self._live.current()).values()
             if declared.node != self._node and channel_id in declared.channels
         ]
 
     async def _takers_elsewhere(
-        self, channel_id: str, room_hooks: Sequence[str], here: set[str]
-    ) -> dict[str, str]:
-        """The executors of other processes alive that take the turn, by id:
-        their nodes, read afresh, so one just started counts and one that
-        stopped does not."""
-        return {
-            executor_id: declared.node
-            for executor_id, declared in (await self._live.current()).items()
-            if declared.node != self._node
-            and executor_id not in here
-            and declared.takes(channel_id, room_hooks)
-        }
+        self, channel_id: str, room_hooks: Sequence[str], skipped: set[str]
+    ) -> dict[str, Elsewhere]:
+        """The executors of other processes alive that take the turn, by
+        member: read afresh, so one just started counts and one whose
+        process withdrew it on closing does not."""
+        alive = await self._live.current()
+        return _takers(alive, channel_id, room_hooks, self._node, skipped)
+
+    def _here_member(self, executor: TurnExecutor) -> str:
+        return member_of(self._node, executor.executor_id)
 
     def _holder_key(self, channel_id: str, room_id: str) -> str:
-        return f"{self._prefix}:holder:{channel_id}:{room_id}"
+        return f"{self._prefix}:holder:{quote(channel_id, safe='')}:{quote(room_id, safe='')}"
+
+
+def _takers(
+    alive: dict[str, Declaration],
+    channel_id: str,
+    room_hooks: Sequence[str],
+    node: str,
+    skipped: set[str],
+) -> dict[str, Elsewhere]:
+    return {
+        member: Elsewhere(declared.executor_id, declared.node)
+        for member, declared in alive.items()
+        if declared.node != node
+        and member not in skipped
+        and declared.takes(channel_id, room_hooks)
+    }
 
 
 def _text(value: Any) -> str:

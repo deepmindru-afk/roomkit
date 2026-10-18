@@ -5,9 +5,11 @@ the executors alive declare (RFC §10.6.7): the one holding the room's state
 for the channel while it lives, else one that takes it. A turn on an executor
 of the owner's own process stays in the process, carried as the in-memory
 backend carries it; one on an executor elsewhere crosses Redis, each message
-the protocol's envelope written to the other process's inbox. The executors
-of a process beat from a thread of their own, and the owner counts those
-beats with the turn's messages (RFC §10.6.8).
+the protocol's envelope written to the other process's inbox, in order, and
+acknowledged where it must be: a request is taken or refused (and placed
+again), a channel control is applied before the owner goes on. Each process
+beats from a thread of its own, and an owner counts a turn's executor alive
+while it beats and its process still runs the turn (RFC §10.6.8).
 
 Requires ``pip install roomkit[redis]`` and a store every process shares
 (RFC §10.6.9). Redis is the trust boundary: whoever writes to it can act as
@@ -19,16 +21,18 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from roomkit.core.exceptions import TurnLinkError
 from roomkit.core.task_utils import cancel_and_wait
+from roomkit.turns._redis_beat import BeatPayload, BeatThread, LiveExecutors
 from roomkit.turns._redis_inbox import Envelope, Inbox
+from roomkit.turns._redis_outbox import Failed, Outbox
 from roomkit.turns._redis_placement import Elsewhere, Placement
-from roomkit.turns._redis_presence import BeatThread, Declaration, LiveExecutors, Registry
-from roomkit.turns._redis_routes import Routes
+from roomkit.turns._redis_presence import Keys, Registry
+from roomkit.turns._redis_routes import REFUSED, Routes
 from roomkit.turns.base import TurnBackend, TurnTimeouts
 from roomkit.turns.memory import InMemoryTurnBackend
 from roomkit.turns.wire import (
@@ -40,11 +44,18 @@ from roomkit.turns.wire import (
 )
 
 if TYPE_CHECKING:
+    from roomkit.turns._redis_links import RedisTurnLink
     from roomkit.turns.base import RoomOwner, TurnLink
     from roomkit.turns.executor import TurnExecutor
     from roomkit.turns.wire import ChannelControl, TurnRequest
 
 logger = logging.getLogger("roomkit.turns")
+
+_DEFAULT_URL = "redis://localhost:6379"
+# The connections one process uses at most besides its inbox's: its writes
+# go through one writer per destination, so few are in use at once.
+_MAX_CONNECTIONS = 32
+_POOL_WAIT = 20.0
 
 
 class RedisTurnBackend(TurnBackend):
@@ -57,17 +68,23 @@ class RedisTurnBackend(TurnBackend):
     process; one given a predicate, as the kit's own, from its process only.
 
     Args:
-        url: The Redis server; the thread an executor beats from connects
-            to it too.
-        client: A ``redis.asyncio`` client to use instead of connecting.
+        url: The Redis server (``redis://localhost:6379`` by default). With
+            *client*, still required: the process's beat thread connects
+            with it.
+        client: A ``redis.asyncio`` client to use for the backend's writes
+            and reads instead of connecting.
         key_prefix: The prefix of every key the backend writes.
-        timeouts: The heartbeat bounds (RFC §10.6.8): the kit and the
-            executors served here keep them, and every process must agree.
+        timeouts: The heartbeat bounds (RFC §10.6.8), kept by the kit given
+            this backend: give every process, and every executor's
+            ``TurnExecutor(timeouts=...)``, the same.
+
+    Raises:
+        ValueError: *client* without *url*.
     """
 
     def __init__(
         self,
-        url: str = "redis://localhost:6379",
+        url: str | None = None,
         *,
         client: Any = None,
         key_prefix: str = "roomkit:turns",
@@ -82,25 +99,33 @@ class RedisTurnBackend(TurnBackend):
                 "redis is required for RedisTurnBackend. "
                 "Install it with: pip install roomkit[redis]"
             ) from exc
+        if client is not None and url is None:
+            raise ValueError(
+                "RedisTurnBackend(client=...) needs url= too: its beat connects with it"
+            )
+        address = url or _DEFAULT_URL
         self._owns_client = client is None
-        self._client = client if client is not None else _aioredis.from_url(url)
+        self._client = client if client is not None else _pooled(_aioredis, address)
         self.node_id = uuid4().hex[:12]
         """This process's id among the backend's processes."""
-        self.timeouts = timeouts or TurnTimeouts()
-        self._inbox_ttl_ms = int(self.timeouts.heartbeat_timeout * 3000)
+        self._timeouts = timeouts or TurnTimeouts()
+        self.timeouts = self._timeouts
+        self._ttl_ms = int(self._timeouts.heartbeat_timeout * 3000)
+        keys = Keys(key_prefix)
+        self._outbox = Outbox(self._client, keys.inbox, self._ttl_ms)
         self._inbox = Inbox(
-            self._client, key_prefix, self.node_id, self._route, self._inbox_ttl_ms
+            _aioredis.from_url(address), keys.inbox(self.node_id), self._route, owns_client=True
         )
-        self._registry = Registry(self._client, key_prefix)
+        self._registry = Registry(self._client, keys)
         self._live = LiveExecutors(
-            self._registry, self.timeouts.heartbeat_interval, self.timeouts.heartbeat_timeout
+            self._registry, self._timeouts.heartbeat_interval, self._timeouts.heartbeat_timeout
         )
         self._beat = BeatThread(
-            lambda: _redis.Redis.from_url(url),
-            self._registry.alive_key,
-            self._inbox.key(self.node_id),
-            self.timeouts.heartbeat_interval,
-            self._inbox_ttl_ms,
+            lambda: _redis.Redis.from_url(address),
+            keys.beat(self.node_id),
+            self._timeouts.heartbeat_interval,
+            self._ttl_ms,
+            lambda: self._payload(),
         )
         # Turns on executors of this process are carried in it (RFC §10.6.7);
         # the tests' loop back sends them across Redis too.
@@ -111,29 +136,70 @@ class RedisTurnBackend(TurnBackend):
         )
         self._tasks: set[asyncio.Task[Any]] = set()
         self._routes = Routes(self.node_id, self._post, self._spawn, self._live, self._here._port)
+        self._payload = BeatPayload(self.node_id, self._routes)
         self._started = False
         self._closed = False
 
     async def submit(self, request: TurnRequest) -> TurnLink:
         self._start()
-        placed = await self._placement.place(
-            request.channel_id, request.room_id, request.room_hooks
-        )
-        if not isinstance(placed, Elsewhere):
-            return self._here._submit_to(placed, request)
-        link = self._routes.owner_link(request, placed.executor_id, placed.node)
-        await self._post(placed.node, "request", request.model_dump_json(), placed.executor_id)
-        return link
+        refused: set[str] = set()
+        while True:
+            placed = await self._placement.place(
+                request.channel_id, request.room_id, request.room_hooks, excluded=refused
+            )
+            if not isinstance(placed, Elsewhere):
+                return self._here._submit_to(placed, request)
+            answer, link = await self._hand(request, placed)
+            if answer != REFUSED:
+                return link
+            # An executor that closed: the turn goes to another, never twice.
+            self._routes.forget_owner_link(link)
+            refused.add(placed.member)
+
+    async def _hand(self, request: TurnRequest, placed: Elsewhere) -> tuple[str, RedisTurnLink]:
+        """Hand *request* to *placed*'s process: its answer (taken or
+        refused) and the owner's end of the turn. A process that does not
+        answer within the accept bound has lost it: the turn is released
+        there, never handed to another (it may have begun)."""
+        link = self._routes.owner_link(request, placed.member, placed.executor_id, placed.node)
+        body = request.model_dump_json()
+        try:
+            answer = await self._routes.ask(
+                placed.node, "request", body, placed.executor_id, bound=self._timeouts.accept
+            )
+        except TimeoutError as exc:
+            link.release()
+            raise TurnLinkError(
+                "executor_lost", f"Executor {placed.member} did not answer the turn"
+            ) from exc
+        except BaseException:
+            link.release()
+            raise
+        return answer, link
 
     async def serve(self, executor: TurnExecutor) -> None:
         self._start()
         if executor not in self._placement.here:
             self._placement.here.append(executor)
         await self._here.serve(executor)
-        if self._loop_back:
+        if executor.timeouts != self._timeouts:
+            logger.warning(
+                "Executor %s keeps other timeouts than its turn backend: give both the same "
+                "TurnTimeouts (RFC §10.6.8)",
+                executor.executor_id,
+            )
+        if self._loop_back or executor.hosted is not None:
             self._routes.shared[executor.executor_id] = executor
         if executor.hosted is not None:
-            await self._share(executor)
+            if executor.store is None or executor.store.is_process_local:
+                logger.warning(
+                    "Executor %s takes turns from other processes without a store they "
+                    "share (TurnExecutor(store=...)): its channels read the rooms there "
+                    "(RFC §10.6.9)",
+                    executor.executor_id,
+                )
+            self._payload.executors = (*self._payload.executors, executor)
+            await self._beat_now()
         # Work a turn began reaches the owner of that turn, here or elsewhere.
         executor.reach_owner(self._routes.port)
 
@@ -142,25 +208,33 @@ class RedisTurnBackend(TurnBackend):
         await self._here.attend(owner)
         if self._routes.owner is None:
             self._routes.owner = owner
+            await self._beat_now()
 
     async def control(self, message: ChannelControl) -> ChannelResult | None:
         self._start()
         raw = ChannelControlEnvelope(message=message).model_dump_json()
         if isinstance(message, ChannelCall):
             placed = await self._placement.place(message.channel_id, message.room_id)
-            return await self._channel_call(placed, raw)
+            return await self._apply(placed, raw)
         if isinstance(message, CommittedEvent):
             held = await self._placement.hold(
                 message.channel_id, message.room_id, message.room_hooks
             )
-            await self._carry(held, raw)
+            await self._apply(held, raw)
             return None
         if isinstance(message, RoomDetached):
             await self._placement.forget(message.channel_id, message.room_id)
         for here in [e for e in self._placement.here if e.declares(message.channel_id)]:
             await here.control(_crossed(raw))
-        for elsewhere in await self._placement.declaring_elsewhere(message.channel_id):
-            await self._post(elsewhere.node, "channel", raw, elsewhere.executor_id)
+        elsewhere = await self._placement.declaring_elsewhere(message.channel_id)
+        results = await asyncio.gather(
+            *(self._apply(executor, raw) for executor in elsewhere), return_exceptions=True
+        )
+        for executor, result in zip(elsewhere, results, strict=True):
+            if isinstance(result, Exception):
+                logger.warning(
+                    "Executor %s did not apply %s: %s", executor.member, message.type, result
+                )
         return None
 
     async def close(self) -> None:
@@ -168,57 +242,40 @@ class RedisTurnBackend(TurnBackend):
             return
         self._closed = True
         self._routes.close()
-        for executor_id in list(self._routes.shared):
-            try:
-                await self._registry.withdraw(executor_id)
-            except Exception:
-                logger.debug("Withdrawing executor %s failed", executor_id, exc_info=True)
+        try:
+            await self._registry.withdraw(self._payload.members)
+        except Exception:
+            logger.debug("Withdrawing this process's executors failed", exc_info=True)
         await asyncio.to_thread(self._beat.stop)
         await self._live.close()
         await self._inbox.close()
+        await self._outbox.close()
         await self._here.close()
         if self._tasks:
             await cancel_and_wait(*self._tasks, log_errors_to=logger)
         if self._owns_client:
             await self._client.aclose()
 
-    async def _share(self, executor: TurnExecutor) -> None:
-        """Have other processes reach *executor*: declared, then alive from
-        its first beat, which this task makes; the thread makes the others."""
-        assert executor.hosted is not None
-        if executor.store is None or executor.store.is_process_local:
-            logger.warning(
-                "Executor %s takes turns from other processes without a store they "
-                "share (TurnExecutor(store=...)): its channels read the rooms there "
-                "(RFC §10.6.9)",
-                executor.executor_id,
-            )
-        self._routes.shared[executor.executor_id] = executor
-        declaration = Declaration(
-            self.node_id, executor.hosted, executor.hooks.defined_room_hooks()
-        )
-        await self._registry.declare(executor.executor_id, declaration)
-        await self._registry.beat(
-            self._routes.shared, self._inbox.key(self.node_id), self._inbox_ttl_ms
-        )
-        self._beat.beat_for(self._routes.shared)
-
-    async def _channel_call(self, placed: TurnExecutor | Elsewhere, raw: str) -> ChannelResult:
+    async def _apply(self, placed: TurnExecutor | Elsewhere, raw: str) -> ChannelResult:
+        """Apply a channel control on *placed*, here or across Redis: its
+        result once applied, waited for while the executor lives."""
         if not isinstance(placed, Elsewhere):
             answer = await placed.control(_crossed(raw))
             if answer is None:
                 return ChannelResult()
             return ChannelResult.model_validate_json(answer.model_dump_json())
         body = await self._routes.ask(
-            placed.node, "channel", raw, placed.executor_id, while_alive=placed.executor_id
+            placed.node, "channel", raw, placed.executor_id, alive=self._lives(placed)
         )
         return ChannelResult.model_validate_json(body)
 
-    async def _carry(self, placed: TurnExecutor | Elsewhere, raw: str) -> None:
-        if not isinstance(placed, Elsewhere):
-            await placed.control(_crossed(raw))
-            return
-        await self._post(placed.node, "channel", raw, placed.executor_id)
+    def _lives(self, placed: Elsewhere) -> Callable[[], bool]:
+        """Whether *placed* still lives: by its beat, or (the tests' loop
+        back) as an executor of this process."""
+        if placed.node == self.node_id:
+            local = self._routes.shared.get(placed.executor_id)
+            return lambda: local is not None and not local.closed
+        return lambda: self._live.alive(placed.member)
 
     def _start(self) -> None:
         if self._closed:
@@ -228,11 +285,25 @@ class RedisTurnBackend(TurnBackend):
             self._inbox.start()
             self._live.start()
 
+    async def _beat_now(self) -> None:
+        """Beat once from this task (alive from now), then from the thread."""
+        await self._registry.beat(self.node_id, self._payload(), self._ttl_ms)
+        self._beat.start()
+
     def _route(self, envelope: Envelope) -> None:
         self._routes.route(envelope)
 
-    async def _post(self, node: str, kind: str, body: str, target: str, ref: str = "") -> None:
-        await self._inbox.send(node, Envelope(kind, self.node_id, body, target=target, ref=ref))
+    def _post(
+        self,
+        node: str,
+        kind: str,
+        body: str,
+        target: str,
+        ref: str = "",
+        *,
+        failed: Failed | None = None,
+    ) -> None:
+        self._outbox.post(node, Envelope(kind, self.node_id, body, target=target, ref=ref), failed)
 
     def _spawn(self, work: Coroutine[Any, Any, None]) -> None:
         """Run *work* on a task the backend holds until it closes."""
@@ -247,6 +318,15 @@ class RedisTurnBackend(TurnBackend):
         self._tasks.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.error("A turn backend message failed", exc_info=error)
+
+
+def _pooled(aioredis: Any, url: str) -> Any:
+    """A client whose callers wait for a free connection instead of failing
+    when every one is in use."""
+    pool = aioredis.BlockingConnectionPool.from_url(
+        url, max_connections=_MAX_CONNECTIONS, timeout=_POOL_WAIT
+    )
+    return aioredis.Redis(connection_pool=pool)
 
 
 def _crossed(raw: str) -> ChannelControl:
