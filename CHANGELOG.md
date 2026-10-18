@@ -271,16 +271,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   event made after its turn crosses as a `room_publication`, published by the
   owner for the turn's room and kinds only, on the kit's executor as on a
   host's, where it was dropped. The owner accepts both only from the
-  executor of the room's last turn of the channel, a host verb only for that
-  very turn (`PermissionError` otherwise). `ScoringHook` writes its scores
-  through the host, never the store itself, and drops one with no owner to
-  reach. Example: `examples/thought_after_turn.py`.
+  executor of the room's last turn of the channel, as it records it when the
+  executor accepts the turn, a host verb only for that very turn
+  (`PermissionError` otherwise) and at the turn's response depth it recorded;
+  a closed owner refuses them. A thinker reports each thought under the turn
+  that asked for it. `ScoringHook` writes its scores through the host, never
+  the store itself, drops one with no owner to reach, and no longer needs a
+  store to attach (`store=` is ignored). Example:
+  `examples/thought_after_turn.py`.
 
 - A discussion hands each committed message to its agents' memories through
   the turn backend, where each agent runs (RMK-827, RFC §10.6.3, §19.7.5 rule
   3): a `committed_event` channel control reaches the executor holding the
-  agent's state for the room, else one declaring it, without moving the
-  holder, and calls the new `Channel.on_room_event(room_id, event)` (an
+  agent's state for the room, else one that would take the room's turns (the
+  room's hooks named), without moving the holder, and calls the new `Channel.on_room_event(room_id, event)` (an
   `AIChannel` hands it to its memory). It no longer calls the live agent
   object the kit holds, so an agent held by its declaration alone, or run on
   a host's executor, learns the conversation too. A discussion turn the speak

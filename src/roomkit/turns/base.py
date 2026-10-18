@@ -214,19 +214,23 @@ class TurnBackend(ABC):
     @abstractmethod
     async def serve(self, executor: TurnExecutor) -> None:
         """Have *executor* take the turns of the channels it declares, from
-        now until the backend closes or the executor does."""
+        now until the backend closes or the executor does. A backend that
+        carries work after a turn gives it a port to the owner
+        (``executor.reach_owner``, RFC §10.6.3)."""
 
     @abstractmethod
     async def control(self, message: ChannelControl) -> ChannelResult | None:
         """Carry a channel control message (RFC §10.6.3): ``room_attached``
         and ``room_detached`` to every executor that declares the channel,
-        answered by none; a ``channel_call`` to the executor that holds the
-        room's state for the channel, else one that declares it, answered
-        by its result.
+        answered by none; a ``committed_event`` to the executor that holds the
+        room's state for the channel, else one that would take the room's
+        turns, never moving the holder, answered by none; a ``channel_call``
+        to the executor that holds the room's state for the channel, else one
+        that declares it, answered by its result.
 
         Raises:
-            TurnLinkError: ``no_executor`` for a ``channel_call`` no executor
-                declares.
+            TurnLinkError: ``no_executor`` for a ``channel_call`` or a
+                ``committed_event`` no executor takes.
         """
 
     async def attend(self, owner: RoomOwner) -> None:  # noqa: B027

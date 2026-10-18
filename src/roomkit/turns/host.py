@@ -4,11 +4,12 @@ A host's tool, or a hook the executor fires, runs where the turn runs, which
 may be another process than the room owner's. It reads the room from the
 store, and changes it only through the turn's host, read with
 :func:`current_turn_host`: inside a call of a host tool during a turn and
-inside a hook the executor fires during it; ``None`` anywhere else, between
-two turns and on the owner included. Each verb is one ``host_call`` on the
-turn's link, every argument is data, and the owner runs it as its own code
-would, under what the turn gave the call (its room, its chain depth, who
-asked) and with the reentrancy of its task reading the turn: a
+inside a hook the executor fires during it, and after the turn in work it
+began, for the verbs :data:`BETWEEN_TURNS` names; ``None`` anywhere else, on
+the owner included. Each verb is one ``host_call`` on the turn's link (a
+``room_call`` after the turn, RFC §10.6.3), every argument is data, and the
+owner runs it as its own code would, under what the turn gave the call (its
+room, its chain depth, who asked) and with the reentrancy of its task reading the turn: a
 ``send_event`` that would wait on the room's own delivery from a task that
 delivery needs returns with its completion detached.
 

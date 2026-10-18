@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
 from collections.abc import Coroutine, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -43,6 +44,9 @@ if TYPE_CHECKING:
 # Put on a pipe when the backend closes: whoever waits on it learns the turn
 # will not end.
 _CLOSED = "\x00closed"
+
+
+logger = logging.getLogger("roomkit.turns")
 
 
 class _Pipe:
@@ -186,6 +190,14 @@ class InMemoryTurnBackend(TurnBackend):
         executor.reach_owner(self._port)
 
     async def attend(self, owner: RoomOwner) -> None:
+        if self._owner is not None and self._owner is not owner:
+            # Which owner a turn's work belongs to is a distributed backend's
+            # to address; here, the first one keeps it.
+            logger.warning(
+                "A second room owner attends this in-memory turn backend: the work of "
+                "a turn after it ended reaches the first one only"
+            )
+            return
         self._owner = owner
 
     async def control(self, message: ChannelControl) -> ChannelResult | None:
@@ -199,7 +211,8 @@ class InMemoryTurnBackend(TurnBackend):
                 return ChannelResult()
             return ChannelResult.model_validate_json(answer.model_dump_json())
         if isinstance(message, CommittedEvent):
-            await self._hold(message.channel_id, message.room_id).control(_crossed(raw))
+            holder = self._hold(message.channel_id, message.room_id, message.room_hooks)
+            await holder.control(_crossed(raw))
             return None
         if isinstance(message, RoomDetached):
             self._holders.pop(message.channel_id, message.room_id)
@@ -213,16 +226,17 @@ class InMemoryTurnBackend(TurnBackend):
             turn.shut()
         self._turns.clear()
 
-    def _hold(self, channel_id: str, room_id: str) -> TurnExecutor:
+    def _hold(self, channel_id: str, room_id: str, room_hooks: Sequence[str]) -> TurnExecutor:
         """The executor holding the room's state of *channel_id*, else one
-        that declares the channel, left as the holder it was (RFC §10.6.3)."""
+        that would take the room's turns, the room's hooks *room_hooks*
+        included; the holder is left as it was (RFC §10.6.3)."""
         holder = self._holders.get(channel_id, room_id)
-        if holder is not None and holder.declares(channel_id):
+        if holder is not None and holder.takes(channel_id, room_hooks):
             return holder
-        declarer = next((e for e in self._executors if e.declares(channel_id)), None)
-        if declarer is None:
+        taker = next((e for e in self._executors if e.takes(channel_id, room_hooks)), None)
+        if taker is None:
             raise TurnLinkError("no_executor", f"No executor serves channel {channel_id!r}")
-        return declarer
+        return taker
 
     def _place(
         self, channel_id: str, room_id: str, room_hooks: Sequence[str] = ()

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import weakref
+from functools import partial
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -16,6 +17,7 @@ from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes,
 from roomkit.channels.declared import DeclaredChannel
 from roomkit.models.steering import Cancel as SteeringCancel
 from roomkit.telemetry.context import get_current_span
+from roomkit.turns._codec import error_record
 from roomkit.turns._owner_between import answer_room_call, publish_between_turns
 from roomkit.turns._owner_inputs import OwnerInputs
 from roomkit.turns._owner_turn import OwnerTurn
@@ -25,7 +27,14 @@ from roomkit.turns._rooms import RoomRecords
 from roomkit.turns.base import RoomOwner, TurnTimeouts
 from roomkit.turns.executor import TurnExecutor
 from roomkit.turns.memory import InMemoryTurnBackend
-from roomkit.turns.wire import ChannelCall, PreviousTurn, RoomDetached, TurnRequest
+from roomkit.turns.wire import (
+    ChannelCall,
+    CommittedEvent,
+    HostResult,
+    PreviousTurn,
+    RoomDetached,
+    TurnRequest,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -39,7 +48,6 @@ if TYPE_CHECKING:
     from roomkit.turns.wire import (
         ChannelControl,
         ChannelResult,
-        HostResult,
         OwnerTool,
         RoomCall,
         RoomPublication,
@@ -129,8 +137,11 @@ class TurnClient(RoomOwner):
         self._calls: set[asyncio.Task[None]] = set()
         # The open human-input requests of its turns, answered here.
         self.inputs = OwnerInputs(self._timeouts.input_hold_timeout)
-        # Each room's last turn of a channel submitted here (RFC §10.6.2).
+        # Each room's last turn of a channel submitted here (RFC §10.6.2), and
+        # the chain depth of its response, which bounds its work after it.
         self._previous: RoomRecords[PreviousTurn] = RoomRecords()
+        self._depths: RoomRecords[tuple[str, int]] = RoomRecords()
+        self._closed = False
         # The names of each room's hooks on executor triggers (RFC §10.6.6).
         self._room_hooks: dict[str, list[str]] = {}
 
@@ -161,21 +172,25 @@ class TurnClient(RoomOwner):
         request.previous_turn, submitted = self._leave(
             channel_id, request.room_id, request.turn_id
         )
+        self._depths.put(channel_id, request.room_id, (request.turn_id, event.chain_depth + 1))
         try:
             link = await self.backend.submit(request)
         except BaseException:
             self._unleave(channel_id, request.room_id, submitted, request.previous_turn)
             raise
         turn = OwnerTurn(
-            link, self._timeouts, self._tools, self._calls, self._host, self.inputs, self._events
+            link,
+            self._timeouts,
+            self._tools,
+            self._calls,
+            self._host,
+            self.inputs,
+            self._events,
+            accepted=partial(_took, submitted),
         )
         self._open.add(turn)
         self._started = [*(t for t in self._started if not t.over), turn]
-        try:
-            return await turn.output()
-        finally:
-            # Known once the executor took the turn, which its output follows.
-            submitted.executor_id = turn.executor_id
+        return await turn.output()
 
     def enable_room_hook(self, room_id: str, name: str) -> None:
         """Name *name* among *room_id*'s hooks on executor triggers: its
@@ -210,13 +225,25 @@ class TurnClient(RoomOwner):
 
     async def control(self, message: ChannelControl) -> ChannelResult | None:
         """Send a channel control message (RFC §10.6.3): a ``channel_call``'s
-        result; nothing for ``room_attached`` and ``room_detached``. After a
-        ``room_detached``, the room's next turn of the channel names no
-        previous turn, so an executor that missed the message still drops
-        the room's state (RFC §10.6.3)."""
+        result; nothing for ``room_attached``, ``room_detached`` and
+        ``committed_event``. After a ``room_detached``, the room's next turn
+        of the channel names no previous turn, so an executor that missed the
+        message still drops the room's state (RFC §10.6.3). A
+        ``committed_event`` goes where the room's turns would, the room's
+        hooks named.
+
+        Raises:
+            TurnLinkError: ``no_executor`` for a ``channel_call`` or a
+                ``committed_event`` no executor takes.
+        """
         await self._serve_own()
         if isinstance(message, RoomDetached):
             self._previous.pop(message.channel_id, message.room_id)
+            self._depths.pop(message.channel_id, message.room_id)
+        if isinstance(message, CommittedEvent):
+            message = message.model_copy(
+                update={"room_hooks": self.room_hook_names(message.room_id)}
+            )
         if not isinstance(message, ChannelCall):
             return await self.backend.control(message)
         # A channel call leaves the room's state as a turn does.
@@ -260,12 +287,28 @@ class TurnClient(RoomOwner):
             self._previous.put(channel_id, room_id, previous)
 
     async def room_call(self, message: RoomCall) -> HostResult:
-        """A host verb an executor made after its turn ended (RFC §10.6.5)."""
-        return await answer_room_call(self._previous, self._host, message)
+        """A host verb an executor made after its turn ended (RFC §10.6.5),
+        at the depth this client recorded for the turn; refused once the
+        client closed, and cancelled by its close."""
+        if self._closed:
+            refusal = RuntimeError("The room owner has closed")
+            return HostResult(call_id=message.call_id, error=error_record(refusal))
+        held = self._depths.get(message.channel_id, message.room_id)
+        depth = held[1] if held is not None and held[0] == message.turn_id else None
+        task = asyncio.current_task()
+        if task is not None:
+            self._calls.add(task)
+        try:
+            return await answer_room_call(self._previous, self._host, message, depth=depth)
+        finally:
+            if task is not None:
+                self._calls.discard(task)
 
     async def room_publication(self, message: RoomPublication) -> None:
-        """What a channel published after its turn ended (RFC §10.6.3)."""
-        await publish_between_turns(self._previous, self._events, message)
+        """What a channel published after its turn ended (RFC §10.6.3); none
+        once the client closed."""
+        if not self._closed:
+            await publish_between_turns(self._previous, self._events, message)
 
     async def _serve_own(self) -> None:
         """Have the backend reach this client outside a turn, and serve the
@@ -310,7 +353,9 @@ class TurnClient(RoomOwner):
     async def close(self) -> None:
         """Close the own executor, which cuts its turns, stop holding every
         turn still open (a stream nobody read), wait for the calls its turns
-        made to end (but the one running this close), then close the backend."""
+        made to end (but the one running this close), then close the backend.
+        Work of a turn that reaches it after this is refused."""
+        self._closed = True
         if self.executor is not None:
             await self.executor.close()
         for turn in list(self._open):
@@ -361,3 +406,8 @@ def registry_turn_client(
         host=host,
         events=events,
     )
+
+
+def _took(submitted: PreviousTurn, executor_id: str) -> None:
+    """Record which executor took the turn *submitted* names, as it took it."""
+    submitted.executor_id = executor_id

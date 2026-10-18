@@ -55,6 +55,8 @@ from roomkit.turns.wire import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from roomkit.models.response_metadata import ResponseMetadata
     from roomkit.turns.base import OwnerEvents, OwnerHost, OwnerTools, TurnLink, TurnTimeouts
     from roomkit.turns.wire import Control, Frame, TurnRequest
@@ -105,10 +107,14 @@ class OwnerTurn:
         host: OwnerHost | None = None,
         inputs: OwnerInputs | None = None,
         events: OwnerEvents | None = None,
+        accepted: Callable[[str], None] | None = None,
     ) -> None:
         self._link = link
         self._timeouts = timeouts
         self._events = events
+        # Told the executor's id as soon as it took the turn: work the turn
+        # began may reach the owner before its output does (RFC §10.6.3).
+        self._on_accepted = accepted
         # What the turn published on its executor, published here in order by
         # a task of its own: a handler that waits on the turn (an answer to an
         # input request, a close) never stalls the frames it waits for.
@@ -341,6 +347,8 @@ class OwnerTurn:
             self._accepted = True
             if isinstance(frame, Accepted):
                 self.executor_id = frame.executor_id
+                if self._on_accepted is not None:
+                    self._on_accepted(frame.executor_id)
         elif isinstance(frame, Record):
             if self._record is not None:
                 self._record.clear()

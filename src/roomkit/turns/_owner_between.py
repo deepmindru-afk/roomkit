@@ -28,10 +28,17 @@ logger = logging.getLogger("roomkit.turns")
 
 
 async def answer_room_call(
-    previous: RoomRecords[PreviousTurn], host: OwnerHost | None, message: RoomCall
+    previous: RoomRecords[PreviousTurn],
+    host: OwnerHost | None,
+    message: RoomCall,
+    *,
+    depth: int | None = None,
 ) -> HostResult:
     """Run *message*'s verb on *host* if the room's last turn of its channel
-    is the one it names: its result, or its refusal."""
+    is the one it names, at that turn's response *depth* as the owner
+    recorded it (the executor's word otherwise): its result, or its refusal."""
+    if depth is not None:
+        message = message.model_copy(update={"chain_depth": depth})
     refusal = _refusal(previous, message, by_turn=True)
     if refusal is None and host is None:
         refusal = "this owner serves no host verb"

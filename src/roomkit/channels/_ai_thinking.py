@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import time
 from typing import TYPE_CHECKING
@@ -44,8 +45,10 @@ class _RoomMind:
         self._channel = channel
         self._task: asyncio.Task[None] | None = None
         self._changed = asyncio.Condition()
-        self._pending: tuple[AIContext, int] | None = None
-        """The latest context to think about, and how often the agent had spoken then."""
+        self._pending: tuple[AIContext, int, contextvars.Context] | None = None
+        """The latest context to think about, how often the agent had spoken
+        then, and the context of the turn that asked: its thought is that
+        turn's work, reported under it (RFC §10.6.5)."""
         self._asked = 0
         self._done = 0
         self._spoke = 0
@@ -53,7 +56,7 @@ class _RoomMind:
     def think(self, context: AIContext) -> int:
         """Have the thinker think about *context*; the ticket :meth:`settled` waits on."""
         self._asked += 1
-        self._pending = (context, self._spoke)
+        self._pending = (context, self._spoke, contextvars.copy_context())
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run(), name=f"thinker:{self.room_id}")
         return self._asked
@@ -84,7 +87,7 @@ class _RoomMind:
 
     async def _run(self) -> None:
         while self._pending is not None:
-            (context, spoke), ticket = self._pending, self._asked
+            (context, spoke, asked_in), ticket = self._pending, self._asked
             self._pending = None
             started = time.monotonic()
             thought = await self._next(self.thought, context)
@@ -98,7 +101,10 @@ class _RoomMind:
                 self._done = ticket
                 self._changed.notify_all()
             if thought != replaced:
-                await self._channel._report_thought(self.room_id, thought, replaced, duration_ms)
+                report = self._channel._report_thought(
+                    self.room_id, thought, replaced, duration_ms
+                )
+                await asyncio.get_running_loop().create_task(report, context=asked_in)
 
     async def _next(self, previous: Thought, context: AIContext) -> Thought:
         try:

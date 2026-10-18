@@ -10,15 +10,30 @@ from typing import Any
 
 import pytest
 
-from roomkit import Agent, ChannelDeclaration, RoomKit, current_turn_host
+from roomkit import (
+    Agent,
+    AIChannel,
+    ChannelDeclaration,
+    Discussion,
+    MockSpeakPolicy,
+    MockThinker,
+    RoomKit,
+    Thought,
+    ThoughtEvent,
+    current_turn_host,
+)
+from roomkit.memory.mock import MockMemoryProvider
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory
+from roomkit.models.enums import ChannelCategory, HookExecution, HookTrigger
 from roomkit.models.event import TextContent
+from roomkit.models.task import Observation
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
 from roomkit.store.memory import InMemoryStore
-from roomkit.turns import InMemoryTurnBackend, TurnExecutor
+from roomkit.tasks.status import TASK_ACTION
+from roomkit.turns import InMemoryTurnBackend, RoomCall, TurnExecutor
+from roomkit.turns._outlet import emit_framework_event
 from tests.test_framework import SimpleChannel
 
 LATER = AITool(name="later", description="Starts work that outlives the turn.", parameters={})
@@ -194,3 +209,286 @@ async def test_a_publication_after_the_turn_reaches_the_owner_for_its_room_only(
     await host.close(kit)
 
     assert seen == ["r:typing_start"]
+
+
+# -- Review of 99cf3e83/d204befd --
+
+
+def _listener(thinker: MockThinker) -> AIChannel:
+    return AIChannel(
+        "nova",
+        provider=MockAIProvider(responses=["x"] * 8),
+        speak_policy=MockSpeakPolicy(["silent"]),
+        thinker=thinker,
+        think_wait=0.0,
+    )
+
+
+async def _thoughts_posted(kit: RoomKit, messages: list[str]) -> tuple[list[str], list[str]]:
+    posted: list[str] = []
+    refused: list[str] = []
+
+    @kit.turn_executor.hook(HookTrigger.ON_THOUGHT, execution=HookExecution.ASYNC)
+    async def post(event: ThoughtEvent, ctx: Any) -> None:
+        host = current_turn_host()
+        assert host is not None
+        try:
+            await host.post_status("nova", "thought", "info", detail=event.thought.text)
+        except PermissionError as exc:
+            refused.append(str(exc))
+
+    async def on_status(entry: Any) -> None:
+        if entry.action == "thought":
+            posted.append(entry.detail)
+
+    await kit.status_bus.subscribe(on_status)
+    for text in messages:
+        await _say(kit, text)
+        await asyncio.sleep(0.1)
+    await asyncio.sleep(0.6)
+    return posted, refused
+
+
+async def _kit_with(channel: AIChannel) -> RoomKit:
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "sms")
+    await kit.attach_channel("r", channel.channel_id, category=ChannelCategory.INTELLIGENCE)
+    return kit
+
+
+async def test_a_thought_at_once_reaches_the_room_before_the_turn_s_output() -> None:
+    """The owner knows the turn's executor from its acceptance: a thought that
+    lands before the turn's output is read is the turn's own work."""
+    kit = await _kit_with(_listener(MockThinker([Thought(text="Quick.")])))
+
+    posted, refused = await _thoughts_posted(kit, ["One."])
+    await kit.close()
+
+    assert (posted, refused) == (["Quick."], [])
+
+
+async def test_a_thinker_running_across_turns_reports_under_the_latest_turn() -> None:
+    thinker = MockThinker([Thought(text="First."), Thought(text="Latest.")], delay=0.3)
+    kit = await _kit_with(_listener(thinker))
+
+    posted, refused = await _thoughts_posted(kit, ["One.", "Two."])
+    await kit.close()
+
+    # The thought on the first event lands once the second turn was sent: that
+    # earlier turn's work is refused; the thought on the latest event is not.
+    assert posted == ["Latest."]
+    assert len(refused) <= 1
+
+
+async def test_the_write_verbs_between_turns_keep_their_refusals() -> None:
+    later = _Later()
+    host = _Host(later)
+    kit = await host.kit()
+
+    async def work() -> Any:
+        turn_host = current_turn_host()
+        assert turn_host is not None
+        room = await turn_host.update_room_metadata("r", {"thought": "kept"})
+        await turn_host.add_observation(
+            Observation(id="o1", room_id="r", channel_id="ana", content="seen", category="note")
+        )
+        refusals = []
+        for attempt in (
+            turn_host.update_room_metadata("r", {"roomkit:channel_state:ana": {}}),
+            turn_host.post_status("ana", TASK_ACTION, "pending"),
+            turn_host.post_status("ana", "x", "info", metadata={"room_id": "other"}),
+            turn_host.send_event(room_id="other", channel_id="ana", content=TextContent(body="x")),
+        ):
+            with pytest.raises(ValueError):
+                await attempt
+            refusals.append(True)
+        sent = await turn_host.send_event(
+            room_id="r", channel_id="ana", content=TextContent(body="Later."), chain_depth=0
+        )
+        return room, refusals, sent
+
+    later.work = work
+    await _say(kit)
+    room, refusals, sent = await _after_the_turn(later)
+    observations = await kit.store.list_observations("r")
+    await host.close(kit)
+
+    assert room.metadata["thought"] == "kept"
+    assert [o.id for o in observations] == ["o1"]
+    assert refusals == [True] * 4
+    assert sent.chain_depth == 1  # the turn's response depth, as the owner recorded it
+
+
+async def test_a_framework_event_after_the_turn_reaches_the_owner() -> None:
+    later = _Later()
+    host = _Host(later)
+    kit = await host.kit()
+    seen: list[str] = []
+
+    @kit.on("tool_call")
+    async def on_tool_call(event: Any) -> None:
+        if event.data.get("later"):
+            seen.append(f"{event.room_id}:{event.channel_id}")
+
+    async def work() -> Any:
+        await emit_framework_event(
+            None, "tool_call", room_id="r", channel_id="ana", data={"later": True}
+        )
+        await emit_framework_event(
+            None, "room_created", room_id="r", channel_id="ana", data={"later": True}
+        )
+        return True
+
+    later.work = work
+    await _say(kit)
+    await _after_the_turn(later)
+    await asyncio.sleep(0.1)
+    await host.close(kit)
+
+    assert seen == ["r:ana"]
+
+
+async def test_a_publication_from_an_executor_no_longer_holding_the_room_is_dropped() -> None:
+    later = _Later()
+    store, backend = InMemoryStore(), InMemoryTurnBackend()
+    takes_a = [True]
+    provider_a = MockAIProvider(ai_responses=[_calls_later(), AIResponse(content="A.")])
+    agent_a = Agent("ana", provider=provider_a, tools=[LATER], tool_handler=later.handler)
+    agent_b = Agent("ana", provider=MockAIProvider(responses=["B."] * 4))
+    first = TurnExecutor({"ana": agent_a}.get, hosts=lambda cid: takes_a[0], store=store)
+    second = TurnExecutor({"ana": agent_b}.get, hosts=lambda cid: cid == "ana", store=store)
+    await backend.serve(first)
+    await backend.serve(second)
+    kit = RoomKit(store=store, turn_backend=backend)
+    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(ChannelDeclaration(channel_id="ana"))
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "sms")
+    await kit.attach_channel("r", "ana", category=ChannelCategory.INTELLIGENCE)
+    seen: list[str] = []
+
+    async def on_event(event: EphemeralEvent) -> None:
+        if event.type is EphemeralEventType.TYPING_START:
+            seen.append(event.room_id)
+
+    await kit.realtime.subscribe_to_room("r", on_event)
+
+    async def work() -> Any:
+        await agent_a._realtime.publish_to_room(
+            "r",
+            EphemeralEvent(
+                room_id="r", type=EphemeralEventType.TYPING_START, user_id="ana", channel_id="ana"
+            ),
+        )
+        return True
+
+    later.work = work
+    await _say(kit)
+    takes_a[0] = False
+    await _say(kit, "Now B.")  # the room's next turn of ana goes to the second executor
+    await _after_the_turn(later)
+    await asyncio.sleep(0.1)
+    await kit.close()
+    await first.close()
+    await second.close()
+
+    assert seen == []
+
+
+async def test_work_after_the_owner_closed_is_refused() -> None:
+    later = _Later()
+    host = _Host(later)
+    kit = await host.kit()
+
+    async def work() -> Any:
+        turn_host = current_turn_host()
+        assert turn_host is not None
+        with pytest.raises(RuntimeError, match="closed"):
+            await turn_host.post_status("ana", "late", "info")
+        return True
+
+    later.work = work
+    await _say(kit)
+    await kit.close()
+    refused = await _after_the_turn(later)
+    await host.executor.close()
+
+    assert refused is True
+
+
+async def test_a_committed_event_goes_where_the_room_s_turns_would() -> None:
+    """Two executors declare the agent; only one defines the room's hook, so
+    only it takes the room's turns, and only it is handed the room's events."""
+    memories = {"a": MockMemoryProvider(), "b": MockMemoryProvider()}
+    store, backend = InMemoryStore(), InMemoryTurnBackend()
+    executors = {}
+    for name, memory in memories.items():
+        agent = Agent("ana", provider=MockAIProvider(responses=["x"] * 4), memory=memory)
+        executors[name] = TurnExecutor(
+            {"ana": agent}.get, hosts=lambda cid: cid == "ana", store=store
+        )
+        await backend.serve(executors[name])
+
+    @executors["b"].room_hook("audit", HookTrigger.ON_AI_RESPONSE, HookExecution.ASYNC)
+    async def audit(event: Any, ctx: Any) -> None:
+        return None
+
+    kit = RoomKit(store=store, turn_backend=backend)
+    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(ChannelDeclaration(channel_id="ana"))
+    kit.register_channel(ChannelDeclaration(channel_id="bob"))
+    await kit.create_room(room_id="r", orchestration=Discussion(agents=["ana", "bob"]))
+    await kit.attach_channel("r", "sms")
+    kit.enable_room_hook("r", "audit")
+
+    await _say(kit, "@bob hello")
+    await asyncio.sleep(0.2)
+    handed = {name: len(memory.ingest_calls) for name, memory in memories.items()}
+    await kit.close()
+    for executor in executors.values():
+        await executor.close()
+
+    assert handed == {"a": 0, "b": 1}
+
+
+async def test_a_second_owner_on_one_in_memory_backend_is_told(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    backend = InMemoryTurnBackend()
+    first = RoomKit(turn_backend=backend)
+    second = RoomKit(turn_backend=backend)
+    for kit in (first, second):
+        await kit._turns._serve_own()
+
+    assert "second room owner" in caplog.text
+    await first.close()
+
+
+async def test_the_owner_holds_a_call_to_the_depth_it_recorded_for_the_turn() -> None:
+    """A room call naming a shallower depth than its turn's response is held
+    to the turn's, as the owner recorded it when it sent the turn."""
+    later = _Later()
+    host = _Host(later)
+    kit = await host.kit()
+    later.work = lambda: asyncio.sleep(0, True)
+    await _say(kit)
+    record = kit._turns._previous.get("ana", "r")
+    assert record is not None and record.executor_id is not None
+    forged = RoomCall(
+        channel_id="ana",
+        room_id="r",
+        executor_id=record.executor_id,
+        turn_id=record.turn_id,
+        chain_depth=0,
+        verb="send_event",
+        arguments={"room_id": "r", "channel_id": "ana", "content": {"type": "text", "body": "x"}},
+    )
+    answer = await kit._turns.room_call(forged)
+    await _after_the_turn(later)
+    await host.close(kit)
+
+    assert answer.error is None
+    assert answer.result["chain_depth"] == 1

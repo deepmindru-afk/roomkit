@@ -59,7 +59,7 @@ async def test_a_declared_agent_s_memory_is_handed_each_message_where_it_runs() 
         other = "bob" if cid == "ana" else "ana"
         assert said.count("Hello everyone.") == 1
         assert f"{cid} here." not in said  # its own answer is never handed to it
-        assert said.count(f"{other} here.") <= 1
+        assert said.count(f"{other} here.") == 1
 
 
 async def test_a_silent_discussion_turn_does_not_hand_the_message_again() -> None:

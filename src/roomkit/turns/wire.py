@@ -360,6 +360,9 @@ class CommittedEvent(BaseModel):
     channel_id: str
     room_id: str
     event: RoomEvent
+    room_hooks: list[str] = Field(default_factory=list)
+    """The room's hooks on executor triggers, as a turn's request names them:
+    the event goes to an executor that would take the room's turns."""
 
 
 class ChannelCall(BaseModel):

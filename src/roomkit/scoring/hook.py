@@ -6,10 +6,10 @@ Usage::
 
     hook = ScoringHook(scorers=[MockScorer()])
     hook.attach(kit)  # registers ON_AI_RESPONSE on the kit's turn executor
-    hook.attach(executor)  # or on an executor a host built (TurnExecutor(store=...))
+    hook.attach(executor)  # or on an executor a host built
 
-    # Scores are stored as Observations in the ConversationStore
-    # and accessible via hook.recent_scores
+    # Scores are stored as Observations by the room's owner, through the
+    # turn's host, and accessible via hook.recent_scores
 """
 
 from __future__ import annotations
@@ -40,13 +40,14 @@ class ScoringHook:
 
     Attach to a :class:`~roomkit.RoomKit` instance to automatically
     score AI responses via the ``ON_AI_RESPONSE`` hook.  Scores are
-    stored as :class:`~roomkit.models.task.Observation` objects in the
-    conversation store and kept in a bounded in-memory buffer for quick
-    access.
+    stored as :class:`~roomkit.models.task.Observation` objects through
+    the turn's host, by the room's owner, wherever the turn runs (RFC
+    §10.6.5), and kept in a bounded in-memory buffer for quick access.
 
     Parameters:
         scorers: List of :class:`ConversationScorer` implementations.
-        store: Optional store for persisting scores. If None, uses kit's store.
+        store: Ignored: an executor never writes the owner's store itself;
+            kept so existing calls still construct.
         max_recent: Maximum number of scores to keep in the in-memory buffer.
     """
 
@@ -63,23 +64,9 @@ class ScoringHook:
 
     def attach(self, target: RoomKit | TurnExecutor) -> None:
         """Register the scoring hook on a turn executor, where ON_AI_RESPONSE
-        fires (RFC §10.6.6): a kit's own, or one a host built. Scores go to
-        the store given, else the kit's or the executor's.
-
-        Raises:
-            ValueError: no store to keep the scores in.
-        """
-        if isinstance(target, TurnExecutor):
-            executor, store = target, target.store
-        else:
-            executor, store = target.turn_executor, target._store
-        if self._store is None:
-            self._store = store
-        if self._store is None:
-            raise ValueError(
-                "ScoringHook keeps its scores in a store: ScoringHook(store=...) "
-                "or TurnExecutor(store=...)"
-            )
+        fires (RFC §10.6.6): a kit's own, or one a host built. Scores reach
+        the room's owner through the turn's host."""
+        executor = target if isinstance(target, TurnExecutor) else target.turn_executor
         decorator = executor.hook(
             HookTrigger.ON_AI_RESPONSE,
             execution=HookExecution.ASYNC,
@@ -128,8 +115,8 @@ class ScoringHook:
         event: AIResponseEvent,
         scores: list[tuple[str, Score]],
     ) -> None:
-        """Store scores as Observations in the ConversationStore."""
-        if not self._store or not event.room_id:
+        """Store scores as Observations, through the turn's host."""
+        if not event.room_id:
             return
         for scorer_name, score in scores:
             obs = Observation(

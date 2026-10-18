@@ -251,10 +251,11 @@ async def test_a_scoring_hook_attaches_to_a_host_s_executor() -> None:
     await executor.close()
 
 
-def test_a_scoring_hook_needs_a_store() -> None:
+def test_a_scoring_hook_needs_no_store_on_a_host_s_executor() -> None:
+    """Scores reach the owner through the turn's host (RFC §10.6.5): an
+    executor with no store takes a scorer."""
     executor = TurnExecutor(lambda channel_id: None)
-    with pytest.raises(ValueError, match="store"):
-        ScoringHook(scorers=[MockScorer()]).attach(executor)
+    ScoringHook(scorers=[MockScorer()]).attach(executor)
 
 
 # -- Room hooks by name (RFC §10.6.6) -------------------------------------------------
