@@ -19,7 +19,7 @@ from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes,
 from roomkit.channels.declared import DeclaredChannel
 from roomkit.models.steering import Cancel as SteeringCancel
 from roomkit.telemetry.context import get_current_span
-from roomkit.turns._codec import error_record
+from roomkit.turns._error_codec import error_record
 from roomkit.turns._owner_between import answer_room_call, publish_between_turns
 from roomkit.turns._owner_inputs import OwnerInputs
 from roomkit.turns._owner_turn import OwnerTurn

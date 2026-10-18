@@ -24,7 +24,8 @@ from roomkit.models.channel import ChannelOutput
 from roomkit.models.steering import Cancel as SteeringCancel
 from roomkit.models.steering import SteeringDirective
 from roomkit.models.streaming import ToolCallEndMarker
-from roomkit.turns._codec import decode_end, decode_output, rebuild_error
+from roomkit.turns._codec import decode_end, decode_output
+from roomkit.turns._error_codec import rebuild_error
 from roomkit.turns._owner_calls import OwnerCalls
 from roomkit.turns._owner_inputs import OwnerInputs
 from roomkit.turns._owner_publish import TurnPublisher, names_its_room

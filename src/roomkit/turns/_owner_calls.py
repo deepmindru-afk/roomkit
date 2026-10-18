@@ -30,7 +30,8 @@ from roomkit.core._turn_scope import enter_turn
 from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.tools.context import ToolCallContext, owner_served_call
 from roomkit.tools.result import as_tool_result
-from roomkit.turns._codec import encode_result, error_record
+from roomkit.turns._codec import encode_result
+from roomkit.turns._error_codec import error_record
 from roomkit.turns.host import READERS, set_turn_host
 from roomkit.turns.wire import HostCall, HostResult, ToolCall, ToolResult
 

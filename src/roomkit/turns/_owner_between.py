@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from roomkit.turns._codec import error_record
+from roomkit.turns._error_codec import error_record
 from roomkit.turns._owner_publish import publish_frame
 from roomkit.turns.wire import HostResult
 

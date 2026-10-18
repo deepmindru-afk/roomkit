@@ -18,7 +18,7 @@ from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
-from roomkit.turns._codec import error_record, rebuild_error
+from roomkit.turns._error_codec import error_record, rebuild_error
 from roomkit.turns.wire import ErrorRecord
 from tests.test_framework import SimpleChannel
 from tests.test_turns_backend import ScriptedChannel, _client, _run

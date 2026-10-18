@@ -21,7 +21,7 @@ from roomkit.core.exceptions import ToolNameCollisionError, TurnLinkError
 from roomkit.core.hooks import HookEngine, HookRegistration, hook_decorator
 from roomkit.core.task_utils import cancel_and_wait
 from roomkit.models.enums import HookExecution
-from roomkit.turns._codec import error_record
+from roomkit.turns._error_codec import error_record
 from roomkit.turns._executor_channels import ChannelFactory, ExecutorChannels
 from roomkit.turns._executor_rooms import ExecutorRooms
 from roomkit.turns._executor_turn import ExecutorTurn

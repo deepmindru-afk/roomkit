@@ -26,7 +26,8 @@ from roomkit.core.hooks import set_turn_room_hooks
 from roomkit.telemetry.context import get_current_span, set_current_span
 from roomkit.tools._turn_inputs import set_turn_inputs
 from roomkit.turns._between_turns import BetweenTurns
-from roomkit.turns._codec import encode_output, error_record
+from roomkit.turns._codec import encode_output
+from roomkit.turns._error_codec import error_record
 from roomkit.turns._executor_calls import ExecutorCalls
 from roomkit.turns._executor_changes import ChannelChanges
 from roomkit.turns._executor_inputs import ExecutorInputs

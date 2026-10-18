@@ -38,7 +38,8 @@ from roomkit.models.streaming import (
 )
 from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
 from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, TurnTimeouts
-from roomkit.turns._codec import decode_item, encode_item, error_record, rebuild_error
+from roomkit.turns._codec import decode_item, encode_item
+from roomkit.turns._error_codec import error_record, rebuild_error
 from roomkit.turns.base import MessageOrder, OwnerTools
 from roomkit.turns.wire import OwnerTool
 from tests.turn_errors import same_error

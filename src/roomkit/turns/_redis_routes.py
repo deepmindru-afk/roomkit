@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from roomkit.core.exceptions import TurnLinkError
-from roomkit.turns._codec import error_record
+from roomkit.turns._error_codec import error_record
 from roomkit.turns._redis_links import RedisExecutorLink, RedisTurnLink
 from roomkit.turns.base import RoomOwner
 from roomkit.turns.wire import (

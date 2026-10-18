@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from roomkit.core.exceptions import ChannelNotRegisteredError
-from roomkit.turns._codec import error_record
+from roomkit.turns._error_codec import error_record
 from roomkit.turns._rooms import RoomRecords, stored_room_state
 from roomkit.turns.wire import ChannelCall, ChannelResult, RoomAttached, RoomDetached
 

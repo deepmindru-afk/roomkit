@@ -18,7 +18,7 @@ from collections.abc import Coroutine, Sequence
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.exceptions import TurnLinkError
-from roomkit.turns._codec import error_record
+from roomkit.turns._error_codec import error_record
 from roomkit.turns._rooms import RoomRecords
 from roomkit.turns.base import ExecutorLink, MessageOrder, RoomOwner, TurnBackend, TurnLink
 from roomkit.turns.wire import (

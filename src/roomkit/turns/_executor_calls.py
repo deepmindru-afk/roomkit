@@ -26,7 +26,8 @@ from roomkit.tools.context import (
     current_tool_requester,
     current_tool_room_id,
 )
-from roomkit.turns._codec import decode_result, rebuild_error
+from roomkit.turns._codec import decode_result
+from roomkit.turns._error_codec import rebuild_error
 from roomkit.turns.wire import CallCancel, CallContext, HostCall, HostResult, ToolCall
 
 if TYPE_CHECKING:

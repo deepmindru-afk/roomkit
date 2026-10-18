@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.core.exceptions import ChannelNotFoundError, ChannelNotRegisteredError
 from roomkit.models.enums import ChannelCategory
-from roomkit.turns._codec import rebuild_error
+from roomkit.turns._error_codec import rebuild_error
 from roomkit.turns._rooms import room_state_key, stored_room_state
 from roomkit.turns.wire import ChannelCall, RoomDetached
 

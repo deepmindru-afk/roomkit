@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from roomkit.turns._codec import rebuild_error
+from roomkit.turns._error_codec import rebuild_error
 from roomkit.turns.wire import RoomCall, RoomPublication
 
 if TYPE_CHECKING:

@@ -31,7 +31,7 @@ from roomkit.channels._video_hooks import room_vision_note
 from roomkit.models.enums import TaskStatus
 from roomkit.tasks.status import TASK_ACTION
 from roomkit.tools.context import _current_turn_chain_depth
-from roomkit.turns._codec import error_record
+from roomkit.turns._error_codec import error_record
 from roomkit.turns.base import OwnerHost
 from roomkit.turns.host import (
     BETWEEN_TURNS,

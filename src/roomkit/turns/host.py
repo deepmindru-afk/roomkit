@@ -32,7 +32,7 @@ from roomkit.models.enums import EventType, Visibility
 from roomkit.models.event import EventContent, RoomEvent
 from roomkit.models.room import Room
 from roomkit.models.task import DelegatedTaskResult, Observation
-from roomkit.turns._codec import rebuild_error
+from roomkit.turns._error_codec import rebuild_error
 from roomkit.turns.wire import ErrorRecord
 
 HostCaller = Callable[[str, dict[str, Any]], Awaitable[Any]]
