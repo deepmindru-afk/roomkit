@@ -48,10 +48,11 @@ def rms_db(data: bytes) -> float:
 def pcm16_energy(data: bytes) -> int:
     """Sum of the squared samples of 16-bit little-endian PCM.
 
-    Standard library only, for the paths a base install runs per frame. A
-    trailing odd byte is ignored. ``math.sumprod`` keeps the sum an exact
-    int at about half the cost of a generator; NumPy only wins from about
-    200 samples on, which is why ``rms_db`` keeps it for realtime chunks.
+    Standard library only, for the paths a base install runs per frame: a
+    base install has no NumPy. A trailing odd byte is ignored.
+    ``math.sumprod`` keeps the sum an exact int at about half the cost of a
+    generator. NumPy is faster on all but the smallest frames (an int64 dot
+    from about 60 samples), so the paths whose extras bring it keep it.
     """
     samples = struct.unpack_from(f"<{len(data) // 2}h", data)
     # Int inputs give an exact int; the stubs only know the float signature.

@@ -16,7 +16,7 @@ def _pcm(*samples: int) -> bytes:
 
 
 def _generator_energy(data: bytes) -> int:
-    """The per-sample generator the energy VAD, barge-in and AGC used before."""
+    """Reference oracle: the per-sample generator sum."""
     count = len(data) // 2
     return sum(s * s for s in struct.unpack(f"<{count}h", data[: count * 2]))
 

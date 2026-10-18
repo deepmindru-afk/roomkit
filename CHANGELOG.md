@@ -322,16 +322,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The energy VAD, the energy barge-in check, the simple AGC and the realtime
-  output-activity check square a frame's samples with `math.sumprod` instead
-  of a per-sample generator (RMK-796). The sums are the same integers, and
-  the RMS of the VAD and the barge-in check is now the correctly rounded root,
-  as the AGC's already was (it moves by one unit in the last place at most);
-  the sum costs 2.3 µs instead of 5.1 µs on a 160-sample frame (8 kHz, 20 ms),
-  and a frame through the energy VAD costs RoomKit about 13 µs instead of
-  16 µs. `pcm16_energy` and `pcm16_rms` in `roomkit.voice.utils` are the one
-  standard-library implementation; the paths that already use NumPy keep
-  it, as NumPy is faster from about 200 samples on.
+- The energy VAD, the energy barge-in check, the simple AGC, the realtime
+  output-activity check and Speex's DEBUG statistics square a frame's samples
+  with `math.sumprod` instead of a per-sample generator (RMK-796). The sums
+  are the same integers, and the RMS of the VAD and the barge-in check is now
+  the correctly rounded root, as the AGC's already was (it moves by one unit
+  in the last place at most); the sum costs 2.3 µs instead of 5.1 µs on a
+  160-sample frame (8 kHz, 20 ms), and a frame through the energy VAD costs
+  RoomKit about 13 µs instead of 16 µs. `pcm16_energy` and `pcm16_rms` in
+  `roomkit.voice.utils` are the one standard-library implementation, since a
+  base install has no NumPy; the paths whose extras bring NumPy keep it, as it
+  is faster on all but the smallest frames.
 
 - A turn's stream costs the room's owner little per item across the turn
   backend (RMK-823, RFC §10.6.3, §10.6.4). Each `pull` grants a window of
