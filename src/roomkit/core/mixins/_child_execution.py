@@ -43,7 +43,7 @@ from roomkit.models.event import (
 from roomkit.models.response_metadata import TurnEntries, recorded_turn_end
 from roomkit.models.store_filter import EventFilter
 from roomkit.providers.utils import _aclose_stream
-from roomkit.turns.owner import drop_unread_streams
+from roomkit.turns.owner import unread_dropped_on_failure
 
 if TYPE_CHECKING:
     from roomkit.channels._tool_registry import ChannelRegistry
@@ -299,7 +299,8 @@ async def _broadcast_and_collect(
         channel_type=ChannelType.SYSTEM,
     )
     result = await router.broadcast(msg_event, source_binding, context)
-    try:
+    # A failure before the answer is read leaves nobody to read its streams.
+    with unread_dropped_on_failure(result.streaming_responses):
         # What the broadcast blocked is stored and announced, and its side
         # effects kept, whichever path broadcast the trigger (RFC §8.3).
         await kit._commit_blocked_events(child_room_id, result)
@@ -311,13 +312,9 @@ async def _broadcast_and_collect(
         # path the answer then takes (RFC §23.3 step 6); a stream that fails
         # later fires it where it is read.
         await kit._report_intelligence_errors(msg_event, context, result)
-    except BaseException:
-        # The answer is never read: nobody reads the streams either.
-        drop_unread_streams(result.streaming_responses)
-        raise
-    return await _answer_of_broadcast(
-        kit, child_room_id, result, bindings, msg_event.chain_depth + 1, turns
-    )
+        return await _answer_of_broadcast(
+            kit, child_room_id, result, bindings, msg_event.chain_depth + 1, turns
+        )
 
 
 async def _answer_of_broadcast(

@@ -95,6 +95,14 @@ other item waits for a later pull, which the reader sends when it reads on."""
 _DELTAS = frozenset({"text", "thinking"})
 
 
+def _deltas_in(item: dict[str, Any]) -> int:
+    """How many deltas a delta item carries: one, or a burst's number."""
+    deltas = item.get("deltas", 1)
+    if type(deltas) is not int or deltas < 1:
+        raise ValueError(f"a burst carries a positive number of deltas, not {deltas!r}")
+    return deltas
+
+
 class OwnerTurn:
     """The owner's side of one turn, from its submission to its end.
 
@@ -121,8 +129,10 @@ class OwnerTurn:
         self._link = link
         self._timeouts = timeouts
         self._events = events
-        # The items the executor may still send unasked (RFC §10.6.4).
+        # The items the executor may still send unasked, and how many its
+        # reader read, a burst counting its deltas (RFC §10.6.4).
         self._granted = 0
+        self._read = 0
         # Told the executor's id as soon as it took the turn: work the turn
         # began may reach the owner before its output does (RFC §10.6.3).
         self._on_accepted = accepted
@@ -153,8 +163,10 @@ class OwnerTurn:
         # intervals passed with none (RFC §10.6.8).
         self._heard = False
         self._silent = 0
-        # The executor's end of the turn came: what it cleaned up is done.
+        # The executor's end of the turn came: what it cleaned up is done; or
+        # the owner gave the turn up itself, and waits for nothing of it.
         self._ended = False
+        self._abandoned = False
         loop = asyncio.get_running_loop()
         self._beat = loop.create_task(self._beat_while_open())
         self._pump = loop.create_task(self._read_frames(), context=contextvars.Context())
@@ -169,7 +181,7 @@ class OwnerTurn:
         """Whether the turn is over for the owner without the executor's end:
         a drain past its bound, a lost executor. What the executor cleans up
         is then not known to be done (RFC §10.6.8)."""
-        return self._over and not self._ended
+        return self._over and not self._ended and not self._abandoned
 
     @property
     def over(self) -> bool:
@@ -179,6 +191,7 @@ class OwnerTurn:
     def abandon(self) -> None:
         """Stop holding the turn now (the owner closes): later frames are
         dropped, and the executor, no longer hearing its owner, cuts it."""
+        self._abandoned = True
         self._finish()
 
     # -- Output and stream ---------------------------------------------------
@@ -222,12 +235,7 @@ class OwnerTurn:
             await self._cancel(_cancel_reason(cancelled))
             raise
         if isinstance(frame, Item):
-            # Past an item that is no delta, the executor waits for a pull; a
-            # burst of text deltas counts as the deltas it carries.
-            if frame.item.get("kind") in _DELTAS:
-                self._granted -= int(frame.item.get("deltas", 1))
-            else:
-                self._granted = 0
+            self._count_read(frame.item)
             self._apply_records(before=seq)
             if frame.item.get("kind") == "stream_end":
                 await self._drain_to_end(None)
@@ -236,6 +244,8 @@ class OwnerTurn:
         if isinstance(frame, Error):
             await self._drain_to_end(None)
             raise rebuild_error(frame.error)
+        # The turn ended with every item read: the record is its last.
+        self._apply_records()
         self._finish()
         if self._steer_cut:
             # Cut by a steering Cancel: the calls it left open end cancelled,
@@ -246,11 +256,23 @@ class OwnerTurn:
             raise StopAsyncIteration
         raise TurnLinkError("executor_lost", "The turn ended in the middle of its stream")
 
+    def _count_read(self, item: dict[str, Any]) -> None:
+        """Count an item the reader reads: past one that is no delta, the
+        executor waits for a pull; a burst counts as the deltas it carries."""
+        if item.get("kind") in _DELTAS:
+            deltas = self._decoded(_deltas_in, item)
+            self._granted -= deltas
+            self._read += deltas
+        else:
+            self._granted = 0
+            self._read += 1
+
     async def _pull(self) -> None:
         """Grant the executor the window again once half of it was read: one
-        pull per many deltas, never one per item."""
-        if self._granted <= PULL_WINDOW // 2:
-            await self._link.send(Pull(count=PULL_WINDOW - self._granted))
+        pull per many deltas, never one per item. Nothing once the turn is
+        over: its last items are read from what came."""
+        if not self._over and self._granted <= PULL_WINDOW // 2:
+            await self._link.send(Pull(count=PULL_WINDOW - self._granted, read=self._read))
             self._granted = PULL_WINDOW
 
     def _open_call_ends(self) -> list[ToolCallEndMarker]:
@@ -493,12 +515,15 @@ class OwnerTurn:
         except TurnLinkError:
             pass
         finally:
+            # The reader stops: the record is the turn's last.
+            self._apply_records()
             self._finish()
 
     def _apply_records(self, *, before: int | None = None) -> None:
         """Apply the records sent before frame *before* (every one when
-        ``None``): the record a reader reads is the one sent before the item
-        it reads, however far the executor read ahead."""
+        ``None``, once the reader stops): the record a reader reads is the
+        one sent before the item it reads, however far the executor read
+        ahead, until the turn's end."""
         while self._records and (before is None or self._records[0][0] < before):
             _, record = self._records.pop(0)
             if self._record is not None:
@@ -510,7 +535,6 @@ class OwnerTurn:
         its calls, answer its steering, drop later frames."""
         if self._over:
             return
-        self._apply_records()
         self._over = True
         # What the turn published is still published; nothing is added after.
         self._to_publish.put_nowait(None)

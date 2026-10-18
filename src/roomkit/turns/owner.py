@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import weakref
-from collections.abc import Iterable
+from collections.abc import Generator, Iterable
+from contextlib import contextmanager
 from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -385,6 +386,17 @@ def drop_unread_streams(responses: Iterable[Any]) -> None:
     a failure leaves nobody to read: none is left to the garbage collector."""
     for response in responses:
         drop_unread(response.stream)
+
+
+@contextmanager
+def unread_dropped_on_failure(responses: Iterable[Any]) -> Generator[None]:
+    """Within it, a failure (a cancellation included) gives up the streams of
+    *responses* nobody will then read; one read already is left as it is."""
+    try:
+        yield
+    except BaseException:
+        drop_unread_streams(responses)
+        raise
 
 
 def registry_turn_client(

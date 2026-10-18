@@ -275,8 +275,14 @@ class CallCancel(BaseModel):
 
 
 class Pull(BaseModel):
+    """Grant the reading of the stream's next *count* items, the owner's
+    reader having read *read* of them (a joined burst counting its deltas):
+    a pull sent before the reader read an item that is no delta grants
+    nothing past it (RFC §10.6.4)."""
+
     type: Literal["pull"] = "pull"
     count: int = Field(default=1, ge=1)
+    read: int = Field(default=0, ge=0)
 
 
 class Close(BaseModel):

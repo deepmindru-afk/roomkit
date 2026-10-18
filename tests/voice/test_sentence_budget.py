@@ -152,6 +152,52 @@ async def test_a_tool_call_after_the_sentence_over_the_budget_never_starts() -> 
     await kit.close()
 
 
+class _BooksAfterManyWords(_BooksAfterTalking):
+    """The same reply, its text a delta per word: more of them than half the
+    window a pull grants (RFC §10.6.4)."""
+
+    async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
+        self.rounds += 1
+        if self.rounds > 1:
+            yield StreamTextDelta(text=" Your table is booked.")
+            yield StreamDone(finish_reason="stop")
+            return
+        text = (
+            "The invoice has three parts and the first part is your plan and the second "
+            "part is all of the calls you made this month. Let me book that table for you "
+            "right now so that you will have a seat at the restaurant tonight."
+        )
+        for word in text.split(" "):
+            yield StreamTextDelta(text=word + " ")
+        yield StreamToolCall(id="t1", name="book_table")
+        yield StreamDone(finish_reason="tool_calls")
+
+
+async def test_a_call_after_the_budget_never_starts_however_many_words_came_first() -> None:
+    """Both sentences are the budget's: the reply stops at the call's start,
+    which the turn never runs (RFC §12.2 step 12s.e)."""
+    backend, model = _StoppableBackend(), _BooksAfterManyWords()
+    kit = RoomKit(voice=backend)
+    kit.register_channel(
+        VoiceChannel("voice-1", tts=_SentenceTTS(), backend=backend, max_sentences=2)
+    )
+    book = AITool(name="book_table", description="Book a table.", parameters={"type": "object"})
+    kit.register_channel(AIChannel("ai-0", provider=model, tools=[book], tool_handler=model.book))
+    room = await kit.create_room()
+    await kit.attach_channel(room.id, "voice-1")
+    await kit.attach_channel(room.id, "ai-0")
+    await kit.join(room.id, "voice-1", participant_id="user-0")
+
+    asked = InboundMessage(
+        channel_id="voice-1", sender_id="user-0", content=TextContent(body="Hi")
+    )
+    await asyncio.wait_for(kit.process_inbound(asked, room_id=room.id), 5)
+    await asyncio.sleep(0.2)
+
+    assert (model.booked, model.rounds) == (0, 1)
+    await kit.close()
+
+
 async def test_a_reply_of_exactly_its_budget_runs_to_its_end() -> None:
     kit, _, backend, tts, [session] = await voice_rooms(SIX[:2], max_sentences=2)
 

@@ -114,6 +114,11 @@ class ExecutorTurn:
         self._channel = channel
         self._timeouts = timeouts
         self._credits = 0
+        # The items read off the stream, and how many were read once the last
+        # one that is no delta was: a pull its reader sent before reading
+        # that one grants nothing past it (RFC §10.6.4).
+        self._items_read = 0
+        self._barrier = 0
         self._closing = False
         # The stream is reading an item, and whether ahead of its reader: a
         # read that follows a delta, which a close cuts (RFC §10.6.4).
@@ -133,10 +138,10 @@ class ExecutorTurn:
         self._open: dict[int, ToolCallStartMarker] = {}
         self._args_sent: dict[int, Any] = {}
         self._ends_sent: set[int] = set()
-        # The calls the turn makes to its owner: the tools it serves, and
-        # the verbs of the turn's host (RFC §10.6.5).
         # Every frame goes in order, the stream's text deltas by burst.
         self._frames = FrameSender(link.send)
+        # The calls the turn makes to its owner: the tools it serves, and
+        # the verbs of the turn's host (RFC §10.6.5).
         self._calls = ExecutorCalls(self._request, self._send_call)
         # Work the turn began reaches the owner after it, where the backend
         # carries that (RFC §10.6.3, §10.6.5).
@@ -263,8 +268,10 @@ class ExecutorTurn:
                 # collected generator's would be, before the cut goes on.
                 await self._close(stream, context)
                 raise
-            # Cut while an item was read: what changed before it still crosses.
-            await self._report_changes()
+            # Cut, reading or waiting for a pull: the channel's stream is
+            # closed under the turn (nothing to do when the cut ended it in
+            # its read), and what changed before still crosses.
+            await self._close(stream, context)
             return
         if not ended:
             await self._close(stream, context)
@@ -281,9 +288,10 @@ class ExecutorTurn:
                 return True
 
     async def _step(self, stream: AsyncIterator[Any]) -> bool:
-        """Read one item and send it after what changed before it; whether
-        the stream goes on."""
+        """Read one item and pass it on after what changed before it, a text
+        delta to the burst being kept; whether the stream goes on."""
         self._credits -= 1
+        self._items_read += 1
         last: Frame | None = None
         self._reading = True
         try:
@@ -300,13 +308,15 @@ class ExecutorTurn:
                 return True
             await self._report_changes(before=item)
             if isinstance(item, str):
-                self._frames.add_text(item)
+                await self._add_text(item)
             else:
                 await self._send_item(item)
             if not isinstance(item, str | ThinkingDeltaMarker):
                 # Past a call's start, a round's break or the loop's end, only
-                # a later pull advances the stream (RFC §10.6.4).
+                # a pull its reader sent once it read this item advances the
+                # stream (RFC §10.6.4).
                 self._credits = 0
+                self._barrier = self._items_read
             return True
         finally:
             self._reading = False
@@ -369,6 +379,14 @@ class ExecutorTurn:
             if ended is not None and ended is not before and seq not in self._ends_sent:
                 self._ends_sent.add(seq)
                 await self._send(ToolEnded(start=seq, end=encode_end(ended)))
+
+    async def _add_text(self, text: str) -> None:
+        """Keep a text delta for the burst; one that cannot cross refuses
+        the turn, as any item that cannot."""
+        try:
+            self._frames.add_text(text)
+        except ValueError as exc:
+            await self._refuse("stream item", exc)
 
     async def _send_item(self, item: Any) -> None:
         """Send one item, a call's end naming the frame of its start."""
@@ -468,7 +486,10 @@ class ExecutorTurn:
     async def _apply_control(self, message: Control) -> None:
         """Apply one control message of the owner's."""
         if isinstance(message, Pull):
-            self._credits += message.count
+            # A pull sent before its reader read the last item that is no
+            # delta grants nothing past that item.
+            if message.read >= self._barrier:
+                self._credits += message.count
         elif isinstance(message, Close):
             self._closing = True
             if self._reading and self._ahead:

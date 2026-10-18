@@ -7,6 +7,9 @@ them itself, whatever still holds its result."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
+import logging
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -15,6 +18,7 @@ import pytest
 
 from roomkit import RoomKit
 from roomkit.core.event_router import StreamingResponse
+from roomkit.core.exceptions import TurnLinkError
 from roomkit.core.lanes import DeliveryCascade, ExecEntry, RoomDeliveryLane
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType
@@ -99,6 +103,75 @@ async def test_a_cancelled_cascade_whose_turns_ended_reports_its_cleanup_done() 
 
     await cascade.cancel_and_wait("caller_cancelled", timeout=2.0)
     await client.close()
+
+
+async def _consumed(stream: Any) -> None:
+    with contextlib.suppress(TurnLinkError):
+        async for _ in stream:
+            pass
+
+
+async def test_a_cancelled_cascade_nobody_waits_for_leaves_no_unretrieved_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Cancelled without a waiter (a dropped lane entry), its cleanup that
+    finds an end owed is no task error left for the garbage collector."""
+    let_go = asyncio.Event()
+
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        try:
+            yield "one"
+            await asyncio.Event().wait()
+        finally:
+            await let_go.wait()
+
+    client = _client(ScriptedChannel(script), QUICK)
+    stream = (await _run(client)).response_stream
+    assert await anext(stream) == "one"
+    cascade = DeliveryCascade("room", reentry_budget=10)
+    cascade.add_streams([_response(stream)])
+    cascade.track(asyncio.ensure_future(_consumed(stream)))
+    await asyncio.sleep(0.05)
+
+    with caplog.at_level(logging.ERROR, logger="asyncio"):
+        cascade.cancel("kit_closed")
+        await asyncio.sleep(0.5)  # past the cancel bound
+        del cascade, stream
+        gc.collect()
+        await asyncio.sleep(0.01)
+    let_go.set()
+    await client.close()
+
+    assert [r.getMessage() for r in caplog.records if r.name == "asyncio"] == []
+
+
+async def test_a_cascade_whose_turn_its_owner_gave_up_reports_its_cleanup_done() -> None:
+    """The owner closing gives up the turns it holds, waiting for nothing of
+    them (a close from inside a turn spares that turn): no end is owed."""
+    let_go = asyncio.Event()
+
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        try:
+            yield "one"
+            await asyncio.Event().wait()
+        finally:
+            await let_go.wait()
+
+    channels = {"agent": ScriptedChannel(script)}
+    backend = InMemoryTurnBackend()
+    executor = TurnExecutor(channels.get, hosts=channels.__contains__, timeouts=QUICK)
+    await backend.serve(executor)
+    client = TurnClient(backend, timeouts=QUICK)
+    stream = (await _run(client)).response_stream
+    assert await anext(stream) == "one"
+    cascade = DeliveryCascade("room", reentry_budget=10)
+    cascade.add_streams([_response(stream)])
+    cascade.track(asyncio.ensure_future(_consumed(stream)))
+
+    await client.close()
+    await cascade.cancel_and_wait("kit_closed", timeout=2.0)
+    let_go.set()
+    await executor.close()
 
 
 @pytest.mark.wallclock
@@ -212,6 +285,24 @@ async def test_a_delegated_turn_whose_commit_fails_closes_the_turns_it_started(
 
     monkeypatch.setattr(kit, "_commit_blocked_events", fails)
     task = await kit.delegate("r", "agent", "Go.", wait=True)
+
+    assert task.result is not None
+    assert await _turns_ended()
+    await kit.close()
+
+
+async def test_a_shared_delegated_turn_whose_commit_fails_closes_the_turns_it_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With a transport shared, the answer takes the room's path: a commit
+    that fails there leaves no stream to the garbage collector either."""
+    kit = await _room_kit()
+
+    async def fails(*args: Any) -> None:
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(kit, "_commit_responses", fails)
+    task = await kit.delegate("r", "agent", "Go.", wait=True, share_channels=["tx"])
 
     assert task.result is not None
     assert await _turns_ended()

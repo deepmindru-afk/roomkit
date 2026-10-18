@@ -33,7 +33,10 @@ class FrameSender:
         self._flush: asyncio.Task[None] | None = None
 
     def add_text(self, text: str) -> None:
-        """Keep *text* for the burst, sent once the stream waits."""
+        """Keep *text* for the burst, sent once the stream waits; a text no
+        frame can carry (a lone surrogate) raises ``ValueError`` here, before
+        it spoils the burst."""
+        text.encode()
         self._text.append(text)
         if self._flush is None:
             # Runs at the loop's next turn: once the stream's task waits.
@@ -48,7 +51,10 @@ class FrameSender:
     async def _flush_burst(self) -> None:
         try:
             async with self._lock:
-                await self._send_text()
+                # Text kept while a send suspended goes too: no flush was
+                # scheduled for it.
+                while self._text:
+                    await self._send_text()
         except Exception:
             logger.debug("A burst of text deltas could not be sent", exc_info=True)
         finally:

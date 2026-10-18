@@ -264,10 +264,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backend (RMK-823, RFC §10.6.3, §10.6.4). Each `pull` grants a window of
   items, so the executor reads text and reasoning deltas ahead of the
   owner's reader, never past a call's start, a segment break or a round's
-  end without a later pull; text deltas the channel yields without a wait
-  between them cross as one `item`, their text joined and their number
-  given (`deltas`). 2000 deltas yielded at once cost the owner's loop about
-  3 ms of CPU instead of 68 ms. A reader sees the same text cut differently:
+  end before the reader read it: a `Pull` says how many items its reader
+  read (`read`), and one sent earlier grants nothing past such an item.
+  Text deltas the channel yields without a wait between them cross as one
+  `item`, their text joined and their number given (`deltas`). 2000 deltas
+  yielded at once cost the owner's loop about 3 ms of CPU instead of 68 ms.
+  A reader sees the same text cut differently:
   a voice channel's sentence budget reads a joined burst a sentence at a
   time, so it still stops before a call its next sentence would announce.
   Deltas read ahead that the reader had not read when the turn was
@@ -449,11 +451,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A cancelled delivery no longer reports its cleanup done while a turn it
   read still owes its end (RMK-823, RFC §10.6.8): once the owner's drain
   gave up at `cancel_timeout`, `cancel_and_wait` raises `TimeoutError`
-  ("did not end on their executor") instead of returning. A delivery that
-  stops between its turns and their reader (cancelled once its plan ran, a
-  root pass or a delegated turn's commit that fails) closes the turns'
-  streams itself, rather than leaving them to the garbage collector while
-  something still holds its result.
+  ("did not end on their executor") instead of returning; a cleanup nobody
+  waits for leaves no unretrieved task error, and a turn the owner gave up
+  itself, closing, owes nothing. A delivery that stops between its turns and
+  their reader (cancelled once its plan ran, a root pass, or a delegated
+  turn's commit or answer that fails) closes the turns' streams itself,
+  rather than leaving them to the garbage collector while something still
+  holds its result.
 
 - A delegation requiring a structured result from a worker the kit holds by
   its declaration alone fell back to the worker's text: the result tool was
