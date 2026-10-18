@@ -28,6 +28,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stt", choices=["batch", "stream"], default="batch")
     parser.add_argument("--repeat", type=_positive, default=3, help="runs, each a fresh kit")
     parser.add_argument("--cpu", type=int, help="pin the process to this CPU (Linux)")
+    parser.add_argument("--dsn", help="put the rooms in this Postgres instead of memory")
     return parser.parse_args(argv)
 
 
@@ -42,10 +43,13 @@ def main(argv: list[str] | None = None) -> int:
                 args.seconds,
                 vad=args.vad == "energy",
                 streaming_stt=args.stt == "stream",
+                dsn=args.dsn,
             )
         )
+        store = "postgres" if args.dsn else "memory"
         sys.stdout.write(
-            f"vad={args.vad} stt={args.stt} calls={cost.calls} frames={cost.frames}: "
+            f"store={store} vad={args.vad} stt={args.stt} calls={cost.calls} "
+            f"frames={cost.frames}: "
             f"{cost.us_per_frame:.1f} µs/frame, {cost.calls_per_core:.0f} calls/core "
             f"for this layer, {cost.stt_requests} STT requests\n"
         )

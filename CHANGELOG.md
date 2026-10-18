@@ -30,7 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the energy VAD or none and a batch or streaming mock STT, and reports
   µs per frame, calls per core for that layer and the STT requests, so two
   runs can be checked to have detected the same turns. RTP, codecs and models
-  are excluded.
+  are excluded. `--dsn` runs the same turns with the rooms in Postgres
+  (RMK-797), and a run waits for the process to stop spending CPU before it
+  closes the kit, so turns still queued for the store's connections are
+  measured rather than dropped.
 
 - `RedisTurnBackend` (RMK-813, RFC §10.6.7 to §10.6.9, `pip install
   roomkit[redis]`): an agent's turns run on an executor in another process

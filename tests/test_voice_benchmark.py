@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from benchmarks.voice import __main__ as cli
 from benchmarks.voice.frame_cost import measure
@@ -18,6 +20,16 @@ async def test_without_a_vad_no_turn_reaches_a_batch_stt() -> None:
     cost = await measure(calls=1, seconds=2, vad=False)
 
     assert (cost.frames, cost.stt_requests) == (100, 0)
+
+
+async def test_a_dsn_runs_the_same_turns_on_postgres() -> None:
+    dsn = os.environ.get("POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("POSTGRES_DSN not set")
+    cost = await measure(calls=2, seconds=2, dsn=dsn)
+
+    assert (cost.frames, cost.stt_requests) == (200, 2)
+    assert cli.parse_args(["--dsn", dsn]).dsn == dsn
 
 
 @pytest.mark.parametrize("argv", [["--calls", "0"], ["--seconds", "-1"], ["--vad", "silero"]])

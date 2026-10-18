@@ -14,7 +14,14 @@ uv run python -m benchmarks.voice --calls 100 --seconds 10 --cpu 2
 
 # No VAD, streaming mock STT.
 uv run python -m benchmarks.voice --vad none --stt stream
+
+# The same turns with the rooms in Postgres (asyncpg is in the dev extra).
+uv run python -m benchmarks.voice --dsn postgresql://postgres:postgres@localhost:5432/postgres
 ```
+
+With `--dsn`, the figure is this process's share of the store reads (the
+driver and the decoding of rows into models); the database server's CPU is
+not counted, and neither is the time a turn waits on a round trip.
 
 The audio is 8 kHz (a G.711 call): one second of a 440 Hz tone, then one
 second of silence, so the energy VAD opens and closes one turn per call
