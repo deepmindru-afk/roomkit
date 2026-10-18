@@ -8,12 +8,12 @@ Suitable for local testing and simple deployments where a neural VAD
 from __future__ import annotations
 
 import logging
-import struct
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from roomkit.voice.pipeline.vad.base import VADConfig, VADEvent, VADEventType, VADProvider
+from roomkit.voice.utils import pcm16_rms
 
 logger = logging.getLogger(__name__)
 
@@ -21,16 +21,6 @@ _DEBUG_SUMMARY_INTERVAL = 50  # frames (~1s at 20ms/frame)
 
 if TYPE_CHECKING:
     from roomkit.voice.audio_frame import AudioFrame
-
-
-def _rms_int16(data: bytes) -> float:
-    """Compute RMS of int16 little-endian PCM data."""
-    n_samples = len(data) // 2
-    if n_samples == 0:
-        return 0.0
-    samples = struct.unpack(f"<{n_samples}h", data[: n_samples * 2])
-    sum_sq = sum(s * s for s in samples)
-    return float((sum_sq / n_samples) ** 0.5)
 
 
 @dataclass
@@ -127,7 +117,7 @@ class EnergyVADProvider(VADProvider):
 
     def process(self, frame: AudioFrame, stream: str) -> VADEvent | None:
         st = self._streams.setdefault(stream, _StreamState())
-        rms = _rms_int16(frame.data)
+        rms = pcm16_rms(frame.data)
         duration_ms = self._frame_duration_ms(frame)
         is_speech = rms >= self._energy_threshold
 

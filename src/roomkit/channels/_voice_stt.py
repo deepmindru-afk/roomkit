@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
-import struct
 import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -26,6 +25,7 @@ from roomkit.voice.base import AudioChunk, SpeakerSegment, TranscriptionResult
 from roomkit.voice.events import SpeakerChangeEvent, TranscriptionEvent
 from roomkit.voice.interruption import echoes, echoes_nearly
 from roomkit.voice.stt.base import diarizes
+from roomkit.voice.utils import pcm16_rms
 
 _NOOP = NoopTelemetryProvider()
 
@@ -528,12 +528,10 @@ class VoiceSTTMixin:
         # A barge-in already owns this playback: nothing is left to decide.
         if playback.barge_in_claimed:
             return
-        n_samples = len(frame.data) // 2
-        if n_samples == 0:
+        if len(frame.data) < 2:
             return
 
-        samples = struct.unpack(f"<{n_samples}h", frame.data)
-        rms = (sum(s * s for s in samples) / n_samples) ** 0.5
+        rms = pcm16_rms(frame.data)
 
         with self._state_lock:
             if rms > self._BARGE_IN_RMS_THRESHOLD:

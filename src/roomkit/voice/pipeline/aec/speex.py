@@ -25,6 +25,7 @@ from typing import Any
 
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.pipeline.aec.base import AECProvider
+from roomkit.voice.utils import pcm16_energy
 
 logger = logging.getLogger("roomkit.voice.pipeline.speex_aec")
 
@@ -297,10 +298,8 @@ class SpeexAECProvider(AECProvider):
         # Accumulated over the full interval so the log reflects average
         # behaviour, not a single-frame snapshot.
         if logger.isEnabledFor(logging.DEBUG):
-            in_view = memoryview(pcm_in)[: self._frame_bytes].cast("h")
-            out_view = memoryview(out_data).cast("h")
-            st.total_in_energy += sum(s * s for s in in_view)
-            st.total_out_energy += sum(s * s for s in out_view)
+            st.total_in_energy += pcm16_energy(pcm_in)
+            st.total_out_energy += pcm16_energy(out_data)
 
         if should_log:
             self._log_stats(stream, st)

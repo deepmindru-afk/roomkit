@@ -8,7 +8,7 @@ import pytest
 
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.pipeline.vad.base import VADConfig, VADEventType
-from roomkit.voice.pipeline.vad.energy import EnergyVADProvider, _rms_int16
+from roomkit.voice.pipeline.vad.energy import EnergyVADProvider
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -35,29 +35,6 @@ def _speech(
     sample_rate: int = 16000,
 ) -> AudioFrame:
     return _make_frame(amplitude=amplitude, n_samples=n_samples, sample_rate=sample_rate)
-
-
-# ---------------------------------------------------------------------------
-# Unit: _rms_int16
-# ---------------------------------------------------------------------------
-
-
-class TestRmsInt16:
-    def test_silence(self) -> None:
-        data = struct.pack("<4h", 0, 0, 0, 0)
-        assert _rms_int16(data) == 0.0
-
-    def test_constant_signal(self) -> None:
-        data = struct.pack("<4h", 100, 100, 100, 100)
-        assert _rms_int16(data) == 100.0
-
-    def test_empty(self) -> None:
-        assert _rms_int16(b"") == 0.0
-
-    def test_odd_byte_count(self) -> None:
-        # 5 bytes → 2 full samples (4 bytes), last byte ignored
-        data = struct.pack("<2h", 200, 200) + b"\x00"
-        assert _rms_int16(data) == 200.0
 
 
 # ---------------------------------------------------------------------------

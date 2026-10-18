@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.pipeline.agc.base import AGCConfig, AGCProvider
+from roomkit.voice.utils import pcm16_rms
 
 logger = logging.getLogger("roomkit.voice.pipeline.agc.simple")
 
@@ -70,9 +71,7 @@ class SimpleAGCProvider(AGCProvider):
             metadata["gain_applied_db"] = 0.0
             return self._copy_frame(frame, frame.data, metadata)
 
-        samples = struct.unpack(f"<{sample_count}h", frame.data)
-        energy = sum(sample * sample for sample in samples)
-        rms = math.sqrt(energy / sample_count)
+        rms = pcm16_rms(frame.data)
         if rms <= 0:
             metadata["gain_applied_db"] = 0.0
             return self._copy_frame(frame, frame.data, metadata)
@@ -82,6 +81,7 @@ class SimpleAGCProvider(AGCProvider):
             metadata["gain_applied_db"] = 0.0
             return self._copy_frame(frame, frame.data, metadata)
 
+        samples = struct.unpack(f"<{sample_count}h", frame.data)
         desired_db = min(
             self._config.max_gain_db,
             max(self._min_gain_db, self._config.target_level_dbfs - level_dbfs),

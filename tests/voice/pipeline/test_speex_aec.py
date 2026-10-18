@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ctypes
+import logging
+import struct
 from unittest.mock import MagicMock, patch
 
 from roomkit.voice.audio_frame import AudioFrame
@@ -92,6 +94,21 @@ class TestSpeexAECProviderProcess:
         assert len(result.data) == len(frame.data)
         assert result.metadata["echo_cancelled"] is True
         mock_lib.speex_echo_capture.assert_called_once()
+
+    def test_debug_stats_report_the_interval_rms(self, caplog):
+        """The DEBUG energy sums read the samples as signed little-endian PCM16."""
+        mock_lib = _make_mock_speexdsp()  # its capture leaves the output silent
+        provider, _ = _make_provider(mock_lib)
+        frame = AudioFrame(
+            data=struct.pack("<h", -1000) * _FRAME_SIZE, sample_rate=16000, channels=1
+        )
+
+        with caplog.at_level(logging.DEBUG):
+            for _ in range(50):  # one log interval
+                provider.process(frame, "s1")
+
+        stats = [r.getMessage() for r in caplog.records if "[AEC stats]" in r.getMessage()]
+        assert len(stats) == 1 and "in_rms=1000 out_rms=0 " in stats[0]
 
     def test_process_frame_size_mismatch(self):
         """Wrong frame size -> passthrough."""
