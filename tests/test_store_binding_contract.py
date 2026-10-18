@@ -76,6 +76,25 @@ async def test_binding_round_trip_and_policy_updates(contract_store: Conversatio
         await contract_store.delete_room(room.id)
 
 
+async def test_binding_exists_answers_as_get_binding_does(
+    contract_store: ConversationStore,
+) -> None:
+    """Routing's yes/no (RFC §10.1 step 2) is the one ``get_binding`` would give."""
+    room = await contract_store.create_room(Room(id=uuid4().hex))
+    try:
+        assert not await contract_store.binding_exists(room.id, "sms")
+        await contract_store.add_binding(
+            ChannelBinding(room_id=room.id, channel_id="sms", channel_type=ChannelType.SMS)
+        )
+        assert await contract_store.binding_exists(room.id, "sms")
+        assert not await contract_store.binding_exists(room.id, "email")
+        assert not await contract_store.binding_exists(uuid4().hex, "sms")
+        await contract_store.remove_binding(room.id, "sms")
+        assert not await contract_store.binding_exists(room.id, "sms")
+    finally:
+        await contract_store.delete_room(room.id)
+
+
 @pytest.mark.parametrize("newest_first", [False, True])
 @pytest.mark.parametrize("cursor", ["after", "before", "offset"])
 async def test_pagination_order_contract(

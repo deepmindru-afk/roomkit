@@ -581,6 +581,11 @@ class InMemoryStore(ConversationStore):
         binding = self._bindings.get(room_id, {}).get(channel_id)
         return binding.model_copy(deep=True) if binding is not None else None
 
+    async def binding_exists(self, room_id: str, channel_id: str) -> bool:
+        # Inbound routing asks on every message: a key lookup, not the deep
+        # copy get_binding pays for a binding nobody reads.
+        return channel_id in self._bindings.get(room_id, {})
+
     async def update_binding(self, binding: ChannelBinding) -> ChannelBinding:
         self._bindings.setdefault(binding.room_id, {})[binding.channel_id] = binding
         self._index_participant(binding.participant_id, binding.room_id)
