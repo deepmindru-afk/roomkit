@@ -461,10 +461,16 @@ class TestRecordingLifecycle:
         which is the channel's own, so ``close()`` gives them the drain budget
         and goes on (RFC 12.10.4). The recordings themselves are finalized
         either way; what the budget abandons is the notification, and the log
-        says which.
+        says which. A hook is registered: an announcement nobody listens to
+        reads nothing, so nothing could wedge it.
         """
         monkeypatch.setattr(activity_module, "DRAIN_TIMEOUT_S", 0.05)
         kit, channel, backend, recorder = await _recording_conference()
+
+        @kit.hook(HookTrigger.ON_RECORDING_STOPPED, HookExecution.ASYNC)
+        async def _listener(event: object, ctx: object) -> None:
+            pass
+
         await backend.simulate_participant_joined(ROOM, "p-alice")
         alice = await backend.simulate_track_published(ROOM, "p-alice")
         await backend.simulate_audio(alice, speech_frame())

@@ -28,6 +28,7 @@ from roomkit.channels._conference_lane import (
 )
 from roomkit.channels._conference_operations import ConferenceResource
 from roomkit.channels._conference_recording import TrackFormat
+from roomkit.channels._room_hooks import RoomHooks
 from roomkit.conference.models import ConferenceTrack, TrackKind
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import HookTrigger
@@ -374,7 +375,6 @@ class ConferenceLanesMixin:
         """
         if self._framework is None:
             return text
-        context = await self._framework._build_context(lane.room_id)
         payload = ConferenceTranscription(
             track_id=lane.track_id,
             participant_id=lane.participant_id,
@@ -382,12 +382,8 @@ class ConferenceLanesMixin:
             text=text,
             timing=timing,
         )
-        result = await self._framework.hook_engine.run_sync_hooks(
-            lane.room_id,
-            HookTrigger.ON_TRANSCRIPTION,
-            payload,
-            context,
-            skip_event_filter=True,
+        result = await RoomHooks(self._framework, lane.room_id).run_sync(
+            HookTrigger.ON_TRANSCRIPTION, payload
         )
         if not result.allowed:
             return ""

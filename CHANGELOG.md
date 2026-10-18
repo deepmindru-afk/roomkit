@@ -367,20 +367,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   detector, ON_TURN_COMPLETE or ON_TURN_INCOMPLETE: it read the room, its
   bindings and its participants before the STT whatever was registered, and
   its speech start read them again for ON_SPEECH_START. Partial
-  transcriptions, VAD silences, barge-ins, DTMF, `say()` and recordings of
-  `VoiceChannel`, and final transcriptions, barge-ins and speaker changes of
-  `RealtimeVoiceChannel`, read them on every event too. Now the first trigger
-  with a registered hook reads the context, the event's later triggers share
-  it, and an event with no hook reads nothing. A voice turn with no voice hook
-  reads the context twice instead of four times (the inbound pipeline's own
-  reads, RFC §10.1 steps 3 and 6, are unchanged): on `benchmarks/voice`,
-  12.9 µs per frame becomes 11.4 µs on `InMemoryStore` and 23.8 µs becomes
-  20.8 µs on `PostgresStore`, two round trips fewer per turn.
+  transcriptions, VAD silences, barge-ins, DTMF, `say()` and recordings read
+  them on every event too, in `VoiceChannel`, `RealtimeVoiceChannel` and
+  `ConferenceChannel` alike (a conference also on each participant's speech
+  start and end). Now the first trigger with a registered hook reads the
+  context, the event's later triggers share it, and an event with no hook
+  reads nothing. A voice turn with no voice hook reads the context twice
+  instead of four times (the inbound pipeline's own reads, RFC §10.1 steps 3
+  and 6, are unchanged): on `benchmarks/voice`, 12.9 µs per frame becomes
+  11.4 µs on `InMemoryStore` and 23.8 µs becomes 20.8 µs on `PostgresStore`,
+  where each read saved is a connection checkout and three SELECTs.
   `InMemoryStore.binding_exists` no longer deep-copies the binding it checks.
-  One difference: with no hook registered, an utterance whose room has gone
-  from the store reaches the inbound pipeline, which creates the room as it
-  does for any message naming one that does not exist, instead of failing on
-  the voice side's context read.
+  An utterance whose ON_SPEECH_END observers cannot read the context (the
+  room gone from the store, the store failing) skips them, logged, and goes
+  on, since an ASYNC hook cannot block (RFC §9.3); an ON_TRANSCRIPTION hook
+  that cannot read it still drops the utterance, failing closed. So an
+  utterance whose room has gone from the store now reaches the inbound
+  pipeline, which opens the room again as it does for any message naming one
+  that does not exist, unless an ON_TRANSCRIPTION hook is registered; it
+  used to fail on the voice side's read.
 
 - The energy VAD, the energy barge-in check, the simple AGC, the realtime
   output-activity check and Speex's DEBUG statistics square a frame's samples

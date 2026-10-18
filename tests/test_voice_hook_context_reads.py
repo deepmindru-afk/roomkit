@@ -3,8 +3,8 @@ registered on one of its triggers, and once for the whole event (RMK-797).
 
 Every door that announces voice hooks is a case: an utterance in VAD,
 continuous and batch mode, a turn completed after its wait, a streaming
-partial, a barge-in, a say(), and a realtime session's transcription and
-speech boundaries. The inbound pipeline's own
+partial, a barge-in, a say(), a realtime session's transcription and speech
+boundaries, and a conference participant's utterance. The inbound pipeline's own
 reads (RFC §10.1 steps 3 and 6) are not counted: they happen with or without
 a hook, and this is about the reads the voice side adds.
 """
@@ -19,7 +19,15 @@ from typing import Any
 
 import pytest
 
-from roomkit import HookExecution, HookResult, HookTrigger, RealtimeVoiceChannel, RoomKit
+from roomkit import (
+    HookExecution,
+    HookResult,
+    HookTrigger,
+    MockConferenceBackend,
+    RealtimeVoiceChannel,
+    RoomKit,
+)
+from roomkit.channels.conference import ConferenceChannel
 from roomkit.channels.voice import TTSPlaybackState, VoiceChannel
 from roomkit.models.context import RoomContext
 from roomkit.models.event import TextContent
@@ -34,6 +42,7 @@ from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransp
 from roomkit.voice.stt.base import STTProvider
 from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.mock import MockTTSProvider
+from tests.conference.lane_audio import drain, say
 
 _INBOUND = frozenset({"_prepare_event_inner", "_run_precommit"})
 _SYNC = frozenset({HookTrigger.ON_TRANSCRIPTION, HookTrigger.BEFORE_TTS})
@@ -221,6 +230,24 @@ async def _realtime_speech() -> tuple[RoomKit, str, Act]:
     return kit, room_id, act
 
 
+async def _conference_utterance() -> tuple[RoomKit, str, Act]:
+    backend = MockConferenceBackend()
+    stt = MockSTTProvider(transcripts=["hello there"])
+    channel = ConferenceChannel("conf", backend=backend, stt=stt)
+    kit = RoomKit()
+    kit.register_channel(channel)
+    room = await kit.create_room()
+    await kit.attach_channel(room.id, "conf")
+    await backend.simulate_participant_joined(room.id, "p-alice")
+    track = await backend.simulate_track_published(room.id, "p-alice")
+
+    async def act() -> None:
+        await say(backend, track)
+        await drain(channel, track.id)
+
+    return kit, room.id, act
+
+
 @dataclass(frozen=True)
 class Door:
     setup: Callable[[], Awaitable[tuple[RoomKit, str, Act]]]
@@ -277,6 +304,12 @@ DOORS = {
         (HookTrigger.ON_SPEECH_START, HookTrigger.ON_SPEECH_END),
         events=2,
         routes=False,
+    ),
+    "conference_utterance": Door(
+        _conference_utterance,
+        (HookTrigger.ON_SPEECH_START, HookTrigger.ON_SPEECH_END, HookTrigger.ON_TRANSCRIPTION),
+        events=3,  # each speech edge is its own event, then the transcript
+        routes=True,
     ),
 }
 

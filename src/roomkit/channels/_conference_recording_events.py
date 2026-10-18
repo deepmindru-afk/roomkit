@@ -22,6 +22,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from roomkit.channels._room_hooks import RoomHooks
 from roomkit.models.enums import HookTrigger
 
 if TYPE_CHECKING:
@@ -180,14 +181,7 @@ class ConferenceRecordingEvents:
         if self._framework is None:
             return
         try:
-            context = await self._framework._build_context(room_id)
-            await self._framework.hook_engine.run_async_hooks(
-                room_id,
-                trigger,
-                event,
-                context,
-                skip_event_filter=True,
-            )
+            await RoomHooks(self._framework, room_id).run_async(trigger, event)
             await self._framework._emit_framework_event(
                 framework_event,
                 room_id=room_id,

@@ -31,6 +31,7 @@ from roomkit.channels._conference_operations import (
     ConferenceResource,
     OperationLease,
 )
+from roomkit.channels._room_hooks import RoomHooks
 from roomkit.conference.models import ConferenceInterruptionScope
 from roomkit.core.task_utils import log_task_exception
 from roomkit.models.enums import HookTrigger
@@ -859,14 +860,7 @@ class ConferenceVoice:
         """
         if self._framework is None:
             return text
-        context = await self._framework._build_context(room_id)
-        result = await self._framework.hook_engine.run_sync_hooks(
-            room_id,
-            HookTrigger.BEFORE_TTS,
-            text,
-            context,
-            skip_event_filter=True,
-        )
+        result = await RoomHooks(self._framework, room_id).run_sync(HookTrigger.BEFORE_TTS, text)
         if not result.allowed:
             logger.info("Conference TTS blocked by hook: %s", result.reason)
             return ""
@@ -876,14 +870,7 @@ class ConferenceVoice:
         """Notify hooks that the bot has spoken."""
         if self._framework is None:
             return
-        context = await self._framework._build_context(room_id)
-        await self._framework.hook_engine.run_async_hooks(
-            room_id,
-            HookTrigger.AFTER_TTS,
-            text,
-            context,
-            skip_event_filter=True,
-        )
+        await RoomHooks(self._framework, room_id).run_async(HookTrigger.AFTER_TTS, text)
 
     # -------------------------------------------------------------------------
     # Being interrupted
@@ -989,10 +976,8 @@ class ConferenceVoice:
         """
         if self._framework is None:
             return
-        context = await self._framework._build_context(lane.room_id)
         async with self._activity.track(lane.room_id):
-            await self._framework.hook_engine.run_async_hooks(
-                lane.room_id,
+            await RoomHooks(self._framework, lane.room_id).run_async(
                 HookTrigger.ON_BARGE_IN,
                 ConferenceBargeIn(
                     room_id=lane.room_id,
@@ -1001,8 +986,6 @@ class ConferenceVoice:
                     interrupted_text=playback.text,
                     audio_position_ms=playback.position_ms,
                 ),
-                context,
-                skip_event_filter=True,
             )
 
     # -------------------------------------------------------------------------

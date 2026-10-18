@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit.channels import _conference_activity
 from roomkit.channels._conference_operations import ConferenceResource
 from roomkit.channels._conference_room_state import LeavingSession
+from roomkit.channels._room_hooks import RoomHooks
 from roomkit.conference.models import BotSession, ConferenceGrants
 from roomkit.core.exceptions import ConferenceCapabilityError, RoomNotAttachedError
 from roomkit.models.enums import ChannelType, HookTrigger
@@ -481,9 +482,7 @@ class ConferenceSessionMixin:
         """
         if self._framework is None:
             return
-        context = await self._framework._build_context(room_id)
-        await self._framework.hook_engine.run_async_hooks(
-            room_id,
+        await RoomHooks(self._framework, room_id).run_async(
             HookTrigger.ON_SESSION_STARTED,
             SessionStartedEvent(
                 room_id=room_id,
@@ -492,8 +491,6 @@ class ConferenceSessionMixin:
                 participant_id=bot.identity,
                 session=bot,
             ),
-            context,
-            skip_event_filter=True,
         )
 
     def _is_own_bot(self, room_id: str, participant_id: str) -> bool:

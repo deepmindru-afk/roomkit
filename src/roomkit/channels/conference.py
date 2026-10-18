@@ -1608,7 +1608,9 @@ class ConferenceChannel(
         message: str,
         data: dict[str, Any],
     ) -> None:
-        if self._framework is None:
+        # No context read, no system event, for a trigger nobody listens to:
+        # the speech edges come through here, twice per utterance per track.
+        if self._framework is None or not self._framework.hook_engine.has_hooks(trigger):
             return
         await self._framework._fire_lifecycle_hook(
             room_id,
