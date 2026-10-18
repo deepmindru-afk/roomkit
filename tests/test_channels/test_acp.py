@@ -1235,10 +1235,11 @@ class TestACPChannel:
                 )
             )
             await asyncio.wait_for(first_update_sent.wait(), timeout=1)
-            for _ in range(50):
-                if "🔧 Inspect files" in stdout.getvalue():
-                    break
-                await asyncio.sleep(0)
+            # Bounded in time, not in loop turns: across a turn backend in
+            # another process the text takes round trips to reach the room.
+            async with asyncio.timeout(2):
+                while "🔧 Inspect files" not in stdout.getvalue():
+                    await asyncio.sleep(0.01)
 
             assert "First chunk" in stdout.getvalue()
             assert "🔧 Inspect files" in stdout.getvalue()
