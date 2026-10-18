@@ -6,6 +6,7 @@ executor emits, are published; anything else is dropped."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -13,8 +14,10 @@ from roomkit.realtime.base import EphemeralEvent
 from roomkit.turns.wire import Ephemeral
 
 if TYPE_CHECKING:
+    import contextvars
+
     from roomkit.turns.base import OwnerEvents
-    from roomkit.turns.wire import FrameworkEventFrame
+    from roomkit.turns.wire import FrameworkEventFrame, TurnRequest
 
 logger = logging.getLogger("roomkit.turns")
 
@@ -71,3 +74,52 @@ async def publish_frame(
         event_id=frame.event_id,
         data=frame.data,
     )
+
+
+class TurnPublisher:
+    """What one turn published on its executor, published here in order by a
+    task of its own: a handler that waits on the turn (an answer to an input
+    request, a close) never stalls the frames it waits for."""
+
+    def __init__(self, events: OwnerEvents | None, request: TurnRequest) -> None:
+        self._events = events
+        self._request = request
+        self._queue: asyncio.Queue[Ephemeral | FrameworkEventFrame | None] = asyncio.Queue()
+        self._task: asyncio.Task[None] | None = None
+
+    def publish_later(
+        self, frame: Ephemeral | FrameworkEventFrame, waiting: contextvars.Context | None
+    ) -> None:
+        """Queue *frame*, the task started on the first in a copy of
+        *waiting*, the context of the task waiting on the turn (RFC §10.6.5)."""
+        if self._events is None:
+            return
+        if self._task is None:
+            context = waiting.copy() if waiting is not None else None
+            self._task = asyncio.get_running_loop().create_task(self._run(), context=context)
+        self._queue.put_nowait(frame)
+
+    def close(self) -> None:
+        """What was queued is still published; nothing is added after."""
+        self._queue.put_nowait(None)
+
+    async def _run(self) -> None:
+        while (frame := await self._queue.get()) is not None:
+            await self._publish(frame)
+
+    async def _publish(self, frame: Ephemeral | FrameworkEventFrame) -> None:
+        """Publish on the owner what the turn published on its executor, as
+        the turn's channel in the turn's room (RFC §10.6.2)."""
+        assert self._events is not None
+        request = self._request
+        try:
+            await publish_frame(
+                self._events,
+                request.room_id,
+                request.channel_id,
+                frame,
+                label=f"Turn {request.turn_id}",
+            )
+        except Exception:
+            # What the turn published never stops the turn.
+            logger.exception("Turn %s: a %s could not be published", request.turn_id, frame.type)

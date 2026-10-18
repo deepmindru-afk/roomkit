@@ -13,9 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import inspect
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Coroutine
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, issue_mark, retire_mark
@@ -24,19 +23,15 @@ from roomkit.channels._tool_registry import set_turn_owner_tools
 from roomkit.core._turn_scope import enter_turn
 from roomkit.core.exceptions import ChannelNotRegisteredError, TurnLinkError
 from roomkit.core.hooks import set_turn_room_hooks
-from roomkit.models.streaming import ThinkingDeltaMarker, ToolCallEndMarker, ToolCallStartMarker
 from roomkit.telemetry.context import get_current_span, set_current_span
 from roomkit.tools._turn_inputs import set_turn_inputs
 from roomkit.turns._between_turns import BetweenTurns
-from roomkit.turns._codec import (
-    encode_end,
-    encode_item,
-    encode_output,
-    error_record,
-    record_payload,
-)
+from roomkit.turns._codec import encode_output, error_record
 from roomkit.turns._executor_calls import ExecutorCalls
+from roomkit.turns._executor_changes import ChannelChanges
 from roomkit.turns._executor_inputs import ExecutorInputs
+from roomkit.turns._executor_pulls import PullGate
+from roomkit.turns._executor_steer import steer_turn
 from roomkit.turns._frame_sender import FrameSender
 from roomkit.turns._outlet import TurnOutlet, set_turn_outlet
 from roomkit.turns.base import heartbeat_tick
@@ -53,11 +48,8 @@ from roomkit.turns.wire import (
     Item,
     Output,
     Pull,
-    Record,
     Steer,
     SteerResult,
-    ToolArgs,
-    ToolEnded,
     ToolResult,
 )
 
@@ -82,15 +74,6 @@ async def _reaction(channel: Channel, event: RoomEvent, request: TurnRequest) ->
         return await channel.on_event(event, request.binding, request.context)
 
 
-def _takes(function: Callable[..., Any], name: str) -> bool:
-    """Whether *function* takes the keyword argument *name*."""
-    try:
-        parameters = inspect.signature(function).parameters.values()
-    except (TypeError, ValueError):
-        return False
-    return any(p.name == name or p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
-
-
 async def _close_stream(stream: AsyncIterator[Any]) -> None:
     aclose = getattr(stream, "aclose", None)
     if aclose is not None:
@@ -113,17 +96,9 @@ class ExecutorTurn:
         self._executor_id = executor_id
         self._channel = channel
         self._timeouts = timeouts
-        self._credits = 0
-        # The items read off the stream, and how many were read once the last
-        # one that is no delta was: a pull its reader sent before reading
-        # that one grants nothing past it (RFC §10.6.4).
-        self._items_read = 0
-        self._barrier = 0
-        self._closing = False
-        # The stream is reading an item, and whether ahead of its reader: a
-        # read that follows a delta, which a close cuts (RFC §10.6.4).
-        self._reading = False
-        self._ahead = False
+        # What the owner's pulls let the stream read (RFC §10.6.4), and
+        # whether a close cut the read ahead of the reader.
+        self._pulls = PullGate()
         self._close_cut = False
         self._cut: str | None = None
         self._wake = asyncio.Event()
@@ -132,14 +107,10 @@ class ExecutorTurn:
         self._built: Channel | None = None
         self._spared = False
         self._mark: dict[str, Any] | None = None
-        self._record: dict[str, Any] = {}
-        self._live_record: Any = None
-        # The calls the stream started and has not ended, by their start's frame.
-        self._open: dict[int, ToolCallStartMarker] = {}
-        self._args_sent: dict[int, Any] = {}
-        self._ends_sent: set[int] = set()
         # Every frame goes in order, the stream's text deltas by burst.
         self._frames = FrameSender(link.send)
+        # What the channel changes after yielding it, sent before what follows.
+        self._changes = ChannelChanges(self._send, self._refuse)
         # The calls the turn makes to its owner: the tools it serves, and
         # the verbs of the turn's host (RFC §10.6.5).
         self._calls = ExecutorCalls(self._request, self._send_call)
@@ -215,7 +186,7 @@ class ExecutorTurn:
         except Exception as exc:
             await self._send(Error(error=error_record(exc)))
             return
-        self._live_record = output.response_metadata
+        self._changes.watch(output.response_metadata)
         stream = output.response_stream
         try:
             wire = encode_output(output)
@@ -223,7 +194,7 @@ class ExecutorTurn:
             if stream is not None:
                 await self._close(stream, contextvars.Context())
             await self._refuse("output", exc)
-        self._record = wire.response_metadata
+        self._changes.sent(wire.response_metadata)
         await self._send(Output(output=wire, streams=stream is not None))
         if stream is not None:
             await self._serve_stream(stream)
@@ -249,7 +220,7 @@ class ExecutorTurn:
             raise
         # The first pull lends the stream its context (RFC §10.6.4).
         context = self._link.stream_context() or contextvars.Context()
-        if self._closing or self._cut is not None:
+        if self._pulls.closing or self._cut is not None:
             await self._close(stream, context)
             return
         try:
@@ -282,7 +253,7 @@ class ExecutorTurn:
         a close or a cut stops it first."""
         while True:
             await self._wait_for_pull()
-            if self._closing or self._cut is not None:
+            if self._pulls.closing or self._cut is not None:
                 return False
             if not await self._step(stream):
                 return True
@@ -290,10 +261,8 @@ class ExecutorTurn:
     async def _step(self, stream: AsyncIterator[Any]) -> bool:
         """Read one item and pass it on after what changed before it, a text
         delta to the burst being kept; whether the stream goes on."""
-        self._credits -= 1
-        self._items_read += 1
         last: Frame | None = None
-        self._reading = True
+        self._pulls.start_read()
         try:
             item = await anext(stream)
         except StopAsyncIteration:
@@ -301,26 +270,19 @@ class ExecutorTurn:
         except Exception as exc:
             last = Error(error=error_record(exc))
         else:
-            # What follows a delta is read ahead of the reader.
-            self._ahead = isinstance(item, str | ThinkingDeltaMarker)
-            if self._closing or self._cut is not None:
+            self._pulls.item_read(item)
+            if self._pulls.closing or self._cut is not None:
                 # Read, then closed: the reader asked for nothing more.
                 return True
-            await self._report_changes(before=item)
+            await self._changes.report(before=item)
             if isinstance(item, str):
                 await self._add_text(item)
             else:
-                await self._send_item(item)
-            if not isinstance(item, str | ThinkingDeltaMarker):
-                # Past a call's start, a round's break or the loop's end, only
-                # a pull its reader sent once it read this item advances the
-                # stream (RFC §10.6.4).
-                self._credits = 0
-                self._barrier = self._items_read
+                await self._changes.send_item(item)
             return True
         finally:
-            self._reading = False
-        await self._report_changes()
+            self._pulls.end_read()
+        await self._changes.report()
         await self._send(last)
         return False
 
@@ -333,7 +295,7 @@ class ExecutorTurn:
                 raise
         except Exception:
             logger.exception("Closing the stream of turn %s failed", self._request.turn_id)
-        await self._report_changes()
+        await self._changes.report()
 
     async def _run_work(self, work: Coroutine[Any, Any, Any], context: contextvars.Context) -> Any:
         """Run one piece of the turn's work as a task the owner can cancel,
@@ -357,28 +319,9 @@ class ExecutorTurn:
             self._work = None
 
     async def _wait_for_pull(self) -> None:
-        while self._credits <= 0 and not self._closing and self._cut is None:
+        while not self._pulls.granted and not self._pulls.closing and self._cut is None:
             self._wake.clear()
             await self._wake.wait()
-
-    # -- What changed on the live objects ------------------------------------
-
-    async def _report_changes(self, *, before: Any = None) -> None:
-        """Send what the channel changed since the last item: its record, a
-        call's fixed arguments, a call's end (but the one *before* is)."""
-        if self._live_record is not None:
-            snapshot = record_payload(self._live_record)
-            if snapshot != self._record:
-                self._record = snapshot
-                await self._send(Record(record=snapshot))
-        for seq, start in self._open.items():
-            if start.ran_with is not None and self._args_sent.get(seq) != start.ran_with:
-                self._args_sent[seq] = start.ran_with
-                await self._send(ToolArgs(start=seq, arguments=start.ran_with))
-            ended = start.ended
-            if ended is not None and ended is not before and seq not in self._ends_sent:
-                self._ends_sent.add(seq)
-                await self._send(ToolEnded(start=seq, end=encode_end(ended)))
 
     async def _add_text(self, text: str) -> None:
         """Keep a text delta for the burst; one that cannot cross refuses
@@ -387,29 +330,6 @@ class ExecutorTurn:
             self._frames.add_text(text)
         except ValueError as exc:
             await self._refuse("stream item", exc)
-
-    async def _send_item(self, item: Any) -> None:
-        """Send one item, a call's end naming the frame of its start."""
-        start = self._start_of(item) if isinstance(item, ToolCallEndMarker) else None
-        try:
-            data = encode_item(item, start=start)
-        except TypeError as exc:
-            await self._refuse("stream item", exc)
-        seq = await self._send(Item(item=data))
-        if isinstance(item, ToolCallStartMarker):
-            self._open[seq] = item
-
-    def _start_of(self, end: ToolCallEndMarker) -> int | None:
-        """The start *end* closes: the one it rides, else the earliest open
-        under its id (two calls under one id are two calls, RFC §6.4)."""
-        seq = next((s for s, start in self._open.items() if start.ended is end), None)
-        if seq is None:
-            seq = next(
-                (s for s, start in self._open.items() if start.tool_id == end.tool_id), None
-            )
-        if seq is not None:
-            del self._open[seq]
-        return seq
 
     # -- The link -------------------------------------------------------------
 
@@ -479,20 +399,16 @@ class ExecutorTurn:
     def _cut_read(self) -> None:
         """A close found the stream reading ahead of its reader: the read is
         cut, as the reader's close would end the channel's stream."""
-        if self._reading and self._work is not None and not self._work.done():
+        if self._pulls.reading and self._work is not None and not self._work.done():
             self._close_cut = True
             self._work.cancel("closed")
 
     async def _apply_control(self, message: Control) -> None:
         """Apply one control message of the owner's."""
         if isinstance(message, Pull):
-            # A pull sent before its reader read the last item that is no
-            # delta grants nothing past that item.
-            if message.read >= self._barrier:
-                self._credits += message.count
+            self._pulls.grant(message)
         elif isinstance(message, Close):
-            self._closing = True
-            if self._reading and self._ahead:
+            if self._pulls.close():
                 # A read ahead of the reader is cut at once; one it asked for
                 # (a running call) finishes first (RFC §10.6.4, §12.2).
                 self._cut_read()
@@ -503,7 +419,7 @@ class ExecutorTurn:
         elif isinstance(message, InputAnswer):
             await self._inputs.answer(message)
         elif isinstance(message, Steer):
-            loops = await self._steer(message)
+            loops = await steer_turn(self._built, message.directive, self._request)
             await self._send(SteerResult(steer_id=message.steer_id, loops=loops))
 
     async def _beat(self) -> None:
@@ -522,31 +438,6 @@ class ExecutorTurn:
     @property
     def turn_id(self) -> str:
         return self._request.turn_id
-
-    async def _steer(self, message: Steer) -> int | None:
-        """Apply a steering directive to this turn's loops, through the
-        channel's ``steer()``, sync or async: how many it reached; ``None``
-        for a channel without steering, not built yet, or whose ``steer()``
-        cannot reach the turn yet (answers ``None``), whose owner cuts the
-        turn on a ``Cancel`` (RFC §10.6.8)."""
-        steer = getattr(self._built, "steer", None)
-        if steer is None:
-            return None
-        # A steer() of the channel's own from before turns were addressed
-        # takes the turn's room instead.
-        address = (
-            {"turn_id": self._request.turn_id}
-            if _takes(steer, "turn_id")
-            else {"room_id": self._request.room_id}
-        )
-        try:
-            reached = steer(message.directive, **address)
-            if inspect.isawaitable(reached):
-                reached = await reached
-        except Exception:
-            logger.exception("Turn %s: the channel's steer() failed", self.turn_id)
-            return 0
-        return reached if reached is None or isinstance(reached, int) else 0
 
     def spare(self) -> None:
         """Let the turn's work run on whatever ends its link: a close called

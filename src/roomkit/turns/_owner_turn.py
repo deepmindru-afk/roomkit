@@ -23,11 +23,12 @@ from roomkit.core.task_utils import cancel_reason
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.steering import Cancel as SteeringCancel
 from roomkit.models.steering import SteeringDirective
-from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
-from roomkit.turns._codec import decode_end, decode_item, decode_output, rebuild_error
+from roomkit.models.streaming import ToolCallEndMarker
+from roomkit.turns._codec import decode_end, decode_output, rebuild_error
 from roomkit.turns._owner_calls import OwnerCalls
 from roomkit.turns._owner_inputs import OwnerInputs
-from roomkit.turns._owner_publish import names_its_room, publish_frame
+from roomkit.turns._owner_publish import TurnPublisher, names_its_room
+from roomkit.turns._owner_stream import StreamCopies
 from roomkit.turns._remote_stream import RemoteStream
 from roomkit.turns.base import heartbeat_tick
 from roomkit.turns.wire import (
@@ -46,7 +47,6 @@ from roomkit.turns.wire import (
     InputTaken,
     Item,
     Output,
-    Pull,
     Record,
     Steer,
     SteerResult,
@@ -58,7 +58,6 @@ from roomkit.turns.wire import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from roomkit.models.response_metadata import ResponseMetadata
     from roomkit.turns.base import OwnerEvents, OwnerHost, OwnerTools, TurnLink, TurnTimeouts
     from roomkit.turns.wire import Control, Frame, TurnRequest
 
@@ -70,37 +69,9 @@ def _cancel_reason(cancelled: asyncio.CancelledError) -> str:
     return cancel_reason(cancelled) or "cancelled"
 
 
-def _cut_end(start: ToolCallStartMarker) -> ToolCallEndMarker:
-    """The end of a call its turn's cut left open."""
-    return ToolCallEndMarker(
-        tool_name=start.tool_name,
-        tool_id=start.tool_id,
-        arguments=start.ran_with if start.ran_with is not None else start.arguments,
-        status="failed",
-        error="cancelled",
-        outcome="cancelled",
-    )
-
-
 def _of_the_turn(request: TurnRequest, room_id: str | None, channel_id: str | None) -> bool:
     """Whether what a turn published names its room and channel (or none)."""
     return names_its_room(request.room_id, request.channel_id, room_id, channel_id)
-
-
-PULL_WINDOW = 64
-"""How many stream items a pull grants the executor at once (RFC §10.6.4):
-text and thinking deltas run ahead of their reader up to this many; any
-other item waits for a later pull, which the reader sends when it reads on."""
-
-_DELTAS = frozenset({"text", "thinking"})
-
-
-def _deltas_in(item: dict[str, Any]) -> int:
-    """How many deltas a delta item carries: one, or a burst's number."""
-    deltas = item.get("deltas", 1)
-    if type(deltas) is not int or deltas < 1:
-        raise ValueError(f"a burst carries a positive number of deltas, not {deltas!r}")
-    return deltas
 
 
 class OwnerTurn:
@@ -128,19 +99,13 @@ class OwnerTurn:
     ) -> None:
         self._link = link
         self._timeouts = timeouts
-        self._events = events
-        # The items the executor may still send unasked, and how many its
-        # reader read, a burst counting its deltas (RFC §10.6.4).
-        self._granted = 0
-        self._read = 0
+        # The owner's copies of what the stream yielded, and its reads.
+        self._copies = StreamCopies()
         # Told the executor's id as soon as it took the turn: work the turn
         # began may reach the owner before its output does (RFC §10.6.3).
         self._on_accepted = accepted
-        # What the turn published on its executor, published here in order by
-        # a task of its own: a handler that waits on the turn (an answer to an
-        # input request, a close) never stalls the frames it waits for.
-        self._to_publish: asyncio.Queue[Ephemeral | FrameworkEventFrame | None] = asyncio.Queue()
-        self._publisher: asyncio.Task[None] | None = None
+        # What the turn published on its executor, published here in order.
+        self._publisher = TurnPublisher(events, link.request)
         held = held_calls if held_calls is not None else set()
         self._calls = OwnerCalls(link.request, tools, host, self._send_result, held)
         self._inputs = inputs if inputs is not None else OwnerInputs(timeouts.input_hold_timeout)
@@ -148,12 +113,6 @@ class OwnerTurn:
         self.executor_id: str | None = None
         """The executor that took the turn, once it said so."""
         self._over = False
-        self._record: ResponseMetadata | None = None
-        # Records the executor sent ahead of the reader, by frame number:
-        # each applies as the reader reaches the item after it (RFC §10.6.4).
-        self._records: list[tuple[int, dict[str, Any]]] = []
-        self._starts: dict[int, ToolCallStartMarker] = {}
-        self._early_ends: dict[int, ToolCallEndMarker] = {}
         self._main: asyncio.Queue[tuple[int, Frame] | BaseException] = asyncio.Queue()
         self._waiting: contextvars.Context | None = None
         self._steers: dict[str, asyncio.Future[int | None]] = {}
@@ -205,7 +164,7 @@ class OwnerTurn:
             raise
         if isinstance(frame, Output):
             output = self._decoded(decode_output, frame.output)
-            self._record = output.response_metadata
+            self._copies.record = output.response_metadata
             if frame.streams:
                 output.response_stream = RemoteStream(self)
             return output
@@ -223,7 +182,7 @@ class OwnerTurn:
         if self._over and self._steer_cut:
             # Read after a steering Cancel ended the turn: the calls it left
             # open end cancelled first.
-            self._cut_ends.extend(self._open_call_ends())
+            self._cut_ends.extend(self._copies.open_call_ends())
         if self._cut_ends:
             return self._cut_ends.pop(0)
         if self._over and self._steer_cut:
@@ -235,56 +194,33 @@ class OwnerTurn:
             await self._cancel(_cancel_reason(cancelled))
             raise
         if isinstance(frame, Item):
-            self._count_read(frame.item)
-            self._apply_records(before=seq)
+            self._decoded(self._copies.count_read, frame.item)
+            self._copies.apply_records(before=seq)
             if frame.item.get("kind") == "stream_end":
                 await self._drain_to_end(None)
                 raise StopAsyncIteration
-            return self._decoded(self._item, seq, frame.item)
+            return self._decoded(self._copies.item, seq, frame.item)
         if isinstance(frame, Error):
             await self._drain_to_end(None)
             raise rebuild_error(frame.error)
         # The turn ended with every item read: the record is its last.
-        self._apply_records()
+        self._copies.apply_records()
         self._finish()
         if self._steer_cut:
             # Cut by a steering Cancel: the calls it left open end cancelled,
             # one per read, then the stream (RFC §10.6.4).
-            self._cut_ends = self._open_call_ends()
+            self._cut_ends = self._copies.open_call_ends()
             if self._cut_ends:
                 return self._cut_ends.pop(0)
             raise StopAsyncIteration
         raise TurnLinkError("executor_lost", "The turn ended in the middle of its stream")
 
-    def _count_read(self, item: dict[str, Any]) -> None:
-        """Count an item the reader reads: past one that is no delta, the
-        executor waits for a pull; a burst counts as the deltas it carries."""
-        if item.get("kind") in _DELTAS:
-            deltas = self._decoded(_deltas_in, item)
-            self._granted -= deltas
-            self._read += deltas
-        else:
-            self._granted = 0
-            self._read += 1
-
     async def _pull(self) -> None:
-        """Grant the executor the window again once half of it was read: one
-        pull per many deltas, never one per item. Nothing once the turn is
-        over: its last items are read from what came."""
-        if not self._over and self._granted <= PULL_WINDOW // 2:
-            await self._link.send(Pull(count=PULL_WINDOW - self._granted, read=self._read))
-            self._granted = PULL_WINDOW
-
-    def _open_call_ends(self) -> list[ToolCallEndMarker]:
-        """The end of every call the stream started and never ended: its own
-        when the executor sent it early, else a cut one."""
-        ends = []
-        for seq in sorted(self._starts):
-            start = self._starts.pop(seq)
-            end = self._early_ends.pop(seq, None) or start.ended or _cut_end(start)
-            start.ended = end
-            ends.append(end)
-        return ends
+        """Grant the executor the window again when the reader read enough of
+        it; nothing once the turn is over: its last items are read from what
+        came."""
+        if not self._over and (pull := self._copies.pull()) is not None:
+            await self._link.send(pull)
 
     async def close_stream(self) -> None:
         """Close the stream: the executor closes the channel's, a running
@@ -306,22 +242,6 @@ class OwnerTurn:
             self._main.put_nowait(invalid)
             self._finish()
             raise invalid from exc
-
-    def _item(self, seq: int, data: dict[str, Any]) -> Any:
-        """A new item, a call's end the same object as its start's ``ended``."""
-        if data["kind"] != "tool_end":
-            item = decode_item(data)
-            if isinstance(item, ToolCallStartMarker):
-                self._starts[seq] = item
-            return item
-        start_seq = data.get("start")
-        end = self._early_ends.pop(start_seq, None) if start_seq is not None else None
-        if end is None:
-            end = decode_end(data)
-        start = self._starts.pop(start_seq, None) if start_seq is not None else None
-        if start is not None:
-            start.ended = end
-        return end
 
     # -- Steering --------------------------------------------------------------
 
@@ -374,7 +294,7 @@ class OwnerTurn:
                 seq, frame = await self._link.receive()
                 self._heard = True
                 if isinstance(frame, Ephemeral | FrameworkEventFrame):
-                    self._publish_later(frame)
+                    self._publisher.publish_later(frame, self._waiting)
                     continue
                 if self._apply(seq, frame):
                     continue
@@ -405,15 +325,11 @@ class OwnerTurn:
                 if self._on_accepted is not None:
                     self._on_accepted(frame.executor_id)
         elif isinstance(frame, Record):
-            self._records.append((seq, frame.record))
+            self._copies.record_sent(seq, frame.record)
         elif isinstance(frame, ToolArgs):
-            if (start := self._starts.get(frame.start)) is not None:
-                start.ran_with = frame.arguments
+            self._copies.args_fixed(frame.start, frame.arguments)
         elif isinstance(frame, ToolEnded):
-            end = self._decoded(decode_end, frame.end)
-            self._early_ends[frame.start] = end
-            if (start := self._starts.get(frame.start)) is not None:
-                start.ended = end
+            self._copies.ended_early(frame.start, self._decoded(decode_end, frame.end))
         elif isinstance(frame, ToolCall | HostCall):
             # The call holds the reentrancy of the task waiting on the turn.
             self._calls.start(frame, self._waiting)
@@ -431,39 +347,6 @@ class OwnerTurn:
         else:
             return False
         return True
-
-    def _publish_later(self, frame: Ephemeral | FrameworkEventFrame) -> None:
-        """Queue *frame* for the turn's publisher, started on the first, in a
-        copy of the context of the task waiting on the turn (RFC §10.6.5)."""
-        if self._events is None:
-            return
-        if self._publisher is None:
-            context = self._waiting.copy() if self._waiting is not None else None
-            self._publisher = asyncio.get_running_loop().create_task(
-                self._publish_queued(), context=context
-            )
-        self._to_publish.put_nowait(frame)
-
-    async def _publish_queued(self) -> None:
-        while (frame := await self._to_publish.get()) is not None:
-            await self._published(frame)
-
-    async def _published(self, frame: Ephemeral | FrameworkEventFrame) -> None:
-        """Publish on the owner what the turn published on its executor, as
-        the turn's channel in the turn's room (RFC §10.6.2)."""
-        assert self._events is not None
-        request = self._link.request
-        try:
-            await publish_frame(
-                self._events,
-                request.room_id,
-                request.channel_id,
-                frame,
-                label=f"Turn {request.turn_id}",
-            )
-        except Exception:
-            # What the turn published never stops the turn.
-            logger.exception("Turn %s: a %s could not be published", request.turn_id, frame.type)
 
     def _silence_limit(self) -> int:
         """How many silent intervals lose the turn: the accept bound until an
@@ -516,19 +399,8 @@ class OwnerTurn:
             pass
         finally:
             # The reader stops: the record is the turn's last.
-            self._apply_records()
+            self._copies.apply_records()
             self._finish()
-
-    def _apply_records(self, *, before: int | None = None) -> None:
-        """Apply the records sent before frame *before* (every one when
-        ``None``, once the reader stops): the record a reader reads is the
-        one sent before the item it reads, however far the executor read
-        ahead, until the turn's end."""
-        while self._records and (before is None or self._records[0][0] < before):
-            _, record = self._records.pop(0)
-            if self._record is not None:
-                self._record.clear()
-                self._record.update(record)
 
     def _finish(self) -> None:
         """The turn is over for the owner: stop beating and reading, cancel
@@ -537,7 +409,7 @@ class OwnerTurn:
             return
         self._over = True
         # What the turn published is still published; nothing is added after.
-        self._to_publish.put_nowait(None)
+        self._publisher.close()
         self._beat.cancel()
         if self._pump is not asyncio.current_task():
             self._pump.cancel()
