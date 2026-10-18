@@ -25,20 +25,25 @@ except ImportError:  # this mode only runs with the redis extra
 from roomkit.turns.redis import RedisTurnBackend
 
 ENABLED = os.environ.get("ROOMKIT_TEST_TURN_BACKEND") == "redis"
+# This session's keys: another session on the same Redis keeps its own.
+SESSION_PREFIX = f"roomkit:test:{uuid4().hex[:12]}"
 
 
 def _backend() -> RedisTurnBackend:
     return RedisTurnBackend(
-        os.environ["REDIS_URL"], key_prefix=f"roomkit:test:{uuid4().hex[:12]}", _loop_back=True
+        os.environ["REDIS_URL"],
+        key_prefix=f"{SESSION_PREFIX}:{uuid4().hex[:12]}",
+        _loop_back=True,
     )
 
 
 def clean_up() -> None:
-    """Delete the keys this mode's backends left (their holders live a week)."""
+    """Delete the keys this session's backends left (their holders live a
+    week), and only those."""
     assert redis is not None
     client = redis.Redis.from_url(os.environ["REDIS_URL"])
     try:
-        for keys in _batches(client.scan_iter("roomkit:test:*", count=1000)):
+        for keys in _batches(client.scan_iter(f"{SESSION_PREFIX}:*", count=1000)):
             client.delete(*keys)
     finally:
         client.close()

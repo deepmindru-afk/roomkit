@@ -22,14 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with its CPU is slow, never lost; a killed executor, or a write Redis
   refuses, fails the turn within `heartbeat_timeout`. A request reaches one
   executor at most: its process acknowledges it, a closed executor's refusal
-  places it again. A room's turns stay on the executor that holds its state
+  places it again, and one a client writes twice (a pipeline it retries) is
+  taken once. A process that closes writes what it queued (a turn's end)
+  within `cancel_timeout`, then withdraws as owner and executor. A room's turns stay on the executor that holds its state
   while it lives (the holder is shared by every owner process), else go to
   one that takes them; a turn no executor declares fails at once with
   `no_executor`. Channel controls are applied on the executor before the
   owner goes on. The agents the kit registers live stay in its process. Work
   a turn began reaches the owner that submitted it, while that owner lives.
-  `client=` needs `url=` too (the beat connects with it). Redis is the trust
-  boundary (ACL, TLS). Example: `examples/turns_redis.py`; guide: Agent
+  `client=` needs `url=` too (the beat connects with it). Needs Redis 6.2
+  or later. Redis is the trust boundary (ACL, TLS). Example: `examples/turns_redis.py`; guide: Agent
   Turns in Another Process (Redis).
 - `TurnExecutor(hosts=...)` also takes the set of channel ids the executor
   runs (RMK-813, RFC §10.6.7); only an executor declared with a set takes

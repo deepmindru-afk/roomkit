@@ -15,6 +15,7 @@ import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import pytest
@@ -39,8 +40,10 @@ from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import SQLiteStore
 from roomkit.turns import TurnExecutor, TurnTimeouts
+from roomkit.turns._redis_links import RedisExecutorLink
 from roomkit.turns.redis import RedisTurnBackend
-from roomkit.turns.wire import CommittedEvent
+from roomkit.turns.wire import CommittedEvent, End
+from tests import redis_turn_mode
 from tests.test_framework import SimpleChannel
 
 pytestmark = pytest.mark.skipif(not os.environ.get("REDIS_URL"), reason="REDIS_URL not set")
@@ -529,18 +532,19 @@ async def test_many_rooms_at_once_keep_every_turn_s_order(prefix: str, redis_cli
 
 
 class _SlowWrites:
-    """A Redis client whose pipelines take 2 ms to write: a cut lands while
-    a frame is being written."""
+    """A Redis client whose pipelines take *delay* to write (2 ms: a cut
+    lands while a frame is being written)."""
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, delay: float = 0.002) -> None:
         self._client = client
+        self._delay = delay
 
     def pipeline(self, **kwargs: Any) -> Any:
         pipe = self._client.pipeline(**kwargs)
         execute = pipe.execute
 
         async def slow() -> Any:
-            await asyncio.sleep(0.002)
+            await asyncio.sleep(self._delay)
             return await execute()
 
         pipe.execute = slow
@@ -782,3 +786,298 @@ async def test_an_executor_s_turn_its_owner_gave_up_leaves_no_link(
     finally:
         await host.close()
         await executor.close()
+
+
+# -- What the review of dd6c8bc6 found -----------------------------------------------
+
+
+class _CutAfterWrite:
+    """A TCP proxy to Redis that, once, forwards a write carrying every one
+    of *marks* and drops the connection before Redis's reply: a client that
+    retries then writes it again."""
+
+    def __init__(self, marks: list[bytes]) -> None:
+        self._marks = marks
+        self.cut = 0
+        self._server: asyncio.Server | None = None
+
+    async def start(self) -> int:
+        self._server = await asyncio.start_server(self._relay, "127.0.0.1", 0)
+        return int(self._server.sockets[0].getsockname()[1])
+
+    async def close(self) -> None:
+        if self._server is not None:
+            self._server.close()
+
+    async def _relay(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        host, port = _redis_address()
+        server_reader, server_writer = await asyncio.open_connection(host, port)
+        written = asyncio.Event()
+
+        async def up() -> None:
+            while data := await reader.read(65536):
+                if not self.cut and all(mark in data for mark in self._marks):
+                    self.cut += 1
+                    written.set()
+                server_writer.write(data)
+                await server_writer.drain()
+
+        async def down() -> None:
+            try:
+                while data := await server_reader.read(65536):
+                    if written.is_set():
+                        return  # Redis executed it; its reply never comes
+                    writer.write(data)
+                    await writer.drain()
+            finally:
+                writer.close()
+                server_writer.close()
+
+        await asyncio.gather(up(), down(), return_exceptions=True)
+
+
+def _redis_address() -> tuple[str, int]:
+    url = urlparse(os.environ["REDIS_URL"])
+    return url.hostname or "localhost", url.port or 6379
+
+
+async def test_a_request_a_client_writes_twice_runs_its_turn_once(
+    prefix: str, redis_client: Any
+) -> None:
+    """A client given as ``client=`` retries a pipeline whose connection
+    dropped after Redis executed it: the request lands twice, the turn runs
+    once (RFC §10.6.7)."""
+    redis = pytest.importorskip("redis.asyncio")
+    store = InMemoryStore()
+    runs: list[str] = []
+
+    class _Counts(MockAIProvider):
+        async def generate_structured_stream(self, context: Any) -> Any:
+            runs.append("run")
+            yield StreamTextDelta(text="Hello once.")
+
+    host, executor = await _hosted(prefix, store, _Worker("worker", _Counts(streaming=True)))
+    proxy = _CutAfterWrite([b"XADD", b"request"])
+    client = redis.Redis(host="127.0.0.1", port=await proxy.start())
+    backend = RedisTurnBackend(
+        os.environ["REDIS_URL"], client=client, key_prefix=prefix, timeouts=TIMEOUTS
+    )
+    kit = RoomKit(store=store, turn_backend=backend)
+    kit.register_channel(SimpleChannel("tx"))
+    kit.register_channel(ChannelDeclaration(channel_id="worker", identity=AgentIdentity()))
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "tx")
+    await kit.attach_channel("r", "worker", category=ChannelCategory.INTELLIGENCE)
+    try:
+        result = await kit.process_inbound(_said("Hi."), room_id="r")
+
+        assert proxy.cut == 1
+        assert result.error is None
+        assert runs == ["run"]
+        assert await _answers(kit) == ["Hello once."]
+    finally:
+        await kit.close()
+        await client.aclose()
+        await proxy.close()
+        await host.close()
+        await executor.close()
+
+
+async def test_what_every_process_reads_of_the_others_costs_the_same_however_many_turns_run(
+    prefix: str, redis_client: Any
+) -> None:
+    """Fifty processes running a thousand turns each: an owner's read of
+    who is alive, made each interval and at each placement, costs what it
+    costs with none (Redis runs nothing else meanwhile)."""
+    backend = _backend(prefix)
+    nodes = [uuid4().hex[:12] for _ in range(50)]
+    now = int(time.time() * 1000)
+    pipe = redis_client.pipeline(transaction=False)
+    for node in nodes:
+        pipe.zadd(f"{prefix}:alive", {f"{node}:w": now})
+        declared = f'{{"node":"{node}","executor_id":"w","channels":["worker"],"room_hooks":[]}}'
+        pipe.hset(f"{prefix}:executors", f"{node}:w", declared)
+    await pipe.execute()
+
+    async def read() -> float:
+        times = []
+        for _ in range(15):
+            started = time.perf_counter()
+            await backend._live.current()
+            times.append(time.perf_counter() - started)
+        return sorted(times)[len(times) // 2]
+
+    try:
+        idle = await read()
+        pipe = redis_client.pipeline(transaction=False)
+        for node in nodes:
+            pipe.sadd(f"{prefix}:running:{node}", *(uuid4().hex for _ in range(1000)))
+        await pipe.execute()
+        busy = await read()
+
+        assert busy < 5 * idle + 0.002, f"{busy * 1000:.1f} ms against {idle * 1000:.1f} ms"
+    finally:
+        await backend.close()
+
+
+async def test_an_executor_served_again_under_its_id_takes_the_turns(
+    prefix: str, redis_client: Any
+) -> None:
+    """A process reloads its executor: it closes one and serves another of
+    the same id, which owners elsewhere then reach."""
+    store = InMemoryStore()
+    host = _backend(prefix)
+    first = _agent_executor("host-a", store, hosts={"worker"}, answer="From the first.")
+    await host.serve(first)
+    await first.close()
+    second = _agent_executor("host-a", store, hosts={"worker"}, answer="From the second.")
+    await host.serve(second)
+    await asyncio.sleep(3 * TIMEOUTS.heartbeat_interval)  # the beat thread's beats
+    kit = await _owner(prefix, "worker", store=store)
+    try:
+        result = await kit.process_inbound(_said("Hi."), room_id="r")
+
+        assert result.error is None
+        assert await _answers(kit) == ["From the second."]
+    finally:
+        await kit.close()
+        await host.close()
+        await second.close()
+
+
+async def test_a_turn_s_end_still_queued_when_its_executor_s_process_closes_reaches_its_owner(
+    prefix: str, redis_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The executor's process closes right after its turn ended, its writes
+    slow (a remote Redis): the end queued is written before it goes."""
+    store = InMemoryStore()
+    worker = _Worker("worker", MockAIProvider(responses=["Hi."] * 5, streaming=True))
+    host, executor = await _hosted(prefix, store, worker)
+    host._outbox._client = _SlowWrites(host._outbox._client, delay=0.05)
+    ended = asyncio.Event()
+    send = RedisExecutorLink.send
+
+    async def sending(self: RedisExecutorLink, frame: Any) -> int:
+        seq = await send(self, frame)
+        if isinstance(frame, End):
+            ended.set()
+        return seq
+
+    monkeypatch.setattr(RedisExecutorLink, "send", sending)
+    kit = await _owner(prefix, "worker", store=store)
+    try:
+        turn = asyncio.ensure_future(kit.process_inbound(_said("Hi."), room_id="r"))
+        await asyncio.wait_for(ended.wait(), 5)
+        await host.close()
+        result = await asyncio.wait_for(turn, 6 * TIMEOUTS.heartbeat_timeout)
+
+        assert result.error is None
+        assert await _answers(kit) == ["Hi."]
+    finally:
+        await kit.close()
+        await host.close()
+        await executor.close()
+
+
+async def test_a_turn_whose_control_redis_refused_stops_on_its_executor_at_once(
+    prefix: str, redis_client: Any
+) -> None:
+    """The owner could not write a control and gave the turn up: its
+    executor is told, rather than finding its owner silent a heartbeat
+    timeout later."""
+    store = InMemoryStore()
+    holding = asyncio.Event()
+    stopped: list[float] = []
+
+    class _Holds(MockAIProvider):
+        async def generate_structured_stream(self, context: Any) -> Any:
+            yield StreamTextDelta(text="Hello ")
+            holding.set()
+            try:
+                await asyncio.sleep(60)
+            finally:
+                stopped.append(time.monotonic())
+
+    host, executor = await _hosted(prefix, store, _Worker("worker", _Holds(streaming=True)))
+    kit = await _owner(prefix, "worker", store=store)
+    backend = kit._turns.backend
+    post = backend._outbox.post
+    refusing = {"armed": False}
+
+    def refused(node: str, envelope: Any, failed: Any = None) -> None:
+        if refusing["armed"] and envelope.kind == "control" and failed is not None:
+            refusing["armed"] = False
+            failed(ConnectionError("OOM command not allowed"))
+            return
+        post(node, envelope, failed)
+
+    backend._outbox.post = refused
+    try:
+        turn = asyncio.ensure_future(kit.process_inbound(_said("Hi."), room_id="r"))
+        await asyncio.wait_for(holding.wait(), 5)
+        refusing["armed"] = True  # the owner's next control (a heartbeat) is refused
+        result = await asyncio.wait_for(turn, 6 * TIMEOUTS.heartbeat_timeout)
+        gave_up = time.monotonic()
+        async with asyncio.timeout(3 * TIMEOUTS.heartbeat_timeout):
+            while not stopped:
+                await asyncio.sleep(0.01)
+
+        assert isinstance(result.error, TurnLinkError)
+        assert stopped[0] - gave_up < TIMEOUTS.heartbeat_timeout / 2
+    finally:
+        await kit.close()
+        await host.close()
+        await executor.close()
+
+
+async def test_a_malformed_member_in_redis_does_not_stop_the_turns(
+    prefix: str, redis_client: Any
+) -> None:
+    """An entry no process of the backend wrote, with no node: the others
+    are still read, and turns still placed."""
+    store = InMemoryStore()
+    worker = _Worker("worker", MockAIProvider(responses=["Hi."] * 5, streaming=True))
+    host, executor = await _hosted(prefix, store, worker)
+    await redis_client.zadd(f"{prefix}:alive", {":w": int(time.time() * 1000)})
+    kit = await _owner(prefix, "worker", store=store)
+    try:
+        result = await kit.process_inbound(_said("Hi."), room_id="r")
+
+        assert result.error is None
+        assert await _answers(kit) == ["Hi."]
+    finally:
+        await kit.close()
+        await host.close()
+        await executor.close()
+
+
+async def test_a_closed_process_is_neither_an_owner_nor_an_executor_in_redis(
+    prefix: str, redis_client: Any
+) -> None:
+    """Closing withdraws the process as an owner and as its executors, and
+    no later beat writes them again: the others stop waiting for it at once."""
+    store = InMemoryStore()
+    worker = _Worker("worker", MockAIProvider(responses=["Hi."] * 5, streaming=True))
+    host, executor = await _hosted(prefix, store, worker)
+    kit = await _owner(prefix, "worker", store=store)
+    await kit.process_inbound(_said("Hi."), room_id="r")
+    owner_node = kit._turns.backend.node_id
+    await kit.close()
+    await host.close()
+    await executor.close()
+    await asyncio.sleep(3 * TIMEOUTS.heartbeat_interval)
+
+    assert await redis_client.zscore(f"{prefix}:owners", owner_node) is None
+    assert await redis_client.zrange(f"{prefix}:alive", 0, -1) == []
+
+
+async def test_the_redis_mode_deletes_only_its_own_session_s_keys(redis_client: Any) -> None:
+    """Sessions sharing one Redis: one ending leaves the others' keys."""
+    other = f"roomkit:test:{uuid4().hex[:12]}:holder:worker:r"
+    await redis_client.set(other, "kept", ex=60)
+    try:
+        await asyncio.to_thread(redis_turn_mode.clean_up)
+
+        assert await redis_client.get(other) == b"kept"
+    finally:
+        await redis_client.delete(other)

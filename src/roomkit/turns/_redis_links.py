@@ -118,6 +118,7 @@ class RedisTurnLink(TurnLink):
         self._live = live
         self._forget = forget
         self._beat_seen = live.last_beat(member)
+        self._released = False
 
     @property
     def taken(self) -> bool:
@@ -139,15 +140,16 @@ class RedisTurnLink(TurnLink):
         self._controls.put("control", self.node, message)
 
     def release(self) -> None:
-        if not self._controls.open:
+        if self._released:
             return
+        self._released = True
         self._controls.open = False
         ended = self._frames.ended
         self._frames.end("backend_closed")
         self._forget(self)
         if not ended:
-            # Given up before its end: the executor stops it, as one whose
-            # owner went.
+            # Given up before its end (a control Redis refused included): the
+            # executor stops it, as one whose owner went.
             turn_id = self.request.turn_id
             self._post(self.node, "released", turn_id, turn_id)
 

@@ -7,6 +7,12 @@ and the work a turn began after it ended to the room owner that submitted the
 turn (RFC §10.6.3), whichever process that owner runs in. A request and a
 channel control are answered, so the owner goes on only once the executor's
 process took them, in order, as the in-memory backend does.
+
+An entry can arrive twice: a client that runs a pipeline again when its
+connection dropped after Redis executed it writes its entries twice. A
+numbered message is admitted once by its turn's order; a question (a request,
+a channel control, work after a turn) is handled once by its reference, and
+asked again it is answered again.
 """
 
 from __future__ import annotations
@@ -44,10 +50,15 @@ logger = logging.getLogger("roomkit.turns")
 
 # How many turns' owners are remembered for the work they began (RFC §10.6.3).
 _TURN_OWNERS = 10_000
-# An answer Redis refused is written again, so its question, waiting while
-# this process beats, is not left waiting for good.
-_ANSWER_ATTEMPTS = 5
-_ANSWER_RETRY_DELAY = 1.0
+# How many questions handled are remembered, so one written twice is not
+# handled twice: a pipeline runs again within moments.
+_HANDLED = 10_000
+# The entries handled once by their reference.
+_QUESTIONS = frozenset({"request", "channel", "owner"})
+# An answer (or work after a turn) Redis refused is written again, so its
+# question, waiting while this process beats, is not left waiting for good.
+_WRITE_ATTEMPTS = 5
+_WRITE_RETRY_DELAY = 1.0
 TAKEN = "taken"
 """What an executor's process answers a request it handed to its executor."""
 REFUSED = "refused"
@@ -91,6 +102,10 @@ class Routes:
         self._executor_links: dict[str, RedisExecutorLink] = {}
         self._answers: dict[str, asyncio.Future[str]] = {}
         self._turn_owners: OrderedDict[str, str] = OrderedDict()
+        # By reference: the answer given, or None while it is worked out (or
+        # for work after a turn, which nothing answers).
+        self._handled: OrderedDict[str, str | None] = OrderedDict()
+        self._closed = False
         self._routes: dict[str, Callable[[Envelope], None]] = {
             "frame": self._frame,
             "control": self._control,
@@ -104,10 +119,15 @@ class Routes:
         """What this process's executors reach a room owner by outside a turn."""
 
     def route(self, envelope: Envelope) -> None:
-        """Hand one inbox entry on, in order, without waiting."""
+        """Hand one inbox entry on, in order, without waiting; a question
+        written twice is answered again, not handled again."""
+        if self._closed:
+            return
         route = self._routes.get(envelope.kind)
         if route is None:
             logger.warning("A turn inbox entry of an unknown kind %r was dropped", envelope.kind)
+            return
+        if envelope.kind in _QUESTIONS and not self._first_time(envelope):
             return
         route(envelope)
 
@@ -122,7 +142,8 @@ class Routes:
         return link
 
     def forget_owner_link(self, link: RedisTurnLink) -> None:
-        self._owner_links.pop(link.request.turn_id, None)
+        if self._owner_links.get(link.request.turn_id) is link:
+            del self._owner_links[link.request.turn_id]
 
     async def ask(
         self,
@@ -153,7 +174,9 @@ class Routes:
             self._answers.pop(ref, None)
 
     def close(self) -> None:
-        """The backend closes: every end of a turn and every question learns it."""
+        """The backend closes: every end of a turn and every question learns
+        it, and nothing that arrives from now is handled."""
+        self._closed = True
         for link in list(self._owner_links.values()):
             link.end("backend_closed")
         for executor_link in list(self._executor_links.values()):
@@ -161,6 +184,14 @@ class Routes:
         for answer in self._answers.values():
             if not answer.done():
                 answer.set_exception(TurnLinkError("backend_closed"))
+
+    def open_turns(self) -> dict[str, list[str]]:
+        """The turns this process submitted elsewhere and still reads, by
+        the node of the executor running each."""
+        turns: dict[str, list[str]] = {}
+        for turn_id, link in self._owner_links.items():
+            turns.setdefault(link.node, []).append(turn_id)
+        return turns
 
     def turn_owner(self, turn_id: str) -> str | None:
         """The node of the owner that submitted *turn_id* to an executor here."""
@@ -177,8 +208,22 @@ class Routes:
                 raise TurnLinkError("executor_lost", "The other side stopped beating")
 
     def _forget_executor_link(self, link: RedisExecutorLink) -> None:
-        if self._executor_links.pop(link.request.turn_id, None) is not None:
+        if self._executor_links.get(link.request.turn_id) is link:
+            del self._executor_links[link.request.turn_id]
             self.running = frozenset(self._executor_links)
+
+    def _first_time(self, question: Envelope) -> bool:
+        """Whether *question* is new; one handled before is answered again
+        with what it was answered."""
+        if question.ref not in self._handled:
+            self._handled[question.ref] = None
+            while len(self._handled) > _HANDLED:
+                self._handled.popitem(last=False)
+            return True
+        logger.debug("A %s written twice was handled once", question.kind)
+        if (answer := self._handled[question.ref]) is not None:
+            self._post_written(question.sender, "answer", answer, "", question.ref)
+        return False
 
     # -- Routes ---------------------------------------------------------------------
 
@@ -242,18 +287,35 @@ class Routes:
             answer = await _apart(owner.room_call(message))
         self._answer_back(envelope, answer.model_dump_json())
 
-    def _answer_back(self, question: Envelope, body: str, attempt: int = 1) -> None:
-        """Answer *question*, again a little later while Redis refuses it."""
+    def _answer_back(self, question: Envelope, body: str) -> None:
+        """Answer *question*, the answer kept for the question asked again."""
+        if question.ref in self._handled:
+            self._handled[question.ref] = body
+        self._post_written(question.sender, "answer", body, "", question.ref)
+
+    def post_written(self, node: str, kind: str, body: str) -> None:
+        """Post a message nothing answers, written again while Redis refuses
+        it: its reference has *node* handle it once."""
+        self._post_written(node, kind, body, "", uuid4().hex)
+
+    def _post_written(
+        self, node: str, kind: str, body: str, target: str, ref: str, attempt: int = 1
+    ) -> None:
+        """Post, again a little later while Redis refuses it: what it posts
+        is handled once however many times it is written."""
 
         def failed(error: Exception) -> None:
-            if attempt >= _ANSWER_ATTEMPTS:
-                logger.error("An answer to %s could not be written: %s", question.sender, error)
+            if self._closed:
+                return
+            if attempt >= _WRITE_ATTEMPTS:
+                logger.error("A turn %s to %s could not be written: %s", kind, node, error)
                 return
             asyncio.get_running_loop().call_later(
-                _ANSWER_RETRY_DELAY, self._answer_back, question, body, attempt + 1
+                _WRITE_RETRY_DELAY, self._post_written, node, kind, body, target, ref, attempt + 1
             )
 
-        self._post(question.sender, "answer", body, "", question.ref, failed=failed)
+        if not self._closed:
+            self._post(node, kind, body, target, ref, failed=failed)
 
 
 class _OwnerPort(RoomOwner):
@@ -284,8 +346,7 @@ class _OwnerPort(RoomOwner):
         if node is None:
             await routes._local_owner.room_publication(message)
             return
-        body = OwnerMessageEnvelope(message=message).model_dump_json()
-        routes._post(node, "owner", body, "")
+        routes.post_written(node, "owner", OwnerMessageEnvelope(message=message).model_dump_json())
 
 
 def _crossed(raw: str) -> ChannelControl:

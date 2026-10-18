@@ -4,7 +4,8 @@
 The beat runs on a thread of its own with a connection of its own, so a turn
 that keeps the event loop busy never stalls it; what it writes is built from
 what the event loop replaces whole and never changes in place. The view of
-the others is read again each heartbeat interval on the event loop.
+the others is read again each heartbeat interval on the event loop, with
+whether the processes running this one's turns still run them.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -42,14 +44,14 @@ class BeatPayload:
         return [member_of(self._node, executor.executor_id) for executor in self.executors]
 
     def __call__(self) -> str:
-        declared: dict[str, str] = {}
-        gone: list[str] = []
-        for executor in self.executors:
-            member = member_of(self._node, executor.executor_id)
-            if executor.closed:
-                gone.append(member)
-            else:
-                declared[member] = self._declaration(member, executor)
+        declared = {
+            member_of(self._node, e.executor_id): self._declaration(e)
+            for e in self.executors
+            if not e.closed
+        }
+        # A closed executor's member another of its id now declares stays.
+        closed = (member_of(self._node, e.executor_id) for e in self.executors if e.closed)
+        gone = [member for member in closed if member not in declared]
         payload = {
             "node": self._node,
             "declared": declared,
@@ -59,10 +61,11 @@ class BeatPayload:
         }
         return json.dumps(payload)
 
-    def _declaration(self, member: str, executor: TurnExecutor) -> str:
+    def _declaration(self, executor: TurnExecutor) -> str:
         """*executor*'s declaration now, the last one kept when the event
         loop changed its room hooks while this thread read them."""
         assert executor.hosted is not None
+        member = member_of(self._node, executor.executor_id)
         try:
             hooks = executor.hooks.defined_room_hooks()
         except RuntimeError:
@@ -74,17 +77,33 @@ class BeatPayload:
 
 class LiveExecutors:
     """A process's view of the processes alive, read each heartbeat interval:
-    the executors and what they declare, the turns each process runs, the
-    owners alive."""
+    the executors and what they declare, the owners alive, and which of the
+    turns this process reads their processes still run.
 
-    def __init__(self, registry: Registry, interval: float, timeout: float) -> None:
+    Args:
+        registry: The processes' beats and declarations.
+        interval: How often the view is read again.
+        timeout: How long a silent process stays alive (RFC §10.6.8).
+        open_turns: The turns this process reads, by the node running each.
+    """
+
+    def __init__(
+        self,
+        registry: Registry,
+        interval: float,
+        timeout: float,
+        open_turns: Callable[[], dict[str, list[str]]],
+    ) -> None:
         self._registry = registry
         self.interval = interval
         """How often the view is read again."""
+        self._timeout = timeout
         self._timeout_ms = int(timeout * 1000)
+        self._open_turns = open_turns
         self._view = View()
+        self._running: dict[str, frozenset[str]] = {}
+        self._failing_since: float | None = None
         self._refresher: asyncio.Task[None] | None = None
-        self._ready = asyncio.Event()
 
     def start(self) -> None:
         if self._refresher is None:
@@ -97,13 +116,6 @@ class LiveExecutors:
         await self.refresh()
         return self._alive_declared()
 
-    async def declared(self) -> dict[str, Declaration]:
-        """The executors alive and what they declare, as last read (read now
-        the first time)."""
-        if not self._ready.is_set():
-            await self.refresh()
-        return self._alive_declared()
-
     def last_beat(self, member: str) -> int | None:
         """The server time of *member*'s last beat seen, in ms."""
         return self._view.beats.get(member)
@@ -111,20 +123,20 @@ class LiveExecutors:
     def alive(self, member: str) -> bool:
         """Whether *member* beat within the timeout, as last read."""
         beat = self._view.beats.get(member)
-        return beat is not None and self._view.now - beat < self._timeout_ms
+        return not self._unread() and beat is not None and self._view.now - beat < self._timeout_ms
 
     def runs(self, node: str, turn_id: str) -> bool:
-        """Whether *node* still ran *turn_id* when it last beat."""
-        return turn_id in self._view.running.get(node, frozenset())
+        """Whether *node* still ran *turn_id* when it last beat, as last asked."""
+        return turn_id in self._running.get(node, frozenset())
 
     def owner_alive(self, node: str) -> bool:
         """Whether the owner process *node* beat within the timeout."""
         beat = self._view.owners.get(node)
-        return beat is not None and self._view.now - beat < self._timeout_ms
+        return not self._unread() and beat is not None and self._view.now - beat < self._timeout_ms
 
     async def refresh(self) -> None:
         self._view = await self._registry.view(forget_after_ms=10 * self._timeout_ms)
-        self._ready.set()
+        self._failing_since = None
 
     async def close(self) -> None:
         if self._refresher is not None:
@@ -140,13 +152,23 @@ class LiveExecutors:
             if view.now - view.beats.get(member, 0) < self._timeout_ms
         }
 
+    def _unread(self) -> bool:
+        """Whether reading the others failed for the heartbeat timeout: none
+        of them is then known alive. Only reads this process made count, so a
+        stall of its own event loop is not the others' silence."""
+        failing = self._failing_since
+        return failing is not None and time.monotonic() - failing >= self._timeout
+
     async def _refresh_each_interval(self) -> None:
         while True:
             try:
                 await self.refresh()
+                self._running = await self._registry.running(self._open_turns())
             except asyncio.CancelledError:
                 raise
             except Exception:
+                if self._failing_since is None:
+                    self._failing_since = time.monotonic()
                 logger.warning("Reading the turn processes alive failed", exc_info=True)
             await asyncio.sleep(self.interval)
 

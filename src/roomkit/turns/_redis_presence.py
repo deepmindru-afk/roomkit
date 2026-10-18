@@ -10,7 +10,9 @@ declared at the next beat), withdraws the executors that closed, writes the
 set of turns the process still runs, and scores the process as a room owner
 when it is one. A turn counts as alive while its executor beats and its
 process still runs it: a turn whose task ended without its ``end`` is soon
-lost, not waited for forever.
+lost, not waited for forever. Each owner asks only about the turns it reads,
+so what every process reads of the others costs the same however many turns
+they run.
 """
 
 from __future__ import annotations
@@ -50,7 +52,7 @@ return now
 """
 
 # KEYS: alive executors, declarations, alive owners. ARGV: the age past which
-# a member is forgotten (ms), the running sets' key prefix. The view as JSON.
+# a member is forgotten (ms). The view as JSON.
 _VIEW = """
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
@@ -60,16 +62,12 @@ for _, member in ipairs(redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', oldest)) do
   redis.call('HDEL', KEYS[2], member)
 end
 redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', oldest)
-local view = {now = now, executors = {}, owners = {}, running = {}}
+local view = {now = now, executors = {}, owners = {}}
 local alive = redis.call('ZRANGE', KEYS[1], 0, -1, 'WITHSCORES')
 for i = 1, #alive, 2 do
   local member = alive[i]
   local declared = redis.call('HGET', KEYS[2], member)
   view.executors[member] = {tonumber(alive[i + 1]), declared or false}
-  local node = string.match(member, '^([^:]+)')
-  if view.running[node] == nil then
-    view.running[node] = redis.call('SMEMBERS', ARGV[2] .. node)
-  end
 end
 local owners = redis.call('ZRANGE', KEYS[3], 0, -1, 'WITHSCORES')
 for i = 1, #owners, 2 do
@@ -130,7 +128,6 @@ class View:
     beats: dict[str, int] = field(default_factory=dict)
     declared: dict[str, Declaration] = field(default_factory=dict)
     owners: dict[str, int] = field(default_factory=dict)
-    running: dict[str, frozenset[str]] = field(default_factory=dict)
 
     @classmethod
     def parse(cls, raw: Any) -> View:
@@ -144,19 +141,12 @@ class View:
                 except (ValueError, KeyError, TypeError):
                     logger.warning("The declaration of executor %s is malformed", member)
         view.owners = {node: int(beat) for node, beat in _entries(data.get("owners"))}
-        view.running = {
-            node: frozenset(_items(ids)) for node, ids in _entries(data.get("running"))
-        }
         return view
 
 
 def _entries(value: Any) -> Iterable[tuple[str, Any]]:
     """A Lua table cjson wrote: an empty one comes as ``{}`` or ``[]``."""
     return value.items() if isinstance(value, dict) else ()
-
-
-def _items(value: Any) -> list[str]:
-    return value if isinstance(value, list) else []
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,9 +167,8 @@ class Keys:
     def owners(self) -> str:
         return f"{self.prefix}:owners"
 
-    @property
-    def running_prefix(self) -> str:
-        return f"{self.prefix}:running:"
+    def running(self, node: str) -> str:
+        return f"{self.prefix}:running:{node}"
 
     def inbox(self, node: str) -> str:
         return f"{self.prefix}:inbox:{node}"
@@ -191,7 +180,7 @@ class Keys:
             self.declarations,
             self.owners,
             self.inbox(node),
-            f"{self.running_prefix}{node}",
+            self.running(node),
         ]
 
 
@@ -209,20 +198,37 @@ class Registry:
         *forget_after_ms* are forgotten."""
         keys = self._keys
         raw = await self._view(
-            keys=[keys.alive, keys.declarations, keys.owners],
-            args=[forget_after_ms, keys.running_prefix],
+            keys=[keys.alive, keys.declarations, keys.owners], args=[forget_after_ms]
         )
         return View.parse(raw)
+
+    async def running(self, turns: dict[str, list[str]]) -> dict[str, frozenset[str]]:
+        """Which of *turns* (by node) each node ran at its last beat."""
+        nodes = [node for node, ids in turns.items() if ids]
+        if not nodes:
+            return {}
+        pipe = self._client.pipeline(transaction=False)
+        for node in nodes:
+            pipe.smismember(self._keys.running(node), turns[node])
+        found = await pipe.execute()
+        return {
+            node: frozenset(t for t, runs in zip(turns[node], flags, strict=True) if runs)
+            for node, flags in zip(nodes, found, strict=True)
+        }
 
     async def beat(self, node: str, payload: str, ttl_ms: int) -> None:
         """Beat once from this task: a member counts as alive from its first."""
         await self._beat(keys=self._keys.beat(node), args=[ttl_ms, payload])
 
-    async def withdraw(self, members: Iterable[str]) -> None:
+    async def withdraw(self, members: Iterable[str], owner: str | None = None) -> None:
+        """Withdraw *members*, and the owner process *owner* when given."""
         names = list(members)
-        if not names:
+        if not names and owner is None:
             return
         pipe = self._client.pipeline(transaction=False)
-        pipe.hdel(self._keys.declarations, *names)
-        pipe.zrem(self._keys.alive, *names)
+        if names:
+            pipe.hdel(self._keys.declarations, *names)
+            pipe.zrem(self._keys.alive, *names)
+        if owner is not None:
+            pipe.zrem(self._keys.owners, owner)
         await pipe.execute()

@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterable
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -31,7 +31,7 @@ from roomkit.turns._redis_beat import BeatPayload, BeatThread, LiveExecutors
 from roomkit.turns._redis_inbox import Envelope, Inbox
 from roomkit.turns._redis_outbox import Failed, Outbox
 from roomkit.turns._redis_placement import Elsewhere, Placement
-from roomkit.turns._redis_presence import Keys, Registry
+from roomkit.turns._redis_presence import Keys, Registry, member_of
 from roomkit.turns._redis_routes import REFUSED, Routes
 from roomkit.turns.base import TurnBackend, TurnTimeouts
 from roomkit.turns.memory import InMemoryTurnBackend
@@ -118,7 +118,10 @@ class RedisTurnBackend(TurnBackend):
         )
         self._registry = Registry(self._client, keys)
         self._live = LiveExecutors(
-            self._registry, self._timeouts.heartbeat_interval, self._timeouts.heartbeat_timeout
+            self._registry,
+            self._timeouts.heartbeat_interval,
+            self._timeouts.heartbeat_timeout,
+            lambda: self._routes.open_turns(),
         )
         self._beat = BeatThread(
             lambda: _redis.Redis.from_url(address),
@@ -178,9 +181,11 @@ class RedisTurnBackend(TurnBackend):
         return answer, link
 
     async def serve(self, executor: TurnExecutor) -> None:
+        """Serve *executor*, in place of one of its id served before; the
+        executors that closed are let go."""
         self._start()
-        if executor not in self._placement.here:
-            self._placement.here.append(executor)
+        kept = [e for e in _others(self._placement.here, executor) if not e.closed]
+        self._placement.here = [*kept, executor]
         await self._here.serve(executor)
         if executor.timeouts != self._timeouts:
             logger.warning(
@@ -198,8 +203,7 @@ class RedisTurnBackend(TurnBackend):
                     "(RFC §10.6.9)",
                     executor.executor_id,
                 )
-            self._payload.executors = (*self._payload.executors, executor)
-            await self._beat_now()
+            await self._beat_for(executor)
         # Work a turn began reaches the owner of that turn, here or elsewhere.
         executor.reach_owner(self._routes.port)
 
@@ -242,14 +246,16 @@ class RedisTurnBackend(TurnBackend):
             return
         self._closed = True
         self._routes.close()
-        try:
-            await self._registry.withdraw(self._payload.members)
-        except Exception:
-            logger.debug("Withdrawing this process's executors failed", exc_info=True)
+        # The beat stops first, so none declares again what is withdrawn.
         await asyncio.to_thread(self._beat.stop)
+        try:
+            owner = self.node_id if self._routes.owner is not None else None
+            await self._registry.withdraw(self._payload.members, owner=owner)
+        except Exception:
+            logger.debug("Withdrawing this process from Redis failed", exc_info=True)
+        await self._outbox.close(drain=self._timeouts.cancel)
         await self._live.close()
         await self._inbox.close()
-        await self._outbox.close()
         await self._here.close()
         if self._tasks:
             await cancel_and_wait(*self._tasks, log_errors_to=logger)
@@ -284,6 +290,16 @@ class RedisTurnBackend(TurnBackend):
             self._started = True
             self._inbox.start()
             self._live.start()
+
+    async def _beat_for(self, executor: TurnExecutor) -> None:
+        """Beat for *executor* from now, in place of one of its id served
+        before; the executors that closed are withdrawn, then let go."""
+        others = _others(self._payload.executors, executor)
+        closed = [member_of(self.node_id, e.executor_id) for e in others if e.closed]
+        if closed:
+            await self._registry.withdraw(closed)
+        self._payload.executors = (*(e for e in others if not e.closed), executor)
+        await self._beat_now()
 
     async def _beat_now(self) -> None:
         """Beat once from this task (alive from now), then from the thread."""
@@ -327,6 +343,11 @@ def _pooled(aioredis: Any, url: str) -> Any:
         url, max_connections=_MAX_CONNECTIONS, timeout=_POOL_WAIT
     )
     return aioredis.Redis(connection_pool=pool)
+
+
+def _others(executors: Iterable[TurnExecutor], executor: TurnExecutor) -> list[TurnExecutor]:
+    """*executors* but those of *executor*'s id."""
+    return [e for e in executors if e.executor_id != executor.executor_id]
 
 
 def _crossed(raw: str) -> ChannelControl:
