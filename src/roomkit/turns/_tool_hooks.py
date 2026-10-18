@@ -185,7 +185,7 @@ class ToolHooks:
             return None
         chain = await self.run_tool_call_chain(event, event.room_id, carrying=carrying)
         if chain is None:
-            unreachable = self._unreachable_tool_call_verdict(event.room_id)
+            unreachable = self._unreachable_tool_call_verdict(event.room_id, event)
             # The framework event says what the model reads: the failure of
             # a hook that fails closed (RFC §9.3).
             reported = (
@@ -231,7 +231,7 @@ class ToolHooks:
         *carrying* is a context the caller already built for this call, which
         spares the room history a second read.
         """
-        if not self._hooks.has_hooks(HookTrigger.ON_TOOL_CALL):
+        if not self._hooks.has_hooks_for(room_id, HookTrigger.ON_TOOL_CALL, event):
             return SyncPipelineResult(event=event), None
         context = await self._context(room_id, HookTrigger.ON_TOOL_CALL, carrying=carrying)
         if context is None:
@@ -359,14 +359,16 @@ class ToolHooks:
         if event.result is not None and (claim is None or claim()):
             await self._emit_tool_call_event(event, channel_id)
 
-    def _unreachable_tool_call_verdict(self, room_id: str) -> ToolCallVerdict | None:
+    def _unreachable_tool_call_verdict(
+        self, room_id: str, event: ToolCallEvent
+    ) -> ToolCallVerdict | None:
         """The verdict on a call whose ON_TOOL_CALL hooks could not run.
 
         None, keeping the result, unless a hook there fails closed: then the
         result is withheld as that hook's own failure would withhold it, since
         the redaction it exists for must not be skipped.
         """
-        closed = self._hooks.fail_closed_hook(room_id, HookTrigger.ON_TOOL_CALL)
+        closed = self._hooks.fail_closed_hook(room_id, HookTrigger.ON_TOOL_CALL, event)
         if closed is None:
             return None
         reason = json.dumps({"error": f"hook_error:{closed}"})
@@ -412,7 +414,7 @@ class ToolHooks:
 
         With no hook registered there is nothing to run and no context is built.
         """
-        if not self._hooks.has_hooks(HookTrigger.BEFORE_TOOL_USE):
+        if not self._hooks.has_hooks_for(room_id, HookTrigger.BEFORE_TOOL_USE, event):
             return SyncPipelineResult(event=event), None
         context = await self._context(room_id, HookTrigger.BEFORE_TOOL_USE, carrying=carrying)
         if context is None:

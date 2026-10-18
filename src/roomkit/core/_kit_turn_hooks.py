@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from roomkit.channels.declared import DeclaredChannel
+from roomkit.core.hooks import TYPED_TURN_TRIGGERS
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
@@ -112,12 +113,15 @@ class KitTurnHooks:
             hook, given_room = given
             if hook.name == name and given_room == room_id:
                 self._given.remove(given)
-                return self._engine.remove_hook(hook)
+                return self._engine.remove_hook(hook, room_id)
         return False
 
 
 def _could_fire(hook: HookRegistration, channel: Channel) -> bool:
-    """Whether *hook*'s channel filter lets *channel*'s turns fire it."""
+    """Whether *hook*'s channel filter lets *channel*'s turns fire it: its
+    ``channel_types`` filters only where the payload carries the agent's
+    type (RFC §9.1)."""
+    types_filter = hook.channel_types is not None and hook.trigger in TYPED_TURN_TRIGGERS
     return (hook.channel_ids is None or channel.channel_id in hook.channel_ids) and (
-        hook.channel_types is None or channel.channel_type in hook.channel_types
+        not types_filter or channel.channel_type in (hook.channel_types or ())
     )

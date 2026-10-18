@@ -93,6 +93,13 @@ TURN_TRIGGERS: frozenset[HookTrigger] = frozenset(
 turn or between turns (RFC §10.6.6); every other trigger fires on the room
 owner."""
 
+TYPED_TURN_TRIGGERS: frozenset[HookTrigger] = frozenset(
+    {HookTrigger.BEFORE_TOOL_USE, HookTrigger.ON_TOOL_CALL, HookTrigger.ON_USER_INPUT_REQUIRED}
+)
+"""The turn triggers whose payload carries the agent's channel type (a tool
+call, an input request): only there does a hook's ``channel_types`` filter
+(RFC §9.1)."""
+
 
 class TurnSide(Protocol):
     """Where a kit's engine sends a hook on a trigger a turn fires: the
@@ -341,7 +348,23 @@ class HookEngine:
 
     def has_sync_hooks(self, room_id: str, trigger: HookTrigger, event: RoomEvent) -> bool:
         """Whether a SYNC hook of *trigger* applies to *event* in *room_id*."""
+        if (engine := self._turn_engine(trigger)) is not None:
+            return engine.has_sync_hooks(room_id, trigger, event)
         return bool(self._get_hooks(room_id, trigger, HookExecution.SYNC, event=event))
+
+    def has_hooks_for(self, room_id: str, trigger: HookTrigger, event: Any) -> bool:
+        """Whether a hook of *trigger* applies to *event* in *room_id*, its
+        filters read (a turn's event: its agent, RFC §9.1)."""
+        if (engine := self._turn_engine(trigger)) is not None:
+            return engine.has_hooks_for(room_id, trigger, event)
+        return bool(self._get_hooks(room_id, trigger, None, event=event))
+
+    def _turn_engine(self, trigger: HookTrigger) -> HookEngine | None:
+        """The engine a kit's engine reads *trigger*'s hooks from: its own
+        executor's, for a trigger a turn fires."""
+        if self._turns or self.turn_side is None or trigger not in TURN_TRIGGERS:
+            return None
+        return self.turn_side.engine
 
     def _check_router_placement(self, hook: HookRegistration, room_id: str | None) -> None:
         """Refuse a router's hook where a discussion takes the turns (RFC
@@ -502,9 +525,15 @@ class HookEngine:
         """Whether the registration *hook* itself is registered here."""
         return any(any(h is hook for h in listed) for listed in self._registrations())
 
-    def remove_hook(self, hook: HookRegistration) -> bool:
-        """Remove the registration *hook* itself, once, global or a room's."""
-        for listed in self._registrations():
+    def remove_hook(self, hook: HookRegistration, room_id: str | None = None) -> bool:
+        """Remove the registration *hook* itself, once: of *room_id*, or
+        global."""
+        scope = (
+            [self._global_hooks]
+            if room_id is None
+            else [self._room_hooks.get(room_id, []), self._owner_room_hooks.get(room_id, [])]
+        )
+        for listed in scope:
             for i, registered in enumerate(listed):
                 if registered is hook:
                     listed.pop(i)
@@ -534,13 +563,13 @@ class HookEngine:
         hooks live in the framework's own registry, and a caller that needs
         both asks both.
         """
-        turn_side = None if self._turns else self.turn_side
         if trigger is None:
+            turn_side = None if self._turns else self.turn_side
             return bool(self._trigger_index) or (
                 turn_side is not None and turn_side.engine.has_hooks()
             )
-        if turn_side is not None and trigger in TURN_TRIGGERS:
-            return turn_side.engine.has_hooks(trigger)
+        if (engine := self._turn_engine(trigger)) is not None:
+            return engine.has_hooks(trigger)
         return trigger in self._trigger_index
 
     def _rebuild_trigger_index(self) -> None:
@@ -707,16 +736,18 @@ class HookEngine:
         """Whether an unusable outcome of *hook* blocks (RFC §9.3)."""
         return hook.fail_closed or trigger in self.FAIL_CLOSED_TRIGGERS
 
-    def fail_closed_hook(self, room_id: str, trigger: HookTrigger) -> str | None:
+    def fail_closed_hook(
+        self, room_id: str, trigger: HookTrigger, event: Any = None
+    ) -> str | None:
         """The name of the first SYNC hook on *trigger* that fails closed, or None.
 
         For a caller that cannot run the pipeline at all (the room's context
         would not build): with such a hook registered, the payload must be
         withheld as the hook's own failure would withhold it.
         """
-        if not self._turns and self.turn_side is not None and trigger in TURN_TRIGGERS:
-            return self.turn_side.engine.fail_closed_hook(room_id, trigger)
-        for hook in self._get_hooks(room_id, trigger, HookExecution.SYNC):
+        if (engine := self._turn_engine(trigger)) is not None:
+            return engine.fail_closed_hook(room_id, trigger, event)
+        for hook in self._get_hooks(room_id, trigger, HookExecution.SYNC, event=event):
             if self._fails_closed(hook, trigger):
                 return hook.name
         return None
@@ -761,6 +792,8 @@ class HookEngine:
     ) -> SyncPipelineResult:
         """Run sync hooks sequentially. Stops on block, passes modified events.
 
+        A kit's engine runs a trigger a turn fires on its own executor's.
+
         Args:
             room_id: The room ID to run hooks for.
             trigger: The hook trigger type.
@@ -786,6 +819,17 @@ class HookEngine:
                 than the event the chain left: a served tool call's result as
                 the model reads it, or a report no SYNC hook can change.
         """
+        if (engine := self._turn_engine(trigger)) is not None:
+            return await engine.run_sync_hooks(
+                room_id,
+                trigger,
+                event,
+                context,
+                skip_event_filter=skip_event_filter,
+                needs_lock=needs_lock,
+                fold=fold,
+                fire_observers=fire_observers,
+            )
         filter_event = None if skip_event_filter else event
         hooks = self._get_hooks(room_id, trigger, HookExecution.SYNC, event=filter_event)
         if needs_lock is not None:
@@ -941,6 +985,8 @@ class HookEngine:
     ) -> None:
         """Run async hooks concurrently. Errors are logged, never raised.
 
+        A kit's engine runs a trigger a turn fires on its own executor's.
+
         Finds hooks regardless of their declared execution mode so that
         hooks registered with the default ``SYNC`` execution still fire
         for triggers that are only invoked asynchronously (e.g.
@@ -957,6 +1003,17 @@ class HookEngine:
             name_prefix: Only run hooks whose name starts with this prefix.
             exclude_name_prefix: Skip hooks whose name starts with this prefix.
         """
+        if (engine := self._turn_engine(trigger)) is not None:
+            await engine.run_async_hooks(
+                room_id,
+                trigger,
+                event,
+                context,
+                skip_event_filter=skip_event_filter,
+                name_prefix=name_prefix,
+                exclude_name_prefix=exclude_name_prefix,
+            )
+            return
         filter_event = None if skip_event_filter else event
         hooks = self._get_hooks(room_id, trigger, None, event=filter_event)
         if name_prefix is not None:

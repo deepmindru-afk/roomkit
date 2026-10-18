@@ -5,6 +5,8 @@ owner's, and the kit's own executor fires them for the turns it runs."""
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 from typing import Any
 
 import pytest
@@ -12,12 +14,24 @@ import pytest
 from roomkit import AgentIdentity, ChannelDeclaration, RoomKit
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.declared import DeclaredChannel, register_strategy_agents
-from roomkit.core.hooks import TURN_TRIGGERS, HookEngine, HookRegistration
+from roomkit.core.hooks import TURN_TRIGGERS, TYPED_TURN_TRIGGERS, HookEngine, HookRegistration
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory, HookExecution, HookTrigger
+from roomkit.models.enums import ChannelCategory, ChannelType, HookExecution, HookTrigger
 from roomkit.models.event import TextContent
+from roomkit.models.hook import HookResult
+from roomkit.models.pending_input import PendingInputEvent
+from roomkit.models.plan_event import PlanUpdatedEvent
+from roomkit.models.thinking_event import ThinkingEvent
+from roomkit.models.tool_call import (
+    AIGenerationEvent,
+    AIResponseEvent,
+    ToolCallEvent,
+    ToolRoundEvent,
+)
 from roomkit.orchestration.base import Orchestration
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.speaking.base import SpeakDecisionEvent
+from roomkit.speaking.thought import ThoughtEvent
 from tests.test_framework import SimpleChannel
 
 
@@ -349,3 +363,124 @@ def test_a_strategy_s_agents_are_registered_all_or_none_beside_a_kit_turn_hook()
         register_strategy_agents(kit, [live, declared])
 
     assert "live" not in kit._channels and "meteo" not in kit._channels
+
+
+def test_a_types_filter_on_an_untyped_turn_trigger_leaves_no_declared_agent_out() -> None:
+    """RFC §9.1: channel_types filters only where the payload carries a type."""
+    untyped = RoomKit()
+    untyped.hook(
+        HookTrigger.ON_AI_RESPONSE,
+        execution=HookExecution.ASYNC,
+        channel_types={ChannelType.REALTIME_VOICE},
+    )(_noop)
+    with pytest.raises(ValueError, match=r"'meteo'"):
+        _declared(untyped)
+
+    typed = RoomKit()
+    typed.hook(
+        HookTrigger.ON_TOOL_CALL,
+        execution=HookExecution.ASYNC,
+        channel_types={ChannelType.REALTIME_VOICE},
+    )(_noop)
+    _declared(typed)  # an AI agent's tool calls are left out
+
+    assert "meteo" in typed._channels
+
+
+def test_the_typed_turn_triggers_are_those_whose_payload_carries_a_type() -> None:
+    payloads = {
+        HookTrigger.BEFORE_TOOL_USE: ToolCallEvent,
+        HookTrigger.ON_TOOL_CALL: ToolCallEvent,
+        HookTrigger.ON_USER_INPUT_REQUIRED: PendingInputEvent,
+        HookTrigger.BEFORE_AI_GENERATION: AIGenerationEvent,
+        HookTrigger.ON_AI_THINKING: ThinkingEvent,
+        HookTrigger.ON_AI_RESPONSE: AIResponseEvent,
+        HookTrigger.AFTER_TOOL_ROUND: ToolRoundEvent,
+        HookTrigger.ON_SPEAK_DECISION: SpeakDecisionEvent,
+        HookTrigger.ON_THOUGHT: ThoughtEvent,
+        HookTrigger.ON_PLAN_UPDATED: PlanUpdatedEvent,
+    }
+
+    def fields(payload: type) -> set[str]:
+        if dataclasses.is_dataclass(payload):
+            return {f.name for f in dataclasses.fields(payload)}
+        return set(payload.model_fields)  # type: ignore[attr-defined]
+
+    assert set(payloads) == TURN_TRIGGERS
+    assert {t for t, payload in payloads.items() if "channel_type" in fields(payload)} == (
+        TYPED_TURN_TRIGGERS
+    )
+
+
+def _call(channel_id: str) -> ToolCallEvent:
+    return ToolCallEvent(
+        channel_id=channel_id,
+        channel_type=ChannelType.AI,
+        tool_call_id="c1",
+        name="search",
+        arguments={},
+        result='"found"',
+        room_id="r1",
+    )
+
+
+async def test_a_hook_filtered_to_another_agent_neither_denies_nor_withholds_a_call() -> None:
+    """The room's context will not build: only the agent a hook filters to
+    is denied, and only its result withheld (RFC §9.3)."""
+    kit = RoomKit()
+
+    @kit.hook(HookTrigger.BEFORE_TOOL_USE, channel_ids={"ai"}, name="gate")
+    async def gate(event: Any, ctx: Any) -> HookResult:
+        return HookResult.allow()
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, channel_ids={"ai"}, name="redact", fail_closed=True)
+    async def redact(event: Any, ctx: Any) -> HookResult:
+        return HookResult.allow()
+
+    tools = kit.turn_executor.wiring.tools
+
+    async def no_context(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    tools._context = no_context  # type: ignore[method-assign]
+
+    other, _ = await tools.decide_before_tool_use(_call("other"), "other")
+    ai, _ = await tools.decide_before_tool_use(_call("ai"), "ai")
+    assert other.allowed and not ai.allowed
+    kept = await tools.judge_tool_call(_call("other"), "other")
+    assert kept is None or (not kept.blocked and kept.result is None)
+    withheld = await tools.judge_tool_call(_call("ai"), "ai")
+    assert withheld is not None and withheld.blocked
+    await kit.close()
+
+
+def test_a_removal_takes_the_registration_of_its_own_scope() -> None:
+    kit = RoomKit()
+    shared = HookRegistration(
+        trigger=HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, fn=_noop, name="dup"
+    )
+    kit.hook_engine.register(shared)
+    kit.hook_engine.add_room_hook("room", shared)
+
+    assert kit.remove_room_hook("room", "dup")
+
+    assert [h.name for h in kit.turn_executor.hooks._global_hooks] == ["dup"]
+    assert kit.hook_engine.room_hook_names("room") == []
+
+
+async def test_the_kit_s_engine_runs_the_turn_hooks_registered_through_it() -> None:
+    """As in 0.105.0: kit.hook_engine.run_async_hooks runs a turn hook."""
+    kit = RoomKit()
+    await kit.create_room(room_id="r1")
+    seen: list[str] = []
+
+    @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+    async def audit(event: Any, ctx: Any) -> None:
+        seen.append(event.channel_id)
+
+    context = await kit._build_context("r1")
+    await kit.hook_engine.run_async_hooks("r1", HookTrigger.ON_TOOL_CALL, _call("ai"), context)
+    await asyncio.sleep(0.05)
+    await kit.close()
+
+    assert seen == ["ai"]
