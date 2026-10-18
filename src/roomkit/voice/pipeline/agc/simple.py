@@ -67,11 +67,7 @@ class SimpleAGCProvider(AGCProvider):
 
         sample_count = len(frame.data) // 2
         metadata = dict(frame.metadata)
-        if sample_count == 0:
-            metadata["gain_applied_db"] = 0.0
-            return self._copy_frame(frame, frame.data, metadata)
-
-        rms = pcm16_rms(frame.data)
+        rms = pcm16_rms(frame.data)  # 0.0 for an empty frame
         if rms <= 0:
             metadata["gain_applied_db"] = 0.0
             return self._copy_frame(frame, frame.data, metadata)

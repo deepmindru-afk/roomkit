@@ -97,6 +97,14 @@ class TestSimpleAGCProvider:
         assert result.data == _frame(0).data
         assert result.metadata["gain_applied_db"] == 0.0
 
+    def test_an_empty_frame_passes_through_with_no_gain(self) -> None:
+        frame = AudioFrame(data=b"", sample_rate=16000)
+
+        out = SimpleAGCProvider().process(frame, "a")
+
+        assert out.data == b""
+        assert out.metadata["gain_applied_db"] == 0.0
+
     def test_silence_is_not_amplified_after_gain_has_adapted(self) -> None:
         provider = SimpleAGCProvider(
             AGCConfig(target_level_dbfs=-12.0, max_gain_db=20.0, attack_ms=0.0)
