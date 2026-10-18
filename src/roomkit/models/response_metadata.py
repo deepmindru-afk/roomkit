@@ -37,10 +37,11 @@ class ResponseMetadata(MutableMapping[str, Any]):
     """Turn-level metadata merged into every MESSAGE event the turn produces.
 
     Behaves as a ``dict`` for every reader and writer (``[...]``, ``.get``,
-    ``.update``, ``**``, ``dict(...)``, ``==``); the only thing it adds is that
-    Pydantic keeps the instance instead of copying it, so one turn has one
-    record. A bare mapping passed where this type is expected is wrapped — the
-    caller's dict is then a snapshot, which is what passing a literal means.
+    ``.update``, ``**``, ``dict(...)``, ``==``); what it adds is that Pydantic
+    keeps the instance instead of copying it, so one turn has one record, and
+    that it counts the writes to its keys (:attr:`writes`). A bare mapping
+    passed where this type is expected is wrapped — the caller's dict is then
+    a snapshot, which is what passing a literal means.
 
     Each MESSAGE event carries the record *as it stands when the event is
     created*: a streamed segment persisted before a tool round shows what was

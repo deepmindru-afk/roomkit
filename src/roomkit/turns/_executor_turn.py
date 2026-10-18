@@ -6,7 +6,8 @@ never past any other item without a later pull. The channel changes some of
 what it already yielded (its response-metadata record, a call's arguments
 once its gate fixed them, a call's end before the end itself is read): after
 each step the turn sends what changed, before the item it read, so the
-owner's copies read as the channel's own.
+owner's copies read as the channel's own (before a delta, the record's
+change is a write to one of its keys, ``_executor_changes``).
 """
 
 from __future__ import annotations

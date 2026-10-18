@@ -291,6 +291,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   text. A stream its reader drops, or a cancelled delivery set leaves unread,
   is closed on the executor.
 
+- `ResponseMetadata.writes` counts the writes to a record's keys (RMK-841,
+  RFC §10.6.4). A turn's executor reads it before each text or reasoning
+  delta and copies the record to compare it only when one of its keys was
+  written since; before any other item, at the stream's end and on close it
+  compares the record in full. A turn's CPU then no longer grows with the
+  size of its record: 2000 deltas with 30 `rag_sources` (about 10 KB) cost
+  17 ms, as with no record, against 40 ms with a copy per delta (13 ms in
+  0.105.0, which had no turn backend). A change made inside a value the
+  record holds (`record["sources"].append(...)`) between two deltas reaches
+  the owner before the next item that is no delta, the one ending the
+  segment stored with it; a record a channel left a bare dict, past the
+  output's validation, is compared before every item.
+
 - `RoomKit(error_classes=...)` and `TurnExecutor(error_classes=...)` (and
   `TurnClient`) name the application's exception classes that cross the turn
   backend as themselves (RMK-838, RFC §10.6.8). Since every turn runs through
@@ -545,19 +558,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or called, and with them `pydub` from the `fastrtc` extra (RMK-824).
 
 ### Fixed
-
-- A turn's response-metadata record is copied when it may have changed, not
-  before every streamed delta (RMK-841, RFC §10.6.3, §10.6.4): the turn's
-  executor took a full JSON copy of the record before each text or reasoning
-  delta to see whether it changed, so a turn cost more CPU the larger its
-  record (2000 deltas with 30 `rag_sources`: 13 ms in 0.105.0, 40 ms since
-  the turn backend, 17 ms now, as with no record). `ResponseMetadata.writes`
-  counts the writes to its keys; before a delta the record is copied only
-  when that count moved, before any other item and at the stream's end
-  always. A change made inside a value the record holds
-  (`record["sources"].append(...)`) between two deltas reaches the owner
-  before the next item that is no delta, the one ending the segment stored
-  with it.
 
 - The router skips a transport binding whose channel is not registered in the
   process without a warning (RMK-828). A transport reaches its client from the
