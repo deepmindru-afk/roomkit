@@ -405,7 +405,7 @@ class TaskTurnFailedError(RoomKitError):
 class RemoteTurnError(RoomKitError):
     """An error raised across the turn backend (by a turn on its executor, by
     a handler the room owner serves) of a class the side reading it does not
-    rebuild (RFC §10.6.8): RoomKit's and Python's own are rebuilt by type,
+    rebuild (RFC §10.6.8): RoomKit's and Python's built-in ones are rebuilt by type,
     with the classes the host declared (``error_classes``); any other comes
     back as this one. It keeps the class it had, the attributes JSON carried,
     and is also an instance of the nearest ancestor of that class the side
@@ -417,6 +417,10 @@ class RemoteTurnError(RoomKitError):
         bases: The classes that class derives from below ``Exception``,
             nearest first, each ``module:qualname``.
     """
+
+    # What a frame naming this class itself, rebuilt without ``__init__``, reads.
+    kind: str = ""
+    bases: tuple[str, ...] = ()
 
     def __init__(self, message: str, *, kind: str, bases: Sequence[str] = ()) -> None:
         super().__init__(message)

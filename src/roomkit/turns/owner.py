@@ -110,7 +110,7 @@ class TurnClient(RoomOwner):
             executors (RFC §10.6.3), or ``None``.
         error_classes: The host's exception classes an error raised on an
             executor is rebuilt as here, with their subclasses, beyond
-            RoomKit's and Python's own (RFC §10.6.8). Any other comes back as
+            RoomKit's and Python's built-in ones (RFC §10.6.8). Any other comes back as
             a ``RemoteTurnError``.
 
     Raises:
@@ -454,15 +454,16 @@ def registry_turn_client(
     verbs run by *host*, what they publish published by *events*, the tools
     orchestration set up for them kept in *owner_tools* (a store of its own
     when None), the host's *error_classes* rebuilt by both. The registry's
-    owner wires and closes its channels; one it
-    holds by its declaration alone is a host executor's to build (RFC
-    §10.6.2)."""
+    owner wires and closes its channels; one it holds by its declaration
+    alone is a host executor's to build (RFC §10.6.2)."""
 
     def runs_here(channel_id: str) -> bool:
         channel = channels.get(channel_id)
         return channel is not None and not isinstance(channel, DeclaredChannel)
 
     backend = backend or InMemoryTurnBackend()
+    # Read once: both sides take the same classes, a generator included.
+    error_classes = tuple(error_classes)
     return TurnClient(
         backend,
         executor=TurnExecutor(

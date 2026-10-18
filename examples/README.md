@@ -229,6 +229,7 @@ CONSOLE=1 uv run python examples/<example>.py
 | `delivery_backend.py` | Delivery | Persistent delivery with InMemoryDeliveryBackend |
 | `delivery_redis.py` | Delivery | Redis-backed persistent distributed delivery |
 | `turns_redis.py` | Turn backend | An agent's turns in a second process over Redis; the executor killed mid-answer, another takes over |
+| `turn_error_classes.py` | Turn backend | An application's error crosses the turn backend as its own class once declared (`error_classes`), as a `RemoteTurnError` keeping its attributes and its `ProviderError` base otherwise |
 | `telemetry_console.py` | Telemetry | Console telemetry provider for span timing |
 | `telemetry_otel.py` | Telemetry | OpenTelemetry integration |
 | `telemetry_pyroscope.py` | Profiling | Continuous CPU profiling with Pyroscope |

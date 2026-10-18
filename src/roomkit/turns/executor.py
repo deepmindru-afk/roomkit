@@ -68,7 +68,7 @@ class TurnExecutor:
             owner wires and closes its channels (the kit's own executor).
         error_classes: The host's exception classes an error raised on the
             room owner is rebuilt as here, with their subclasses, beyond
-            RoomKit's and Python's own (RFC §10.6.8). Any other comes back as
+            RoomKit's and Python's built-in ones (RFC §10.6.8). Any other comes back as
             a ``RemoteTurnError``.
 
     Raises:

@@ -10,6 +10,7 @@ import functools
 import json
 import sys
 import traceback
+import types
 from collections.abc import Iterable
 from typing import Any
 
@@ -23,6 +24,15 @@ _REBUILT_PACKAGES = ("roomkit", "builtins")
 
 # At most this many causes, and this many ancestors, cross with an error.
 _CHAIN_LIMIT = 16
+
+# Where a RemoteTurnError keeps the arguments and the attributes of the error
+# it stands for, so that it crosses again as that error.
+_STANDS_FOR = "_roomkit_stands_for"
+_REMOTE_OWN = frozenset({"kind", "bases", _STANDS_FOR})
+
+# A module's namespace, read without the module's class: a lazily loaded
+# module runs its code on any attribute read.
+_MODULE_NAMESPACE = vars(types.ModuleType)["__dict__"]
 
 
 def error_record(exc: BaseException) -> ErrorRecord:
@@ -42,18 +52,32 @@ def _one_record(exc: BaseException) -> ErrorRecord:
     """*exc* alone; an error rebuilt as a ``RemoteTurnError`` crosses again as
     the error it stands for."""
     if isinstance(exc, RemoteTurnError):
-        kind, bases = exc.kind, list(exc.bases)
-        own = {"kind", "bases"}
-    else:
-        cls = type(exc)
-        kind, bases, own = _kind(cls), _ancestors(cls), set()
+        return _stand_in_record(exc)
+    cls = type(exc)
     return ErrorRecord(
-        kind=kind,
+        kind=_kind(cls),
         message=str(exc),
         args=[a if _is_json(a) else str(a) for a in exc.args],
-        attributes={k: v for k, v in vars(exc).items() if k not in own and _is_json(v)},
-        bases=bases,
+        attributes=_json_attributes(exc, frozenset()),
+        bases=_ancestors(cls),
     )
+
+
+def _stand_in_record(exc: RemoteTurnError) -> ErrorRecord:
+    """The record of the error *exc* stands for: its class, ancestors,
+    arguments and attributes, with what was set on *exc* since."""
+    args, attributes = getattr(exc, _STANDS_FOR, (list(exc.args), {}))
+    return ErrorRecord(
+        kind=exc.kind,
+        message=str(exc),
+        args=args,
+        attributes={**attributes, **_json_attributes(exc, _REMOTE_OWN)},
+        bases=list(exc.bases),
+    )
+
+
+def _json_attributes(exc: BaseException, skip: frozenset[str]) -> dict[str, Any]:
+    return {k: v for k, v in vars(exc).items() if k not in skip and _is_json(v)}
 
 
 def _kind(cls: type) -> str:
@@ -68,11 +92,11 @@ def _ancestors(cls: type) -> list[str]:
 
 class ErrorClasses:
     """The exception classes one side of the turn backend rebuilds by type
-    (RFC §10.6.8): RoomKit's, Python's, and those its host declared, each
+    (RFC §10.6.8): RoomKit's, Python's built-in ones, and those its host declared, each
     with its subclasses.
 
     Args:
-        declared: The host's classes, beyond RoomKit's and Python's own.
+        declared: The host's classes, beyond RoomKit's and Python's built-in ones.
 
     Raises:
         TypeError: An entry of *declared* is not an ``Exception`` class.
@@ -94,7 +118,8 @@ class ErrorClasses:
             current.__cause__ = cause
             current = cause
         if record.traceback:
-            exc.add_note(f"Raised on {where}:\n{record.traceback.rstrip()}")
+            # BaseException's own, past an attribute of the record that shadows it.
+            BaseException.add_note(exc, f"Raised on {where}:\n{record.traceback.rstrip()}")
         return exc
 
     def _one(self, record: ErrorRecord) -> BaseException:
@@ -144,14 +169,16 @@ def _remote(record: ErrorRecord, ancestors: Iterable[type[Exception]]) -> Remote
     exc.__dict__.update(record.attributes)
     exc.kind = record.kind
     exc.bases = tuple(record.bases)
+    exc.__dict__[_STANDS_FOR] = (list(record.args), dict(record.attributes))
     return exc
 
 
 def _new_remote(ancestor: type[Exception], message: str) -> RemoteTurnError | None:
     """A new ``RemoteTurnError`` that is also an *ancestor*; ``None`` when
-    the ancestor's ``__new__`` refuses a message alone (``ExceptionGroup``)."""
-    cls = _remote_class(ancestor)
+    the ancestor refuses the subclass (its ``__init_subclass__``, a layout
+    it cannot share) or a message alone (``ExceptionGroup``)."""
     try:
+        cls = _remote_class(ancestor)
         return cls.__new__(cls, message)
     except Exception:
         return None
@@ -160,29 +187,27 @@ def _new_remote(ancestor: type[Exception], message: str) -> RemoteTurnError | No
 @functools.cache
 def _remote_class(ancestor: type[Exception]) -> type[RemoteTurnError]:
     """``RemoteTurnError``, made a subclass of *ancestor* too: one class per
-    ancestor; ``RemoteTurnError`` itself when the two cannot share a layout."""
+    ancestor (what *ancestor* refuses raises, and is not kept)."""
     if issubclass(RemoteTurnError, ancestor):
         return RemoteTurnError
     namespace = {
         "__module__": RemoteTurnError.__module__,
         "__qualname__": RemoteTurnError.__qualname__,
     }
-    try:
-        return type(RemoteTurnError.__name__, (RemoteTurnError, ancestor), namespace)
-    except TypeError:
-        return RemoteTurnError
+    return type(RemoteTurnError.__name__, (RemoteTurnError, ancestor), namespace)
 
 
 def _loaded_class(kind: str) -> type[Exception] | None:
     """The class *kind* names: an ``Exception`` defined at the top of a
-    loaded module, read from the module's namespace, so that no name off the
-    wire imports anything (nor runs a module's ``__getattr__``); ``None`` for
-    any other (an interpreter exit or a cancellation is never raised from a
-    name)."""
+    loaded module, read from the module's namespace without the module's
+    class, so that no name off the wire imports anything nor runs a module's
+    code (its ``__getattr__``, a lazy loader); ``None`` for any other (an
+    interpreter exit or a cancellation is never raised from a name)."""
     module_name, _, name = kind.partition(":")
-    namespace = getattr(sys.modules.get(module_name), "__dict__", None)
-    if not isinstance(namespace, dict) or not name.isidentifier():
+    module = sys.modules.get(module_name)
+    if not issubclass(type(module), types.ModuleType) or not name.isidentifier():
         return None
+    namespace: dict[str, Any] = _MODULE_NAMESPACE.__get__(module)
     target = namespace.get(name)
     if not isinstance(target, type) or not issubclass(target, Exception):
         return None

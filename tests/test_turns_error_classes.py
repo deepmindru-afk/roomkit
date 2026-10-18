@@ -10,6 +10,7 @@ read off the wire never imports anything.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import sys
 import types
@@ -63,6 +64,20 @@ class HostReadTimeoutError(HostTransportError):
 
 class HostQuotaError(TimeoutError):
     """A host error deriving from one of Python's."""
+
+
+class FormattedError(Exception):
+    """An application error whose message is built from its arguments."""
+
+    def __str__(self) -> str:
+        return f"app error {self.args[0]}"
+
+
+class RefusingBaseError(ValueError):
+    """A declared base that refuses any subclass it did not register."""
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        raise ValueError(f"unregistered subclass {cls.__name__}")
 
 
 class _Lazy(types.ModuleType):
@@ -179,6 +194,55 @@ def test_an_error_rebuilt_as_remote_crosses_again_as_the_error_it_stands_for() -
     assert (again.kind, again.bases) == (on_owner.kind, on_owner.bases)
 
 
+def test_an_error_crossing_twice_keeps_its_arguments_and_attributes() -> None:
+    raised = FormattedError("X")
+    raised.kind = "quota"  # type: ignore[attr-defined]
+    raised.code = 7  # type: ignore[attr-defined]
+    on_owner = _crossed(raised)
+    assert str(on_owner) == "app error X"
+    on_owner.reported = True  # type: ignore[attr-defined]
+
+    on_executor = _crossed(on_owner, FormattedError)
+
+    assert type(on_executor) is FormattedError
+    assert on_executor.args == ("X",)
+    assert str(on_executor) == "app error X"
+    attributes = {k: v for k, v in vars(on_executor).items() if k != "__notes__"}
+    assert attributes == {"kind": "quota", "code": 7, "reported": True}
+
+
+def test_an_ancestor_whose_class_cannot_be_made_is_passed_over() -> None:
+    record = ErrorRecord(
+        kind="rmk838.not_loaded:Leaf",
+        message="m",
+        bases=[f"{RefusingBaseError.__module__}:RefusingBaseError", "builtins:ValueError"],
+    )
+    rebuilt = ErrorClasses((RefusingBaseError,)).rebuild(record)
+    assert isinstance(rebuilt, RemoteTurnError)
+    assert isinstance(rebuilt, ValueError)
+    assert not isinstance(rebuilt, RefusingBaseError)
+
+
+def test_a_frame_naming_the_remote_error_itself_crosses_again() -> None:
+    record = ErrorRecord(kind="roomkit.core.exceptions:RemoteTurnError", message="m", args=["m"])
+    rebuilt = ErrorClasses().rebuild(record)
+    assert error_record(rebuilt).message == "m"
+    assert error_type_name(rebuilt) == "RemoteTurnError"
+
+
+def test_an_attribute_named_like_a_method_does_not_break_the_rebuild() -> None:
+    record = ErrorRecord(
+        kind="builtins:ValueError",
+        message="m",
+        args=["m"],
+        attributes={"add_note": 1},
+        traceback="tb",
+    )
+    rebuilt = ErrorClasses().rebuild(record)
+    assert type(rebuilt) is ValueError
+    assert any("tb" in note for note in rebuilt.__notes__)
+
+
 def test_a_loaded_class_named_in_a_frame_and_not_declared_is_not_rebuilt() -> None:
     rebuilt = _crossed(HostReadTimeoutError("read timed out"), HostProviderError)
     assert type(rebuilt) is not HostReadTimeoutError
@@ -204,6 +268,40 @@ def test_a_name_off_the_wire_runs_no_module_code_and_imports_nothing(
     assert lazy.asked == []
     assert absent not in sys.modules
     assert f"{absent}.sub" not in sys.modules
+
+
+def test_a_name_off_the_wire_does_not_load_a_lazily_imported_module(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran = tmp_path / "ran"
+    source = tmp_path / "rmk838_lazily_loaded.py"
+    source.write_text(
+        f"import pathlib\npathlib.Path({str(ran)!r}).write_text('ran')\n"
+        "class Boom(Exception):\n    pass\n"
+    )
+    spec = importlib.util.spec_from_file_location("rmk838_lazily_loaded", source)
+    assert spec is not None and spec.loader is not None
+    loader = importlib.util.LazyLoader(spec.loader)
+    spec.loader = loader
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    monkeypatch.setitem(sys.modules, "rmk838_lazily_loaded", module)
+    record = ErrorRecord(kind="rmk838_lazily_loaded:Boom", message="m")
+
+    rebuilt = ErrorClasses((Exception,)).rebuild(record)
+
+    assert type(rebuilt) is RemoteTurnError
+    assert not ran.exists()
+
+
+async def test_a_declaration_given_once_reaches_both_sides_of_the_kit() -> None:
+    raised = _host_error()
+    once = (cls for cls in (HostProviderError, HostTransportError))
+
+    result, _ = await _inbound(RoomKit(error_classes=once), raised)
+
+    assert type(result.error) is HostProviderError
+    assert type(result.error.__cause__) is HostReadTimeoutError
 
 
 @pytest.mark.parametrize("entry", ["httpx", KeyboardInterrupt, object, ValueError("x")])

@@ -259,10 +259,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a tool that calls the kit finds the reentrancy guards it finds today.
   Heartbeats run both ways: a silent executor fails the turn with
   `TurnLinkError` (`executor_lost`, or `no_executor` when none took it), and
-  an error of a class outside RoomKit, Python and the classes the host
-  declares (`error_classes`, below) comes back as `RemoteTurnError`, keeping
-  its class name; every error keeps, as a note, where the executor raised it. A frame the backend cannot carry (a tool
-  result JSON has no form for, an unknown stream item) fails the turn with a
+  an error of a class outside RoomKit, Python's built-ins and the classes the
+  host declares (`error_classes`, below) comes back as `RemoteTurnError`,
+  keeping its class name; every error keeps, as a note, where the executor
+  raised it. A frame the backend cannot carry (a tool result JSON has no
+  form for, an unknown stream item) fails the turn with a
   `TypeError` naming it; a record value JSON has no form for crosses as its
   text. A stream its reader drops, or a cancelled delivery set leaves unread,
   is closed on the executor.
@@ -272,7 +273,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backend as themselves (RMK-838, RFC §10.6.8). Since every turn runs through
   the backend, an error a turn raised reached `InboundResult.error`,
   `ON_ERROR` and its chain of causes as a `RemoteTurnError` without its
-  attributes whenever its class was not RoomKit's or Python's: an
+  attributes whenever its class was not RoomKit's or a Python built-in: an
   application's classified provider error lost its type, its code and its
   verdicts, and a transport error among its causes (`httpx.ReadTimeout`) its
   type. A declared class and its subclasses come back as themselves, with
@@ -288,8 +289,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `wait_task`) crosses as the error it stands for. An entry that is not an
   `Exception` class raises `TypeError`. A class named on the wire is looked up
   among the names a loaded module defines: it never imports a module nor runs
-  a module's `__getattr__` (a frame naming `roomkit.sources:WebSocketSource`
-  imported `roomkit.sources.websocket`). Example:
+  a module's code, its `__getattr__` or a lazy loader (a frame naming
+  `roomkit.sources:WebSocketSource` imported `roomkit.sources.websocket`).
+  Example:
   `examples/turn_error_classes.py`.
 
 - `Discussion(rules=...)` gives each turn the host's rules for how the room

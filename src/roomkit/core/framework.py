@@ -275,7 +275,7 @@ class RoomKit(
             error_classes: The application's exception classes, with their
                 subclasses, that an error crossing the turn backend is
                 rebuilt as (RFC §10.6.8), on this kit and on its own
-                executor, beyond RoomKit's and Python's own: an error a
+                executor, beyond RoomKit's and Python's built-in ones: an error a
                 turn raised reaches ``InboundResult.error``, ``ON_ERROR``
                 and the chain of causes as the class it was raised as, its
                 attributes kept. Any other class comes back as a
