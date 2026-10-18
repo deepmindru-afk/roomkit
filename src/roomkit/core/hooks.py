@@ -407,6 +407,10 @@ class HookEngine:
         """Whether a room hook is defined under each of *names*."""
         return all(name in self._named_room_hooks for name in names)
 
+    def defined_room_hooks(self) -> frozenset[str]:
+        """The names room hooks are defined under."""
+        return frozenset(self._named_room_hooks)
+
     def use_room_hooks(self, room_id: str, names: Iterable[str]) -> None:
         """Apply to *room_id* the room hooks defined under *names*, as its
         turn's request names them, in place of those it had."""

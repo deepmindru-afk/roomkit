@@ -174,6 +174,7 @@ async def test_a_cascade_whose_turn_its_owner_gave_up_reports_its_cleanup_done()
     await executor.close()
 
 
+@pytest.mark.in_process("measures the in-memory link")
 @pytest.mark.wallclock
 async def test_two_thousand_deltas_cost_the_owner_s_loop_little() -> None:
     """A turn's text deltas cross the in-memory backend at a cost close to

@@ -178,6 +178,14 @@ class InMemoryTurnBackend(TurnBackend):
         if self._closed:
             raise TurnLinkError("backend_closed")
         executor = self._place(request.channel_id, request.room_id, request.room_hooks)
+        return self._submit_to(executor, request)
+
+    def _submit_to(self, executor: TurnExecutor, request: TurnRequest) -> TurnLink:
+        """Start a turn on *executor*, an executor of this process another
+        backend placed it on; carried here, serialized, in the owner's
+        execution context."""
+        if self._closed:
+            raise TurnLinkError("backend_closed")
         turn = _MemoryTurn(request)
         self._turns.add(turn)
         turn.taken = True

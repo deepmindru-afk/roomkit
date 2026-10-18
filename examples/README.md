@@ -228,6 +228,7 @@ CONSOLE=1 uv run python examples/<example>.py
 | `store_filtered_count.py` | Storage | Exact event counts under the filter a page would use |
 | `delivery_backend.py` | Delivery | Persistent delivery with InMemoryDeliveryBackend |
 | `delivery_redis.py` | Delivery | Redis-backed persistent distributed delivery |
+| `turns_redis.py` | Turn backend | An agent's turns in a second process over Redis; the executor killed mid-answer, another takes over |
 | `telemetry_console.py` | Telemetry | Console telemetry provider for span timing |
 | `telemetry_otel.py` | Telemetry | OpenTelemetry integration |
 | `telemetry_pyroscope.py` | Profiling | Continuous CPU profiling with Pyroscope |

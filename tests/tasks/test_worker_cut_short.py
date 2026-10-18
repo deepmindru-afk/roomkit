@@ -417,6 +417,9 @@ def _cutting_agent(channel_id: str, responses: list[AIResponse]) -> Agent:
     )
 
 
+@pytest.mark.in_process(
+    "RMK-834: a delegation keeps the answer of the responder that finished first"
+)
 @pytest.mark.parametrize("worker_cut", [True, False], ids=["worker-cut", "helper-cut"])
 async def test_the_answer_and_its_end_are_read_off_one_responder(worker_cut: bool) -> None:
     done = [AIResponse(content="Found it.")] * 3

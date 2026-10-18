@@ -109,6 +109,13 @@ class TurnLink(ABC):
     def release(self) -> None:
         """Forget the turn: later frames are dropped."""
 
+    def beat_heard(self) -> bool:
+        """Whether the executor that took the turn beat since this was last
+        asked, outside the turn's messages: an executor in a process of its
+        own beats from a thread its turn's work cannot stall (RFC §10.6.8).
+        Default: it beats by messages alone."""
+        return False
+
 
 class ExecutorLink(ABC):
     """The executor's side of one turn."""
@@ -206,6 +213,10 @@ class RoomOwner(ABC):
 
 class TurnBackend(ABC):
     """Carries turns between room owners and executors (RFC §10.6)."""
+
+    timeouts: TurnTimeouts | None = None
+    """The bounds every side of its turns keeps, when the backend sets them:
+    its processes must agree on them (RFC §10.6.8)."""
 
     @abstractmethod
     async def submit(self, request: TurnRequest) -> TurnLink:

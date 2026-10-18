@@ -452,7 +452,10 @@ class OwnerTurn:
             await heartbeat_tick(self._timeouts.heartbeat_interval)
             if self._over:
                 return
-            self._silent = 0 if self._heard else self._silent + 1
+            # Once an executor took the turn, its beat outside the messages
+            # counts too: a turn busy with its CPU still beats.
+            heard = self._heard or (self._accepted and self._link.beat_heard())
+            self._silent = 0 if heard else self._silent + 1
             self._heard = False
             if self._silent >= self._silence_limit():
                 await self._lost()

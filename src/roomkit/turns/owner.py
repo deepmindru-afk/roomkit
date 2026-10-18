@@ -420,12 +420,16 @@ def registry_turn_client(
         channel = channels.get(channel_id)
         return channel is not None and not isinstance(channel, DeclaredChannel)
 
+    backend = backend or InMemoryTurnBackend()
     return TurnClient(
-        backend or InMemoryTurnBackend(),
-        executor=TurnExecutor(channels.get, hosts=runs_here, owns_channels=False),
+        backend,
+        executor=TurnExecutor(
+            channels.get, hosts=runs_here, owns_channels=False, timeouts=backend.timeouts
+        ),
         tools=RegistryOwnerTools(owner_tools or OwnerToolStore(channels.get)),
         host=host,
         events=events,
+        timeouts=backend.timeouts,
     )
 
 

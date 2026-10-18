@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `RedisTurnBackend` (RMK-813, RFC §10.6.7 to §10.6.9, `pip install
+  roomkit[redis]`): an agent's turns run on an executor in another process
+  or on another machine, while the kit keeps the room. One backend per
+  process on a shared Redis and a shared store: `RoomKit(store=...,
+  turn_backend=RedisTurnBackend(url))` on the owner, `await
+  backend.serve(TurnExecutor(build, hosts={"meteo"}, store=...))` on the
+  executor. Each process reads one inbox stream; executors register what
+  they declare and beat from a thread of their own, on Redis's clock, so a
+  turn busy with its CPU is slow, never lost, and a killed executor fails
+  its turn with `executor_lost` within `heartbeat_timeout`. A room's turns
+  stay on the executor that holds its state while it lives (the holder is
+  shared by every owner process), else go to one that takes them; a turn no
+  executor declares fails at once with `no_executor`. The agents the kit
+  registers live stay in its process. Work a turn began reaches the owner
+  that submitted it. Redis is the trust boundary (ACL, TLS). Example:
+  `examples/turns_redis.py`; guide: Agent Turns in Another Process (Redis).
+- `TurnExecutor(hosts=...)` also takes the set of channel ids the executor
+  runs (RMK-813, RFC §10.6.7); only an executor declared with a set takes
+  turns from other processes, one given a predicate those of its own
+  process. `TurnBackend.timeouts` gives the kit and its own executor the
+  backend's bounds, and `TurnLink.beat_heard()` lets a backend count a beat
+  its executor makes outside the turn's messages (RFC §10.6.8).
+
 - Strategies and the owner's tools take an agent the kit holds by its
   declaration alone, named by its channel id (RMK-826, RFC §10.6.2):
   `Supervisor`, `Loop`, `Swarm`, `Pipeline`, `Discussion`,

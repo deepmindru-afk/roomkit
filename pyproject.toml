@@ -296,6 +296,7 @@ markers = [
     "wallclock: asserts real elapsed-time budgets; deselect on loaded CI runners",
     "xfail_streaming(reason): known tool-loop divergence, the streaming variant is xfail (strict); the reason names the card",
     "xfail_non_streaming(reason): known tool-loop divergence, the non-streaming variant is xfail (strict); the reason names the card",
+    "in_process(reason): assumes the kit's turns run in its process; skipped when ROOMKIT_TEST_TURN_BACKEND=redis carries them across Redis",
 ]
 filterwarnings = [
     "error",

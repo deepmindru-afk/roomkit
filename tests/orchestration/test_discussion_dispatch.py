@@ -432,6 +432,7 @@ async def test_the_recent_conversation_holds_what_a_candidate_may_read() -> None
     await kit.close()
 
 
+@pytest.mark.in_process("RMK-835: an order dependency to explain")
 async def test_a_done_discussion_decides_nothing() -> None:
     policy = MockDispatchPolicy([["sre"]])
     over = {"now": False}

@@ -446,6 +446,7 @@ async def test_a_delegated_turn_s_failure_is_logged_once(
     assert [r.name for r in lines] == ["roomkit.tasks"]
 
 
+@pytest.mark.in_process("RMK-835: an order dependency to explain")
 async def test_a_cancelled_read_keeps_the_turns_of_the_streams_read_before() -> None:
     """Two agents answer; the read is cancelled during the second's stream:
     the caller's ``turns`` hold both, the first completed, the second

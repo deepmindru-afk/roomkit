@@ -23,6 +23,7 @@ from roomkit.models.event import (
 from roomkit.models.event import EventContent as EventContentType
 from roomkit.models.room import Room
 from roomkit.store.memory import InMemoryStore
+from tests import redis_turn_mode
 from tests.tool_loop_modes import expect_streaming
 
 
@@ -80,13 +81,26 @@ def streaming(request: pytest.FixtureRequest) -> Iterator[bool]:
     expect_streaming(None)
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    if redis_turn_mode.ENABLED:
+        redis_turn_mode.install(config)
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """A divergence mark needs its reason and the ``streaming`` fixture.
 
     Without the fixture the mark would be ignored and the divergence hidden;
-    without a reason nobody knows which card owns it.
+    without a reason nobody knows which card owns it. An ``in_process`` mark
+    needs its reason too, and skips its test when the kit's turns cross
+    Redis (tests/redis_turn_mode.py).
     """
     for item in items:
+        in_process = item.get_closest_marker("in_process")
+        if in_process is not None:
+            if not in_process.args or not isinstance(in_process.args[0], str):
+                raise pytest.UsageError(f"{item.nodeid}: @in_process needs the reason")
+            if redis_turn_mode.ENABLED:
+                item.add_marker(pytest.mark.skip(reason=f"in process: {in_process.args[0]}"))
         for name in ("xfail_streaming", "xfail_non_streaming"):
             marker = item.get_closest_marker(name)
             if marker is None:

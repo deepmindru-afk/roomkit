@@ -318,6 +318,7 @@ async def test_a_room_s_turn_goes_to_an_executor_defining_its_hooks() -> None:
     await elsewhere.close()
 
 
+@pytest.mark.in_process("reads the in-memory backend's placement")
 async def test_a_room_hook_no_executor_defines_leaves_the_room_unanswered() -> None:
     kit = await _kit()
     kit.enable_room_hook("r1", "missing")

@@ -119,6 +119,9 @@ async def test_a_close_from_a_held_run_does_not_wait_for_it() -> None:
     await asyncio.wait_for(closed.wait(), timeout=5.0)
 
 
+@pytest.mark.in_process(
+    "the kit closes from a tool in its own turn: an executor elsewhere holds no kit"
+)
 async def test_a_close_from_an_inline_workers_tool_does_not_wait_for_it() -> None:
     kit = RoomKit()
     closed = asyncio.Event()
@@ -229,6 +232,9 @@ def _closing_agent(kit: RoomKit, closed: asyncio.Event) -> Agent:
     return Agent("agent", provider=provider, tools=[tool], tool_handler=shutdown)
 
 
+@pytest.mark.in_process(
+    "the kit closes from a tool in its own turn: an executor elsewhere holds no kit"
+)
 @pytest.mark.parametrize(
     "door", ["room-turn", "inline", "inline-shared", "background"], ids=lambda d: d
 )

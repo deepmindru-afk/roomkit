@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -51,8 +51,9 @@ class TurnExecutor:
             ``None`` when it has none; sync or async. The executor builds
             each channel once, wires it (RFC §10.6.2) and closes it when it
             closes.
-        hosts: Which channel ids this executor declares; every id when
-            omitted.
+        hosts: Which channel ids this executor declares: their collection,
+            or a predicate; every id when omitted. Only a collection can be
+            told to executors' backends in other processes (RFC §10.6.7).
         executor_id: The id the executor answers with; a random one when
             omitted.
         timeouts: The heartbeat bounds it keeps.
@@ -70,7 +71,7 @@ class TurnExecutor:
         self,
         build_channel: ChannelFactory,
         *,
-        hosts: Callable[[str], bool] | None = None,
+        hosts: Collection[str] | Callable[[str], bool] | None = None,
         executor_id: str | None = None,
         timeouts: TurnTimeouts | None = None,
         store: ConversationStore | None = None,
@@ -80,7 +81,15 @@ class TurnExecutor:
         owns_channels: bool = True,
     ) -> None:
         self.executor_id = executor_id or f"executor-{uuid4().hex[:12]}"
-        self._hosts = hosts
+        if isinstance(hosts, str):
+            raise TypeError("hosts is a collection of channel ids or a predicate, not one id")
+        self._hosted: frozenset[str] | None = None
+        self._hosts: Callable[[str], bool] | None = None
+        if isinstance(hosts, Collection):
+            self._hosted = frozenset(hosts)
+            self._hosts = self._hosted.__contains__
+        elif hosts is not None:
+            self._hosts = hosts
         self._timeouts = timeouts or TurnTimeouts()
         self._turns: dict[asyncio.Task[None], ExecutorTurn] = {}
         self._closed = False
@@ -205,6 +214,17 @@ class TurnExecutor:
     def declares(self, channel_id: str) -> bool:
         """Whether this executor takes the turns of *channel_id*."""
         return not self._closed and (self._hosts is None or self._hosts(channel_id))
+
+    @property
+    def hosted(self) -> frozenset[str] | None:
+        """The channel ids it declares when they were given as a collection;
+        ``None`` for a predicate or every id (RFC §10.6.7)."""
+        return self._hosted
+
+    @property
+    def closed(self) -> bool:
+        """Whether the executor closed: it takes no more turns."""
+        return self._closed
 
     def reach_owner(self, owner: RoomOwner) -> None:
         """Reach the room owner outside a turn through *owner*, which a backend
