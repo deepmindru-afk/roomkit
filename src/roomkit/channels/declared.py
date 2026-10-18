@@ -202,6 +202,10 @@ def register_strategy_agents(kit: RoomKit, agents: Iterable[Channel | str]) -> N
                 f"Channel {agent.channel_id!r} is registered by its declaration alone: "
                 f"give the strategy its id, {agent.channel_id!r}, not an agent object"
             )
+        elif isinstance(agent, DeclaredChannel) and held is None:
+            # Refused before any is registered: a turn hook on the kit that
+            # would never fire for it (RFC §10.6.6).
+            kit._kit_turn_hooks.refuse_declaration(agent)
     for agent in agents:
         if not isinstance(agent, str) and agent.channel_id not in kit.channels:
             kit.register_channel(agent)

@@ -109,6 +109,11 @@ class TurnSide(Protocol):
     def room_hook_names(self, room_id: str) -> list[str]: ...
 
     @property
+    def engine(self) -> HookEngine:
+        """The executor's engine, read for the hooks the kit gave it."""
+        ...
+
+    @property
     def fail_closed(self) -> frozenset[HookTrigger]: ...
 
     def set_fail_closed(self, triggers: frozenset[HookTrigger]) -> None: ...
@@ -498,12 +503,13 @@ class HookEngine:
         return any(any(h is hook for h in listed) for listed in self._registrations())
 
     def remove_hook(self, hook: HookRegistration) -> bool:
-        """Remove the registration *hook* itself, global or a room's."""
+        """Remove the registration *hook* itself, once, global or a room's."""
         for listed in self._registrations():
-            if any(h is hook for h in listed):
-                listed[:] = [h for h in listed if h is not hook]
-                self._rebuild_trigger_index()
-                return True
+            for i, registered in enumerate(listed):
+                if registered is hook:
+                    listed.pop(i)
+                    self._rebuild_trigger_index()
+                    return True
         return False
 
     def _registrations(self) -> list[list[HookRegistration]]:
@@ -528,8 +534,13 @@ class HookEngine:
         hooks live in the framework's own registry, and a caller that needs
         both asks both.
         """
+        turn_side = None if self._turns else self.turn_side
         if trigger is None:
-            return bool(self._trigger_index)
+            return bool(self._trigger_index) or (
+                turn_side is not None and turn_side.engine.has_hooks()
+            )
+        if turn_side is not None and trigger in TURN_TRIGGERS:
+            return turn_side.engine.has_hooks(trigger)
         return trigger in self._trigger_index
 
     def _rebuild_trigger_index(self) -> None:
@@ -544,6 +555,15 @@ class HookEngine:
 
     def _hook_matches_event(self, hook: HookRegistration, event: RoomEvent) -> bool:
         """Check if a hook's filters match the given event."""
+        if not isinstance(event, RoomEvent):
+            # A turn's event (a tool call, a response, a thought): its
+            # channel is the agent's; a type it does not carry filters nothing.
+            channel_type = getattr(event, "channel_type", None)
+            return (hook.channel_ids is None or event.channel_id in hook.channel_ids) and (
+                hook.channel_types is None
+                or channel_type is None
+                or channel_type in hook.channel_types
+            )
         source = event.source
 
         # All filters must pass (None means "match all")
@@ -694,6 +714,8 @@ class HookEngine:
         would not build): with such a hook registered, the payload must be
         withheld as the hook's own failure would withhold it.
         """
+        if not self._turns and self.turn_side is not None and trigger in TURN_TRIGGERS:
+            return self.turn_side.engine.fail_closed_hook(room_id, trigger)
         for hook in self._get_hooks(room_id, trigger, HookExecution.SYNC):
             if self._fails_closed(hook, trigger):
                 return hook.name

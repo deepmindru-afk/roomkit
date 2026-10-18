@@ -11,6 +11,7 @@ import pytest
 
 from roomkit import AgentIdentity, ChannelDeclaration, RoomKit
 from roomkit.channels.ai import AIChannel
+from roomkit.channels.declared import DeclaredChannel, register_strategy_agents
 from roomkit.core.hooks import TURN_TRIGGERS, HookEngine, HookRegistration
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, HookExecution, HookTrigger
@@ -292,3 +293,59 @@ def test_a_kit_turn_hook_removed_on_the_executor_no_longer_refuses_a_declaration
     _declared(kit)
 
     assert "meteo" in kit._channels
+
+
+async def test_a_turn_hook_s_channel_filter_holds_on_the_turn_s_agent() -> None:
+    """RFC §9.1: a hook with channel_ids fires only for those channels' turns."""
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(AIChannel("ai", provider=MockAIProvider(responses=["a"])))
+    kit.register_channel(AIChannel("other", provider=MockAIProvider(responses=["b"])))
+    await kit.create_room(room_id="room")
+    await kit.attach_channel("room", "sms")
+    for agent in ("ai", "other"):
+        await kit.attach_channel("room", agent, category=ChannelCategory.INTELLIGENCE)
+    seen: list[str] = []
+
+    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC, channel_ids={"ai"})
+    async def on_response(event: Any, ctx: Any) -> None:
+        seen.append(event.channel_id)
+
+    await _ask(kit, "room")
+    await kit.close()
+    # Both agents answered (each other too, up to the chain depth).
+    assert seen and set(seen) == {"ai"}
+
+
+def test_the_kit_s_engine_reads_the_turn_hooks_registered_through_it() -> None:
+    """As in 0.105.0, where one engine held them all."""
+    kit = RoomKit()
+    kit.hook(HookTrigger.BEFORE_TOOL_USE, name="gate", fail_closed=True)(_noop)
+
+    assert kit.hook_engine.has_hooks(HookTrigger.BEFORE_TOOL_USE)
+    assert kit.hook_engine.has_hooks()
+    assert kit.hook_engine.fail_closed_hook("room", HookTrigger.BEFORE_TOOL_USE) == "gate"
+
+
+def test_one_registration_given_twice_is_removed_once_per_call() -> None:
+    kit = RoomKit()
+    twice = HookRegistration(
+        trigger=HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, fn=_noop, name="dup"
+    )
+    kit.hook_engine.register(twice)
+    kit.hook_engine.register(twice)
+
+    assert kit.hook_engine.remove_global_hook("dup")
+    assert [h.name for h in kit.turn_executor.hooks._global_hooks] == ["dup"]
+
+
+def test_a_strategy_s_agents_are_registered_all_or_none_beside_a_kit_turn_hook() -> None:
+    kit = RoomKit()
+    kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)(_noop)
+    live = AIChannel("live", provider=MockAIProvider(responses=["a"]))
+    declared = DeclaredChannel(ChannelDeclaration(channel_id="meteo", identity=AgentIdentity()))
+
+    with pytest.raises(ValueError, match=r"'meteo'"):
+        register_strategy_agents(kit, [live, declared])
+
+    assert "live" not in kit._channels and "meteo" not in kit._channels

@@ -479,6 +479,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A hook's channel filters hold on the triggers a turn fires (RMK-833, RFC
+  §9.1): `channel_ids` and `channel_types` were ignored there, so
+  `@kit.hook(HookTrigger.ON_TOOL_CALL, channel_ids={"support"})` fired for
+  every agent's tool calls. They now read the turn's agent: its id, and its
+  type when the trigger's payload carries it (a tool call, an input request).
+
 - A cancelled delivery no longer reports its cleanup done while a turn it
   read still owes its end (RMK-823, RFC §10.6.8): once the owner's drain
   gave up at `cancel_timeout`, `cancel_and_wait` raises `TimeoutError`

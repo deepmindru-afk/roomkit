@@ -406,8 +406,9 @@ class HooksApiMixin(HelpersMixin):
         if not self.turn_executor.hooks.defines_room_hooks([name]):
             logger.warning(
                 "Room hook %r enabled for room %s is not defined on the kit's own "
-                "executor: its calls outside a turn (realtime voice, conference) run "
-                "without it",
+                "executor: the room's turns of the agents the kit runs find no "
+                "executor, and its calls outside a turn (realtime voice, conference) "
+                "run without it",
                 name,
                 room_id,
             )

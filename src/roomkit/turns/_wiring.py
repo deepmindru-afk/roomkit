@@ -325,9 +325,7 @@ class TurnWiring:
             context = await self.hook_context(event.room_id, trigger)
             if context is None:
                 return
-            await self._hooks.run_sync_hooks(
-                event.room_id, trigger, event, context, skip_event_filter=True
-            )
+            await self._hooks.run_sync_hooks(event.room_id, trigger, event, context)
 
         return _callback
 
@@ -353,7 +351,7 @@ class TurnWiring:
                 if context is None:
                     return True  # Allow on error (fail-open)
                 hook_result = await self._hooks.run_sync_hooks(
-                    event.room_id, trigger, event, context, skip_event_filter=True
+                    event.room_id, trigger, event, context
                 )
             await self.emit(
                 "user_input_required",
@@ -384,9 +382,7 @@ class TurnWiring:
                 context = await self.hook_context(event.room_id, trigger)
                 if context is None:
                     return
-                await self._hooks.run_async_hooks(
-                    event.room_id, trigger, event, context, skip_event_filter=True
-                )
+                await self._hooks.run_async_hooks(event.room_id, trigger, event, context)
             await self.emit(
                 "ai_response",
                 room_id=event.room_id,
@@ -415,7 +411,7 @@ class TurnWiring:
                 if context is None:
                     return SyncPipelineResult(allowed=True)
                 sync_result = await self._hooks.run_sync_hooks(
-                    event.room_id, trigger, event, context, skip_event_filter=True
+                    event.room_id, trigger, event, context
                 )
             await self.emit(
                 "before_ai_generation",
@@ -434,4 +430,4 @@ class TurnWiring:
         context = await self.hook_context(room_id, trigger)
         if context is None:
             return
-        await self._hooks.run_async_hooks(room_id, trigger, event, context, skip_event_filter=True)
+        await self._hooks.run_async_hooks(room_id, trigger, event, context)

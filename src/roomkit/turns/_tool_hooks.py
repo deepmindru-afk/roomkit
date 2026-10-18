@@ -241,7 +241,6 @@ class ToolHooks:
             HookTrigger.ON_TOOL_CALL,
             event,
             context,
-            skip_event_filter=True,
             fold=tool_call_chain_fold(event),
             fire_observers=False,
         )
@@ -326,7 +325,6 @@ class ToolHooks:
             HookTrigger.ON_TOOL_CALL,
             event,
             context,
-            skip_event_filter=True,
         )
 
     async def _emit_tool_call_event(self, event: ToolCallEvent, channel_id: str) -> None:
@@ -424,6 +422,5 @@ class ToolHooks:
             HookTrigger.BEFORE_TOOL_USE,
             event,
             context,
-            skip_event_filter=True,
         )
         return hook_result, context

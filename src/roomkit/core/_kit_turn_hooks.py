@@ -55,6 +55,10 @@ class KitTurnHooks:
         return [hook.name for hook, given_room in self._still_given() if given_room == room_id]
 
     @property
+    def engine(self) -> HookEngine:
+        return self._engine
+
+    @property
     def fail_closed(self) -> frozenset[HookTrigger]:
         return self._engine.FAIL_CLOSED_TRIGGERS
 
