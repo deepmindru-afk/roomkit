@@ -245,15 +245,15 @@ class RedisTurnBackend(TurnBackend):
         if self._closed:
             return
         self._closed = True
-        # From now a request is refused, to be placed again, and none asked.
+        # From now what reaches the process is refused at once (a request is
+        # placed again) and nothing is asked.
         self._routes.close()
         # Nothing is placed here any more; the process beats on while what
         # it was doing is answered and written (a turn's end among it).
         await self._undeclare()
+        await self._answer_what_is_under_way()
         await self._inbox.close()
         self._routing = False
-        if self._tasks:
-            await asyncio.wait(set(self._tasks), timeout=self._timeouts.cancel)
         await self._outbox.close(drain=self._timeouts.cancel)
         # The beat stops first, so none declares again what is withdrawn.
         await asyncio.to_thread(self._beat.stop)
@@ -294,13 +294,25 @@ class RedisTurnBackend(TurnBackend):
             self._inbox.start()
             self._live.start()
 
+    async def _answer_what_is_under_way(self) -> None:
+        """Let what this process was doing answer, within the cancel bound,
+        and a turn still on its way to an executor it declared reach it and
+        be refused: an owner that placed it from an older view writes it
+        within an interval."""
+        wait = self._timeouts.heartbeat_interval if self._payload.executors else 0.0
+        grace = asyncio.ensure_future(asyncio.sleep(wait))
+        if self._tasks:
+            await asyncio.wait(set(self._tasks), timeout=self._timeouts.cancel)
+        await grace
+
     async def _undeclare(self) -> None:
         """Beat from now without declaring this process's executors."""
         self._payload.close()
         if not self._payload.executors and self._routes.owner is None:
             return  # it never beat
         try:
-            await self._registry.beat(self.node_id, self._payload(), self._ttl_ms)
+            async with asyncio.timeout(self._timeouts.cancel):
+                await self._registry.beat(self.node_id, self._payload(), self._ttl_ms)
         except Exception:
             logger.debug("Withdrawing this process's declarations failed", exc_info=True)
 
@@ -308,7 +320,8 @@ class RedisTurnBackend(TurnBackend):
         """Withdraw this process's executors, and it as a room owner."""
         try:
             owner = self.node_id if self._routes.owner is not None else None
-            await self._registry.withdraw(self._payload.members, owner=owner)
+            async with asyncio.timeout(self._timeouts.cancel):
+                await self._registry.withdraw(self._payload.members, owner=owner)
         except Exception:
             logger.debug("Withdrawing this process from Redis failed", exc_info=True)
 
@@ -340,9 +353,10 @@ class RedisTurnBackend(TurnBackend):
         *,
         failed: Failed | None = None,
         writes: int | None = 1,
+        within: float | None = None,
     ) -> None:
         envelope = Envelope(kind, self.node_id, body, target=target, ref=ref)
-        self._outbox.post(node, envelope, failed, writes=writes)
+        self._outbox.post(node, envelope, failed, writes=writes, within=within)
 
     def _spawn(self, work: Coroutine[Any, Any, None]) -> None:
         """Run *work* on a task the backend holds until it closes."""

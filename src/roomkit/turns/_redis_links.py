@@ -27,7 +27,7 @@ logger = logging.getLogger("roomkit.turns")
 
 Post = Callable[..., None]
 """Queue a message for a node's inbox: ``post(node, kind, body, target, ref="",
-failed=None, writes=1)``; it never waits."""
+failed=None, writes=1, within=None)``; it never waits."""
 
 # Put on a link's queue when its turn is gone: its reader learns why.
 _GONE = "\x00gone"

@@ -1100,11 +1100,12 @@ def _slow_beat_stop(backend: RedisTurnBackend, delay: float) -> None:
     backend._beat.stop = slow  # type: ignore[method-assign]
 
 
-async def test_a_request_reaching_a_closing_process_goes_to_another_executor(
+async def test_a_turn_placed_on_a_closing_process_from_an_older_view_goes_elsewhere(
     prefix: str, redis_client: Any
 ) -> None:
-    """The room's holder closes while the owner places the room's turn on
-    it: its process refuses the turn, which another executor takes."""
+    """The owner read who is alive just before the room's holder began
+    closing: the closing process refuses the turn, which another executor
+    takes (RFC §10.6.7)."""
     store = InMemoryStore()
     closing_host = _backend(prefix)
     first = _agent_executor("host-a", store, hosts={"worker"}, answer="From A.")
@@ -1114,10 +1115,17 @@ async def test_a_request_reaching_a_closing_process_goes_to_another_executor(
     await other_host.serve(second)
     kit = await _owner(prefix, "worker", store=store)
     await redis_client.set(f"{prefix}:holder:worker:r", f"{closing_host.node_id}:host-a")
+    live = kit._turns.backend._live
+    older = await live.current()
     try:
         _slow_beat_stop(closing_host, 0.5)
         closing = asyncio.ensure_future(closing_host.close())
         await asyncio.sleep(0.05)
+
+        async def as_read_before() -> Any:
+            return older
+
+        live.current = as_read_before  # type: ignore[method-assign]
         result = await kit.process_inbound(_said("Hi."), room_id="r")
         await closing
 
@@ -1265,6 +1273,45 @@ async def test_a_room_call_its_owner_runs_while_closing_is_answered(
 
         assert slow.ran == ["send"]
         assert result.error is None and result.result == "sent"
+    finally:
+        await kit.close()
+        await host.close()
+        await executor.close()
+
+
+async def test_work_reaching_a_closing_owner_is_refused_at_once(
+    prefix: str, redis_client: Any
+) -> None:
+    """While the owner's process closes, answering the room call it was
+    running, another room call reaches it: refused at once, not left to
+    wait out the close."""
+    store = InMemoryStore()
+    worker = _Worker("worker", MockAIProvider(responses=["Hi."] * 5, streaming=True))
+    host, executor = await _hosted(prefix, store, worker)
+    kit = await _owner(prefix, "worker", store=store)
+    owner_backend = kit._turns.backend
+    try:
+        await kit.process_inbound(_said("Hi."), room_id="r")
+        turn_id = next(iter(host._routes._turn_owners))
+        owner_backend._routes.owner = _SlowOwner(owner_backend._routes.owner, delay=0.8)
+
+        def call(verb: str) -> RoomCall:
+            return RoomCall(
+                channel_id="worker", room_id="r", executor_id="host-a", turn_id=turn_id, verb=verb
+            )
+
+        running = asyncio.ensure_future(host._routes.port.room_call(call("send")))
+        await asyncio.sleep(0.05)
+        closing = asyncio.ensure_future(owner_backend.close())
+        await asyncio.sleep(0.05)
+        started = time.monotonic()
+        late = await asyncio.wait_for(host._routes.port.room_call(call("send_again")), 5)
+        refused_after = time.monotonic() - started
+        await running
+        await closing
+
+        assert late.error is not None
+        assert refused_after < TIMEOUTS.heartbeat_interval * 2
     finally:
         await kit.close()
         await host.close()

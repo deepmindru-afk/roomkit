@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -35,9 +36,9 @@ RETRY_DELAY = 1.0
 Failed = Callable[[Exception], None]
 """Told when Redis refused the batch a message was in, for its last write."""
 
-# A message, who to tell when it cannot be written, and its writes left
-# (None: until it is written).
-_Queued = tuple["Envelope", Failed | None, int | None]
+# A message, who to tell when it cannot be written, its writes left (None:
+# until it is written) and when it is written again no more (None: never).
+_Queued = tuple["Envelope", Failed | None, int | None, float | None]
 # Put on each queue on closing: its writer stops once it wrote what came before.
 _CLOSING = None
 
@@ -75,11 +76,12 @@ class Outbox:
         failed: Failed | None = None,
         *,
         writes: int | None = 1,
+        within: float | None = None,
     ) -> None:
         """Queue *envelope* for *node*'s inbox, after what was posted to it
         before, written up to *writes* times while Redis refuses it (None:
-        until it is written, while the outbox runs); *failed* is told if it
-        is never written."""
+        until it is written, while the outbox runs), for at most *within*
+        seconds when given; *failed* is told if it is never written."""
         if self._closed:
             if failed is not None:
                 failed(ConnectionError("The turn backend closed"))
@@ -93,7 +95,8 @@ class Outbox:
                 name=f"roomkit-turns-outbox-{node}",
                 context=contextvars.Context(),
             )
-        queue.put_nowait((envelope, failed, writes))
+        deadline = None if within is None else time.monotonic() + within
+        queue.put_nowait((envelope, failed, writes, deadline))
 
     async def close(self, drain: float) -> None:
         """Take no more messages, write what is queued within *drain*
@@ -149,7 +152,7 @@ class Outbox:
         again; the senders of the rest are told."""
         try:
             pipe = self._client.pipeline(transaction=False)
-            for envelope, _, _ in batch:
+            for envelope, *_ in batch:
                 pipe.xadd(key, envelope.fields())
             pipe.pexpire(key, self._ttl_ms)
             await pipe.execute()
@@ -157,10 +160,11 @@ class Outbox:
             _tell(batch, ConnectionError("The turn backend closed before writing it"))
             raise
         except Exception as exc:
+            now = time.monotonic()
             again = [
-                (envelope, failed, None if left is None else left - 1)
-                for envelope, failed, left in batch
-                if left is None or left > 1
+                (envelope, failed, None if left is None else left - 1, deadline)
+                for envelope, failed, left, deadline in batch
+                if _written_again(left, deadline, now)
             ]
             logger.warning(
                 "Writing %d turn message(s) to %s failed (%d written again): %s",
@@ -169,7 +173,7 @@ class Outbox:
                 len(again),
                 exc,
             )
-            _tell([item for item in batch if item[2] is not None and item[2] <= 1], exc)
+            _tell([item for item in batch if not _written_again(item[2], item[3], now)], exc)
             return again
         return []
 
@@ -192,6 +196,11 @@ def _batch(
     return batch, closing
 
 
+def _written_again(left: int | None, deadline: float | None, now: float) -> bool:
+    """Whether a message Redis refused is written again."""
+    return (left is None or left > 1) and (deadline is None or now < deadline)
+
+
 def _emptied(queue: asyncio.Queue[_Queued | None]) -> list[_Queued | None]:
     items = []
     while not queue.empty():
@@ -200,7 +209,7 @@ def _emptied(queue: asyncio.Queue[_Queued | None]) -> list[_Queued | None]:
 
 
 def _tell(batch: list[_Queued], error: Exception) -> None:
-    for envelope, failed, _ in batch:
+    for envelope, failed, *_ in batch:
         if failed is None:
             continue
         try:

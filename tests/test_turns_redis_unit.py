@@ -214,7 +214,7 @@ class _Posted:
 
     def __init__(self) -> None:
         self.messages: list[tuple[str, str, str, str]] = []
-        self.writes: list[int | None] = []
+        self.writes: list[tuple[int | None, float | None]] = []
 
     def __call__(
         self,
@@ -226,9 +226,10 @@ class _Posted:
         *,
         failed: Any = None,
         writes: int | None = 1,
+        within: float | None = None,
     ) -> None:
         self.messages.append((node, kind, body, ref))
-        self.writes.append(writes)
+        self.writes.append((writes, within))
 
     def of(self, kind: str) -> list[tuple[str, str, str, str]]:
         return [m for m in self.messages if m[1] == kind]
@@ -322,10 +323,10 @@ async def test_work_after_a_turn_written_twice_reaches_its_owner_once() -> None:
         turn_id="t-1",
         frame=Ephemeral(channel="room:room", event={}),
     )
-    for message, ref in ((call, "ref-3"), (published, "ref-4")):
+    for kind, message, ref in (("owner", call, "ref-3"), ("work", published, "ref-4")):
         body = OwnerMessageEnvelope(message=message).model_dump_json()
-        routes.route(Envelope("owner", "node-a", body, "", ref))
-        routes.route(Envelope("owner", "node-a", body, "", ref))
+        routes.route(Envelope(kind, "node-a", body, "", ref))
+        routes.route(Envelope(kind, "node-a", body, "", ref))
     await asyncio.gather(*tasks)
 
     assert owner.calls == ["send"]
@@ -348,12 +349,12 @@ async def test_answers_and_work_after_a_turn_are_written_until_they_are() -> Non
         )
     )
 
-    assert [m[1] for m in posted.messages] == ["answer", "owner"]
-    # An answer until it is written; work after a turn within the window its
-    # receiver remembers it for (written twice, handled once).
-    assert posted.writes == [None, _redis_routes._WORK_WRITES]
-    assert _redis_routes._WORK_WRITES * 21 < _redis_routes._HANDLED_FOR
-    assert posted.of("owner")[0][3] != ""  # a reference: handled once on arrival
+    assert [m[1] for m in posted.messages] == ["answer", "work"]
+    # An answer until it is written; work after a turn for less long than
+    # its receiver remembers it (written twice, published once).
+    assert posted.writes == [(None, None), (None, _redis_routes._WORK_FOR)]
+    assert _redis_routes._WORK_FOR < _redis_routes._PUBLISHED_FOR
+    assert posted.of("work")[0][3] != ""  # a reference: handled once on arrival
 
 
 def test_a_request_reaching_a_closing_process_is_refused_to_be_placed_again() -> None:
@@ -680,3 +681,71 @@ async def test_a_channel_control_for_an_executor_this_process_never_served_fails
 
     (answer,) = posted.of("answer")
     assert ChannelResult.model_validate_json(answer[2]).error is not None
+
+
+async def test_what_reaches_a_closing_process_is_refused_without_being_applied() -> None:
+    routes, posted, tasks = _routes()
+    taker = _Taker()
+    owner = _Owner()
+    routes.shared["host-a"] = taker  # type: ignore[assignment]
+    routes.owner = owner  # type: ignore[assignment]
+    routes.close()
+    control = ChannelControlEnvelope(message=RoomDetached(channel_id="agent", room_id="room"))
+    call = RoomCall(
+        channel_id="agent", room_id="room", executor_id="host-a", turn_id="t-1", verb="send"
+    )
+    published = RoomPublication(
+        channel_id="agent",
+        room_id="room",
+        executor_id="host-a",
+        turn_id="t-1",
+        frame=Ephemeral(channel="room:room", event={}),
+    )
+
+    routes.route(Envelope("channel", "node-a", control.model_dump_json(), "host-a", "ref-12"))
+    routes.route(
+        Envelope(
+            "owner", "node-a", OwnerMessageEnvelope(message=call).model_dump_json(), "", "r13"
+        )
+    )
+    body = OwnerMessageEnvelope(message=published).model_dump_json()
+    routes.route(Envelope("work", "node-a", body, "", "ref-14"))
+    await asyncio.gather(*tasks)
+
+    assert taker.applied == [] and owner.calls == [] and owner.publications == []
+    channel_answer, call_answer = (m[2] for m in posted.of("answer"))
+    assert ChannelResult.model_validate_json(channel_answer).error is not None
+    assert HostResult.model_validate_json(call_answer).error is not None
+
+
+async def test_a_stall_of_this_process_with_a_read_in_flight_then_one_failure_is_not_silence() -> (
+    None
+):
+    """The read in flight across the stall times out, the next one fails
+    once: two failures, but not the others' silence for a heartbeat timeout."""
+    registry = _Registry()
+    live = LiveExecutors(registry, 0.02, 0.2, dict)  # type: ignore[arg-type]
+    live.start()
+    try:
+        await asyncio.sleep(0.05)
+        registry.silent = True  # the read in flight hangs
+        await asyncio.sleep(0.01)
+        time.sleep(0.4)  # noqa: ASYNC251 - this process's event loop stalls
+        registry.silent = False
+        registry.fail_once = True
+        registry.failed.clear()
+        await registry.failed.wait()
+
+        assert live.alive("node-a:w")
+    finally:
+        await live.close()
+
+
+async def test_a_message_written_again_for_a_while_is_given_up_after_it() -> None:
+    outbox = Outbox(_RefusesAll(), lambda node: f"inbox:{node}", ttl_ms=60_000, retry_delay=0.01)
+    told: list[str] = []
+    outbox.post("a", _message("work"), lambda error: told.append("work"), writes=None, within=0.05)
+    await asyncio.sleep(0.2)
+
+    assert told == ["work"]
+    await outbox.close(drain=0.05)

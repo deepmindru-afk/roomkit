@@ -129,8 +129,8 @@ class LiveExecutors:
         self._open_turns = open_turns
         self._view = View()
         self._running: dict[str, frozenset[str]] = {}
-        # The reads failing in a row: how many, from the first one's start
-        # to the last one's end.
+        # The reads failing in a row: how many, from the first one's failure
+        # to the last one's.
         self._failures = 0
         self._failing_since: float | None = None
         self._failed_at = 0.0
@@ -198,24 +198,25 @@ class LiveExecutors:
 
     async def _refresh_each_interval(self) -> None:
         while True:
-            started = time.monotonic()
             try:
-                # A read that hangs fails as one that raises, from its start.
+                # A read that hangs fails as one that raises.
                 async with asyncio.timeout(self._timeout):
                     await self.refresh()
                     self._running = await self._registry.running(self._open_turns())
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
-                self._failed(started if isinstance(exc, TimeoutError) else time.monotonic())
+            except Exception:
+                self._failed()
                 logger.warning("Reading the turn processes alive failed", exc_info=True)
             await asyncio.sleep(self.interval)
 
-    def _failed(self, since: float) -> None:
+    def _failed(self) -> None:
+        """A read failed: counted from when it failed, so neither a stall of
+        this process nor a read that succeeded before it counts."""
         self._failures += 1
         self._failed_at = time.monotonic()
         if self._failing_since is None:
-            self._failing_since = since
+            self._failing_since = self._failed_at
 
 
 class BeatThread:

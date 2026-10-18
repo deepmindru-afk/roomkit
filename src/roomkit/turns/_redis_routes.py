@@ -52,14 +52,17 @@ logger = logging.getLogger("roomkit.turns")
 # How many turns' owners are remembered for the work they began (RFC §10.6.3).
 _TURN_OWNERS = 10_000
 # How many questions handled are remembered, and for how long, so one written
-# twice is not handled twice: a pipeline runs again within moments, and work
-# after a turn is written again for less than the window (_WORK_WRITES
-# writes, each at most the pool's wait and the outbox's retry delay).
+# twice is not handled twice: a pipeline runs again within moments.
 _HANDLED = 10_000
-_HANDLED_FOR = 600.0
-_WORK_WRITES = 20
-# The entries handled once by their reference.
+_HANDLED_FOR = 60.0
+# The entries handled once by their reference, and answered.
 _QUESTIONS = frozenset({"request", "channel", "owner"})
+# Work after a turn that nothing answers is written again for _WORK_FOR
+# while Redis refuses it, and remembered by its owner for longer, so it is
+# published once.
+_WORK_FOR = 300.0
+_PUBLISHED = 100_000
+_PUBLISHED_FOR = 600.0
 TAKEN = "taken"
 """What an executor's process answers a request it handed to its executor."""
 REFUSED = "refused"
@@ -106,6 +109,8 @@ class Routes:
         # By reference: when it came, and the answer given (None while it is
         # worked out, or for work after a turn, which nothing answers).
         self._handled: OrderedDict[str, tuple[float, str | None]] = OrderedDict()
+        # By reference, when it came: the work after a turn handled.
+        self._published: OrderedDict[str, float] = OrderedDict()
         self._closing = False
         self._routes: dict[str, Callable[[Envelope], None]] = {
             "frame": self._frame,
@@ -114,6 +119,7 @@ class Routes:
             "request": self._request,
             "channel": lambda envelope: self._spawn(self._channel(envelope)),
             "owner": lambda envelope: self._spawn(self._owner_message(envelope)),
+            "work": lambda envelope: self._spawn(self._owner_message(envelope)),
             "answer": self._answer,
         }
         self.port: RoomOwner = _OwnerPort(self)
@@ -121,12 +127,18 @@ class Routes:
 
     def route(self, envelope: Envelope) -> None:
         """Hand one inbox entry on, in order, without waiting; a question
-        written twice is answered again, not handled again."""
+        written twice is answered again, not handled again, and one reaching
+        a closing process is refused."""
         route = self._routes.get(envelope.kind)
         if route is None:
             logger.warning("A turn inbox entry of an unknown kind %r was dropped", envelope.kind)
             return
         if envelope.kind in _QUESTIONS and not self._first_time(envelope):
+            return
+        if envelope.kind == "work" and not self._first_work(envelope):
+            return
+        if self._closing and envelope.kind in (*_QUESTIONS, "work"):
+            self._refuse_closing(envelope)
             return
         route(envelope)
 
@@ -231,6 +243,32 @@ class Routes:
             self._post_answer(question, answer)
         return False
 
+    def _first_work(self, work: Envelope) -> bool:
+        """Whether *work* after a turn is new: written again, it is not
+        published twice."""
+        if work.ref in self._published:
+            return False
+        now = time.monotonic()
+        self._published[work.ref] = now
+        while len(self._published) > _PUBLISHED or (
+            next(iter(self._published.values())) < now - _PUBLISHED_FOR
+        ):
+            self._published.popitem(last=False)
+        return True
+
+    def _refuse_closing(self, envelope: Envelope) -> None:
+        """Answer what reaches this closing process at once, applying
+        nothing: a request is placed again, a question learns it failed."""
+        closing = error_record(TurnLinkError("backend_closed"))
+        if envelope.kind == "request":
+            self._answer_back(envelope, REFUSED)
+        elif envelope.kind == "channel":
+            self._answer_back(envelope, ChannelResult(error=closing).model_dump_json())
+        elif envelope.kind == "owner":
+            self._answer_back(envelope, HostResult(call_id="", error=closing).model_dump_json())
+        else:
+            logger.warning("Work after a turn reached this closing process and was dropped")
+
     # -- Routes ---------------------------------------------------------------------
 
     def _frame(self, envelope: Envelope) -> None:
@@ -251,10 +289,9 @@ class Routes:
 
     def _request(self, envelope: Envelope) -> None:
         """A request of an owner elsewhere, for an executor of this process,
-        answered at once: taken, or refused by an executor that closed or a
-        backend closing."""
+        answered at once: taken, or refused by an executor that closed."""
         executor = self.shared.get(envelope.target)
-        if executor is None or executor.closed or self._closing:
+        if executor is None or executor.closed:
             self._answer_back(envelope, REFUSED)
             return
         request = TurnRequest.model_validate_json(envelope.body)
@@ -336,7 +373,7 @@ class Routes:
         def lost(error: Exception) -> None:
             logger.warning("Work after a turn could not reach its owner %s: %s", node, error)
 
-        self._post(node, "owner", body, "", uuid4().hex, failed=lost, writes=_WORK_WRITES)
+        self._post(node, "work", body, "", uuid4().hex, failed=lost, writes=None, within=_WORK_FOR)
 
 
 class _OwnerPort(RoomOwner):

@@ -24,9 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   executor at most: its process acknowledges it, a closed executor's refusal
   places it again, and one a client writes twice (a pipeline it retries) is
   taken once. A process that closes stops declaring its executors (nothing
-  new is placed there), refuses a turn still reaching it (placed on another
-  executor), and beats on while it answers what it was applying and writes
-  what it queued (a turn's end), within `cancel_timeout`; then it withdraws.
+  new is placed there) and beats on while it answers what it was applying
+  (within `cancel_timeout`) and writes what it queued (a turn's end, within
+  `cancel_timeout` again), refusing at once what reaches it meanwhile (a
+  turn is placed on another executor); then it withdraws.
   A room's turns stay on the executor that holds its state
   while it lives (the holder is shared by every owner process), else go to
   one that takes them; a turn no executor declares fails at once with
