@@ -563,6 +563,25 @@ async def test_a_channel_call_refused_before_it_is_sent_leaves_the_previous_turn
     assert ("detached", "room") not in agent.log
 
 
+async def test_a_turn_refused_before_it_is_handed_over_leaves_the_previous_turn() -> None:
+    backend = InMemoryTurnBackend()
+    agent = _Agent()
+    executor = _Recording(agent, "a")
+    await backend.serve(executor)
+    client = TurnClient(backend)
+    await _turn(client)
+    # Bytes that are not UTF-8 have no text to fall back on: the request
+    # cannot be written, and no executor is given it.
+    with pytest.raises(ValueError):
+        await _turn(client, raw=b"\xff\xfe")
+    await _turn(client)
+
+    first, second = executor.requests
+    assert second.previous_turn is not None
+    assert second.previous_turn.turn_id == first.turn_id
+    assert ("detached", "room") not in agent.log
+
+
 class _AnswerAfterTaking(InMemoryTurnBackend):
     """Hands a request to its executor, then waits for the executor's answer,
     as a backend across processes does: a cancel there comes once the turn

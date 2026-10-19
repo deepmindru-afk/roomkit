@@ -168,6 +168,7 @@ class RedisTurnBackend(TurnBackend):
         there, never handed to another (it may have begun)."""
         link = self._routes.owner_link(request, placed.member, placed.executor_id, placed.node)
         body = request_json(request)
+        request.hand_over()
         try:
             answer = await self._routes.ask(
                 placed.node, "request", body, placed.executor_id, bound=self._timeouts.accept
@@ -221,7 +222,9 @@ class RedisTurnBackend(TurnBackend):
         if isinstance(message, ChannelCall):
             channel_id, room_id = message.channel_id, message.room_id
             return await self._applied_once(
-                raw, lambda refused: self._placement.place(channel_id, room_id, excluded=refused)
+                raw,
+                lambda refused: self._placement.place(channel_id, room_id, excluded=refused),
+                message,
             )
         if isinstance(message, CommittedEvent):
             channel_id, room_id, hooks = message.channel_id, message.room_id, message.room_hooks
@@ -252,12 +255,16 @@ class RedisTurnBackend(TurnBackend):
         self,
         raw: str,
         choose: Callable[[set[str]], Coroutine[Any, Any, TurnExecutor | Elsewhere]],
+        call: ChannelCall | None = None,
     ) -> ChannelResult:
         """Apply a channel control on the executor *choose* places it on,
-        placed again, never twice, while a closing process refuses it."""
+        placed again, never twice, while a closing process refuses it; a
+        *call* is marked handed as it goes to that executor."""
         refused: set[str] = set()
         while True:
             placed = await choose(refused)
+            if call is not None:
+                call.hand_over()
             result = await self._apply(placed, raw)
             if result is not None:
                 return result

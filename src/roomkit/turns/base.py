@@ -232,7 +232,9 @@ class TurnBackend(ABC):
 
     @abstractmethod
     async def submit(self, request: TurnRequest) -> TurnLink:
-        """Start a turn: an executor that declares its channel takes it."""
+        """Start a turn: an executor that declares its channel takes it. The
+        backend marks *request* handed (``request.hand_over()``) as it gives
+        it to an executor, before any wait on the executor's answer."""
 
     @abstractmethod
     async def serve(self, executor: TurnExecutor) -> None:
@@ -249,7 +251,8 @@ class TurnBackend(ABC):
         room's state for the channel, else one that would take the room's
         turns, never moving the holder, answered by none; a ``channel_call``
         to the executor that holds the room's state for the channel, else one
-        that declares it, answered by its result.
+        that declares it, answered by its result, marked handed
+        (``message.hand_over()``) as the backend gives it to that executor.
 
         Raises:
             TurnLinkError: ``no_executor`` for a ``channel_call`` or a

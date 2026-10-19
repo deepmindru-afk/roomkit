@@ -41,13 +41,14 @@ from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import SQLiteStore
-from roomkit.turns import TurnExecutor, TurnTimeouts
+from roomkit.turns import TurnClient, TurnExecutor, TurnTimeouts
 from roomkit.turns._redis_links import RedisExecutorLink
 from roomkit.turns._redis_presence import Keys, Registry
 from roomkit.turns.redis import RedisTurnBackend
 from roomkit.turns.wire import CommittedEvent, End, HostResult, RoomCall
 from tests import redis_turn_mode
 from tests.test_framework import SimpleChannel
+from tests.test_turns_channel_control import _Agent, _Recording, _turn
 
 pytestmark = pytest.mark.skipif(not os.environ.get("REDIS_URL"), reason="REDIS_URL not set")
 
@@ -1478,3 +1479,35 @@ async def test_an_executor_s_process_closing_mid_turn_ends_the_turn_within_the_c
         await kit.close()
         await host.close()
         await executor.close()
+
+
+async def test_a_turn_whose_placement_failed_is_not_the_room_s_previous_turn(
+    prefix: str, redis_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = _backend(prefix)
+    agent = _Agent()
+    executor = _Recording(agent, "a")
+    await backend.serve(executor)
+    client = TurnClient(backend)
+    try:
+        await _turn(client)
+        place = backend._placement.place
+        failures = [ConnectionError("Redis did not answer")]
+
+        async def placed_once_failing(*args: Any, **kwargs: Any) -> Any:
+            if failures:
+                raise failures.pop()
+            return await place(*args, **kwargs)
+
+        monkeypatch.setattr(backend._placement, "place", placed_once_failing)
+        # The read that places the turn fails: no executor was given it.
+        with pytest.raises(ConnectionError):
+            await _turn(client)
+        await _turn(client)
+
+        first, second = executor.requests
+        assert second.previous_turn is not None
+        assert second.previous_turn.turn_id == first.turn_id
+        assert ("detached", "room") not in agent.log
+    finally:
+        await client.close()

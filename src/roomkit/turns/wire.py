@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
@@ -41,7 +41,27 @@ class PreviousTurn(BaseModel):
     """The executor that took it; ``None`` when none had said so yet."""
 
 
-class TurnRequest(BaseModel):
+class _HandedOver(BaseModel):
+    """A message that leaves the room's state once an executor may hold it
+    (RFC §10.6.2). Its backend marks it as it gives it to an executor, so
+    the owner knows whether a failure came before: one that did leaves the
+    room's previous turn as it was, one after may follow the message's
+    start there. The mark never crosses."""
+
+    _handed: bool = PrivateAttr(default=False)
+
+    def hand_over(self) -> None:
+        """Mark the message given to an executor, here or across the
+        backend's transport."""
+        self._handed = True
+
+    @property
+    def handed(self) -> bool:
+        """Whether the backend gave the message to an executor."""
+        return self._handed
+
+
+class TurnRequest(_HandedOver):
     """What the owner sends an executor to start one turn."""
 
     turn_id: str
@@ -375,7 +395,7 @@ class CommittedEvent(BaseModel):
     the event goes to an executor that would take the room's turns."""
 
 
-class ChannelCall(BaseModel):
+class ChannelCall(_HandedOver):
     """A per-room verb of the channel (an ACP session's ``set_config_option``),
     answered by a :class:`ChannelResult` (RFC §10.6.3)."""
 

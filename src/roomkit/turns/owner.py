@@ -17,10 +17,8 @@ from uuid import uuid4
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes, discussion_turn
 from roomkit.channels.declared import DeclaredChannel
-from roomkit.core.exceptions import TurnLinkError
 from roomkit.models.steering import Cancel as SteeringCancel
 from roomkit.telemetry.context import get_current_span
-from roomkit.turns._codec import control_json
 from roomkit.turns._error_codec import ErrorClasses, error_record
 from roomkit.turns._owner_between import answer_room_call, publish_between_turns
 from roomkit.turns._owner_inputs import OwnerInputs
@@ -56,19 +54,6 @@ if TYPE_CHECKING:
         RoomCall,
         RoomPublication,
     )
-
-
-_UNSENT = frozenset({"no_executor", "backend_closed"})
-"""The link errors of a turn or channel call no executor took: the owner
-names the previous turn it named before it (RFC §10.6.3). After any other
-failure, a cancel or a timeout included, it may have reached its executor,
-which recorded it as leaving the room's state."""
-
-
-def _unsent(exc: BaseException) -> bool:
-    """Whether *exc*, raised sending a turn or a channel call, says no
-    executor took it."""
-    return isinstance(exc, TurnLinkError) and exc.reason in _UNSENT
 
 
 def turn_request(
@@ -208,8 +193,11 @@ class TurnClient(RoomOwner):
         self._handing[request.turn_id] = (request, handed)
         try:
             link = await self.backend.submit(request)
-        except BaseException as exc:
-            if _unsent(exc):
+        except BaseException:
+            # Failed before its backend gave it to an executor, the turn is
+            # not the room's previous one; after, a cancel or a timeout
+            # included, its executor may have begun it (RFC §10.6.2).
+            if not request.handed:
                 self._unleave(channel_id, request.room_id, submitted, request.previous_turn)
             self._handed(request, handed)
             raise
@@ -288,16 +276,14 @@ class TurnClient(RoomOwner):
             )
         if not isinstance(message, ChannelCall):
             return await self.backend.control(message)
-        # An argument JSON has no form for is refused before the call counts
-        # as sent; then the call leaves the room's state as a turn does.
-        control_json(message)
+        # A channel call leaves the room's state as a turn does.
         channel_id, room_id = message.channel_id, message.room_id
         previous, made = self._leave(channel_id, room_id, message.call_id)
         call = message.model_copy(update={"previous_turn": previous})
         try:
             answer = await self.backend.control(call)
-        except BaseException as exc:
-            if _unsent(exc):
+        except BaseException:
+            if not call.handed:
                 self._unleave(channel_id, room_id, made, previous)
             raise
         if answer is not None:

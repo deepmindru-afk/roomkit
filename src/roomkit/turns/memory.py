@@ -190,6 +190,7 @@ class InMemoryTurnBackend(TurnBackend):
         turn = _MemoryTurn(request)
         self._turns.add(turn)
         turn.taken = True
+        request.hand_over()
         executor.take(_ExecutorLink(turn))
         return _OwnerLink(turn, request, self)
 
@@ -215,6 +216,7 @@ class InMemoryTurnBackend(TurnBackend):
         raw = control_json(message)
         if isinstance(message, ChannelCall):
             executor = self._place(message.channel_id, message.room_id)
+            message.hand_over()
             answer = await executor.control(_crossed(raw))
             if answer is None:
                 return ChannelResult()
