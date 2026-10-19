@@ -92,6 +92,18 @@ class _Lazy(types.ModuleType):
         raise AttributeError(name)
 
 
+class _LazyProxy:
+    """A module-level object that evaluates what it wraps when its class is
+    read, as ``django.conf.settings`` or werkzeug's ``LocalProxy`` do."""
+
+    def __init__(self, load: Callable[[], Any]) -> None:
+        self._load = load
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return type(self._load())
+
+
 def _host_error() -> HostProviderError:
     error = HostProviderError("payment required", code="payment_required", answered=False)
     error.__cause__ = HostReadTimeoutError("read timed out")
@@ -292,6 +304,23 @@ def test_a_name_off_the_wire_does_not_load_a_lazily_imported_module(
 
     assert type(rebuilt) is RemoteTurnError
     assert not ran.exists()
+
+
+def test_a_name_off_the_wire_does_not_evaluate_a_lazy_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded: list[str] = []
+    module = types.ModuleType("rmk854_settings")
+    module.settings = _LazyProxy(lambda: loaded.append("settings") or ValueError())  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rmk854_settings", module)
+    record = ErrorRecord(
+        kind="rmk854_settings:settings", message="m", bases=["rmk854_settings:settings"]
+    )
+
+    rebuilt = ErrorClasses((Exception,)).rebuild(record)
+
+    assert type(rebuilt) is RemoteTurnError
+    assert loaded == []
 
 
 async def test_a_declaration_given_once_reaches_both_sides_of_the_kit() -> None:

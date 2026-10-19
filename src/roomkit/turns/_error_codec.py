@@ -208,8 +208,10 @@ def _loaded_class(kind: str) -> type[Exception] | None:
     if not issubclass(type(module), types.ModuleType) or not name.isidentifier():
         return None
     namespace: dict[str, Any] = _MODULE_NAMESPACE.__get__(module)
-    target = namespace.get(name)
-    if not isinstance(target, type) or not issubclass(target, Exception):
+    target: Any = namespace.get(name)
+    # Never isinstance(): it reads ``__class__``, which a lazy proxy (a
+    # framework's settings object) answers by loading what it wraps.
+    if not issubclass(type(target), type) or not issubclass(target, Exception):
         return None
     return target if target.__module__ == module_name else None
 
