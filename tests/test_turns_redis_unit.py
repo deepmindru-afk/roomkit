@@ -25,6 +25,7 @@ from roomkit.turns._error_codec import ROOMKIT_ERRORS
 from roomkit.turns._owner_turn import OwnerTurn
 from roomkit.turns._redis_beat import LiveExecutors
 from roomkit.turns._redis_inbox import Envelope
+from roomkit.turns._redis_links import RedisExecutorLink
 from roomkit.turns._redis_outbox import Outbox
 from roomkit.turns._redis_placement import Placement
 from roomkit.turns._redis_presence import Declaration, View, member_of
@@ -35,6 +36,7 @@ from roomkit.turns.wire import (
     Accepted,
     ChannelControlEnvelope,
     ChannelResult,
+    End,
     Ephemeral,
     HostResult,
     OwnerMessageEnvelope,
@@ -276,6 +278,7 @@ def _routes() -> tuple[Routes, _Posted, list[asyncio.Task[None]]]:
         lambda work: tasks.append(asyncio.ensure_future(work)),
         None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
+        end_bound=1.0,
     )
     return routes, posted, tasks
 
@@ -881,3 +884,55 @@ async def test_an_event_held_for_a_room_no_one_holds_goes_where_its_next_turn_go
         placed = await placement.place("agent", "room")
 
         assert held == placed
+
+
+class _HangingPipeline:
+    """A Redis pipeline on a connection dropped without a word: its write
+    never returns."""
+
+    def xadd(self, key: str, fields: dict[str, str]) -> None:
+        pass
+
+    def pexpire(self, key: str, ttl: int) -> None:
+        pass
+
+    async def execute(self) -> None:
+        await asyncio.Event().wait()
+
+
+class _HangingClient:
+    def pipeline(self, transaction: bool) -> _HangingPipeline:
+        return _HangingPipeline()
+
+
+async def test_a_turn_whose_end_write_hangs_stops_running_after_the_end_bound() -> None:
+    outbox = Outbox(_HangingClient(), lambda node: f"inbox:{node}", ttl_ms=60_000)
+
+    def post(
+        node: str,
+        kind: str,
+        body: str,
+        target: str,
+        ref: str = "",
+        failed: Any = None,
+        *,
+        writes: int | None = 1,
+        within: float | None = None,
+        written: Any = None,
+    ) -> None:
+        envelope = Envelope(kind, "node-b", body, target=target, ref=ref)
+        outbox.post(node, envelope, failed, writes=writes, within=within, written=written)
+
+    let_go: list[RedisExecutorLink] = []
+    request = _request()
+    link = RedisExecutorLink(request, "node-a", post, let_go.append, end_bound=0.2)
+    try:
+        await link.send(End())
+        link.turn_ended()
+        await asyncio.sleep(0.05)
+        # Its end is on its way: the turn still runs here.
+        assert let_go == []
+        await asyncio.sleep(0.3)
+        assert let_go == [link]
+    finally:
+        await outbox.close(drain=0.01)

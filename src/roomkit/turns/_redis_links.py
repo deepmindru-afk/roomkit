@@ -192,6 +192,8 @@ class RedisExecutorLink(ExecutorLink):
         owner_node: str,
         post: Post,
         forget: Callable[[RedisExecutorLink], None],
+        *,
+        end_bound: float,
     ) -> None:
         self.request = request
         self.owner_node = owner_node
@@ -199,8 +201,11 @@ class RedisExecutorLink(ExecutorLink):
         self._frames = _Outbound(request.turn_id, FrameEnvelope, post, self._broken)
         self._forget = forget
         # The turn's end is on its way: its process runs the turn until it is
-        # written, so a stall meanwhile does not lose a turn that completed.
+        # written, so a stall meanwhile does not lose a turn that completed;
+        # within end_bound, so a write that hangs does not keep it running.
         self._ending = False
+        self._end_bound = end_bound
+        self._end_timer: asyncio.TimerHandle | None = None
 
     def deliver(self, body: str) -> None:
         self._controls.deliver(body)
@@ -231,12 +236,31 @@ class RedisExecutorLink(ExecutorLink):
 
     def turn_ended(self) -> None:
         """The turn's task ended: let go of now, or once its end, sent, is
-        written or refused."""
+        written or refused, at the latest after ``end_bound``."""
         self._frames.open = False
         if not self._ending:
             self._forget(self)
+            return
+        loop = asyncio.get_running_loop()
+        self._end_timer = loop.call_later(self._end_bound, self._end_unwritten)
 
     def _end_written(self) -> None:
+        self._let_go()
+
+    def _end_unwritten(self) -> None:
+        """The turn's end was neither written nor refused in time (a
+        connection dropped without a word): the turn stops counting as run
+        here, and its owner fails it from its silence."""
+        logger.warning(
+            "Turn %s: its end was not written within %.1f s", self.request.turn_id, self._end_bound
+        )
+        self._end_timer = None
+        self._let_go()
+
+    def _let_go(self) -> None:
+        if self._end_timer is not None:
+            self._end_timer.cancel()
+            self._end_timer = None
         self._forget(self)
 
     def _broken(self, error: Exception) -> None:
@@ -246,4 +270,4 @@ class RedisExecutorLink(ExecutorLink):
         self._frames.open = False
         self._controls.end("frame_lost")
         if self._ending:
-            self._forget(self)
+            self._let_go()

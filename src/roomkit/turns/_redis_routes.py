@@ -81,6 +81,8 @@ class Routes:
         live: The processes alive, as this one reads them.
         local_owner: What the owner of this process is reached by for a turn
             it submitted to an executor here.
+        end_bound: How long a turn that ended stays running here while its
+            end is being written (the heartbeat timeout).
     """
 
     def __init__(
@@ -90,8 +92,11 @@ class Routes:
         spawn: Callable[[Coroutine[Any, Any, None]], None],
         live: LiveExecutors,
         local_owner: RoomOwner,
+        *,
+        end_bound: float,
     ) -> None:
         self._node = node
+        self._end_bound = end_bound
         self._post = post
         self._spawn = spawn
         self._live = live
@@ -311,7 +316,13 @@ class Routes:
             self._answer_back(envelope, REFUSED)
             return
         request = TurnRequest.model_validate_json(envelope.body)
-        link = RedisExecutorLink(request, envelope.sender, self._post, self._forget_executor_link)
+        link = RedisExecutorLink(
+            request,
+            envelope.sender,
+            self._post,
+            self._forget_executor_link,
+            end_bound=self._end_bound,
+        )
         self._executor_links[request.turn_id] = link
         self.running = frozenset(self._executor_links)
         self._none_running.clear()

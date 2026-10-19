@@ -139,7 +139,14 @@ class RedisTurnBackend(TurnBackend):
             self._client, key_prefix, self.node_id, self._live, loop_back=_loop_back
         )
         self._tasks: set[asyncio.Task[Any]] = set()
-        self._routes = Routes(self.node_id, self._post, self._spawn, self._live, self._here._port)
+        self._routes = Routes(
+            self.node_id,
+            self._post,
+            self._spawn,
+            self._live,
+            self._here._port,
+            end_bound=self._timeouts.heartbeat_timeout,
+        )
         self._payload = BeatPayload(self.node_id, self._routes)
         self._started = False
         self._routing = True
