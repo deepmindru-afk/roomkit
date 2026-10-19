@@ -236,6 +236,11 @@ class HookEngine:
         # A turn executor's room hooks, defined by name: a request names those
         # of its room (RFC §10.6.6), and they apply to the room from its turn.
         self._named_room_hooks: dict[str, list[HookRegistration]] = {}
+        # The names each room uses on a turn executor between its turns (its
+        # owner's, or those its last turn named), resolved at each read: a
+        # name defined, removed or defined again after the room named it
+        # reads as it stands.
+        self._room_hook_names: dict[str, tuple[str, ...]] = {}
         # The kit's own executor's room hooks the kit gave it, by room: they
         # apply to the room's turns there, beside those a request names.
         self._owner_room_hooks: dict[str, list[HookRegistration]] = {}
@@ -337,6 +342,7 @@ class HookEngine:
         """The names of the hooks registered for *room_id* alone, those a
         kit's engine gave its own executor included."""
         names = [h.name for h in self._room_hooks.get(room_id, [])]
+        names += [n for n in self._room_hook_names.get(room_id, ()) if n in self._named_room_hooks]
         if self.turn_side is not None and not self._turns:
             names += self.turn_side.room_hook_names(room_id)
         return names
@@ -453,11 +459,18 @@ class HookEngine:
         the room's set; with, on the kit's own executor, those the kit gave
         it for the room."""
         given = self._owner_room_hooks.get(room_id, [])
+        if not self._turns:
+            return [*self._room_hooks.get(room_id, []), *given]
         turn = _TURN_ROOM_HOOKS.get()
-        if self._turns and turn is not None and turn[0] == room_id:
-            named = [hook for name in turn[1] for hook in self._named_room_hooks.get(name, ())]
-            return [*named, *given]
-        return [*self._room_hooks.get(room_id, []), *given]
+        if turn is not None and turn[0] == room_id:
+            names = turn[1]
+        else:
+            names = self._room_hook_names.get(room_id, ())
+        return [*self._defined_under(names), *given]
+
+    def _defined_under(self, names: Iterable[str]) -> list[HookRegistration]:
+        """The room hooks defined under *names* now, in their order."""
+        return [hook for name in names for hook in self._named_room_hooks.get(name, ())]
 
     def define_room_hook(self, hook: HookRegistration) -> None:
         """Define a turn executor's room hook under its name: it applies to a
@@ -473,19 +486,11 @@ class HookEngine:
         defined[:] = [h for h in defined if h.trigger != hook.trigger]
         defined.append(hook)
         self._trigger_index.add(hook.trigger)
-        for room_id, hooks in self._room_hooks.items():
-            # A room using the name runs the new definition from now.
-            if any(h.name == hook.name for h in hooks):
-                self._room_hooks[room_id] = [
-                    h for h in hooks if not (h.name == hook.name and h.trigger == hook.trigger)
-                ] + [hook]
 
     def undefine_room_hook(self, name: str) -> bool:
         """Forget the room hooks defined under *name*, in every room."""
         if self._named_room_hooks.pop(name, None) is None:
             return False
-        for room_id, hooks in list(self._room_hooks.items()):
-            self._room_hooks[room_id] = [h for h in hooks if h.name != name]
         self._rebuild_trigger_index()
         return True
 
@@ -499,12 +504,13 @@ class HookEngine:
 
     def use_room_hooks(self, room_id: str, names: Iterable[str]) -> None:
         """Apply to *room_id* the room hooks defined under *names*, as its
-        turn's request names them, in place of those it had."""
-        hooks = [hook for name in names for hook in self._named_room_hooks.get(name, ())]
-        if hooks:
-            self._room_hooks[room_id] = hooks
+        turn's request names them, in place of those it had: each read finds
+        what is defined under them then."""
+        names = tuple(names)
+        if names:
+            self._room_hook_names[room_id] = names
         else:
-            self._room_hooks.pop(room_id, None)
+            self._room_hook_names.pop(room_id, None)
 
     def remove_global_hook(self, name: str) -> bool:
         """Remove a global hook by name, one a kit's engine gave its own
@@ -519,7 +525,18 @@ class HookEngine:
         for hooks in (self._room_hooks.get(room_id, []), self._owner_room_hooks.get(room_id, [])):
             if self._removed(hooks, name):
                 return True
+        if self._unnamed(room_id, name):
+            return True
         return self.turn_side is not None and self.turn_side.remove_room_hook(room_id, name)
+
+    def _unnamed(self, room_id: str, name: str) -> bool:
+        """Stop *room_id* using the room hooks defined under *name*; whether
+        it used them."""
+        names = self._room_hook_names.get(room_id, ())
+        if name not in names or name not in self._named_room_hooks:
+            return False
+        self.use_room_hooks(room_id, [n for n in names if n != name])
+        return True
 
     def holds(self, hook: HookRegistration) -> bool:
         """Whether the registration *hook* itself is registered here."""

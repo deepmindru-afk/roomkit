@@ -459,6 +459,52 @@ async def test_a_room_hook_gates_a_call_outside_a_turn_as_soon_as_it_is_enabled(
     await kit.close()
 
 
+async def _gate_denies(event: Any, ctx: Any) -> HookResult:
+    return HookResult.block("needs approval")
+
+
+async def _voice_call_allowed(kit: RoomKit) -> bool:
+    """Whether the realtime voice tool gate lets a call in room r1 run."""
+    event = ToolCallEvent(
+        channel_id="voice",
+        channel_type=ChannelType.REALTIME_VOICE,
+        tool_call_id="t1",
+        name="transfer_money",
+        arguments={},
+        room_id="r1",
+    )
+    decision, _ = await kit._decide_before_tool_use(event, "voice")
+    return decision.allowed
+
+
+async def test_a_room_hook_enabled_before_it_is_defined_gates_a_call_outside_a_turn() -> None:
+    kit = RoomKit()
+    await kit.create_room(room_id="r1")
+    # A room's configuration restored before the host's hooks are loaded.
+    kit.enable_room_hook("r1", "approval")
+    kit.turn_executor.room_hook("approval", HookTrigger.BEFORE_TOOL_USE)(_gate_denies)
+
+    allowed = await _voice_call_allowed(kit)
+
+    await kit.close()
+    assert not allowed
+
+
+async def test_a_room_hook_defined_again_after_its_removal_gates_a_call_outside_a_turn() -> None:
+    kit = RoomKit()
+    await kit.create_room(room_id="r1")
+    kit.turn_executor.room_hook("approval", HookTrigger.BEFORE_TOOL_USE)(_gate_denies)
+    kit.enable_room_hook("r1", "approval")
+    kit.turn_executor.remove_room_hook("approval")
+    removed = await _voice_call_allowed(kit)
+    kit.turn_executor.room_hook("approval", HookTrigger.BEFORE_TOOL_USE)(_gate_denies)
+
+    allowed = await _voice_call_allowed(kit)
+
+    await kit.close()
+    assert (removed, allowed) == (True, False)
+
+
 def test_a_room_hook_defined_again_on_a_trigger_replaces_the_first() -> None:
     executor = TurnExecutor(lambda channel_id: None)
 
