@@ -71,7 +71,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turns from other processes, one given a predicate those of its own
   process. `TurnBackend.timeouts` gives the kit and its own executor the
   backend's bounds, and `TurnLink.beat_heard()` lets a backend count a beat
-  its executor makes outside the turn's messages (RFC §10.6.8).
+  its executor makes outside the turn's messages (RFC §10.6.8). A backend
+  marks a request or a channel call handed (`hand_over()`) as it gives it to
+  an executor, before any wait on its answer: one that failed before stays
+  out of the room's previous turn, and one handed stays in it, a cancel or a
+  timeout included (RFC §10.6.2).
 
 - Strategies and the owner's tools take an agent the kit holds by its
   declaration alone, named by its channel id (RMK-826, RFC §10.6.2):
