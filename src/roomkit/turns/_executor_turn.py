@@ -150,17 +150,28 @@ class ExecutorTurn:
             self._host._close()
             self._outlet.close()
             self._inputs.close()
-            task = asyncio.current_task()
-            if self._cut is not None or (task is not None and task.cancelling()):
-                # Cut: nothing waits for an owner that may no longer answer.
-                self._calls.fail_all(TurnLinkError(self._cut or "cancelled"))
+            try:
+                await self._settle_calls()
+            finally:
+                if self._mark is not None:
+                    retire_mark(self._mark)
+                watch.cancel()
+                beat.cancel()
+                await asyncio.gather(watch, beat, return_exceptions=True)
+                await self._send(End())
+
+    async def _settle_calls(self) -> None:
+        """Wait for the calls still on their way. A cut turn, or one cut while
+        it waits (its executor closing), fails them instead: nothing waits for
+        an owner that may no longer answer."""
+        task = asyncio.current_task()
+        if self._cut is not None or (task is not None and task.cancelling()):
+            self._calls.fail_all(TurnLinkError(self._cut or "cancelled"))
+        try:
             await self._calls.settle()
-            if self._mark is not None:
-                retire_mark(self._mark)
-            watch.cancel()
-            beat.cancel()
-            await asyncio.gather(watch, beat, return_exceptions=True)
-            await self._send(End())
+        except asyncio.CancelledError:
+            self._calls.fail_all(TurnLinkError(self._cut or "cancelled"))
+            raise
 
     # -- The turn -----------------------------------------------------------
 

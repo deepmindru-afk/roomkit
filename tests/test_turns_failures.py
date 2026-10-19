@@ -23,10 +23,20 @@ from roomkit.models.room import Room
 from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, TurnTimeouts
 from roomkit.turns._error_codec import ROOMKIT_ERRORS, error_record
+from roomkit.turns.base import OwnerHost
+from roomkit.turns.host import current_turn_host
 from roomkit.turns.wire import ErrorRecord
 from tests.test_framework import SimpleChannel
-from tests.test_turns_backend import ScriptedChannel, _binding, _client, _event, _run
+from tests.test_turns_backend import (
+    ScriptedChannel,
+    _binding,
+    _client,
+    _event,
+    _read_all,
+    _run,
+)
 
 
 class _Opaque:
@@ -316,3 +326,113 @@ async def test_the_turns_of_a_cancelled_delivery_set_all_end() -> None:
         await asyncio.sleep(0.01)
     assert _turn_tasks() == []
     await kit.close()
+
+
+# -- An executor closed while a turn's end waits for a verb ---------------------
+
+FAST = TurnTimeouts(heartbeat_interval=0.05, heartbeat_timeout=0.2, cancel=0.3)
+
+
+class _HeldHost(OwnerHost):
+    """Holds each verb until released."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.started = asyncio.Event()
+
+    async def call(self, request: Any, verb: str, arguments: dict[str, Any]) -> Any:
+        self.started.set()
+        await self.release.wait()
+        return None
+
+
+class _PostsOnATask(ScriptedChannel):
+    """Its turn posts a status from a task of its own (a tool's), then
+    answers: the turn's end waits for that verb."""
+
+    async def on_event(self, event: RoomEvent, binding: Any, context: Any) -> ChannelOutput:
+        host = current_turn_host()
+        assert host is not None
+        self.posting = asyncio.create_task(host.post_status("agent", "x", "running"))
+        return await super().on_event(event, binding, context)
+
+
+def _executor_turn_tasks() -> list[str]:
+    """The tasks of an executor's turn still running."""
+    names = [t.get_coro().__qualname__ for t in asyncio.all_tasks() if not t.done()]
+    return [name for name in names if name.startswith("ExecutorTurn.")]
+
+
+async def _waiting_for_the_verb(
+    channel: ScriptedChannel, host: _HeldHost, *, own_executor: bool
+) -> tuple[TurnClient, TurnExecutor, ChannelOutput]:
+    """A client whose turn ended on its executor but for the verb *host*
+    holds, the turn's end waiting for it."""
+    channels = {channel.channel_id: channel}
+    executor = TurnExecutor(channels.get, hosts=channels.__contains__, timeouts=FAST)
+    backend = InMemoryTurnBackend()
+    if not own_executor:
+        await backend.serve(executor)
+    client = TurnClient(
+        backend, executor=executor if own_executor else None, host=host, timeouts=FAST
+    )
+    output = await _run(client)
+    await asyncio.wait_for(host.started.wait(), 1)
+    await asyncio.sleep(0.05)
+    return client, executor, output
+
+
+async def _turn_over(client: TurnClient) -> bool:
+    for _ in range(100):
+        if all(turn.over for turn in client._started) and not _executor_turn_tasks():
+            return True
+        await asyncio.sleep(0.01)
+    return False
+
+
+async def test_an_executor_closed_while_a_turn_s_end_waits_for_a_verb_ends_the_turn() -> None:
+    channel, host = _PostsOnATask(), _HeldHost()
+    client, executor, _ = await _waiting_for_the_verb(channel, host, own_executor=False)
+
+    await asyncio.wait_for(executor.close(), 2)
+
+    over, left = await _turn_over(client), _executor_turn_tasks()
+    host.release.set()
+    await client.close()
+    assert left == []
+    assert over
+    # The verb on its way failed in its task: nothing answers it any more.
+    with pytest.raises(TurnLinkError):
+        await asyncio.wait_for(channel.posting, 1)
+
+
+async def test_the_reader_of_a_turn_whose_executor_closed_while_its_end_waited_ends() -> None:
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        yield "hi"
+
+    channel, host = _PostsOnATask(script), _HeldHost()
+    client, executor, output = await _waiting_for_the_verb(channel, host, own_executor=False)
+    reader = asyncio.create_task(_read_all(output))
+    await asyncio.sleep(0.05)
+
+    await asyncio.wait_for(executor.close(), 2)
+
+    # Ten heartbeat timeouts: a silent executor would have failed the turn.
+    done, _ = await asyncio.wait({reader}, timeout=2)
+    reader.cancel()
+    host.release.set()
+    await asyncio.gather(reader, channel.posting, return_exceptions=True)
+    await client.close()
+    assert reader in done
+
+
+async def test_an_owner_closed_while_its_turn_s_end_waits_for_a_verb_leaves_no_turn_task() -> None:
+    channel, host = _PostsOnATask(), _HeldHost()
+    client, _, _ = await _waiting_for_the_verb(channel, host, own_executor=True)
+
+    await asyncio.wait_for(client.close(), 2)
+
+    left = _executor_turn_tasks()
+    host.release.set()
+    await asyncio.gather(channel.posting, return_exceptions=True)
+    assert left == []
