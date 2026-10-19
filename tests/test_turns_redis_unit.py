@@ -570,6 +570,33 @@ async def test_closing_tells_the_senders_of_what_it_could_not_write() -> None:
     assert told == ["m1", "m2", "m3"]
 
 
+async def test_a_sender_is_told_its_message_was_written_once_redis_took_it() -> None:
+    client = _Client(delay=0.05)
+    outbox = Outbox(client, lambda node: f"inbox:{node}", ttl_ms=60_000)
+    told: list[list[str]] = []
+    outbox.post("a", _message("end"), written=lambda: told.append(list(client.written)))
+    await asyncio.sleep(0.01)  # being written
+
+    assert told == []
+    await outbox.close(drain=1.0)
+    assert told == [["end"]]
+
+
+async def test_a_message_redis_refused_is_never_told_written() -> None:
+    outbox = Outbox(_RefusesAll(), lambda node: f"inbox:{node}", ttl_ms=60_000)
+    told: list[str] = []
+    outbox.post(
+        "a",
+        _message("end"),
+        lambda error: told.append("refused"),
+        written=lambda: told.append("written"),
+    )
+    await asyncio.sleep(0.05)
+
+    assert told == ["refused"]
+    await outbox.close(drain=0.05)
+
+
 async def test_the_others_read_by_a_read_that_hangs_are_not_alive() -> None:
     registry = _Registry()
     live = LiveExecutors(registry, 0.01, 0.1, dict)  # type: ignore[arg-type]

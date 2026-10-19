@@ -30,7 +30,7 @@ from roomkit.core.task_utils import cancel_and_wait
 from roomkit.turns._codec import control_json, request_json
 from roomkit.turns._redis_beat import BeatPayload, BeatThread, LiveExecutors
 from roomkit.turns._redis_inbox import Envelope, Inbox
-from roomkit.turns._redis_outbox import Failed, Outbox
+from roomkit.turns._redis_outbox import Failed, Outbox, Written
 from roomkit.turns._redis_placement import Elsewhere, Placement
 from roomkit.turns._redis_presence import Keys, Registry, member_of
 from roomkit.turns._redis_routes import REFUSED, Routes
@@ -378,9 +378,10 @@ class RedisTurnBackend(TurnBackend):
         failed: Failed | None = None,
         writes: int | None = 1,
         within: float | None = None,
+        written: Written | None = None,
     ) -> None:
         envelope = Envelope(kind, self.node_id, body, target=target, ref=ref)
-        self._outbox.post(node, envelope, failed, writes=writes, within=within)
+        self._outbox.post(node, envelope, failed, writes=writes, within=within, written=written)
 
     def _spawn(self, work: Coroutine[Any, Any, None]) -> None:
         """Run *work* on a task the backend holds until it closes."""

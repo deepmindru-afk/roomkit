@@ -100,8 +100,8 @@ class Routes:
         self.owner: RoomOwner | None = None
         """The room owner of this process, once it attends."""
         self.running: frozenset[str] = frozenset()
-        """The turns of other processes this one runs: replaced, never
-        changed, so the beat thread reads it whole."""
+        """The turns of other processes this one runs, each until its end is
+        written: replaced, never changed, so the beat thread reads it whole."""
         self._owner_links: dict[str, RedisTurnLink] = {}
         self._executor_links: dict[str, RedisExecutorLink] = {}
         self._answers: dict[str, asyncio.Future[str]] = {}

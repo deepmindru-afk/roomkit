@@ -20,14 +20,14 @@ from roomkit.turns.wire import ControlEnvelope, End, FrameEnvelope, TurnRequest
 
 if TYPE_CHECKING:
     from roomkit.turns._redis_beat import LiveExecutors
-    from roomkit.turns._redis_outbox import Failed
+    from roomkit.turns._redis_outbox import Failed, Written
     from roomkit.turns.wire import Control, Frame
 
 logger = logging.getLogger("roomkit.turns")
 
 Post = Callable[..., None]
 """Queue a message for a node's inbox: ``post(node, kind, body, target, ref="",
-failed=None, writes=1, within=None)``; it never waits."""
+failed=None, writes=1, within=None, written=None)``; it never waits."""
 
 # Put on a link's queue when its turn is gone: its reader learns why.
 _GONE = "\x00gone"
@@ -83,14 +83,16 @@ class _Outbound:
         self._sent = 0
         self.open = True
 
-    def put(self, kind: str, node: str, message: Frame | Control) -> int:
+    def put(
+        self, kind: str, node: str, message: Frame | Control, written: Written | None = None
+    ) -> int:
         if not self.open:
             return self._sent
         body = self._envelope.model_validate(
             {"turn_id": self._turn_id, "seq": self._sent + 1, "message": message}
         ).model_dump_json()
         self._sent += 1
-        self._post(node, kind, body, self._turn_id, failed=self._broken)
+        self._post(node, kind, body, self._turn_id, failed=self._broken, written=written)
         return self._sent
 
 
@@ -185,6 +187,9 @@ class RedisExecutorLink(ExecutorLink):
         self._controls = _Inbound(ControlEnvelope)
         self._frames = _Outbound(request.turn_id, FrameEnvelope, post, self._broken)
         self._forget = forget
+        # The turn's end is on its way: its process runs the turn until it is
+        # written, so a stall meanwhile does not lose a turn that completed.
+        self._ending = False
 
     def deliver(self, body: str) -> None:
         self._controls.deliver(body)
@@ -199,14 +204,22 @@ class RedisExecutorLink(ExecutorLink):
         return cast("Control", message)
 
     async def send(self, frame: Frame) -> int:
-        seq = self._frames.put("frame", self.owner_node, frame)
-        if isinstance(frame, End):
-            # The turn's last frame: nothing more crosses.
-            self._frames.open = False
+        if not isinstance(frame, End):
+            return self._frames.put("frame", self.owner_node, frame)
+        # The turn's last frame: nothing more crosses.
+        self._ending = self._frames.open
+        seq = self._frames.put("frame", self.owner_node, frame, written=self._end_written)
+        self._frames.open = False
         return seq
 
     def turn_ended(self) -> None:
+        """The turn's task ended: let go of now, or once its end, sent, is
+        written or refused."""
         self._frames.open = False
+        if not self._ending:
+            self._forget(self)
+
+    def _end_written(self) -> None:
         self._forget(self)
 
     def _broken(self, error: Exception) -> None:
@@ -215,3 +228,5 @@ class RedisExecutorLink(ExecutorLink):
         logger.warning("Turn %s lost its link to its owner: %s", self.request.turn_id, error)
         self._frames.open = False
         self._controls.end("frame_lost")
+        if self._ending:
+            self._forget(self)

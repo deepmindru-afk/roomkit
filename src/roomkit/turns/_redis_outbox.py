@@ -35,10 +35,13 @@ RETRY_DELAY = 1.0
 
 Failed = Callable[[Exception], None]
 """Told when Redis refused the batch a message was in, for its last write."""
+Written = Callable[[], None]
+"""Told once Redis took the batch a message was in."""
 
 # A message, who to tell when it cannot be written, its writes left (None:
-# until it is written) and when it is written again no more (None: never).
-_Queued = tuple["Envelope", Failed | None, int | None, float | None]
+# until it is written), when it is written again no more (None: never), and
+# who to tell once it is written.
+_Queued = tuple["Envelope", Failed | None, int | None, float | None, Written | None]
 # Put on each queue on closing: its writer stops once it wrote what came before.
 _CLOSING = None
 
@@ -77,11 +80,13 @@ class Outbox:
         *,
         writes: int | None = 1,
         within: float | None = None,
+        written: Written | None = None,
     ) -> None:
         """Queue *envelope* for *node*'s inbox, after what was posted to it
         before, written up to *writes* times while Redis refuses it (None:
         until it is written, while the outbox runs), for at most *within*
-        seconds when given; *failed* is told if it is never written."""
+        seconds when given; *failed* is told if it is never written, and
+        *written* once it is."""
         if self._closed:
             if failed is not None:
                 failed(ConnectionError("The turn backend closed"))
@@ -96,7 +101,7 @@ class Outbox:
                 context=contextvars.Context(),
             )
         deadline = None if within is None else time.monotonic() + within
-        queue.put_nowait((envelope, failed, writes, deadline))
+        queue.put_nowait((envelope, failed, writes, deadline, written))
 
     async def close(self, drain: float) -> None:
         """Take no more messages, write what is queued within *drain*
@@ -162,8 +167,8 @@ class Outbox:
         except Exception as exc:
             now = time.monotonic()
             again = [
-                (envelope, failed, None if left is None else left - 1, deadline)
-                for envelope, failed, left, deadline in batch
+                (envelope, failed, None if left is None else left - 1, deadline, written)
+                for envelope, failed, left, deadline, written in batch
                 if _written_again(left, deadline, now)
             ]
             logger.warning(
@@ -175,6 +180,7 @@ class Outbox:
             )
             _tell([item for item in batch if not _written_again(item[2], item[3], now)], exc)
             return again
+        _tell_written(batch)
         return []
 
 
@@ -206,6 +212,18 @@ def _emptied(queue: asyncio.Queue[_Queued | None]) -> list[_Queued | None]:
     while not queue.empty():
         items.append(queue.get_nowait())
     return items
+
+
+def _tell_written(batch: list[_Queued]) -> None:
+    for envelope, *_, written in batch:
+        if written is None:
+            continue
+        try:
+            written()
+        except Exception:
+            logger.exception(
+                "Telling the sender of a %s message it was written failed", envelope.kind
+            )
 
 
 def _tell(batch: list[_Queued], error: Exception) -> None:

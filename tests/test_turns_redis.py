@@ -12,8 +12,9 @@ import asyncio
 import json
 import os
 import sys
+import threading
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -1363,3 +1364,68 @@ async def test_a_channel_call_and_an_event_for_a_closing_holder_go_to_another_ex
         await other_host.close()
         await first.close()
         await second.close()
+
+
+# -- What the review of ff1faca9 found -----------------------------------------------
+
+
+class _LoopThread:
+    """An event loop on a thread of its own: a process of its own as far as
+    the test's loop can tell, its stalls not the test's."""
+
+    def __init__(self) -> None:
+        self.loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self._thread.start()
+
+    async def run[T](self, work: Coroutine[Any, Any, T]) -> T:
+        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(work, self.loop))
+
+    def stop(self) -> None:
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self._thread.join(5)
+        self.loop.close()
+
+
+@pytest.mark.parametrize("stall", ["as_its_end_is_sent", "once_its_task_ended"])
+async def test_a_turn_that_ended_is_not_lost_to_a_stall_before_its_end_is_written(
+    prefix: str, redis_client: Any, monkeypatch: pytest.MonkeyPatch, stall: str
+) -> None:
+    """The executor's process stalls past the heartbeat timeout (another
+    turn's CPU) just after a turn sent its end, its writes slow (a remote
+    Redis): its beat names the turn until the end is written, so the owner
+    reads a turn that completed, not a lost one (RFC §10.6.8)."""
+    store = InMemoryStore()
+    process = _LoopThread()
+    send = RedisExecutorLink.send
+
+    async def sending(self: RedisExecutorLink, frame: Any) -> int:
+        seq = await send(self, frame)
+        if isinstance(frame, End):
+            loop, stalled = asyncio.get_running_loop(), 2.5 * TIMEOUTS.heartbeat_timeout
+            if stall == "as_its_end_is_sent":
+                loop.call_soon(time.sleep, stalled)
+            else:
+                loop.call_later(0.01, time.sleep, stalled)
+        return seq
+
+    monkeypatch.setattr(RedisExecutorLink, "send", sending)
+
+    async def serve() -> tuple[RedisTurnBackend, TurnExecutor]:
+        worker = _Worker("worker", MockAIProvider(responses=["Hi."] * 5, streaming=True))
+        host, executor = await _hosted(prefix, store, worker)
+        host._outbox._client = _SlowWrites(host._outbox._client, delay=0.05)
+        return host, executor
+
+    host, executor = await process.run(serve())
+    kit = await _owner(prefix, "worker", store=store)
+    try:
+        result = await asyncio.wait_for(kit.process_inbound(_said("Hi."), room_id="r"), 15)
+
+        assert result.error is None
+        assert await _answers(kit) == ["Hi."]
+    finally:
+        await kit.close()
+        await process.run(host.close())
+        await process.run(executor.close())
+        process.stop()
