@@ -71,8 +71,8 @@ async def redis_client(prefix: str) -> AsyncIterator[Any]:
     await client.aclose()
 
 
-def _backend(prefix: str) -> RedisTurnBackend:
-    return RedisTurnBackend(os.environ["REDIS_URL"], key_prefix=prefix, timeouts=TIMEOUTS)
+def _backend(prefix: str, timeouts: TurnTimeouts = TIMEOUTS) -> RedisTurnBackend:
+    return RedisTurnBackend(os.environ["REDIS_URL"], key_prefix=prefix, timeouts=timeouts)
 
 
 @pytest.fixture
@@ -81,8 +81,13 @@ def database(tmp_path: Path) -> Path:
     return tmp_path / "rooms.db"
 
 
-async def _owner(prefix: str, *agents: str, store: ConversationStore | None = None) -> RoomKit:
-    kit = RoomKit(store=store or InMemoryStore(), turn_backend=_backend(prefix))
+async def _owner(
+    prefix: str,
+    *agents: str,
+    store: ConversationStore | None = None,
+    timeouts: TurnTimeouts = TIMEOUTS,
+) -> RoomKit:
+    kit = RoomKit(store=store or InMemoryStore(), turn_backend=_backend(prefix, timeouts))
     kit.register_channel(SimpleChannel("tx"))
     for agent in agents:
         kit.register_channel(ChannelDeclaration(channel_id=agent, identity=AgentIdentity()))
@@ -325,14 +330,18 @@ class _Worker(Agent):
 
 
 async def _hosted(
-    prefix: str, store: ConversationStore, channel: Any, name: str = "host-a"
+    prefix: str,
+    store: ConversationStore,
+    channel: Any,
+    name: str = "host-a",
+    timeouts: TurnTimeouts = TIMEOUTS,
 ) -> tuple[RedisTurnBackend, TurnExecutor]:
-    backend = _backend(prefix)
+    backend = _backend(prefix, timeouts)
     executor = TurnExecutor(
         lambda channel_id: channel if channel_id == channel.channel_id else None,
         hosts={channel.channel_id},
         executor_id=name,
-        timeouts=TIMEOUTS,
+        timeouts=timeouts,
         store=store,
     )
     await backend.serve(executor)
@@ -1429,3 +1438,43 @@ async def test_a_turn_that_ended_is_not_lost_to_a_stall_before_its_end_is_writte
         await process.run(host.close())
         await process.run(executor.close())
         process.stop()
+
+
+@pytest.mark.parametrize("first", ["backend", "executor"])
+async def test_an_executor_s_process_closing_mid_turn_ends_the_turn_within_the_cancel_bound(
+    prefix: str, redis_client: Any, first: str
+) -> None:
+    """The executor's process closes while a turn waits on its model: it
+    cuts the turn and writes its end before it goes, so the owner fails the
+    turn at once, not on its silence a heartbeat timeout later (RFC
+    §10.6.8)."""
+    timeouts = TurnTimeouts(heartbeat_interval=0.2, heartbeat_timeout=3.0, accept=3.0, cancel=1.0)
+    store = InMemoryStore()
+    holding = asyncio.Event()
+
+    class _Holds(MockAIProvider):
+        async def generate_structured_stream(self, context: Any) -> Any:
+            yield StreamTextDelta(text="Hello ")
+            holding.set()
+            await asyncio.sleep(60)
+
+    worker = _Worker("worker", _Holds(streaming=True))
+    host, executor = await _hosted(prefix, store, worker, timeouts=timeouts)
+    kit = await _owner(prefix, "worker", store=store, timeouts=timeouts)
+    try:
+        turn = asyncio.ensure_future(kit.process_inbound(_said("Hi."), room_id="r"))
+        await asyncio.wait_for(holding.wait(), 5)
+        started = time.monotonic()
+        closing = (host, executor) if first == "backend" else (executor, host)
+        for closed in closing:
+            await closed.close()
+        result = await asyncio.wait_for(turn, 6 * timeouts.heartbeat_timeout)
+        waited = time.monotonic() - started
+
+        assert waited < timeouts.heartbeat_timeout / 2, result.error
+        assert isinstance(result.error, TurnLinkError)
+        assert result.error.reason == "executor_lost"
+    finally:
+        await kit.close()
+        await host.close()
+        await executor.close()

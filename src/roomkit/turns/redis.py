@@ -319,14 +319,17 @@ class RedisTurnBackend(TurnBackend):
             self._live.start()
 
     async def _answer_what_is_under_way(self) -> None:
-        """Let what this process was doing answer, within the cancel bound,
-        and a turn still on its way to an executor it declared reach it and
-        be refused: an owner that placed it from an older view writes it
-        within an interval."""
+        """Let what this process was doing answer, within the cancel bound
+        (the turns it runs for other processes cut, their ends written), and
+        a turn still on its way to an executor it declared reach it and be
+        refused: an owner that placed it from an older view writes it within
+        an interval."""
         wait = self._timeouts.heartbeat_interval if self._payload.executors else 0.0
         grace = asyncio.ensure_future(asyncio.sleep(wait))
+        turns = asyncio.ensure_future(self._routes.turns_written(self._timeouts.cancel))
         if self._tasks:
             await asyncio.wait(set(self._tasks), timeout=self._timeouts.cancel)
+        await turns
         await grace
 
     async def _undeclare(self) -> None:

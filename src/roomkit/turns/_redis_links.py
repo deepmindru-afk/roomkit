@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, cast
 
 from roomkit.core.exceptions import TurnLinkError
 from roomkit.turns.base import ExecutorLink, MessageOrder, TurnLink
-from roomkit.turns.wire import ControlEnvelope, End, FrameEnvelope, TurnRequest
+from roomkit.turns.wire import Cancel, ControlEnvelope, End, FrameEnvelope, TurnRequest
 
 if TYPE_CHECKING:
     from roomkit.turns._redis_beat import LiveExecutors
@@ -31,6 +31,9 @@ failed=None, writes=1, within=None, written=None)``; it never waits."""
 
 # Put on a link's queue when its turn is gone: its reader learns why.
 _GONE = "\x00gone"
+# Put on a link's queue for a message of this side's own: its reader reads it
+# in turn, outside the other end's numbering.
+_OWN = "\x00own"
 
 
 class _Inbound:
@@ -41,6 +44,7 @@ class _Inbound:
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._order = MessageOrder()
         self._gone = "backend_closed"
+        self._own: list[Frame | Control] = []
         self.ended = False
         """Whether the other end's ``end`` came."""
 
@@ -51,12 +55,19 @@ class _Inbound:
         self._gone = reason
         self._queue.put_nowait(_GONE)
 
+    def hand(self, message: Frame | Control) -> None:
+        """Have the reader read *message*, of this side's own, in turn."""
+        self._own.append(message)
+        self._queue.put_nowait(_OWN)
+
     async def next(self) -> tuple[int, Frame | Control]:
         while True:
             body = await self._queue.get()
             if body == _GONE:
                 self._queue.put_nowait(_GONE)
                 raise TurnLinkError(self._gone)
+            if body == _OWN:
+                return 0, self._own.pop(0)
             envelope = self._envelope.model_validate_json(body)
             if self._order.admit(envelope.seq):
                 if isinstance(envelope.message, End):
@@ -195,9 +206,15 @@ class RedisExecutorLink(ExecutorLink):
         self._controls.deliver(body)
 
     def end(self, reason: str) -> None:
-        """The owner released the turn, or the backend closed."""
+        """The owner released the turn, or the backend closed past the
+        turn's cut: the turn stops, sending nothing more."""
         self._frames.open = False
         self._controls.end(reason)
+
+    def cut(self, reason: str) -> None:
+        """The backend closes: the turn is cut as its owner's ``cancel``
+        would cut it, and ends, its end still sent."""
+        self._controls.hand(Cancel(reason=reason))
 
     async def receive(self) -> Control:
         _, message = await self._controls.next()

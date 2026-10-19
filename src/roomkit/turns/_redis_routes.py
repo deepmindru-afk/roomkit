@@ -18,6 +18,7 @@ asked again it is answered again.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import logging
 import time
@@ -104,6 +105,8 @@ class Routes:
         written: replaced, never changed, so the beat thread reads it whole."""
         self._owner_links: dict[str, RedisTurnLink] = {}
         self._executor_links: dict[str, RedisExecutorLink] = {}
+        self._none_running = asyncio.Event()
+        self._none_running.set()
         self._answers: dict[str, asyncio.Future[str]] = {}
         self._turn_owners: OrderedDict[str, str] = OrderedDict()
         # By reference: when it came, and the answer given (None while it is
@@ -187,17 +190,29 @@ class Routes:
             self._answers.pop(ref, None)
 
     def close(self) -> None:
-        """The backend closes: every end of a turn and every question learns
-        it. What still arrives is routed until the inbox closes, a request
-        refused, so its owner places it again."""
+        """The backend closes: every owner's end of a turn and every question
+        learns it, and each turn run here for an owner elsewhere is cut, its
+        end still written (``turns_written``). What still arrives is routed
+        until the inbox closes, a request refused, so its owner places it
+        again."""
         self._closing = True
         for link in list(self._owner_links.values()):
             link.end("backend_closed")
         for executor_link in list(self._executor_links.values()):
-            executor_link.end("backend_closed")
+            executor_link.cut("backend_closed")
         for answer in self._answers.values():
             if not answer.done():
                 answer.set_exception(TurnLinkError("backend_closed"))
+
+    async def turns_written(self, bound: float) -> None:
+        """Wait, within *bound*, until the turns run here ended and their
+        ends are written; one still running then stops, its owner learning
+        it from its silence."""
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(bound):
+                await self._none_running.wait()
+        for executor_link in list(self._executor_links.values()):
+            executor_link.end("backend_closed")
 
     def open_turns(self) -> dict[str, list[str]]:
         """The turns this process submitted elsewhere and still reads, by
@@ -225,6 +240,8 @@ class Routes:
         if self._executor_links.get(link.request.turn_id) is link:
             del self._executor_links[link.request.turn_id]
             self.running = frozenset(self._executor_links)
+            if not self._executor_links:
+                self._none_running.set()
 
     def _first_time(self, question: Envelope) -> bool:
         """Whether *question* is new; one handled before is answered again
@@ -297,6 +314,7 @@ class Routes:
         link = RedisExecutorLink(request, envelope.sender, self._post, self._forget_executor_link)
         self._executor_links[request.turn_id] = link
         self.running = frozenset(self._executor_links)
+        self._none_running.clear()
         self._turn_owners[request.turn_id] = envelope.sender
         while len(self._turn_owners) > _TURN_OWNERS:
             self._turn_owners.popitem(last=False)
