@@ -1576,3 +1576,28 @@ async def test_a_turn_refused_then_not_placed_again_is_not_the_room_s_previous_t
         await client.close()
         await host.close()
         await executor.close()
+
+
+async def test_a_request_that_cannot_be_written_leaves_no_owner_link(
+    prefix: str, redis_client: Any
+) -> None:
+    owner, host = _backend(prefix), _backend(prefix)
+    agent = _Agent()
+    executor = _TakingAcross(agent)
+    await host.serve(executor)
+    await asyncio.sleep(3 * TIMEOUTS.heartbeat_interval)  # the beat thread's beats
+    client = TurnClient(owner)
+    try:
+        await _turn(client)
+        await asyncio.sleep(0.2)  # the first turn's end read
+        before = set(owner._routes._owner_links)
+        # Bytes that are not UTF-8 have no text to fall back on: the request
+        # cannot be written, and nothing waits for its turn.
+        with pytest.raises(ValueError):
+            await _turn(client, raw=b"\xff\xfe")
+
+        assert set(owner._routes._owner_links) == before
+    finally:
+        await client.close()
+        await host.close()
+        await executor.close()

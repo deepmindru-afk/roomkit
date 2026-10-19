@@ -174,8 +174,9 @@ class RedisTurnBackend(TurnBackend):
         refused) and the owner's end of the turn. A process that does not
         answer within the accept bound has lost it: the turn is released
         there, never handed to another (it may have begun)."""
-        link = self._routes.owner_link(request, placed.member, placed.executor_id, placed.node)
+        # Written first: a request that cannot be leaves no link waiting.
         body = request_json(request)
+        link = self._routes.owner_link(request, placed.member, placed.executor_id, placed.node)
         request.hand_over()
         try:
             answer = await self._routes.ask(
