@@ -536,9 +536,13 @@ class HumanInputHandler:
 
     def withdraw(self, pending_id: str) -> None:
         """Withdraw a request whose turn ended while it was open (RFC §10.6.5):
-        its waiter reads it given up, as after a release."""
+        its waiter reads it given up, as after a release. A detached request
+        is its creator's to release (:meth:`create_detached`): the turn only
+        lets go of it."""
         self._turn_of.pop(pending_id, None)
-        self.release(pending_id)
+        pending = self._pending.get(pending_id)
+        if pending is None or not pending.detached:
+            self.release(pending_id)
 
 
 class HumanInputToolHandler:

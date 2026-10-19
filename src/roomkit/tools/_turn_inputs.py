@@ -46,7 +46,8 @@ class InputSettler(Protocol):
         ...
 
     def withdraw(self, pending_id: str) -> None:
-        """Withdraw *pending_id*: its turn ended while it was open."""
+        """Withdraw *pending_id*: its turn ended while it was open. One its
+        creator releases (a detached request) is only let go of."""
         ...
 
 

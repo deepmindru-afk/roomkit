@@ -224,9 +224,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hook's `BLOCK`, its timeout or a release is never taken back by a later
   answer, and the owner closes its record (`input_closed`). A request still
   open when its turn ends is withdrawn on both sides (its waiter reads it
-  released); one asked from a task after its turn ended is the handler's
-  alone. Answers the kit holds are capped (1024); a request belongs to the
-  turn that opened it.
+  released), but a detached one (`HumanInputHandler.create_detached`): its
+  creator releases it, and only the owner's record goes with the turn; one
+  asked from a task after its turn ended is the handler's alone. Answers the
+  kit holds are capped (1024); a request belongs to the turn that opened it.
 
 - `RoomKit.steer(directive, channel_id, *, room_id=None, turn_id=None)`
   (RMK-811, RFC §21.3, §10.6.8): steering through the turn backend. The kit

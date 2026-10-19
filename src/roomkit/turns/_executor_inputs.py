@@ -6,7 +6,8 @@ A request the channel's handler opens is sent to the owner as an
 says whether it did. A request settled here (an answer the channel's handler
 received, a hook's block, its bound, a release) is sent as an
 ``input_closed``, and the owner answers it no more. When the turn ends, its
-requests still open are withdrawn, and nothing more is sent.
+requests still open are withdrawn, but a detached one, its creator's to
+release, which the turn only lets go of; nothing more is sent.
 """
 
 from __future__ import annotations
@@ -45,7 +46,8 @@ class ExecutorInputs:
 
     def close(self) -> None:
         """The turn ended: its requests still open are withdrawn, on both
-        sides (RFC §10.6.5), and later ones are the handler's alone."""
+        sides (RFC §10.6.5), but a detached one, which its creator releases,
+        and later ones are the handler's alone."""
         self._running = False
         still_open, self._open = self._open, {}
         for pending_id, settle in still_open.items():

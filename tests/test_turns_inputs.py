@@ -25,7 +25,7 @@ from roomkit.models.pending_input import PendingInputEvent
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.tools.human_input import HumanInputToolHandler
+from roomkit.tools.human_input import HumanInputHandler, HumanInputToolHandler
 from roomkit.turns._owner_inputs import OwnerInputs
 from roomkit.turns.wire import InputAnswer, InputRequest
 from tests.test_framework import SimpleChannel
@@ -214,6 +214,40 @@ async def test_a_request_still_open_when_its_turn_ends_is_withdrawn() -> None:
     # answers it no more.
     assert outcomes == ["Released before an answer arrived"]
     assert await kit.answer_input(asked[0], "Too late") is False
+    await kit.close()
+
+
+async def test_a_detached_request_a_turn_raised_outlives_the_turn() -> None:
+    """A runtime with a tool loop of its own raises a detached request, whose
+    answer travels back another way and whose creator releases it
+    (``create_detached``): the turn's end lets go of it, never withdraws it."""
+    human = HumanInputHandler()
+    raised: list[str] = []
+
+    async def tool(name: str, arguments: dict[str, Any]) -> str:
+        pending = await human.create_detached(
+            "ask_user", {"question": "Ship it?"}, room_id="r1", channel_id="agent"
+        )
+        raised.append(pending.pending_id)
+        return "asked; the answer comes back later"
+
+    other = AITool(name="ask_later", description="Ask.", parameters={"type": "object"})
+    call = AIResponse(content="", tool_calls=[AIToolCall(id="c1", name="ask_later", arguments={})])
+    provider = MockAIProvider(ai_responses=[call, AIResponse(content="I asked.")])
+    agent = AIChannel("agent", provider=provider, tools=[other], tool_handler=tool)
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("ops"))
+    kit.register_channel(agent)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "ops")
+    await kit.attach_channel("r1", "agent", category=ChannelCategory.INTELLIGENCE)
+
+    await asyncio.wait_for(_say(kit), 5)
+
+    # The owner's record went with the turn; the creator's way answers it.
+    assert await kit.answer_input(raised[0], "From the kit") is False
+    assert human.resolve(raised[0], "yes")
+    assert await human.wait(raised[0], timeout=1) == "yes"
     await kit.close()
 
 
