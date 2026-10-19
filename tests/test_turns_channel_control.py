@@ -29,7 +29,7 @@ from roomkit.models.steering import Cancel
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor
 from roomkit.turns._rooms import room_state_key
-from roomkit.turns.base import ExecutorLink
+from roomkit.turns.base import ExecutorLink, TurnLink
 from roomkit.turns.host import UpdateRoomMetadata
 from roomkit.turns.wire import (
     ChannelCall,
@@ -541,6 +541,68 @@ async def test_a_channel_call_no_executor_took_leaves_the_previous_turn() -> Non
     first, second = executor.requests
     assert second.previous_turn is not None
     assert second.previous_turn.turn_id == first.turn_id
+    assert ("detached", "room") not in agent.log
+
+
+async def test_a_channel_call_refused_before_it_is_sent_leaves_the_previous_turn() -> None:
+    backend = InMemoryTurnBackend()
+    agent = _Agent()
+    executor = _Recording(agent, "a")
+    await backend.serve(executor)
+    client = TurnClient(backend)
+    await _turn(client)
+    # An argument JSON has no form for: refused before it crosses.
+    call = ChannelCall(channel_id="agent", room_id="room", verb="set", arguments={"x": object()})
+    with pytest.raises(ValueError):
+        await client.control(call)
+    await _turn(client)
+
+    first, second = executor.requests
+    assert second.previous_turn is not None
+    assert second.previous_turn.turn_id == first.turn_id
+    assert ("detached", "room") not in agent.log
+
+
+class _AnswerAfterTaking(InMemoryTurnBackend):
+    """Hands a request to its executor, then waits for the executor's answer,
+    as a backend across processes does: a cancel there comes once the turn
+    was taken."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hold = False
+
+    async def submit(self, request: TurnRequest) -> TurnLink:
+        link = await super().submit(request)
+        if self.hold:
+            self.hold = False
+            await asyncio.Event().wait()
+        return link
+
+
+async def test_a_turn_the_owner_stopped_submitting_once_taken_is_the_previous_one() -> None:
+    backend = _AnswerAfterTaking()
+    agent = _Agent()
+    executor = _Recording(agent, "a")
+    await backend.serve(executor)
+    client = TurnClient(backend)
+    await _turn(client)
+    backend.hold = True
+    submitting = asyncio.create_task(_turn(client))
+    for _ in range(100):
+        if agent.log.count(("turn", "room")) == 2:
+            break
+        await asyncio.sleep(0.01)
+    # The executor began the turn, so it left the room's state: the owner
+    # cancelled waiting for the answer, not the record.
+    submitting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await submitting
+    await _turn(client)
+
+    _first, taken, last = executor.requests
+    assert last.previous_turn is not None
+    assert last.previous_turn.turn_id == taken.turn_id
     assert ("detached", "room") not in agent.log
 
 
