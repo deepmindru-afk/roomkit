@@ -55,6 +55,11 @@ class _HandedOver(BaseModel):
         backend's transport."""
         self._handed = True
 
+    def refused(self) -> None:
+        """The executor it was given to refused it unapplied (its process
+        closing): no executor holds it, until it is handed again."""
+        self._handed = False
+
     @property
     def handed(self) -> bool:
         """Whether the backend gave the message to an executor."""

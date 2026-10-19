@@ -165,6 +165,7 @@ class RedisTurnBackend(TurnBackend):
             if answer != REFUSED:
                 return link
             # An executor that closed: the turn goes to another, never twice.
+            request.refused()
             self._routes.forget_owner_link(link)
             refused.add(placed.member)
 
@@ -275,6 +276,8 @@ class RedisTurnBackend(TurnBackend):
             result = await self._apply(placed, raw)
             if result is not None:
                 return result
+            if call is not None:
+                call.refused()
             assert isinstance(placed, Elsewhere)
             refused.add(placed.member)
 

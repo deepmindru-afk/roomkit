@@ -44,6 +44,7 @@ from roomkit.store.sqlite import SQLiteStore
 from roomkit.turns import TurnClient, TurnExecutor, TurnTimeouts
 from roomkit.turns._redis_links import RedisExecutorLink
 from roomkit.turns._redis_presence import Keys, Registry
+from roomkit.turns._redis_routes import REFUSED
 from roomkit.turns.redis import RedisTurnBackend
 from roomkit.turns.wire import CommittedEvent, End, HostResult, RoomCall
 from tests import redis_turn_mode
@@ -1511,3 +1512,67 @@ async def test_a_turn_whose_placement_failed_is_not_the_room_s_previous_turn(
         assert ("detached", "room") not in agent.log
     finally:
         await client.close()
+
+
+class _TakingAcross(TurnExecutor):
+    """An executor other processes reach for one channel, keeping the
+    requests it took."""
+
+    def __init__(self, channel: _Agent) -> None:
+        super().__init__(
+            lambda channel_id: channel if channel_id == channel.channel_id else None,
+            hosts={channel.channel_id},
+            executor_id="across",
+        )
+        self.requests: list[Any] = []
+
+    def take(self, link: Any) -> None:
+        self.requests.append(link.request)
+        super().take(link)
+
+
+async def test_a_turn_refused_then_not_placed_again_is_not_the_room_s_previous_turn(
+    prefix: str, redis_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, host = _backend(prefix), _backend(prefix)
+    agent = _Agent()
+    executor = _TakingAcross(agent)
+    await host.serve(executor)
+    await asyncio.sleep(3 * TIMEOUTS.heartbeat_interval)  # the beat thread's beats
+    client = TurnClient(owner)
+    try:
+        await _turn(client)
+        # The host's process refuses the next request unapplied (as one
+        # closing does), then the owner's read placing it again fails.
+        take = host._routes._routes["request"]
+        refusals = [REFUSED]
+
+        def refusing_once(envelope: Any) -> None:
+            if refusals:
+                host._routes._answer_back(envelope, refusals.pop())
+                return
+            take(envelope)
+
+        monkeypatch.setitem(host._routes._routes, "request", refusing_once)
+        place = owner._placement.place
+        places: list[int] = []
+
+        async def placed_then_failing(*args: Any, **kwargs: Any) -> Any:
+            places.append(1)
+            if len(places) == 2:  # the read placing it again, past the refusal
+                raise ConnectionError("Redis did not answer")
+            return await place(*args, **kwargs)
+
+        monkeypatch.setattr(owner._placement, "place", placed_then_failing)
+        with pytest.raises(ConnectionError):
+            await _turn(client)
+        await _turn(client)
+
+        first, last = executor.requests
+        assert last.previous_turn is not None
+        assert last.previous_turn.turn_id == first.turn_id
+        assert ("detached", "room") not in agent.log
+    finally:
+        await client.close()
+        await host.close()
+        await executor.close()
