@@ -467,3 +467,47 @@ async def test_a_value_set_on_the_channel_object_is_not_stored_by_a_read(
     room = await kit.get_room(ROOM)
     assert room.metadata[room_state_key(AGENT)] == {"config": {"model": "sonnet"}}
     await kit.close()
+
+
+# -- A channel call across a cancel or a detach --------------------------------------
+
+
+class _HangingConfig(_FakeACPConnection):
+    """An agent whose ``set_config_option`` never answers while ``hangs``."""
+
+    def __init__(self) -> None:
+        super().__init__(None, emit_updates=False)
+        self.hangs = False
+        self.setting = asyncio.Event()
+
+    async def set_config_option(self, **kwargs: Any) -> Any:
+        if self.hangs:
+            self.setting.set()
+            await asyncio.Event().wait()
+        return await super().set_config_option(**kwargs)
+
+
+async def test_a_cancelled_channel_call_keeps_the_room_s_session(tmp_path: Any) -> None:
+    connection = _HangingConfig()
+    channel = ACPChannel(AGENT, transport=_FakeTransport(connection), cwd=tmp_path)
+    connection.client = channel._client
+    kit = await _room(channel)
+    await _say(kit, "first question")
+    assert channel.session_id(ROOM) == "session-1"
+
+    connection.hangs = True
+    call = asyncio.create_task(
+        kit.channel_call(AGENT, ROOM, "set_config_option", config_id="model", value="sonnet")
+    )
+    await asyncio.wait_for(connection.setting.wait(), 5)
+    # As a host's timeout does: the call may have reached the executor.
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    connection.hangs = False
+
+    await _say(kit, "second question")
+    assert connection.closed_sessions == []
+    assert len(connection.new_session_calls) == 1
+    assert [c["session_id"] for c in connection.prompt_calls] == ["session-1", "session-1"]
+    await kit.close()

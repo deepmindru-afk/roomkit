@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, discussion_notes, discussion_turn
 from roomkit.channels.declared import DeclaredChannel
+from roomkit.core.exceptions import TurnLinkError
 from roomkit.models.steering import Cancel as SteeringCancel
 from roomkit.telemetry.context import get_current_span
 from roomkit.turns._error_codec import ErrorClasses, error_record
@@ -54,6 +55,13 @@ if TYPE_CHECKING:
         RoomCall,
         RoomPublication,
     )
+
+
+_UNSENT = frozenset({"no_executor", "backend_closed"})
+"""The link errors of a channel call no executor took: the owner names the
+previous turn it named before the call (RFC §10.6.3). After any other
+failure, a cancel or a timeout included, the call may have reached its
+executor, which recorded it as leaving the room's state."""
 
 
 def turn_request(
@@ -278,8 +286,9 @@ class TurnClient(RoomOwner):
         call = message.model_copy(update={"previous_turn": previous})
         try:
             answer = await self.backend.control(call)
-        except BaseException:
-            self._unleave(channel_id, room_id, made, previous)
+        except TurnLinkError as exc:
+            if exc.reason in _UNSENT:
+                self._unleave(channel_id, room_id, made, previous)
             raise
         if answer is not None:
             made.executor_id = answer.executor_id

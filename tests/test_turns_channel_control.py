@@ -474,6 +474,52 @@ async def test_a_turn_after_a_channel_call_names_it_and_keeps_its_state() -> Non
     assert ("detached", "room") not in first.log
 
 
+async def test_a_channel_call_the_owner_stopped_waiting_for_is_the_previous_one() -> None:
+    client, a, _b, first, _second = await _two_executors()
+    await _turn(client)
+    reached = asyncio.Event()
+
+    async def hang(room_id: str, verb: str, arguments: dict[str, Any]) -> Any:
+        reached.set()
+        await asyncio.Event().wait()
+
+    first.channel_call = hang  # type: ignore[method-assign]
+    call = ChannelCall(channel_id="agent", room_id="room", verb="hang")
+    waiting = asyncio.create_task(client.control(call))
+    await asyncio.wait_for(reached.wait(), 5)
+    # The call reached the executor, which recorded it as leaving the room's
+    # state: the owner cancelled waiting for it, not the record.
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    await _turn(client)
+
+    request = a.requests[-1]
+    assert request.previous_turn is not None
+    assert request.previous_turn.turn_id == call.call_id
+    assert ("detached", "room") not in first.log
+
+
+async def test_a_channel_call_no_executor_took_leaves_the_previous_turn() -> None:
+    backend = InMemoryTurnBackend()
+    agent = _Agent()
+    executor = _Recording(agent, "a")
+    await backend.serve(executor)
+    client = TurnClient(backend)
+    await _turn(client)
+    executor.declaring = False
+    with pytest.raises(TurnLinkError) as raised:
+        await client.control(ChannelCall(channel_id="agent", room_id="room", verb="set"))
+    assert raised.value.reason == "no_executor"
+    executor.declaring = True
+    await _turn(client)
+
+    first, second = executor.requests
+    assert second.previous_turn is not None
+    assert second.previous_turn.turn_id == first.turn_id
+    assert ("detached", "room") not in agent.log
+
+
 async def test_a_record_that_falls_out_drops_the_state_it_vouched_for() -> None:
     client, a, _b, first, _second = await _two_executors()
     a._rooms._left._kept = 1
