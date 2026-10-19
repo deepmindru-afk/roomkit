@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.106.0] — 2026-10-18
+
 ### Added
 
 - `benchmarks/rtp/` measures how many G.711 calls one core carries on the RTP
@@ -61,8 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   owner goes on. The agents the kit registers live stay in its process. Work
   a turn began reaches the owner that submitted it, while that owner lives.
   `client=` needs `url=` too (the beat connects with it). Needs Redis 6.2
-  or later. Redis is the trust boundary (ACL, TLS). Example: `examples/turns_redis.py`; guide: Agent
-  Turns in Another Process (Redis).
+  or later. Redis is the trust boundary (ACL, TLS). Example:
+  `examples/turns_redis.py`; guide: Agent Turns in Another Process (Redis).
+
 - `TurnExecutor(hosts=...)` also takes the set of channel ids the executor
   runs (RMK-813, RFC §10.6.7); only an executor declared with a set takes
   turns from other processes, one given a predicate those of its own
@@ -135,9 +138,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   being state of the owner's process. `ScoringHook.attach` takes an executor,
   and records through the turn's host while the turn runs. The request
   carries the broadcast span's id (`TurnRequest.trace`), which a turn in a
-  context of its own continues on the same telemetry provider; a trace
-  context another process's provider continues (a W3C `traceparent`) comes
-  with the distributed backend (RMK-813). The owner publishes what a turn
+  context of its own continues on the same telemetry provider; an executor
+  in another process (`RedisTurnBackend`) does not know that span, so its
+  turns start traces of their own until the request carries a W3C trace
+  context (RMK-836). The owner publishes what a turn
   published off the turn's frame reader, in order, so a framework-event
   handler may wait on its turn (answer its input, close the kit), and only
   the framework events the wiring emits, as the turn's room and channel.
@@ -361,6 +365,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — an error of the application's own class that a turn raised
+  reaches the kit as a `RemoteTurnError` unless the kit declares the class**
+  (RMK-809, RMK-838, RFC §10.6.8). Every turn now crosses the turn backend as
+  serialized messages, the in-memory default included, and only RoomKit's
+  classes, Python's built-ins and the classes named in `error_classes=` come
+  back as themselves. `InboundResult.error`, `ON_ERROR` and the error's
+  causes carried the class the turn raised (an application's
+  `QuotaExceededError`, an `httpx.ReadTimeout` among the causes); they now
+  carry a `RemoteTurnError` that keeps the class's name, its JSON attributes
+  and the nearest of its ancestors the kit rebuilds, so `except
+  QuotaExceededError` no longer catches it while a subclass of
+  `ProviderError` still reads as a `ProviderError`. Migration: name the
+  classes the application catches or inspects,
+  `RoomKit(error_classes=(QuotaExceededError, httpx.HTTPError))`, and the
+  same on each `TurnExecutor` in another process.
+
 - A voice event reads the room's context for its hooks only when a hook is
   registered on one of its triggers, once for the whole event (RMK-797). An
   utterance announces ON_SPEECH_END, ON_TRANSCRIPTION and, with a turn
@@ -444,8 +464,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the turn backend, where each agent runs (RMK-827, RFC §10.6.3, §19.7.5 rule
   3): a `committed_event` channel control reaches the executor holding the
   agent's state for the room, else one that would take the room's turns (the
-  room's hooks named), without moving the holder, and calls the new `Channel.on_room_event(room_id, event)` (an
-  `AIChannel` hands it to its memory). It no longer calls the live agent
+  room's hooks named), without moving the holder, and calls the new
+  `Channel.on_room_event(room_id, event)` (an `AIChannel` hands it to its
+  memory). It no longer calls the live agent
   object the kit holds, so an agent held by its declaration alone, or run on
   a host's executor, learns the conversation too. A discussion turn the speak
   policy leaves silent no longer hands its message to memory a second time.
@@ -472,14 +493,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exception no longer cancels the attachment, nor reaches the caller of
   `detach_channel`. A channel of another category is called as before.
 
-- Detaching an `ACPChannel` from a room closes the room's session and forgets
-  the config values the host set on it (RMK-812, RFC §10.6.3, §6.4): a later
-  attachment opens a new session, caught up on the room, where it used to
-  resume the old conversation. The detach never waits for the agent: the
-  session is closed in the background once the room's running turn ended
-  (a standalone turn's included, RMK-820), or by that turn itself when it
-  prompted the room's session; a turn started before the detach that has
-  not prompted yet ends without prompting, marked `interrupted`.
+- **BREAKING — detaching an `ACPChannel` from a room closes the room's
+  session and forgets the config values the host set on it** (RMK-812, RFC
+  §10.6.3, §6.4): a later attachment opens a new session, caught up on the
+  room, where it used to resume the old conversation. The detach never waits
+  for the agent: the session is closed in the background once the room's
+  running turn ended (a standalone turn's included, RMK-820), or by that
+  turn itself when it prompted the room's session; a turn started before the
+  detach that has not prompted yet ends without prompting, marked
+  `interrupted`. Migration: a host that relied on a re-attachment resuming
+  the agent's conversation keeps the agent attached; one that re-attaches
+  sets its config values again with `kit.channel_call(channel_id, room_id,
+  "set_config_option", config_id=..., value=...)`.
 
 - Detaching an `AIChannel` from a room drops everything it keeps for the
   room (RMK-812, RFC §10.6.3): its plan, the images its provider refused, and
@@ -513,10 +538,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call with a `TypeError`. On the owner a handler reads no response-metadata
   record: the turn's is the executor's. The kit's close waits for a handler
   still running to unwind, and a close a handler calls runs to its end.
-  `TaskStatusTool` and `CancelTaskTool` stay host tools, and the owner still
-  keeps these tools in the registry of the channel it holds: both move
-  beside the channel's declaration with the distributed backend. `OwnerTools`
-  and `OwnerTool` are exported.
+  `TaskStatusTool` and `CancelTaskTool` given to an agent stay host tools
+  (`setup_task_tools` has the owner serve them, RMK-825), and the owner keeps
+  the tools it serves beside the channel's declaration (RMK-826).
+  `OwnerTools` and `OwnerTool` are exported.
 
 - **The hooks of a turn fire on the turn executor** (RMK-810, RMK-833, RFC
   §10.6.6): `BEFORE_AI_GENERATION`, `ON_AI_THINKING`, `ON_AI_RESPONSE`,
@@ -641,9 +666,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   'pyaudioop'`. The websocket's µ-law now goes through roomkit's own G.711
   codec, which produces the same bytes as `audioop`, and `pydub` is gone (see
   Removed). A CI job installs the extra alone on 3.13.
+
 - The vendored WebRTC websocket drops a media frame over
   `MAX_INBOUND_AUDIO_FRAME_BYTES` before decoding it, as the Twilio and
   realtime websocket transports do (RMK-824).
+
 - A cancelled delivery tells its turn's executor why (RMK-811, RFC §10.6.8):
   the cascade's reason (`superseded`, `caller_cancelled`, `kit_closed`...)
   rides its cancellation down to the turn and the turn's own work, a turn
@@ -15730,7 +15757,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.105.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.106.0...HEAD
+[0.106.0]: https://github.com/roomkit-live/roomkit/compare/v0.105.0...v0.106.0
 [0.105.0]: https://github.com/roomkit-live/roomkit/compare/v0.104.0...v0.105.0
 [0.104.0]: https://github.com/roomkit-live/roomkit/compare/v0.103.0...v0.104.0
 [0.103.0]: https://github.com/roomkit-live/roomkit/compare/v0.102.0...v0.103.0
