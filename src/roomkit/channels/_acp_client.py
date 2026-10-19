@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import time
@@ -79,6 +80,10 @@ class _TurnState:
     turn_id: str | None = field(default_factory=current_turn_id)
     """The turn of the turn backend this one runs under (RFC §10.6), which a
     steering ``Cancel`` addresses; ``None`` outside one."""
+    scope: contextvars.Context = field(default_factory=contextvars.copy_context)
+    """The context the turn was registered in, its prompt's: the agent's
+    updates and permission requests for its session run in a copy of it, under
+    the turn they belong to (its outlet, its host, its room's hooks)."""
     activity_seen: bool = False
     """Any update or permission request rules out a pre-execution refusal."""
     queue: asyncio.Queue[StreamDelta | _TurnDone] = field(default_factory=asyncio.Queue)
@@ -285,7 +290,9 @@ class _ACPClient:
         options: list[Any],
         **kwargs: Any,
     ) -> Any:
-        return await self._channel._request_permission(session_id, tool_call, options)
+        return await self._channel._for_session(
+            session_id, self._channel._request_permission(session_id, tool_call, options)
+        )
 
     async def session_update(
         self,
@@ -297,7 +304,9 @@ class _ACPClient:
         if task is not None:
             self._session_update_tasks.setdefault(session_id, set()).add(task)
         try:
-            await self._channel._receive_update(session_id, update)
+            await self._channel._for_session(
+                session_id, self._channel._receive_update(session_id, update)
+            )
         finally:
             if task is not None:
                 tasks = self._session_update_tasks.get(session_id)
@@ -428,7 +437,13 @@ class ACPConnectionMixin:
 
             self._message_queue = _new_message_queue(sdk)
             try:
-                connection = await self._transport.open(self._client, queue=self._message_queue)
+                # Opened in a context of its own: the SDK's receive loop, started
+                # here, would keep the opening turn's for the connection's life,
+                # and run every room's updates under that one room's turn.
+                connection = await asyncio.get_running_loop().create_task(
+                    self._transport.open(self._client, queue=self._message_queue),
+                    context=contextvars.Context(),
+                )
                 response = await connection.initialize(
                     _STABLE_PROTOCOL_VERSION,
                     client_capabilities=sdk.schema.ClientCapabilities(

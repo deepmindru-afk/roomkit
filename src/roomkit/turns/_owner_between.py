@@ -5,9 +5,9 @@ The owner accepts what comes from the executor of the last turn it sent for
 the channel and room, as its record of that turn (``previous_turn``) names
 it: a host verb only for that very turn, whose work it is; a publication for
 any turn of that executor, which still holds the room's state (an external
-agent's session updates arrive in the context of the turn that opened its
-connection). Anything else is refused, an owner that restarted included,
-until its next turn.
+agent's session update handled under the turn that prompted it, which ended
+since). Anything else is refused, an owner that restarted included, until
+its next turn.
 """
 
 from __future__ import annotations

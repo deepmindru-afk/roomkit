@@ -4,25 +4,34 @@ The host's session verbs are channel calls reaching the executor that holds
 the room's session, and the values it sets belong to the room; a lost
 executor's room reopens its session on the next one, caught up and set up
 again; a detach closes the room's session; a steering ``Cancel`` cancels the
-prompt as the channel's own cancel does.
+prompt as the channel's own cancel does; each room's agent updates and
+permission requests run under that room's turn, whichever opened the
+connection.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
-from collections.abc import Callable
+import socket
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
+import acp
 import pytest
+from acp.schema import PermissionOption, PromptResponse
 
-from roomkit import ACPChannel, RoomKit
+from roomkit import ACPChannel, RoomKit, current_turn_host
 from roomkit.core._turn_scope import enter_turn
 from roomkit.core.exceptions import ChannelNotFoundError, RoomNotFoundError
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, HookExecution, HookTrigger
 from roomkit.models.event import TextContent
 from roomkit.models.steering import Cancel
+from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
+from roomkit.realtime.memory import InMemoryRealtime
+from roomkit.tools.external import ExternalToolHandler, ToolDecision
 from roomkit.turns import InMemoryTurnBackend, TurnExecutor
 from roomkit.turns._rooms import room_state_key
 from tests.conftest import make_event
@@ -32,7 +41,9 @@ from tests.test_channels.test_acp import (
     _context,
     _FakeACPConnection,
     _FakeTransport,
+    _InProcessEchoAgent,
     _sent,
+    _SocketPairTransport,
 )
 from tests.test_channels.test_acp_discussion import _Hanging
 from tests.test_channels.test_acp_instruction import _instruction
@@ -52,7 +63,7 @@ async def _room(channel: ACPChannel, backend: InMemoryTurnBackend | None = None)
     return kit
 
 
-async def _say(kit: RoomKit, body: str) -> None:
+async def _say(kit: RoomKit, body: str, room_id: str = ROOM) -> None:
     await kit.process_inbound(
         InboundMessage(
             channel_id="sms",
@@ -60,7 +71,7 @@ async def _say(kit: RoomKit, body: str) -> None:
             content=TextContent(body=body),
             addressed_to=[AGENT],
         ),
-        room_id=ROOM,
+        room_id=room_id,
     )
     await asyncio.sleep(0)
 
@@ -580,3 +591,133 @@ async def test_a_value_set_across_a_detach_during_a_turn_is_not_kept(tmp_path: A
     await asyncio.wait_for(said, 5)
     assert connection.closed_sessions == ["session-1"]
     await kit.close()
+
+
+# -- Each room's agent updates, under that room's turn -------------------------------
+
+
+class _ReadingAgent(_InProcessEchoAgent):
+    """A real ACP agent that thinks, asks to read a file, reads it and answers."""
+
+    async def prompt(self, session_id: str, prompt: list[Any], **kwargs: Any) -> PromptResponse:
+        await self.conn.session_update(
+            session_id=session_id, update=acp.update_agent_thought_text("pondering")
+        )
+        await self.conn.session_update(
+            session_id=session_id,
+            update=acp.start_tool_call("read-1", "Read", kind="read", status="in_progress"),
+        )
+        await self.conn.request_permission(
+            session_id=session_id,
+            tool_call=acp.update_tool_call("read-1", title="Read"),
+            options=[PermissionOption(option_id="allow", name="Allow", kind="allow_once")],
+        )
+        await self.conn.session_update(
+            session_id=session_id, update=acp.update_tool_call("read-1", status="completed")
+        )
+        await self.conn.session_update(
+            session_id=session_id, update=acp.update_agent_message_text("done")
+        )
+        return PromptResponse(stop_reason="end_turn")
+
+
+@contextlib.asynccontextmanager
+async def _socket_agent() -> AsyncIterator[_SocketPairTransport]:
+    """A transport to a real ACP agent over a socket pair, served until exit."""
+    agent_sock, client_sock = socket.socketpair()
+    agent_reader, agent_writer = await asyncio.open_connection(sock=agent_sock)
+    client_reader, client_writer = await asyncio.open_connection(sock=client_sock)
+    serving = asyncio.create_task(acp.run_agent(_ReadingAgent(), agent_writer, agent_reader))
+    try:
+        yield _SocketPairTransport(client_reader, client_writer)
+    finally:
+        serving.cancel()
+        await asyncio.gather(serving, return_exceptions=True)
+        agent_writer.close()
+
+
+async def _two_rooms(channel: ACPChannel, realtime: InMemoryRealtime | None = None) -> RoomKit:
+    kit = RoomKit(realtime=realtime)
+    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(channel)
+    for room_id in ("room-1", "room-2"):
+        await kit.create_room(room_id=room_id)
+        await kit.attach_channel(room_id, "sms", category=ChannelCategory.TRANSPORT)
+        await kit.attach_channel(room_id, AGENT, category=ChannelCategory.INTELLIGENCE)
+    return kit
+
+
+class _PostingHandler(ExternalToolHandler):
+    """Approves every call, posting a status through the turn's host, if any,
+    and reports each end to ON_TOOL_CALL."""
+
+    async def process_tool_call(
+        self, tool_name: str, tool_input: dict[str, Any], **kwargs: Any
+    ) -> ToolDecision:
+        host = current_turn_host()
+        if host is not None:
+            await host.post_status(AGENT, "permission", "ok", detail=kwargs["room_id"])
+        return ToolDecision(approved=True)
+
+    async def on_tool_result(
+        self, tool_name: str, tool_input: dict[str, Any], result: str, **kwargs: Any
+    ) -> None:
+        await self._fire_on_tool_hook(tool_name, tool_input, result, **kwargs)
+
+
+async def test_each_room_s_agent_updates_reach_that_room(tmp_path: Any) -> None:
+    realtime = InMemoryRealtime()
+    seen: dict[str, list[EphemeralEvent]] = {"room-1": [], "room-2": []}
+    async with _socket_agent() as transport:
+        kit = await _two_rooms(ACPChannel(AGENT, transport=transport, cwd=tmp_path), realtime)
+        for room_id, events in seen.items():
+
+            async def capture(event: EphemeralEvent, events: list[Any] = events) -> None:
+                events.append(event)
+
+            await realtime.subscribe_to_room(room_id, capture)
+
+        # Room-1's turn opens the connection; room-2's updates arrive on it.
+        await _say(kit, "first room", "room-1")
+        await _say(kit, "second room", "room-2")
+
+        def thought(room_id: str) -> bool:
+            return any(e.type is EphemeralEventType.THINKING_DELTA for e in seen[room_id])
+
+        await _eventually(lambda: thought("room-1") and thought("room-2"))
+        await kit.close()
+
+
+async def test_each_room_s_tool_hooks_and_permissions_see_that_room_s_host(
+    tmp_path: Any,
+) -> None:
+    async with _socket_agent() as transport:
+        channel = ACPChannel(
+            AGENT, transport=transport, cwd=tmp_path, external_tool_handler=_PostingHandler()
+        )
+        kit = await _two_rooms(channel)
+
+        @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC)
+        async def audit(event: Any, ctx: Any) -> None:
+            host = current_turn_host()
+            if host is not None:
+                await host.post_status(AGENT, "tool", "ok", detail=event.room_id)
+
+        await _say(kit, "first room", "room-1")
+        await _say(kit, "second room", "room-2")
+
+        async def posted() -> list[tuple[str, str, Any]]:
+            entries = await kit.status_bus.recent(20)
+            return [(e.action, e.detail, e.metadata.get("room_id")) for e in entries]
+
+        async with asyncio.timeout(5):
+            while len(await posted()) < 4:
+                await asyncio.sleep(0.01)
+        # Each posted for the room it ran for, through that room's turn.
+        assert sorted(await posted()) == [
+            ("permission", "room-1", "room-1"),
+            ("permission", "room-2", "room-2"),
+            ("tool", "room-1", "room-1"),
+            ("tool", "room-2", "room-2"),
+        ]
+        await kit.close()

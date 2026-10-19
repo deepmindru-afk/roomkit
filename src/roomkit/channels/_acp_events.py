@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import partial
@@ -292,6 +294,15 @@ class ACPEventsMixin:
     _tool_report_hook: ToolCallObserver | None
     _tool_observer_hook: ToolCallObserver | None
     _realtime: RealtimeBackend | None
+
+    async def _for_session[T](self, session_id: str, work: Coroutine[Any, Any, T]) -> T:
+        """Run *work*, the agent's update or permission request for
+        *session_id*, under the turn prompting that session, else outside any
+        turn: one connection serves every room, and what it receives for a
+        room is published, hooked and decided as that room's (RFC §10.6.2)."""
+        turn = self._turns.get(session_id)
+        context = turn.scope.copy() if turn is not None else contextvars.Context()
+        return await asyncio.get_running_loop().create_task(work, context=context)
 
     async def _receive_update(self, session_id: str, update: Any) -> None:
         if (turn := self._turns.get(session_id)) is not None:
