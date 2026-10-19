@@ -25,6 +25,7 @@ from roomkit.models.tool_call import ToolCallEvent
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.speaking.always import AlwaysSpeak
 from roomkit.tools.context import _current_turn_chain_depth
 from tests.test_framework import SimpleChannel
 
@@ -354,6 +355,72 @@ async def test_a_delegation_through_the_host_keeps_its_turns_chain_depth() -> No
     # and so is what is delivered later on its behalf.
     assert depths == [1]
     assert seen["result"] is not None
+    await kit.close()
+
+
+async def _hook_kit(*more: Agent) -> RoomKit:
+    """A kit whose agent reports its speak decisions: a hook its executor
+    fires during the turn, before the tool loop sets the turn's depth."""
+    agent = Agent(
+        "agent",
+        provider=MockAIProvider(ai_responses=[AIResponse(content="hi")]),
+        role="agent",
+        speak_policy=AlwaysSpeak(),
+    )
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("ops"))
+    kit.register_channel(agent)
+    for other in more:
+        kit.register_channel(other)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "ops")
+    await kit.attach_channel("r1", "agent", category=ChannelCategory.INTELLIGENCE)
+    return kit
+
+
+async def test_an_event_a_hook_sends_before_the_tool_loop_is_as_deep_as_the_response() -> None:
+    kit = await _hook_kit()
+    sent: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+
+    @kit.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
+    async def note(event: Any, ctx: Any) -> None:
+        host = current_turn_host()
+        assert host is not None and host.open
+        event = await host.send_event("r1", "ops", TextContent(body="noted"), addressed_to=[])
+        sent.set_result(event)
+
+    # The agent answers an event at depth 3: its response is at depth 4.
+    await asyncio.wait_for(kit.send_event("r1", "ops", TextContent(body="go"), chain_depth=3), 10)
+
+    assert (await asyncio.wait_for(sent, 5)).chain_depth == 4
+    await kit.close()
+
+
+async def test_a_delegation_a_hook_makes_before_the_tool_loop_keeps_the_turns_depth() -> None:
+    worker = Agent(
+        "worker", provider=MockAIProvider(ai_responses=[AIResponse(content="found")]), role="w"
+    )
+    kit = await _hook_kit(worker)
+    depths: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+    run_background = type(kit)._run_background
+
+    async def spy(self: Any, *args: Any, **kwargs: Any) -> Any:
+        if not depths.done():
+            depths.set_result(_current_turn_chain_depth())
+        return await run_background(self, *args, **kwargs)
+
+    @kit.hook(HookTrigger.ON_SPEAK_DECISION, execution=HookExecution.ASYNC)
+    async def note(event: Any, ctx: Any) -> None:
+        host = current_turn_host()
+        assert host is not None and host.open
+        await host.delegate("r1", "worker", "Look it up")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(type(kit), "_run_background", spy)
+        await asyncio.wait_for(
+            kit.send_event("r1", "ops", TextContent(body="go"), chain_depth=3), 10
+        )
+        assert await asyncio.wait_for(depths, 5) == 4
     await kit.close()
 
 

@@ -32,6 +32,7 @@ from roomkit.tools.context import ToolCallContext, owner_served_call
 from roomkit.tools.result import as_tool_result
 from roomkit.turns._codec import encode_result
 from roomkit.turns._error_codec import error_record
+from roomkit.turns.base import response_depth
 from roomkit.turns.host import READERS, set_turn_host
 from roomkit.turns.wire import HostCall, HostResult, ToolCall, ToolResult
 
@@ -193,7 +194,10 @@ class OwnerCalls:
             room=room if room.id == request.room_id else None,
             actor_id=context.actor_id,
             requester=context.requester,
-            chain_depth=context.chain_depth,
+            # A call made outside the tool loop (a hook fired before it, an
+            # ACP agent's turn) carries depth 0: the turn's work is at least
+            # as deep as its response.
+            chain_depth=max(context.chain_depth, response_depth(request)),
             allowed_names=context.allowed_names,
         ):
             yield record

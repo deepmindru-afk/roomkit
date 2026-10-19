@@ -59,6 +59,13 @@ class TurnTimeouts:
         return max(1, round(self.heartbeat_timeout / self.heartbeat_interval))
 
 
+def response_depth(request: TurnRequest) -> int:
+    """The chain depth of the turn's response (RFC §8.3): what the turn does
+    on its own behalf through the owner is at least that deep, so a chain of
+    turns stops at the chain-depth limit (RFC §10.6.5)."""
+    return request.event.chain_depth + 1
+
+
 async def heartbeat_tick(interval: float) -> None:
     """Wait one heartbeat interval on the loop's own timer, so code that
     patches ``asyncio.sleep`` (a test, a host's clock) cannot make the

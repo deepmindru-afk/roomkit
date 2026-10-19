@@ -26,7 +26,7 @@ from roomkit.turns._owner_turn import OwnerTurn
 from roomkit.turns._registry_tools import OwnerToolStore, RegistryOwnerTools
 from roomkit.turns._remote_stream import RemoteStream
 from roomkit.turns._rooms import RoomRecords
-from roomkit.turns.base import RoomOwner, TurnTimeouts
+from roomkit.turns.base import RoomOwner, TurnTimeouts, response_depth
 from roomkit.turns.executor import TurnExecutor
 from roomkit.turns.memory import InMemoryTurnBackend
 from roomkit.turns.wire import (
@@ -188,7 +188,7 @@ class TurnClient(RoomOwner):
         request.previous_turn, submitted = self._leave(
             channel_id, request.room_id, request.turn_id
         )
-        self._depths.put(channel_id, request.room_id, (request.turn_id, event.chain_depth + 1))
+        self._depths.put(channel_id, request.room_id, (request.turn_id, response_depth(request)))
         handed: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._handing[request.turn_id] = (request, handed)
         try:

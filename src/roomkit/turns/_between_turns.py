@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from roomkit.turns.base import response_depth
 from roomkit.turns.wire import RoomCall, RoomPublication
 
 if TYPE_CHECKING:
@@ -49,7 +50,7 @@ class BetweenTurns:
                 executor_id=self._executor_id,
                 turn_id=request.turn_id,
                 # What the turn's response is at: the bound on agent loops.
-                chain_depth=request.event.chain_depth + 1,
+                chain_depth=response_depth(request),
                 verb=verb,
                 arguments=arguments,
             )
