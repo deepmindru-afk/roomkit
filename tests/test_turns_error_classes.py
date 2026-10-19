@@ -80,6 +80,18 @@ class RefusingBaseError(ValueError):
         raise ValueError(f"unregistered subclass {cls.__name__}")
 
 
+class Billing:
+    """A host's classes nested in a class, as Django's ``Model.DoesNotExist``."""
+
+    class QuotaExceededError(Exception):
+        def __init__(self, code: str) -> None:
+            super().__init__(f"quota exceeded: {code}")
+            self.code = code
+
+    class PlanQuotaExceededError(QuotaExceededError):
+        """Undeclared: read as the declared class it derives from."""
+
+
 class _Lazy(types.ModuleType):
     """A module whose ``__getattr__`` would import what a name asks for."""
 
@@ -132,6 +144,32 @@ def test_a_declared_class_comes_back_as_itself_with_its_attributes() -> None:
 def test_a_subclass_of_a_declared_class_is_rebuilt_by_type() -> None:
     rebuilt = _crossed(HostReadTimeoutError("read timed out"), HostTransportError)
     assert type(rebuilt) is HostReadTimeoutError
+
+
+def test_a_declared_class_nested_in_a_class_comes_back_as_itself() -> None:
+    rebuilt = _crossed(Billing.QuotaExceededError("Q1"), Billing.QuotaExceededError)
+    assert type(rebuilt) is Billing.QuotaExceededError
+    assert (str(rebuilt), rebuilt.code) == ("quota exceeded: Q1", "Q1")
+
+
+def test_a_declared_class_defined_in_a_function_comes_back_as_itself() -> None:
+    class LocalError(Exception):
+        pass
+
+    rebuilt = _crossed(LocalError("x"), LocalError)
+    assert type(rebuilt) is LocalError
+
+
+def test_an_undeclared_subclass_of_a_declared_nested_class_reads_as_it() -> None:
+    rebuilt = _crossed(Billing.PlanQuotaExceededError("Q2"), Billing.QuotaExceededError)
+    assert isinstance(rebuilt, RemoteTurnError)
+    assert isinstance(rebuilt, Billing.QuotaExceededError)
+    assert rebuilt.code == "Q2"
+
+
+def test_a_dotted_name_off_the_wire_reaches_no_undeclared_nested_class() -> None:
+    rebuilt = _crossed(Billing.QuotaExceededError("Q1"))
+    assert type(rebuilt) is RemoteTurnError
 
 
 def test_a_declared_class_in_the_cause_chain_comes_back_as_itself() -> None:
@@ -624,6 +662,15 @@ async def test_a_declared_class_a_turn_raised_reaches_the_inbound_result() -> No
     assert same_error(result.error, raised)
     assert result.error.answered is False
     assert [e.metadata["error_type"] for e in errors] == ["HostProviderError"]
+
+
+async def test_a_declared_nested_class_a_turn_raised_reaches_the_inbound_result() -> None:
+    result, _ = await _inbound(
+        RoomKit(error_classes=(Billing.QuotaExceededError,)), Billing.QuotaExceededError("Q1")
+    )
+
+    assert type(result.error) is Billing.QuotaExceededError
+    assert result.error.code == "Q1"
 
 
 async def test_an_undeclared_provider_error_subclass_is_logged_as_a_provider_line(

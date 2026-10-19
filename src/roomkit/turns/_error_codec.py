@@ -107,6 +107,9 @@ class ErrorClasses:
         for cls in self._declared:
             if not isinstance(cls, type) or not issubclass(cls, Exception):
                 raise TypeError(f"error_classes takes Exception classes, not {cls!r}")
+        # By the name they cross under: a module's namespace does not hold a
+        # class nested in a class or defined in a function.
+        self._by_kind = {_kind(cls): cls for cls in self._declared}
 
     def rebuild(self, record: ErrorRecord, *, where: str = "the turn's executor") -> BaseException:
         """One new exception per record, its causes chained; the note says
@@ -133,7 +136,11 @@ class ErrorClasses:
         return _remote(record, filter(None, map(self._rebuilt, record.bases)))
 
     def _rebuilt(self, kind: str) -> type[Exception] | None:
-        """The class *kind* names when this side rebuilds it."""
+        """The class *kind* names when this side rebuilds it: a declared one,
+        else one a loaded module defines."""
+        declared = self._by_kind.get(kind)
+        if declared is not None:
+            return declared
         cls = _loaded_class(kind)
         if cls is None:
             return None
