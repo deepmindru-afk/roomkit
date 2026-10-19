@@ -182,16 +182,28 @@ def _of_class(cls: type[Exception], record: ErrorRecord) -> BaseException | None
     except Exception:
         return None
     exc.args = tuple(record.args)
-    attributes = dict(record.attributes)
-    if isinstance(exc, OSError):
-        # Slots of the class: set through it, never into the __dict__.
-        for name in _OS_ERROR_FIELDS:
-            if name in attributes:
-                setattr(exc, name, attributes.pop(name))
-    exc.__dict__.update(attributes)
+    exc.__dict__.update(_set_os_error_fields(exc, record))
     if not _gives_back(exc, record.message):
         return None
     return exc
+
+
+def _set_os_error_fields(exc: BaseException, record: ErrorRecord) -> dict[str, Any]:
+    """Set an ``OSError``'s slots through its class, never into its
+    ``__dict__`` where they would read as unset: its file names from the
+    record's attributes, and its ``errno`` and ``strerror`` from the record's
+    arguments when *exc* was not built from them (a stand-in). The record's
+    other attributes, for the ``__dict__``."""
+    attributes = dict(record.attributes)
+    if not isinstance(exc, OSError):
+        return attributes
+    for name in _OS_ERROR_FIELDS:
+        if name in attributes:
+            setattr(exc, name, attributes.pop(name))
+    code, text = (record.args + [None, None])[:2]
+    if exc.errno is None and isinstance(code, int) and isinstance(text, str):
+        exc.errno, exc.strerror = code, text
+    return attributes
 
 
 def _gives_back(exc: BaseException, message: str) -> bool:
@@ -210,7 +222,7 @@ def _remote(record: ErrorRecord, classes: Iterable[type[Exception]]) -> RemoteTu
     if exc is None:
         exc = RemoteTurnError.__new__(RemoteTurnError, record.message)
     exc.args = (record.message,)
-    exc.__dict__.update(record.attributes)
+    exc.__dict__.update(_set_os_error_fields(exc, record))
     exc.kind = record.kind
     exc.bases = tuple(record.bases)
     exc.__dict__[_STANDS_FOR] = (list(record.args), dict(record.attributes))

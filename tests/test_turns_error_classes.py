@@ -10,9 +10,11 @@ read off the wire never imports anything.
 from __future__ import annotations
 
 import asyncio
+import errno
 import importlib.util
 import logging
 import os
+import pathlib
 import sys
 import types
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
@@ -240,6 +242,19 @@ def test_an_os_error_keeps_its_filenames_and_its_errno() -> None:
         "/nonexistent/roomkit-a",
         "/nonexistent/roomkit-b",
     )
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [pathlib.Path("/nonexistent/roomkit-x"), b"/nonexistent/roomkit-x"],
+    ids=["path", "bytes"],
+)
+def test_an_os_error_whose_filename_json_cannot_carry_keeps_its_errno(filename: object) -> None:
+    raised = FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), filename)
+    rebuilt = _crossed(raised)
+    assert isinstance(rebuilt, FileNotFoundError)
+    assert str(rebuilt) == str(raised)
+    assert (rebuilt.errno, rebuilt.strerror) == (errno.ENOENT, os.strerror(errno.ENOENT))
 
 
 def test_a_declared_class_that_cannot_give_its_message_back_still_reads_as_itself() -> None:
