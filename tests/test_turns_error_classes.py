@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import logging
+import os
 import sys
 import types
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
@@ -211,6 +212,8 @@ BUILT_IN_MESSAGES: dict[str, Callable[[], object]] = {
     "indentation_error": lambda: compile("if x:\npass", "<turn>", "exec"),
     "unicode_decode_error": lambda: b"\xff".decode(),
     "unicode_encode_error": lambda: chr(233).encode("ascii"),
+    "file_not_found": lambda: open("/nonexistent/roomkit-turn"),  # noqa: SIM115
+    "two_filenames": lambda: os.rename("/nonexistent/roomkit-a", "/nonexistent/roomkit-b"),
 }
 
 
@@ -227,6 +230,16 @@ def test_a_built_in_error_built_from_its_arguments_keeps_its_fields() -> None:
     rebuilt = _crossed(_raised(BUILT_IN_MESSAGES["syntax_error"]))
     assert type(rebuilt) is SyntaxError
     assert (rebuilt.filename, rebuilt.lineno) == ("<turn>", 1)
+
+
+def test_an_os_error_keeps_its_filenames_and_its_errno() -> None:
+    rebuilt = _crossed(_raised(BUILT_IN_MESSAGES["two_filenames"]))
+    assert type(rebuilt) is FileNotFoundError
+    assert (rebuilt.errno, rebuilt.filename, rebuilt.filename2) == (
+        2,
+        "/nonexistent/roomkit-a",
+        "/nonexistent/roomkit-b",
+    )
 
 
 def test_a_declared_class_that_cannot_give_its_message_back_still_reads_as_itself() -> None:

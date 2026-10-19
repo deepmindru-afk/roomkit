@@ -30,6 +30,10 @@ _CHAIN_LIMIT = 16
 _STANDS_FOR = "_roomkit_stands_for"
 _REMOTE_OWN = frozenset({"kind", "bases", _STANDS_FOR})
 
+# The fields of an OSError its message reads that live outside its arguments
+# and its __dict__ (slots of the class), carried as attributes.
+_OS_ERROR_FIELDS = ("filename", "filename2")
+
 # A module's namespace, read without the module's class: a lazily loaded
 # module runs its code on any attribute read.
 _MODULE_NAMESPACE = vars(types.ModuleType)["__dict__"]
@@ -58,9 +62,18 @@ def _one_record(exc: BaseException) -> ErrorRecord:
         kind=_kind(cls),
         message=str(exc),
         args=[a if _is_json(a) else str(a) for a in exc.args],
-        attributes=_json_attributes(exc, frozenset()),
+        attributes={**_json_attributes(exc, frozenset()), **_os_error_fields(exc)},
         bases=_ancestors(cls),
     )
+
+
+def _os_error_fields(exc: BaseException) -> dict[str, Any]:
+    """An ``OSError``'s file names, which its message reads (``[Errno 2] No
+    such file or directory: 'x'``) and its arguments do not hold."""
+    if not isinstance(exc, OSError):
+        return {}
+    fields = {name: getattr(exc, name) for name in _OS_ERROR_FIELDS}
+    return {name: value for name, value in fields.items() if value is not None and _is_json(value)}
 
 
 def _stand_in_record(exc: RemoteTurnError) -> ErrorRecord:
@@ -158,10 +171,10 @@ ROOMKIT_ERRORS = ErrorClasses()
 def _of_class(cls: type[Exception], record: ErrorRecord) -> BaseException | None:
     """A new *cls* carrying the record's arguments and attributes; ``None``
     when the class refuses them. One of Python's is built by its constructor,
-    whose fields its message may live in (a ``SyntaxError``'s location);
-    another without its ``__init__``, and kept only when it gives the
-    record's message back (``__init__`` set what it reads from objects JSON
-    did not carry)."""
+    whose fields its message may live in (a ``SyntaxError``'s location, an
+    ``OSError``'s file names); another without its ``__init__``. Either is
+    kept only when it gives the record's message back (``__init__`` set what
+    it reads from objects JSON did not carry)."""
     built_in = cls.__module__ == "builtins"
     try:
         # A built-in's constructor runs no code but the interpreter's, on JSON values.
@@ -169,8 +182,14 @@ def _of_class(cls: type[Exception], record: ErrorRecord) -> BaseException | None
     except Exception:
         return None
     exc.args = tuple(record.args)
-    exc.__dict__.update(record.attributes)
-    if not built_in and not _gives_back(exc, record.message):
+    attributes = dict(record.attributes)
+    if isinstance(exc, OSError):
+        # Slots of the class: set through it, never into the __dict__.
+        for name in _OS_ERROR_FIELDS:
+            if name in attributes:
+                setattr(exc, name, attributes.pop(name))
+    exc.__dict__.update(attributes)
+    if not _gives_back(exc, record.message):
         return None
     return exc
 
