@@ -405,6 +405,30 @@ async def test_detaching_a_channel_forgets_what_the_room_kept_for_it() -> None:
     await kit.close()
 
 
+async def test_a_channel_call_across_a_detach_stores_nothing_with_the_room() -> None:
+    kit, agent = await _kit()
+    reached, release = asyncio.Event(), asyncio.Event()
+    verb = agent.channel_call
+
+    async def slow(room_id: str, name: str, arguments: dict[str, Any]) -> Any:
+        reached.set()
+        await release.wait()
+        return await verb(room_id, name, arguments)
+
+    agent.channel_call = slow  # type: ignore[method-assign]
+    call = asyncio.create_task(kit.channel_call("agent", "room", "set", model="opus"))
+    await asyncio.wait_for(reached.wait(), 5)
+    await kit.detach_channel("room", "agent")
+    release.set()
+    assert await call == {"model": "opus"}
+
+    # The detach forgot what the room kept; the call that ran across it
+    # does not write it back beside the detach's tombstone.
+    room = await kit.get_room("room")
+    assert room_state_key("agent") not in room.metadata
+    await kit.close()
+
+
 async def test_a_verb_the_channel_lacks_raises_on_the_owner() -> None:
     kit, _agent = await _kit()
     with pytest.raises(ValueError, match="no per-room verb 'nope'"):

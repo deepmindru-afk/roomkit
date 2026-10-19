@@ -366,8 +366,12 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         next session (after a recovery or an agent restart) is set to it too,
         over ``session_config``, until :meth:`close_session`. A call that opens
         the room's session sets its value in place of the room's earlier one,
-        so a value the agent has come to refuse is replaced, not replayed.
+        so a value the agent has come to refuse is replaced, not replayed. A
+        call the channel's detach from the room overtook keeps nothing: the
+        detach forgot the room's values, and a session the call opened is
+        closed (RFC §6.4, *Detaching*).
         """
+        generation = self._detached.get(room_id, 0)
         connection = await self._ensure_connection()
         # Never on the room's turn lock: an in-flight turn holds it for its
         # whole duration, and waiting for that would deadlock a caller running
@@ -384,6 +388,8 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
             )
             options = _reported_options(response)
         values = _config_values(options)
+        if await self._detached_during(room_id, generation, session_id, opened, connection):
+            return values
         if self._sessions.get(room_id) != session_id:
             # Closed (or rebuilt) while the agent answered: what it reports,
             # and the value, are no longer the room's to keep.
@@ -614,6 +620,19 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
             if self._sessions.get(room_id) != session_id:
                 return
             await self._discard_room_session(room_id, self._connection)
+
+    async def _detached_during(
+        self, room_id: str, generation: int, session_id: str, opened: bool, connection: Any
+    ) -> bool:
+        """Whether the channel was detached from *room_id* since a host call
+        started at *generation* (the number of its detaches then). A session
+        the call opened is then the detached room's, discarded as a turn
+        across a detach discards its own."""
+        if self._detached.get(room_id, 0) == generation:
+            return False
+        if opened and self._sessions.get(room_id) == session_id:
+            await self._discard_room_session(room_id, connection)
+        return True
 
     async def close_session(self, room_id: str) -> bool:
         """Forget one Room's ACP session, and close it where the agent can.

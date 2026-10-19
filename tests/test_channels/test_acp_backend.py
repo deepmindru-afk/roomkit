@@ -511,3 +511,72 @@ async def test_a_cancelled_channel_call_keeps_the_room_s_session(tmp_path: Any) 
     assert len(connection.new_session_calls) == 1
     assert [c["session_id"] for c in connection.prompt_calls] == ["session-1", "session-1"]
     await kit.close()
+
+
+async def test_a_channel_call_across_a_detach_keeps_no_session_and_no_value(
+    tmp_path: Any,
+) -> None:
+    connection = _SlowOpening()
+    channel = ACPChannel(AGENT, transport=_FakeTransport(connection), cwd=tmp_path)
+    connection.client = channel._client
+    kit = await _room(channel)
+    call = asyncio.create_task(
+        kit.channel_call(AGENT, ROOM, "set_config_option", config_id="model", value="sonnet")
+    )
+    await asyncio.wait_for(connection.opening.wait(), 5)
+
+    await kit.detach_channel(ROOM, AGENT)
+    connection.release.set()
+    await asyncio.wait_for(call, 5)
+
+    # The session it opened was the detached room's: closed, its value forgotten.
+    assert channel.session_id(ROOM) is None
+    assert connection.closed_sessions == ["session-1"]
+    assert channel.room_state(ROOM) == {}
+    room = await kit.get_room(ROOM)
+    assert room_state_key(AGENT) not in room.metadata
+    await kit.attach_channel(ROOM, AGENT, category=ChannelCategory.INTELLIGENCE)
+    await _say(kit, "hello again")
+    assert [c["session_id"] for c in connection.prompt_calls] == ["session-2"]
+    await kit.close()
+
+
+class _HangingAndSlowConfig(_Hanging):
+    """An agent whose prompt runs until released, and whose
+    ``set_config_option`` answers once ``answer`` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setting = asyncio.Event()
+        self.answer = asyncio.Event()
+
+    async def set_config_option(self, **kwargs: Any) -> Any:
+        self.setting.set()
+        await self.answer.wait()
+        return await super().set_config_option(**kwargs)
+
+
+async def test_a_value_set_across_a_detach_during_a_turn_is_not_kept(tmp_path: Any) -> None:
+    connection = _HangingAndSlowConfig()
+    channel = ACPChannel(AGENT, transport=_FakeTransport(connection), cwd=tmp_path)
+    connection.client = channel._client
+    kit = await _room(channel)
+    said = asyncio.create_task(_say(kit, "read every file"))
+    await asyncio.wait_for(connection.prompted.wait(), 5)
+    call = asyncio.create_task(
+        kit.channel_call(AGENT, ROOM, "set_config_option", config_id="model", value="sonnet")
+    )
+    await asyncio.wait_for(connection.setting.wait(), 5)
+
+    # The running turn holds the room's turn lock: the detach's close waits.
+    await kit.detach_channel(ROOM, AGENT)
+    connection.answer.set()
+    await asyncio.wait_for(call, 5)
+
+    assert channel.room_state(ROOM) == {}
+    room = await kit.get_room(ROOM)
+    assert room_state_key(AGENT) not in room.metadata
+    connection.release.set()
+    await asyncio.wait_for(said, 5)
+    assert connection.closed_sessions == ["session-1"]
+    await kit.close()

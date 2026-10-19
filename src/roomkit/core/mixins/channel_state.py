@@ -12,6 +12,7 @@ from roomkit.turns.wire import ChannelCall, RoomDetached
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
+    from roomkit.core.locks import RoomLockManager
     from roomkit.models.channel import ChannelBinding
     from roomkit.store.base import ConversationStore
     from roomkit.turns.owner import TurnClient
@@ -22,6 +23,7 @@ class ChannelStateMixin:
     written from a verb's answer, forgotten when the channel is detached."""
 
     _store: ConversationStore
+    _lock_manager: RoomLockManager
     _channels: dict[str, Channel]
     _turns: TurnClient
     get_room: Any  # see RoomLifecycleMixin
@@ -73,10 +75,22 @@ class ChannelStateMixin:
         if answer is None:
             return None
         if answer.room_state is not None:
-            await self._store_room_state(room_id, channel_id, answer.room_state)
+            await self._keep_answered_state(room_id, channel_id, answer.room_state)
         if answer.error is not None:
             raise self._turns.errors.rebuild(answer.error)
         return answer.result
+
+    async def _keep_answered_state(
+        self, room_id: str, channel_id: str, state: dict[str, Any]
+    ) -> None:
+        """Store a verb's *state* while the channel is still attached to the
+        room, read under the room lock ``detach_channel`` holds: a detach
+        forgets what the room kept for the channel (RFC §10.6.2), and a call
+        that ran across it does not write it back."""
+        async with self._lock_manager.locked(room_id):
+            if await self._store.get_binding(room_id, channel_id) is None:
+                return
+            await self._store_room_state(room_id, channel_id, state)
 
     async def _store_room_state(
         self, room_id: str, channel_id: str, state: dict[str, Any]
