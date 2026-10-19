@@ -31,7 +31,13 @@ from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor
 from roomkit.turns._rooms import room_state_key
 from roomkit.turns.base import ExecutorLink
 from roomkit.turns.host import UpdateRoomMetadata
-from roomkit.turns.wire import ChannelCall, RoomAttached, RoomDetached, TurnRequest
+from roomkit.turns.wire import (
+    ChannelCall,
+    CommittedEvent,
+    RoomAttached,
+    RoomDetached,
+    TurnRequest,
+)
 
 
 class _Agent(Channel):
@@ -47,6 +53,8 @@ class _Agent(Channel):
         self.restored: list[dict[str, Any]] = []
         self.release: asyncio.Event | None = None
         self.steered: list[Any] = []
+        self.bindings: list[ChannelBinding] = []
+        self.events: list[RoomEvent] = []
 
     async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
         raise NotImplementedError
@@ -66,6 +74,10 @@ class _Agent(Channel):
 
     async def on_room_attached(self, room_id: str, binding: ChannelBinding) -> None:
         self.log.append(("attached", room_id))
+        self.bindings.append(binding)
+
+    async def on_room_event(self, room_id: str, event: RoomEvent) -> None:
+        self.events.append(event)
 
     async def on_room_detached(self, room_id: str) -> None:
         self.log.append(("detached", room_id))
@@ -265,6 +277,26 @@ async def test_attach_and_detach_reach_every_executor_declaring_the_channel() ->
     await client.control(RoomAttached(channel_id="agent", room_id="room", binding=_binding()))
     await client.control(RoomDetached(channel_id="agent", room_id="room"))
     assert first.log == second.log == [("attached", "room"), ("detached", "room")]
+
+
+class _Opaque:
+    """A value JSON has no form for."""
+
+
+async def test_channel_control_carries_a_value_json_has_no_form_for_as_its_text() -> None:
+    """An application in the owner's process keeps an object in a binding's
+    or an event's metadata: the control message carries it as its text, as a
+    turn's request does."""
+    client, _a, _b, first, second = await _two_executors()
+    binding = _binding().model_copy(update={"metadata": {"handle": _Opaque()}})
+    event = _event().model_copy(update={"metadata": {"handle": _Opaque()}})
+
+    await client.control(RoomAttached(channel_id="agent", room_id="room", binding=binding))
+    await client.control(CommittedEvent(channel_id="agent", room_id="room", event=event))
+
+    assert first.bindings[0].metadata["handle"].startswith("<")
+    [handed] = first.events + second.events
+    assert handed.metadata["handle"].startswith("<")
 
 
 async def test_a_channel_call_reaches_the_executor_holding_the_room() -> None:

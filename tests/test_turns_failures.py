@@ -12,16 +12,21 @@ from typing import Any
 import pytest
 
 from roomkit import RoomKit
+from roomkit.channels.agent import Agent
 from roomkit.core.exceptions import RemoteTurnError, TurnLinkError, error_type_name
 from roomkit.models.channel import ChannelOutput
+from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory
 from roomkit.models.event import RoomEvent, TextContent
+from roomkit.models.room import Room
 from roomkit.models.streaming import ToolCallEndMarker, ToolCallStartMarker
+from roomkit.providers.ai.base import AIResponse
+from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.turns._error_codec import ROOMKIT_ERRORS, error_record
 from roomkit.turns.wire import ErrorRecord
 from tests.test_framework import SimpleChannel
-from tests.test_turns_backend import ScriptedChannel, _client, _run
+from tests.test_turns_backend import ScriptedChannel, _binding, _client, _event, _run
 
 
 class _Opaque:
@@ -178,6 +183,53 @@ async def test_a_record_value_json_has_no_form_for_crosses_as_its_text() -> None
     assert await anext(output.response_stream) == "text"
     assert output.response_metadata["at_output"].startswith("<")
     assert output.response_metadata["opaque"].startswith("<")
+
+
+class _ReadsTheRoom(ScriptedChannel):
+    """Keeps what its turn read of the event and the room."""
+
+    async def on_event(self, event: RoomEvent, binding: Any, context: Any) -> ChannelOutput:
+        self.read = (event, context)
+        return await super().on_event(event, binding, context)
+
+
+async def test_a_request_value_json_has_no_form_for_crosses_as_its_text() -> None:
+    """An application in the owner's process keeps an object in a room's
+    metadata or an event's: the request carries it as its text, as the
+    record does, and the turn runs."""
+    channel = _ReadsTheRoom()
+    event = _event().model_copy(update={"metadata": {"handle": _Opaque()}})
+    room = Room(id="room", metadata={"session": _Opaque()})
+    context = RoomContext(room=room, bindings=[_binding()], recent_events=[event])
+
+    output = await _client(channel).run(event, _binding(), context)
+
+    assert output.responded
+    read_event, read_context = channel.read
+    assert read_event.metadata["handle"].startswith("<")
+    assert read_context.room.metadata["session"].startswith("<")
+    assert read_context.recent_events[0].metadata["handle"].startswith("<")
+
+
+async def test_an_agent_answers_in_a_room_whose_metadata_json_has_no_form_for() -> None:
+    agent = Agent(
+        "agent", provider=MockAIProvider(ai_responses=[AIResponse(content="hello")]), role="a"
+    )
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(agent)
+    await kit.create_room(room_id="room", metadata={"session": _Opaque()})
+    await kit.attach_channel("room", "sms")
+    await kit.attach_channel("room", "agent", category=ChannelCategory.INTELLIGENCE)
+    message = InboundMessage(
+        channel_id="sms", sender_id="+15550000001", content=TextContent(body="hi")
+    )
+
+    result = await kit.process_inbound(message, room_id="room")
+
+    await kit.close()
+    assert result.error is None
+    assert [e.content.body for e in result.response_events] == ["hello"]
 
 
 def _raise_deep() -> None:

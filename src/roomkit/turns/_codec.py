@@ -3,16 +3,18 @@
 A stream item (a text delta or one of the stream markers) and a channel's
 output each have one wire form (an exception's is ``_error_codec``'s).
 Decoding builds new objects: nothing the executor holds is handed to the
-owner.
+owner. What the owner sends of a room (a request, a channel control message)
+crosses as the response-metadata record does: a value JSON has no form for
+is written as its text.
 """
 
 from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from pydantic_core import to_jsonable_python
+from pydantic_core import to_json, to_jsonable_python
 
 from roomkit.models.channel import ChannelOutput
 from roomkit.models.response_metadata import ResponseMetadata
@@ -25,7 +27,10 @@ from roomkit.models.streaming import (
 )
 from roomkit.providers.ai.base import AIImagePart, AITextPart
 from roomkit.turns._error_codec import ErrorClasses, error_record
-from roomkit.turns.wire import WireOutput
+from roomkit.turns.wire import ChannelCall, ChannelControlEnvelope, WireOutput
+
+if TYPE_CHECKING:
+    from roomkit.turns.wire import ChannelControl, TurnRequest
 
 # -- Stream items ---------------------------------------------------------------
 
@@ -219,3 +224,27 @@ def decode_output(wire: WireOutput, errors: ErrorClasses) -> ChannelOutput:
         metadata_updates=wire.metadata_updates,
         error=None if wire.error is None else errors.rebuild(wire.error),
     )
+
+
+# -- What the owner sends -------------------------------------------------------
+
+
+def request_json(request: TurnRequest) -> str:
+    """A turn's request as it crosses. The room's data it carries (the room's
+    metadata, an event's) may hold a value an application in the owner's
+    process left there that JSON has no form for: it crosses as its text,
+    the record's rule (:func:`record_payload`), and the turn runs."""
+    # pydantic_core's to_json: model_dump_json takes no fallback in pydantic
+    # 2.9, the floor RoomKit declares.
+    return to_json(request, by_alias=False, fallback=str).decode()
+
+
+def control_json(message: ChannelControl) -> str:
+    """A channel control message as it crosses, in its envelope: the room's
+    data it carries (a binding, a committed event) as a request carries it.
+    A channel call's arguments are its caller's, as a host verb's are: one
+    JSON has no form for is refused (``ValueError``), never sent as text."""
+    envelope = ChannelControlEnvelope(message=message)
+    if isinstance(message, ChannelCall):
+        return envelope.model_dump_json()
+    return to_json(envelope, by_alias=False, fallback=str).decode()

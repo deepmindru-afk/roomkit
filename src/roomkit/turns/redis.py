@@ -27,6 +27,7 @@ from uuid import uuid4
 
 from roomkit.core.exceptions import TurnLinkError
 from roomkit.core.task_utils import cancel_and_wait
+from roomkit.turns._codec import control_json, request_json
 from roomkit.turns._redis_beat import BeatPayload, BeatThread, LiveExecutors
 from roomkit.turns._redis_inbox import Envelope, Inbox
 from roomkit.turns._redis_outbox import Failed, Outbox
@@ -166,7 +167,7 @@ class RedisTurnBackend(TurnBackend):
         answer within the accept bound has lost it: the turn is released
         there, never handed to another (it may have begun)."""
         link = self._routes.owner_link(request, placed.member, placed.executor_id, placed.node)
-        body = request.model_dump_json()
+        body = request_json(request)
         try:
             answer = await self._routes.ask(
                 placed.node, "request", body, placed.executor_id, bound=self._timeouts.accept
@@ -216,7 +217,7 @@ class RedisTurnBackend(TurnBackend):
 
     async def control(self, message: ChannelControl) -> ChannelResult | None:
         self._start()
-        raw = ChannelControlEnvelope(message=message).model_dump_json()
+        raw = control_json(message)
         if isinstance(message, ChannelCall):
             channel_id, room_id = message.channel_id, message.room_id
             return await self._applied_once(

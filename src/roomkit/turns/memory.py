@@ -18,6 +18,7 @@ from collections.abc import Coroutine, Sequence
 from typing import TYPE_CHECKING, Any
 
 from roomkit.core.exceptions import TurnLinkError
+from roomkit.turns._codec import control_json, request_json
 from roomkit.turns._error_codec import error_record
 from roomkit.turns._rooms import RoomRecords
 from roomkit.turns.base import ExecutorLink, MessageOrder, RoomOwner, TurnBackend, TurnLink
@@ -97,7 +98,7 @@ class _MemoryTurn:
     request as JSON, and the owner's execution contexts."""
 
     def __init__(self, request: TurnRequest) -> None:
-        self.request_json = request.model_dump_json()
+        self.request_json = request_json(request)
         self.channel_id = request.channel_id
         self.frames = _Pipe(request.turn_id, FrameEnvelope)
         self.controls = _Pipe(request.turn_id, ControlEnvelope)
@@ -211,7 +212,7 @@ class InMemoryTurnBackend(TurnBackend):
     async def control(self, message: ChannelControl) -> ChannelResult | None:
         if self._closed:
             raise TurnLinkError("backend_closed")
-        raw = ChannelControlEnvelope(message=message).model_dump_json()
+        raw = control_json(message)
         if isinstance(message, ChannelCall):
             executor = self._place(message.channel_id, message.room_id)
             answer = await executor.control(_crossed(raw))
