@@ -197,6 +197,54 @@ def test_an_undeclared_provider_error_subclass_reads_as_a_provider_error() -> No
     assert not isinstance(rebuilt.__cause__, HostTransportError)
 
 
+def _raised(work: Callable[[], object]) -> Exception:
+    try:
+        work()
+    except Exception as exc:
+        return exc
+    raise AssertionError("did not raise")
+
+
+# Python's errors whose message lives in fields their ``__init__`` sets.
+BUILT_IN_MESSAGES: dict[str, Callable[[], object]] = {
+    "syntax_error": lambda: compile("def (", "<turn>", "exec"),
+    "indentation_error": lambda: compile("if x:\npass", "<turn>", "exec"),
+    "unicode_decode_error": lambda: b"\xff".decode(),
+    "unicode_encode_error": lambda: chr(233).encode("ascii"),
+}
+
+
+@pytest.mark.parametrize("case", BUILT_IN_MESSAGES)
+def test_a_built_in_error_keeps_the_message_its_fields_make(case: str) -> None:
+    raised = _raised(BUILT_IN_MESSAGES[case])
+    wire = error_record(raised).model_dump_json()
+    rebuilt = ErrorClasses().rebuild(ErrorRecord.model_validate_json(wire))
+    assert isinstance(rebuilt, type(raised))
+    assert str(rebuilt) == str(raised)
+
+
+def test_a_built_in_error_built_from_its_arguments_keeps_its_fields() -> None:
+    rebuilt = _crossed(_raised(BUILT_IN_MESSAGES["syntax_error"]))
+    assert type(rebuilt) is SyntaxError
+    assert (rebuilt.filename, rebuilt.lineno) == ("<turn>", 1)
+
+
+def test_a_declared_class_that_cannot_give_its_message_back_still_reads_as_itself() -> None:
+    class DetailedError(Exception):
+        def __init__(self, response: object) -> None:
+            super().__init__("detailed")
+            self.response = response
+
+        def __str__(self) -> str:
+            return f"failed: {self.response!r}"
+
+    raised = DetailedError(object())  # JSON carries no response
+    rebuilt = _crossed(raised, DetailedError)
+    assert isinstance(rebuilt, RemoteTurnError)
+    assert isinstance(rebuilt, DetailedError)
+    assert str(rebuilt) == str(raised)
+
+
 def test_an_undeclared_class_reads_as_its_nearest_python_ancestor() -> None:
     rebuilt = _crossed(HostQuotaError("over quota"))
     assert isinstance(rebuilt, RemoteTurnError)

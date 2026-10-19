@@ -324,7 +324,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   type. A declared class and its subclasses come back as themselves, with
   their arguments and the attributes JSON carries, causes included, on the
   kit and on an executor in another process, each reading with its own
-  declaration: `RoomKit(error_classes=(AppError, httpx.HTTPError))`. Any other
+  declaration: `RoomKit(error_classes=(AppError, httpx.HTTPError))`. One
+  whose message JSON cannot carry (its `__str__` reads an object, a
+  `UnicodeDecodeError`'s bytes) comes back as a `RemoteTurnError` that is
+  also of its class, its message kept. Any other
   class comes back as a `RemoteTurnError` that keeps its JSON attributes and
   its class's ancestors (`RemoteTurnError.bases`), and that is also an
   instance of the nearest of them the side rebuilds: an application's

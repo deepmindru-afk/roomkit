@@ -127,13 +127,15 @@ class ErrorClasses:
 
     def _one(self, record: ErrorRecord) -> BaseException:
         """The record's error, of its class when this side rebuilds it; else a
-        ``RemoteTurnError`` also of the nearest ancestor this side rebuilds."""
+        ``RemoteTurnError`` also of that class, when it is rebuilt but could
+        not be built from the record, or of the nearest ancestor rebuilt."""
         cls = self._rebuilt(record.kind)
         if cls is not None:
             exc = _of_class(cls, record)
             if exc is not None:
                 return exc
-        return _remote(record, filter(None, map(self._rebuilt, record.bases)))
+        classes = [cls, *map(self._rebuilt, record.bases)]
+        return _remote(record, filter(None, classes))
 
     def _rebuilt(self, kind: str) -> type[Exception] | None:
         """The class *kind* names when this side rebuilds it: a declared one,
@@ -154,21 +156,37 @@ ROOMKIT_ERRORS = ErrorClasses()
 
 
 def _of_class(cls: type[Exception], record: ErrorRecord) -> BaseException | None:
-    """A new *cls* carrying the record's arguments and attributes, built
-    without its ``__init__``; ``None`` when the class refuses them."""
+    """A new *cls* carrying the record's arguments and attributes; ``None``
+    when the class refuses them. One of Python's is built by its constructor,
+    whose fields its message may live in (a ``SyntaxError``'s location);
+    another without its ``__init__``, and kept only when it gives the
+    record's message back (``__init__`` set what it reads from objects JSON
+    did not carry)."""
+    built_in = cls.__module__ == "builtins"
     try:
-        exc = cls.__new__(cls, *record.args)
+        # A built-in's constructor runs no code but the interpreter's, on JSON values.
+        exc = cls(*record.args) if built_in else cls.__new__(cls, *record.args)
     except Exception:
         return None
     exc.args = tuple(record.args)
     exc.__dict__.update(record.attributes)
+    if not built_in and not _gives_back(exc, record.message):
+        return None
     return exc
 
 
-def _remote(record: ErrorRecord, ancestors: Iterable[type[Exception]]) -> RemoteTurnError:
+def _gives_back(exc: BaseException, message: str) -> bool:
+    """Whether *exc* reads *message*; one whose ``__str__`` raises does not."""
+    try:
+        return str(exc) == message
+    except Exception:
+        return False
+
+
+def _remote(record: ErrorRecord, classes: Iterable[type[Exception]]) -> RemoteTurnError:
     """The record's error as a ``RemoteTurnError`` that is also the first of
-    *ancestors* it can be built as."""
-    built = (_new_remote(ancestor, record.message) for ancestor in ancestors)
+    *classes* it can be built as."""
+    built = (_new_remote(cls, record.message) for cls in classes)
     exc = next((e for e in built if e is not None), None)
     if exc is None:
         exc = RemoteTurnError.__new__(RemoteTurnError, record.message)
