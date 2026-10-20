@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from roomkit.channels.agent import Agent
+from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.core.task_utils import hold_task
 from roomkit.models.enums import EventType, HookExecution, HookTrigger
 from roomkit.orchestration._agents import held
@@ -174,8 +175,6 @@ class ConversationPipeline:
         # Detect speech-to-speech mode
         is_realtime = False
         if voice_channel_id:
-            from roomkit.channels.realtime_voice import RealtimeVoiceChannel
-
             is_realtime = isinstance(kit.channels.get(voice_channel_id), RealtimeVoiceChannel)
         live = [a for a in held_agents if isinstance(a, Agent)]
         if is_realtime:
@@ -313,8 +312,6 @@ class ConversationPipeline:
         channel, starts each new session with its room's active agent, and
         reconfigures a room's sessions on its handoffs (RFC §19.5).
         """
-        from roomkit.channels.realtime_voice import RealtimeVoiceChannel
-
         rtv = kit.channels.get(rtv_channel_id)
         if not isinstance(rtv, RealtimeVoiceChannel):
             msg = f"voice_channel_id={rtv_channel_id!r} does not point to a RealtimeVoiceChannel"

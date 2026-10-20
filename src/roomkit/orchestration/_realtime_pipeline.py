@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._agent_features import UnservedFeature, unserved_in_pipeline
 from roomkit.channels._tool_registry import SessionConfig, orchestration_tool
+from roomkit.channels.realtime_voice import RealtimeVoiceChannel, get_current_voice_session
 from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.orchestration.handoff import (
     HANDOFF_TOOL,
@@ -33,7 +34,6 @@ from roomkit.tools.result import declined_answer
 if TYPE_CHECKING:
     from roomkit.channels.agent import Agent
     from roomkit.channels.ai import ToolResult
-    from roomkit.channels.realtime_voice import RealtimeVoiceChannel
     from roomkit.core.framework import RoomKit
     from roomkit.models.room import Room
     from roomkit.orchestration.pipeline import PipelineStage
@@ -219,9 +219,6 @@ class RealtimePipeline:
 
     async def serve_handoff(self, arguments: dict[str, Any]) -> ToolResult:
         """Hand the room of the call off to the agent *arguments* name."""
-        # Lazy import to avoid circular dependency
-        from roomkit.channels.realtime_voice import get_current_voice_session
-
         kit = self._kit
         session = get_current_voice_session()
         session_id = session.id if session else None

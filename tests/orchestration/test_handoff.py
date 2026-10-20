@@ -1144,24 +1144,58 @@ async def test_a_handler_without_a_realtime_channel_takes_a_declared_agent(
     await kit.close()
 
 
+@pytest.mark.parametrize("held", ["declared", "ai"])
 @pytest.mark.parametrize("path", ["channel_id", "agents changed in place"])
-async def test_a_realtime_language_change_refuses_an_agent_without_its_prompt(path: str) -> None:
+async def test_a_realtime_language_change_refuses_an_agent_without_its_prompt(
+    path: str, held: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """RMK-831: a language change for a realtime channel whose active agent
-    is held by its declaration alone is refused before anything is written,
+    is not an Agent is refused before anything is written or reconfigured,
     whether the channel is named by the call (the handler serving none) or
     the agent was put in the handler's agents in place."""
-    kit = await _handoff_kit("declared")
-    router = ConversationRouter(default_agent_id="declared")
+    kit = await _handoff_kit(held)
+    reconfigured = _spy_sessions(kit, monkeypatch)
+    router = ConversationRouter(default_agent_id=held)
     if path == "channel_id":
         handler = HandoffHandler(kit=kit, router=router)
-        handler.agents = {"declared": kit.channels["declared"]}
+        handler.agents = {held: kit.channels[held]}
         change = handler.set_language("r1", "French", channel_id="rtv")
     else:
         handler = HandoffHandler(kit=kit, router=router, event_channel_id="rtv")
-        handler.agents["declared"] = kit.channels["declared"]
+        handler.agents[held] = kit.channels[held]
         change = handler.set_language("r1", "French")
 
-    with pytest.raises(ValueError, match="agents themselves"):
+    with pytest.raises(ValueError, match=f"agents themselves.*{held}"):
         await change
     assert _language(await kit.get_room("r1")) is None
+    assert reconfigured == []
     await kit.close()
+
+
+async def test_a_language_change_on_a_text_channel_takes_a_declared_agent() -> None:
+    """RMK-831: a handler whose event channel is realtime, asked to change
+    the language for a text channel, runs no session's prompt: it writes the
+    language, its declared agent kept."""
+    kit = await _handoff_kit("declared")
+    handler = HandoffHandler(
+        kit=kit, router=ConversationRouter(default_agent_id="declared"), event_channel_id="rtv"
+    )
+    handler.agents["declared"] = kit.channels["declared"]
+
+    await handler.set_language("r1", "French", channel_id="sms")
+
+    assert _language(await kit.get_room("r1")) == "French"
+    await kit.close()
+
+
+def _spy_sessions(kit: RoomKit, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """The prompts the realtime channel's one session of r1 is reconfigured with."""
+    rtv = kit.channels["rtv"]
+    reconfigured: list[Any] = []
+
+    async def reconfigure(session: Any, **kwargs: Any) -> None:
+        reconfigured.append(kwargs.get("system_prompt"))
+
+    monkeypatch.setattr(rtv, "get_room_sessions", lambda room_id: [object()])
+    monkeypatch.setattr(rtv, "reconfigure_session", reconfigure)
+    return reconfigured

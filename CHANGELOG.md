@@ -76,16 +76,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A `HandoffHandler` serving a realtime voice channel refuses an agent that
   is not an `Agent` (one the kit holds by its declaration alone, or another
-  intelligence channel) with a `ValueError` (RMK-831, RFC §19.5, §19.6): the
-  channel's sessions run each agent's prompt and identity block, which only
-  an `Agent` carries. It refuses one when given it while `event_channel_id`
-  names a realtime channel, and `set_language()` refuses one before writing
-  the room's language when the channel it reconfigures (`channel_id=` or
-  `event_channel_id`) is realtime, whoever put the agent in its `agents`;
-  `set_language()` raised `AttributeError` at the first language change.
-  `ConversationPipeline` refuses such agents by the same rule. A handler
-  serving no realtime channel (Swarm's, Pipeline's, a text one) still takes
-  declared agents.
+  intelligence channel) with a `ValueError` naming it (RMK-831, RFC §19.5,
+  §19.6): the channel's sessions run each agent's own prompt, which only an
+  `Agent` carries. It refuses one when given it while `event_channel_id`
+  names a realtime channel the kit holds, and `set_language()` refuses one
+  before writing the room's language when the channel it reconfigures
+  (`channel_id=` or `event_channel_id`) is realtime, whoever put the agent in
+  its `agents`; `set_language()` raised `AttributeError` at the first
+  language change. An object that is not an `Agent` but carries
+  `system_prompt` and `build_identity_block`, which `set_language()` took,
+  is refused too. `ConversationPipeline` refuses such agents by the same
+  rule. A handler serving no realtime channel (Swarm's, Pipeline's, a text
+  one) still takes declared agents.
 
 - `cancel_task` answers a task of the room it may not cancel as still
   running, and why (RMK-829, RFC §23.4): an inline delegation runs inside the

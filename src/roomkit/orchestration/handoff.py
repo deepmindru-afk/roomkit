@@ -178,9 +178,9 @@ def build_handoff_tool(targets: list[tuple[str, str | None]]) -> AITool:
 
 
 REALTIME_NEEDS_LIVE_AGENTS = (
-    "A realtime voice session runs each agent's prompt and identity block: give "
-    "the pipeline or the handoff handler the agents themselves, not ids the kit "
-    "holds by declaration nor other intelligence channels"
+    "A realtime voice session runs each agent's own prompt: give the pipeline or "
+    "the handoff handler the agents themselves, not ids the kit holds by "
+    "declaration nor other intelligence channels"
 )
 """Why a realtime handoff refuses any agent that is not an Agent (RFC §19.5,
 §19.6)."""
@@ -190,14 +190,15 @@ def require_live_agents(agents: Iterable[Any]) -> None:
     """Refuse, for a realtime handoff, any agent that is not an
     :class:`~roomkit.channels.agent.Agent`: one the kit holds by its
     declaration alone, or another intelligence channel. A realtime session
-    runs each agent's prompt and identity block, which only an Agent carries
-    (RFC §19.5, §19.6).
+    runs each agent's own prompt, which only an Agent carries (RFC §19.5,
+    §19.6).
 
     Raises:
-        ValueError: one of *agents* is not an Agent.
+        ValueError: one of *agents* is not an Agent, each one named.
     """
-    if any(not isinstance(agent, Agent) for agent in agents):
-        raise ValueError(REALTIME_NEEDS_LIVE_AGENTS)
+    refused = [str(getattr(a, "channel_id", a)) for a in agents if not isinstance(a, Agent)]
+    if refused:
+        raise ValueError(f"{REALTIME_NEEDS_LIVE_AGENTS} ({', '.join(refused)})")
 
 
 class HandoffHandler:
