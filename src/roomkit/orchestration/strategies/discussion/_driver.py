@@ -179,6 +179,14 @@ class TurnDriver:
         if self._stopping or room.closed:
             # done() may uninstall the discussion it is asked about.
             return None
+        return await self._planned_turn(done)
+
+    async def _planned_turn(self, done: bool) -> _Turn | None:
+        """The turn to give, planned under the room lock, once the dispatch
+        policy decided the first message waiting for it, off the lock;
+        *done* is what the discussion's ``done`` answered."""
+        room = self._room
+        shared = room.shared
         async with room.kit._lock_manager.locked(room.room_id):
             context = await room.kit._build_context(room.room_id, reads_history=True)
             if context.room.status in _REFUSING:
