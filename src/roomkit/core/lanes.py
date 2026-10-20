@@ -71,6 +71,31 @@ _active_lane_room: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 
 
+# The cascade whose plan the current task executes: an intelligence target's
+# turn run there is its turn work, which cancelling it cancels. Set while a
+# plan executes only; the turn's own code (a strategy, a tool) works for none.
+_delivering: contextvars.ContextVar[DeliveryCascade | None] = contextvars.ContextVar(
+    "_delivering", default=None
+)
+
+
+async def run_turn_work[T](work: Coroutine[Any, Any, T]) -> T:
+    """Run *work*, a turn, as the turn work of the cascade whose plan the
+    current task executes (RFC §10.1): cancelling the cascade cancels it, and
+    refuses it once cancelled; outside a plan's execution it simply runs."""
+    cascade = _delivering.get()
+    if cascade is None:
+        return await work
+    return await cascade.run(work, turn_work=True)
+
+
+def _outside_delivery() -> contextvars.Context:
+    """A copy of the current context whose code executes no cascade's plan."""
+    context = contextvars.copy_context()
+    context.run(_delivering.set, None)
+    return context
+
+
 def delivery_claim_key(room_id: str) -> str:
     """The lock-manager key for a room's delivery claim."""
     return f"{DELIVERY_CLAIM_PREFIX}{room_id}"
@@ -150,6 +175,12 @@ class DeliveryCascade:
     between two passes of an AI chain. ``wait()`` therefore resolves exactly
     when "the caller observes its event's delivery-set completion" (RFC §10.1
     step 18) holds for the whole chain the call started.
+
+    Cancelling it stops its turns, not its delivery (RFC §10.1, *Explicit
+    delivery cancellation*): its turn work (an intelligence target's turn,
+    the reading of a stream) is cancelled, and none starts after; its plans
+    still deliver their event to every other target and fire their
+    AFTER_BROADCAST, and no reentry follows.
     """
 
     __slots__ = (
@@ -167,6 +198,7 @@ class DeliveryCascade:
         "room_id",
         "streams",
         "_tasks",
+        "_turn_work",
         "_cleanup_task",
     )
 
@@ -204,6 +236,8 @@ class DeliveryCascade:
         self.delivery_results: dict[str, Any] = {}
         self.unavailable_targets: list[str] = []
         self._tasks: set[asyncio.Task[Any]] = set()
+        # Its turn work: what a cancellation cancels.
+        self._turn_work: set[asyncio.Task[Any]] = set()
         self._cleanup_task: asyncio.Task[None] | None = None
 
     @property
@@ -213,26 +247,34 @@ class DeliveryCascade:
             self._cleanup_task is None or self._cleanup_task.done()
         )
 
-    def track(self, task: asyncio.Task[Any]) -> None:
-        """Own a task before it can start; cancellation is sent only once."""
+    def track(self, task: asyncio.Task[Any], *, turn_work: bool = False) -> None:
+        """Own a task before it can start; *turn_work* (a turn, or the
+        reading of a stream) is what a cancellation cancels, once."""
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        if not turn_work:
+            return
+        self._turn_work.add(task)
+        task.add_done_callback(self._turn_work.discard)
         if self.cancelled is not None:
-            task.cancel()
+            task.cancel(self.cancelled)
 
     async def run[T](
         self,
         work: Coroutine[Any, Any, T],
         *,
         on_task: Callable[[asyncio.Task[T]], None] | None = None,
+        turn_work: bool = False,
     ) -> T:
         """Execute owned work without giving its waiter cancellation
-        ownership; *on_task* receives its task as soon as it is owned."""
-        if self.cancelled is not None:
+        ownership; *on_task* receives its task as soon as it is owned.
+        *turn_work* is refused once the cascade is cancelled, and runs for no
+        delivery; its delivery work still runs."""
+        if turn_work and self.cancelled is not None:
             work.close()
-            raise asyncio.CancelledError
-        task = start_named(work)
-        self.track(task)
+            raise asyncio.CancelledError(self.cancelled)
+        task = start_named(work, context=_outside_delivery() if turn_work else None)
+        self.track(task, turn_work=turn_work)
         if on_task is not None:
             on_task(task)
         try:
@@ -267,7 +309,7 @@ class DeliveryCascade:
             )
 
     async def abandon(self, reason: str) -> None:
-        """Stop the delivery tail of a cascade its caller left (cancelled or
+        """Stop the turns of a cascade its caller left (cancelled or
         failed): drained within :meth:`cancel_and_wait`'s budget, or only
         cancelled when the caller is the lane or holds the room lock."""
         if self.waiter_would_deadlock():
@@ -327,7 +369,11 @@ class DeliveryCascade:
         ``chained`` marks answers to an answer, started by a pass other than
         the caller's own: read like the caller's, they count against the
         reentry budget and their record and failure are not the caller's.
+        A cancelled cascade's are dropped unread: nobody reads them.
         """
+        if self.cancelled is not None:
+            drop_unread_streams(streams)
+            return
         for stream in streams:
             stream.chained = chained
         self.streams.extend(streams)
@@ -348,11 +394,12 @@ class DeliveryCascade:
             self.error = exc
 
     def cancel(self, reason: str) -> None:
-        """Abort the cascade: wake every waiter, keep the reason."""
+        """Stop the cascade's turns: cancel its turn work and start none
+        after; wake every waiter, keep the reason."""
         if self.cancelled is not None:
             return
         self.cancelled = reason
-        for task in self._tasks:
+        for task in self._turn_work:
             if not task.done() and not task.cancelling():
                 # The reason travels with the cancellation: a turn the
                 # cascade runs tells its executor why (RFC §10.6.8).
@@ -811,6 +858,9 @@ class RoomDeliveryLane:
         a completed-empty execution so the cursor and the cascade still
         advance.
         """
+        # This task executes the cascade's plan: its targets' turns are the
+        # cascade's turn work (RFC §10.1).
+        _delivering.set(entry.cascade)
         try:
             return await self._host._execute_plan(entry.plan)
         except asyncio.CancelledError:
@@ -834,9 +884,10 @@ class RoomDeliveryLane:
         """
         try:
             if result is not None and entry.cascade.cancelled is not None:
-                # Cancelled once the plan ran: nobody reads what it started.
+                # Cancelled once the plan ran: nobody reads what it started,
+                # and its event's aftermath still follows (RFC §10.1).
                 drop_unread_streams(getattr(result, "streaming_responses", ()))
-            elif result is not None:
+            if result is not None:
                 await entry.cascade.run(self._finish_effects(entry, result))
         except asyncio.CancelledError:
             if entry.cascade.cancelled is None:

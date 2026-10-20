@@ -35,6 +35,7 @@ from roomkit.models.response_metadata import merge_caller_record
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
+    from roomkit.core._delivery_keys import DeliveryKeys
     from roomkit.core.admission import RoomAdmission
     from roomkit.core.inbound_router import InboundRoomRouter
     from roomkit.core.lanes import DeliveryCascade
@@ -114,6 +115,7 @@ class InboundMixin(HelpersMixin):
     _inbound_rate_limit: Any  # RateLimit | None
     _telemetry: TelemetryProvider
     _verification_inbound: bool
+    _delivery_keys: DeliveryKeys
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _resolve_identity: Any  # see InboundHost
@@ -168,13 +170,15 @@ class InboundMixin(HelpersMixin):
                 identity (a chat, a number) to a room is where it usually
                 lives.
 
-        Cancelling an awaited call cancels only its delivery cascade and
-        drains owned generation, tools and streams before propagating
-        ``CancelledError``. Cleanup has a five-second budget; ``TimeoutError``
-        reports that work is still unwinding and its resources must be kept.
-        Deferred callers explicitly use ``result.delivery.cancel()``;
-        cancelling a handle's ``wait()`` cancels only that wait. Committed
-        timeline events are retained in either case.
+        Cancelling an awaited call stops only its turns (the message is
+        still delivered to the room's other channels) and drains owned
+        generation, tools and streams before propagating ``CancelledError``.
+        Cleanup has a five-second budget; ``TimeoutError`` reports that work
+        is still unwinding and its resources must be kept. Deferred callers
+        explicitly use ``result.delivery.cancel()``, and any code by the
+        message's ``delivery_key`` (:meth:`cancel_delivery`); cancelling a
+        handle's ``wait()`` cancels only that wait. Committed timeline events
+        are retained in every case.
         """
         from roomkit.telemetry.base import SpanKind
         from roomkit.telemetry.context import get_current_span, reset_span, set_current_span
@@ -241,6 +245,24 @@ class InboundMixin(HelpersMixin):
                     inbound_span_id,
                     attributes={"blocked": _inbound_result.blocked, "deferred": defer_delivery},
                 )
+
+    async def cancel_delivery(self, key: str, *, reason: str = "caller_cancelled") -> int:
+        """Cancel the deliveries in flight of the messages sent with
+        ``InboundMessage(delivery_key=key)`` (RFC §10.1, *Explicit delivery
+        cancellation*): how many it cancelled, 0 when the key names nothing
+        in flight (the deliveries are over, or were never sent).
+
+        Each delivery's agents stop: a turn not started yet never starts, a
+        running one is cut, and nothing answers it after. The message itself
+        is still delivered to the room's other channels and its
+        AFTER_BROADCAST hooks fire. Returns at once, from anywhere in the
+        process, a tool handler included; each delivery's caller reads its
+        cancelled end on its result, as after ``result.delivery.cancel()``.
+
+        The key names, it does not authorize: check who may cancel before
+        calling.
+        """
+        return self._delivery_keys.cancel(key, reason)
 
     async def _process_inbound_inner(
         self,
@@ -391,13 +413,15 @@ class InboundMixin(HelpersMixin):
         the setting exists for. Past the lock, ``_process_locked`` spends what
         remains on the pre-commit gates and stops there. That timeout never
         invalidates a committed event. Explicit caller cancellation instead
-        stops the delivery tail, retaining the committed timeline record.
+        stops the message's turns, retaining the committed timeline record.
         """
         from roomkit.core.lanes import DeliveryCascade
 
         cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
+        key = message.delivery_key
+        self._delivery_keys.hold(key, cascade)
         try:
-            return await self._complete_inbound_delivery(
+            result = await self._complete_inbound_delivery(
                 event,
                 context,
                 resolved_identity,
@@ -412,8 +436,13 @@ class InboundMixin(HelpersMixin):
         except BaseException:
             # The caller owns this cascade even if setup failed after commit,
             # before it could receive a deferred handle. Drain off the lock.
+            self._delivery_keys.release(key, cascade)
             await cascade.abandon("caller_cancelled")
             raise
+        if result.delivery is None:
+            # Over; a deferred tail lets go of its key when it ends.
+            self._delivery_keys.release(key, cascade)
+        return result
 
     async def _complete_inbound_delivery(
         self,
@@ -500,6 +529,8 @@ class InboundMixin(HelpersMixin):
         completion.
         """
         consumer = self._consume_streams_when_cascade_completes(cascade, room_id)
+        key = message.delivery_key
+        consumer.add_done_callback(lambda _: self._delivery_keys.release(key, cascade))
         result.delivery = DeliveryHandle(cascade, consumer, result)
         await self._connect_session_if_ready(message, channel, room_id, result)
         return result

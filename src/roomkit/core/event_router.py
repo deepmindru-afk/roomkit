@@ -13,7 +13,7 @@ from roomkit.core._failure_log import log_failure
 from roomkit.core._turn_runners import TurnRunner
 from roomkit.core.circuit_breaker import CircuitBreaker
 from roomkit.core.exceptions import NoRecipientError
-from roomkit.core.lanes import DeliveryPlan
+from roomkit.core.lanes import DeliveryPlan, run_turn_work
 from roomkit.core.rate_limiter import TokenBucketRateLimiter
 from roomkit.core.retry import retry_with_backoff
 from roomkit.core.transcoder import DefaultContentTranscoder
@@ -499,7 +499,7 @@ class EventRouter:
 
                 # on_event — all channels react; an intelligence channel's
                 # call is a turn, run through the turn backend (RFC §10.6).
-                output = await self.react(channel, transcoded_event, binding, context)
+                output = await self._reacting(channel, transcoded_event, binding, context)
                 tr.output = output
                 if output.error is not None:
                     # Delivered and failed at once: the output goes on, and
@@ -681,6 +681,22 @@ class EventRouter:
         )
 
         return result
+
+    async def _reacting(
+        self, channel: Channel, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        """*channel*'s reaction to a planned event: an intelligence channel's
+        turn runs as its delivery's turn work, and answers nothing once the
+        delivery was cancelled, before it started or while it ran (RFC §10.1)."""
+        if binding.category != ChannelCategory.INTELLIGENCE:
+            return await self.react(channel, event, binding, context)
+        try:
+            return await run_turn_work(self.react(channel, event, binding, context))
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+            return ChannelOutput.empty()
 
     async def react(
         self,

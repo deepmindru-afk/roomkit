@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `InboundMessage.delivery_key` and `kit.cancel_delivery(key)` (RMK-860, RFC
+  §10.1): a caller names a message's delivery by a key of its own and cancels
+  it from anywhere in the process, without its handle, so an agent's tool can
+  pass a task id along as text. It answers how many deliveries in flight the
+  key named and cancelled, returns at once (a sync hook or a tool handler
+  included), and each call's caller reads the cancelled end on its result.
+  Several messages may share a key; the key is never stored and grants
+  nothing. Two tasks handed to one agent in one room can now be stopped one at
+  a time, where a room's Stop cut the running one and let the waiting one
+  start. `examples/cancel_delivery_by_key.py` runs it.
+
+### Changed
+
+- Cancelling a delivery stops its turns, not its delivery (RMK-860, RFC §10.1):
+  `result.delivery.cancel()`, a cancelled awaited `process_inbound()` /
+  `send_event()` / `regenerate_response()` and `kit.cancel_delivery()` cancel
+  the intelligence targets' turns and the reading of their streams, and a turn
+  not started yet never starts; the message is still delivered to the room's
+  other channels and its AFTER_BROADCAST hooks fire. A message cancelled while
+  it waited in the room's lane used to be stored without reaching any
+  transport or firing its hooks, so a host's live view and audit missed it.
+
 ### Fixed
 
 - A turn's executor cancels the turn's running work once (RMK-860, RFC

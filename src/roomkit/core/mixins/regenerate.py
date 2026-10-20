@@ -225,7 +225,7 @@ class RegenerateMixin(HelpersMixin):
             return await self._finish_regeneration(room_id, trigger, plan, cascade)
         except BaseException:
             # The caller owns the cascade: a caller cancelled stops its
-            # delivery tail, off the lock, as on the inbound path.
+            # turns, off the lock, as on the inbound path.
             await cascade.abandon("caller_cancelled")
             raise
 

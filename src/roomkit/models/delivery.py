@@ -118,6 +118,13 @@ class InboundMessage(BaseModel):
     # pass that must start from a blank page — a summary re-run that would
     # otherwise read, and copy, its previous answer. Instructions only.
     standalone: bool = False
+    # A key the caller chooses that names this message's delivery while it
+    # runs (RFC §10.1): ``kit.cancel_delivery(key)`` cancels it from anywhere
+    # in the process, without the handle, so an agent's tool can pass it on
+    # as text. The agents it asks stop, queued or running; the message itself
+    # is still delivered. Several messages may share one key. Never stored;
+    # it names, it does not authorize: check who may cancel before calling.
+    delivery_key: str | None = None
 
     @model_validator(mode="after")
     def _standalone_is_an_instruction(self) -> InboundMessage:
@@ -175,11 +182,17 @@ class DeliveryHandle:
     async def cancel(
         self, *, reason: str = "caller_cancelled", timeout: float = 5.0
     ) -> InboundResult:
-        """Cancel this turn and drain its tools, generation and streams.
+        """Stop this message's turns and drain their tools, generation and
+        streams (RFC §10.1): a turn not started yet never starts, a running
+        one is cut, and nothing answers the message after.
 
-        Returns the original result with ``cancellation_reason`` set. Already
-        committed events remain stored. Other turns and shared providers are
-        unaffected. Repeated calls are safe and preserve the first reason.
+        Returns the original result with ``cancellation_reason`` set. The
+        message itself stays stored and is still delivered to the room's
+        other channels, its AFTER_BROADCAST hooks fired; a delivery still
+        waiting in the room's lane follows in lane order. Other turns and
+        shared providers are unaffected. Repeated calls are safe and preserve
+        the first reason. Code without this handle cancels the same way by
+        the message's ``delivery_key`` (``kit.cancel_delivery``).
 
         ``TimeoutError`` means cleanup is STILL running: retain the resources
         it uses and await this handle before disposing them. Cancellation of

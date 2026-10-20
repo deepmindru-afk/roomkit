@@ -73,7 +73,7 @@ async def test_a_cancelled_cascade_reports_its_cleanup_incomplete_while_an_end_i
         async for _ in stream:
             pass
 
-    cascade.track(asyncio.ensure_future(consume()))
+    cascade.track(asyncio.ensure_future(consume()), turn_work=True)
     await asyncio.sleep(0.05)
 
     with pytest.raises(TimeoutError, match="did not end"):
@@ -98,7 +98,7 @@ async def test_a_cancelled_cascade_whose_turns_ended_reports_its_cleanup_done() 
         async for _ in stream:
             pass
 
-    cascade.track(asyncio.ensure_future(consume()))
+    cascade.track(asyncio.ensure_future(consume()), turn_work=True)
     await asyncio.sleep(0.05)
 
     await cascade.cancel_and_wait("caller_cancelled", timeout=2.0)
@@ -130,7 +130,7 @@ async def test_a_cancelled_cascade_nobody_waits_for_leaves_no_unretrieved_error(
     assert await anext(stream) == "one"
     cascade = DeliveryCascade("room", reentry_budget=10)
     cascade.add_streams([_response(stream)])
-    cascade.track(asyncio.ensure_future(_consumed(stream)))
+    cascade.track(asyncio.ensure_future(_consumed(stream)), turn_work=True)
     await asyncio.sleep(0.05)
 
     with caplog.at_level(logging.ERROR, logger="asyncio"):
@@ -166,7 +166,7 @@ async def test_a_cascade_whose_turn_its_owner_gave_up_reports_its_cleanup_done()
     assert await anext(stream) == "one"
     cascade = DeliveryCascade("room", reentry_budget=10)
     cascade.add_streams([_response(stream)])
-    cascade.track(asyncio.ensure_future(_consumed(stream)))
+    cascade.track(asyncio.ensure_future(_consumed(stream)), turn_work=True)
 
     await client.close()
     await cascade.cancel_and_wait("kit_closed", timeout=2.0)

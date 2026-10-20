@@ -602,7 +602,7 @@ class LaneExecutionMixin(HelpersMixin):
             name=f"roomkit-detached-streams-{room_id}",
             context=contextvars.Context(),
         )
-        cascade.track(task)
+        cascade.track(task, turn_work=True)
         task.add_done_callback(_end_tail)
         self._hold_reader(task)
         return task
@@ -626,6 +626,7 @@ class LaneExecutionMixin(HelpersMixin):
                     cascade, room_id, response_events=cascade.response_events
                 ),
                 on_task=self._hold_reader,
+                turn_work=True,
             )
         )
         return read if read is not None else (None, ResponseMetadata())

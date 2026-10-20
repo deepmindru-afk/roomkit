@@ -358,6 +358,12 @@ them through `identity_id`.
 
 ## Cancelling a turn
 
+Cancelling a message's delivery stops its agents' turns and only those: a turn
+still waiting in the room's lane (or behind the room's ACP prompt) never
+starts, a running one is cut with its tools, and nothing answers after. The
+message itself is still delivered to the room's other channels and fires its
+`AFTER_BROADCAST` hooks. The room's other turns go on.
+
 Cancelling a task awaiting `kit.process_inbound()` cancels and drains that
 call's tools, generation and stream consumers before propagating
 `asyncio.CancelledError`. Other rooms and shared providers remain usable.
@@ -373,5 +379,15 @@ The default cleanup budget is five seconds on both paths. `TimeoutError`
 means cleanup is incomplete: keep resources still in use, and for a deferred
 call await its handle later. Repeated cancellation does not interrupt
 finalizers. A handle cannot drain its own room lock or lane (`RuntimeError`).
+
+Code without the handle names the delivery by a key the caller set on the
+message, `InboundMessage(..., delivery_key="task-42")`, and cancels it from
+anywhere in the process, a tool handler included:
+`await kit.cancel_delivery("task-42", reason="lead_cancelled")`. It answers how
+many deliveries in flight the key named and cancelled (0 once they are over),
+returns at once, and each call's caller reads its cancelled end on its result.
+Several messages may share a key. The key is never stored and grants nothing:
+check who may cancel before calling. A `kit.steer(Cancel(), ...)` reaches only
+turns that have started; use the delivery to stop one message's turns.
 External effects already committed and tasks detached by application handlers
 are outside this cancellation contract. See `examples/cancel_delivery.py`.
