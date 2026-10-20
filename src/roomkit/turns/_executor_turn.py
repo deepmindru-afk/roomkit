@@ -100,10 +100,12 @@ class ExecutorTurn:
         self._executor_id = executor_id
         self._channel = channel
         self._timeouts = timeouts
-        # What the owner's pulls let the stream read (RFC §10.6.4), and
-        # whether a close cut the read ahead of the reader.
+        # What the owner's pulls let the stream read (RFC §10.6.4), whether a
+        # close cut the read ahead of the reader, and whether the channel's
+        # stream is being closed (a cleanup no later cut cancels).
         self._pulls = PullGate()
         self._close_cut = False
+        self._cleaning = False
         self._cut: str | None = None
         self._wake = asyncio.Event()
         self._heard = True
@@ -307,6 +309,7 @@ class ExecutorTurn:
 
     async def _close(self, stream: AsyncIterator[Any], context: contextvars.Context) -> None:
         """Close the stream as a local reader's close would."""
+        self._cleaning = True
         try:
             await self._run_work(_close_stream(stream), context)
         except asyncio.CancelledError:
@@ -314,6 +317,8 @@ class ExecutorTurn:
                 raise
         except Exception:
             logger.exception("Closing the stream of turn %s failed", self._request.turn_id)
+        finally:
+            self._cleaning = False
         await self._changes.report()
 
     async def _run_work(self, work: Coroutine[Any, Any, Any], context: contextvars.Context) -> Any:
@@ -476,11 +481,11 @@ class ExecutorTurn:
 
     def _cancel_work(self, reason: str) -> bool:
         """Cancel the piece of the turn's work that runs, once: one already
-        cancelled (a close then a cut, or a cut then a close) is let finish
-        its cleanup, the channel's finalizers included. Whether it was
-        cancelled now."""
+        cancelled, or the stream's close a close started (a close then a cut,
+        or a cut then a close), is let finish its cleanup, the channel's
+        finalizers included. Whether it was cancelled now."""
         work = self._work
-        if work is None or work.done() or work.cancelling():
+        if work is None or work.done() or work.cancelling() or self._cleaning:
             return False
         work.cancel(reason)
         return True

@@ -34,10 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A turn's executor cancels the turn's running work once (RMK-860, RFC
-  §10.6.8): a stream close that reached it while a cut's cleanup ran (or a cut
-  after a close) cancelled that cleanup again, so a channel's stream finalizer
-  awaiting something (a provider closing its connection) was interrupted
-  halfway and the turn's end was written before it had finished.
+  §10.6.8): a stream close that reached it while a cut's cleanup ran, or a cut
+  that reached it while a close's cleanup ran, cancelled that cleanup again, so
+  a channel's stream finalizer awaiting something (a provider closing its
+  connection) was interrupted halfway and the turn's end was written before it
+  had finished.
 
 ## [0.106.0] — 2026-10-19
 

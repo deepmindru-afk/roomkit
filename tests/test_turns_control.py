@@ -272,6 +272,45 @@ async def test_a_close_after_a_cut_lets_the_channel_finish_its_cleanup() -> None
     await client.close()
 
 
+class FinalizingAfterMarker(Held):
+    """A channel without steering whose stream ends its reads on a marker,
+    then takes a while to clean up."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.unwinding = asyncio.Event()
+        self.finished = asyncio.Event()
+
+    async def _stream(self) -> AsyncIterator[Any]:
+        try:
+            yield ToolCallStartMarker(tool_name="t", tool_id="c1")
+            yield "more"
+        finally:
+            self.unwinding.set()
+            await self.release.wait()
+            self.finished.set()
+
+
+async def test_a_cut_after_a_close_lets_the_channel_finish_its_cleanup() -> None:
+    channel = FinalizingAfterMarker()
+    client = _client(channel)
+    output = await _start(client)
+    assert output.response_stream is not None
+    stream = output.response_stream
+    await anext(stream)
+
+    # The close finds no read under way: it starts the channel's cleanup.
+    closing = asyncio.create_task(stream.aclose())
+    await asyncio.wait_for(channel.unwinding.wait(), 2)
+    await asyncio.wait_for(client.steer(Cancel(), "agent", room_id="room"), 2)
+    await asyncio.sleep(0.05)
+    channel.release.set()
+    await asyncio.wait_for(closing, 2)
+
+    assert channel.finished.is_set()
+    await client.close()
+
+
 async def test_a_directive_other_than_cancel_reaches_no_channel_without_steering() -> None:
     channel = Held()
     client = _client(channel)
