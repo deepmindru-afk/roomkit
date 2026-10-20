@@ -22,8 +22,6 @@ from typing import Any
 logger = logging.getLogger("roomkit.turns")
 
 _READ_BLOCK_MS = 1000
-READ_BLOCK_S = _READ_BLOCK_MS / 1000
-"""How long the server holds the inbox's blocking read, in seconds."""
 _READ_COUNT = 256
 _RETRY_DELAY = 1.0
 

@@ -87,19 +87,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   delays its routing into the queue, a pass begun meanwhile missed it every
   time. Now such a pass plans nothing and the next one asks `done` first.
 
-- A Redis turn backend gives up a read or a write on a connection Redis left
-  without closing it (a NAT or a load balancer's idle timeout) within
-  `heartbeat_timeout`, and tries it again on a new one (RMK-859, RFC §10.6.8).
-  Its clients set no timeout, so with a redis-py before 8.0, which the
-  `redis` extra admits (`redis>=5.0.1`), the inbox's blocking read, an outbox
-  write and the beat waited until TCP gave up, about 15 minutes, every later
-  message to that process waiting behind the write; 8.0 and later gave up
-  after their own 5 s. Each client the backend builds now opens its
-  connections with `socket_timeout` set to `heartbeat_timeout` (one second
-  more for the inbox, whose read the server holds that long),
-  `socket_connect_timeout` and `socket_keepalive`. A client passed as
-  `client=` keeps its own settings.
-
 - A delegated task keeps the answer of the agent it was delegated to, and
   fails on that agent's own cut only, whatever other agent shares the child
   room (RMK-834, RFC §23.3 step 6), on the shared-transport path and the trace
