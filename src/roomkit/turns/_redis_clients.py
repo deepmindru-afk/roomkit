@@ -48,6 +48,7 @@ def redis_clients(address: str, timeouts: TurnTimeouts, client: Any = None) -> R
     try:
         import redis
         import redis.asyncio as aioredis
+        from redis.exceptions import TimeoutError as RedisTimeoutError
     except ImportError as exc:
         raise ImportError(
             "redis is required for RedisTurnBackend. Install it with: pip install roomkit[redis]"
@@ -64,7 +65,7 @@ def redis_clients(address: str, timeouts: TurnTimeouts, client: Any = None) -> R
         pooled=client,
         inbox=aioredis.from_url(address, **inbox_options),
         beat=lambda: redis.Redis.from_url(address, **options),
-        timeout_errors=(TimeoutError, redis.exceptions.TimeoutError),
+        timeout_errors=(TimeoutError, RedisTimeoutError),
     )
 
 

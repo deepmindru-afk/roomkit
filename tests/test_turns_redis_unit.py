@@ -1002,7 +1002,7 @@ def test_every_connection_gives_up_within_half_the_silence_bound(
     it more (a second, never over a beat's interval), whatever redis-py's
     own default, so the call tried again at once lands inside the silence
     bound."""
-    redis = pytest.importorskip("redis")
+    exceptions = pytest.importorskip("redis.exceptions")
     clients = redis_clients("redis://localhost:6379", timeouts)
     beat = clients.beat()
 
@@ -1010,8 +1010,22 @@ def test_every_connection_gives_up_within_half_the_silence_bound(
         options = client.connection_pool.connection_kwargs
         assert (options["socket_timeout"], options["socket_connect_timeout"]) == (waits, bound)
         assert "socket_keepalive" not in options
-    assert redis.exceptions.TimeoutError in clients.timeout_errors
+    assert exceptions.TimeoutError in clients.timeout_errors
     beat.close()
+
+
+def test_the_clients_build_on_a_redis_package_imported_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RMK-859: a redis package imported again while its submodules stay
+    loaded lacks them as attributes: the clients still name the error a cut
+    call raises, read from its own module."""
+    exceptions = pytest.importorskip("redis.exceptions")
+    monkeypatch.delitem(sys.modules, "redis")
+
+    clients = redis_clients("redis://localhost:6379", TurnTimeouts())
+
+    assert exceptions.TimeoutError in clients.timeout_errors
 
 
 def test_a_client_given_is_the_pool_and_none_is_built() -> None:
