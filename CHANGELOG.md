@@ -39,9 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turn's notes' header (RMK-844, RFC §6.4): a text seen to hold none is
   remembered by a digest and returned as it is, as a text seen to hold no copy
   of the runtime's other marks already was. The header's scan ran over every
-  message of the history on every turn, about 60 µs per KB: on 50 stored
-  answers of 8 KB, a turn's CPU goes from 18 ms to 9.3 ms. A text new to the
-  turn is scanned as before, and one holding a copy is replaced every time.
+  message of the history on every turn, about 60 µs per KB: a turn that
+  streams 2000 deltas over a history of 50 stored answers of 8 KB goes from
+  18 ms to 9.3 ms of CPU. A text new to the turn is scanned as before, and one
+  holding a copy is replaced every time. A run of consecutive user messages
+  the runtime did not label is still scanned whole, the new input with it, for
+  a copy split over them.
 
 ### Fixed
 

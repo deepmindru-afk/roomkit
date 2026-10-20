@@ -1,7 +1,8 @@
 """Texts a scan for copies of the runtime's marks found clean (RFC §6.4).
 
 The marks' scan and the notes' header's scan each keep one, so a text a turn
-already read is not scanned again by either.
+already read is not scanned again by either; the scan for a copy split over
+consecutive messages keeps one of the runs it read.
 """
 
 from __future__ import annotations

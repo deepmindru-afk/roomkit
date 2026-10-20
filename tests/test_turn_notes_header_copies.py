@@ -18,7 +18,7 @@ from uuid import uuid4
 import pytest
 
 from roomkit import TURN_NOTES_HEADER, add_turn_note
-from roomkit.channels import _turn_notes
+from roomkit.channels import _mark_copies, _turn_notes
 from roomkit.channels._turn_notes import (
     COPIED_HEADER_MARK,
     conversation_without_header_copies,
@@ -335,10 +335,23 @@ class _Scans:
         self.texts.append(text)
         return self._pattern.sub(repl, text)
 
+    def finditer(self, text: str) -> Any:
+        self.texts.append(text)
+        return self._pattern.finditer(text)
+
 
 def _scans(monkeypatch: pytest.MonkeyPatch) -> _Scans:
+    """The header's pattern recording its scans, wherever the runtime reads it:
+    a text's own scan, and the scan for a copy split over consecutive user
+    messages."""
     scans = _Scans(_turn_notes.header_copies())
-    monkeypatch.setattr(_turn_notes, "header_copies", lambda: scans)
+
+    def recording() -> _Scans:
+        return scans
+
+    recording.cache_info = _turn_notes.header_copies.cache_info  # ty: ignore[unresolved-attribute]
+    for module in (_turn_notes, _mark_copies):
+        monkeypatch.setattr(module, "header_copies", recording)
     return scans
 
 
@@ -367,13 +380,17 @@ async def test_a_turn_does_not_scan_the_history_the_last_turn_read(
     streaming: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """RMK-844: the history a turn reads was read by the last turn, so its
-    texts are not scanned for the header again; the turn's cost of that scan
-    does not grow with the history (it took 7.8 ms of an 18 ms turn over 50
-    stored answers of 8 KB)."""
+    messages are not scanned for the header again, and the turn's cost of that
+    scan does not grow with the history. A run of consecutive user messages
+    the runtime did not label is still scanned whole for a copy split over
+    them, the turn's input included."""
     provider = MockAIProvider(ai_responses=[_DONE, _DONE], streaming=streaming)
     ch = AIChannel("ai1", provider=provider)
     marks = [uuid4().hex for _ in range(30)]
-    history = [_said(f"message {mark}") for mark in marks]
+    history = [
+        _said(f"message {mark}", channel_id="ai1" if i % 2 else "sms1")
+        for i, mark in enumerate(marks)
+    ]
     await _turn(ch, _said("first question"), history)
 
     question = f"second question {uuid4().hex}"
