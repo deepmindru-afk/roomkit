@@ -446,21 +446,28 @@ async def test_a_delegated_turn_s_failure_is_logged_once(
     assert [r.name for r in lines] == ["roomkit.tasks"]
 
 
-@pytest.mark.in_process(
-    "RMK-834: a delivery reads its streams in the order its targets returned them, "
-    "which across a backend follows latency"
-)
+class _Late(Agent):
+    """An agent whose turn returns after the others'."""
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        await asyncio.sleep(0.2)
+        return await super().on_event(event, binding, context)
+
+
 async def test_a_cancelled_read_keeps_the_turns_of_the_streams_read_before() -> None:
-    """Two agents answer; the read is cancelled during the second's stream:
-    the caller's ``turns`` hold both, the first completed, the second
-    cancelled."""
+    """Two agents answer, their streams read in the order their turns
+    returned (RFC §10.1 step 14): the read is cancelled during the second's
+    stream, once the first's answer is stored. The caller's ``turns`` hold
+    both, the first completed, the second cancelled."""
     started = asyncio.Event()
     kit = RoomKit()
     kit.register_channel(SimpleChannel("tx"))
     kit.register_channel(
         Agent("fast", provider=MockAIProvider(responses=["done"], streaming=True))
     )
-    kit.register_channel(Agent("slow", provider=_Slow(started)))
+    kit.register_channel(_Late("slow", provider=_Slow(started)))
     await kit.create_room(room_id="r")
     await kit.attach_channel("r", "tx")
     for agent_id in ("fast", "slow"):
@@ -468,6 +475,9 @@ async def test_a_cancelled_read_keeps_the_turns_of_the_streams_read_before() -> 
     message = InboundMessage(channel_id="tx", sender_id="u", content=TextContent(body="Go."))
     result = await kit.process_inbound(message, defer_delivery=True)
     await started.wait()
+    async with asyncio.timeout(5):
+        while not [e for e in await kit.store.list_events("r") if e.source.channel_id == "fast"]:
+            await asyncio.sleep(0.01)
     assert result.delivery is not None
     final = await result.delivery.cancel()
     await kit.close()

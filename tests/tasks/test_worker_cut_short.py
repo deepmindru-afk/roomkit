@@ -417,9 +417,6 @@ def _cutting_agent(channel_id: str, responses: list[AIResponse]) -> Agent:
     )
 
 
-@pytest.mark.in_process(
-    "RMK-834: a delegation keeps the answer of the responder that finished first"
-)
 @pytest.mark.parametrize("worker_cut", [True, False], ids=["worker-cut", "helper-cut"])
 async def test_the_answer_and_its_end_are_read_off_one_responder(worker_cut: bool) -> None:
     done = [AIResponse(content="Found it.")] * 3
@@ -440,4 +437,44 @@ async def test_the_answer_and_its_end_are_read_off_one_responder(worker_cut: boo
         _assert_cut(task.result)
     else:
         assert (task.result.status, task.result.output) == (TaskStatus.COMPLETED, "Found it.")
+    await kit.close()
+
+
+class _LateAgent(Agent):
+    """An agent whose turn returns after the others': its answer comes last."""
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        await asyncio.sleep(0.2)
+        return await super().on_event(event, binding, context)
+
+
+@pytest.mark.parametrize(
+    "shared", [["helper", "email-out"], ["helper"]], ids=["transport", "trace"]
+)
+async def test_a_delegation_keeps_its_agent_s_answer_when_another_returns_first(
+    shared: list[str],
+) -> None:
+    """RMK-834: the helper shared into the child room returns before the
+    worker: the task keeps the worker's answer, whatever the order its
+    responders returned in (RFC §23.3 step 6)."""
+    kit = RoomKit()
+    kit.register_channel(
+        _LateAgent(
+            "worker", provider=MockAIProvider(responses=["From the worker."], streaming=True)
+        )
+    )
+    kit.register_channel(
+        Agent("helper", provider=MockAIProvider(responses=["From the helper."], streaming=True))
+    )
+    kit.register_channel(SimpleChannel("email-out"))
+    await kit.create_room(room_id="parent")
+    await kit.attach_channel("parent", "email-out")
+    await kit.attach_channel("parent", "helper", category=ChannelCategory.INTELLIGENCE)
+
+    task = await kit.delegate("parent", "worker", "Find it.", share_channels=shared, wait=True)
+
+    assert task.result is not None
+    assert (task.result.status, task.result.output) == (TaskStatus.COMPLETED, "From the worker.")
     await kit.close()

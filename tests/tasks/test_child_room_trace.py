@@ -351,6 +351,7 @@ class TestEveryResponseIsRead:
     """RMK-291 review: a delegated broadcast's responses are all read (RFC §8.3)."""
 
     async def test_a_second_response_is_read_and_the_first_answer_wins(self) -> None:
+        """In a room no delegation made, which names no agent."""
         kit = _recording_kit()
         read: list[str] = []
 
@@ -363,7 +364,7 @@ class TestEveryResponseIsRead:
 
         result = BroadcastResult(streaming_responses=[_stream("w1"), _stream("w2")])
 
-        text = await _collect_answer(kit, "parent::task-7", result, 1)
+        text = await _collect_answer(kit, "parent::task-7", result, 1, None)
 
         assert text == "w1's answer"
         assert read == ["w1", "w2"]
@@ -382,7 +383,7 @@ class TestEveryResponseIsRead:
         result = BroadcastResult(streaming_responses=[_sr(_failing()), _sr(_answering())])
 
         with pytest.raises(RuntimeError, match="upstream 500"):
-            await _collect_answer(kit, "parent::task-8", result, 1)
+            await _collect_answer(kit, "parent::task-8", result, 1, None)
         assert [e.content.body for e in kit.store.added] == ["Looking.", "Done."]
 
 

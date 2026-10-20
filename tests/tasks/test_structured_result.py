@@ -86,7 +86,7 @@ def _make_kit(
                 _tool_call_event(tool_name, arguments, channel_id=agent_id, outcome="served")
             )
         out = ChannelOutput(responded=True, response_events=[_text_event("raw text")])
-        return BroadcastResult(outputs={"w1": out})
+        return BroadcastResult(outputs={agent_id: out})
 
     kit._get_router = MagicMock(
         return_value=SimpleNamespace(broadcast=AsyncMock(side_effect=_broadcast))
@@ -153,7 +153,7 @@ def _make_cc_kit(events: list[RoomEvent]):
     async def _broadcast(_event, _binding, _context):
         # The gateway handled submit_result; tool_handler is not called here.
         out = ChannelOutput(responded=True, response_events=[_text_event("done")])
-        return BroadcastResult(outputs={"w1": out})
+        return BroadcastResult(outputs={"agent:w1": out})
 
     kit._get_router = MagicMock(
         return_value=SimpleNamespace(broadcast=AsyncMock(side_effect=_broadcast))

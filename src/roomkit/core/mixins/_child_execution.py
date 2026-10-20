@@ -313,28 +313,35 @@ async def _broadcast_and_collect(
         # later fires it where it is read.
         await kit._report_intelligence_errors(msg_event, context, result)
         return await _answer_of_broadcast(
-            kit, child_room_id, result, bindings, msg_event.chain_depth + 1, turns
+            kit, room, result, bindings, msg_event.chain_depth + 1, turns
         )
 
 
 async def _answer_of_broadcast(
     kit: RoomKit,
-    child_room_id: str,
+    room: Room,
     result: BroadcastResult,
     bindings: list[ChannelBinding],
     child_depth: int,
     turns: TurnEntries | None,
 ) -> str | None:
-    """A delegated broadcast's answer, by the room's path when a transport
-    is shared, else the trace's; each responder's turn entry goes to *turns*
-    however the turn ended (RFC §23.3 steps 5 and 6)."""
+    """A delegated broadcast's answer, the delegated agent's, by the room's
+    path when a transport is shared, else the trace's; each responder's turn
+    entry goes to *turns* however the turn ended (RFC §23.3 steps 5 and 6)."""
+    agent_id = _task_agent(room)
     try:
         if _shares_a_transport(bindings):
-            return await _deliver_answer(kit, child_room_id, result)
-        return await _collect_answer(kit, child_room_id, result, child_depth)
+            return await _deliver_answer(kit, room.id, result, agent_id)
+        return await _collect_answer(kit, room.id, result, child_depth, agent_id)
     finally:
         if turns is not None:
             turns.update(responder_turn_entries(result))
+
+
+def _task_agent(room: Room) -> str | None:
+    """The agent a delegation gave the child room's task to, when it did."""
+    agent_id = (room.metadata or {}).get("task_agent_id")
+    return str(agent_id) if agent_id else None
 
 
 def _shares_a_transport(bindings: list[ChannelBinding]) -> bool:
@@ -342,7 +349,9 @@ def _shares_a_transport(bindings: list[ChannelBinding]) -> bool:
     return any(binding.category == ChannelCategory.TRANSPORT for binding in bindings)
 
 
-async def _deliver_answer(kit: RoomKit, child_room_id: str, result: BroadcastResult) -> str | None:
+async def _deliver_answer(
+    kit: RoomKit, child_room_id: str, result: BroadcastResult, agent_id: str | None
+) -> str | None:
     """Commit a delegated turn as a room commits its answers; the answer it kept.
 
     A transport shared into the child room is told what the agent answers
@@ -352,9 +361,9 @@ async def _deliver_answer(kit: RoomKit, child_room_id: str, result: BroadcastRes
     right to write and riding the child room's delivery lane. The shared
     binding's access and the agent binding's visibility decide what the
     transport receives, as in any room. The answer is the last one the room
-    kept (step 6): a hook's rewrite holds for the task result too, and an
-    answer the gate refused is none. A response that failed fails the turn
-    once every response is read.
+    kept of the delegated agent, *agent_id* (step 6): a hook's rewrite holds
+    for the task result too, and an answer the gate refused is none. A
+    response that failed fails the turn once every response is read.
     """
     cascade = DeliveryCascade(child_room_id, reentry_budget=kit._max_chain_depth * 10)
     cascade.add_streams(result.streaming_responses)
@@ -371,7 +380,7 @@ async def _deliver_answer(kit: RoomKit, child_room_id: str, result: BroadcastRes
         text, reason = _answer_of(result, cascade.response_events, failed_by)
         # Reported in the child room, by its reader or the delivery set's.
         raise mark_reported(_turn_failure(failure, text, reason))
-    text, reason = _kept_answer(result, cascade.response_events)
+    text, reason = _kept_answer(result, cascade.response_events, agent_id)
     if (cut := _cut_short(text, reason)) is not None:
         raise cut
     return text
@@ -414,14 +423,19 @@ def _answer_of(
     )
 
 
-def _kept_answer(result: BroadcastResult, rows: list[RoomEvent]) -> tuple[str | None, str | None]:
+def _kept_answer(
+    result: BroadcastResult, rows: list[RoomEvent], agent_id: str | None
+) -> tuple[str | None, str | None]:
     """The answer the child room kept, and how the turn that gave it ended.
 
-    Both are read off one responder, never off another's: the first that
-    kept an answer among *rows*, its end read from its own record (RFC §23.3
-    step 6). With no answer kept, the end is the first responder's that
-    names one.
+    Both are read off one responder, never off another's (RFC §23.3 step
+    6): the delegated agent, *agent_id*, whatever the order its responders
+    returned in. A room no delegation made names none: the first responder
+    that kept an answer among *rows*, its end read from its own record, and
+    with no answer kept, the first responder's end that names one.
     """
+    if agent_id is not None:
+        return _answer_of(result, rows, agent_id)
     records = _responder_records(result)
     for cid, record in records.items():
         if (row := _last_answer(rows, cid)) is not None:
@@ -499,23 +513,28 @@ async def _buffered_outcome(
 
 
 async def _collect_answer(
-    kit: RoomKit, child_room_id: str, result: BroadcastResult, child_depth: int
+    kit: RoomKit,
+    child_room_id: str,
+    result: BroadcastResult,
+    child_depth: int,
+    agent_id: str | None,
 ) -> str | None:
     """Keep the trace of every response a delegated broadcast started; its answer.
 
     Every response is read to its end (RFC §8.3), so none is left generating
-    unread. The first answer is the delegated turn's; a response that failed
-    fails the turn once they are all read (RFC §6.4).
+    unread. The delegated agent's answer, *agent_id*'s, is the turn's (RFC
+    §23.3 step 6), the first one in a room no delegation made; a response
+    that failed fails the turn once they are all read (RFC §6.4).
     """
-    answers: list[str] = []
+    answers: dict[str, str] = {}
     failure: Exception | None = None
-    for output in result.outputs.values():
+    for channel_id, output in result.outputs.items():
         if output.response_stream is not None:
             continue
         answer, failed = await _buffered_outcome(kit, child_room_id, output)
         failure = failure or failed
         if answer is not None:
-            answers.append(answer)
+            answers.setdefault(channel_id, answer)
     # Streaming: drain the marker stream, persisting tool calls + text segments.
     for sr in result.streaming_responses:
         try:
@@ -524,12 +543,14 @@ async def _collect_answer(
             failure = failure or exc
             continue
         if text:
-            answers.append(text)
+            answers.setdefault(sr.source_channel_id, text)
     if failure is not None:
         # Reported in the child room: a buffered failure by the delivery set,
         # a stream's by its trace writer.
         raise mark_reported(failure)
-    return answers[0] if answers else None
+    if agent_id is not None:
+        return answers.get(agent_id)
+    return next(iter(answers.values()), None)
 
 
 #: A cursor larger than any real event index, so ``before_index`` returns the
@@ -625,7 +646,7 @@ async def _run_with_structured_result(
 
     tool = result_tool or SUBMIT_RESULT
     room = await kit.get_room(child_room_id)
-    agent_id = (room.metadata or {}).get("task_agent_id")
+    agent_id = _task_agent(room)
     channel = kit.channels.get(agent_id) if agent_id else None
     if not _takes_owner_tools(channel):
         # No injectable agent channel — fall back to plain text collection.
