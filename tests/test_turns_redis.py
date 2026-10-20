@@ -14,7 +14,7 @@ import os
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Coroutine
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -42,6 +42,7 @@ from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import SQLiteStore
 from roomkit.turns import TurnClient, TurnExecutor, TurnTimeouts
+from roomkit.turns._redis_inbox import READ_BLOCK_S
 from roomkit.turns._redis_links import RedisExecutorLink
 from roomkit.turns._redis_presence import Keys, Registry
 from roomkit.turns._redis_routes import REFUSED
@@ -1648,3 +1649,80 @@ async def test_a_live_agent_stays_on_the_kit_s_executor_whoever_holds_the_room(
     assert said == ["from host", "from kit"]
     assert answer == "kit"
     assert seen == ["call:kit", "event:kit"]
+
+
+class _Blackhole:
+    """A proxy to the Redis of REDIS_URL that, once cut, keeps every socket
+    open and drops every byte: a peer gone without closing (RMK-859)."""
+
+    def __init__(self) -> None:
+        self.cut = False
+        self._writers: list[asyncio.StreamWriter] = []
+        self._server: asyncio.Server | None = None
+
+    async def url(self) -> str:
+        target = urlparse(os.environ["REDIS_URL"])
+        self._target = (target.hostname or "localhost", target.port or 6379)
+        self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        port = self._server.sockets[0].getsockname()[1]
+        credentials = target.netloc.rpartition("@")[0]
+        at = f"{credentials}@" if credentials else ""
+        return f"redis://{at}127.0.0.1:{port}{target.path}"
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        upstream_reader, upstream_writer = await asyncio.open_connection(*self._target)
+        self._writers += [writer, upstream_writer]
+        await asyncio.gather(
+            self._pipe(reader, upstream_writer),
+            self._pipe(upstream_reader, writer),
+            return_exceptions=True,
+        )
+
+    async def _pipe(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        while data := await reader.read(65536):
+            if not self.cut:
+                writer.write(data)
+                await writer.drain()
+
+    async def close(self) -> None:
+        assert self._server is not None
+        self._server.close()
+        for writer in self._writers:
+            writer.close()
+
+
+async def _gives_up(call: Awaitable[Any], *, within: float) -> None:
+    redis = pytest.importorskip("redis")
+    started = time.monotonic()
+    with pytest.raises(redis.exceptions.TimeoutError):
+        await asyncio.wait_for(call, within + 10)
+    assert time.monotonic() - started < within
+
+
+async def test_a_half_open_connection_gives_up_within_the_heartbeat_timeout(
+    prefix: str, redis_client: Any
+) -> None:
+    """RMK-859: Redis gone without closing the connection (a NAT or a load
+    balancer's idle timeout): each client the backend builds gives up a call
+    within heartbeat_timeout, plus the server's hold of the inbox's blocking
+    read, whatever redis-py the extra resolves; one before 8.0 set no bound
+    and waited until TCP gave up."""
+    proxy = _Blackhole()
+    backend = RedisTurnBackend(await proxy.url(), key_prefix=prefix, timeouts=TIMEOUTS)
+    beat = backend._beat._connect()
+    await backend._client.ping()
+    await backend._inbox._client.ping()
+    await asyncio.to_thread(beat.ping)
+    proxy.cut = True
+
+    bound = TIMEOUTS.heartbeat_timeout + 1.0
+    await _gives_up(backend._client.xadd(f"{prefix}:probe", {"a": "1"}), within=bound)
+    stream = {f"{prefix}:probe": "$"}
+    read = backend._inbox._client.xread(stream, block=1000)
+    await _gives_up(read, within=bound + READ_BLOCK_S)
+    await _gives_up(asyncio.to_thread(beat.set, f"{prefix}:beat", "1"), within=bound)
+
+    proxy.cut = False
+    beat.close()
+    await backend.close()
+    await proxy.close()
