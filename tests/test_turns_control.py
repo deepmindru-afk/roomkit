@@ -233,6 +233,45 @@ async def test_a_cancel_for_a_channel_without_steering_cuts_its_turn() -> None:
     await client.close()
 
 
+class Finalizing(Held):
+    """A channel without steering whose stream's cleanup takes a while."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.unwinding = asyncio.Event()
+        self.finished = asyncio.Event()
+
+    async def _stream(self) -> AsyncIterator[str]:
+        try:
+            yield "first"
+            await asyncio.Future()
+        finally:
+            self.unwinding.set()
+            await self.release.wait()
+            self.finished.set()
+
+
+async def test_a_close_after_a_cut_lets_the_channel_finish_its_cleanup() -> None:
+    channel = Finalizing()
+    client = _client(channel)
+    output = await _start(client)
+    assert output.response_stream is not None
+    stream = output.response_stream
+    assert await anext(stream) == "first"
+
+    await asyncio.wait_for(client.steer(Cancel(), "agent", room_id="room"), 2)
+    await asyncio.wait_for(channel.unwinding.wait(), 2)
+    # A close reaching the executor while the cut's cleanup runs does not
+    # cancel the cleanup again: the channel's finalizer runs to its end.
+    closing = asyncio.create_task(stream.aclose())
+    await asyncio.sleep(0.05)
+    channel.release.set()
+    await asyncio.wait_for(closing, 2)
+
+    assert channel.finished.is_set()
+    await client.close()
+
+
 async def test_a_directive_other_than_cancel_reaches_no_channel_without_steering() -> None:
     channel = Held()
     client = _client(channel)

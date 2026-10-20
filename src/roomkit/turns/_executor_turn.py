@@ -418,9 +418,8 @@ class ExecutorTurn:
     def _cut_read(self) -> None:
         """A close found the stream reading ahead of its reader: the read is
         cut, as the reader's close would end the channel's stream."""
-        if self._pulls.reading and self._work is not None and not self._work.done():
+        if self._pulls.reading and self._cancel_work("closed"):
             self._close_cut = True
-            self._work.cancel("closed")
 
     async def _apply_control(self, message: Control) -> None:
         """Apply one control message of the owner's."""
@@ -471,6 +470,17 @@ class ExecutorTurn:
             self._cut = reason
         if reason in ("owner_lost", "frame_lost"):
             self._calls.fail_all(TurnLinkError(reason))
-        if first and not self._spared and self._work is not None and not self._work.done():
-            self._work.cancel(reason)
+        if first and not self._spared:
+            self._cancel_work(reason)
         self._wake.set()
+
+    def _cancel_work(self, reason: str) -> bool:
+        """Cancel the piece of the turn's work that runs, once: one already
+        cancelled (a close then a cut, or a cut then a close) is let finish
+        its cleanup, the channel's finalizers included. Whether it was
+        cancelled now."""
+        work = self._work
+        if work is None or work.done() or work.cancelling():
+            return False
+        work.cancel(reason)
+        return True
