@@ -12,6 +12,7 @@ from roomkit import ChannelDeclaration, RoomKit
 from roomkit.channels._mark_copies import COPIED_MARK
 from roomkit.channels._runtime_record import RUNTIME_RECORD
 from roomkit.channels.ai import AIChannel
+from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.memory.base import MemoryProvider, MemoryResult
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
@@ -34,7 +35,9 @@ from roomkit.orchestration.state import (
 )
 from roomkit.providers.ai.base import AIMessage
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from tests.conftest import make_event
+from tests.test_framework import SimpleChannel
 from tests.tool_room import owner_tool_call_in, owner_tool_definitions, room_tool_names
 
 # -- Helpers ------------------------------------------------------------------
@@ -1082,23 +1085,83 @@ class TestSendGreetingOnARealKit:
         await kit.close()
 
 
-@pytest.mark.parametrize("realtime", [True, False], ids=["realtime", "text"])
-def test_a_realtime_handoff_refuses_an_agent_held_by_its_declaration(realtime: bool) -> None:
-    """RMK-831: a handler serving a realtime channel rebuilds the active
-    agent's prompt for its session, which a declaration does not carry: it
-    refuses such an agent when given it, where ``set_language`` raised
-    AttributeError later. A text handoff (Swarm's) still takes it."""
+async def _handoff_kit(active: str) -> RoomKit:
+    """Room r1 whose active agent is *active*: a realtime channel ``rtv``, a
+    text channel ``sms``, an agent held by its declaration alone and a live
+    AI channel that is not an Agent."""
     kit = RoomKit()
-    kit.register_channel(ChannelDeclaration(channel_id="a"))
+    kit.register_channel(
+        RealtimeVoiceChannel(
+            "rtv", provider=MockRealtimeProvider(), transport=MockRealtimeTransport()
+        )
+    )
+    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(ChannelDeclaration(channel_id="declared"))
+    kit.register_channel(AIChannel("ai", provider=MockAIProvider(responses=["x"])))
+    room = await kit.create_room(room_id="r1")
+    state = ConversationState(phase="intake", active_agent_id=active)
+    await kit.store.update_room(set_conversation_state(room, state))
+    return kit
+
+
+def _language(room: Room) -> Any:
+    return get_conversation_state(room).context.get("language")
+
+
+@pytest.mark.parametrize("held", ["declared", "ai"])
+async def test_a_realtime_handler_refuses_an_agent_without_its_prompt(held: str) -> None:
+    """RMK-831: a handler serving a realtime channel (``event_channel_id``
+    names one) refuses an agent that is not an Agent, held by its
+    declaration alone or another intelligence channel: the channel's
+    sessions would run a prompt it does not carry."""
+    kit = await _handoff_kit(held)
     handler = HandoffHandler(
-        kit=kit,
-        router=ConversationRouter(default_agent_id="a"),
-        event_channel_id="voice" if realtime else None,
+        kit=kit, router=ConversationRouter(default_agent_id=held), event_channel_id="rtv"
     )
 
-    if realtime:
-        with pytest.raises(ValueError, match="not ids the kit holds by declaration"):
-            handler.agents = {"a": kit.channels["a"]}
+    with pytest.raises(ValueError, match="agents themselves"):
+        handler.agents = {held: kit.channels[held]}
+    await kit.close()
+
+
+@pytest.mark.parametrize("event_channel_id", [None, "sms"], ids=["no channel", "text channel"])
+async def test_a_handler_without_a_realtime_channel_takes_a_declared_agent(
+    event_channel_id: str | None,
+) -> None:
+    """RMK-831: a handler serving no realtime channel takes an agent held by
+    its declaration, and its language change writes the room's language."""
+    kit = await _handoff_kit("declared")
+    handler = HandoffHandler(
+        kit=kit,
+        router=ConversationRouter(default_agent_id="declared"),
+        event_channel_id=event_channel_id,
+    )
+
+    handler.agents = {"declared": kit.channels["declared"]}
+    await handler.set_language("r1", "French")
+
+    assert _language(await kit.get_room("r1")) == "French"
+    await kit.close()
+
+
+@pytest.mark.parametrize("path", ["channel_id", "agents changed in place"])
+async def test_a_realtime_language_change_refuses_an_agent_without_its_prompt(path: str) -> None:
+    """RMK-831: a language change for a realtime channel whose active agent
+    is held by its declaration alone is refused before anything is written,
+    whether the channel is named by the call (the handler serving none) or
+    the agent was put in the handler's agents in place."""
+    kit = await _handoff_kit("declared")
+    router = ConversationRouter(default_agent_id="declared")
+    if path == "channel_id":
+        handler = HandoffHandler(kit=kit, router=router)
+        handler.agents = {"declared": kit.channels["declared"]}
+        change = handler.set_language("r1", "French", channel_id="rtv")
     else:
-        handler.agents = {"a": kit.channels["a"]}
-        assert handler.agents == {"a": kit.channels["a"]}
+        handler = HandoffHandler(kit=kit, router=router, event_channel_id="rtv")
+        handler.agents["declared"] = kit.channels["declared"]
+        change = handler.set_language("r1", "French")
+
+    with pytest.raises(ValueError, match="agents themselves"):
+        await change
+    assert _language(await kit.get_room("r1")) is None
+    await kit.close()

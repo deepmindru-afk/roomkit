@@ -22,9 +22,9 @@ from roomkit.orchestration._realtime_pipeline import (
     refuse_agents_with_unserved,
 )
 from roomkit.orchestration.handoff import (
-    REALTIME_NEEDS_LIVE_AGENTS,
     HandoffHandler,
     build_handoff_tool,
+    require_live_agents,
     setup_handoff,
 )
 from roomkit.orchestration.router import ConversationRouter, RoutingConditions, RoutingRule
@@ -180,7 +180,7 @@ class ConversationPipeline:
         live = [a for a in held_agents if isinstance(a, Agent)]
         if is_realtime:
             # Refused before anything is installed.
-            _refuse_declared_agents(held_agents, live)
+            require_live_agents(held_agents)
             refuse_agents_with_unserved(live, voice_channel_id)  # ty: ignore[invalid-argument-type]
 
         router = self.to_router()
@@ -470,11 +470,3 @@ class ConversationPipeline:
                 if ctx.room.id in _handoff_pending:
                     return HookResult.block("handoff_transition")
                 return HookResult.allow()
-
-
-def _refuse_declared_agents(agents: Sequence[HeldAgent], live: Sequence[Agent]) -> None:
-    """Refuse a realtime pipeline any agent not given live: its session runs
-    each agent's prompt and tools (RFC §12.4), which a declaration does not
-    carry."""
-    if len(live) != len(agents):
-        raise ValueError(REALTIME_NEEDS_LIVE_AGENTS)

@@ -8,7 +8,7 @@ preserves context, and optionally escalates channels.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -18,7 +18,9 @@ from roomkit._text import CONVERSATION_SUMMARY_TAG, fence, identifier, quoted
 from roomkit.channels._mark_copies import without_mark_copies
 from roomkit.channels._runtime_record import HANDED_ON_CONTEXT, HANDOFF_OPENING, runtime_record
 from roomkit.channels._tool_registry import ToolEntry, orchestration_tool
-from roomkit.channels.declared import DeclaredChannel, id_of, owner_tools_of
+from roomkit.channels.agent import Agent
+from roomkit.channels.declared import id_of, owner_tools_of
+from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.memory._wrapper import _MemoryWrapper
 from roomkit.memory.base import MemoryProvider, MemoryResult
 from roomkit.models.channel import ChannelBinding
@@ -39,6 +41,7 @@ if TYPE_CHECKING:
 
     from roomkit.channels.ai import AIChannel
     from roomkit.channels.base import Channel
+    from roomkit.channels.declared import DeclaredChannel
     from roomkit.core.framework import RoomKit
     from roomkit.orchestration.router import ConversationRouter
 
@@ -175,10 +178,26 @@ def build_handoff_tool(targets: list[tuple[str, str | None]]) -> AITool:
 
 
 REALTIME_NEEDS_LIVE_AGENTS = (
-    "A realtime voice channel runs each agent's prompt and tools in its session: "
-    "give it the agents themselves, not ids the kit holds by declaration"
+    "A realtime voice session runs each agent's prompt and identity block: give "
+    "the pipeline or the handoff handler the agents themselves, not ids the kit "
+    "holds by declaration nor other intelligence channels"
 )
-"""Why a realtime handoff refuses an agent held by its declaration (RFC §12.4)."""
+"""Why a realtime handoff refuses any agent that is not an Agent (RFC §19.5,
+§19.6)."""
+
+
+def require_live_agents(agents: Iterable[Any]) -> None:
+    """Refuse, for a realtime handoff, any agent that is not an
+    :class:`~roomkit.channels.agent.Agent`: one the kit holds by its
+    declaration alone, or another intelligence channel. A realtime session
+    runs each agent's prompt and identity block, which only an Agent carries
+    (RFC §19.5, §19.6).
+
+    Raises:
+        ValueError: one of *agents* is not an Agent.
+    """
+    if any(not isinstance(agent, Agent) for agent in agents):
+        raise ValueError(REALTIME_NEEDS_LIVE_AGENTS)
 
 
 class HandoffHandler:
@@ -228,11 +247,11 @@ class HandoffHandler:
 
     @agents.setter
     def agents(self, value: dict[str, Any]) -> None:
-        """The agents the handler hands off between; one held by its
-        declaration alone is refused when the handler serves a realtime
-        channel (*event_channel_id*), whose session runs its prompt here."""
-        if self._event_channel_id and any(isinstance(a, DeclaredChannel) for a in value.values()):
-            raise ValueError(REALTIME_NEEDS_LIVE_AGENTS)
+        """The agents the handler hands off between: each an Agent when the
+        handler serves a realtime channel (*event_channel_id* names one),
+        whose sessions run the agent's prompt (RFC §19.6)."""
+        if self._realtime_channel(self._event_channel_id) is not None:
+            require_live_agents(value.values())
         self._agents = value
 
     @property
@@ -539,8 +558,6 @@ class HandoffHandler:
 
         channel = self._kit.channels.get(ch_id)
 
-        from roomkit.channels.realtime_voice import RealtimeVoiceChannel
-
         if isinstance(channel, RealtimeVoiceChannel):
             lang = self._get_room_language(room, agent_id)
             for session in channel.get_room_sessions(room_id):
@@ -577,47 +594,38 @@ class HandoffHandler:
             language: Language name or code (e.g. ``"French"``, ``"fr"``).
             channel_id: Voice channel ID. Falls back to the event channel
                 configured by ``install()``.
+
+        Raises:
+            ValueError: the room's realtime channel would run the prompt of
+                an active agent that is not an Agent (RFC §19.6); nothing is
+                written.
         """
-        # 1. Persist language in conversation state
+        channel = self._realtime_channel(channel_id or self._event_channel_id)
         async with self._kit.lock_manager.locked(room_id):
             room = await self._kit.get_room(room_id)
             state = get_conversation_state(room)
+            agent = self._agents.get(state.active_agent_id or "")
+            if channel is not None and agent is not None:
+                require_live_agents([agent])
             new_state = state.model_copy(
                 update={"context": {**state.context, "language": language}}
             )
-            room = set_conversation_state(room, new_state)
-            await self._kit.store.update_room(room)
+            await self._kit.store.update_room(set_conversation_state(room, new_state))
 
-        agent_id = state.active_agent_id
-        if not agent_id:
+        if channel is None or agent is None:
             return
-
-        # 2. For realtime: reconfigure session with language in prompt
-        ch_id = channel_id or self._event_channel_id
-        if not ch_id:
-            return
-
-        channel = self._kit.channels.get(ch_id)
-
-        from roomkit.channels.realtime_voice import RealtimeVoiceChannel
-
-        if not isinstance(channel, RealtimeVoiceChannel):
-            return
-
-        agent = self._agents.get(agent_id)
-        if agent is None:
-            return
-
-        # Rebuild system prompt with new language
-        prompt = getattr(agent, "system_prompt", None) or ""
-        identity = agent.build_identity_block(language=language)
-        if identity:
-            prompt = prompt + identity
-
+        prompt = _language_prompt(agent, language)
         for session in channel.get_room_sessions(room_id):
             await channel.reconfigure_session(session, system_prompt=prompt)
+        logger.info(
+            "Language set to %r for room %s (agent=%s)", language, room_id, state.active_agent_id
+        )
 
-        logger.info("Language set to %r for room %s (agent=%s)", language, room_id, agent_id)
+    def _realtime_channel(self, channel_id: str | None) -> RealtimeVoiceChannel | None:
+        """The realtime voice channel *channel_id* names on the kit, if it
+        names one."""
+        channel = self._kit.channels.get(channel_id) if channel_id else None
+        return channel if isinstance(channel, RealtimeVoiceChannel) else None
 
     def _get_room_language(self, room: Room, agent_id: str | None) -> str | None:
         """Get effective language: room override > agent default."""
@@ -633,6 +641,13 @@ class HandoffHandler:
 
     def _resolve_alias(self, target: str) -> str:
         return self._aliases.get(target, target)
+
+
+def _language_prompt(agent: Agent, language: str) -> str:
+    """*agent*'s prompt with its identity block in *language*."""
+    prompt = agent.system_prompt or ""
+    identity = agent.build_identity_block(language=language)
+    return prompt + identity if identity else prompt
 
 
 # -- HandoffMemoryProvider ----------------------------------------------------
