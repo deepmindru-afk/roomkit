@@ -35,6 +35,7 @@ from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.models import DelegatedTaskResult, task_work
 from tests.test_channels.test_acp import _channel
 from tests.test_framework import AILikeChannel, SimpleChannel
+from tests.test_turn_end_doors import _Late
 
 LOOKUP = AITool(name="lookup", description="look up", parameters={"type": "object"})
 LOOPING = AIResponse(
@@ -406,10 +407,12 @@ async def test_an_acp_worker_that_ended_its_turn_completes(tmp_path: Any) -> Non
     await kit.close()
 
 
-def _cutting_agent(channel_id: str, responses: list[AIResponse]) -> Agent:
+def _cutting_agent(
+    channel_id: str, responses: list[AIResponse], *, streaming: bool = True
+) -> Agent:
     return Agent(
         channel_id,
-        provider=MockAIProvider(ai_responses=responses, streaming=True),
+        provider=MockAIProvider(ai_responses=responses, streaming=streaming),
         tools=[LOOKUP],
         tool_handler=_found,
         tool_search=False,
@@ -417,56 +420,98 @@ def _cutting_agent(channel_id: str, responses: list[AIResponse]) -> Agent:
     )
 
 
+_SUBMITTED = {"status": "completed", "summary": "Found it.", "data": {"x": 1}}
+
+_SHARED = pytest.mark.parametrize(
+    "shared", [["helper", "email-out"], ["helper"]], ids=["transport", "trace"]
+)
+_STREAMING = pytest.mark.parametrize("streaming", [True, False], ids=["streams", "generates"])
+
+
+@_STREAMING
+@_SHARED
 @pytest.mark.parametrize("worker_cut", [True, False], ids=["worker-cut", "helper-cut"])
-async def test_the_answer_and_its_end_are_read_off_one_responder(worker_cut: bool) -> None:
+async def test_the_answer_and_its_end_are_read_off_one_responder(
+    worker_cut: bool, shared: list[str], streaming: bool
+) -> None:
+    """The task's answer and its end are the worker's, never the helper's
+    shared into the child room: a cut helper leaves the worker's answer, a
+    cut worker fails the task whatever the helper said (RMK-834)."""
     done = [AIResponse(content="Found it.")] * 3
     kit = RoomKit()
-    kit.register_channel(_cutting_agent("worker", [LOOPING] * 3 if worker_cut else done))
-    kit.register_channel(_cutting_agent("helper", done if worker_cut else [LOOPING] * 3))
+    worker = [LOOPING] * 3 if worker_cut else done
+    helper = done if worker_cut else [LOOPING] * 3
+    kit.register_channel(_cutting_agent("worker", worker, streaming=streaming))
+    kit.register_channel(_cutting_agent("helper", helper, streaming=streaming))
+    kit.register_channel(SimpleChannel("email-out"))
+    await kit.create_room(room_id="parent")
+    await kit.attach_channel("parent", "email-out")
+    await kit.attach_channel("parent", "helper", category=ChannelCategory.INTELLIGENCE)
+
+    task = await kit.delegate("parent", "worker", "Find it.", share_channels=shared, wait=True)
+
+    assert task.result is not None
+    if worker_cut:
+        _assert_cut(task.result)
+    else:
+        assert (task.result.status, task.result.output, task.result.error) == (
+            TaskStatus.COMPLETED,
+            "Found it.",
+            None,
+        )
+    await kit.close()
+
+
+@_SHARED
+async def test_a_cut_helper_leaves_a_worker_that_owes_its_result(shared: list[str]) -> None:
+    """The worker hands its result back on its second turn; the helper is cut
+    on each: the worker is re-prompted and its result kept (RMK-834)."""
+    submit = AIResponse(
+        content="",
+        finish_reason="tool_calls",
+        tool_calls=[AIToolCall(id="s", name="submit_result", arguments=_SUBMITTED)],
+    )
+    replies = [AIResponse(content="Working on it."), submit, AIResponse(content="Sent.")]
+    kit = RoomKit()
+    kit.register_channel(
+        Agent("worker", provider=MockAIProvider(ai_responses=replies, streaming=True))
+    )
+    kit.register_channel(_cutting_agent("helper", [LOOPING] * 9))
     kit.register_channel(SimpleChannel("email-out"))
     await kit.create_room(room_id="parent")
     await kit.attach_channel("parent", "email-out")
     await kit.attach_channel("parent", "helper", category=ChannelCategory.INTELLIGENCE)
 
     task = await kit.delegate(
-        "parent", "worker", "Find it.", share_channels=["helper", "email-out"], wait=True
+        "parent",
+        "worker",
+        "Find it.",
+        share_channels=shared,
+        wait=True,
+        require_structured_result=True,
     )
 
     assert task.result is not None
-    if worker_cut:
-        _assert_cut(task.result)
-    else:
-        assert (task.result.status, task.result.output) == (TaskStatus.COMPLETED, "Found it.")
+    assert task.result.status == TaskStatus.COMPLETED
+    assert json.loads(task.result.output)["summary"] == _SUBMITTED["summary"]
     await kit.close()
 
 
-class _LateAgent(Agent):
-    """An agent whose turn returns after the others': its answer comes last."""
-
-    async def on_event(
-        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
-    ) -> ChannelOutput:
-        await asyncio.sleep(0.2)
-        return await super().on_event(event, binding, context)
-
-
-@pytest.mark.parametrize(
-    "shared", [["helper", "email-out"], ["helper"]], ids=["transport", "trace"]
-)
+@_STREAMING
+@_SHARED
 async def test_a_delegation_keeps_its_agent_s_answer_when_another_returns_first(
-    shared: list[str],
+    shared: list[str], streaming: bool
 ) -> None:
     """RMK-834: the helper shared into the child room returns before the
     worker: the task keeps the worker's answer, whatever the order its
     responders returned in (RFC §23.3 step 6)."""
     kit = RoomKit()
+    worker = MockAIProvider(responses=["From the worker."], streaming=streaming)
+    kit.register_channel(_Late("worker", provider=worker))
     kit.register_channel(
-        _LateAgent(
-            "worker", provider=MockAIProvider(responses=["From the worker."], streaming=True)
+        Agent(
+            "helper", provider=MockAIProvider(responses=["From the helper."], streaming=streaming)
         )
-    )
-    kit.register_channel(
-        Agent("helper", provider=MockAIProvider(responses=["From the helper."], streaming=True))
     )
     kit.register_channel(SimpleChannel("email-out"))
     await kit.create_room(room_id="parent")

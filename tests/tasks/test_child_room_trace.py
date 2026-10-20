@@ -95,7 +95,9 @@ class TestPersistChildStream:
             )
             yield "Here is the answer."
 
-        text = await _persist_child_stream(kit, "parent::task-1", _sr(_stream()), chain_depth=1)
+        text, _end = await _persist_child_stream(
+            kit, "parent::task-1", _sr(_stream()), chain_depth=1
+        )
 
         # Return value is the last segment, the worker's answer, as a
         # non-streaming worker's last message is (RMK-289).
@@ -147,7 +149,9 @@ class TestPersistChildStream:
             yield ThinkingDeltaMarker(thinking="hmm")
             yield "final answer"
 
-        text = await _persist_child_stream(kit, "parent::task-2", _sr(_stream()), chain_depth=1)
+        text, _end = await _persist_child_stream(
+            kit, "parent::task-2", _sr(_stream()), chain_depth=1
+        )
         assert text == "final answer"
         # Only the text segment is persisted — thinking is transient.
         assert [e.type for e in kit.store.added] == [EventType.MESSAGE]
@@ -159,7 +163,9 @@ class TestPersistChildStream:
             yield "just "
             yield "text"
 
-        text = await _persist_child_stream(kit, "parent::task-3", _sr(_stream()), chain_depth=1)
+        text, _end = await _persist_child_stream(
+            kit, "parent::task-3", _sr(_stream()), chain_depth=1
+        )
         assert text == "just text"
         assert len(kit.store.added) == 1
         assert kit.store.added[0].content.body == "just text"
@@ -351,7 +357,7 @@ class TestEveryResponseIsRead:
     """RMK-291 review: a delegated broadcast's responses are all read (RFC §8.3)."""
 
     async def test_a_second_response_is_read_and_the_first_answer_wins(self) -> None:
-        """In a room no delegation made, which names no agent."""
+        """Two responses of the delegated agent: both are read, the first kept."""
         kit = _recording_kit()
         read: list[str] = []
 
@@ -364,7 +370,7 @@ class TestEveryResponseIsRead:
 
         result = BroadcastResult(streaming_responses=[_stream("w1"), _stream("w2")])
 
-        text = await _collect_answer(kit, "parent::task-7", result, 1, None)
+        text = await _collect_answer(kit, "parent::task-7", result, 1, "agent:w1")
 
         assert text == "w1's answer"
         assert read == ["w1", "w2"]
@@ -383,7 +389,7 @@ class TestEveryResponseIsRead:
         result = BroadcastResult(streaming_responses=[_sr(_failing()), _sr(_answering())])
 
         with pytest.raises(RuntimeError, match="upstream 500"):
-            await _collect_answer(kit, "parent::task-8", result, 1, None)
+            await _collect_answer(kit, "parent::task-8", result, 1, "agent:w1")
         assert [e.content.body for e in kit.store.added] == ["Looking.", "Done."]
 
 
@@ -396,7 +402,9 @@ class TestRunAgentNonStreaming:
         kit._persist_side_effects = AsyncMock()
         kit._report_intelligence_errors = AsyncMock()
         kit.get_room = AsyncMock(
-            return_value=Room(id="parent::task-1", metadata={"parent_room_id": "parent"})
+            return_value=Room(
+                id="parent::task-1", metadata={"parent_room_id": "parent", "task_agent_id": "w1"}
+            )
         )
         kit.store.list_bindings = AsyncMock(return_value=[])
         kit.store.list_events = AsyncMock(return_value=[])
@@ -439,7 +447,9 @@ class TestRunAgentNonStreaming:
         kit._persist_side_effects = AsyncMock()
         kit._report_intelligence_errors = AsyncMock()
         kit.get_room = AsyncMock(
-            return_value=Room(id="parent::task-1", metadata={"parent_room_id": "parent"})
+            return_value=Room(
+                id="parent::task-1", metadata={"parent_room_id": "parent", "task_agent_id": "w1"}
+            )
         )
         kit.store.list_bindings = AsyncMock(return_value=[])
         kit.store.list_events = AsyncMock(return_value=[])

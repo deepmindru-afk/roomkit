@@ -74,13 +74,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   time. Now such a pass plans nothing and the next one asks `done` first.
 
 - A delegated task keeps the answer of the agent it was delegated to, and
-  that agent's end, whatever other agent shares the child room (RMK-834, RFC
-  §23.3 step 6). It kept the first responder's in the order their turns
-  returned: a helper shared into the room that answered sooner gave the task
-  its answer, or hid that the worker was cut, and across Redis the order
-  followed the latency. Both the shared-transport path and the trace path
-  read the delegated agent's answer. The RFC now says that a message's own
-  responses are read in the order their turns return them (§10.1 step 14).
+  fails on that agent's own cut only, whatever other agent shares the child
+  room (RMK-834, RFC §23.3 step 6), on the shared-transport path and the trace
+  path alike. It kept the first responder's answer in the order their turns
+  returned, so a helper shared into the room that answered sooner gave the
+  task its answer, or hid that the worker was cut, and across Redis the order
+  followed the latency; without a shared transport, a helper cut short failed
+  the task with the helper's narration and end, the worker's answer lost, and
+  a worker owing its result was not re-prompted. A worker that gave no answer
+  while a shared helper did now fails the task where it completed with the
+  helper's answer. A helper whose turn fails with an error still fails the
+  task, as before. The RFC now says that a message's own responses are read
+  in the order their turns return them (§10.1 step 14).
 
 - A turn's executor cancels the turn's running work once (RMK-860, RFC
   §10.6.8): a stream close that reached it while a cut's cleanup ran, or a cut

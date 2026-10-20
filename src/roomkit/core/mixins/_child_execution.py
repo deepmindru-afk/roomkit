@@ -158,8 +158,9 @@ async def _persist_child_stream(
     child_room_id: str,
     sr: Any,
     chain_depth: int,
-) -> str:
-    """Write a delegated turn's stream into its child room; the worker's answer.
+) -> tuple[str, str | None]:
+    """Write a delegated turn's stream into its child room; its answer and how
+    its turn ended.
 
     The rows are the ones a room's streamed turn leaves, by the same writer
     (RFC §23.3): text segments split at tool-call boundaries, each call's
@@ -167,8 +168,10 @@ async def _persist_child_stream(
     (``loop_end_reason``, ``ai_usage``) on its last message (RFC §6.4). Only
     the commit differs, through :class:`_TraceSink`. A delegation cancelled or
     failed mid-turn closes its open calls and keeps its text (RFC §12.2 step
-    13s), then propagates. Returns the last segment's text: the worker's
-    answer, as a non-streaming worker's last message is.
+    13s), then propagates. Returns the last segment's text, the responder's
+    answer as a non-streaming responder's last message is, and its turn's end:
+    whether a cut short ends the task is the delegated agent's alone to decide
+    (RFC §23.3 step 6).
     """
     correlation_id = uuid4().hex
     writer = SegmentWriter(
@@ -185,9 +188,7 @@ async def _persist_child_stream(
         await _report_turn_failure(kit, child_room_id, sr, exc, correlation_id)
         end = _turn_end(stream_record(sr), writer.persisted)
         raise mark_reported(_turn_failure(exc, _last_text(writer.persisted), end))  # noqa: B904
-    if (cut := _cut_short(answer, _turn_end(stream_record(sr), writer.persisted))) is not None:
-        raise cut
-    return answer
+    return answer, _turn_end(stream_record(sr), writer.persisted)
 
 
 async def _report_turn_failure(
@@ -380,7 +381,7 @@ async def _deliver_answer(
         text, reason = _answer_of(result, cascade.response_events, failed_by)
         # Reported in the child room, by its reader or the delivery set's.
         raise mark_reported(_turn_failure(failure, text, reason))
-    text, reason = _kept_answer(result, cascade.response_events, agent_id)
+    text, reason = _answer_of(result, cascade.response_events, agent_id)
     if (cut := _cut_short(text, reason)) is not None:
         raise cut
     return text
@@ -421,27 +422,6 @@ def _answer_of(
     return (answer_text(row) if row is not None else None), _turn_end(
         record, [row] if row is not None else []
     )
-
-
-def _kept_answer(
-    result: BroadcastResult, rows: list[RoomEvent], agent_id: str | None
-) -> tuple[str | None, str | None]:
-    """The answer the child room kept, and how the turn that gave it ended.
-
-    Both are read off one responder, never off another's (RFC §23.3 step
-    6): the delegated agent, *agent_id*, whatever the order its responders
-    returned in. A room no delegation made names none: the first responder
-    that kept an answer among *rows*, its end read from its own record, and
-    with no answer kept, the first responder's end that names one.
-    """
-    if agent_id is not None:
-        return _answer_of(result, rows, agent_id)
-    records = _responder_records(result)
-    for cid, record in records.items():
-        if (row := _last_answer(rows, cid)) is not None:
-            return answer_text(row), _turn_end(record, [row])
-    ends = (_turn_end(record, []) for record in records.values())
-    return None, next((end for end in ends if end is not None), None)
 
 
 def _turn_failure(failure: Exception, text: str | None, reason: str | None) -> Exception:
@@ -490,26 +470,25 @@ def _last_answer(rows: list[RoomEvent], channel_id: str) -> RoomEvent | None:
 
 async def _buffered_outcome(
     kit: RoomKit, child_room_id: str, output: Any
-) -> tuple[str | None, Exception | None]:
-    """A delegated buffered reply's answer, or why the turn has none.
+) -> tuple[str | None, str | None, Exception | None]:
+    """A delegated buffered reply's answer, how its turn ended, and its error.
 
     Its trace is kept first: ``response_events`` already hold the tool-call
     events, and all of them persist, not just the final text. An error fails
     the turn, whether the reply answered or not, as on the room path
-    (:func:`_responder_failure`); a turn its cap, deadline or budget cut has
-    no answer (RFC §6.4).
+    (:func:`_responder_failure`); a turn its cap, deadline or budget cut is
+    returned with its end, which ends the task only for the delegated agent
+    (RFC §6.4, §23.3 step 6).
     """
     if not output.responded:
-        return None, output.error
+        return None, None, output.error
     final_text = await _persist_response_events(kit, child_room_id, output.response_events)
     reason = _turn_end(output.response_metadata, output.response_events)
     if output.error is not None:
         # A turn the provider interrupted after a round kept its trace and
         # has no answer.
-        return None, _turn_failure(output.error, final_text, reason)
-    if (cut := _cut_short(final_text, reason)) is not None:
-        return None, cut
-    return final_text, None
+        return None, reason, _turn_failure(output.error, final_text, reason)
+    return final_text, reason, None
 
 
 async def _collect_answer(
@@ -522,35 +501,34 @@ async def _collect_answer(
     """Keep the trace of every response a delegated broadcast started; its answer.
 
     Every response is read to its end (RFC §8.3), so none is left generating
-    unread. The delegated agent's answer, *agent_id*'s, is the turn's (RFC
-    §23.3 step 6), the first one in a room no delegation made; a response
+    unread. The delegated agent's answer, *agent_id*'s, is the turn's, and
+    only its turn cut short ends the task (RFC §23.3 step 6); a response
     that failed fails the turn once they are all read (RFC §6.4).
     """
-    answers: dict[str, str] = {}
+    turns: dict[str, tuple[str | None, str | None]] = {}
     failure: Exception | None = None
     for channel_id, output in result.outputs.items():
         if output.response_stream is not None:
             continue
-        answer, failed = await _buffered_outcome(kit, child_room_id, output)
+        text, end, failed = await _buffered_outcome(kit, child_room_id, output)
         failure = failure or failed
-        if answer is not None:
-            answers.setdefault(channel_id, answer)
+        turns.setdefault(channel_id, (text, end))
     # Streaming: drain the marker stream, persisting tool calls + text segments.
     for sr in result.streaming_responses:
         try:
-            text = await _persist_child_stream(kit, child_room_id, sr, child_depth)
+            outcome = await _persist_child_stream(kit, child_room_id, sr, child_depth)
         except Exception as exc:
             failure = failure or exc
             continue
-        if text:
-            answers.setdefault(sr.source_channel_id, text)
+        turns.setdefault(sr.source_channel_id, outcome)
     if failure is not None:
         # Reported in the child room: a buffered failure by the delivery set,
         # a stream's by its trace writer.
         raise mark_reported(failure)
-    if agent_id is not None:
-        return answers.get(agent_id)
-    return next(iter(answers.values()), None)
+    text, end = turns.get(agent_id or "", (None, None))
+    if (cut := _cut_short(text, end)) is not None:
+        raise cut
+    return text or None
 
 
 #: A cursor larger than any real event index, so ``before_index`` returns the
