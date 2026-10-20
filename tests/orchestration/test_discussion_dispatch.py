@@ -36,6 +36,8 @@ from roomkit.orchestration.strategies.discussion import (
     _queue,
 )
 from roomkit.orchestration.strategies.discussion._config import CONFIG_KEY
+from roomkit.orchestration.strategies.discussion._queue import SpeakQueueState
+from roomkit.orchestration.strategies.discussion._room import DiscussionRoom
 from roomkit.orchestration.strategies.discussion._shared import STATE_KEY
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
@@ -432,7 +434,6 @@ async def test_the_recent_conversation_holds_what_a_candidate_may_read() -> None
     await kit.close()
 
 
-@pytest.mark.in_process("RMK-835: a behaviour difference across Redis to explain")
 async def test_a_done_discussion_decides_nothing() -> None:
     policy = MockDispatchPolicy([["sre"]])
     over = {"now": False}
@@ -446,6 +447,34 @@ async def test_a_done_discussion_decides_nothing() -> None:
     assert policy.turns == [] and await _answers(kit) == []
     queue = kit.speak_queue("r1")
     assert queue is not None and queue.over
+    await kit.close()
+
+
+async def test_a_message_the_peek_missed_asks_done_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The driver peeks at the queue off the room lock, then plans under it:
+    a message queued in between reached the dispatch policy without the
+    discussion's ``done`` being asked, as across Redis (RMK-835)."""
+    policy = MockDispatchPolicy([["sre"]])
+    over = {"now": False}
+    kit = RoomKit()
+    await _room(kit, _team(), dispatch=policy, done=lambda room_id: over["now"])
+    missed = {"once": True}
+    read = DiscussionRoom.read
+
+    async def peek(self: DiscussionRoom) -> SpeakQueueState:
+        state = await read(self)
+        if missed["once"] and state.dispatching:
+            missed["once"] = False
+            return state.model_copy(update={"entries": [], "dispatching": []})
+        return state
+
+    monkeypatch.setattr(DiscussionRoom, "read", peek)
+    over["now"] = True
+    await _say(kit, "anyone?")
+    await _settle(kit)
+
+    assert not missed["once"]
+    assert policy.turns == [] and await _answers(kit) == []
     await kit.close()
 
 

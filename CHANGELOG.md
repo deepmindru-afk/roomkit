@@ -62,6 +62,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A discussion asks its `done` before it gives a turn or dispatches a
+  message, one queued while it looked at the queue included (RMK-835, RFC
+  §19.7.5 rule 15). Its driver reads the queue off the room lock and asked
+  `done` only when that read held something, then planned from the queue read
+  again under the lock: a message queued in between reached the dispatch
+  policy, or took its turn, with `done` never asked, so a discussion `done`
+  said was over still gave it, and a `done` that uninstalls the discussion
+  never ran. Across Redis, where the queue is read sooner than the message is
+  stored, it happened every time. Now such a pass plans nothing and the next
+  one asks `done` first.
+
 - A turn's executor cancels the turn's running work once (RMK-860, RFC
   §10.6.8): a stream close that reached it while a cut's cleanup ran, or a cut
   that reached it while a close's cleanup ran, cancelled that cleanup again, so

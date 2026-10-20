@@ -529,7 +529,6 @@ async def test_uninstalling_from_a_speak_queue_hook_releases_the_room() -> None:
     await kit.close()
 
 
-@pytest.mark.in_process("RMK-835: a behaviour difference across Redis to explain")
 async def test_uninstalling_from_done_releases_the_room() -> None:
     kit = RoomKit()
 

@@ -175,16 +175,19 @@ class TurnDriver:
         unchanged = peek.version == self._seen_version
         if unchanged and shared.holds(peek) and not shared.renew_due(peek):
             return None
-        done = await self._done() if peek.entries or peek.dispatching else False
+        # Asked off the room lock, of a queue that holds something: done() may
+        # uninstall the discussion it is asked about.
+        done = await self._done() if _holds_work(peek) else None
         if self._stopping or room.closed:
-            # done() may uninstall the discussion it is asked about.
             return None
         return await self._planned_turn(done)
 
-    async def _planned_turn(self, done: bool) -> _Turn | None:
+    async def _planned_turn(self, done: bool | None) -> _Turn | None:
         """The turn to give, planned under the room lock, once the dispatch
         policy decided the first message waiting for it, off the lock;
-        *done* is what the discussion's ``done`` answered."""
+        *done* is what the discussion's ``done`` answered, ``None`` when the
+        queue peeked held nothing to ask it about. One that holds something
+        now is planned on the next look, once ``done`` was asked (rule 15)."""
         room = self._room
         shared = room.shared
         async with room.kit._lock_manager.locked(room.room_id):
@@ -195,6 +198,10 @@ class TurnDriver:
                 # Uninstalled since the peek: no turn, the next look leaves it.
                 if shared.config is None or not shared.take(state):
                     return None
+                if done is None and _holds_work(state):
+                    self.wake()
+                    return None
+                done = bool(done)
                 pending = self._waiting_decision(state, done=done)
                 turn, stopped = None, []
                 if pending is None:
@@ -567,6 +574,12 @@ class TurnDriver:
         state.over = True
         room.drop_instructions(state.drop(), keep=state)
         room.fire(SpeakQueueChange.OVER, [])
+
+
+def _holds_work(state: SpeakQueueState) -> bool:
+    """Whether *state* holds a turn to give or a message waiting for the
+    dispatch policy: what the discussion's ``done`` is asked about."""
+    return bool(state.entries or state.dispatching)
 
 
 async def _abandon(turn: _Turn, reason: str, *, drain: bool = True) -> None:
