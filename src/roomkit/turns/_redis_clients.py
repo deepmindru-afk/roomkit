@@ -1,0 +1,67 @@
+"""The Redis connections a turn backend opens (RFC §10.6.8).
+
+Each gives up a call on a peer gone without closing (a half-open connection:
+a NAT or a load balancer forgot it) within half the backend's silence bound,
+so the call tried again on a new connection still lands inside that bound: a
+process is never taken for lost for one dead connection. redis-py before 8.0
+sets no bound of its own; 8.0 and later bound every call at 5 s.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any, NamedTuple
+
+from roomkit.turns._redis_inbox import READ_BLOCK_S
+from roomkit.turns.base import TurnTimeouts
+
+_MAX_CONNECTIONS = 32
+"""The connections one process uses at most besides its inbox's: its writes
+go through one writer per destination, so few are in use at once."""
+
+_POOL_WAIT = 20.0
+"""How long a caller waits for a free connection of the pool, in seconds."""
+
+
+class RedisClients(NamedTuple):
+    """The backend's connections: its pool, its inbox's, its beat's factory."""
+
+    pooled: Any
+    inbox: Any
+    beat: Callable[[], Any]
+
+
+def redis_clients(address: str, timeouts: TurnTimeouts) -> RedisClients:
+    """The connections a backend opens on *address*, each bounded by
+    *timeouts* (RFC §10.6.8): its pool, its inbox's blocking read (bounded
+    the second more the server holds it), and the factory its beat thread
+    connects with.
+
+    Raises:
+        ImportError: redis is not installed.
+    """
+    try:
+        import redis
+        import redis.asyncio as aioredis
+    except ImportError as exc:
+        raise ImportError(
+            "redis is required for RedisTurnBackend. Install it with: pip install roomkit[redis]"
+        ) from exc
+    bound = call_bound(timeouts)
+    options = {"socket_timeout": bound, "socket_connect_timeout": bound}
+    pool = aioredis.BlockingConnectionPool.from_url(
+        address, max_connections=_MAX_CONNECTIONS, timeout=_POOL_WAIT, **options
+    )
+    return RedisClients(
+        pooled=aioredis.Redis(connection_pool=pool),
+        inbox=aioredis.from_url(address, **{**options, "socket_timeout": bound + READ_BLOCK_S}),
+        beat=lambda: redis.Redis.from_url(address, **options),
+    )
+
+
+def call_bound(timeouts: TurnTimeouts) -> float:
+    """How long one Redis call waits for its peer: half the silence bound,
+    never under a beat's interval (5 s with the default bounds), so the beat
+    or the read tried again on a new connection lands inside the silence
+    bound (RFC §10.6.8)."""
+    return max(timeouts.heartbeat_interval, timeouts.heartbeat_timeout / 2)

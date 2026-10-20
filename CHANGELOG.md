@@ -62,6 +62,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A Redis turn backend whose Redis goes silent without closing a connection
+  (a NAT or a load balancer forgot it) keeps the process among the living
+  (RMK-859, RFC §10.6.8). Its connections set no timeout, so with a redis-py
+  before 8.0, which the `redis` extra admitted, the beat, the inbox's read and
+  an outbox write waited until TCP gave up, about 15 minutes: the other
+  processes took this one for lost and cut its turns. Each connection the
+  backend opens now gives up a call after half of `heartbeat_timeout` (5 s by
+  default, never under `heartbeat_interval`; one second more for the inbox's
+  blocking read), so the beat and the read tried again on a new connection
+  land inside the silence bound; a turn's message whose write was cut fails
+  its turn. A client passed as `client=` keeps its own settings. The extra now
+  needs `redis>=5.0.2`: 5.0.1's connection pool blocked every caller on a
+  silent Redis.
+
 - A turn already over whose `end` never came (its drain past
   `cancel_timeout`, its executor lost) stays incomplete when its owner closes
   (RMK-832, RFC §10.1, §10.6.8). The owner's close gave up every turn it held,

@@ -24,6 +24,7 @@ from roomkit.turns import InMemoryTurnBackend, TurnExecutor, TurnTimeouts, _redi
 from roomkit.turns._error_codec import ROOMKIT_ERRORS
 from roomkit.turns._owner_turn import OwnerTurn
 from roomkit.turns._redis_beat import LiveExecutors
+from roomkit.turns._redis_clients import redis_clients
 from roomkit.turns._redis_inbox import Envelope
 from roomkit.turns._redis_links import RedisExecutorLink
 from roomkit.turns._redis_outbox import Outbox
@@ -936,3 +937,31 @@ async def test_a_turn_whose_end_write_hangs_stops_running_after_the_end_bound() 
         assert let_go == [link]
     finally:
         await outbox.close(drain=0.01)
+
+
+def test_every_connection_gives_up_within_half_the_silence_bound() -> None:
+    """RMK-859: a call on a half-open connection gives up within half of
+    heartbeat_timeout (never under a beat's interval), the inbox's blocking
+    read the second more the server holds it, whatever redis-py's own
+    default, so the call tried again lands inside the silence bound."""
+    pytest.importorskip("redis")
+    clients = redis_clients("redis://localhost:6379", TurnTimeouts())
+    beat = clients.beat()
+
+    for client, bound in ((clients.pooled, 5.0), (clients.inbox, 6.0), (beat, 5.0)):
+        options = client.connection_pool.connection_kwargs
+        assert (options["socket_timeout"], options["socket_connect_timeout"]) == (bound, 5.0)
+        assert "socket_keepalive" not in options
+    beat.close()
+
+
+def test_a_unix_socket_url_builds_every_connection() -> None:
+    """A unix:// connection refuses TCP's options (socket_keepalive): the
+    backend's three connections build on one."""
+    pytest.importorskip("redis")
+    clients = redis_clients("unix:///tmp/roomkit-no-such-redis.sock", TurnTimeouts())
+    beat = clients.beat()
+
+    for client in (clients.pooled, clients.inbox, beat):
+        client.connection_pool.make_connection()
+    beat.close()

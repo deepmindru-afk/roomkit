@@ -42,6 +42,9 @@ from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import SQLiteStore
 from roomkit.turns import TurnClient, TurnExecutor, TurnTimeouts
+from roomkit.turns._redis_beat import BeatThread, LiveExecutors
+from roomkit.turns._redis_clients import redis_clients
+from roomkit.turns._redis_inbox import Envelope, Inbox
 from roomkit.turns._redis_links import RedisExecutorLink
 from roomkit.turns._redis_presence import Keys, Registry
 from roomkit.turns._redis_routes import REFUSED
@@ -1648,3 +1651,128 @@ async def test_a_live_agent_stays_on_the_kit_s_executor_whoever_holds_the_room(
     assert said == ["from host", "from kit"]
     assert answer == "kit"
     assert seen == ["call:kit", "event:kit"]
+
+
+class _Silencing:
+    """A TCP proxy to Redis that, once told, drops every byte of the
+    connections already open and keeps them open: a NAT or a load balancer
+    that forgot them. A connection opened after reaches Redis (RMK-859)."""
+
+    def __init__(self) -> None:
+        self._accepted = 0
+        self._silenced_below: int | None = None
+        self._writers: list[asyncio.StreamWriter] = []
+        self._server: asyncio.Server | None = None
+
+    async def url(self) -> str:
+        self._server = await asyncio.start_server(self._relay, "127.0.0.1", 0)
+        port = self._server.sockets[0].getsockname()[1]
+        return f"redis://127.0.0.1:{port}{urlparse(os.environ['REDIS_URL']).path}"
+
+    def silence(self) -> None:
+        self._silenced_below = self._accepted
+
+    async def close(self) -> None:
+        assert self._server is not None
+        self._server.close()
+        for writer in self._writers:
+            writer.close()
+
+    async def _relay(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        number = self._accepted
+        self._accepted += 1
+        server_reader, server_writer = await asyncio.open_connection(*_redis_address())
+        self._writers += [writer, server_writer]
+
+        async def pipe(source: asyncio.StreamReader, sink: asyncio.StreamWriter) -> None:
+            while data := await source.read(65536):
+                if self._silenced_below is None or number >= self._silenced_below:
+                    sink.write(data)
+                    await sink.drain()
+
+        await asyncio.gather(
+            pipe(reader, server_writer), pipe(server_reader, writer), return_exceptions=True
+        )
+
+
+# A short silence bound for the half-open tests: the bound a call keeps is 2 s.
+_HALF_OPEN = TurnTimeouts(heartbeat_interval=0.5, heartbeat_timeout=4.0)
+
+
+async def test_a_half_open_beat_connection_takes_nobody_for_lost(
+    prefix: str, redis_client: Any
+) -> None:
+    """RMK-859: the beat's one connection goes half-open: its call gives up,
+    the beat goes on on a new connection, and the other processes never see
+    this one lost."""
+    proxy = _Silencing()
+    keys = Keys(prefix)
+    payload = json.dumps(
+        {
+            "node": "n",
+            "generation": 1,
+            "declared": {"n:e": ""},
+            "undeclared": [],
+            "gone": [],
+            "running": [],
+            "owner": True,
+        }
+    )
+    beat = BeatThread(
+        redis_clients(await proxy.url(), _HALF_OPEN).beat,
+        keys.beat("n"),
+        _HALF_OPEN.heartbeat_interval,
+        int(_HALF_OPEN.heartbeat_timeout * 3000),
+        lambda: payload,
+    )
+    live = LiveExecutors(
+        Registry(redis_client, keys),
+        _HALF_OPEN.heartbeat_interval,
+        _HALF_OPEN.heartbeat_timeout,
+        lambda: {},
+    )
+    beat.start()
+    await asyncio.sleep(1.0)
+    live.start()
+    await asyncio.sleep(1.0)
+    assert live.alive("n:e")
+
+    proxy.silence()
+    seen_lost = False
+    for _ in range(60):
+        await asyncio.sleep(0.1)
+        seen_lost = seen_lost or not live.alive("n:e")
+
+    await asyncio.to_thread(beat.stop)
+    await live.close()
+    await proxy.close()
+    assert not seen_lost
+
+
+async def test_a_half_open_inbox_reads_within_the_silence_bound(
+    prefix: str, redis_client: Any
+) -> None:
+    """RMK-859: the inbox's connection goes half-open: an entry written then
+    is handed on within heartbeat_timeout, read on a new connection."""
+    proxy = _Silencing()
+    handed: list[float] = []
+    key = f"{prefix}:inbox:n"
+    inbox = Inbox(
+        redis_clients(await proxy.url(), _HALF_OPEN).inbox,
+        key,
+        lambda envelope: handed.append(time.monotonic()),
+        owns_client=True,
+    )
+    inbox.start()
+    await asyncio.sleep(0.5)
+
+    proxy.silence()
+    written = time.monotonic()
+    await redis_client.xadd(key, Envelope("control", "n", "{}").fields())
+    async with asyncio.timeout(3 * _HALF_OPEN.heartbeat_timeout):
+        while not handed:
+            await asyncio.sleep(0.05)
+
+    await inbox.close()
+    await proxy.close()
+    assert handed[0] - written < _HALF_OPEN.heartbeat_timeout

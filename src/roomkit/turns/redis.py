@@ -30,6 +30,7 @@ from roomkit.core.exceptions import TurnLinkError
 from roomkit.core.task_utils import cancel_and_wait
 from roomkit.turns._codec import control_json, request_json
 from roomkit.turns._redis_beat import BeatPayload, BeatThread, LiveExecutors
+from roomkit.turns._redis_clients import redis_clients
 from roomkit.turns._redis_inbox import Envelope, Inbox
 from roomkit.turns._redis_outbox import Failed, Outbox, Written
 from roomkit.turns._redis_placement import Elsewhere, Placement
@@ -54,10 +55,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("roomkit.turns")
 
 _DEFAULT_URL = "redis://localhost:6379"
-# The connections one process uses at most besides its inbox's: its writes
-# go through one writer per destination, so few are in use at once.
-_MAX_CONNECTIONS = 32
-_POOL_WAIT = 20.0
 
 
 class RedisTurnBackend(TurnBackend):
@@ -93,31 +90,21 @@ class RedisTurnBackend(TurnBackend):
         timeouts: TurnTimeouts | None = None,
         _loop_back: bool = False,
     ) -> None:
-        try:
-            import redis as _redis
-            import redis.asyncio as _aioredis
-        except ImportError as exc:
-            raise ImportError(
-                "redis is required for RedisTurnBackend. "
-                "Install it with: pip install roomkit[redis]"
-            ) from exc
         if client is not None and url is None:
             raise ValueError(
                 "RedisTurnBackend(client=...) needs url= too: its beat connects with it"
             )
-        address = url or _DEFAULT_URL
-        self._owns_client = client is None
-        self._client = client if client is not None else _pooled(_aioredis, address)
-        self.node_id = uuid4().hex[:12]
-        """This process's id among the backend's processes."""
         self._timeouts = timeouts or TurnTimeouts()
         self.timeouts = self._timeouts
+        clients = redis_clients(url or _DEFAULT_URL, self._timeouts)
+        self._owns_client = client is None
+        self._client = client if client is not None else clients.pooled
+        self.node_id = uuid4().hex[:12]
+        """This process's id among the backend's processes."""
         self._ttl_ms = int(self._timeouts.heartbeat_timeout * 3000)
         keys = Keys(key_prefix)
         self._outbox = Outbox(self._client, keys.inbox, self._ttl_ms)
-        self._inbox = Inbox(
-            _aioredis.from_url(address), keys.inbox(self.node_id), self._route, owns_client=True
-        )
+        self._inbox = Inbox(clients.inbox, keys.inbox(self.node_id), self._route, owns_client=True)
         self._registry = Registry(self._client, keys)
         self._live = LiveExecutors(
             self._registry,
@@ -126,7 +113,7 @@ class RedisTurnBackend(TurnBackend):
             lambda: self._routes.open_turns(),
         )
         self._beat = BeatThread(
-            lambda: _redis.Redis.from_url(address),
+            clients.beat,
             keys.beat(self.node_id),
             self._timeouts.heartbeat_interval,
             self._ttl_ms,
@@ -419,15 +406,6 @@ class RedisTurnBackend(TurnBackend):
         self._tasks.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.error("A turn backend message failed", exc_info=error)
-
-
-def _pooled(aioredis: Any, url: str) -> Any:
-    """A client whose callers wait for a free connection instead of failing
-    when every one is in use."""
-    pool = aioredis.BlockingConnectionPool.from_url(
-        url, max_connections=_MAX_CONNECTIONS, timeout=_POOL_WAIT
-    )
-    return aioredis.Redis(connection_pool=pool)
 
 
 def _others(executors: Iterable[TurnExecutor], executor: TurnExecutor) -> list[TurnExecutor]:
