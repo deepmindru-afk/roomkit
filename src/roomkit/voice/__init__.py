@@ -583,6 +583,20 @@ def get_pocket_tts_config() -> type:
     return PocketTTSConfig
 
 
+def get_phonon_tts_provider() -> type:
+    """Get PhononTTSProvider class (requires ptts)."""
+    from roomkit.voice.tts.phonon import PhononTTSProvider
+
+    return PhononTTSProvider
+
+
+def get_phonon_tts_config() -> type:
+    """Get PhononTTSConfig class."""
+    from roomkit.voice.tts.phonon import PhononTTSConfig
+
+    return PhononTTSConfig
+
+
 def get_grok_tts_provider() -> type:
     """Get GrokTTSProvider class (requires httpx, websockets)."""
     from roomkit.voice.tts.grok import GrokTTSProvider

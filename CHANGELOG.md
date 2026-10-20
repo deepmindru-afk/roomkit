@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other's. Two tasks handed to one agent in one room can now be stopped one at
   a time, where a room's Stop cut the running one and let the waiting one
   start. `examples/cancel_delivery_by_key.py` runs it.
+- Phonon text-to-speech, Gradium's small local models (RMK-867,
+  `pip install roomkit[phonon]`). `PhononTTSProvider` runs the 31M and 40M
+  Phonon models (English, French, German, Spanish, Portuguese) in the process
+  through their Rust runtime, `ptts`, on the CPU with no torch: about ten
+  times faster than real time on two threads, 40–110 ms to the first chunk,
+  streamed as 24 kHz PCM. It loads the runtime's default model, Phonon 31m
+  English, unless `PhononTTSConfig.model` names another (`hf://` or a local
+  checkpoint), takes a catalog voice by name or id or a Gradium Studio voice
+  file, fetches the default voice at `warmup()`, and lists the catalog. A
+  barge-in stops the runtime's workers in about 60 ms, and replies stream
+  side by side from one loaded model. `examples/voice_local_phonon.py` runs a
+  local French assistant on it.
 
 ### Changed
 

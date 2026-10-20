@@ -136,6 +136,7 @@ async def pin_language(event, ctx):
 | Grok TTS | `GrokTTSProvider` | `GrokTTSConfig` | xAI |
 | Gemini TTS | `GeminiTTSProvider` | `GeminiTTSConfig` | `roomkit[gemini]` |
 | Fish Audio (Drama 3, S2) | `FishAudioTTSProvider` | `FishAudioTTSConfig` | `roomkit[fish-audio]` |
+| Phonon (Gradium, local CPU) | `PhononTTSProvider` | `PhononTTSConfig` | `roomkit[phonon]` |
 | Mock | `MockTTSProvider` | — | built-in |
 
 ```python

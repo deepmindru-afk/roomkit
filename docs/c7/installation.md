@@ -43,6 +43,7 @@ pip install roomkit[gradium]      # Gradium TTS
 pip install roomkit[qwen-tts]     # Qwen3 TTS
 pip install roomkit[neutts]       # NeuTTS
 pip install roomkit[fish-audio]   # Fish Audio TTS (Drama 3, S2)
+pip install roomkit[phonon]       # Phonon TTS (Gradium, local CPU)
 ```
 
 ### Voice — Backends

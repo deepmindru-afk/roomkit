@@ -84,6 +84,8 @@ fluxions = ["httpx>=0.27"]
 # Pulls the CUDA build of torch on Linux; for CPU only, install from
 # https://download.pytorch.org/whl/cpu (see the Pocket TTS guide).
 pocket-tts = ["pocket-tts>=3.2"]
+# Gradium Phonon: its own Rust runtime (abi3 wheels, numpy only), no torch.
+phonon = ["ptts>=0.4.0"]
 # WebRTC realtime transport. Vendored gradio-free under roomkit.webrtc
 # (src/roomkit/webrtc/), so this pulls the transport's own runtime deps instead
 # of the upstream fastrtc package — which forced gradio<6 (CVEs) and pillow<12.
@@ -351,6 +353,7 @@ allowed-unresolved-imports = [
     "onnxruntime.**",
     "perth.**",
     "pocket_tts.**",
+    "ptts.**",
     "pyautogui.**",
     "pyroscope.**",
     "qwen_asr.**",
