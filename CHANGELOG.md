@@ -62,6 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A turn already over whose `end` never came (its drain past
+  `cancel_timeout`, its executor lost) stays incomplete when its owner closes
+  (RMK-832, RFC §10.1, §10.6.8). The owner's close gave up every turn it held,
+  over or not, so a cascade still cleaning up when the kit closed reported such
+  a turn's cleanup done, where incomplete drainage MUST be reported. The close
+  gives up only the turns still open.
+
 - `cancel_task` answers `running`, saying it ends with what runs it, for a
   task the room lists running that runs in no background: an inline
   delegation, a strategy's worker run (RMK-829, RFC §23.4). It answered

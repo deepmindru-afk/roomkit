@@ -153,8 +153,11 @@ class OwnerTurn:
 
     def abandon(self) -> None:
         """Stop holding the turn now (the owner closes): later frames are
-        dropped, and the executor, no longer hearing its owner, cuts it."""
-        self._abandoned = True
+        dropped, and the executor, no longer hearing its owner, cuts it. A
+        turn already over keeps what it reported: one whose end is owed stays
+        owed (RFC §10.6.8)."""
+        if not self._over:
+            self._abandoned = True
         self._finish()
 
     # -- Output and stream ---------------------------------------------------

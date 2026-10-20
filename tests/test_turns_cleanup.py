@@ -174,6 +174,56 @@ async def test_a_cascade_whose_turn_its_owner_gave_up_reports_its_cleanup_done()
     await executor.close()
 
 
+async def test_a_turn_whose_end_is_owed_stays_owed_when_its_owner_closes() -> None:
+    """The owner closing gives up the turns still open, never one already
+    over: a turn whose drain passed ``cancel_timeout`` keeps its end owed, so
+    a cascade still cleaning up reports it incomplete (RFC §10.1, §10.6.8)."""
+    let_go = asyncio.Event()
+
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        try:
+            yield "one"
+            await asyncio.Event().wait()
+        finally:
+            await let_go.wait()
+
+    async def consume(stream: Any) -> None:
+        with contextlib.suppress(TurnLinkError):
+            async for _ in stream:
+                pass
+
+    async def slow_to_stop() -> None:
+        # More of the cascade's turn work, slow to honour the cut: its
+        # cleanup reads the turn's end after the owner closed.
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.6)
+            raise
+
+    channels = {"agent": ScriptedChannel(script)}
+    backend = InMemoryTurnBackend()
+    executor = TurnExecutor(channels.get, hosts=channels.__contains__, timeouts=QUICK)
+    await backend.serve(executor)
+    client = TurnClient(backend, timeouts=QUICK)
+    stream = (await _run(client)).response_stream
+    assert await anext(stream) == "one"
+    cascade = DeliveryCascade("room", reentry_budget=10)
+    cascade.add_streams([_response(stream)])
+    cascade.track(asyncio.ensure_future(consume(stream)), turn_work=True)
+    cascade.track(asyncio.ensure_future(slow_to_stop()), turn_work=True)
+    await asyncio.sleep(0.05)
+    cleanup = asyncio.ensure_future(cascade.cancel_and_wait("caller_cancelled", timeout=3.0))
+    await asyncio.sleep(0.4)  # past cancel_timeout: the turn is over, its end owed
+
+    await client.close()
+
+    with pytest.raises(TimeoutError):
+        await cleanup
+    let_go.set()
+    await executor.close()
+
+
 @pytest.mark.in_process("measures the in-memory link")
 @pytest.mark.wallclock
 async def test_two_thousand_deltas_cost_the_owner_s_loop_little() -> None:
