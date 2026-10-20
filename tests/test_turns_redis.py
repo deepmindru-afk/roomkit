@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import AsyncIterator, Coroutine
@@ -43,7 +44,7 @@ from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import SQLiteStore
 from roomkit.turns import TurnClient, TurnExecutor, TurnTimeouts
 from roomkit.turns._redis_beat import BeatThread, LiveExecutors
-from roomkit.turns._redis_clients import redis_clients
+from roomkit.turns._redis_clients import call_bound, read_block, redis_clients
 from roomkit.turns._redis_inbox import Envelope, Inbox
 from roomkit.turns._redis_links import RedisExecutorLink
 from roomkit.turns._redis_presence import Keys, Registry
@@ -1654,9 +1655,10 @@ async def test_a_live_agent_stays_on_the_kit_s_executor_whoever_holds_the_room(
 
 
 class _Silencing:
-    """A TCP proxy to Redis that, once told, drops every byte of the
-    connections already open and keeps them open: a NAT or a load balancer
-    that forgot them. A connection opened after reaches Redis (RMK-859)."""
+    """A proxy to Redis that, once told, drops every byte of the connections
+    already open and keeps them open: a NAT or a load balancer that forgot
+    them. A connection opened after reaches Redis, until it refuses them
+    (RMK-859)."""
 
     def __init__(self) -> None:
         self._accepted = 0
@@ -1669,8 +1671,17 @@ class _Silencing:
         port = self._server.sockets[0].getsockname()[1]
         return f"redis://127.0.0.1:{port}{urlparse(os.environ['REDIS_URL']).path}"
 
+    async def unix_url(self, path: str) -> str:
+        self._server = await asyncio.start_unix_server(self._relay, path)
+        return f"unix://{path}?db={urlparse(os.environ['REDIS_URL']).path.strip('/') or 0}"
+
     def silence(self) -> None:
         self._silenced_below = self._accepted
+
+    def refuse(self) -> None:
+        """Refuse every connection from now: Redis stopped."""
+        assert self._server is not None
+        self._server.close()
 
     async def close(self) -> None:
         assert self._server is not None
@@ -1695,51 +1706,65 @@ class _Silencing:
         )
 
 
-# A short silence bound for the half-open tests: the bound a call keeps is 2 s.
-_HALF_OPEN = TurnTimeouts(heartbeat_interval=0.5, heartbeat_timeout=4.0)
+# Short silence bounds for the half-open tests, the heartbeat interval under
+# half of each: the example's, the suite's, and one with room to spare.
+_HALF_OPEN = [
+    TurnTimeouts(heartbeat_interval=0.5, heartbeat_timeout=2.0),
+    TurnTimeouts(heartbeat_interval=0.2, heartbeat_timeout=1.0),
+    TurnTimeouts(heartbeat_interval=0.5, heartbeat_timeout=4.0),
+]
+
+_BEAT = json.dumps(
+    {
+        "node": "n",
+        "generation": 1,
+        "declared": {"n:e": ""},
+        "undeclared": [],
+        "gone": [],
+        "running": [],
+        "owner": True,
+    }
+)
+"""What the half-open tests' process beats: one executor, an owner."""
 
 
+def _beat_thread(url: str, keys: Keys, timeouts: TurnTimeouts) -> BeatThread:
+    clients = redis_clients(url, timeouts)
+    return BeatThread(
+        clients.beat,
+        keys.beat("n"),
+        timeouts.heartbeat_interval,
+        int(timeouts.heartbeat_timeout * 3000),
+        lambda: _BEAT,
+        bound=call_bound(timeouts),
+        timeout_errors=clients.timeout_errors,
+    )
+
+
+@pytest.mark.parametrize(
+    "timeouts", _HALF_OPEN, ids=lambda t: f"{t.heartbeat_interval}s-of-{t.heartbeat_timeout}s"
+)
 async def test_a_half_open_beat_connection_takes_nobody_for_lost(
-    prefix: str, redis_client: Any
+    prefix: str, redis_client: Any, timeouts: TurnTimeouts
 ) -> None:
-    """RMK-859: the beat's one connection goes half-open: its call gives up,
-    the beat goes on on a new connection, and the other processes never see
-    this one lost."""
+    """RMK-859: the beat's one connection goes half-open: its call gives up
+    within half the silence bound, the beat goes on at once on a new
+    connection, and the other processes never see this one lost."""
     proxy = _Silencing()
     keys = Keys(prefix)
-    payload = json.dumps(
-        {
-            "node": "n",
-            "generation": 1,
-            "declared": {"n:e": ""},
-            "undeclared": [],
-            "gone": [],
-            "running": [],
-            "owner": True,
-        }
-    )
-    beat = BeatThread(
-        redis_clients(await proxy.url(), _HALF_OPEN).beat,
-        keys.beat("n"),
-        _HALF_OPEN.heartbeat_interval,
-        int(_HALF_OPEN.heartbeat_timeout * 3000),
-        lambda: payload,
-    )
+    beat = _beat_thread(await proxy.url(), keys, timeouts)
     live = LiveExecutors(
-        Registry(redis_client, keys),
-        _HALF_OPEN.heartbeat_interval,
-        _HALF_OPEN.heartbeat_timeout,
-        lambda: {},
+        Registry(redis_client, keys), timeouts.heartbeat_interval, timeouts.heartbeat_timeout, dict
     )
     beat.start()
-    await asyncio.sleep(1.0)
+    await asyncio.sleep(2 * timeouts.heartbeat_interval)
     live.start()
-    await asyncio.sleep(1.0)
+    await asyncio.sleep(2 * timeouts.heartbeat_interval)
     assert live.alive("n:e")
 
     proxy.silence()
     seen_lost = False
-    for _ in range(60):
+    for _ in range(round(15 * timeouts.heartbeat_timeout)):
         await asyncio.sleep(0.1)
         seen_lost = seen_lost or not live.alive("n:e")
 
@@ -1749,30 +1774,104 @@ async def test_a_half_open_beat_connection_takes_nobody_for_lost(
     assert not seen_lost
 
 
+@pytest.mark.parametrize(
+    "timeouts", _HALF_OPEN, ids=lambda t: f"{t.heartbeat_interval}s-of-{t.heartbeat_timeout}s"
+)
 async def test_a_half_open_inbox_reads_within_the_silence_bound(
-    prefix: str, redis_client: Any
+    prefix: str, redis_client: Any, timeouts: TurnTimeouts
 ) -> None:
-    """RMK-859: the inbox's connection goes half-open: an entry written then
-    is handed on within heartbeat_timeout, read on a new connection."""
+    """RMK-859: the inbox's connection goes half-open just as a read starts:
+    an entry written then is handed on within heartbeat_timeout, read again
+    at once on a new connection."""
     proxy = _Silencing()
     handed: list[float] = []
     key = f"{prefix}:inbox:n"
+    clients = redis_clients(await proxy.url(), timeouts)
+    reading = asyncio.Event()
+    read = clients.inbox.xread
+
+    async def xread(*args: Any, **kwargs: Any) -> Any:
+        reading.set()
+        return await read(*args, **kwargs)
+
+    clients.inbox.xread = xread
     inbox = Inbox(
-        redis_clients(await proxy.url(), _HALF_OPEN).inbox,
+        clients.inbox,
         key,
         lambda envelope: handed.append(time.monotonic()),
         owns_client=True,
+        block=read_block(timeouts),
+        timeout_errors=clients.timeout_errors,
     )
     inbox.start()
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(2 * timeouts.heartbeat_interval)
+    reading.clear()
+    await reading.wait()
 
     proxy.silence()
     written = time.monotonic()
     await redis_client.xadd(key, Envelope("control", "n", "{}").fields())
-    async with asyncio.timeout(3 * _HALF_OPEN.heartbeat_timeout):
+    async with asyncio.timeout(3 * timeouts.heartbeat_timeout):
         while not handed:
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.02)
 
     await inbox.close()
     await proxy.close()
-    assert handed[0] - written < _HALF_OPEN.heartbeat_timeout
+    assert handed[0] - written < timeouts.heartbeat_timeout
+
+
+async def test_a_read_cut_by_its_connection_counts_from_its_start(
+    prefix: str, redis_client: Any
+) -> None:
+    """RMK-859: Redis freezes, then refuses: the read in flight, cut by its
+    connection's bound, counts as one that hung, so the others are unread
+    about a heartbeat timeout after the freeze, not that plus the bound."""
+    timeouts = TurnTimeouts(heartbeat_interval=0.25, heartbeat_timeout=2.0)
+    proxy = _Silencing()
+    keys = Keys(prefix)
+    beat = _beat_thread(os.environ["REDIS_URL"], keys, timeouts)
+    clients = redis_clients(await proxy.url(), timeouts)
+    live = LiveExecutors(
+        Registry(clients.pooled, keys),
+        timeouts.heartbeat_interval,
+        timeouts.heartbeat_timeout,
+        dict,
+        timeout_errors=clients.timeout_errors,
+    )
+    beat.start()
+    await asyncio.sleep(0.5)
+    live.start()
+    await asyncio.sleep(0.5)
+    assert live.alive("n:e")
+
+    proxy.silence()
+    proxy.refuse()
+    await asyncio.sleep(timeouts.heartbeat_timeout + 3 * timeouts.heartbeat_interval)
+    unread = not live.alive("n:e")
+
+    await asyncio.to_thread(beat.stop)
+    await live.close()
+    await clients.pooled.aclose()
+    await proxy.close()
+    assert unread
+
+
+async def test_a_unix_socket_url_reaches_redis_on_every_connection(prefix: str) -> None:
+    """A unix:// connection refuses TCP's options (socket_keepalive): the
+    backend's three connections reach Redis through one."""
+    proxy = _Silencing()
+    path = os.path.join(tempfile.mkdtemp(), "redis.sock")
+    clients = redis_clients(await proxy.unix_url(path), TIMEOUTS)
+    beat = clients.beat()
+
+    answers = [
+        await clients.pooled.ping(),
+        await clients.inbox.ping(),
+        await asyncio.to_thread(beat.ping),
+    ]
+
+    beat.close()
+    await clients.pooled.aclose()
+    await clients.inbox.aclose()
+    await proxy.close()
+    assert answers == [True, True, True]

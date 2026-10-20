@@ -818,6 +818,54 @@ async def test_a_read_that_hung_counts_from_its_start() -> None:
         await live.close()
 
 
+class _ClientTimeoutError(Exception):
+    """What a Redis client raises when its connection's bound cuts a call:
+    not the builtin TimeoutError (redis-py's is not one)."""
+
+
+class _CutThenRefuses(_Registry):
+    """Redis freezes: the read in flight is cut by its connection's bound,
+    half the heartbeat timeout; then every connection is refused."""
+
+    def __init__(self, bound: float) -> None:
+        super().__init__()
+        self.bound = bound
+        self.frozen = False
+        self.cut = 0
+
+    async def view(self, forget_after_ms: int) -> View:
+        if self.frozen and not self.cut:
+            self.cut += 1
+            await asyncio.sleep(self.bound)
+            raise _ClientTimeoutError("Timeout reading from redis")
+        if self.frozen:
+            raise ConnectionError("Connection refused")
+        return await super().view(forget_after_ms)
+
+
+async def test_a_read_its_connection_cut_counts_from_its_start() -> None:
+    """RMK-859: a read the client's bound cut counts as one that hung, from
+    its start: the others are unread about a heartbeat timeout after Redis
+    froze, not that plus the bound."""
+    registry = _CutThenRefuses(bound=0.5)
+    live = LiveExecutors(
+        registry,  # type: ignore[arg-type]
+        0.1,
+        1.0,
+        dict,
+        timeout_errors=(TimeoutError, _ClientTimeoutError),
+    )
+    live.start()
+    try:
+        await asyncio.sleep(0.15)
+        registry.frozen = True
+        await asyncio.sleep(1.35)
+
+        assert not live.alive("node-a:w")
+    finally:
+        await live.close()
+
+
 async def test_a_stall_just_over_the_timeout_with_a_read_in_flight_is_not_silence() -> None:
     """The read in flight across a stall a little longer than the timeout
     times out late, the next fails once: not the others' silence."""
@@ -939,29 +987,41 @@ async def test_a_turn_whose_end_write_hangs_stops_running_after_the_end_bound() 
         await outbox.close(drain=0.01)
 
 
-def test_every_connection_gives_up_within_half_the_silence_bound() -> None:
+@pytest.mark.parametrize(
+    ("timeouts", "bound", "inbox"),
+    [
+        (TurnTimeouts(), 5.0, 6.0),
+        (TurnTimeouts(heartbeat_interval=0.5, heartbeat_timeout=2.0), 1.0, 1.5),
+    ],
+)
+def test_every_connection_gives_up_within_half_the_silence_bound(
+    timeouts: TurnTimeouts, bound: float, inbox: float
+) -> None:
     """RMK-859: a call on a half-open connection gives up within half of
-    heartbeat_timeout (never under a beat's interval), the inbox's blocking
-    read the second more the server holds it, whatever redis-py's own
-    default, so the call tried again lands inside the silence bound."""
-    pytest.importorskip("redis")
-    clients = redis_clients("redis://localhost:6379", TurnTimeouts())
+    heartbeat_timeout, the inbox's blocking read the time the server holds
+    it more (a second, never over a beat's interval), whatever redis-py's
+    own default, so the call tried again at once lands inside the silence
+    bound."""
+    redis = pytest.importorskip("redis")
+    clients = redis_clients("redis://localhost:6379", timeouts)
     beat = clients.beat()
 
-    for client, bound in ((clients.pooled, 5.0), (clients.inbox, 6.0), (beat, 5.0)):
+    for client, waits in ((clients.pooled, bound), (clients.inbox, inbox), (beat, bound)):
         options = client.connection_pool.connection_kwargs
-        assert (options["socket_timeout"], options["socket_connect_timeout"]) == (bound, 5.0)
+        assert (options["socket_timeout"], options["socket_connect_timeout"]) == (waits, bound)
         assert "socket_keepalive" not in options
+    assert redis.exceptions.TimeoutError in clients.timeout_errors
     beat.close()
 
 
-def test_a_unix_socket_url_builds_every_connection() -> None:
-    """A unix:// connection refuses TCP's options (socket_keepalive): the
-    backend's three connections build on one."""
+def test_a_client_given_is_the_pool_and_none_is_built() -> None:
+    """RMK-859: with client=, the backend writes through it: no pool of its
+    own is built."""
     pytest.importorskip("redis")
-    clients = redis_clients("unix:///tmp/roomkit-no-such-redis.sock", TurnTimeouts())
-    beat = clients.beat()
+    given = object()
 
-    for client in (clients.pooled, clients.inbox, beat):
-        client.connection_pool.make_connection()
-    beat.close()
+    with patch("redis.asyncio.BlockingConnectionPool.from_url") as pool:
+        clients = redis_clients("redis://localhost:6379", TurnTimeouts(), given)
+
+    assert clients.pooled is given
+    assert not pool.called

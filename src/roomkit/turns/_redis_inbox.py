@@ -21,10 +21,9 @@ from typing import Any
 
 logger = logging.getLogger("roomkit.turns")
 
-_READ_BLOCK_MS = 1000
-READ_BLOCK_S = _READ_BLOCK_MS / 1000
-"""How long the server holds the inbox's blocking read, in seconds: its
-connection waits that much longer than any other call (RFC §10.6.8)."""
+READ_BLOCK_S = 1.0
+"""How long the server holds the inbox's blocking read at most, in seconds:
+its connection waits that much longer than any other call (RFC §10.6.8)."""
 _READ_COUNT = 256
 _RETRY_DELAY = 1.0
 
@@ -82,15 +81,27 @@ class Inbox:
         handle: Called with each entry read, in order, on the reader's task;
             it must not wait.
         owns_client: Whether the reader closes *client* when it closes.
+        block: How long the server holds each read, in seconds.
+        timeout_errors: What a read its bound cut raises: read again at once.
     """
 
     def __init__(
-        self, client: Any, key: str, handle: Callable[[Envelope], None], *, owns_client: bool
+        self,
+        client: Any,
+        key: str,
+        handle: Callable[[Envelope], None],
+        *,
+        owns_client: bool,
+        block: float = READ_BLOCK_S,
+        timeout_errors: tuple[type[Exception], ...] = (TimeoutError,),
     ) -> None:
         self._client = client
         self._key = key
         self._handle = handle
         self._owns_client = owns_client
+        # Redis reads a block of 0 as forever.
+        self._block_ms = max(1, round(block * 1000))
+        self._timeout_errors = timeout_errors
         self._reader: asyncio.Task[None] | None = None
 
     def start(self) -> None:
@@ -110,21 +121,11 @@ class Inbox:
             await self._client.aclose()
 
     async def _read(self) -> None:
-        """Read the inbox from its start, each entry handed on and deleted;
-        a failed read is retried, the entries waiting where they are."""
+        """Read the inbox from its start, each entry handed on and deleted."""
         key = self._key
         last = "0-0"
         while True:
-            try:
-                answer = await self._client.xread(
-                    {key: last}, count=_READ_COUNT, block=_READ_BLOCK_MS
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning("Reading the turn inbox %s failed; retrying", key, exc_info=True)
-                await asyncio.sleep(_RETRY_DELAY)
-                continue
+            answer = await self._entries_after(last)
             for _stream, entries in answer or ():
                 ids = []
                 for entry_id, fields in entries:
@@ -133,6 +134,29 @@ class Inbox:
                     self._hand_on(fields)
                 if ids:
                     await self._delete(key, ids)
+
+    async def _entries_after(self, last: str) -> Any:
+        """The entries after *last*, once read. A read its bound cut is read
+        again at once, on a new connection, so it lands inside the silence
+        bound (RFC §10.6.8); another failure, or a second cut in a row, is
+        retried after a delay. The entries wait where they are meanwhile."""
+        again = True
+        while True:
+            try:
+                return await self._client.xread(
+                    {self._key: last}, count=_READ_COUNT, block=self._block_ms
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Reading the turn inbox %s failed; retrying", self._key, exc_info=True
+                )
+                if again and isinstance(exc, self._timeout_errors):
+                    again = False
+                    continue
+                again = True
+                await asyncio.sleep(_RETRY_DELAY)
 
     def _hand_on(self, fields: dict[Any, Any]) -> None:
         try:

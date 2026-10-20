@@ -30,7 +30,7 @@ from roomkit.core.exceptions import TurnLinkError
 from roomkit.core.task_utils import cancel_and_wait
 from roomkit.turns._codec import control_json, request_json
 from roomkit.turns._redis_beat import BeatPayload, BeatThread, LiveExecutors
-from roomkit.turns._redis_clients import redis_clients
+from roomkit.turns._redis_clients import call_bound, read_block, redis_clients
 from roomkit.turns._redis_inbox import Envelope, Inbox
 from roomkit.turns._redis_outbox import Failed, Outbox, Written
 from roomkit.turns._redis_placement import Elsewhere, Placement
@@ -71,7 +71,7 @@ class RedisTurnBackend(TurnBackend):
             *client*, still required: the process's beat thread connects
             with it.
         client: A ``redis.asyncio`` client to use for the backend's writes
-            and reads instead of connecting.
+            and reads instead of connecting; its calls keep its own timeouts.
         key_prefix: The prefix of every key the backend writes.
         timeouts: The heartbeat bounds (RFC §10.6.8), kept by the kit given
             this backend: give every process, and every executor's
@@ -96,21 +96,29 @@ class RedisTurnBackend(TurnBackend):
             )
         self._timeouts = timeouts or TurnTimeouts()
         self.timeouts = self._timeouts
-        clients = redis_clients(url or _DEFAULT_URL, self._timeouts)
+        clients = redis_clients(url or _DEFAULT_URL, self._timeouts, client)
         self._owns_client = client is None
-        self._client = client if client is not None else clients.pooled
+        self._client = clients.pooled
         self.node_id = uuid4().hex[:12]
         """This process's id among the backend's processes."""
         self._ttl_ms = int(self._timeouts.heartbeat_timeout * 3000)
         keys = Keys(key_prefix)
         self._outbox = Outbox(self._client, keys.inbox, self._ttl_ms)
-        self._inbox = Inbox(clients.inbox, keys.inbox(self.node_id), self._route, owns_client=True)
+        self._inbox = Inbox(
+            clients.inbox,
+            keys.inbox(self.node_id),
+            self._route,
+            owns_client=True,
+            block=read_block(self._timeouts),
+            timeout_errors=clients.timeout_errors,
+        )
         self._registry = Registry(self._client, keys)
         self._live = LiveExecutors(
             self._registry,
             self._timeouts.heartbeat_interval,
             self._timeouts.heartbeat_timeout,
             lambda: self._routes.open_turns(),
+            timeout_errors=clients.timeout_errors,
         )
         self._beat = BeatThread(
             clients.beat,
@@ -118,6 +126,8 @@ class RedisTurnBackend(TurnBackend):
             self._timeouts.heartbeat_interval,
             self._ttl_ms,
             lambda: self._payload(),
+            bound=call_bound(self._timeouts),
+            timeout_errors=clients.timeout_errors,
         )
         # Turns on executors of this process are carried in it (RFC §10.6.7);
         # the tests' loop back sends them across Redis too.

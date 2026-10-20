@@ -2,9 +2,12 @@
 
 Each gives up a call on a peer gone without closing (a half-open connection:
 a NAT or a load balancer forgot it) within half the backend's silence bound,
-so the call tried again on a new connection still lands inside that bound: a
-process is never taken for lost for one dead connection. redis-py before 8.0
-sets no bound of its own; 8.0 and later bound every call at 5 s.
+its inbox's blocking read the time the server holds it more, and the beat or
+the read it cut is tried again at once on a new connection. While the
+heartbeat interval stays under the other half of the silence bound (the
+defaults: 2 s and 10 s), that try lands inside the silence bound: a process is
+never taken for lost for one dead connection. redis-py before 8.0 sets no
+bound of its own; 8.0 and later bound every call at 5 s.
 """
 
 from __future__ import annotations
@@ -24,18 +27,20 @@ _POOL_WAIT = 20.0
 
 
 class RedisClients(NamedTuple):
-    """The backend's connections: its pool, its inbox's, its beat's factory."""
+    """The backend's connections: its pool, its inbox's, its beat's factory,
+    and what a call its bound cut raises."""
 
     pooled: Any
     inbox: Any
     beat: Callable[[], Any]
+    timeout_errors: tuple[type[Exception], ...]
 
 
-def redis_clients(address: str, timeouts: TurnTimeouts) -> RedisClients:
+def redis_clients(address: str, timeouts: TurnTimeouts, client: Any = None) -> RedisClients:
     """The connections a backend opens on *address*, each bounded by
-    *timeouts* (RFC §10.6.8): its pool, its inbox's blocking read (bounded
-    the second more the server holds it), and the factory its beat thread
-    connects with.
+    *timeouts* (RFC §10.6.8): its pool (*client* in its place when given),
+    its inbox's blocking read (bounded the time the server holds it more),
+    and the factory its beat thread connects with.
 
     Raises:
         ImportError: redis is not installed.
@@ -49,19 +54,29 @@ def redis_clients(address: str, timeouts: TurnTimeouts) -> RedisClients:
         ) from exc
     bound = call_bound(timeouts)
     options = {"socket_timeout": bound, "socket_connect_timeout": bound}
-    pool = aioredis.BlockingConnectionPool.from_url(
-        address, max_connections=_MAX_CONNECTIONS, timeout=_POOL_WAIT, **options
-    )
+    if client is None:
+        pool = aioredis.BlockingConnectionPool.from_url(
+            address, max_connections=_MAX_CONNECTIONS, timeout=_POOL_WAIT, **options
+        )
+        client = aioredis.Redis(connection_pool=pool)
+    inbox_options = {**options, "socket_timeout": bound + read_block(timeouts)}
     return RedisClients(
-        pooled=aioredis.Redis(connection_pool=pool),
-        inbox=aioredis.from_url(address, **{**options, "socket_timeout": bound + READ_BLOCK_S}),
+        pooled=client,
+        inbox=aioredis.from_url(address, **inbox_options),
         beat=lambda: redis.Redis.from_url(address, **options),
+        timeout_errors=(TimeoutError, redis.exceptions.TimeoutError),
     )
 
 
 def call_bound(timeouts: TurnTimeouts) -> float:
-    """How long one Redis call waits for its peer: half the silence bound,
-    never under a beat's interval (5 s with the default bounds), so the beat
-    or the read tried again on a new connection lands inside the silence
-    bound (RFC §10.6.8)."""
-    return max(timeouts.heartbeat_interval, timeouts.heartbeat_timeout / 2)
+    """How long one Redis call waits for its peer: half the silence bound
+    (5 s with the default bounds), so the beat or the read tried again at
+    once lands inside the silence bound (RFC §10.6.8)."""
+    return timeouts.heartbeat_timeout / 2
+
+
+def read_block(timeouts: TurnTimeouts) -> float:
+    """How long the server holds the inbox's blocking read: a second, never
+    over a beat's interval, so the read cut and tried again at once lands
+    inside the silence bound too (RFC §10.6.8)."""
+    return min(READ_BLOCK_S, timeouts.heartbeat_interval)

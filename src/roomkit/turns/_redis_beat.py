@@ -112,6 +112,8 @@ class LiveExecutors:
         interval: How often the view is read again.
         timeout: How long a silent process stays alive (RFC §10.6.8).
         open_turns: The turns this process reads, by the node running each.
+        timeout_errors: What a read that hung raises: this view's own bound's
+            error, and the client's when its connection's bound cut it.
     """
 
     def __init__(
@@ -120,6 +122,8 @@ class LiveExecutors:
         interval: float,
         timeout: float,
         open_turns: Callable[[], dict[str, list[str]]],
+        *,
+        timeout_errors: tuple[type[Exception], ...] = (TimeoutError,),
     ) -> None:
         self._registry = registry
         self.interval = interval
@@ -127,6 +131,7 @@ class LiveExecutors:
         self._timeout = timeout
         self._timeout_ms = int(timeout * 1000)
         self._open_turns = open_turns
+        self._timeout_errors = timeout_errors
         self._view = View()
         self._running: dict[str, frozenset[str]] = {}
         # The reads failing in a row: how many, from the first one's failure
@@ -209,7 +214,7 @@ class LiveExecutors:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._failed(started, hung=isinstance(exc, TimeoutError))
+                self._failed(started, hung=isinstance(exc, self._timeout_errors))
                 logger.warning("Reading the turn processes alive failed", exc_info=True)
             await asyncio.sleep(self.interval)
 
@@ -230,7 +235,17 @@ class LiveExecutors:
 
 class BeatThread:
     """Beats for this process from a thread of its own, on a connection of
-    its own (RFC §10.6.8): each beat is what *payload* builds then."""
+    its own (RFC §10.6.8): each beat is what *payload* builds then.
+
+    Args:
+        connect: Opens the thread's connection.
+        keys: The keys a beat writes.
+        interval: How often it beats.
+        ttl_ms: How long a beat's keys outlive it.
+        payload: Builds what each beat writes.
+        bound: How long one call on the connection waits for its peer.
+        timeout_errors: What a call that bound cut raises: tried again at once.
+    """
 
     def __init__(
         self,
@@ -239,12 +254,17 @@ class BeatThread:
         interval: float,
         ttl_ms: int,
         payload: Callable[[], str],
+        *,
+        bound: float,
+        timeout_errors: tuple[type[Exception], ...],
     ) -> None:
         self._connect = connect
         self._keys = keys
         self._interval = interval
         self._ttl_ms = ttl_ms
         self._payload = payload
+        self._bound = bound
+        self._timeout_errors = timeout_errors
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -258,7 +278,8 @@ class BeatThread:
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=self._interval + 6.0)
+            # A beat in flight connects, then calls, each within the bound.
+            self._thread.join(timeout=2 * self._bound + 1.0)
             self._thread = None
 
     def _run(self) -> None:
@@ -266,11 +287,21 @@ class BeatThread:
         beat = client.register_script(BEAT_SCRIPT)
         try:
             while True:
-                try:
-                    beat(keys=self._keys, args=[self._ttl_ms, self._payload()])
-                except Exception:
-                    logger.warning("A turn process beat failed", exc_info=True)
+                # A beat its bound cut is tried again at once, on a new
+                # connection, so it lands inside the silence bound (RFC
+                # §10.6.8); a second cut in a row waits the interval.
+                if not self._beat_once(beat) and not self._stop.is_set():
+                    self._beat_once(beat)
                 if self._stop.wait(self._interval):
                     return
         finally:
             client.close()
+
+    def _beat_once(self, beat: Any) -> bool:
+        """Beat; False when the call's bound cut it."""
+        try:
+            beat(keys=self._keys, args=[self._ttl_ms, self._payload()])
+        except Exception as exc:
+            logger.warning("A turn process beat failed", exc_info=True)
+            return not isinstance(exc, self._timeout_errors)
+        return True

@@ -102,12 +102,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an outbox write waited until TCP gave up, about 15 minutes: the other
   processes took this one for lost and cut its turns. Each connection the
   backend opens now gives up a call after half of `heartbeat_timeout` (5 s by
-  default, never under `heartbeat_interval`; one second more for the inbox's
-  blocking read), so the beat and the read tried again on a new connection
-  land inside the silence bound; a turn's message whose write was cut fails
-  its turn. A client passed as `client=` keeps its own settings. The extra now
-  needs `redis>=5.0.2`: 5.0.1's connection pool blocked every caller on a
-  silent Redis.
+  default; the inbox's blocking read waits the time Redis holds it more, a
+  second at most and never over `heartbeat_interval`), and the beat or the
+  read it cut is tried again at once on a new connection: while
+  `heartbeat_interval` stays under half of `heartbeat_timeout` (the defaults:
+  2 s and 10 s), that try lands inside the silence bound. A turn's message
+  whose write was cut fails its turn. A read of the processes alive that its
+  connection cut counts from its start, as one that hung, so a Redis that
+  froze leaves the others unread about `heartbeat_timeout` later. A client
+  passed as `client=` keeps its own settings, and no pool is built beside it.
+  The extra now needs `redis>=5.0.2`: 5.0.1's connection pool blocked every
+  caller on a silent Redis.
 
 - A turn already over whose `end` never came (its drain past
   `cancel_timeout`, its executor lost) stays incomplete when its owner closes
