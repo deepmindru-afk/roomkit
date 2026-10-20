@@ -450,10 +450,18 @@ async def test_a_done_discussion_decides_nothing() -> None:
     await kit.close()
 
 
-async def test_a_message_the_peek_missed_asks_done_first(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("message", "dispatched"),
+    [("anyone?", True), ("@dev check the deploy", False)],
+    ids=["waiting-for-dispatch", "addressed"],
+)
+async def test_a_message_the_peek_missed_asks_done_first(
+    monkeypatch: pytest.MonkeyPatch, message: str, dispatched: bool
+) -> None:
     """The driver peeks at the queue off the room lock, then plans under it:
-    a message queued in between reached the dispatch policy without the
-    discussion's ``done`` being asked, as across Redis (RMK-835)."""
+    a message queued in between, waiting for the dispatch policy or
+    addressed to an agent, is planned only once the discussion's ``done`` was
+    asked, which ends the discussion here (RMK-835)."""
     policy = MockDispatchPolicy([["sre"]])
     over = {"now": False}
     kit = RoomKit()
@@ -463,18 +471,20 @@ async def test_a_message_the_peek_missed_asks_done_first(monkeypatch: pytest.Mon
 
     async def peek(self: DiscussionRoom) -> SpeakQueueState:
         state = await read(self)
-        if missed["once"] and state.dispatching:
+        if missed["once"] and (state.dispatching if dispatched else state.entries):
             missed["once"] = False
             return state.model_copy(update={"entries": [], "dispatching": []})
         return state
 
     monkeypatch.setattr(DiscussionRoom, "read", peek)
     over["now"] = True
-    await _say(kit, "anyone?")
+    await _say(kit, message)
     await _settle(kit)
 
     assert not missed["once"]
     assert policy.turns == [] and await _answers(kit) == []
+    queue = kit.speak_queue("r1")
+    assert queue is not None and queue.over
     await kit.close()
 
 

@@ -69,9 +69,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   again under the lock: a message queued in between reached the dispatch
   policy, or took its turn, with `done` never asked, so a discussion `done`
   said was over still gave it, and a `done` that uninstalls the discussion
-  never ran. Across Redis, where the queue is read sooner than the message is
-  stored, it happened every time. Now such a pass plans nothing and the next
-  one asks `done` first.
+  never ran. Across Redis, where handing a message to the agents' memories
+  delays its routing into the queue, a pass begun meanwhile missed it every
+  time. Now such a pass plans nothing and the next one asks `done` first.
 
 - A delegated task keeps the answer of the agent it was delegated to, and
   that agent's end, whatever other agent shares the child room (RMK-834, RFC
