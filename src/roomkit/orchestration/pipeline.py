@@ -21,7 +21,12 @@ from roomkit.orchestration._realtime_pipeline import (
     RealtimePipeline,
     refuse_agents_with_unserved,
 )
-from roomkit.orchestration.handoff import HandoffHandler, build_handoff_tool, setup_handoff
+from roomkit.orchestration.handoff import (
+    REALTIME_NEEDS_LIVE_AGENTS,
+    HandoffHandler,
+    build_handoff_tool,
+    setup_handoff,
+)
 from roomkit.orchestration.router import ConversationRouter, RoutingConditions, RoutingRule
 
 if TYPE_CHECKING:
@@ -472,8 +477,4 @@ def _refuse_declared_agents(agents: Sequence[HeldAgent], live: Sequence[Agent]) 
     each agent's prompt and tools (RFC §12.4), which a declaration does not
     carry."""
     if len(live) != len(agents):
-        raise ValueError(
-            "A realtime voice channel runs each agent's prompt and tools in its "
-            "session: give the pipeline the agents themselves, not ids the kit "
-            "holds by declaration"
-        )
+        raise ValueError(REALTIME_NEEDS_LIVE_AGENTS)

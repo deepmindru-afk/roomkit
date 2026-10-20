@@ -74,6 +74,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `HandoffHandler` built for a realtime voice channel (`event_channel_id=`)
+  refuses an agent the kit holds by its declaration alone, with a
+  `ValueError`, as `ConversationPipeline` already did (RMK-831, RFC §12.4):
+  its session runs each agent's prompt, which a declaration does not carry.
+  Given one, `set_language()` raised `AttributeError` later, at the first
+  language change. `Swarm` and `Pipeline` hand off without a realtime channel
+  and still take declared agents.
+
 - `cancel_task` answers a task of the room it may not cancel as still
   running, and why (RMK-829, RFC §23.4): an inline delegation runs inside the
   turn that asked for it and ends with it, and a task a strategy runs unposted

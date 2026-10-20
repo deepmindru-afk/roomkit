@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from roomkit import RoomKit
+from roomkit import ChannelDeclaration, RoomKit
 from roomkit.channels._mark_copies import COPIED_MARK
 from roomkit.channels._runtime_record import RUNTIME_RECORD
 from roomkit.channels.ai import AIChannel
@@ -26,6 +26,7 @@ from roomkit.orchestration.handoff import (
     build_handoff_tool,
     setup_handoff,
 )
+from roomkit.orchestration.router import ConversationRouter
 from roomkit.orchestration.state import (
     ConversationState,
     get_conversation_state,
@@ -1079,3 +1080,25 @@ class TestSendGreetingOnARealKit:
         ]
         assert speaker.spoken == ["Welcome!"]
         await kit.close()
+
+
+@pytest.mark.parametrize("realtime", [True, False], ids=["realtime", "text"])
+def test_a_realtime_handoff_refuses_an_agent_held_by_its_declaration(realtime: bool) -> None:
+    """RMK-831: a handler serving a realtime channel rebuilds the active
+    agent's prompt for its session, which a declaration does not carry: it
+    refuses such an agent when given it, where ``set_language`` raised
+    AttributeError later. A text handoff (Swarm's) still takes it."""
+    kit = RoomKit()
+    kit.register_channel(ChannelDeclaration(channel_id="a"))
+    handler = HandoffHandler(
+        kit=kit,
+        router=ConversationRouter(default_agent_id="a"),
+        event_channel_id="voice" if realtime else None,
+    )
+
+    if realtime:
+        with pytest.raises(ValueError, match="not ids the kit holds by declaration"):
+            handler.agents = {"a": kit.channels["a"]}
+    else:
+        handler.agents = {"a": kit.channels["a"]}
+        assert handler.agents == {"a": kit.channels["a"]}

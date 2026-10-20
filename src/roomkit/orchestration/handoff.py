@@ -18,7 +18,7 @@ from roomkit._text import CONVERSATION_SUMMARY_TAG, fence, identifier, quoted
 from roomkit.channels._mark_copies import without_mark_copies
 from roomkit.channels._runtime_record import HANDED_ON_CONTEXT, HANDOFF_OPENING, runtime_record
 from roomkit.channels._tool_registry import ToolEntry, orchestration_tool
-from roomkit.channels.declared import id_of, owner_tools_of
+from roomkit.channels.declared import DeclaredChannel, id_of, owner_tools_of
 from roomkit.memory._wrapper import _MemoryWrapper
 from roomkit.memory.base import MemoryProvider, MemoryResult
 from roomkit.models.channel import ChannelBinding
@@ -39,7 +39,6 @@ if TYPE_CHECKING:
 
     from roomkit.channels.ai import AIChannel
     from roomkit.channels.base import Channel
-    from roomkit.channels.declared import DeclaredChannel
     from roomkit.core.framework import RoomKit
     from roomkit.orchestration.router import ConversationRouter
 
@@ -175,6 +174,13 @@ def build_handoff_tool(targets: list[tuple[str, str | None]]) -> AITool:
 # -- HandoffHandler -----------------------------------------------------------
 
 
+REALTIME_NEEDS_LIVE_AGENTS = (
+    "A realtime voice channel runs each agent's prompt and tools in its session: "
+    "give it the agents themselves, not ids the kit holds by declaration"
+)
+"""Why a realtime handoff refuses an agent held by its declaration (RFC §12.4)."""
+
+
 class HandoffHandler:
     """Processes handoff tool calls.
 
@@ -222,6 +228,11 @@ class HandoffHandler:
 
     @agents.setter
     def agents(self, value: dict[str, Any]) -> None:
+        """The agents the handler hands off between; one held by its
+        declaration alone is refused when the handler serves a realtime
+        channel (*event_channel_id*), whose session runs its prompt here."""
+        if self._event_channel_id and any(isinstance(a, DeclaredChannel) for a in value.values()):
+            raise ValueError(REALTIME_NEEDS_LIVE_AGENTS)
         self._agents = value
 
     @property
