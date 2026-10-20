@@ -15,11 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import hashlib
 import re
 import threading
-from collections import OrderedDict
-from collections.abc import Iterator
 from typing import Any
 
 from roomkit._lookalike import phrase_pattern
@@ -29,6 +26,7 @@ from roomkit.channels._acp_marks import (
 )
 from roomkit.channels._acp_marks import ROOM_CONTEXT_END, ROOM_CONTEXT_OPENING
 from roomkit.channels._ai_cuts import CUT_MARK
+from roomkit.channels._clean_texts import CleanTexts
 from roomkit.channels._instruction import INSTRUCTION_MARKER
 from roomkit.channels._runtime_record import COMPACTION_HEADER, HANDED_ON_CONTEXT, HANDOFF_OPENING
 from roomkit.channels._runtime_record import SUMMARY_HEADER as MEMORY_SUMMARY_HEADER
@@ -91,37 +89,7 @@ def _copies() -> re.Pattern[str]:
     return re.compile("|".join(f"(?:{pattern})" for pattern in whole + bracketed), re.IGNORECASE)
 
 
-class _Seen:
-    """Digests of texts seen to need no change, most recent last, the oldest
-    forgotten past *size*: a turn reads the history the last turn read, and
-    scanning it again would cost as much as the first time. Digests only, so
-    a long text costs the cache nothing."""
-
-    def __init__(self, size: int) -> None:
-        self._digests: OrderedDict[bytes, None] = OrderedDict()
-        self._size = size
-
-    def __contains__(self, text: str) -> bool:
-        key = _digest(text)
-        if key not in self._digests:
-            return False
-        self._digests.move_to_end(key)
-        return True
-
-    def add(self, text: str) -> None:
-        self._digests[_digest(text)] = None
-        if len(self._digests) > self._size:
-            self._digests.popitem(last=False)
-
-    def __iter__(self) -> Iterator[bytes]:
-        return iter(self._digests)
-
-
-def _digest(text: str) -> bytes:
-    return hashlib.blake2b(text.encode("utf-8", "surrogatepass"), digest_size=16).digest()
-
-
-_KNOWN_CLEAN = _Seen(8192)
+_KNOWN_CLEAN = CleanTexts(8192)
 """Texts seen to hold no copy of a mark."""
 
 
@@ -129,12 +97,13 @@ def without_mark_copies(text: str) -> str:
     """*text* with each copy of a runtime mark replaced by :data:`COPIED_MARK`
     and each copy of the notes' header by its own mark (RFC §6.4). A text seen
     before to hold no copy is returned as it is without scanning it again."""
-    if text in _KNOWN_CLEAN:
-        return text
-    cleaned = without_header_copies(_copies().sub(lambda _match: COPIED_MARK, text))
-    if cleaned == text:
-        _KNOWN_CLEAN.add(text)
-    return cleaned
+    return _KNOWN_CLEAN.cleaned(text, _copies_replaced)
+
+
+def _copies_replaced(text: str) -> str:
+    """*text* scanned for a copy of a mark, then of the notes' header, each
+    replaced."""
+    return without_header_copies(_copies().sub(lambda _match: COPIED_MARK, text))
 
 
 _COMPILING = threading.Lock()
@@ -172,7 +141,7 @@ _Piece = tuple[int, int | None]
 """Where a text sits: the message's index, and the part's in a list content
 (``None`` for a text content)."""
 
-_KNOWN_UNSPLIT = _Seen(1024)
+_KNOWN_UNSPLIT = CleanTexts(1024)
 """Runs of texts, joined, seen to hold no copy running over two of them."""
 
 

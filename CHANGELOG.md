@@ -35,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   room's lane used to be stored without reaching any transport or firing its
   hooks, so a host's live view and audit missed it.
 
+- A turn no longer scans the history the last turn read for a copy of the
+  turn's notes' header (RMK-844, RFC §6.4): a text seen to hold none is
+  remembered by a digest and returned as it is, as a text seen to hold no copy
+  of the runtime's other marks already was. The header's scan ran over every
+  message of the history on every turn, about 60 µs per KB: on 50 stored
+  answers of 8 KB, a turn's CPU goes from 18 ms to 9.3 ms. A text new to the
+  turn is scanned as before, and one holding a copy is replaced every time.
+
 ### Fixed
 
 - A turn's executor cancels the turn's running work once (RMK-860, RFC

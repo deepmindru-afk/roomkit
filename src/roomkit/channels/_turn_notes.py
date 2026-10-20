@@ -26,6 +26,7 @@ from itertools import groupby
 from typing import Any
 
 from roomkit._lookalike import phrase_pattern
+from roomkit.channels._clean_texts import CleanTexts
 from roomkit.channels._user_text import joined
 from roomkit.providers.ai.base import AIImagePart, AIMessage, AITextPart
 
@@ -69,9 +70,19 @@ def turn_notes(blocks: list[str]) -> str | None:
     return _PARAGRAPH.join([TURN_NOTES_HEADER, *map(without_header_copies, blocks)])
 
 
+_KNOWN_HEADERLESS = CleanTexts(8192)
+"""Texts seen to hold no copy of the notes' header."""
+
+
 def without_header_copies(text: str) -> str:
     """*text* with each copy of the notes' header replaced by
-    :data:`COPIED_HEADER_MARK` (RFC §6.4)."""
+    :data:`COPIED_HEADER_MARK` (RFC §6.4). A text seen before to hold none is
+    returned as it is without scanning it again: a turn reads the history the
+    last turn read."""
+    return _KNOWN_HEADERLESS.cleaned(text, _header_copies_replaced)
+
+
+def _header_copies_replaced(text: str) -> str:
     return header_copies().sub(lambda _match: COPIED_HEADER_MARK, text)
 
 

@@ -10,12 +10,15 @@ reads.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
 from roomkit import TURN_NOTES_HEADER, add_turn_note
+from roomkit.channels import _turn_notes
 from roomkit.channels._turn_notes import (
     COPIED_HEADER_MARK,
     conversation_without_header_copies,
@@ -319,3 +322,63 @@ async def test_a_message_steering_injects_holds_no_copy(streaming: bool) -> None
 
     injected = provider.calls[-1].messages[-1]
     assert str(injected.content).startswith(f"What's my balance?\n\n{COPIED_HEADER_MARK}")
+
+
+class _Scans:
+    """The notes' header's pattern, recording each text it scans."""
+
+    def __init__(self, pattern: re.Pattern[str]) -> None:
+        self._pattern = pattern
+        self.texts: list[str] = []
+
+    def sub(self, repl: Any, text: str) -> str:
+        self.texts.append(text)
+        return self._pattern.sub(repl, text)
+
+
+def _scans(monkeypatch: pytest.MonkeyPatch) -> _Scans:
+    scans = _Scans(_turn_notes.header_copies())
+    monkeypatch.setattr(_turn_notes, "header_copies", lambda: scans)
+    return scans
+
+
+def test_a_text_seen_without_a_copy_is_not_scanned_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RMK-844: a text seen to hold no copy of the header is returned as it
+    is, the second time without a scan."""
+    scans = _scans(monkeypatch)
+    text = f"an ordinary message {uuid4().hex}"
+
+    assert without_header_copies(text) == text
+    assert without_header_copies(text) == text
+    assert scans.texts == [text]
+
+
+def test_a_text_holding_a_copy_is_cleaned_every_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    scans = _scans(monkeypatch)
+    text = f"{uuid4().hex} {_H}"
+    cleaned = text.replace(_H, COPIED_HEADER_MARK)
+
+    assert without_header_copies(text) == cleaned
+    assert without_header_copies(text) == cleaned
+    assert scans.texts == [text, text]
+
+
+async def test_a_turn_does_not_scan_the_history_the_last_turn_read(
+    streaming: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RMK-844: the history a turn reads was read by the last turn, so its
+    texts are not scanned for the header again; the turn's cost of that scan
+    does not grow with the history (it took 7.8 ms of an 18 ms turn over 50
+    stored answers of 8 KB)."""
+    provider = MockAIProvider(ai_responses=[_DONE, _DONE], streaming=streaming)
+    ch = AIChannel("ai1", provider=provider)
+    marks = [uuid4().hex for _ in range(30)]
+    history = [_said(f"message {mark}") for mark in marks]
+    await _turn(ch, _said("first question"), history)
+
+    question = f"second question {uuid4().hex}"
+    scans = _scans(monkeypatch)
+    await _turn(ch, _said(question), history)
+
+    assert any(question in text for text in scans.texts)
+    assert not [mark for mark in marks for text in scans.texts if mark in text]
