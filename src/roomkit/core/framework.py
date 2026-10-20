@@ -23,7 +23,6 @@ if TYPE_CHECKING:
 
 from roomkit.channels.base import Channel
 from roomkit.channels.websocket import SendFn, StreamSendFn, WebSocketChannel
-from roomkit.core._delivery_keys import DeliveryKeys
 from roomkit.core._kit_turn_hooks import KitTurnHooks
 from roomkit.core._kit_wiring import KitEvents, KitWiringEnv
 from roomkit.core._turn_host import KitHost
@@ -354,8 +353,6 @@ class RoomKit(
         self._start_turns(turn_backend, error_classes)
         # A strategy's runner takes an agent's turns on this owner (RFC §10.6.1).
         self._turn_runners = TurnRunners()
-        # The deliveries in flight a caller named by a key (RFC §10.1).
-        self._delivery_keys = DeliveryKeys()
         # Explicit detaches (revocations, RFC §7.5-7) are recorded in room
         # metadata by detach_channel() — not here — so they survive restarts
         # and are visible to every process sharing the store.

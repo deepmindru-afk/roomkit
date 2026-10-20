@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import AsyncExitStack
+from functools import cached_property
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._runtime_record import RUNTIME_RECORD
+from roomkit.core._delivery_keys import DeliveryKeys
 from roomkit.core.exceptions import ChannelNotRegisteredError, RoomNotFoundError
 from roomkit.core.inbound_router import (
     binding_admits,
@@ -35,7 +37,6 @@ from roomkit.models.response_metadata import merge_caller_record
 
 if TYPE_CHECKING:
     from roomkit.channels.base import Channel
-    from roomkit.core._delivery_keys import DeliveryKeys
     from roomkit.core.admission import RoomAdmission
     from roomkit.core.inbound_router import InboundRoomRouter
     from roomkit.core.lanes import DeliveryCascade
@@ -115,7 +116,6 @@ class InboundMixin(HelpersMixin):
     _inbound_rate_limit: Any  # RateLimit | None
     _telemetry: TelemetryProvider
     _verification_inbound: bool
-    _delivery_keys: DeliveryKeys
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _resolve_identity: Any  # see InboundHost
@@ -246,11 +246,22 @@ class InboundMixin(HelpersMixin):
                     attributes={"blocked": _inbound_result.blocked, "deferred": defer_delivery},
                 )
 
-    async def cancel_delivery(self, key: str, *, reason: str = "caller_cancelled") -> int:
+    async def cancel_delivery(
+        self,
+        key: str,
+        *,
+        reason: str = "caller_cancelled",
+        organization_id: str | None = None,
+    ) -> int:
         """Cancel the deliveries in flight of the messages sent with
         ``InboundMessage(delivery_key=key)`` (RFC §10.1, *Explicit delivery
         cancellation*): how many it cancelled, 0 when the key names nothing
         in flight (the deliveries are over, or were never sent).
+
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2): only the deliveries of its rooms are cancelled, so two
+        tenants that chose the same key never cancel each other's. Left
+        unset, every delivery the key names in the process is.
 
         Each delivery's agents stop: a turn not started yet never starts, a
         running one is cut, and nothing answers it after. The message itself
@@ -262,7 +273,12 @@ class InboundMixin(HelpersMixin):
         The key names, it does not authorize: check who may cancel before
         calling.
         """
-        return self._delivery_keys.cancel(key, reason)
+        return self._delivery_keys.cancel(key, reason, organization_id=organization_id)
+
+    @cached_property
+    def _delivery_keys(self) -> DeliveryKeys:
+        """The deliveries in flight a caller named by a key (RFC §10.1)."""
+        return DeliveryKeys()
 
     async def _process_inbound_inner(
         self,
@@ -418,8 +434,8 @@ class InboundMixin(HelpersMixin):
         from roomkit.core.lanes import DeliveryCascade
 
         cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
-        key = message.delivery_key
-        self._delivery_keys.hold(key, cascade)
+        organization_id = context.room.organization_id if context.room else None
+        self._delivery_keys.hold(message.delivery_key, cascade, organization_id)
         try:
             result = await self._complete_inbound_delivery(
                 event,
@@ -436,12 +452,12 @@ class InboundMixin(HelpersMixin):
         except BaseException:
             # The caller owns this cascade even if setup failed after commit,
             # before it could receive a deferred handle. Drain off the lock.
-            self._delivery_keys.release(key, cascade)
+            cascade.over()
             await cascade.abandon("caller_cancelled")
             raise
-        if result.delivery is None:
-            # Over; a deferred tail lets go of its key when it ends.
-            self._delivery_keys.release(key, cascade)
+        if not cascade.reader_detached:
+            # Over: a reader it detached (a deferred tail) ends it instead.
+            cascade.over()
         return result
 
     async def _complete_inbound_delivery(
@@ -529,8 +545,6 @@ class InboundMixin(HelpersMixin):
         completion.
         """
         consumer = self._consume_streams_when_cascade_completes(cascade, room_id)
-        key = message.delivery_key
-        consumer.add_done_callback(lambda _: self._delivery_keys.release(key, cascade))
         result.delivery = DeliveryHandle(cascade, consumer, result)
         await self._connect_session_if_ready(message, channel, room_id, result)
         return result

@@ -71,31 +71,6 @@ _active_lane_room: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 
 
-# The cascade whose plan the current task executes: an intelligence target's
-# turn run there is its turn work, which cancelling it cancels. Set while a
-# plan executes only; the turn's own code (a strategy, a tool) works for none.
-_delivering: contextvars.ContextVar[DeliveryCascade | None] = contextvars.ContextVar(
-    "_delivering", default=None
-)
-
-
-async def run_turn_work[T](work: Coroutine[Any, Any, T]) -> T:
-    """Run *work*, a turn, as the turn work of the cascade whose plan the
-    current task executes (RFC §10.1): cancelling the cascade cancels it, and
-    refuses it once cancelled; outside a plan's execution it simply runs."""
-    cascade = _delivering.get()
-    if cascade is None:
-        return await work
-    return await cascade.run(work, turn_work=True)
-
-
-def _outside_delivery() -> contextvars.Context:
-    """A copy of the current context whose code executes no cascade's plan."""
-    context = contextvars.copy_context()
-    context.run(_delivering.set, None)
-    return context
-
-
 def delivery_claim_key(room_id: str) -> str:
     """The lock-manager key for a room's delivery claim."""
     return f"{DELIVERY_CLAIM_PREFIX}{room_id}"
@@ -200,6 +175,8 @@ class DeliveryCascade:
         "_tasks",
         "_turn_work",
         "_cleanup_task",
+        "_when_over",
+        "reader_detached",
     )
 
     def __init__(self, room_id: str, *, reentry_budget: int) -> None:
@@ -236,16 +213,41 @@ class DeliveryCascade:
         self.delivery_results: dict[str, Any] = {}
         self.unavailable_targets: list[str] = []
         self._tasks: set[asyncio.Task[Any]] = set()
-        # Its turn work: what a cancellation cancels.
+        # Its turn work: what a cancellation cancels and its cleanup joins.
         self._turn_work: set[asyncio.Task[Any]] = set()
         self._cleanup_task: asyncio.Task[None] | None = None
+        self._when_over: list[Callable[[], None]] = []
+        # A reader nobody awaits reads its streams: the delivery is over when
+        # that reader ends, not when its call returns.
+        self.reader_detached = False
 
     @property
     def drained(self) -> bool:
-        """No owned execution or stream consumer is still unwinding."""
-        return all(task.done() for task in self._tasks) and (
+        """No turn work (a turn, a stream's reader) is still unwinding: once
+        cancelled, a plan still delivering its event to the transports does
+        not hold the turns' resources."""
+        return all(task.done() for task in self._turn_work) and (
             self._cleanup_task is None or self._cleanup_task.done()
         )
+
+    def detach_reader(self, task: asyncio.Task[Any]) -> None:
+        """Own *task*, a reader of the cascade's streams nobody awaits, as
+        turn work: the caller's delivery is over when it ends."""
+        self.track(task, turn_work=True)
+        self.reader_detached = True
+        task.add_done_callback(lambda _: self.over())
+
+    def when_over(self, callback: Callable[[], None]) -> None:
+        """Call *callback* once the caller's delivery is over (:meth:`over`)."""
+        self._when_over.append(callback)
+
+    def over(self) -> None:
+        """The caller's delivery is over: its call returned having read what
+        it started, or the reader it detached ended. Calls the callbacks
+        :meth:`when_over` registered, once."""
+        callbacks, self._when_over = self._when_over, []
+        for callback in callbacks:
+            callback()
 
     def track(self, task: asyncio.Task[Any], *, turn_work: bool = False) -> None:
         """Own a task before it can start; *turn_work* (a turn, or the
@@ -268,12 +270,12 @@ class DeliveryCascade:
     ) -> T:
         """Execute owned work without giving its waiter cancellation
         ownership; *on_task* receives its task as soon as it is owned.
-        *turn_work* is refused once the cascade is cancelled, and runs for no
-        delivery; its delivery work still runs."""
+        *turn_work* (a turn, a stream's reader) is refused once the cascade is
+        cancelled; its delivery work still runs."""
         if turn_work and self.cancelled is not None:
             work.close()
             raise asyncio.CancelledError(self.cancelled)
-        task = start_named(work, context=_outside_delivery() if turn_work else None)
+        task = start_named(work)
         self.track(task, turn_work=turn_work)
         if on_task is not None:
             on_task(task)
@@ -286,14 +288,15 @@ class DeliveryCascade:
             raise
 
     async def wait_drained(self) -> None:
-        """Join running work, including its asynchronous finalizers."""
-        while pending := {task for task in self._tasks if not task.done()}:
+        """Join its turn work, including its asynchronous finalizers."""
+        while pending := {task for task in self._turn_work if not task.done()}:
             await asyncio.wait(pending)
         if self._cleanup_task is not None:
             await asyncio.shield(self._cleanup_task)
 
     async def _cleanup(self) -> None:
-        while pending := {task for task in self._tasks if not task.done()}:
+        # The turns' work, not the delivery going on (RFC §10.1).
+        while pending := {task for task in self._turn_work if not task.done()}:
             await asyncio.wait(pending)
         # Also close streams whose consumer was cancelled before its first
         # step. No generator is closed concurrently with its running task.
@@ -515,7 +518,8 @@ class LaneConfig:
 class LaneHost(Protocol):
     """What a lane executor asks of the framework.
 
-    ``_execute_plan`` runs a plan's delivery set and returns its
+    ``_execute_plan`` runs a plan's delivery set, its intelligence targets'
+    turns as its cascade's turn work, and returns its
     ``BroadcastResult``-shaped outcome. ``_post_plan_effects`` fires the
     per-event aftermath (delivery framework events, ON_ERROR funnel, side
     effects, AFTER_BROADCAST). ``_reentry_commit_pass`` turns the response
@@ -525,7 +529,7 @@ class LaneHost(Protocol):
 
     _store: ConversationStore
 
-    async def _execute_plan(self, plan: DeliveryPlan) -> Any: ...
+    async def _execute_plan(self, plan: DeliveryPlan, cascade: DeliveryCascade) -> Any: ...
 
     async def _post_plan_effects(
         self, plan: DeliveryPlan, result: Any, cascade: DeliveryCascade
@@ -858,11 +862,8 @@ class RoomDeliveryLane:
         a completed-empty execution so the cursor and the cascade still
         advance.
         """
-        # This task executes the cascade's plan: its targets' turns are the
-        # cascade's turn work (RFC §10.1).
-        _delivering.set(entry.cascade)
         try:
-            return await self._host._execute_plan(entry.plan)
+            return await self._host._execute_plan(entry.plan, entry.cascade)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

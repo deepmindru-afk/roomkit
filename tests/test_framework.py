@@ -825,9 +825,9 @@ class TestTimeouts:
         # than process_timeout.
         original = kit._execute_plan
 
-        async def slow_execute(plan: object) -> object:
+        async def slow_execute(plan: object, cascade: object) -> object:
             await asyncio.sleep(0.1)
-            return await original(plan)
+            return await original(plan, cascade)
 
         kit._execute_plan = slow_execute  # type: ignore[assignment]
 

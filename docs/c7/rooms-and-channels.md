@@ -385,9 +385,10 @@ message, `InboundMessage(..., delivery_key="task-42")`, and cancels it from
 anywhere in the process, a tool handler included:
 `await kit.cancel_delivery("task-42", reason="lead_cancelled")`. It answers how
 many deliveries in flight the key named and cancelled (0 once they are over),
-returns at once, and each call's caller reads its cancelled end on its result.
-Several messages may share a key. The key is never stored and grants nothing:
-check who may cancel before calling. A `kit.steer(Cancel(), ...)` reaches only
+returns at once, and each call's caller reads `cancellation_reason` on its
+result. Several messages may share a key. The key is never stored and grants
+nothing: check who may cancel before calling, and pass `organization_id=` so a
+key two tenants both chose only reaches the caller's rooms. A `kit.steer(Cancel(), ...)` reaches only
 turns that have started; use the delivery to stop one message's turns.
 External effects already committed and tasks detached by application handlers
 are outside this cancellation contract. See `examples/cancel_delivery.py`.

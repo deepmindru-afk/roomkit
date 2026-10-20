@@ -13,7 +13,7 @@ from roomkit.core._failure_log import log_failure
 from roomkit.core._turn_runners import TurnRunner
 from roomkit.core.circuit_breaker import CircuitBreaker
 from roomkit.core.exceptions import NoRecipientError
-from roomkit.core.lanes import DeliveryPlan, run_turn_work
+from roomkit.core.lanes import DeliveryCascade, DeliveryPlan
 from roomkit.core.rate_limiter import TokenBucketRateLimiter
 from roomkit.core.retry import retry_with_backoff
 from roomkit.core.transcoder import DefaultContentTranscoder
@@ -380,8 +380,11 @@ class EventRouter:
             defers_solicitation=self._defers is not None and self._defers(event.room_id),
         )
 
-    async def execute_plan(self, plan: DeliveryPlan) -> BroadcastResult:
-        """Execute a plan's delivery set (RFC §10.1 step 14).
+    async def execute_plan(
+        self, plan: DeliveryPlan, *, cascade: DeliveryCascade | None = None
+    ) -> BroadcastResult:
+        """Execute a plan's delivery set (RFC §10.1 step 14), its intelligence
+        targets' turns as *cascade*'s turn work when it has one.
 
         RFC §3.8: For each target channel:
         - on_event(): all channels react (intelligence generates, observers analyze)
@@ -499,7 +502,7 @@ class EventRouter:
 
                 # on_event — all channels react; an intelligence channel's
                 # call is a turn, run through the turn backend (RFC §10.6).
-                output = await self._reacting(channel, transcoded_event, binding, context)
+                output = await self.react_for(cascade, channel, transcoded_event, binding, context)
                 tr.output = output
                 if output.error is not None:
                     # Delivered and failed at once: the output goes on, and
@@ -682,19 +685,28 @@ class EventRouter:
 
         return result
 
-    async def _reacting(
-        self, channel: Channel, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    async def react_for(
+        self,
+        cascade: DeliveryCascade | None,
+        channel: Channel,
+        event: RoomEvent,
+        binding: ChannelBinding,
+        context: RoomContext,
+        *,
+        answers: bool = True,
     ) -> ChannelOutput:
-        """*channel*'s reaction to a planned event: an intelligence channel's
-        turn runs as its delivery's turn work, and answers nothing once the
-        delivery was cancelled, before it started or while it ran (RFC §10.1)."""
-        if binding.category != ChannelCategory.INTELLIGENCE:
-            return await self.react(channel, event, binding, context)
+        """*channel*'s reaction to an event *cascade* delivers: an intelligence
+        channel's turn runs as the cascade's turn work, and answers nothing
+        once the cascade is cancelled, before it starts or while it runs
+        (RFC §10.1)."""
+        reaction = self.react(channel, event, binding, context, answers=answers)
+        if cascade is None or binding.category != ChannelCategory.INTELLIGENCE:
+            return await reaction
         try:
-            return await run_turn_work(self.react(channel, event, binding, context))
+            return await cascade.run(reaction, turn_work=True)
         except asyncio.CancelledError:
             current = asyncio.current_task()
-            if current is not None and current.cancelling():
+            if cascade.cancelled is None or (current is not None and current.cancelling()):
                 raise
             return ChannelOutput.empty()
 

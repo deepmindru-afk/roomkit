@@ -58,7 +58,7 @@ class FakeHost:
         self.on_execute: Any = None
         self.on_reentry: Any = None
 
-    async def _execute_plan(self, plan: DeliveryPlan) -> Any:
+    async def _execute_plan(self, plan: DeliveryPlan, cascade: Any) -> Any:
         if self.execute_gate is not None:
             await self.execute_gate.wait()
         if self.on_execute is not None:
@@ -434,7 +434,7 @@ async def test_two_registries_one_store_preserve_global_index_order() -> None:
     order: list[str] = []
 
     class OrderedHost(FakeHost):
-        async def _execute_plan(self, plan: DeliveryPlan) -> Any:
+        async def _execute_plan(self, plan: DeliveryPlan, cascade: Any) -> Any:
             order.append(plan.event.id)
             await asyncio.sleep(0.01)
             return {}
@@ -491,7 +491,7 @@ async def test_claim_blocks_gap_clock_while_owner_is_executing() -> None:
     slow_gate = asyncio.Event()
 
     class SlowHost(FakeHost):
-        async def _execute_plan(self, plan: DeliveryPlan) -> Any:
+        async def _execute_plan(self, plan: DeliveryPlan, cascade: Any) -> Any:
             if plan.event.id == "slow0":
                 await slow_gate.wait()  # long provider round trip
             self.executed.append(plan.event.id)

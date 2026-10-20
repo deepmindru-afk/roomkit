@@ -602,7 +602,7 @@ class LaneExecutionMixin(HelpersMixin):
             name=f"roomkit-detached-streams-{room_id}",
             context=contextvars.Context(),
         )
-        cascade.track(task, turn_work=True)
+        cascade.detach_reader(task)
         task.add_done_callback(_end_tail)
         self._hold_reader(task)
         return task
@@ -670,13 +670,14 @@ class LaneExecutionMixin(HelpersMixin):
 
     # -- Lane executor callbacks (LaneHost) --
 
-    async def _execute_plan(self, plan: DeliveryPlan) -> BroadcastResult:
-        """Execute one plan's delivery set (called by the lane executor)."""
+    async def _execute_plan(self, plan: DeliveryPlan, cascade: DeliveryCascade) -> BroadcastResult:
+        """Execute one plan's delivery set (called by the lane executor), its
+        intelligence targets' turns as *cascade*'s turn work (RFC §10.1)."""
         if plan.injected:
-            return await self._execute_injected_plan(plan)
+            return await self._execute_injected_plan(plan, cascade)
         if plan.rerun and await self._refuse_closed_rerun(plan):
             return BroadcastResult()
-        return await self._get_router().execute_plan(plan)
+        return await self._get_router().execute_plan(plan, cascade=cascade)
 
     async def _refuse_closed_rerun(self, plan: DeliveryPlan) -> bool:
         """Whether the room closed while a regeneration waited in its lane:
@@ -694,7 +695,9 @@ class LaneExecutionMixin(HelpersMixin):
         )
         return True
 
-    async def _execute_injected_plan(self, plan: DeliveryPlan) -> BroadcastResult:
+    async def _execute_injected_plan(
+        self, plan: DeliveryPlan, cascade: DeliveryCascade
+    ) -> BroadcastResult:
         """Deliver an injected event to its named channels.
 
         Deliberately bare — direct ``on_event`` and, for transports,
@@ -715,8 +718,8 @@ class LaneExecutionMixin(HelpersMixin):
                 # §19.7.5); an injected event answers nothing anyway.
                 continue
             try:
-                await self._get_router().react(
-                    channel, plan.event, binding, plan.context, answers=False
+                await self._get_router().react_for(
+                    cascade, channel, plan.event, binding, plan.context, answers=False
                 )
                 if binding.category == ChannelCategory.TRANSPORT:
                     await channel.deliver(plan.event, binding, plan.context)

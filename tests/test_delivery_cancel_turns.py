@@ -28,7 +28,8 @@ from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelO
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage, InboundResult
 from roomkit.models.enums import ChannelMediaType, ChannelType, EventType
-from roomkit.models.event import RoomEvent, TextContent
+from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.hook import InjectedEvent
 from roomkit.providers.ai.base import AIContext, AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.turns import InMemoryTurnBackend
@@ -257,11 +258,13 @@ async def test_a_turn_queued_behind_the_room_s_turn_never_starts(
         assert room.seen.started == ["task A"]
 
         assert await room.kit.cancel_delivery("b") == 1
+        assert a.delivery is not None and b.delivery is not None
+        # The cancel returns at once; B's turns are stopped once its handle
+        # reads them stopped (a turn backend elsewhere is told over its link).
+        done_b = await asyncio.wait_for(b.delivery.wait(), WAIT)
         room.seen.gate("task A").set()
         held.set()
-        assert a.delivery is not None and b.delivery is not None
         done_a = await asyncio.wait_for(a.delivery.wait(), WAIT)
-        done_b = await asyncio.wait_for(b.delivery.wait(), WAIT)
         await room.until_broadcast("task B")
 
         # B's agent never started; A, the room's other turn, ran to its end.
@@ -429,10 +432,10 @@ async def test_a_cancel_under_the_room_lock_returns_at_once(path: str, tmp_path:
         await room.seen.until_started("task A")
         b = await room.send("task B", "b")
         await room.send("stop B")
-        room.seen.gate("task A").set()
-        room.seen.gate("stop B").set()
         assert a.delivery is not None and b.delivery is not None
         done_b = await asyncio.wait_for(b.delivery.wait(), WAIT)
+        room.seen.gate("task A").set()
+        room.seen.gate("stop B").set()
 
         assert cancelled == [1]
         assert "task B" not in room.seen.started
@@ -481,3 +484,167 @@ async def test_a_task_delegated_from_a_delivery_is_not_its_turn_work(tmp_path: P
         for gate in worker.gates.values():
             gate.set()
         await _closed(room)
+
+
+# -- what goes on after a cancel: the delivery, and nothing of the turns -----------------
+
+
+async def test_a_cancel_returns_at_once_while_a_transport_still_delivers(
+    tmp_path: Path,
+) -> None:
+    """The cancel joins the turns' work, not the delivery going on: a slow
+    transport neither holds the cancel nor makes it report its cleanup
+    incomplete, on the handle and on an awaited call alike."""
+    room = await _room("steerless", tmp_path)
+    room.ws.held["task A"] = asyncio.Event()
+    room.ws.held["task B"] = asyncio.Event()
+    try:
+        a = await room.send("task A", "a")
+        await room.seen.until_started("task A")
+        assert a.delivery is not None
+        done_a = await asyncio.wait_for(a.delivery.cancel(timeout=0.5), WAIT)
+        assert done_a.cancellation_reason == "caller_cancelled"
+        room.ws.held["task A"].set()
+        await room.until_broadcast("task A")
+
+        message = InboundMessage(
+            channel_id="sms", sender_id="user", content=TextContent(body="task B")
+        )
+        call = asyncio.create_task(room.kit.process_inbound(message, room_id="r"))
+        await room.seen.until_started("task B")
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(call, 1.0)
+
+        room.ws.held["task B"].set()
+        await room.until_broadcast("task B")
+        assert room.seen.finished == []
+        assert room.delivered() == ["task A", "task B"]
+    finally:
+        await _closed(room)
+
+
+async def test_a_cancelled_send_event_is_still_delivered(tmp_path: Path) -> None:
+    room = await _room("steerless", tmp_path)
+    try:
+        call = asyncio.create_task(room.kit.send_event("r", "sms", TextContent(body="task A")))
+        await room.seen.until_started("task A")
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(call, WAIT)
+        await room.until_broadcast("task A")
+
+        assert room.seen.finished == []
+        assert room.delivered() == ["task A"]
+    finally:
+        await _closed(room)
+
+
+async def test_an_event_injected_by_a_cancelled_delivery_starts_no_turn(
+    path: str, tmp_path: Path
+) -> None:
+    """A hook's injected event is delivered by the plan of the message that
+    fired it: once that delivery is cancelled, its turn never starts either."""
+    room = await _room(path, tmp_path)
+    held = room.ws.held["held"] = asyncio.Event()
+    agent_id = "acp-agent" if path == "acp" else "agent"
+
+    @room.kit.hook(HookTrigger.BEFORE_BROADCAST)
+    async def inject(event: RoomEvent, ctx: Any) -> HookResult:
+        if isinstance(event.content, TextContent) and event.content.body == "task B":
+            injected = RoomEvent(
+                room_id="r",
+                source=EventSource(channel_id="sms", channel_type=ChannelType.SMS),
+                content=TextContent(body="task C"),
+            )
+            return HookResult.allow([InjectedEvent(event=injected, target_channel_ids=[agent_id])])
+        return HookResult.allow()
+
+    try:
+        room.seen.gate("task C").set()
+        await room.send("held", visibility="transport")
+        b = await room.send("task B", "b")
+        assert await room.kit.cancel_delivery("b") == 1
+        held.set()
+        assert b.delivery is not None
+        await asyncio.wait_for(b.delivery.wait(), WAIT)
+        await room.until_broadcast("task B")
+        await asyncio.sleep(0.1)
+
+        assert room.seen.started == []
+    finally:
+        await _closed(room)
+
+
+# -- the key: held while the delivery is in flight, scoped to its organization --------
+
+
+async def test_a_reentrant_call_s_key_names_its_delivery_until_it_runs(tmp_path: Path) -> None:
+    """A call made under the room's lock (a sync hook) returns before its
+    delivery starts, which follows in the lane: its key still names it."""
+    room = await _room("agent", tmp_path)
+    counts: list[int] = []
+
+    @room.kit.hook(HookTrigger.BEFORE_BROADCAST)
+    async def post(event: RoomEvent, ctx: Any) -> HookResult:
+        if isinstance(event.content, TextContent) and event.content.body == "lead":
+            inner = InboundMessage(
+                channel_id="sms",
+                sender_id="user",
+                content=TextContent(body="task B"),
+                delivery_key="b",
+            )
+            await room.kit.process_inbound(inner, room_id="r")
+            counts.append(await room.kit.cancel_delivery("b"))
+        return HookResult.allow()
+
+    try:
+        room.seen.gate("lead").set()
+        lead = await room.send("lead")
+        assert lead.delivery is not None
+        await asyncio.wait_for(lead.delivery.wait(), WAIT)
+        await room.until_broadcast("task B")
+        await asyncio.sleep(0.1)
+
+        assert counts == [1]
+        assert "task B" not in room.seen.started
+        await _settled(lambda: not room.kit._delivery_keys._named)
+    finally:
+        await _closed(room)
+
+
+async def test_a_cancel_for_an_organization_reaches_only_its_rooms(tmp_path: Path) -> None:
+    """Two tenants that chose the same key never cancel each other's."""
+    seen = Seen()
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(_Steerless(seen))
+    for room_id, organization in (("r1", "org-1"), ("r2", "org-2")):
+        await kit.create_room(room_id=room_id, organization_id=organization)
+        await kit.attach_channel(room_id, "sms")
+        await kit.attach_channel(room_id, "agent", category=ChannelCategory.INTELLIGENCE)
+
+    def task(body: str) -> InboundMessage:
+        return InboundMessage(
+            channel_id="sms", sender_id="user", content=TextContent(body=body), delivery_key="t"
+        )
+
+    try:
+        one = await kit.process_inbound(task("task A"), room_id="r1", defer_delivery=True)
+        two = await kit.process_inbound(task("task B"), room_id="r2", defer_delivery=True)
+        await seen.until_started("task A")
+        await seen.until_started("task B")
+
+        assert await kit.cancel_delivery("t", organization_id="org-2") == 1
+        assert two.delivery is not None and one.delivery is not None
+        await asyncio.wait_for(two.delivery.wait(), WAIT)
+        seen.gate("task A").set()
+        done_one = await asyncio.wait_for(one.delivery.wait(), WAIT)
+
+        assert seen.finished == ["task A"]
+        assert done_one.cancellation_reason is None
+        assert await kit.cancel_delivery("t", organization_id="org-1") == 0
+    finally:
+        for gate in seen.gates.values():
+            gate.set()
+        await kit.close()

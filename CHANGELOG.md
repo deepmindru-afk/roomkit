@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key named and cancelled, returns at once (a sync hook or a tool handler
   included), and each call's caller reads the cancelled end on its result.
   Several messages may share a key; the key is never stored and grants
-  nothing. Two tasks handed to one agent in one room can now be stopped one at
+  nothing, and `organization_id=` keeps a cancellation to the caller's rooms
+  (RFC §17.2), so two tenants that chose the same key never cancel each
+  other's. Two tasks handed to one agent in one room can now be stopped one at
   a time, where a room's Stop cut the running one and let the waiting one
   start. `examples/cancel_delivery_by_key.py` runs it.
 
@@ -27,9 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `send_event()` / `regenerate_response()` and `kit.cancel_delivery()` cancel
   the intelligence targets' turns and the reading of their streams, and a turn
   not started yet never starts; the message is still delivered to the room's
-  other channels and its AFTER_BROADCAST hooks fire. A message cancelled while
-  it waited in the room's lane used to be stored without reaching any
-  transport or firing its hooks, so a host's live view and audit missed it.
+  other channels and its AFTER_BROADCAST hooks fire, an event a hook injected
+  for it starting no turn either. The cancel joins the turns' work only, never
+  a transport still delivering. A message cancelled while it waited in the
+  room's lane used to be stored without reaching any transport or firing its
+  hooks, so a host's live view and audit missed it.
 
 ### Fixed
 

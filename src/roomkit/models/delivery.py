@@ -189,7 +189,8 @@ class DeliveryHandle:
         Returns the original result with ``cancellation_reason`` set. The
         message itself stays stored and is still delivered to the room's
         other channels, its AFTER_BROADCAST hooks fired; a delivery still
-        waiting in the room's lane follows in lane order. Other turns and
+        waiting in the room's lane follows in lane order, after this returns,
+        and its ``delivery_results`` stay empty on this result. Other turns and
         shared providers are unaffected. Repeated calls are safe and preserve
         the first reason. Code without this handle cancels the same way by
         the message's ``delivery_key`` (``kit.cancel_delivery``).
