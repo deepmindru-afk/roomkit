@@ -264,10 +264,10 @@ class CancelTaskTool:
             return json.dumps({"error": "task_id is required"})
         line = await self._line(room_id, task_id)
         running = line is not None and line.get("status") == "running"
-        if line is None:
+        if line is None or (running and not self._kit._is_room_task(task_id, room_id)):
+            # A line naming a task the kit runs for another room is not this
+            # room's to cancel, whoever posted it.
             return _answer(task_id, "unknown", f"No task {task_id} here.")
-        if running and not self._kit._is_room_task(task_id, room_id):
-            return self._out_of_reach(task_id)
         if running and await self._cancel(task_id, room_id):
             return _answer(
                 task_id, str(TaskStatus.CANCELLED), "Cancelled: its result will not come back."
@@ -275,16 +275,6 @@ class CancelTaskTool:
         # It ended meanwhile, or before the call: as it stands.
         ended = await self._line(room_id, task_id) or line
         return _answer(task_id, str(ended.get("status")), "The task had already ended.")
-
-    def _out_of_reach(self, task_id: str) -> str:
-        """The answer for a task the room lists running that its call may not
-        cancel (RFC §23.4): one the kit runs in the background for another
-        room is no task here, whoever posted its line; one that runs in no
-        background (an inline delegation, a strategy's worker run) is still
-        running, and ends with what runs it."""
-        if self._kit._runs_in_background(task_id):
-            return _answer(task_id, "unknown", f"No task {task_id} here.")
-        return _answer(task_id, "running", _ENDS_WITH_ITS_RUNNER)
 
     async def _line(self, room_id: str, task_id: str) -> dict[str, Any] | None:
         lines = await room_task_lines(self._kit.status_bus, room_id, self._window)
@@ -296,12 +286,6 @@ class CancelTaskTool:
         call = current_tool_call()
         channel_id = call.channel_id if call is not None else None
         return await self._kit._cancel_task_for(task_id, channel_id, room_id=room_id)
-
-
-_ENDS_WITH_ITS_RUNNER = (
-    "Still running, and not cancellable on its own: it runs inside the turn or the "
-    "strategy that asked for it, and ends with it."
-)
 
 
 def _answer(task_id: str, status: str, message: str) -> str:
