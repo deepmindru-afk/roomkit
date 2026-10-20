@@ -158,10 +158,11 @@ class _ExecutorLink(ExecutorLink):
 class InMemoryTurnBackend(TurnBackend):
     """Turns carried in this process, serialized like any other (RFC §10.6).
 
-    A room's turns of a channel go to the executor that took its last turn
-    or channel call while it serves and declares the channel, else to the
-    first that declares it (RFC §10.6.7). Every executor is in this process,
-    so a turn none declares fails at once with ``no_executor``.
+    The turns of a channel the owner's own executor declares go to it alone.
+    Another channel's turns in a room go to the executor that took its last
+    turn or channel call while it serves and declares the channel, else to
+    the first that declares it (RFC §10.6.7). Every executor is in this
+    process, so a turn none declares fails at once with ``no_executor``.
     """
 
     def __init__(self) -> None:

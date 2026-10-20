@@ -1,9 +1,10 @@
 """Where a room's turns of a channel go on the Redis turn backend (RFC §10.6.7).
 
-The room owner chooses: the executor that holds the room's state for the
-channel, while it lives and takes the turn, else one that takes it, one of
-the owner's own process first (carried in the process), else one alive
-elsewhere, the rooms no executor holds yet spread over them. The holder is a
+The room owner chooses: its own executor alone for a channel that executor
+declares (the agents it holds live); else the executor that holds the room's
+state for the channel, while it lives and takes the turn, else one that takes
+it, one of the owner's own process first (carried in the process), else one
+alive elsewhere, the rooms no executor holds yet spread over them. The holder is a
 key every owner process reads, so a room's turns follow its session state
 whichever owner submits them. An executor elsewhere is one process's: its id
 restarted in another process is another executor.

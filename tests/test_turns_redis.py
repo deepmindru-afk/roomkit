@@ -50,6 +50,7 @@ from roomkit.turns.wire import CommittedEvent, End, HostResult, RoomCall
 from tests import redis_turn_mode
 from tests.test_framework import SimpleChannel
 from tests.test_turns_channel_control import _Agent, _Recording, _turn
+from tests.test_turns_own_executor import _Tagged
 
 pytestmark = pytest.mark.skipif(not os.environ.get("REDIS_URL"), reason="REDIS_URL not set")
 
@@ -1601,3 +1602,49 @@ async def test_a_request_that_cannot_be_written_leaves_no_owner_link(
         await client.close()
         await host.close()
         await executor.close()
+
+
+async def test_a_live_agent_stays_on_the_kit_s_executor_whoever_holds_the_room(
+    prefix: str, redis_client: Any
+) -> None:
+    """RMK-837: the room's holder names a host's executor in another process,
+    which ran the agent while the kit held it by its declaration; once the kit
+    holds the agent live, its turns, channel calls and committed events go to
+    the kit's own executor."""
+    seen: list[str] = []
+    store = InMemoryStore()
+    host_backend = _backend(prefix)
+    host = TurnExecutor(
+        lambda channel_id: _Tagged(channel_id, "host", seen),
+        hosts={"ai"},
+        executor_id="host",
+        store=store,
+        timeouts=TIMEOUTS,
+    )
+    await host_backend.serve(host)
+    kit = RoomKit(store=store, turn_backend=_backend(prefix))
+    kit.register_channel(SimpleChannel("tx"))
+    kit.register_channel(ChannelDeclaration(channel_id="ai"))
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "tx")
+    await kit.attach_channel("r", "ai", category=ChannelCategory.INTELLIGENCE)
+
+    async def say(body: str) -> None:
+        message = InboundMessage(channel_id="tx", sender_id="u", content=TextContent(body=body))
+        await kit.process_inbound(message, room_id="r")
+
+    await say("first")
+    kit.unregister_channel("ai")
+    kit.register_channel(_Tagged("ai", "kit", seen))
+    await say("second")
+    answer = await kit.channel_call("ai", "r", "whoami")
+    events = await store.list_events("r")
+    await kit._turns.control(CommittedEvent(channel_id="ai", room_id="r", event=events[0]))
+    said = [e.content.body for e in await store.list_events("r") if e.source.channel_id == "ai"]
+    await kit.close()
+    await host_backend.close()
+    await host.close()
+
+    assert said == ["from host", "from kit"]
+    assert answer == "kit"
+    assert seen == ["call:kit", "event:kit"]

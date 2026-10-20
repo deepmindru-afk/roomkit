@@ -1,8 +1,9 @@
 """Turns carried between processes by Redis (RFC §10.6).
 
 The room owner's process submits each turn to one executor, chosen from what
-the executors alive declare (RFC §10.6.7): the one holding the room's state
-for the channel while it lives, else one that takes it. A turn on an executor
+the executors alive declare (RFC §10.6.7): its own executor alone for the
+agents it holds live, else the one holding the room's state for the channel
+while it lives, else one that takes it. A turn on an executor
 of the owner's own process stays in the process, carried as the in-memory
 backend carries it; one on an executor elsewhere crosses Redis, each message
 the protocol's envelope written to the other process's inbox, in order, and
