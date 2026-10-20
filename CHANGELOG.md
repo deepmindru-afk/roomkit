@@ -84,16 +84,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `cancel_task` answers a task of the room it may not cancel as still
   running, and why (RMK-829, RFC §23.4): an inline delegation runs inside the
-  turn that asked for it and ends with it, and a task a strategy runs unposted
-  is the strategy's. It answered `unknown` ("No task … here"), so an agent
-  shown the task running by `task_status` was told it did not exist. What is
-  the room's is the kit's own record of the tasks it runs for each room, never
-  the status bus: another room's task, ended or not, or an id the kit never
-  ran, still answers `unknown`. A task whose pending entry left the bus's
-  window, its progress alone left, is listed running as the turn's notes read
-  it, and `cancel_task` cancels it, where it answered that it had ended. The
-  console's `/cancel` says an inline task runs inside its caller's turn,
-  where it said it had ended.
+  turn that asked for it and ends with it, and a task a strategy runs
+  unposted, inline or in the background, is the strategy's. It answered
+  `unknown` ("No task … here"), so an agent shown the task running by
+  `task_status` was told it did not exist. What is the room's is the kit's own
+  record of the tasks it runs for each room, never the status bus: another
+  room's task, ended or not, an id the kit never ran, or a task another kit
+  runs for the room on a bus both share, still answers `unknown`. A task of
+  the room that ended answers that it had ended, with its status, even while
+  the bus still shows it running (the kit keeps the latest 1024 ended), where
+  it answered `unknown`. A task whose pending entry left the bus's window, its
+  progress alone left, is listed running as the turn's notes read it, and
+  `cancel_task` cancels it, where it answered that it had ended. The console's
+  `/cancel` says why an inline run is still running, in the tool's words,
+  where it said it had ended, and cancels only a task the kit runs for its
+  room: a line of the room naming another room's task cancelled that task.
 
 - A Redis turn backend whose Redis goes silent without closing a connection
   (a NAT or a load balancer forgot it) keeps the process among the living

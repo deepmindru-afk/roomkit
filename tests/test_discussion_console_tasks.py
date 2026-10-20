@@ -16,6 +16,8 @@ from prompt_toolkit.output import DummyOutput
 from roomkit import Agent, Discussion, RoomKit, WebSocketChannel
 from roomkit.console import AgentCard, DiscussionConsole
 from roomkit.console._discussion_view import DiscussionView
+from roomkit.models.enums import ChannelCategory
+from roomkit.orchestration._worker_run import WorkerStatus, run_worker
 from roomkit.orchestration.strategies.discussion import (
     SpeakQueue,
     SpeakQueueChange,
@@ -23,6 +25,8 @@ from roomkit.orchestration.strategies.discussion import (
 )
 from roomkit.providers.ai.base import AIContext, AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tasks.status import post_task_progress
+from roomkit.tools.context import tool_turn_context
 from tests.orchestration.test_strategy_discussion import _Chunked
 from tests.test_framework import SimpleChannel
 
@@ -214,25 +218,84 @@ async def test_the_person_starts_lists_and_cancels_tasks(
     await kit.close()
 
 
-async def test_the_console_says_an_inline_task_runs_inside_its_turn(pipe: PipeInput) -> None:
-    """RMK-829: ``/cancel`` on an inline delegation, which no cancel reaches,
-    says it ends with the turn that asked for it, never that it had ended."""
+async def _inline_run(kit: RoomKit, door: str) -> asyncio.Future[Any]:
+    """An inline run of the helper's in r1 no cancel reaches: a delegation
+    inside its turn, or a strategy's worker run, which posts its progress so
+    that the room lists it by its task."""
+    if door == "delegation":
+        return asyncio.ensure_future(kit.delegate("r1", "helper", "Read the source.", wait=True))
+    run = asyncio.ensure_future(
+        run_worker(
+            kit,
+            "r1",
+            "helper",
+            "Read the source.",
+            timeout=None,
+            status=WorkerStatus({"room_id": "r1", "strategy": "sequential"}),
+        )
+    )
+    await _until(lambda: len(kit._room_tasks.running) == 1)
+    child = next(r.id for r in await kit.store.list_rooms() if r.id.startswith("r1::task-"))
+    with tool_turn_context(room_id=child):
+        assert await post_task_progress(kit, "2 of 9")
+    return run
+
+
+@pytest.mark.parametrize(
+    ("door", "why"),
+    [
+        ("delegation", "it runs inside the turn that asked for it"),
+        ("strategy", "the strategy that runs it follows it"),
+    ],
+)
+async def test_the_console_says_why_an_inline_run_is_not_cancelled(
+    pipe: PipeInput, door: str, why: str
+) -> None:
+    """RMK-829: ``/cancel`` on an inline run no cancel reaches says it is
+    still running and why, as ``cancel_task`` does, never that it had ended."""
     kit = RoomKit()
     await _tasks_room(kit)
     console, running = await _console(kit, pipe)
-    inline = asyncio.ensure_future(kit.delegate("r1", "helper", "Read the source.", wait=True))
-    await _until(lambda: len(kit._room_tasks) == 1)
-    (task_id,) = kit._room_tasks
+    inline = await _inline_run(kit, door)
+    await _until(lambda: len(kit._room_tasks.running) == 1)
+    (task_id,) = kit._room_tasks.running
     short = task_id.removeprefix("task-")[:6]
     pipe.send_text("/tasks\r")
     await _until(lambda: f"{short}  @helper" in _room(console.view))
 
     pipe.send_text(f"/cancel {short}\r")
-    await _until(lambda: "runs inside the turn that asked for it" in _room(console.view))
+    await _until(lambda: f"task {short} is still running: {why}" in _room(console.view))
 
     assert not inline.done()
     inline.cancel()
     await asyncio.gather(inline, return_exceptions=True)
+    console.exit()
+    await asyncio.wait_for(running, 5)
+    await kit.close()
+
+
+async def test_the_console_cancels_no_task_a_line_names_for_another_room(
+    pipe: PipeInput,
+) -> None:
+    """RMK-829: a line posted for r1 naming another room's running task: the
+    console's ``/cancel`` in r1 cancels nothing, whatever the line says."""
+    kit = RoomKit()
+    await _tasks_room(kit)
+    await kit.create_room(room_id="other")
+    await kit.attach_channel("other", "dev", category=ChannelCategory.INTELLIGENCE)
+    console, running = await _console(kit, pipe)
+    theirs = await kit.delegate("other", "helper", "Read the source.", notify="dev")
+    kit.status_bus.post(
+        "helper", "task", "pending", metadata={"room_id": "r1", "task_id": theirs.id}
+    )
+    await asyncio.sleep(0.05)
+    short = theirs.id.removeprefix("task-")[:6]
+
+    pipe.send_text(f"/cancel {short}\r")
+    await _until(lambda: f"task {short} is not one this kit runs" in _room(console.view))
+
+    assert theirs.result is None
+    await kit.cancel_task(theirs.id)
     console.exit()
     await asyncio.wait_for(running, 5)
     await kit.close()

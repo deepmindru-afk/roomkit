@@ -45,6 +45,7 @@ from roomkit.models.enums import (
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.response_metadata import TurnEntries
 from roomkit.tasks._child_status import record_task_end
+from roomkit.tasks._room_tasks import RoomTaskRecord, TaskReach
 from roomkit.tasks.brief import conversation_block, worker_description
 from roomkit.tasks.handback import CALLER_HANDS_BACK, bounded, hand_back, result_text
 from roomkit.tasks.models import (
@@ -56,8 +57,6 @@ from roomkit.tasks.models import (
 )
 from roomkit.tasks.posting import HAND_BACKS, post_result, posted_text
 from roomkit.tasks.status import (
-    RoomTask,
-    TaskReach,
     post_task_ended,
     post_task_pending,
     room_task_lines,
@@ -219,8 +218,9 @@ class DelegationHost(Protocol):
             ends, so its close cuts it (a hand-back under way included).
         _task_cancelled_by: The tasks a ``cancel_task`` call is cancelling,
             by the channel that made the call.
-        _room_tasks: Each task still running for a room, by id: its room
-            and how it can end (RFC §23.4).
+        _room_tasks: What the framework knows of the tasks it runs for
+            each room: those running, how each can end, and how the latest
+            ended (RFC §23.4).
 
     Cross-mixin methods (provided by other mixins in the MRO):
         get_room: From :class:`RoomLifecycleMixin`.
@@ -238,7 +238,7 @@ class DelegationHost(Protocol):
     _closed: bool
     _background_runs: set[asyncio.Task[None]]
     _task_cancelled_by: dict[str, str]
-    _room_tasks: dict[str, RoomTask]
+    _room_tasks: RoomTaskRecord
 
 
 _TASK_NAME_CHARS = 200
@@ -298,7 +298,7 @@ class DelegationMixin(HelpersMixin):
     _closed: bool
     _background_runs: set[asyncio.Task[None]]
     _task_cancelled_by: dict[str, str]
-    _room_tasks: dict[str, RoomTask]
+    _room_tasks: RoomTaskRecord
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     get_room: Any  # see DelegationHost
@@ -637,8 +637,10 @@ class DelegationMixin(HelpersMixin):
         cancellation is raised once the task has ended."""
         handle.status = TaskStatus.IN_PROGRESS
         start = time.monotonic()
-        # Listed for its room, it ends with the turn that asked for it.
-        self._room_tasks[handle.id] = RoomTask(handle.parent_room_id, "turn")
+        # Recorded for its room: it ends with the turn that asked for it, or
+        # is the strategy's that runs it without posting it (RFC §23.4).
+        reach: TaskReach = "turn" if handle._post_status else "strategy"
+        self._room_tasks.start(handle.id, handle.parent_room_id, reach)
         run = hold_task(
             self,
             self._inline_task(
@@ -657,7 +659,7 @@ class DelegationMixin(HelpersMixin):
         try:
             await await_interruptible(run)
         finally:
-            self._room_tasks.pop(handle.id, None)
+            self._room_tasks.end(handle.id, str(handle.status))
         return handle
 
     async def _inline_task(
@@ -789,11 +791,10 @@ class DelegationMixin(HelpersMixin):
         session_id = session.id if session is not None else None
 
         async def _on_bg_complete(result: DelegatedTaskResult) -> None:
-            try:
-                await _complete(result)
-            finally:
-                # Once the bus shows its end: a cancel meanwhile reads it ended.
-                self._room_tasks.pop(result.task_id, None)
+            # Recorded ended first: a cancel meanwhile reads it ended, whenever
+            # the bus shows that end.
+            self._room_tasks.end(result.task_id, str(result.status))
+            await _complete(result)
 
         async def _complete(result: DelegatedTaskResult) -> None:
             span.end(result)
@@ -815,7 +816,7 @@ class DelegationMixin(HelpersMixin):
         # A task a strategy runs without posting it is the strategy's to
         # follow, never a room's cancel_task's (RFC §23.4).
         reach: TaskReach = "tool" if handle._post_status else "strategy"
-        self._room_tasks[handle.id] = RoomTask(handle.parent_room_id, reach)
+        self._room_tasks.start(handle.id, handle.parent_room_id, reach)
         try:
             await self._task_runner.submit(
                 self,  # ty: ignore[invalid-argument-type]
@@ -824,7 +825,7 @@ class DelegationMixin(HelpersMixin):
                 on_complete=_on_bg_complete,
             )
         except BaseException:
-            self._room_tasks.pop(handle.id, None)
+            self._room_tasks.forget(handle.id)
             raise
         return handle
 
@@ -842,19 +843,6 @@ class DelegationMixin(HelpersMixin):
         """
         return await self._task_runner.cancel(task_id)
 
-    def _is_room_task(self, task_id: str, room_id: str) -> bool:
-        """Whether *task_id* is a background task still running for *room_id*,
-        as the kit submitted it: what a room's ``cancel_task`` may reach,
-        whatever the StatusBus says (RFC §23.4)."""
-        return self._room_tasks.get(task_id) == RoomTask(room_id, "tool")
-
-    def _room_task_reach(self, task_id: str, room_id: str) -> TaskReach | None:
-        """How *task_id*, a task still running for *room_id*, can end; ``None``
-        for any task that is not the room's: another room's, one ended, one
-        the framework never ran (RFC §23.4)."""
-        task = self._room_tasks.get(task_id)
-        return task.reach if task is not None and task.room_id == room_id else None
-
     async def _cancel_task_for(
         self, task_id: str, channel_id: str | None, *, room_id: str
     ) -> bool:
@@ -862,7 +850,7 @@ class DelegationMixin(HelpersMixin):
         a task of that room; when *channel_id*, the caller, is the one the
         result was going to, it is not handed the cancellation back, the
         tool's answer having told it (RFC §23.4)."""
-        if not self._is_room_task(task_id, room_id):
+        if self._room_tasks.reach(task_id, room_id) != "tool":
             return False
         if channel_id:
             self._task_cancelled_by[task_id] = channel_id

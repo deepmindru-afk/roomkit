@@ -108,9 +108,9 @@ from roomkit.realtime.memory import InMemoryRealtime
 from roomkit.sources.base import SourceProvider
 from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
+from roomkit.tasks._room_tasks import RoomTaskRecord
 from roomkit.tasks.background import BackgroundSetup
 from roomkit.tasks.base import TaskRunner
-from roomkit.tasks.status import RoomTask
 from roomkit.turns._registry_tools import OwnerToolStore
 from roomkit.turns.base import TurnBackend
 from roomkit.turns.executor import TurnExecutor
@@ -465,9 +465,10 @@ class RoomKit(
         # The tasks a ``cancel_task`` call is cancelling, by the channel that
         # made it: that channel is not handed the cancellation back (RFC §23.4).
         self._task_cancelled_by: dict[str, str] = {}
-        # Each task still running for a room, by id: its room and how it can
-        # end; what a cancel_task call reads, never the bus (RFC §23.4).
-        self._room_tasks: dict[str, RoomTask] = {}
+        # What the framework knows of the tasks it runs for each room: whether
+        # a task is the room's, how it can end, how it ended; a cancel_task
+        # call answers from it, never from the bus alone (RFC §23.4).
+        self._room_tasks = RoomTaskRecord()
         # Each agent's background setup: its worker and how its results come
         # back (RFC §23.4).
         self._background_setups: dict[str, BackgroundSetup] = {}

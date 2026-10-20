@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 from roomkit import HookExecution, HookResult, HookTrigger, RoomKit
 from roomkit.channels._discussion_turn import DISCUSSION_CONFIG
+from roomkit.channels._tasks_note import render_tasks_note
 from roomkit.channels.agent import Agent
 from roomkit.core.mixins.delegation import task_name
 from roomkit.models.enums import ChannelCategory, EventType, TaskStatus
@@ -258,16 +261,37 @@ def test_a_running_task_reads_running_and_an_orchestration_run_reads_as_one_task
 
     tasks = room_tasks(
         [
-            entry("worker", StatusLevel.PENDING, "La météo ?", task_id="t1"),
-            entry("writer", StatusLevel.PENDING, "Rédige."),  # a worker run, no id yet
-            entry("writer", StatusLevel.COMPLETED, "Le texte.", task_id="t2"),
+            entry("worker", StatusLevel.PENDING, "The weather?", task_id="t1"),
+            entry("writer", StatusLevel.PENDING, "Write it."),  # a worker run, no id yet
+            entry("writer", StatusLevel.COMPLETED, "The text.", task_id="t2"),
         ]
     )
     assert [(t["task_id"], t["agent"], t["status"]) for t in tasks] == [
         ("t1", "worker", "running"),
         ("t2", "writer", "completed"),
     ]
-    assert tasks[1]["task"] == "Rédige."
+    assert tasks[1]["task"] == "Write it."
+
+
+async def test_a_task_seen_by_its_progress_alone_reads_running_at_it() -> None:
+    """RMK-829: a task whose pending entry left the bus's window, only its
+    progress posted since: task_status and the turn's notes read it running,
+    at that progress."""
+    kit = RoomKit()
+    await kit.create_room(room_id="r")
+    kit.status_bus.post(
+        "worker", "task", "info", detail="12 of 30", metadata={"room_id": "r", "task_id": "t1"}
+    )
+    await asyncio.sleep(0)
+    with tool_turn_context(room_id="r"):
+        answer = json.loads(await TaskStatusTool(kit).handler(TASK_STATUS_TOOL, {}))
+    note = render_tasks_note(await kit._build_room_tasks_loader()("r"), now=datetime.now(UTC))
+    await kit.close()
+
+    (task,) = answer["tasks"]
+    assert (task["task_id"], task["status"], task["progress"]) == ("t1", "running", "12 of 30")
+    assert "running; at" in note
+    assert "12 of 30" in note
 
 
 def test_the_supervisor_names_task_status_only_to_an_agent_that_has_it() -> None:

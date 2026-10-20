@@ -29,6 +29,7 @@ from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, EventType, HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.orchestration.strategies.discussion._names import read_names
+from roomkit.tasks._room_tasks import why_not_cancelled
 from roomkit.tasks.background import BACKGROUND_TOOL
 from roomkit.tasks.status import room_task_lines
 
@@ -262,16 +263,23 @@ class DiscussionConsole:
                 else f"{rest.strip()!r} names several tasks: give more of its id"
             )
             return
-        cancelled = await self._kit.cancel_task(found[0])
-        if not cancelled and self._kit._room_task_reach(found[0], self._room_id) == "turn":
-            self.view.note(
-                f"task {short_task(found[0])} runs inside the turn that asked for it: "
-                "it ends with that turn"
-            )
-            return
-        self.view.note(
-            f"task {short_task(found[0])} " + ("cancelled" if cancelled else "had ended")
-        )
+        self.view.note(await self._cancelled(found[0]))
+
+    async def _cancelled(self, task_id: str) -> str:
+        """What ``/cancel`` says of *task_id*, a task a line of the room names:
+        cancelled with the host's reach when the kit runs it for this room,
+        never from the line alone; else why not (RFC §23.4)."""
+        short = short_task(task_id)
+        record = self._kit._room_tasks
+        reach = record.reach(task_id, self._room_id)
+        if reach is not None and await self._kit.cancel_task(task_id):
+            return f"task {short} cancelled"
+        why = why_not_cancelled(reach)
+        if why is not None:
+            return f"task {short} is still running: {why}"
+        if reach is not None or record.ended_with(task_id, self._room_id) is not None:
+            return f"task {short} had ended"
+        return f"task {short} is not one this kit runs for this room"
 
     async def _set_listening(self, name: str, rest: str) -> None:
         agents = self._named_agents(rest)

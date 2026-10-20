@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._discussion_turn import discussion_handles
 from roomkit.core.exceptions import RoomNotFoundError, UnservedToolCallError
@@ -16,6 +16,7 @@ from roomkit.orchestration.status_bus import (
     StatusLevel,
     post_agent_lifecycle,
 )
+from roomkit.tasks._room_tasks import TaskReach, why_not_cancelled
 from roomkit.tools.context import current_tool_call, current_tool_room, current_tool_room_id
 
 if TYPE_CHECKING:
@@ -28,20 +29,6 @@ TASK_ACTION = "task"
 
 TASK_STATUS_TOOL = "task_status"
 CANCEL_TASK_TOOL = "cancel_task"
-
-TaskReach = Literal["tool", "strategy", "turn"]
-"""How a task of a room can end before its own end (RFC §23.4): ``tool``, a
-background task the room's ``cancel_task`` cancels; ``strategy``, a
-background task a strategy runs without posting it, which the strategy
-follows and the host may cancel; ``turn``, an inline delegation, which ends
-with the turn that asked for it."""
-
-
-class RoomTask(NamedTuple):
-    """A task the framework runs for a room, and how it can end."""
-
-    room_id: str
-    reach: TaskReach
 
 
 def _task_metadata(room_id: str, task_id: str, child_room_id: str) -> dict[str, Any]:
@@ -235,7 +222,10 @@ class CancelTaskTool:
     tasks the StatusBus lists for the room of the call: never another room's,
     nor a strategy's worker run, which that strategy follows itself. A running
     task ends ``cancelled``; the agent that cancelled it is not handed the
-    cancellation back, the tool's answer having told it.
+    cancellation back, the tool's answer having told it. A task of the room
+    it may not cancel is answered still running, and why; whether a task is
+    the room's, and how one ended, is what the framework knows of the tasks it
+    runs for each room, never what the bus lists alone.
 
     Args:
         kit: The framework whose tasks the tool cancels.
@@ -279,18 +269,37 @@ class CancelTaskTool:
         if not task_id:
             return json.dumps({"error": "task_id is required"})
         line = await self._line(room_id, task_id)
-        running = line is not None and line.get("status") == "running"
         if line is None:
             return _answer(task_id, "unknown", f"No task {task_id} here.")
-        if running and not self._kit._is_room_task(task_id, room_id):
-            return _out_of_reach(task_id, self._kit._room_task_reach(task_id, room_id))
-        if running and await self._cancel(task_id, room_id):
+        if line.get("status") == "running":
+            return await self._answer_running(room_id, task_id)
+        return _answer(task_id, str(line.get("status")), "The task had already ended.")
+
+    async def _answer_running(self, room_id: str, task_id: str) -> str:
+        """The answer for a task the bus lists running for *room_id*, from
+        what the framework knows of it (RFC §23.4): cancelled when the room
+        may cancel it, ended when it ended meanwhile or before, else still
+        running and why, or no task of the room."""
+        record = self._kit._room_tasks
+        reach = record.reach(task_id, room_id)
+        if reach == "tool" and await self._cancel(task_id, room_id):
             return _answer(
                 task_id, str(TaskStatus.CANCELLED), "Cancelled: its result will not come back."
             )
-        # It ended meanwhile, or before the call: as it stands.
-        ended = await self._line(room_id, task_id) or line
-        return _answer(task_id, str(ended.get("status")), "The task had already ended.")
+        if reach == "tool" or record.ended_with(task_id, room_id) is not None:
+            return await self._answer_ended(room_id, task_id)
+        return _out_of_reach(task_id, reach)
+
+    async def _answer_ended(self, room_id: str, task_id: str) -> str:
+        """The answer for a task of *room_id* that ended: with the status the
+        framework recorded, else the bus's once it shows the end (a runner
+        that let the task go before its end was recorded)."""
+        status = self._kit._room_tasks.ended_with(task_id, room_id)
+        if status is None:
+            line = await self._line(room_id, task_id)
+            ended = line is not None and line.get("status") != "running"
+            status = str(line["status"]) if line is not None and ended else "ended"
+        return _answer(task_id, status, "The task had already ended.")
 
     async def _line(self, room_id: str, task_id: str) -> dict[str, Any] | None:
         lines = await room_task_lines(self._kit.status_bus, room_id, self._window)
@@ -304,27 +313,15 @@ class CancelTaskTool:
         return await self._kit._cancel_task_for(task_id, channel_id, room_id=room_id)
 
 
-_WHY_NOT_CANCELLED: dict[str, str] = {
-    "turn": (
-        "Still running, and not cancellable on its own: it runs inside the turn that "
-        "asked for it, and ends with it."
-    ),
-    "strategy": (
-        "Still running, and not this conversation's to cancel: the strategy that runs "
-        "it follows it."
-    ),
-}
-
-
 def _out_of_reach(task_id: str, reach: TaskReach | None) -> str:
     """The answer for a task the room lists running that its call may not
     cancel (RFC §23.4): a task of the room is still running, and why; any
-    other (another room's, one never run here), whoever posted its line, is
-    no task here."""
-    why = _WHY_NOT_CANCELLED.get(reach or "")
+    other (another room's, one never run by this framework), whoever posted
+    its line, is no task here."""
+    why = why_not_cancelled(reach)
     if why is None:
         return _answer(task_id, "unknown", f"No task {task_id} here.")
-    return _answer(task_id, "running", why)
+    return _answer(task_id, "running", f"Still running, and not cancellable here: {why}.")
 
 
 def _answer(task_id: str, status: str, message: str) -> str:

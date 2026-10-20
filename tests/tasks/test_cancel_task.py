@@ -22,12 +22,19 @@ from roomkit.core.exceptions import ToolNameCollisionError, UnservedToolCallErro
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, EventType, TaskStatus
 from roomkit.models.event import TextContent
-from roomkit.orchestration._worker_run import WorkerStatus, follow_worker
+from roomkit.orchestration._worker_run import WorkerStatus, follow_worker, run_worker
+from roomkit.orchestration.status_bus import (
+    InMemoryStatusBackend,
+    StatusBus,
+    StatusEntry,
+    StatusLevel,
+)
 from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks import CANCEL_TASK_TOOL, CancelTaskTool
+from roomkit.tasks._room_tasks import ENDED_ROOM_TASKS_KEPT, RoomTaskRecord
 from roomkit.tasks.handback import CALLER_HANDS_BACK
-from roomkit.tasks.status import TASK_STATUS_TOOL, room_task_lines
+from roomkit.tasks.status import TASK_STATUS_TOOL, post_task_progress, room_task_lines
 from roomkit.tools.context import ToolCallContext, tool_turn_context
 from roomkit.turns._registry_tools import RegistryOwnerTools
 from tests.conference.test_conference_realtime import until
@@ -60,7 +67,7 @@ class _Room:
     async def open(self) -> _Room:
         kit = self.kit
         kit.register_channel(SimpleChannel("sms"))
-        kit.register_channel(Agent("speaker", provider=MockAIProvider(responses=["Voilà."])))
+        kit.register_channel(Agent("speaker", provider=MockAIProvider(responses=["Here it is."])))
         kit.register_channel(Agent("worker", provider=self.worker))
         await kit.create_room(room_id="r")
         await kit.attach_channel("r", "sms")
@@ -78,9 +85,7 @@ class _Room:
         return self
 
     async def running_task(self, room_id: str = "r") -> Any:
-        task = await self.kit.delegate(
-            room_id, "worker", "Compte jusqu'à mille.", notify="speaker"
-        )
+        task = await self.kit.delegate(room_id, "worker", "Count to a thousand.", notify="speaker")
         await asyncio.wait_for(self.worker.started.wait(), 5)
         return task
 
@@ -159,8 +164,8 @@ async def test_another_rooms_task_is_out_of_reach() -> None:
 
 
 async def test_a_task_that_already_ended_is_left_as_it_stands() -> None:
-    room = await _Room(MockAIProvider(responses=["Mille."])).open()
-    task = await room.kit.delegate("r", "worker", "Compte jusqu'à mille.", notify="speaker")
+    room = await _Room(MockAIProvider(responses=["A thousand."])).open()
+    task = await room.kit.delegate("r", "worker", "Count to a thousand.", notify="speaker")
     await task.wait(timeout=5)
     await until(lambda: bool(room.ended), timeout=5)
 
@@ -251,7 +256,7 @@ async def test_the_owner_serves_the_task_tools_set_up_on_an_agent() -> None:
 async def test_a_task_whose_end_is_being_told_reads_ended_not_unknown() -> None:
     """While its ON_TASK_COMPLETED hooks run, the room's own task is still the
     room's: cancel_task says it had already ended (RFC §23.4)."""
-    room = await _Room(MockAIProvider(responses=["Mille."])).open()
+    room = await _Room(MockAIProvider(responses=["A thousand."])).open()
     in_hook = asyncio.Event()
     release = asyncio.Event()
 
@@ -260,7 +265,7 @@ async def test_a_task_whose_end_is_being_told_reads_ended_not_unknown() -> None:
         in_hook.set()
         await release.wait()
 
-    task = await room.kit.delegate("r", "worker", "Compte.", notify="speaker")
+    task = await room.kit.delegate("r", "worker", "Count.", notify="speaker")
     await asyncio.wait_for(in_hook.wait(), 5)
     cancelling = asyncio.ensure_future(_cancel(CancelTaskTool(room.kit), task.id))
     await asyncio.sleep(0.05)
@@ -269,7 +274,7 @@ async def test_a_task_whose_end_is_being_told_reads_ended_not_unknown() -> None:
     await room.kit.close()
 
     assert answer["status"] == "completed"
-    assert room.kit._room_tasks == {}
+    assert room.kit._room_tasks.running == []
 
 
 async def test_setup_task_tools_sets_up_both_tools_or_neither() -> None:
@@ -290,7 +295,7 @@ async def test_a_strategy_s_unposted_worker_is_never_a_room_s_to_cancel() -> Non
     the strategy's to follow, though its follower posts lines (RFC §23.4)."""
     room = await _Room(_Endless()).open()
     task = await room.kit.delegate(
-        "r", "worker", "Compte.", notify=CALLER_HANDS_BACK, post_status=False
+        "r", "worker", "Count.", notify=CALLER_HANDS_BACK, post_status=False
     )
     follower = asyncio.ensure_future(
         follow_worker(
@@ -334,7 +339,7 @@ async def test_an_inline_delegation_is_said_running_not_unknown() -> None:
     assert answer["status"] == "running"
     assert "runs inside the turn that asked for it" in answer["message"]
     assert still_running
-    assert room.kit._room_tasks == {}
+    assert room.kit._room_tasks.running == []
 
 
 @pytest.mark.parametrize("named", ["another room's ended task", "a task never run"])
@@ -418,12 +423,12 @@ async def test_a_turn_s_cancel_task_is_served_by_the_owner(
     call = AIToolCall(id="c1", name=CANCEL_TASK_TOOL, arguments={"task_id": task.id})
     speaker._provider._ai_responses = [  # type: ignore[attr-defined]
         AIResponse(content="", tool_calls=[call]),
-        AIResponse(content="Annulé."),
+        AIResponse(content="Cancelled."),
     ]
     speaker._provider._index = 0  # type: ignore[attr-defined]
 
     await room.kit.process_inbound(
-        InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Annule.")),
+        InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Cancel it.")),
         room_id="r",
     )
     result = await task.wait(timeout=5)
@@ -443,8 +448,147 @@ async def test_a_submit_that_fails_leaves_no_task_of_the_room() -> None:
 
     room.kit._task_runner.submit = down  # type: ignore[method-assign]
     with pytest.raises(RuntimeError):
-        await room.kit.delegate("r", "worker", "Compte.", notify="speaker")
-    left = dict(room.kit._room_tasks)
+        await room.kit.delegate("r", "worker", "Count.", notify="speaker")
+    left = room.kit._room_tasks.running
     await room.kit.close()
 
-    assert left == {}
+    assert left == []
+
+
+class _Gated(MockAIProvider):
+    """A worker that answers once released."""
+
+    def __init__(self) -> None:
+        super().__init__(responses=["Done."])
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def generate(self, context: AIContext) -> AIResponse:
+        self.started.set()
+        await self.release.wait()
+        return AIResponse(content="Done.")
+
+
+def _delegated(kit: RoomKit, door: str) -> asyncio.Future[Any]:
+    if door == "inline":
+        return asyncio.ensure_future(kit.delegate("r", "worker", "Count.", wait=True))
+    return asyncio.ensure_future(kit.delegate("r", "worker", "Count.", notify=CALLER_HANDS_BACK))
+
+
+@pytest.mark.parametrize("door", ["inline", "background"])
+async def test_the_room_s_task_ending_while_cancel_task_reads_the_bus_reads_ended(
+    door: str,
+) -> None:
+    """RMK-829: the room's own task ends while cancel_task reads its line,
+    which still says running: it had already ended, with its status, never
+    no task here."""
+    room = await _Room(_Gated()).open()
+    run = _delegated(room.kit, door)
+    await asyncio.wait_for(room.worker.started.wait(), 5)
+    (task_id,) = room.kit._room_tasks.running
+    recent = room.kit.status_bus.recent
+
+    async def ending_meanwhile(*args: Any, **kwargs: Any) -> Any:
+        entries = await recent(*args, **kwargs)
+        room.worker.release.set()
+        await until(lambda: not room.kit._room_tasks.running)
+        return entries
+
+    room.kit.status_bus.recent = ending_meanwhile  # type: ignore[method-assign]
+    answer = await _cancel(CancelTaskTool(room.kit), task_id)
+    await asyncio.gather(run, return_exceptions=True)
+    await room.kit.close()
+
+    assert (answer["status"], answer["message"]) == ("completed", "The task had already ended.")
+
+
+class _LaggingBackend(InMemoryStatusBackend):
+    """A task's end lands on the bus a while after it is posted, as on a
+    remote bus."""
+
+    async def publish(self, entry: StatusEntry) -> None:
+        if entry.action == "task" and entry.status != StatusLevel.PENDING:
+            await asyncio.sleep(0.3)
+        await super().publish(entry)
+
+
+@pytest.mark.parametrize("door", ["inline", "background"])
+async def test_the_room_s_task_ended_before_the_bus_shows_it_reads_ended(door: str) -> None:
+    """RMK-829: the room's task ended, its end not on the bus yet: cancel_task
+    answers it ended, with the status the framework recorded."""
+    room = _Room(MockAIProvider(responses=["Done."]))
+    room.kit = RoomKit(status_bus=StatusBus(backend=_LaggingBackend()))
+    await room.open()
+    await _delegated(room.kit, door)
+    await until(lambda: not room.kit._room_tasks.running)
+    (line,) = await room_task_lines(room.kit.status_bus, "r", 50)
+
+    answer = await _cancel(CancelTaskTool(room.kit), line["task_id"])
+    await room.kit.close()
+
+    assert line["status"] == "running"
+    assert (answer["status"], answer["message"]) == ("completed", "The task had already ended.")
+
+
+async def test_a_strategy_s_inline_worker_run_is_the_strategy_s() -> None:
+    """RMK-829: a strategy's inline worker run, outside any turn, whose worker
+    posts its progress: still running, the strategy's to follow, never said
+    to run inside a turn."""
+    room = await _Room(_Endless()).open()
+    run = asyncio.ensure_future(
+        run_worker(
+            room.kit,
+            "r",
+            "worker",
+            "Count.",
+            timeout=None,
+            status=WorkerStatus({"room_id": "r", "strategy": "sequential"}),
+        )
+    )
+    await asyncio.wait_for(room.worker.started.wait(), 5)
+    child = next(r.id for r in await room.kit.store.list_rooms() if r.id.startswith("r::task-"))
+    with tool_turn_context(room_id=child):
+        assert await post_task_progress(room.kit, "3 of 5")
+    await asyncio.sleep(0)
+    (task_id,) = room.kit._room_tasks.running
+
+    answer = await _cancel(CancelTaskTool(room.kit), task_id)
+    run.cancel()
+    await asyncio.gather(run, return_exceptions=True)
+    await room.kit.close()
+
+    assert answer["status"] == "running"
+    assert "the strategy that runs it follows it" in answer["message"]
+
+
+async def test_another_kit_s_task_on_a_shared_bus_is_no_task_here() -> None:
+    """RMK-829: a task another kit runs for the room, on a bus both read, is
+    not one this kit may answer for: no task here; it is cancelled where it
+    runs."""
+    bus = StatusBus()
+    theirs = _Room(_Endless())
+    theirs.kit = RoomKit(status_bus=bus)
+    await theirs.open()
+    ours = _Room(MockAIProvider(responses=["x"]))
+    ours.kit = RoomKit(status_bus=bus)
+    await ours.open()
+    task = await theirs.running_task()
+
+    answer = await _cancel(CancelTaskTool(ours.kit), task.id)
+    await theirs.kit.cancel_task(task.id)
+    await ours.kit.close()
+    await theirs.kit.close()
+
+    assert (answer["status"], answer["message"]) == ("unknown", f"No task {task.id} here.")
+
+
+def test_the_record_keeps_the_latest_ended_tasks_only() -> None:
+    record = RoomTaskRecord()
+    for n in range(ENDED_ROOM_TASKS_KEPT + 1):
+        record.start(f"t{n}", "r", "tool")
+        record.end(f"t{n}", "completed")
+
+    assert record.ended_with("t0", "r") is None
+    assert record.ended_with(f"t{ENDED_ROOM_TASKS_KEPT}", "r") == "completed"
+    assert record.ended_with(f"t{ENDED_ROOM_TASKS_KEPT}", "other") is None
+    assert record.running == []
