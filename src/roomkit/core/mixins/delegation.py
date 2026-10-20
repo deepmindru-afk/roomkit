@@ -837,6 +837,12 @@ class DelegationMixin(HelpersMixin):
         whatever the StatusBus says (RFC §23.4)."""
         return self._task_rooms.get(task_id) == room_id
 
+    def _runs_in_background(self, task_id: str) -> bool:
+        """Whether *task_id* is a background task still running for any room
+        a ``cancel_task`` may reach: neither an inline delegation nor a
+        strategy's worker run, which end with what runs them (RFC §23.4)."""
+        return task_id in self._task_rooms
+
     async def _cancel_task_for(
         self, task_id: str, channel_id: str | None, *, room_id: str
     ) -> bool:

@@ -62,6 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cancel_task` answers `running`, saying it ends with what runs it, for a
+  task the room lists running that runs in no background: an inline
+  delegation, a strategy's worker run (RMK-829, RFC §23.4). It answered
+  `unknown` ("No task … here"), so an agent shown the task running by
+  `task_status` was told it did not exist. Another room's background task
+  still answers `unknown`.
+
 - A discussion asks its `done` before it gives a turn or dispatches a
   message, one queued while it looked at the queue included (RMK-835, RFC
   §19.7.5 rule 15). Its driver reads the queue off the room lock and asked

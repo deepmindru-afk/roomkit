@@ -27,7 +27,7 @@ from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks import CANCEL_TASK_TOOL, CancelTaskTool
 from roomkit.tasks.handback import CALLER_HANDS_BACK
-from roomkit.tasks.status import TASK_STATUS_TOOL
+from roomkit.tasks.status import TASK_STATUS_TOOL, room_task_lines
 from roomkit.tools.context import ToolCallContext, tool_turn_context
 from roomkit.turns._registry_tools import RegistryOwnerTools
 from tests.conference.test_conference_realtime import until
@@ -308,7 +308,31 @@ async def test_a_strategy_s_unposted_worker_is_never_a_room_s_to_cancel() -> Non
     await asyncio.wait_for(follower, 5)
     await room.kit.close()
 
-    assert answer["status"] == "unknown"
+    assert answer["status"] == "running"
+    assert "not cancellable on its own" in answer["message"]
+    assert still_running
+
+
+async def test_an_inline_delegation_is_said_running_not_unknown() -> None:
+    """RMK-829: an inline delegation of the room is listed running by
+    ``task_status``; ``cancel_task`` says so too, and why it cannot cancel
+    it, never that the task does not exist."""
+    room = await _Room(_Endless()).open()
+    inline = asyncio.ensure_future(
+        room.kit.delegate("r", "worker", "Compte jusqu'à mille.", wait=True)
+    )
+    await asyncio.wait_for(room.worker.started.wait(), 5)
+    (line,) = await room_task_lines(room.kit.status_bus, "r", 50)
+
+    answer = await _cancel(CancelTaskTool(room.kit), line["task_id"])
+    still_running = not inline.done()
+    inline.cancel()
+    await asyncio.gather(inline, return_exceptions=True)
+    await room.kit.close()
+
+    assert line["status"] == "running"
+    assert answer["status"] == "running"
+    assert "not cancellable on its own" in answer["message"]
     assert still_running
 
 
