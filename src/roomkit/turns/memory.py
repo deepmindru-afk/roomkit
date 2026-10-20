@@ -238,13 +238,10 @@ class InMemoryTurnBackend(TurnBackend):
         self._turns.clear()
 
     def _hold(self, channel_id: str, room_id: str, room_hooks: Sequence[str]) -> TurnExecutor:
-        """The executor holding the room's state of *channel_id*, else one
-        that would take the room's turns, the room's hooks *room_hooks*
-        included; the holder is left as it was (RFC §10.6.3)."""
-        holder = self._holders.get(channel_id, room_id)
-        if holder is not None and holder.takes(channel_id, room_hooks):
-            return holder
-        taker = next((e for e in self._executors if e.takes(channel_id, room_hooks)), None)
+        """The executor that would take the room's turns of *channel_id*, the
+        room's hooks *room_hooks* included; the holder is left as it was (RFC
+        §10.6.3)."""
+        taker = self._taker(channel_id, room_id, room_hooks)
         if taker is None:
             raise TurnLinkError("no_executor", f"No executor serves channel {channel_id!r}")
         return taker
@@ -255,9 +252,7 @@ class InMemoryTurnBackend(TurnBackend):
         """The executor a room's turn or channel call of *channel_id* goes to,
         one that defines the room's hooks *room_hooks*, recorded as the one
         holding the room's state from now."""
-        holder = self._holders.get(channel_id, room_id)
-        if holder is None or not holder.takes(channel_id, room_hooks):
-            holder = next((e for e in self._executors if e.takes(channel_id, room_hooks)), None)
+        holder = self._taker(channel_id, room_id, room_hooks)
         if holder is None:
             missing = f" with room hooks {list(room_hooks)}" if room_hooks else ""
             raise TurnLinkError(
@@ -265,6 +260,22 @@ class InMemoryTurnBackend(TurnBackend):
             )
         self._holders.put(channel_id, room_id, holder)
         return holder
+
+    def _taker(
+        self, channel_id: str, room_id: str, room_hooks: Sequence[str]
+    ) -> TurnExecutor | None:
+        """The executor that takes a room's turn of *channel_id*: the owner's
+        own alone when it declares the channel, since it runs the channels the
+        owner holds live; else the one holding the room's state while it
+        takes it, else the first that takes it (RFC §10.6.7); ``None`` when
+        none does."""
+        own = self._owner.executor if self._owner is not None else None
+        if own is not None and own in self._executors and own.declares(channel_id):
+            return own if own.takes(channel_id, room_hooks) else None
+        holder = self._holders.get(channel_id, room_id)
+        if holder is not None and holder.takes(channel_id, room_hooks):
+            return holder
+        return next((e for e in self._executors if e.takes(channel_id, room_hooks)), None)
 
     def _forget(self, turn: _MemoryTurn) -> None:
         self._turns.discard(turn)

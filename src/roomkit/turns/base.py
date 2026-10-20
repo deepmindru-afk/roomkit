@@ -213,6 +213,12 @@ class RoomOwner(ABC):
     """What reaches a room owner outside a turn (RFC §10.6.3): the owner
     implements it, and an executor holds one its backend gave it."""
 
+    executor: TurnExecutor | None = None
+    """The owner's own executor, the one that runs the channels it holds live
+    (the kit's), or ``None``: a backend the owner attends places the turns of
+    the channels it declares on it, before any other executor (RFC
+    §10.6.7)."""
+
     @abstractmethod
     async def room_call(self, message: RoomCall) -> HostResult:
         """Run a host verb made after its turn ended: the verb's result, or
@@ -261,8 +267,10 @@ class TurnBackend(ABC):
 
     async def attend(self, owner: RoomOwner) -> None:  # noqa: B027
         """Have what executors send outside a turn reach *owner* (RFC
-        §10.6.3). Default: nothing reaches an owner outside a turn, and an
-        executor's verbs made after their turn are refused."""
+        §10.6.3), and place the turns of the channels its own executor
+        (``owner.executor``) declares on that executor first (RFC §10.6.7).
+        Default: nothing reaches an owner outside a turn, and an executor's
+        verbs made after their turn are refused."""
 
     @abstractmethod
     async def close(self) -> None:

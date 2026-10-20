@@ -24,6 +24,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — the kit's own executor alone takes the turns of the agents the
+  kit holds live** (RMK-837, RFC §10.6.7), their channel calls and the
+  events a discussion hands their memories included, whatever other executor
+  is served on the kit's turn backend. An executor a host served there first,
+  without `hosts=` or naming the agent, used to take them: its own copy of the
+  agent answered, the hooks registered on the kit (a `BEFORE_TOOL_USE` guard
+  among them) never fired, and a turn its factory had no channel for failed.
+  Now the agent the kit holds answers, its kit hooks fire, and a turn the
+  kit's executor does not take (a room hook enabled for the room that it does
+  not define) fails with `no_executor` rather than moving to another
+  executor. To run an agent on a host's executor, register its
+  `ChannelDeclaration` on the kit instead of the agent; `RoomOwner.executor`
+  is how a backend learns which executor is the owner's.
+
 - Cancelling a delivery stops its turns, not its delivery (RMK-860, RFC §10.1):
   `result.delivery.cancel()`, a cancelled awaited `process_inbound()` /
   `send_event()` / `regenerate_response()` and `kit.cancel_delivery()` cancel

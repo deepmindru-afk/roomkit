@@ -223,6 +223,7 @@ class RedisTurnBackend(TurnBackend):
         await self._here.attend(owner)
         if self._routes.owner is None:
             self._routes.owner = owner
+            self._placement.own = owner.executor
             await self._beat_now()
 
     async def control(self, message: ChannelControl) -> ChannelResult | None:

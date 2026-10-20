@@ -59,6 +59,9 @@ class Placement:
         self._loop_back = loop_back
         self.here: list[TurnExecutor] = []
         """The executors this process serves."""
+        self.own: TurnExecutor | None = None
+        """The executor of the room owner this process attends, which runs
+        the channels the owner holds live (RFC §10.6.7)."""
         self._next = 0
 
     async def place(
@@ -99,10 +102,14 @@ class Placement:
         *,
         spread: bool,
     ) -> TurnExecutor | Elsewhere:
-        """The holder while it lives and takes the turn, else one that takes
-        it, one of this process first, else one elsewhere: a room no
-        executor holds yet goes to the next of them, the spread moving on
-        only when *spread* (a turn or call placed, not an event held)."""
+        """The owner's own executor alone for a channel it declares, else the
+        holder while it lives and takes the turn, else one that takes it, one
+        of this process first, else one elsewhere: a room no executor holds
+        yet goes to the next of them, the spread moving on only when *spread*
+        (a turn or call placed, not an event held)."""
+        own = self._owning(channel_id)
+        if own is not None:
+            return self._own_taken(own, channel_id, room_hooks, excluded)
         here = {
             self._here_member(e): e
             for e in self.here
@@ -121,10 +128,7 @@ class Placement:
         if here:
             return next(iter(here.values()))
         if not elsewhere:
-            missing = f" with room hooks {list(room_hooks)}" if room_hooks else ""
-            raise TurnLinkError(
-                "no_executor", f"No executor serves channel {channel_id!r}{missing}"
-            )
+            raise _no_executor(channel_id, room_hooks)
         # A room no executor holds yet: its turns spread over the takers.
         members = sorted(elsewhere)
         following = (self._next + 1) % len(members)
@@ -153,6 +157,27 @@ class Placement:
         alive = await self._live.current()
         return _takers(alive, channel_id, room_hooks, self._node, skipped)
 
+    def _owning(self, channel_id: str) -> TurnExecutor | None:
+        """The owner's own executor when it declares *channel_id*: it runs the
+        channels the owner holds live, and no other executor takes their turns
+        (RFC §10.6.7)."""
+        own = self.own
+        return own if own is not None and own in self.here and own.declares(channel_id) else None
+
+    def _own_taken(
+        self,
+        own: TurnExecutor,
+        channel_id: str,
+        room_hooks: Sequence[str],
+        excluded: Collection[str],
+    ) -> TurnExecutor | Elsewhere:
+        """*own*, the owner's executor, for a turn of a channel it runs (across
+        Redis in the tests' loop back); ``no_executor`` when it refused the
+        turn or does not define the room's hooks."""
+        if self._here_member(own) in excluded or not own.takes(channel_id, room_hooks):
+            raise _no_executor(channel_id, room_hooks)
+        return Elsewhere(own.executor_id, self._node) if self._loop_back else own
+
     def _here_member(self, executor: TurnExecutor) -> str:
         return member_of(self._node, executor.executor_id)
 
@@ -174,6 +199,11 @@ def _takers(
         and member not in skipped
         and declared.takes(channel_id, room_hooks)
     }
+
+
+def _no_executor(channel_id: str, room_hooks: Sequence[str]) -> TurnLinkError:
+    missing = f" with room hooks {list(room_hooks)}" if room_hooks else ""
+    return TurnLinkError("no_executor", f"No executor serves channel {channel_id!r}{missing}")
 
 
 def _text(value: Any) -> str:

@@ -22,7 +22,7 @@ import acp
 import pytest
 from acp.schema import PermissionOption, PromptResponse
 
-from roomkit import ACPChannel, RoomKit, current_turn_host
+from roomkit import ACPChannel, ChannelDeclaration, RoomKit, current_turn_host
 from roomkit.core._turn_scope import enter_turn
 from roomkit.core.exceptions import ChannelNotFoundError, RoomNotFoundError
 from roomkit.models.delivery import InboundMessage
@@ -53,7 +53,9 @@ ROOM = "room-1"
 AGENT = "acp-agent"
 
 
-async def _room(channel: ACPChannel, backend: InMemoryTurnBackend | None = None) -> RoomKit:
+async def _room(
+    channel: ACPChannel | ChannelDeclaration, backend: InMemoryTurnBackend | None = None
+) -> RoomKit:
     kit = RoomKit(turn_backend=backend)
     kit.register_channel(SimpleChannel("sms"))
     kit.register_channel(channel)
@@ -135,17 +137,26 @@ async def test_a_verb_an_acp_agent_lacks_is_refused(tmp_path: Any) -> None:
 
 
 async def test_a_lost_executor_s_room_reopens_its_session_on_the_next(tmp_path: Any) -> None:
+    """The kit holds the agent by its declaration, and two executors of a host
+    serve it: the room's session opens on the first, then on the next once the
+    first is lost."""
     backend = InMemoryTurnBackend()
     remote, remote_connection, _ = _channel(tmp_path, emit_updates=False)
+    local, local_connection, _ = _channel(tmp_path, emit_updates=False)
     elsewhere = TurnExecutor(
         lambda channel_id: remote if channel_id == AGENT else None,
-        hosts=lambda channel_id: channel_id == AGENT,
+        hosts={AGENT},
         executor_id="elsewhere",
     )
-    # Served before the kit's own executor: the room's session opens there.
+    following = TurnExecutor(
+        lambda channel_id: local if channel_id == AGENT else None,
+        hosts={AGENT},
+        executor_id="following",
+    )
+    # Served first: the room's session opens there.
     await backend.serve(elsewhere)
-    local, local_connection, _ = _channel(tmp_path, emit_updates=False)
-    kit = await _room(local, backend)
+    await backend.serve(following)
+    kit = await _room(local.declaration(), backend)
 
     await kit.channel_call(AGENT, ROOM, "set_config_option", config_id="model", value="sonnet")
     await _say(kit, "first question")
@@ -155,7 +166,7 @@ async def test_a_lost_executor_s_room_reopens_its_session_on_the_next(tmp_path: 
     await elsewhere.close()
     await _say(kit, "second question")
 
-    # The kit's executor opened the room's session anew: set to the value the
+    # The next executor opened the room's session anew: set to the value the
     # room keeps, and caught up on what the lost session had been told.
     assert len(local_connection.new_session_calls) == 1
     assert [(c["config_id"], c["value"]) for c in local_connection.set_config_calls] == [
@@ -164,6 +175,7 @@ async def test_a_lost_executor_s_room_reopens_its_session_on_the_next(tmp_path: 
     sent = _sent(local_connection)
     assert "first question" in sent and sent.endswith("second question")
     await kit.close()
+    await following.close()
     await remote.close()
 
 

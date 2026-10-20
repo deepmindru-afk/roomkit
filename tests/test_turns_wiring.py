@@ -59,10 +59,14 @@ def _agent(*, calls: bool = True) -> Agent:
     return Agent("agent", provider=provider, role="agent", tools=[LOOKUP], tool_handler=handler)
 
 
-async def _kit(backend: InMemoryTurnBackend | None = None, **kit: Any) -> RoomKit:
+async def _kit(
+    backend: InMemoryTurnBackend | None = None, *, declared: bool = False, **kit: Any
+) -> RoomKit:
+    """A kit with the agent, live or by its *declared* declaration alone (a
+    host's executor then runs it), in room ``r1``."""
     room = RoomKit(turn_backend=backend, **kit)
     room.register_channel(SimpleChannel("ops"))
-    room.register_channel(_agent())
+    room.register_channel(_agent().declaration() if declared else _agent())
     await room.create_room(room_id="r1")
     await room.attach_channel("r1", "ops")
     await room.attach_channel("r1", "agent", category=ChannelCategory.INTELLIGENCE)
@@ -82,8 +86,8 @@ async def _settle() -> None:
 
 
 async def _elsewhere(store: InMemoryStore, **options: Any) -> tuple[InMemoryTurnBackend, Any]:
-    """A backend served first by an executor a host built, with its own copy
-    of the agent: the room's turns run there."""
+    """A backend served by an executor a host built, which builds the agent a
+    kit holds by its declaration: the room's turns run there."""
     backend = InMemoryTurnBackend()
     built: list[Agent] = []
 
@@ -107,7 +111,7 @@ async def _elsewhere(store: InMemoryStore, **options: Any) -> tuple[InMemoryTurn
 async def test_a_host_s_executor_fires_its_own_hooks() -> None:
     store = InMemoryStore()
     backend, executor = await _elsewhere(store)
-    kit = await _kit(backend, store=store)
+    kit = await _kit(backend, store=store, declared=True)
     seen: list[str] = []
 
     @executor.hook(HookTrigger.BEFORE_TOOL_USE)
@@ -122,10 +126,6 @@ async def test_a_host_s_executor_fires_its_own_hooks() -> None:
     async def response(event: Any, context: Any) -> None:
         seen.append(f"response:{event.response_content}")
 
-    @kit.hook(HookTrigger.ON_AI_RESPONSE, execution=HookExecution.ASYNC)
-    async def kits(event: Any, context: Any) -> None:
-        seen.append("kit's executor")
-
     await _say(kit)
     await _settle()
 
@@ -137,7 +137,7 @@ async def test_a_host_s_executor_fires_its_own_hooks() -> None:
 async def test_a_host_s_executor_builds_a_channel_once_and_closes_it() -> None:
     store = InMemoryStore()
     backend, executor = await _elsewhere(store)
-    kit = await _kit(backend, store=store)
+    kit = await _kit(backend, store=store, declared=True)
     await _say(kit, "one")
     await _say(kit, "two")
 
@@ -158,7 +158,7 @@ async def test_a_host_s_executor_builds_a_channel_once_and_closes_it() -> None:
 async def test_what_a_turn_elsewhere_publishes_reaches_the_owner() -> None:
     store = InMemoryStore()
     backend, executor = await _elsewhere(store)
-    kit = await _kit(backend, store=store)
+    kit = await _kit(backend, store=store, declared=True)
     published: list[str] = []
     emitted: list[str] = []
 
@@ -238,7 +238,7 @@ async def test_a_turn_in_a_context_of_its_own_continues_the_owner_s_span(
 async def test_a_scoring_hook_attaches_to_a_host_s_executor() -> None:
     store = InMemoryStore()
     backend, executor = await _elsewhere(store)
-    kit = await _kit(backend, store=store)
+    kit = await _kit(backend, store=store, declared=True)
     hook = ScoringHook(scorers=[MockScorer()])
     hook.attach(executor)
 
@@ -292,12 +292,19 @@ async def test_a_room_hook_runs_for_the_rooms_that_enable_it() -> None:
 async def test_a_room_s_turn_goes_to_an_executor_defining_its_hooks() -> None:
     store = InMemoryStore()
     backend, elsewhere = await _elsewhere(store)
-    kit = await _kit(backend, store=store)
+    auditor = TurnExecutor(
+        lambda channel_id: _agent() if channel_id == "agent" else None,
+        hosts={"agent"},
+        executor_id="auditor",
+        store=store,
+    )
+    await backend.serve(auditor)
+    kit = await _kit(backend, store=store, declared=True)
     seen: list[str] = []
 
-    @kit.turn_executor.room_hook("audit", HookTrigger.ON_AI_RESPONSE, HookExecution.ASYNC)
+    @auditor.room_hook("audit", HookTrigger.ON_AI_RESPONSE, HookExecution.ASYNC)
     async def audit(event: Any, context: Any) -> None:
-        seen.append("kit's executor")
+        seen.append("auditor")
 
     taken: list[str] = []
     take = elsewhere.take
@@ -311,11 +318,12 @@ async def test_a_room_s_turn_goes_to_an_executor_defining_its_hooks() -> None:
     await _say(kit)
     await _settle()
 
-    # The executor served first does not define "audit": the kit's own takes it.
-    assert seen == ["kit's executor"]
+    # The executor served first does not define "audit": the one that does takes it.
+    assert seen == ["auditor"]
     assert taken == []
     await kit.close()
     await elsewhere.close()
+    await auditor.close()
 
 
 @pytest.mark.in_process("reads the in-memory backend's placement")

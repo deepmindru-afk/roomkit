@@ -103,16 +103,15 @@ async def test_a_declared_worker_hands_its_structured_result_back() -> None:
 
 
 async def test_an_executor_refuses_a_turn_whose_owner_tool_its_channel_declares() -> None:
-    """The kit's copy of the agent has no tool named as the owner's, so the
-    setup passes; the host's agent does: its turn is refused, rather than a
-    call reaching one handler or the other by executor."""
+    """The kit holds the agent by its declaration, which names no tool as the
+    owner's, so the setup passes; the host's agent does: its turn is refused,
+    rather than a call reaching one handler or the other by executor."""
     own = AITool(name="delegate_task", description="The host's own.", parameters={})
     hosted = _agent("ana", _calls("delegate_task", agent="x", task="y"), tools=[own])
     host = _Host(ana=hosted)
     kit = await host.kit()
-    copy = _agent("ana")
-    kit.register_channel(copy)
-    setup_delegation(copy, DelegateHandler(kit))
+    kit.register_channel(ChannelDeclaration(channel_id="ana"))
+    setup_delegation("ana", DelegateHandler(kit))
     await kit.create_room(room_id="r")
     await kit.attach_channel("r", "sms")
     await kit.attach_channel("r", "ana", category=ChannelCategory.INTELLIGENCE)
