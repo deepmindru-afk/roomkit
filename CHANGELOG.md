@@ -74,6 +74,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cancel_task` answers a task of the room it may not cancel as still
+  running, and why (RMK-829, RFC §23.4): an inline delegation runs inside the
+  turn that asked for it and ends with it, and a task a strategy runs unposted
+  is the strategy's. It answered `unknown` ("No task … here"), so an agent
+  shown the task running by `task_status` was told it did not exist. What is
+  the room's is the kit's own record of the tasks it runs for each room, never
+  the status bus: another room's task, ended or not, or an id the kit never
+  ran, still answers `unknown`. A task whose pending entry left the bus's
+  window, its progress alone left, is listed running as the turn's notes read
+  it, and `cancel_task` cancels it, where it answered that it had ended. The
+  console's `/cancel` says an inline task runs inside its caller's turn,
+  where it said it had ended.
+
 - A Redis turn backend whose Redis goes silent without closing a connection
   (a NAT or a load balancer forgot it) keeps the process among the living
   (RMK-859, RFC §10.6.8). Its connections set no timeout, so with a redis-py

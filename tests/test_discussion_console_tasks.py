@@ -214,6 +214,30 @@ async def test_the_person_starts_lists_and_cancels_tasks(
     await kit.close()
 
 
+async def test_the_console_says_an_inline_task_runs_inside_its_turn(pipe: PipeInput) -> None:
+    """RMK-829: ``/cancel`` on an inline delegation, which no cancel reaches,
+    says it ends with the turn that asked for it, never that it had ended."""
+    kit = RoomKit()
+    await _tasks_room(kit)
+    console, running = await _console(kit, pipe)
+    inline = asyncio.ensure_future(kit.delegate("r1", "helper", "Read the source.", wait=True))
+    await _until(lambda: len(kit._room_tasks) == 1)
+    (task_id,) = kit._room_tasks
+    short = task_id.removeprefix("task-")[:6]
+    pipe.send_text("/tasks\r")
+    await _until(lambda: f"{short}  @helper" in _room(console.view))
+
+    pipe.send_text(f"/cancel {short}\r")
+    await _until(lambda: "runs inside the turn that asked for it" in _room(console.view))
+
+    assert not inline.done()
+    inline.cancel()
+    await asyncio.gather(inline, return_exceptions=True)
+    console.exit()
+    await asyncio.wait_for(running, 5)
+    await kit.close()
+
+
 async def test_task_commands_are_off_without_background_work(pipe: PipeInput) -> None:
     kit = RoomKit()
     kit.register_channel(SimpleChannel("ops"))

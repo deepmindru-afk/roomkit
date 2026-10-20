@@ -63,8 +63,7 @@ def render_tasks_note(
 
 
 def _running(task: dict[str, Any]) -> bool:
-    # A task whose pending entry left the bus's window has only its progress.
-    return task.get("status", "running") == "running"
+    return task.get("status") == "running"
 
 
 def _task_line(task: dict[str, Any], now: datetime, handles: Mapping[str, str]) -> str:

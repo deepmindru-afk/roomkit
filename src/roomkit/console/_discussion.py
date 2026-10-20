@@ -263,6 +263,12 @@ class DiscussionConsole:
             )
             return
         cancelled = await self._kit.cancel_task(found[0])
+        if not cancelled and self._kit._room_task_reach(found[0], self._room_id) == "turn":
+            self.view.note(
+                f"task {short_task(found[0])} runs inside the turn that asked for it: "
+                "it ends with that turn"
+            )
+            return
         self.view.note(
             f"task {short_task(found[0])} " + ("cancelled" if cancelled else "had ended")
         )

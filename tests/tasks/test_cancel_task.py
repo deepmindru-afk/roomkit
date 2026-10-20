@@ -27,7 +27,7 @@ from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks import CANCEL_TASK_TOOL, CancelTaskTool
 from roomkit.tasks.handback import CALLER_HANDS_BACK
-from roomkit.tasks.status import TASK_STATUS_TOOL
+from roomkit.tasks.status import TASK_STATUS_TOOL, room_task_lines
 from roomkit.tools.context import ToolCallContext, tool_turn_context
 from roomkit.turns._registry_tools import RegistryOwnerTools
 from tests.conference.test_conference_realtime import until
@@ -269,7 +269,7 @@ async def test_a_task_whose_end_is_being_told_reads_ended_not_unknown() -> None:
     await room.kit.close()
 
     assert answer["status"] == "completed"
-    assert room.kit._task_rooms == {}
+    assert room.kit._room_tasks == {}
 
 
 async def test_setup_task_tools_sets_up_both_tools_or_neither() -> None:
@@ -308,8 +308,75 @@ async def test_a_strategy_s_unposted_worker_is_never_a_room_s_to_cancel() -> Non
     await asyncio.wait_for(follower, 5)
     await room.kit.close()
 
-    assert answer["status"] == "unknown"
+    assert answer["status"] == "running"
+    assert "the strategy that runs it follows it" in answer["message"]
     assert still_running
+
+
+async def test_an_inline_delegation_is_said_running_not_unknown() -> None:
+    """RMK-829: an inline delegation of the room is listed running by
+    ``task_status``; ``cancel_task`` says so too, and why it cannot cancel
+    it, never that the task does not exist."""
+    room = await _Room(_Endless()).open()
+    inline = asyncio.ensure_future(
+        room.kit.delegate("r", "worker", "Count to a thousand.", wait=True)
+    )
+    await asyncio.wait_for(room.worker.started.wait(), 5)
+    (line,) = await room_task_lines(room.kit.status_bus, "r", 50)
+
+    answer = await _cancel(CancelTaskTool(room.kit), line["task_id"])
+    still_running = not inline.done()
+    inline.cancel()
+    await asyncio.gather(inline, return_exceptions=True)
+    await room.kit.close()
+
+    assert line["status"] == "running"
+    assert answer["status"] == "running"
+    assert "runs inside the turn that asked for it" in answer["message"]
+    assert still_running
+    assert room.kit._room_tasks == {}
+
+
+@pytest.mark.parametrize("named", ["another room's ended task", "a task never run"])
+async def test_a_line_for_a_task_the_room_does_not_hold_is_no_task_here(named: str) -> None:
+    """RMK-829: what the room holds is the kit's record, never the bus: a
+    line posted for room ``r`` naming another room's task that ended, or an
+    id the kit never ran, is answered as no task here, revealing nothing."""
+    room = await _Room(MockAIProvider(responses=["done"])).open()
+    await room.kit.create_room(room_id="other")
+    await room.kit.attach_channel("other", "speaker", category=ChannelCategory.INTELLIGENCE)
+    task_id = "task-never-run"
+    if named == "another room's ended task":
+        theirs = await room.kit.delegate("other", "worker", "Count.", wait=True)
+        task_id = theirs.id
+    room.kit.status_bus.post(
+        "worker", "task", "pending", metadata={"room_id": "r", "task_id": task_id}
+    )
+    await asyncio.sleep(0)
+
+    answer = await _cancel(CancelTaskTool(room.kit), task_id)
+    await room.kit.close()
+
+    assert (answer["status"], answer["message"]) == ("unknown", f"No task {task_id} here.")
+
+
+async def test_a_task_whose_pending_entry_left_the_window_is_still_cancelled() -> None:
+    """A running task of the room whose pending entry the bus's window no
+    longer holds, only its progress, is listed running, as the turn's notes
+    read it, and ``cancel_task`` cancels it."""
+    room = await _Room(_Endless()).open()
+    task = await room.running_task()
+    for n in range(5):
+        room.kit.status_bus.post("worker", "task", "pending", metadata={"room_id": f"o{n}"})
+    room.kit.status_bus.post(
+        "worker", "task", "info", detail="12 of 30", metadata={"room_id": "r", "task_id": task.id}
+    )
+    await asyncio.sleep(0)
+
+    answer = await _cancel(CancelTaskTool(room.kit, window=6), task.id)
+    await room.kit.close()
+
+    assert answer["status"] == str(TaskStatus.CANCELLED)
 
 
 async def test_a_cancel_with_no_tool_call_is_held_to_the_room_too() -> None:
@@ -377,7 +444,7 @@ async def test_a_submit_that_fails_leaves_no_task_of_the_room() -> None:
     room.kit._task_runner.submit = down  # type: ignore[method-assign]
     with pytest.raises(RuntimeError):
         await room.kit.delegate("r", "worker", "Compte.", notify="speaker")
-    left = dict(room.kit._task_rooms)
+    left = dict(room.kit._room_tasks)
     await room.kit.close()
 
     assert left == {}

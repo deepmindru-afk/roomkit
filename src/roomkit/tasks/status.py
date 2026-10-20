@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from roomkit.channels._discussion_turn import discussion_handles
 from roomkit.core.exceptions import RoomNotFoundError, UnservedToolCallError
@@ -28,6 +28,20 @@ TASK_ACTION = "task"
 
 TASK_STATUS_TOOL = "task_status"
 CANCEL_TASK_TOOL = "cancel_task"
+
+TaskReach = Literal["tool", "strategy", "turn"]
+"""How a task of a room can end before its own end (RFC §23.4): ``tool``, a
+background task the room's ``cancel_task`` cancels; ``strategy``, a
+background task a strategy runs without posting it, which the strategy
+follows and the host may cancel; ``turn``, an inline delegation, which ends
+with the turn that asked for it."""
+
+
+class RoomTask(NamedTuple):
+    """A task the framework runs for a room, and how it can end."""
+
+    room_id: str
+    reach: TaskReach
 
 
 def _task_metadata(room_id: str, task_id: str, child_room_id: str) -> dict[str, Any]:
@@ -123,6 +137,8 @@ def room_tasks(entries: Iterable[StatusEntry]) -> list[dict[str, Any]]:
             line.pop("ended", None)
             continue
         if entry.status == StatusLevel.INFO:
+            # A task whose pending entry left the bus's window: running still.
+            line.setdefault("status", "running")
             line.update(progress=entry.detail, progress_at=entry.ts)
             continue
         status = str(entry.metadata.get("task_status") or entry.status)
@@ -264,10 +280,10 @@ class CancelTaskTool:
             return json.dumps({"error": "task_id is required"})
         line = await self._line(room_id, task_id)
         running = line is not None and line.get("status") == "running"
-        if line is None or (running and not self._kit._is_room_task(task_id, room_id)):
-            # A line naming a task the kit runs for another room is not this
-            # room's to cancel, whoever posted it.
+        if line is None:
             return _answer(task_id, "unknown", f"No task {task_id} here.")
+        if running and not self._kit._is_room_task(task_id, room_id):
+            return _out_of_reach(task_id, self._kit._room_task_reach(task_id, room_id))
         if running and await self._cancel(task_id, room_id):
             return _answer(
                 task_id, str(TaskStatus.CANCELLED), "Cancelled: its result will not come back."
@@ -286,6 +302,29 @@ class CancelTaskTool:
         call = current_tool_call()
         channel_id = call.channel_id if call is not None else None
         return await self._kit._cancel_task_for(task_id, channel_id, room_id=room_id)
+
+
+_WHY_NOT_CANCELLED: dict[str, str] = {
+    "turn": (
+        "Still running, and not cancellable on its own: it runs inside the turn that "
+        "asked for it, and ends with it."
+    ),
+    "strategy": (
+        "Still running, and not this conversation's to cancel: the strategy that runs "
+        "it follows it."
+    ),
+}
+
+
+def _out_of_reach(task_id: str, reach: TaskReach | None) -> str:
+    """The answer for a task the room lists running that its call may not
+    cancel (RFC §23.4): a task of the room is still running, and why; any
+    other (another room's, one never run here), whoever posted its line, is
+    no task here."""
+    why = _WHY_NOT_CANCELLED.get(reach or "")
+    if why is None:
+        return _answer(task_id, "unknown", f"No task {task_id} here.")
+    return _answer(task_id, "running", why)
 
 
 def _answer(task_id: str, status: str, message: str) -> str:

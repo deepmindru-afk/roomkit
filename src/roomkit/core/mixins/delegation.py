@@ -55,7 +55,13 @@ from roomkit.tasks.models import (
     task_work,
 )
 from roomkit.tasks.posting import HAND_BACKS, post_result, posted_text
-from roomkit.tasks.status import post_task_ended, post_task_pending, room_task_lines
+from roomkit.tasks.status import (
+    RoomTask,
+    TaskReach,
+    post_task_ended,
+    post_task_pending,
+    room_task_lines,
+)
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.tools.context import _current_turn_chain_depth
 
@@ -213,8 +219,8 @@ class DelegationHost(Protocol):
             ends, so its close cuts it (a hand-back under way included).
         _task_cancelled_by: The tasks a ``cancel_task`` call is cancelling,
             by the channel that made the call.
-        _task_rooms: Each running background task the room's tools may
-            cancel, by id: its parent room.
+        _room_tasks: Each task still running for a room, by id: its room
+            and how it can end (RFC §23.4).
 
     Cross-mixin methods (provided by other mixins in the MRO):
         get_room: From :class:`RoomLifecycleMixin`.
@@ -232,7 +238,7 @@ class DelegationHost(Protocol):
     _closed: bool
     _background_runs: set[asyncio.Task[None]]
     _task_cancelled_by: dict[str, str]
-    _task_rooms: dict[str, str]
+    _room_tasks: dict[str, RoomTask]
 
 
 _TASK_NAME_CHARS = 200
@@ -292,7 +298,7 @@ class DelegationMixin(HelpersMixin):
     _closed: bool
     _background_runs: set[asyncio.Task[None]]
     _task_cancelled_by: dict[str, str]
-    _task_rooms: dict[str, str]
+    _room_tasks: dict[str, RoomTask]
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     get_room: Any  # see DelegationHost
@@ -631,6 +637,8 @@ class DelegationMixin(HelpersMixin):
         cancellation is raised once the task has ended."""
         handle.status = TaskStatus.IN_PROGRESS
         start = time.monotonic()
+        # Listed for its room, it ends with the turn that asked for it.
+        self._room_tasks[handle.id] = RoomTask(handle.parent_room_id, "turn")
         run = hold_task(
             self,
             self._inline_task(
@@ -646,7 +654,10 @@ class DelegationMixin(HelpersMixin):
             awaited=True,
             eager=True,
         )
-        await await_interruptible(run)
+        try:
+            await await_interruptible(run)
+        finally:
+            self._room_tasks.pop(handle.id, None)
         return handle
 
     async def _inline_task(
@@ -782,7 +793,7 @@ class DelegationMixin(HelpersMixin):
                 await _complete(result)
             finally:
                 # Once the bus shows its end: a cancel meanwhile reads it ended.
-                self._task_rooms.pop(result.task_id, None)
+                self._room_tasks.pop(result.task_id, None)
 
         async def _complete(result: DelegatedTaskResult) -> None:
             span.end(result)
@@ -801,10 +812,10 @@ class DelegationMixin(HelpersMixin):
             if on_complete:
                 await on_complete(result)
 
-        if handle._post_status:
-            # A task a strategy runs without posting it is the strategy's to
-            # follow, never a room's cancel_task's (RFC §23.4).
-            self._task_rooms[handle.id] = handle.parent_room_id
+        # A task a strategy runs without posting it is the strategy's to
+        # follow, never a room's cancel_task's (RFC §23.4).
+        reach: TaskReach = "tool" if handle._post_status else "strategy"
+        self._room_tasks[handle.id] = RoomTask(handle.parent_room_id, reach)
         try:
             await self._task_runner.submit(
                 self,  # ty: ignore[invalid-argument-type]
@@ -813,7 +824,7 @@ class DelegationMixin(HelpersMixin):
                 on_complete=_on_bg_complete,
             )
         except BaseException:
-            self._task_rooms.pop(handle.id, None)
+            self._room_tasks.pop(handle.id, None)
             raise
         return handle
 
@@ -835,7 +846,14 @@ class DelegationMixin(HelpersMixin):
         """Whether *task_id* is a background task still running for *room_id*,
         as the kit submitted it: what a room's ``cancel_task`` may reach,
         whatever the StatusBus says (RFC §23.4)."""
-        return self._task_rooms.get(task_id) == room_id
+        return self._room_tasks.get(task_id) == RoomTask(room_id, "tool")
+
+    def _room_task_reach(self, task_id: str, room_id: str) -> TaskReach | None:
+        """How *task_id*, a task still running for *room_id*, can end; ``None``
+        for any task that is not the room's: another room's, one ended, one
+        the framework never ran (RFC §23.4)."""
+        task = self._room_tasks.get(task_id)
+        return task.reach if task is not None and task.room_id == room_id else None
 
     async def _cancel_task_for(
         self, task_id: str, channel_id: str | None, *, room_id: str
