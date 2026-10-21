@@ -213,17 +213,20 @@ class TelemetryProvider(ABC):
     def inject_context(self, span_id: str) -> dict[str, str]:
         """The fields that name *span_id* to another process, for its spans
         to continue the same trace: what a turn's request carries for an
-        executor elsewhere (RFC §10.6.9). The W3C trace context
-        (``traceparent``, ``tracestate``) for ``OpenTelemetryProvider``;
-        empty by default, for a provider whose spans stay in its process.
+        executor elsewhere (RFC §10.6.9). For ``OpenTelemetryProvider``, what
+        the application's propagator writes: the W3C trace context
+        (``traceparent``, ``tracestate``) and the ``baggage`` by default.
+        Empty by default, for a provider whose spans stay in its process.
         """
         return {}
 
     def extract_context(self, carrier: Mapping[str, str]) -> Any:
         """The backend context the fields of :meth:`inject_context` name, for
-        :func:`~roomkit.telemetry.context.set_current_span`: the spans
-        started under it continue the other process's trace. ``None`` by
-        default, and when *carrier* names no span.
+        :func:`~roomkit.telemetry.context.set_current_span`: a provider whose
+        :meth:`start_span` reads it back
+        (:func:`~roomkit.telemetry.context.get_current_telemetry_ctx`)
+        starts its spans in the other process's trace. ``None`` by default,
+        and when *carrier* names no span.
         """
         return None
 

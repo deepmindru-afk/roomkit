@@ -112,7 +112,9 @@ class OpenTelemetryProvider(TelemetryProvider):
 
     def inject_context(self, span_id: str) -> dict[str, str]:
         """*span_id*'s trace context, written by the application's
-        propagator (W3C ``traceparent`` and ``tracestate`` by default)."""
+        propagator: W3C ``traceparent`` and ``tracestate``, and the ambient
+        ``baggage``, by default (``OTEL_PROPAGATORS=tracecontext`` keeps the
+        baggage in its process)."""
         from opentelemetry import propagate
 
         context = self.get_span_context(span_id)
@@ -143,40 +145,7 @@ class OpenTelemetryProvider(TelemetryProvider):
         session_id: str | None = None,
         channel_id: str | None = None,
     ) -> str:
-        from opentelemetry import trace
-
-        from roomkit.telemetry.context import get_current_telemetry_ctx
-
-        # Build context with explicit parent.
-        #
-        # Primary: use the backend context stored in the ContextVar (set by
-        # callers via set_current_span(..., telemetry_ctx=...)).  This
-        # bypasses the _active_spans dict lookup entirely and is resilient
-        # to any dict key / instance mismatch across async tasks.
-        #
-        # Fallback: look up the parent in _active_spans / _ended_spans by
-        # span_id.  This covers cases where the caller didn't propagate
-        # the telemetry context.
-        ctx = None
-        if parent_id:
-            # Try the ContextVar-based context first (most reliable)
-            telemetry_ctx = get_current_telemetry_ctx()
-            if telemetry_ctx is not None:
-                ctx = telemetry_ctx
-            else:
-                # Fallback: dict lookup
-                parent_span = self._active_spans.get(parent_id) or self._ended_spans.get(parent_id)
-                if parent_span is not None:
-                    ctx = trace.set_span_in_context(parent_span)
-                else:
-                    logger.warning(
-                        "Parent span %s not found for %s (active=%d, ended=%d)",
-                        parent_id,
-                        name,
-                        len(self._active_spans),
-                        len(self._ended_spans),
-                    )
-
+        ctx = self._parent_context(parent_id, name) if parent_id else None
         otel_span = self._tracer.start_span(
             name=f"roomkit.{name}",
             context=ctx,
@@ -189,6 +158,32 @@ class OpenTelemetryProvider(TelemetryProvider):
         self._active_spans[span_id] = otel_span
 
         return span_id
+
+    def _parent_context(self, parent_id: str, name: str) -> Any:
+        """The OpenTelemetry context a span named *name* starts under, as a
+        child of *parent_id*: the context the caller propagated when its span
+        is that parent (one from another process included), else the parent
+        this provider started, else the propagated context, the span then
+        staying in its trace under an ancestor."""
+        from opentelemetry import trace
+
+        from roomkit.telemetry.context import get_current_telemetry_ctx
+
+        propagated = get_current_telemetry_ctx()
+        if propagated is not None and _span_id_in(propagated) == parent_id:
+            return propagated
+        parent_span = self._active_spans.get(parent_id) or self._ended_spans.get(parent_id)
+        if parent_span is not None:
+            return trace.set_span_in_context(parent_span)
+        if propagated is None:
+            logger.warning(
+                "Parent span %s not found for %s (active=%d, ended=%d)",
+                parent_id,
+                name,
+                len(self._active_spans),
+                len(self._ended_spans),
+            )
+        return propagated
 
     def end_span(
         self,
@@ -341,3 +336,11 @@ class OpenTelemetryProvider(TelemetryProvider):
             otel_span.set_attribute(f"roomkit.{key}", value)
         elif value is not None:
             otel_span.set_attribute(f"roomkit.{key}", str(value))
+
+
+def _span_id_in(context: Any) -> str:
+    """The id of the span an OpenTelemetry *context* holds, as RoomKit names
+    span ids (16 hex digits)."""
+    from opentelemetry import trace
+
+    return format(trace.get_current_span(context).get_span_context().span_id, "016x")

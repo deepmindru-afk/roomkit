@@ -256,3 +256,28 @@ class TestAcrossProcesses:
         assert named is not None and named["span_id"] == span
         assert named["traceparent"].split("-")[2] == span
         assert bare == {"span_id": span}
+
+
+async def test_a_turn_s_generation_is_a_child_of_the_broadcast_it_runs_under() -> None:
+    """RMK-836: a span started with an explicit parent nests under it, not
+    under the context an ancestor propagated: the turn's generation is the
+    broadcast's child (RFC §10.6.9), the inbound pipeline its grandparent."""
+    provider, exporter = _exporting_provider()
+    kit = RoomKit(telemetry=provider)
+    kit.register_channel(SimpleChannel("ch1"))
+    kit.register_channel(AIChannel("ai", provider=MockAIProvider(responses=["Hello."])))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "ch1")
+    await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+
+    await kit.process_inbound(
+        InboundMessage(channel_id="ch1", sender_id="u", content=TextContent(body="Hi.")),
+        room_id="r1",
+    )
+    await kit.close()
+
+    spans = exporter.get_finished_spans()
+    by_id = {s.context.span_id: s for s in spans}
+    (generate,) = [s for s in spans if s.name == "roomkit.llm.generate"]
+    assert generate.parent is not None
+    assert by_id[generate.parent.span_id].name == "roomkit.framework.broadcast"

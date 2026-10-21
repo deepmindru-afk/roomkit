@@ -37,7 +37,7 @@ from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.steering import Cancel
-from roomkit.providers.ai.base import StreamTextDelta
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall, StreamTextDelta
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
@@ -1893,8 +1893,9 @@ async def test_a_turn_elsewhere_shows_in_the_owner_s_trace(
     prefix: str, redis_client: Any, database: Path
 ) -> None:
     """RMK-836: a turn an executor runs in another process (another backend,
-    its own telemetry) shows as one trace with the owner's spans: the
-    executor's spans continue the span the turn runs under (RFC §10.6.9)."""
+    its own telemetry) shows as one trace with the owner's spans: its
+    generation is the owner's broadcast's child, and its tool call the
+    generation's (RFC §10.6.9)."""
     memory = pytest.importorskip("opentelemetry.sdk.trace.export.in_memory_span_exporter")
     exporter = memory.InMemorySpanExporter()
     kit = RoomKit(
@@ -1909,7 +1910,7 @@ async def test_a_turn_elsewhere_shows_in_the_owner_s_trace(
     await kit.attach_channel("r", "worker", category=ChannelCategory.INTELLIGENCE)
     backend = _backend(prefix)
     executor = TurnExecutor(
-        lambda channel_id: Agent(channel_id, provider=MockAIProvider(responses=["Hello."] * 5)),
+        _weather_agent,
         hosts={"worker"},
         executor_id="host-a",
         timeouts=TIMEOUTS,
@@ -1924,9 +1925,29 @@ async def test_a_turn_elsewhere_shows_in_the_owner_s_trace(
     await executor.close()
 
     spans = exporter.get_finished_spans()
-    owner_ids = {s.context.span_id for s in spans if s.instrumentation_scope.name == "owner"}
-    theirs = [s for s in spans if s.instrumentation_scope.name == "executor"]
+    by_id = {s.context.span_id: s for s in spans}
+    generate = next(s for s in spans if s.name == "roomkit.llm.generate")
+    tool = next(s for s in spans if s.name == "roomkit.tool.get_weather")
     assert result.error is None
-    assert theirs
-    assert {s.context.trace_id for s in spans} == {theirs[0].context.trace_id}
-    assert any(s.parent is not None and s.parent.span_id in owner_ids for s in theirs)
+    assert {s.context.trace_id for s in spans} == {generate.context.trace_id}
+    assert generate.parent is not None and tool.parent is not None
+    assert by_id[generate.parent.span_id].name == "roomkit.framework.broadcast"
+    assert by_id[generate.parent.span_id].instrumentation_scope.name == "owner"
+    assert tool.parent.span_id == generate.context.span_id
+
+
+def _weather_agent(channel_id: str) -> Agent:
+    """An agent that calls one tool, then answers."""
+
+    async def weather(name: str, arguments: dict[str, Any]) -> str:
+        return '{"temp": 22}'
+
+    call = AIToolCall(id="t1", name="get_weather", arguments={})
+    return Agent(
+        channel_id,
+        provider=MockAIProvider(
+            ai_responses=[AIResponse(content="", tool_calls=[call]), AIResponse(content="Sunny.")]
+        ),
+        tools=[AITool(name="get_weather", description="The weather.")],
+        tool_handler=weather,
+    )

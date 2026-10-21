@@ -69,8 +69,12 @@ async def main() -> None:
         return
     exporter = InMemorySpanExporter()
     prefix = f"example:trace:{uuid4().hex[:8]}"
-    rooms = os.path.join(tempfile.mkdtemp(), "rooms.db")
+    with tempfile.TemporaryDirectory() as folder:
+        await run(exporter, prefix, os.path.join(folder, "rooms.db"))
 
+
+async def run(exporter: Any, prefix: str, rooms: str) -> None:
+    """The owner and the executor, one turn, then each side's spans."""
     # The owner: the room, the agent by its declaration, its own telemetry.
     kit = RoomKit(
         store=SQLiteStore(rooms),

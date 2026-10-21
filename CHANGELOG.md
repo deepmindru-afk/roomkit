@@ -16,9 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   spans continue it. Give the executor's process an `OpenTelemetryProvider`
   (`TurnExecutor(telemetry=...)`). The request carried the span's id only,
   which another process cannot resolve: its `OpenTelemetryProvider` logged
-  "Parent span not found" and started a new trace. `TelemetryProvider` gains
-  `inject_context(span_id)` and `extract_context(carrier)`, optional (`{}`
-  and `None` by default), and `TurnClient` a `telemetry=` the kit sets.
+  "Parent span not found" and started a new trace. The default propagator
+  also carries the ambient `baggage` (`OTEL_PROPAGATORS=tracecontext` keeps
+  it in its process), and the executor follows the owner's sampling decision.
+  `TelemetryProvider` gains `inject_context(span_id)` and
+  `extract_context(carrier)`, optional (`{}` and `None` by default), and
+  `TurnClient` a `telemetry=` the kit sets. An `OpenTelemetryProvider` span
+  started with an explicit parent now nests under it rather than under the
+  context an ancestor propagated: a turn's generation is its broadcast's
+  child, where it was the inbound pipeline's, and its tool calls the
+  generation's.
 
 - `InboundMessage.delivery_key` and `kit.cancel_delivery(key)` (RMK-860, RFC
   §10.1): a caller names a message's delivery by a key of its own and cancels
