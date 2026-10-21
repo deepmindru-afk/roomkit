@@ -11,8 +11,9 @@ import logging
 import math
 from collections import deque
 from dataclasses import dataclass, field, fields, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
+from roomkit.local_models import SHERPA_ONNX_VAD, FromLocalModel
 from roomkit.voice.pipeline.vad.base import VADConfig, VADEvent, VADEventType, VADProvider
 from roomkit.voice.utils import _get_np, pcm16_energy_numpy
 
@@ -48,8 +49,11 @@ def _pcm_s16le_to_float32(data: bytes) -> Any:
 
 
 @dataclass
-class SherpaOnnxVADConfig:
+class SherpaOnnxVADConfig(FromLocalModel):
     """Configuration for the sherpa-onnx VAD provider.
+
+    For a downloaded local model, :meth:`from_local_model` fills in the path:
+    ``SherpaOnnxVADConfig.from_local_model("ten-vad")``.
 
     Attributes:
         model: Path to the ``.onnx`` model file.
@@ -91,6 +95,8 @@ class SherpaOnnxVADConfig:
     sample_rate: int = 16000
     num_threads: int = 1
     provider: str = "cpu"
+
+    local_model_kind: ClassVar[str] = SHERPA_ONNX_VAD
 
 
 @dataclass

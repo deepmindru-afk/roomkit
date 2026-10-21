@@ -31,8 +31,9 @@ import math
 import os
 import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
+from roomkit.local_models import SHERPA_ONNX_DENOISER, FromLocalModel
 from roomkit.voice._onnx_metadata import read_onnx_metadata
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.pipeline.denoiser.base import DenoiserProvider
@@ -104,8 +105,11 @@ def _with_samples(frame: AudioFrame, data: bytes) -> AudioFrame:
 
 
 @dataclass
-class SherpaOnnxDenoiserConfig:
+class SherpaOnnxDenoiserConfig(FromLocalModel):
     """Configuration for the sherpa-onnx denoiser (GTCRN or DPDFNet).
+
+    For the downloaded GTCRN model, :meth:`from_local_model` fills in the path:
+    ``SherpaOnnxDenoiserConfig.from_local_model("gtcrn-simple")``.
 
     Attributes:
         model: Path to the model file: ``gtcrn_simple.onnx`` for GTCRN; for
@@ -142,6 +146,8 @@ class SherpaOnnxDenoiserConfig:
     context_frames: int = _DEFAULT_CONTEXT_FRAMES
     silence_threshold: float = 0.005
     model_type: str = "gtcrn"
+
+    local_model_kind: ClassVar[str] = SHERPA_ONNX_DENOISER
 
     def __post_init__(self) -> None:
         if self.num_threads <= 0:

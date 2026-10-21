@@ -23,6 +23,7 @@ CONSOLE=1 uv run python examples/<example>.py
 | `voice_expressive.py` | TTS | ElevenLabs expressive voice with emotion and accent tags |
 | `voice_neutts.py` | TTS | NeuTTS with zero-shot voice cloning from reference audio |
 | `voice_local_onnx_vllm.py` | Local AI | Fully local voice assistant with sherpa-onnx STT/TTS + vLLM |
+| `voice_local_offline.py` | Local AI | Voice agent with no network: models downloaded once by name, llama.cpp, RNNoise, Smart Turn |
 | `voice_parakeet_tdt.py` | Local STT | NVIDIA Parakeet TDT ASR for offline speech recognition |
 | `voice_qwen3_asr.py` | Local STT | Qwen3-ASR speech recognition pipeline |
 | `voice_qwen3_tts.py` | Local TTS | Qwen3 text-to-speech with voice cloning |

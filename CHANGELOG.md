@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Local models by name (RMK-893). `roomkit.local_models` knows the files of
+  nine local models (sherpa-onnx STT, TTS, VAD and denoiser, Smart Turn), each
+  pinned to its URLs and SHA-256. `python -m roomkit.local_models download
+  <name>...` fetches them once, checked and atomic, skipping a model already
+  there; `list` marks the downloaded ones, `path` prints a directory. A config
+  is then built by the model's name with no network:
+  `SherpaOnnxSTTConfig.from_local_model("zipformer-en-2023-06-26")`, likewise
+  on `SherpaOnnxTTSConfig`, `SherpaOnnxVADConfig`, `SherpaOnnxDenoiserConfig`
+  and `SmartTurnConfig`. A model that is not downloaded raises
+  `ModelNotDownloadedError`, whose message is the command that downloads it.
+  Models live in `$ROOMKIT_MODELS_DIR`, else `~/.cache/roomkit/models`.
+
+- Kokoro voices by name: `SherpaOnnxTTSConfig.voice_names` (filled by
+  `from_local_model()`) lets `voice="af_heart"` stand where a speaker id is
+  taken, per synthesis included; `from_local_model(..., voice=...)` sets the
+  default voice. A number still reads as a speaker id.
+
+- `roomkit[rnnoise]`: `RNNoiseDenoiserProvider` falls back on the
+  `librnnoise` the `pyrnnoise` wheel ships for Linux, macOS and Windows when
+  the system has none. Only the library is loaded; the package is never
+  imported.
+
+- `examples/voice_local_offline.py`: a voice agent that runs with no network,
+  its models downloaded once by name (zipformer, Kokoro, TEN-VAD, Smart Turn),
+  SmolLM2 through llama.cpp, RNNoise.
+
 ### Fixed
 
 - In continuous mode, an acknowledgement whose first partial was taken for

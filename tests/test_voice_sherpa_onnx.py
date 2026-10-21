@@ -449,6 +449,47 @@ class TestSherpaOnnxTTSProvider:
         assert provider.default_voice == "3"
 
     @pytest.mark.asyncio
+    async def test_a_voice_is_named_per_synthesis(self) -> None:
+        sherpa = _mock_sherpa_module()
+        tts_mock = MagicMock()
+        tts_mock.generate.return_value = SimpleNamespace(samples=[0.0], sample_rate=24000)
+        sherpa.OfflineTts.return_value = tts_mock
+        provider = self._make_provider(
+            sherpa,
+            model="model.onnx",
+            tokens="tokens.txt",
+            voice_names=("af_alloy", "af_aoede", "af_bella", "af_heart"),
+        )
+
+        await provider.synthesize("Hi", voice="af_heart")
+        assert tts_mock.generate.call_args[1]["sid"] == 3
+
+        async for _chunk in provider.synthesize_stream("Hi", voice="af_bella"):
+            pass
+        assert tts_mock.generate.call_args[1]["sid"] == 2
+
+    def test_default_voice_reads_as_its_name(self) -> None:
+        provider = self._make_provider(
+            _mock_sherpa_module(),
+            model="model.onnx",
+            tokens="tokens.txt",
+            speaker_id=1,
+            voice_names=("amy", "ben"),
+        )
+        assert provider.default_voice == "ben"
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_voice_name_is_refused(self) -> None:
+        provider = self._make_provider(
+            _mock_sherpa_module(),
+            model="model.onnx",
+            tokens="tokens.txt",
+            voice_names=("amy",),
+        )
+        with pytest.raises(ValueError, match="named voices: amy"):
+            await provider.synthesize("Hi", voice="nobody")
+
+    @pytest.mark.asyncio
     async def test_streaming_yields_chunks(self) -> None:
         sherpa = _mock_sherpa_module()
         tts_mock = MagicMock()

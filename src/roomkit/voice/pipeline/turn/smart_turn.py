@@ -13,7 +13,13 @@ This installs ``numpy``, ``onnxruntime``, and ``transformers``.
 
 Model download
 --------------
-Download the ONNX model from HuggingFace (no auto-download)::
+Download the CPU model once, while online (pinned, SHA-256 checked)::
+
+    python -m roomkit.local_models download smart-turn-v3.2-cpu
+
+and build the config by its name:
+``SmartTurnConfig.from_local_model("smart-turn-v3.2-cpu")``. Or fetch a file
+yourself and pass its path as ``model_path``::
 
     # CPU (int8 quantized, ~8MB — recommended)
     wget https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx
@@ -59,8 +65,9 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
+from roomkit.local_models import SMART_TURN, FromLocalModel
 from roomkit.voice.pipeline.turn.base import TurnContext, TurnDecision, TurnDetector
 
 logger = logging.getLogger("roomkit.voice.turn.smart_turn")
@@ -72,11 +79,13 @@ _CHUNK_SAMPLES = _CHUNK_SECONDS * _EXPECTED_SAMPLE_RATE
 
 
 @dataclass
-class SmartTurnConfig:
+class SmartTurnConfig(FromLocalModel):
     """Configuration for :class:`SmartTurnDetector`.
 
     Attributes:
-        model_path: Local path to the ONNX model file (required, no auto-download).
+        model_path: Local path to the ONNX model file. For the downloaded
+            local model, ``SmartTurnConfig.from_local_model("smart-turn-v3.2-cpu")``
+            fills it in (``python -m roomkit.local_models download smart-turn-v3.2-cpu``).
         threshold: Completion probability above which the turn is considered done.
         num_threads: Number of CPU threads for the ONNX runtime session.
         provider: ONNX execution provider (``"cpu"`` or ``"cuda"``).
@@ -94,6 +103,8 @@ class SmartTurnConfig:
     provider: str = "cpu"
     fallback_on_no_audio: bool = True
     max_consecutive_failures: int = 3
+
+    local_model_kind: ClassVar[str] = SMART_TURN
 
 
 class SmartTurnDetector(TurnDetector):

@@ -151,6 +151,7 @@ from roomkit.delivery import (
     DeliveryItemStatus,
     InMemoryDeliveryBackend,
 )
+from roomkit.local_models import LocalModel, ModelDownloadError, ModelFile, ModelNotDownloadedError
 from roomkit.memory import MemoryProvider, MemoryResult, TurnFootprint
 from roomkit.models.channel import (
     AgentIdentity,
@@ -755,6 +756,11 @@ __all__ = [
     "FaceZone",
     "MockFaceTouchFilter",
     "get_current_voice_session",
+    # Local model files
+    "LocalModel",
+    "ModelDownloadError",
+    "ModelFile",
+    "ModelNotDownloadedError",
     # Console (optional)
     "RoomKitConsole",
     "DiscussionConsole",

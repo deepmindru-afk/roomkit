@@ -10,14 +10,17 @@ import struct
 import threading
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, ClassVar, Self
 
+from roomkit.local_models import SHERPA_ONNX_TTS, FromLocalModel
 from roomkit.voice.base import AudioChunk
 from roomkit.voice.tts.audio_utils import wrap_wav as _wrap_wav
 from roomkit.voice.tts.base import TTSProvider
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from roomkit.models.event import AudioContent
     from roomkit.voice.tts.context import TTSContext
 
@@ -28,8 +31,12 @@ _MODEL_TYPES = ("vits", "kokoro")
 
 
 @dataclass
-class SherpaOnnxTTSConfig:
+class SherpaOnnxTTSConfig(FromLocalModel):
     """Configuration for the sherpa-onnx TTS provider.
+
+    For a downloaded local model, :meth:`from_local_model` fills in the paths
+    and the voice names:
+    ``SherpaOnnxTTSConfig.from_local_model("kokoro-int8-multi-lang-v1_0", voice="af_heart")``.
 
     Attributes:
         model: Path to the ``.onnx`` model.
@@ -39,6 +46,7 @@ class SherpaOnnxTTSConfig:
             several, comma-separated (``lexicon-us-en.txt,lexicon-zh.txt``).
         speaker_id: Speaker ID for multi-speaker models; for Kokoro, the
             index of a voice in ``voices.bin`` (``ff_siwis`` is 30 in v1.0).
+            The default voice.
         speed: Speech speed multiplier (1.0 = normal).
         sample_rate: The rate a caller sets its output up for (Kokoro: 24000).
             Audio always carries the model's own rate.
@@ -49,6 +57,10 @@ class SherpaOnnxTTSConfig:
         lang: Language espeak-ng reads the text in for a multi-lang Kokoro
             (``"fr"``, ``"es"``, ``"it"``...). Empty, any text that is not
             Chinese is read as English: French comes out mispronounced.
+        voice_names: The model's speaker names, in speaker-id order. With
+            them, a voice is named (``"af_heart"``) wherever a speaker id is
+            taken, per synthesis included. :meth:`from_local_model` fills
+            them in.
     """
 
     model: str = ""
@@ -63,6 +75,9 @@ class SherpaOnnxTTSConfig:
     model_type: str = "vits"
     voices: str = ""
     lang: str = ""
+    voice_names: tuple[str, ...] = ()
+
+    local_model_kind: ClassVar[str] = SHERPA_ONNX_TTS
 
     def __post_init__(self) -> None:
         if self.model_type not in _MODEL_TYPES:
@@ -72,6 +87,44 @@ class SherpaOnnxTTSConfig:
             )
         if self.model_type == "kokoro" and not self.voices:
             raise ValueError("A Kokoro model needs its voices.bin in SherpaOnnxTTSConfig.voices")
+
+    @classmethod
+    def from_local_model(
+        cls,
+        name: str,
+        *,
+        voice: str | None = None,
+        models_dir: str | Path | None = None,
+        **overrides: Any,
+    ) -> Self:
+        """The config for a downloaded local model, by the model's name.
+
+        As :meth:`FromLocalModel.from_local_model
+        <roomkit.local_models.FromLocalModel.from_local_model>`, plus
+        ``voice``: the default voice, by name (``"af_heart"``) or speaker id.
+        """
+        config = super().from_local_model(name, models_dir=models_dir, **overrides)
+        if voice is None:
+            return config
+        return replace(config, speaker_id=config.speaker_id_for(voice))
+
+    def speaker_id_for(self, voice: str | None) -> int:
+        """The speaker id of ``voice``: a name in :attr:`voice_names`, or an id.
+
+        ``None`` is the default, :attr:`speaker_id`.
+
+        Raises:
+            ValueError: ``voice`` is neither a known name nor a number.
+        """
+        if voice is None:
+            return self.speaker_id
+        if voice in self.voice_names:
+            return self.voice_names.index(voice)
+        try:
+            return int(voice)
+        except ValueError:
+            named = ", ".join(self.voice_names) or "none (this config names no voices)"
+            raise ValueError(f"Unknown voice {voice!r}; named voices: {named}") from None
 
 
 def _float32_to_pcm_s16le(samples: list[float]) -> bytes:
@@ -172,7 +225,9 @@ class SherpaOnnxTTSProvider(TTSProvider):
 
     @property
     def default_voice(self) -> str:
-        return str(self._config.speaker_id)
+        names = self._config.voice_names
+        speaker_id = self._config.speaker_id
+        return names[speaker_id] if 0 <= speaker_id < len(names) else str(speaker_id)
 
     def _get_tts(self) -> Any:
         """Lazily create the OfflineTts engine, once. Blocking: call it off the loop."""
@@ -249,7 +304,8 @@ class SherpaOnnxTTSProvider(TTSProvider):
 
         Args:
             text: Text to synthesize.
-            voice: Speaker ID as string (uses default if not specified).
+            voice: A voice name from ``voice_names`` or a speaker id, as a
+                string (default: the configured voice).
 
         Returns:
             AudioContent with a ``data:`` URL containing WAV audio.
@@ -257,7 +313,7 @@ class SherpaOnnxTTSProvider(TTSProvider):
         from roomkit.models.event import AudioContent as AudioContentModel
 
         tts = await self._tts_engine()
-        sid = int(voice) if voice is not None else self._config.speaker_id
+        sid = self._config.speaker_id_for(voice)
         speed = self._config.speed
         chunks = _split_text(text)
 
@@ -303,7 +359,8 @@ class SherpaOnnxTTSProvider(TTSProvider):
 
         Args:
             text: Text to synthesize.
-            voice: Speaker ID as string (uses default if not specified).
+            voice: A voice name from ``voice_names`` or a speaker id, as a
+                string (default: the configured voice).
 
         Yields:
             AudioChunk with PCM S16LE audio data.
@@ -312,7 +369,7 @@ class SherpaOnnxTTSProvider(TTSProvider):
         sentence under way; a synthesis error is raised to the reader.
         """
         tts = await self._tts_engine()
-        sid = int(voice) if voice is not None else self._config.speaker_id
+        sid = self._config.speaker_id_for(voice)
         speed = self._config.speed
         # The rate the model speaks at, which config.sample_rate may not match
         # (Kokoro speaks 24 kHz, a Piper model 16, 22.05 or 44.1 kHz).

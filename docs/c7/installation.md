@@ -63,6 +63,7 @@ pip install roomkit[webtransport] # WebTransport backend
 ```bash
 pip install roomkit[webrtc-aec]   # WebRTC echo cancellation
 pip install roomkit[aicoustics]   # ai|coustics denoiser
+pip install roomkit[rnnoise]      # librnnoise for RNNoise, when the system has none
 pip install roomkit[smart-turn]   # ML-based turn detection
 ```
 

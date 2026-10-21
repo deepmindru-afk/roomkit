@@ -102,6 +102,12 @@ fastrtc = [
     "uvicorn>=0.30",
 ]
 aicoustics = ["aic-sdk>=2.1"]
+# The librnnoise RNNoiseDenoiserProvider loads, for machines without the system
+# package. Only the native library inside the wheel is loaded; pyrnnoise's own
+# dependencies (audiolab, matplotlib) are installed but never imported. Each
+# release ships a macOS wheel for the newest macOS only (0.4.4+: macOS 26); the
+# floor stays at 0.4.3 so pip still finds a wheel for macOS 15.
+rnnoise = ["pyrnnoise>=0.4.3"]
 webrtc-aec = ["aec-audio-processing>=0.1"]
 local-audio = ["sounddevice>=0.4", "numpy>=1.26"]
 local-video = ["opencv-python-headless>=4.8"]
@@ -254,6 +260,7 @@ all = [
     "roomkit[opentelemetry]",
     "roomkit[phonenumbers]",
     "roomkit[smart-turn]",
+    "roomkit[rnnoise]",
     "roomkit[console]",
 ]
 

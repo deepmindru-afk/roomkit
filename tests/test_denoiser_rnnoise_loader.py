@@ -51,7 +51,50 @@ class TestResolution:
     ) -> None:
         monkeypatch.setattr(rnnoise.ctypes.util, "find_library", lambda _name: None)
         monkeypatch.setattr(rnnoise, "_rnnoise_search_dirs", lambda: [str(tmp_path)])
+        monkeypatch.setattr(rnnoise, "_pyrnnoise_library", lambda: None)
         assert rnnoise._find_rnnoise() is None
+
+
+class TestPyrnnoiseWheel:
+    """``roomkit[rnnoise]``: the library the pyrnnoise wheel ships."""
+
+    @staticmethod
+    def _fake_wheel(monkeypatch: pytest.MonkeyPatch, tmp_path) -> str:
+        package = tmp_path / "site" / "pyrnnoise"
+        package.mkdir(parents=True)
+        # Importing this would fail the test: the loader must never import it.
+        (package / "__init__.py").write_text("raise AssertionError('pyrnnoise was imported')\n")
+        if rnnoise.sys.platform == "darwin":
+            name = "librnnoise.dylib"
+        elif rnnoise.sys.platform == "win32":
+            name = "rnnoise.dll"
+        else:
+            name = "librnnoise.so"
+        (package / name).write_bytes(b"")
+        monkeypatch.syspath_prepend(str(tmp_path / "site"))
+        return str(package / name)
+
+    def test_found_when_the_system_has_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        library = self._fake_wheel(monkeypatch, tmp_path)
+        monkeypatch.setattr(rnnoise.ctypes.util, "find_library", lambda _name: None)
+        monkeypatch.setattr(rnnoise, "_rnnoise_search_dirs", lambda: [str(tmp_path / "none")])
+
+        assert rnnoise._find_rnnoise() == library
+        assert "pyrnnoise" not in rnnoise.sys.modules
+
+    def test_the_system_library_comes_first(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        self._fake_wheel(monkeypatch, tmp_path)
+        monkeypatch.setattr(rnnoise.ctypes.util, "find_library", lambda _name: "librnnoise.so.0")
+
+        assert rnnoise._find_rnnoise() == "librnnoise.so.0"
+
+    def test_none_without_the_wheel(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(rnnoise.importlib.util, "find_spec", lambda _name: None)
+        assert rnnoise._pyrnnoise_library() is None
 
 
 class TestGuidance:

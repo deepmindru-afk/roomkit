@@ -10,8 +10,9 @@ import threading
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
+from roomkit.local_models import SHERPA_ONNX_STT, FromLocalModel
 from roomkit.voice.base import AudioChunk, TranscriptionResult
 from roomkit.voice.stt.base import STTProvider
 
@@ -23,8 +24,11 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class SherpaOnnxSTTConfig:
+class SherpaOnnxSTTConfig(FromLocalModel):
     """Configuration for the sherpa-onnx STT provider.
+
+    For a downloaded local model, :meth:`from_local_model` fills in the paths:
+    ``SherpaOnnxSTTConfig.from_local_model("zipformer-en-2023-06-26")``.
 
     Attributes:
         mode: Recognition mode — ``"transducer"`` or ``"whisper"``.
@@ -74,6 +78,8 @@ class SherpaOnnxSTTConfig:
     rule2_min_trailing_silence: float = 1.2
     rule3_min_utterance_length: float = 20.0
     tail_padding_s: float = 0.66
+
+    local_model_kind: ClassVar[str] = SHERPA_ONNX_STT
 
 
 def _pcm_s16le_to_float32(data: bytes) -> list[float]:

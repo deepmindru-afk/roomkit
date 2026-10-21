@@ -1,9 +1,12 @@
 """Noise suppression provider using RNNoise (ctypes).
 
-Uses the system ``librnnoise`` library via :mod:`ctypes` — no pip
-dependency required.  The library can be installed on most Linux
-distributions (``apt install librnnoise0``) and on macOS via Homebrew
-(``brew install rnnoise``).
+Loads ``librnnoise`` through :mod:`ctypes`, from the first place that has it:
+
+1. the system (``apt install librnnoise0`` on Debian/Ubuntu, or a source
+   build in ``~/.local/lib``, ``/usr/local/lib`` or Homebrew's prefix);
+2. the copy the ``pyrnnoise`` wheel ships for Linux x86_64/aarch64, macOS and
+   Windows: ``pip install roomkit[rnnoise]``. Only the library is loaded,
+   the ``pyrnnoise`` package itself is never imported.
 
 RNNoise operates at **48 kHz** with **480-sample frames** (10 ms) using
 **float32** samples in the range [-32768, 32768].  When the pipeline
@@ -21,6 +24,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import importlib.util
 import logging
 import os
 import struct
@@ -73,6 +77,28 @@ def _find_rnnoise() -> str | None:
         candidate = os.path.join(directory, soname)
         if os.path.isfile(candidate):
             return candidate
+    return _pyrnnoise_library()
+
+
+def _pyrnnoise_library() -> str | None:
+    """The ``librnnoise`` inside the installed ``pyrnnoise`` wheel, if any.
+
+    Only the package's directory is located: importing ``pyrnnoise`` would
+    load audiolab and matplotlib, which this provider never uses.
+    """
+    spec = importlib.util.find_spec("pyrnnoise")
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    if sys.platform == "darwin":
+        name = "librnnoise.dylib"
+    elif sys.platform == "win32":
+        name = "rnnoise.dll"
+    else:
+        name = "librnnoise.so"
+    for directory in spec.submodule_search_locations:
+        candidate = os.path.join(directory, name)
+        if os.path.isfile(candidate):
+            return candidate
     return None
 
 
@@ -90,7 +116,8 @@ def _load_rnnoise() -> ctypes.CDLL:
         # to install 40 MB that can never satisfy this import.
         raise ImportError(
             "librnnoise is required for RNNoiseDenoiserProvider and was not "
-            "found on the library search path. Debian/Ubuntu: "
+            "found. pip install roomkit[rnnoise] installs a copy (Linux, macOS, "
+            "Windows). Or install it on the system: Debian/Ubuntu: "
             "apt install librnnoise0. macOS: build xiph/rnnoise from source "
             "(the Homebrew cask named 'rnnoise' is a set of DAW plugins and "
             "does not provide this library). For a denoiser that needs no "
