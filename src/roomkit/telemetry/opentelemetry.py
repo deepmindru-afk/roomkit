@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Mapping
 from typing import Any
 
 from roomkit.telemetry.base import SpanKind, TelemetryProvider
@@ -108,6 +109,28 @@ class OpenTelemetryProvider(TelemetryProvider):
         if otel_span is not None:
             return trace.set_span_in_context(otel_span)
         return None
+
+    def inject_context(self, span_id: str) -> dict[str, str]:
+        """*span_id*'s trace context, written by the application's
+        propagator (W3C ``traceparent`` and ``tracestate`` by default)."""
+        from opentelemetry import propagate
+
+        context = self.get_span_context(span_id)
+        if context is None:
+            return {}
+        carrier: dict[str, str] = {}
+        propagate.inject(carrier, context=context)
+        return carrier
+
+    def extract_context(self, carrier: Mapping[str, str]) -> Any:
+        """The OpenTelemetry context the application's propagator reads from
+        *carrier*; ``None`` when it names no span."""
+        from opentelemetry import propagate, trace
+
+        context = propagate.extract(dict(carrier))
+        if not trace.get_current_span(context).get_span_context().is_valid:
+            return None
+        return context
 
     def start_span(
         self,

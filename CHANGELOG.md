@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A turn that an executor runs in another process shows as one trace with
+  the owner's spans (RMK-836, RFC §10.6.9): its request carries the W3C trace
+  context of the span it runs under (`traceparent`, `tracestate`, as the
+  application's OpenTelemetry propagator writes them), and the executor's
+  spans continue it. Give the executor's process an `OpenTelemetryProvider`
+  (`TurnExecutor(telemetry=...)`). The request carried the span's id only,
+  which another process cannot resolve: its `OpenTelemetryProvider` logged
+  "Parent span not found" and started a new trace. `TelemetryProvider` gains
+  `inject_context(span_id)` and `extract_context(carrier)`, optional (`{}`
+  and `None` by default), and `TurnClient` a `telemetry=` the kit sets.
+
 - `InboundMessage.delivery_key` and `kit.cancel_delivery(key)` (RMK-860, RFC
   §10.1): a caller names a message's delivery by a key of its own and cancels
   it from anywhere in the process, without its handle, so an agent's tool can

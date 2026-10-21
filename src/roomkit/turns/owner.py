@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
     from roomkit.models.steering import SteeringDirective
+    from roomkit.telemetry.base import TelemetryProvider
     from roomkit.turns.base import OwnerEvents, OwnerHost, OwnerTools, TurnBackend
     from roomkit.turns.wire import (
         ChannelControl,
@@ -64,9 +65,11 @@ def turn_request(
     answers: bool = True,
     strategy_turn: bool = False,
     owner_tools: list[OwnerTool] | None = None,
+    telemetry: TelemetryProvider | None = None,
 ) -> TurnRequest:
     """The request for one turn of *binding*'s channel on *event*, with the
-    tools the owner serves it (*owner_tools*).
+    tools the owner serves it (*owner_tools*) and the broadcast span it runs
+    under, named by *telemetry* for an executor elsewhere (RFC §10.6.9).
 
     A discussion's turn mark is this process's: its notes travel in the
     request, and the event goes without it (RFC §10.6.3).
@@ -76,7 +79,6 @@ def turn_request(
     if DISCUSSION_TURN in (event.metadata or {}):
         metadata = {k: v for k, v in event.metadata.items() if k != DISCUSSION_TURN}
         event = event.model_copy(update={"metadata": metadata})
-    span_id = get_current_span()
     return TurnRequest(
         turn_id=f"turn-{uuid4().hex}",
         room_id=event.room_id,
@@ -89,10 +91,19 @@ def turn_request(
         notes=notes,
         in_place=in_place,
         owner_tools=owner_tools or [],
-        # The broadcast span the turn runs under, for an executor elsewhere to
-        # continue (RFC §10.6.9); in memory the turn's context carries it too.
-        trace={"span_id": span_id} if span_id else None,
+        trace=_trace(telemetry),
     )
+
+
+def _trace(telemetry: TelemetryProvider | None) -> dict[str, str] | None:
+    """The broadcast span a turn runs under, with what names it to another
+    process, for an executor elsewhere to continue its trace (RFC §10.6.9);
+    in memory the turn's context carries it too."""
+    span_id = get_current_span()
+    if not span_id:
+        return None
+    carrier = telemetry.inject_context(span_id) if telemetry is not None else {}
+    return {**carrier, "span_id": span_id}
 
 
 class TurnClient(RoomOwner):
@@ -112,6 +123,9 @@ class TurnClient(RoomOwner):
             executor is rebuilt as here, with their subclasses, beyond
             RoomKit's and Python's built-in ones (RFC §10.6.8). Any other comes back as
             a ``RemoteTurnError``.
+        telemetry: The telemetry whose spans a turn runs under, named in its
+            request for an executor elsewhere to continue the trace (RFC
+            §10.6.9), or ``None``.
 
     Raises:
         TypeError: An entry of *error_classes* is not an ``Exception`` class.
@@ -127,9 +141,12 @@ class TurnClient(RoomOwner):
         host: OwnerHost | None = None,
         events: OwnerEvents | None = None,
         error_classes: Iterable[type[Exception]] = (),
+        telemetry: TelemetryProvider | None = None,
     ) -> None:
         self.backend = backend
         self.executor = executor
+        self.telemetry = telemetry
+        """The telemetry whose spans a turn runs under (RFC §10.6.9)."""
         self.errors = ErrorClasses(error_classes)
         """The classes this owner rebuilds an error as (RFC §10.6.8)."""
         self._timeouts = timeouts or TurnTimeouts()
@@ -183,6 +200,7 @@ class TurnClient(RoomOwner):
             answers=answers,
             strategy_turn=strategy_turn,
             owner_tools=declared,
+            telemetry=self.telemetry,
         )
         request.room_hooks = list(self._room_hooks.get(request.room_id, ()))
         request.previous_turn, submitted = self._leave(

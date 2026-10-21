@@ -1875,3 +1875,58 @@ async def test_a_unix_socket_url_reaches_redis_on_every_connection(prefix: str) 
     await clients.inbox.aclose()
     await proxy.close()
     assert answers == [True, True, True]
+
+
+def _otel(exporter: Any, service: str) -> Any:
+    """A process's OpenTelemetry provider, exporting to *exporter*."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+    from roomkit.telemetry.opentelemetry import OpenTelemetryProvider
+
+    tracer_provider = TracerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return OpenTelemetryProvider(tracer_provider=tracer_provider, service_name=service)
+
+
+async def test_a_turn_elsewhere_shows_in_the_owner_s_trace(
+    prefix: str, redis_client: Any, database: Path
+) -> None:
+    """RMK-836: a turn an executor runs in another process (another backend,
+    its own telemetry) shows as one trace with the owner's spans: the
+    executor's spans continue the span the turn runs under (RFC §10.6.9)."""
+    memory = pytest.importorskip("opentelemetry.sdk.trace.export.in_memory_span_exporter")
+    exporter = memory.InMemorySpanExporter()
+    kit = RoomKit(
+        store=SQLiteStore(database),
+        turn_backend=_backend(prefix),
+        telemetry=_otel(exporter, "owner"),
+    )
+    kit.register_channel(SimpleChannel("tx"))
+    kit.register_channel(ChannelDeclaration(channel_id="worker", identity=AgentIdentity()))
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "tx")
+    await kit.attach_channel("r", "worker", category=ChannelCategory.INTELLIGENCE)
+    backend = _backend(prefix)
+    executor = TurnExecutor(
+        lambda channel_id: Agent(channel_id, provider=MockAIProvider(responses=["Hello."] * 5)),
+        hosts={"worker"},
+        executor_id="host-a",
+        timeouts=TIMEOUTS,
+        store=SQLiteStore(database),
+        telemetry=_otel(exporter, "executor"),
+    )
+    await backend.serve(executor)
+
+    result = await kit.process_inbound(_said("Hi."), room_id="r")
+    await kit.close()
+    await backend.close()
+    await executor.close()
+
+    spans = exporter.get_finished_spans()
+    owner_ids = {s.context.span_id for s in spans if s.instrumentation_scope.name == "owner"}
+    theirs = [s for s in spans if s.instrumentation_scope.name == "executor"]
+    assert result.error is None
+    assert theirs
+    assert {s.context.trace_id for s in spans} == {theirs[0].context.trace_id}
+    assert any(s.parent is not None and s.parent.span_id in owner_ids for s in theirs)

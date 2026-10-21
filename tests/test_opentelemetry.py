@@ -10,13 +10,18 @@ import pytest
 
 from roomkit.channels.ai import AIChannel
 from roomkit.core.framework import RoomKit
+from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory, HookTrigger
-from roomkit.models.event import TextContent
+from roomkit.models.enums import ChannelCategory, ChannelType, HookTrigger
+from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.room import Room
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.telemetry.base import SpanKind
+from roomkit.telemetry.context import restored_span
+from roomkit.telemetry.noop import NoopTelemetryProvider
 from roomkit.telemetry.opentelemetry import OpenTelemetryProvider
+from roomkit.turns.owner import turn_request
 from tests.test_framework import SimpleChannel
 
 
@@ -180,3 +185,74 @@ class TestTraceContinuity:
             assert tail.parent.span_id == inbound.context.span_id
         else:
             assert "roomkit.framework.detached" not in by_name
+
+
+def _second_provider(exporter: Any) -> OpenTelemetryProvider:
+    """Another process's provider: its own tracer, the same exporter."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+    tracer_provider = TracerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return OpenTelemetryProvider(tracer_provider=tracer_provider, service_name="executor")
+
+
+def _turn_request(telemetry: Any) -> Any:
+    return turn_request(
+        RoomEvent(
+            room_id="room",
+            source=EventSource(channel_id="sms", channel_type=ChannelType.SMS),
+            content=TextContent(body="hello"),
+        ),
+        ChannelBinding(
+            channel_id="agent",
+            room_id="room",
+            channel_type=ChannelType.AI,
+            category=ChannelCategory.INTELLIGENCE,
+        ),
+        RoomContext(room=Room(id="room")),
+        telemetry=telemetry,
+    )
+
+
+class TestAcrossProcesses:
+    """RMK-836: a span named by its trace context continues in another
+    provider's trace, as a turn's executor in another process continues the
+    owner's broadcast (RFC §10.6.9)."""
+
+    def test_a_span_another_provider_names_is_the_parent_of_its_spans(self) -> None:
+        owner, exporter = _exporting_provider()
+        executor = _second_provider(exporter)
+        parent = owner.start_span(SpanKind.BROADCAST, "broadcast")
+        carrier = owner.inject_context(parent)
+
+        with restored_span(parent, telemetry_ctx=executor.extract_context(carrier)):
+            child = executor.start_span(SpanKind.LLM_GENERATE, "generate", parent_id=parent)
+        executor.end_span(child)
+        owner.end_span(parent)
+
+        spans = {s.name: s for s in exporter.get_finished_spans()}
+        broadcast, generate = spans["roomkit.broadcast"], spans["roomkit.generate"]
+        assert "traceparent" in carrier
+        assert generate.parent is not None
+        assert generate.parent.span_id == broadcast.context.span_id
+        assert generate.context.trace_id == broadcast.context.trace_id
+
+    def test_a_carrier_that_names_no_span_gives_no_context(self) -> None:
+        provider, _ = _exporting_provider()
+
+        assert provider.inject_context("0123456789abcdef") == {}
+        assert provider.extract_context({"span_id": "0123456789abcdef"}) is None
+
+    def test_a_turn_request_names_its_span_by_trace_context(self) -> None:
+        provider, _ = _exporting_provider()
+        span = provider.start_span(SpanKind.BROADCAST, "broadcast")
+
+        with restored_span(span, telemetry_ctx=provider.get_span_context(span)):
+            named = _turn_request(provider).trace
+            bare = _turn_request(NoopTelemetryProvider()).trace
+        provider.end_span(span)
+
+        assert named is not None and named["span_id"] == span
+        assert named["traceparent"].split("-")[2] == span
+        assert bare == {"span_id": span}

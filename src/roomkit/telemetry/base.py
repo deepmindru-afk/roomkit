@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -207,6 +207,23 @@ class TelemetryProvider(ABC):
 
         Returns ``None`` by default.  Override in providers that carry
         backend-specific context (e.g. ``OpenTelemetryProvider``).
+        """
+        return None
+
+    def inject_context(self, span_id: str) -> dict[str, str]:
+        """The fields that name *span_id* to another process, for its spans
+        to continue the same trace: what a turn's request carries for an
+        executor elsewhere (RFC §10.6.9). The W3C trace context
+        (``traceparent``, ``tracestate``) for ``OpenTelemetryProvider``;
+        empty by default, for a provider whose spans stay in its process.
+        """
+        return {}
+
+    def extract_context(self, carrier: Mapping[str, str]) -> Any:
+        """The backend context the fields of :meth:`inject_context` name, for
+        :func:`~roomkit.telemetry.context.set_current_span`: the spans
+        started under it continue the other process's trace. ``None`` by
+        default, and when *carrier* names no span.
         """
         return None
 

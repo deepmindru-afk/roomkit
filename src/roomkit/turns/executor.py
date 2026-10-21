@@ -104,6 +104,7 @@ class TurnExecutor:
         self._turns: dict[asyncio.Task[None], ExecutorTurn] = {}
         self._closed = False
         self._hooks = HookEngine(turns=True)
+        self._telemetry = telemetry
         if telemetry is not None:
             self._hooks._telemetry = telemetry
         # A hook's timeout (RFC §8.2) is emitted where the turn's events go.
@@ -265,6 +266,7 @@ class TurnExecutor:
             self._timeouts,
             self._errors,
             owner=self._owner,
+            telemetry=self._telemetry,
         )
         task = asyncio.get_running_loop().create_task(
             turn.run(),

@@ -481,6 +481,8 @@ class RoomKit(
             self._telemetry = telemetry.provider or NoopTelemetryProvider()
         else:
             self._telemetry = NoopTelemetryProvider()
+        # A turn's request names the span it runs under (RFC §10.6.9).
+        self._turns.telemetry = self._telemetry
         suppressed = (
             telemetry.suppressed_hook_triggers
             if isinstance(telemetry, _TelemetryConfigCls)

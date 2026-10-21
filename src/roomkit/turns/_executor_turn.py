@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from roomkit.channels.base import Channel
     from roomkit.models.channel import ChannelOutput
     from roomkit.models.event import RoomEvent
+    from roomkit.telemetry.base import TelemetryProvider
     from roomkit.turns._error_codec import ErrorClasses
     from roomkit.turns.base import ExecutorLink, RoomOwner, TurnTimeouts
     from roomkit.turns.wire import Control, Frame, TurnRequest
@@ -94,9 +95,11 @@ class ExecutorTurn:
         timeouts: TurnTimeouts,
         errors: ErrorClasses,
         owner: RoomOwner | None = None,
+        telemetry: TelemetryProvider | None = None,
     ) -> None:
         self._link = link
         self._request = link.request
+        self._telemetry = telemetry
         self._executor_id = executor_id
         self._channel = channel
         self._timeouts = timeouts
@@ -332,8 +335,10 @@ class ExecutorTurn:
         context.run(set_turn_room_hooks, self._request.room_id, self._request.room_hooks)
         trace = self._request.trace or {}
         if trace.get("span_id") and context.run(get_current_span) is None:
-            # A context of its own: the turn continues the owner's span.
-            context.run(set_current_span, trace["span_id"])
+            # A context of its own: the turn continues the owner's span, in
+            # the owner's trace when the request names it (RFC §10.6.9).
+            remote = self._telemetry.extract_context(trace) if self._telemetry else None
+            context.run(set_current_span, trace["span_id"], telemetry_ctx=remote)
         self._work = asyncio.get_running_loop().create_task(
             work, context=context, name=f"roomkit-turn-{self._request.turn_id}-work"
         )
