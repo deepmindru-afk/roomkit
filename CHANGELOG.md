@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.107.0] — 2026-10-21
+
 ### Added
 
 - A turn that an executor runs in another process shows as one trace with
@@ -39,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other's. Two tasks handed to one agent in one room can now be stopped one at
   a time, where a room's Stop cut the running one and let the waiting one
   start. `examples/cancel_delivery_by_key.py` runs it.
+
 - Phonon text-to-speech, Gradium's small local models (RMK-867,
   `pip install roomkit[phonon]`). `PhononTTSProvider` runs the 31M and 40M
   Phonon models (English, French, German, Spanish, Portuguese) in the process
@@ -51,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   barge-in stops the runtime's workers in about 60 ms, and replies stream
   side by side from one loaded model. `examples/voice_local_phonon.py` runs a
   local French assistant on it.
+
 - Voxtral 3 speech, Mistral's transcription and TTS (RMK-884,
   `pip install roomkit[mistral-voice]`), so a voice agent runs on Mistral end
   to end beside `MistralAIProvider`. `VoxtralSTTProvider` transcribes a clip
@@ -68,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PCM, converted from the float samples the service sends, and lists every
   voice the workspace can use; its offline catalog holds the 36 Voxtral 3
   presets, four of them French. `examples/voice_voxtral.py` runs the agent.
+
 - `STTProvider.keeps_stream_across_turns` (RMK-887, RFC §12.2): a provider
   whose model cuts the turns within one stream says so, and a `VoiceChannel`
   in continuous mode keeps its stream open across turns, as it does for a
@@ -75,6 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reach the room one at a time in the order they were said, the reply to one
   never holding back the next. `VoxtralSTTProvider` claims it whenever turn
   detection is on.
+
 - Speaker labels on Voxtral (RMK-885): `VoxtralSTTConfig(diarize=True,
   turn_detection=None)` makes `VoxtralSTTProvider` report
   `supports_diarization`, and every final name its speaker in `segments`
@@ -148,6 +154,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measured), and the new turn's first word comes no sooner than a delay after
   it, where the plain wait (the delay plus 100 ms) had joined that word to
   the last turn.
+
 - A `HandoffHandler` serving a realtime voice channel refuses an agent that
   is not an `Agent` (one the kit holds by its declaration alone, or another
   intelligence channel) with a `ValueError` naming it (RMK-831, RFC §19.5,
@@ -16008,7 +16015,8 @@ See entries `0.7.0a1` through `0.7.0a18` below.
 - `STTProvider.transcribe()` returns `TranscriptionResult` (Phase 3.1)
 - Framework event names enriched with payloads (Phase 4)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.106.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit/compare/v0.107.0...HEAD
+[0.107.0]: https://github.com/roomkit-live/roomkit/compare/v0.106.0...v0.107.0
 [0.106.0]: https://github.com/roomkit-live/roomkit/compare/v0.105.0...v0.106.0
 [0.105.0]: https://github.com/roomkit-live/roomkit/compare/v0.104.0...v0.105.0
 [0.104.0]: https://github.com/roomkit-live/roomkit/compare/v0.103.0...v0.104.0
