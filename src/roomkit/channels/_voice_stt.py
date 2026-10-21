@@ -617,10 +617,11 @@ class VoiceSTTMixin:
         with self._state_lock:
             self._burst_words[session_id] = text
 
-    def _words_left_pending(self, session_id: str) -> bool:
-        """Whether the utterance's last words were left with no verdict."""
+    def _partials_verdicts(self, session_id: str) -> tuple[bool, bool]:
+        """Whether the utterance's partials left their last words with no
+        verdict, and whether they fired ON_BACKCHANNEL."""
         with self._state_lock:
-            return session_id in self._burst_pending
+            return session_id in self._burst_pending, session_id in self._burst_backchannel
 
     def _forget_burst_words(self, session_id: str) -> None:
         with self._state_lock:
@@ -722,7 +723,13 @@ class VoiceSTTMixin:
             self._voices_heard_alone.pop(session_id, None)
 
     def _final_cuts_in(
-        self, session: VoiceSession, playback: TTSPlaybackState, text: str, room_id: str
+        self,
+        session: VoiceSession,
+        playback: TTSPlaybackState,
+        text: str,
+        room_id: str,
+        *,
+        acknowledged: bool,
     ) -> bool:
         """Judge a final over *playback* whose first words were taken for its
         echo, or left with no verdict, still being said.
@@ -732,7 +739,10 @@ class VoiceSTTMixin:
         whole utterance (past any minimum of sustained speech), and when the
         policy cuts, the playback is cut and the final is the turn (RFC
         §12.3.13). So is a final whose last partial was pending ("No" that
-        might have been "noted"): no later words came to decide.
+        might have been "noted"): no later words came to decide. A
+        backchannel fires ON_BACKCHANNEL here unless its partials did
+        (*acknowledged*): once per utterance, which is over, so nothing is
+        kept for the next.
         """
         decision = self._judge_barge_in(
             session.id,
@@ -740,11 +750,14 @@ class VoiceSTTMixin:
             speech_duration_ms=self._interruption_handler.config.min_speech_ms,
             speech_text=text,
         )
-        if decision.is_backchannel:
-            self._report_burst_backchannel(session, text, room_id)
+        if decision.is_backchannel and not acknowledged:
+            self._schedule(
+                self._fire_backchannel_hook(session, text, room_id),
+                name=f"backchannel:{session.id}",
+            )
         if not decision.should_interrupt:
             return False
-        logger.info("Barge-in on a final its echo verdict held back: %r", text)
+        logger.info("Barge-in on a final judged whole: %r", text)
         self._schedule(
             self._handle_barge_in(session, playback, room_id),
             name=f"barge_in:{session.id}",
@@ -994,7 +1007,8 @@ class VoiceSTTMixin:
                             )
                             # Words the partials left undecided, or that
                             # were not the echo after all: the final decides.
-                            judge_final = self._words_left_pending(session.id) or (
+                            pending, acknowledged = self._partials_verdicts(session.id)
+                            judge_final = pending or (
                                 held_back_by is not None and not echo_of_response
                             )
                             # The utterance is over: its words and verdict
@@ -1018,7 +1032,13 @@ class VoiceSTTMixin:
                                 not barge_in_fired
                                 and playback is not None
                                 and judge_final
-                                and self._final_cuts_in(session, playback, result.text, room_id)
+                                and self._final_cuts_in(
+                                    session,
+                                    playback,
+                                    result.text,
+                                    room_id,
+                                    acknowledged=acknowledged,
+                                )
                             ):
                                 barge_in_fired = True
                                 barge_in_playback = playback

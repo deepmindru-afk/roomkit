@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- In continuous mode, an acknowledgement whose first partial was taken for
+  the response's echo ("Ou" for the response's "où") fires ON_BACKCHANNEL
+  once, as RFC §12.3.13 says, not twice (RMK-892). Its final, judged whole,
+  fired again, and kept the verdict past its utterance: the next
+  acknowledgement fired none.
+
 - Under `InterruptionStrategy.SEMANTIC`, an acknowledgement a streaming STT
   writes word by word, or in pieces of words, no longer cuts the agent at its
   first partial (RMK-889, RFC §12.3.13). Live, Voxtral wrote "Ou" before

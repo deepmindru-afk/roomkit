@@ -28,14 +28,20 @@ _SILENT_CHUNK = AudioFrame(data=b"\x00\x00" * 1600)
 
 
 class _ScriptSTT(STTProvider):
-    """Server-endpointing STT that says its scripted results on the first cycle."""
+    """Server-endpointing STT that says its scripted results on the first cycle;
+    *kept*, it keeps that stream across turns, as Voxtral does."""
 
-    def __init__(self, results: list[TranscriptionResult]) -> None:
+    def __init__(self, results: list[TranscriptionResult], *, kept: bool = False) -> None:
         self._results = list(results)
+        self._kept = kept
 
     @property
     def supports_streaming(self) -> bool:
         return True
+
+    @property
+    def keeps_stream_across_turns(self) -> bool:
+        return self._kept
 
     async def transcribe(self, audio: Any, *, language: str | None = None) -> TranscriptionResult:
         return TranscriptionResult(text="", is_final=True)
@@ -55,10 +61,14 @@ def _partials(*texts: str) -> list[TranscriptionResult]:
 
 async def _said_over_the_agent(
     results: list[TranscriptionResult],
+    *,
+    response: str = "Bonne continuation avec tes tests, je suis là.",
+    echo_guard_open: bool = False,
+    kept: bool = False,
 ) -> tuple[list[str], list[object], list[object]]:
-    """*results* from the STT while the agent speaks: the turns, cuts and
-    backchannels that came of them."""
-    stt = _ScriptSTT(results)
+    """*results* from the STT while the agent speaks *response*: the turns,
+    cuts and backchannels that came of them."""
+    stt = _ScriptSTT(results, kept=kept)
     backend = MockVoiceBackend(capabilities=VoiceCapability.INTERRUPTION)
     channel = VoiceChannel(
         "voice-1",
@@ -75,7 +85,8 @@ async def _said_over_the_agent(
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "voice-1")
     session = await kit.connect_voice("r1", "user-1", "voice-1")
-    channel._session_played_ms[session.id] = 60_000  # noqa: SLF001 — past the echo guard
+    if not echo_guard_open:
+        channel._session_played_ms[session.id] = 60_000  # noqa: SLF001 — past the guard
     heard: list[str] = []
     cuts: list[object] = []
     backchannels: list[object] = []
@@ -94,7 +105,7 @@ async def _said_over_the_agent(
         return HookResult.allow()
 
     channel._playing_sessions[session.id] = TTSPlaybackState(  # noqa: SLF001
-        session_id=session.id, text="Bonne continuation avec tes tests, je suis là."
+        session_id=session.id, text=response
     )
     await backend.simulate_audio_received(session, _SILENT_CHUNK)
     await asyncio.sleep(0.4)
@@ -152,3 +163,39 @@ async def test_a_word_that_opens_no_acknowledgement_still_cuts_at_once() -> None
 
     assert len(cuts) == 1
     assert heard == ["Attends."]
+
+
+async def test_an_acknowledgement_whose_first_piece_was_taken_for_echo_fires_once() -> None:
+    """ "Ou" reads as the echo of the response's "où"; "Ouais" is an
+    acknowledgement, and so is its final: one ON_BACKCHANNEL (RFC §12.3.13,
+    RMK-892), where the final fired a second."""
+    heard, cuts, backchannels = await _said_over_the_agent(
+        [*_partials("Ou", "Ouais"), TranscriptionResult(text="Ouais.")],
+        response="Au bord de la mer, où il s'arrête.",
+        echo_guard_open=True,
+    )
+
+    assert cuts == []
+    assert heard == []
+    assert len(backchannels) == 1
+
+
+async def test_the_next_acknowledgement_still_fires_after_one_its_final_judged() -> None:
+    """The first "Ouais." is judged on its final (its only partial echoed "où");
+    the second, on its partial: each fires ON_BACKCHANNEL. The final's verdict
+    was kept past its utterance, and the next one's went unreported."""
+    heard, cuts, backchannels = await _said_over_the_agent(
+        [
+            *_partials("Ou"),
+            TranscriptionResult(text="Ouais."),
+            *_partials("Ouais"),
+            TranscriptionResult(text="Ouais."),
+        ],
+        response="Au bord de la mer, où il s'arrête.",
+        echo_guard_open=True,
+        kept=True,  # one stream for both, as Voxtral's
+    )
+
+    assert cuts == []
+    assert heard == []
+    assert len(backchannels) == 2
