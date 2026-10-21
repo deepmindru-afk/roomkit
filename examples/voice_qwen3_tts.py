@@ -17,12 +17,8 @@ Requirements:
     A local LLM server:
       Ollama: ollama pull qwen3:8b && ollama serve
 
-    STT models (sherpa-onnx):
-      wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
-      tar xf sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
-
-    VAD model:
-      wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
+    Models (download once, while online):
+      python -m roomkit.local_models download zipformer-en-kroko-2025-08-06 ten-vad
 
     Reference audio for voice cloning:
       Record 3-10 seconds of clean speech and provide the transcript.
@@ -33,11 +29,6 @@ Run:
     REF_TEXT="The transcript of your reference audio." \\
     LLM_MODEL=qwen3:8b \\
     LLM_BASE_URL=http://localhost:11434/v1 \\
-    VAD_MODEL=ten-vad.onnx \\
-    STT_ENCODER=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/encoder.onnx \\
-    STT_DECODER=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/decoder.onnx \\
-    STT_JOINER=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/joiner.onnx \\
-    STT_TOKENS=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/tokens.txt \\
     uv run python examples/voice_qwen3_tts.py
 
 Environment variables:
@@ -58,14 +49,7 @@ Environment variables:
     LLM_MAX_TOKENS      Max response tokens (default: 256)
     SYSTEM_PROMPT       Custom system prompt
 
-    --- STT (sherpa-onnx) ---
-    STT_ENCODER         (required) Path to encoder .onnx
-    STT_DECODER         (required) Path to decoder .onnx
-    STT_JOINER          Path to joiner .onnx (transducer mode)
-    STT_TOKENS          (required) Path to tokens.txt
-
-    --- VAD (sherpa-onnx) ---
-    VAD_MODEL           (required) Path to VAD .onnx model
+    --- VAD (sherpa-onnx TEN-VAD) ---
     VAD_THRESHOLD       Speech probability threshold 0-1 (default: 0.35)
 
 Press Ctrl+C to stop.
@@ -79,7 +63,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import require_env, run_until_stopped, setup_console, setup_logging
+from shared import (
+    require_env,
+    require_local_models,
+    run_until_stopped,
+    setup_console,
+    setup_logging,
+)
 
 from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.channels.ai import AIChannel
@@ -94,15 +84,8 @@ logger = setup_logging("voice_qwen3_tts")
 
 
 async def main() -> None:
-    env = require_env(
-        "REF_AUDIO",
-        "REF_TEXT",
-        "LLM_MODEL",
-        "VAD_MODEL",
-        "STT_ENCODER",
-        "STT_DECODER",
-        "STT_TOKENS",
-    )
+    require_local_models("zipformer-en-kroko-2025-08-06", "ten-vad")
+    env = require_env("REF_AUDIO", "REF_TEXT", "LLM_MODEL")
 
     kit = RoomKit()
     console_cleanup = setup_console(kit)
@@ -120,11 +103,10 @@ async def main() -> None:
     )
 
     # --- VAD (sherpa-onnx neural VAD) -----------------------------------------
-    vad_model = env["VAD_MODEL"]
     vad_threshold = float(os.environ.get("VAD_THRESHOLD", "0.35"))
     vad = SherpaOnnxVADProvider(
-        SherpaOnnxVADConfig(
-            model=vad_model,
+        SherpaOnnxVADConfig.from_local_model(
+            "ten-vad",
             threshold=vad_threshold,
             silence_threshold_ms=600,
             min_speech_duration_ms=200,
@@ -132,23 +114,19 @@ async def main() -> None:
             provider="cpu",
         )
     )
-    logger.info("VAD: sherpa-onnx (threshold=%.2f, model=%s)", vad_threshold, vad_model)
+    logger.info("VAD: sherpa-onnx TEN-VAD (threshold=%.2f)", vad_threshold)
 
     pipeline_config = AudioPipelineConfig(vad=vad)
 
     # --- STT (sherpa-onnx) ----------------------------------------------------
     stt = SherpaOnnxSTTProvider(
-        SherpaOnnxSTTConfig(
-            mode="transducer",
-            encoder=env["STT_ENCODER"],
-            decoder=env["STT_DECODER"],
-            joiner=os.environ.get("STT_JOINER", ""),
-            tokens=env["STT_TOKENS"],
+        SherpaOnnxSTTConfig.from_local_model(
+            "zipformer-en-kroko-2025-08-06",
             sample_rate=sample_rate,
             provider="cpu",
         )
     )
-    logger.info("STT: sherpa-onnx (encoder=%s)", os.environ["STT_ENCODER"])
+    logger.info("STT: sherpa-onnx Kroko English")
 
     # --- TTS (Qwen3-TTS with voice cloning) -----------------------------------
     ref_audio = env["REF_AUDIO"]

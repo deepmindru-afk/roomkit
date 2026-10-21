@@ -44,7 +44,7 @@ from roomkit.local_models._registry import (
     local_model_config,
     local_model_dir,
 )
-from roomkit.local_models._sherpa_onnx import KOKORO_V1_VOICES
+from roomkit.local_models._tts import KOKORO_V1_VOICES
 
 __all__ = [
     "KINDS",

@@ -19,17 +19,12 @@ Requirements:
     Headphones are recommended: echo cancellation is never perfect on
     speakers, and the assistant hearing itself reads as a barge-in.
 
-Models (download once, into examples/models/):
-    mkdir -p examples/models && cd examples/models
-    # VAD: TEN-VAD
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
-    # STT: Kroko, a Zipformer transducer, French, streaming
+Models (download once, while online):
+    # VAD: TEN-VAD; STT: Kroko, a Zipformer transducer, French, streaming
     # (model license: huggingface.co/Banafo/Kroko-ASR)
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-fr-kroko-2025-08-06.tar.bz2
-    tar xf sherpa-onnx-streaming-zipformer-fr-kroko-2025-08-06.tar.bz2
+    python -m roomkit.local_models download ten-vad zipformer-fr-kroko-2025-08-06
     # Turn detection (optional, multilingual): a pause no longer splits a sentence
-    wget https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx
-    cd ../..
+    python -m roomkit.local_models download smart-turn-v3.2-cpu
 
     Pocket TTS weights and its pre-made voices download from Hugging Face on
     first run (licences per voice: huggingface.co/kyutai/tts-voices).
@@ -80,9 +75,10 @@ Environment variables:
                         at the cost of waiting TURN_WAIT_MS on more sentences.
     TURN_WAIT_MS        Silence after a turn judged unfinished before it is answered
                         (default: 1500)
-    SMART_TURN_MODEL    Smart Turn v3 .onnx (default: MODELS_DIR/smart-turn-v3.2-cpu.onnx,
-                        used when present; add --extra smart-turn). Without it,
-                        every pause of 0.6 s ends the turn.
+    SMART_TURN          0 to turn Smart Turn v3 off (default: on when the
+                        smart-turn-v3.2-cpu local model is downloaded; add
+                        --extra smart-turn). Without it, every pause of 0.6 s
+                        ends the turn.
 
     --- Tools (MCP, stdio) ---
     MCP_COMMAND         Command line of an MCP server whose tools the assistant
@@ -90,10 +86,9 @@ Environment variables:
                         stopped with it; it gets a minimal environment.
 
     --- STT and VAD (sherpa-onnx, CPU) ---
-    MODELS_DIR          Where the models were downloaded (default: examples/models)
+    ROOMKIT_MODELS_DIR  Where the downloaded models live
+                        (default: ~/.cache/roomkit/models)
     VAD_THRESHOLD       Speech probability threshold 0-1 (default: 0.5)
-    VAD_MODEL, STT_ENCODER, STT_DECODER, STT_JOINER, STT_TOKENS
-                        Override one model file (default: found in MODELS_DIR)
 
     --- Pocket TTS ---
     POCKET_DEVICE       cpu | cuda (default: cpu)
@@ -130,6 +125,7 @@ from shared import (
     build_interruption,
     enable_voice_debug,
     log_tool_call,
+    require_local_models,
     run_until_stopped,
     setup_logging,
 )
@@ -143,6 +139,7 @@ from roomkit import (
     VoiceChannel,
 )
 from roomkit.channels.ai import AIChannel
+from roomkit.local_models import is_downloaded
 from roomkit.providers.ai.base import AIProvider
 from roomkit.providers.llamacpp import LlamaCppAIProvider, LlamaCppConfig
 from roomkit.providers.ollama import OllamaAIProvider, OllamaConfig
@@ -163,15 +160,8 @@ for _noisy in ("httpx", "pocket_tts"):
 MIC_RATE = 16000
 BLOCK_MS = 20
 
-DEFAULT_MODELS_DIR = Path(__file__).resolve().parent / "models"
-STT_DIR = "sherpa-onnx-streaming-zipformer-fr-kroko-2025-08-06"
-MODEL_FILES = {
-    "VAD_MODEL": "ten-vad.onnx",
-    "STT_ENCODER": f"{STT_DIR}/encoder.onnx",
-    "STT_DECODER": f"{STT_DIR}/decoder.onnx",
-    "STT_JOINER": f"{STT_DIR}/joiner.onnx",
-    "STT_TOKENS": f"{STT_DIR}/tokens.txt",
-}
+STT_MODEL = "zipformer-fr-kroko-2025-08-06"
+TURN_MODEL = "smart-turn-v3.2-cpu"
 
 SYSTEM_PROMPT = (
     "You are a warm voice assistant having a spoken conversation. "
@@ -217,21 +207,6 @@ async def start_llm(provider: AIProvider) -> None:
         await provider.start()
 
 
-def model_paths() -> dict[str, str]:
-    """Each model file: its env var when set, else its place in MODELS_DIR."""
-    models_dir = Path(os.environ.get("MODELS_DIR", DEFAULT_MODELS_DIR))
-    paths = {
-        var: os.environ.get(var) or str(models_dir / name) for var, name in MODEL_FILES.items()
-    }
-    missing = [path for path in paths.values() if not Path(path).is_file()]
-    if missing:
-        logger.error("Model files not found, see 'Models' at the top of this example:")
-        for path in missing:
-            logger.error("  %s", path)
-        sys.exit(1)
-    return paths
-
-
 def build_turn_detector() -> SmartTurnDetector | None:
     """Smart Turn v3 when its model was downloaded: it hears whether a sentence is over.
 
@@ -240,18 +215,21 @@ def build_turn_detector() -> SmartTurnDetector | None:
     stacked answers. A turn Smart Turn judges unfinished waits for more speech,
     and is still answered after 1.5 s of silence (turn_incomplete_wait_ms).
     """
-    models_dir = Path(os.environ.get("MODELS_DIR", DEFAULT_MODELS_DIR))
-    model = os.environ.get("SMART_TURN_MODEL") or str(models_dir / "smart-turn-v3.2-cpu.onnx")
-    if not Path(model).is_file():
-        logger.info("No Smart Turn model at %s: turns end at every VAD pause", model)
+    if os.environ.get("SMART_TURN") == "0":
+        logger.info("Smart Turn off (SMART_TURN=0): turns end at every VAD pause")
+        return None
+    if not is_downloaded(TURN_MODEL):
+        logger.info("Smart Turn not downloaded (%s): turns end at every VAD pause", TURN_MODEL)
         return None
     try:
         threshold = float(os.environ.get("SMART_TURN_THRESHOLD", "0.5"))
-        detector = SmartTurnDetector(SmartTurnConfig(model_path=model, threshold=threshold))
+        detector = SmartTurnDetector(
+            SmartTurnConfig.from_local_model(TURN_MODEL, threshold=threshold)
+        )
     except ImportError as exc:
         logger.warning("Smart Turn needs its extra (--extra smart-turn): %s", exc)
         return None
-    logger.info("Turn detection: Smart Turn v3 (%s, threshold %.2f)", Path(model).name, threshold)
+    logger.info("Turn detection: Smart Turn v3 (%s, threshold %.2f)", TURN_MODEL, threshold)
     return detector
 
 
@@ -293,7 +271,7 @@ async def main() -> None:
 
 
 async def run(stack: AsyncExitStack) -> None:
-    env = model_paths()
+    require_local_models("ten-vad", STT_MODEL)
     if os.environ.get("POCKET_DISABLE_CUDNN") == "1":
         import torch
 
@@ -319,9 +297,8 @@ async def run(stack: AsyncExitStack) -> None:
 
     # --- VAD and STT (sherpa-onnx, CPU) ----------------------------------------
     vad = SherpaOnnxVADProvider(
-        SherpaOnnxVADConfig(
-            model=env["VAD_MODEL"],
-            model_type="ten",
+        SherpaOnnxVADConfig.from_local_model(
+            "ten-vad",
             threshold=float(os.environ.get("VAD_THRESHOLD", "0.5")),
             silence_threshold_ms=600,
             min_speech_duration_ms=200,
@@ -329,19 +306,10 @@ async def run(stack: AsyncExitStack) -> None:
             provider="cpu",
         )
     )
+    # Kroko French's local model pads 1.5 s of tail silence: below that it
+    # drops the last word ("midi" -> "mid").
     stt = SherpaOnnxSTTProvider(
-        SherpaOnnxSTTConfig(
-            mode="transducer",
-            encoder=env["STT_ENCODER"],
-            decoder=env["STT_DECODER"],
-            joiner=env["STT_JOINER"],
-            tokens=env["STT_TOKENS"],
-            sample_rate=MIC_RATE,
-            provider="cpu",
-            # Kroko French drops the last word ("midi" -> "mid") below ~1.5 s
-            # of tail silence; the padding costs compute, not waiting time.
-            tail_padding_s=1.5,
-        )
+        SherpaOnnxSTTConfig.from_local_model(STT_MODEL, sample_rate=MIC_RATE, provider="cpu")
     )
 
     # --- Pocket TTS: French, on the CPU or the GPU -----------------------------

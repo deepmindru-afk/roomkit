@@ -13,18 +13,17 @@ to anyone who can reach that address.
 Requires:
     pip install roomkit[local-video,local-audio,deepgram,sherpa-onnx,anthropic]
 
-    # VAD model (sherpa-onnx TEN-VAD):
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
+Models (download once, while online):
+    python -m roomkit.local_models download ten-vad
 
 Environment variables:
     DEEPGRAM_API_KEY   Deepgram key (French STT)
     ANTHROPIC_API_KEY  Anthropic key (translation)
-    VAD_MODEL          path to the VAD model file (ten-vad.onnx above)
     MJPEG_HOST         (optional) interface of the video server, default 127.0.0.1
     MJPEG_PORT         (optional) port of the video server, default 8089
 
 Run with:
-    VAD_MODEL=ten-vad.onnx DEEPGRAM_API_KEY=... ANTHROPIC_API_KEY=... \\
+    DEEPGRAM_API_KEY=... ANTHROPIC_API_KEY=... \\
         uv run python examples/video_live_subtitles.py
 """
 
@@ -38,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cv2
 import numpy as np
-from shared import run_until_stopped, setup_logging
+from shared import require_local_models, run_until_stopped, setup_logging
 from shared.env import require_env
 
 from roomkit import HookExecution, HookTrigger, RoomKit, VoiceChannel
@@ -55,10 +54,9 @@ from roomkit.voice import (
     get_deepgram_config,
     get_deepgram_provider,
     get_local_audio_backend,
-    get_sherpa_onnx_vad_config,
-    get_sherpa_onnx_vad_provider,
 )
 from roomkit.voice.pipeline import AudioPipelineConfig
+from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
 
 logger = setup_logging("subtitles")
 
@@ -169,7 +167,8 @@ class MJPEGFilter(VideoFilterProvider):
 
 
 async def main() -> None:
-    env = require_env("DEEPGRAM_API_KEY", "ANTHROPIC_API_KEY", "VAD_MODEL")
+    require_local_models("ten-vad")
+    env = require_env("DEEPGRAM_API_KEY", "ANTHROPIC_API_KEY")
     host = os.environ.get("MJPEG_HOST", "127.0.0.1")
     port = int(os.environ.get("MJPEG_PORT", "8089"))
 
@@ -214,9 +213,7 @@ async def main() -> None:
         width=640,
         height=480,
     )
-    vad = get_sherpa_onnx_vad_provider()(
-        get_sherpa_onnx_vad_config()(model=env["VAD_MODEL"]),
-    )
+    vad = SherpaOnnxVADProvider(SherpaOnnxVADConfig.from_local_model("ten-vad"))
 
     # --- Kit + overlays --------------------------------------------------
 

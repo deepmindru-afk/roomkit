@@ -17,20 +17,12 @@ Requirements:
     A local LLM server:
       Ollama: ollama pull qwen3:8b && ollama serve
 
-    VAD model:
-      wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
-
-    TTS model (VITS/Piper voice):
-      wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-low.tar.bz2
-      tar xf vits-piper-en_US-amy-low.tar.bz2
+    Models (download once, while online):
+      python -m roomkit.local_models download ten-vad vits-piper-en_US-amy-low
 
 Run:
     LLM_MODEL=qwen3:8b \\
     LLM_BASE_URL=http://localhost:11434/v1 \\
-    VAD_MODEL=ten-vad.onnx \\
-    TTS_MODEL=vits-piper-en_US-amy-low/en_US-amy-low.onnx \\
-    TTS_TOKENS=vits-piper-en_US-amy-low/tokens.txt \\
-    TTS_DATA_DIR=vits-piper-en_US-amy-low/espeak-ng-data \\
     uv run python examples/voice_qwen3_asr.py
 
 Environment variables:
@@ -48,14 +40,7 @@ Environment variables:
     LLM_MAX_TOKENS      Max response tokens (default: 256)
     SYSTEM_PROMPT       Custom system prompt
 
-    --- TTS (sherpa-onnx) ---
-    TTS_MODEL           (required) Path to VITS/Piper .onnx model
-    TTS_TOKENS          (required) Path to TTS tokens.txt
-    TTS_DATA_DIR        Path to TTS data directory (espeak-ng-data)
-    TTS_SAMPLE_RATE     Output sample rate of the voice (default: 22050)
-
-    --- VAD (sherpa-onnx) ---
-    VAD_MODEL           (required) Path to VAD .onnx model
+    --- VAD (sherpa-onnx TEN-VAD) ---
     VAD_THRESHOLD       Speech probability threshold 0-1 (default: 0.35)
 
     --- Other ---
@@ -72,7 +57,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import require_env, run_until_stopped, setup_console, setup_logging
+from shared import (
+    require_env,
+    require_local_models,
+    run_until_stopped,
+    setup_console,
+    setup_logging,
+)
 
 from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.channels.ai import AIChannel
@@ -87,28 +78,29 @@ logger = setup_logging("voice_qwen3_asr")
 
 
 async def main() -> None:
-    env = require_env("LLM_MODEL", "VAD_MODEL", "TTS_MODEL", "TTS_TOKENS")
+    require_local_models("ten-vad", "vits-piper-en_US-amy-low")
+    env = require_env("LLM_MODEL")
 
     kit = RoomKit()
     console_cleanup = setup_console(kit)
 
     sample_rate = 16000
-    tts_sample_rate = int(os.environ.get("TTS_SAMPLE_RATE", "22050"))
+    # Built first: the speaker plays at the voice's own rate (16 kHz for amy).
+    tts_config = SherpaOnnxTTSConfig.from_local_model("vits-piper-en_US-amy-low")
 
     # --- Backend: local mic + speakers ----------------------------------------
     backend = LocalAudioBackend(
         input_sample_rate=sample_rate,
-        output_sample_rate=tts_sample_rate,
+        output_sample_rate=tts_config.sample_rate,
         channels=1,
         block_duration_ms=20,
     )
 
     # --- VAD (sherpa-onnx neural VAD) -----------------------------------------
-    vad_model = env["VAD_MODEL"]
     vad_threshold = float(os.environ.get("VAD_THRESHOLD", "0.35"))
     vad = SherpaOnnxVADProvider(
-        SherpaOnnxVADConfig(
-            model=vad_model,
+        SherpaOnnxVADConfig.from_local_model(
+            "ten-vad",
             threshold=vad_threshold,
             silence_threshold_ms=600,
             min_speech_duration_ms=200,
@@ -116,7 +108,7 @@ async def main() -> None:
             provider="cpu",
         )
     )
-    logger.info("VAD: sherpa-onnx (threshold=%.2f, model=%s)", vad_threshold, vad_model)
+    logger.info("VAD: sherpa-onnx TEN-VAD (threshold=%.2f)", vad_threshold)
 
     pipeline_config = AudioPipelineConfig(vad=vad)
 
@@ -138,15 +130,8 @@ async def main() -> None:
     )
 
     # --- TTS (sherpa-onnx) ----------------------------------------------------
-    tts = SherpaOnnxTTSProvider(
-        SherpaOnnxTTSConfig(
-            model=env["TTS_MODEL"],
-            tokens=env["TTS_TOKENS"],
-            data_dir=os.environ.get("TTS_DATA_DIR", ""),
-            sample_rate=tts_sample_rate,
-        )
-    )
-    logger.info("TTS: sherpa-onnx (model=%s, rate=%d)", env["TTS_MODEL"], tts_sample_rate)
+    tts = SherpaOnnxTTSProvider(tts_config)
+    logger.info("TTS: sherpa-onnx Piper amy (rate=%d)", tts_config.sample_rate)
 
     # --- LLM (local via OpenAI-compatible API) --------------------------------
     llm_model = env["LLM_MODEL"]

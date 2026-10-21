@@ -9,7 +9,7 @@ speaks it through the system speakers with Kokoro, on this machine::
 Kokoro-82M (Apache 2.0) runs through sherpa-onnx, on the CPU: no GPU, no
 network once the model is downloaded. Its v1.0 voices speak American and
 British English, Spanish, French, Hindi, Italian, Japanese, Brazilian
-Portuguese and Mandarin. A voice is an index into the model's ``voices.bin``.
+Portuguese and Mandarin. A voice is named (``af_heart``, ``ff_siwis``…).
 
 For text that is neither English nor Chinese, set ``KOKORO_LANG`` to its
 espeak-ng language (``fr``, ``es``, ``it``…): without it the model reads the
@@ -20,27 +20,25 @@ The voice channel runs with ``stt=None``: no microphone transcription, only
 delivery. The local backend still opens the mic when the session starts —
 audio simply goes nowhere without an STT provider.
 
-Model (download once, into examples/models/)::
+Model (download once, while online)::
 
-    mkdir -p examples/models && cd examples/models
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_0.tar.bz2
-    tar xf kokoro-int8-multi-lang-v1_0.tar.bz2
-    cd ../..
+    python -m roomkit.local_models download kokoro-int8-multi-lang-v1_0
 
 Requires:
     pip install roomkit[sherpa-onnx,local-audio]
 
 Environment variables:
-    KOKORO_DIR    Model directory (default: examples/models/kokoro-int8-multi-lang-v1_0)
     KOKORO_LANG   espeak-ng language for text other than English or Chinese (default: none)
-    KOKORO_VOICE  Voice index (default: 3, af_heart). Some others in v1.0:
-                  20 bf_alice, 28 ef_dora, 30 ff_siwis, 35 if_sara, 42 pf_dora
+    KOKORO_VOICE  Voice name (default: af_heart). Some others in v1.0:
+                  bf_alice, ef_dora, ff_siwis, if_sara, pf_dora
+    ROOMKIT_MODELS_DIR  Where the downloaded models live
+                  (default: ~/.cache/roomkit/models)
 
 Run with:
     uv run --extra sherpa-onnx --extra local-audio python examples/kokoro_tts_room.py
 
     In French:
-    KOKORO_LANG=fr KOKORO_VOICE=30 uv run --extra sherpa-onnx --extra local-audio \\
+    KOKORO_LANG=fr KOKORO_VOICE=ff_siwis uv run --extra sherpa-onnx --extra local-audio \\
         python examples/kokoro_tts_room.py
 
 Type a line and press Enter. Ctrl+D (or Ctrl+C) to quit.
@@ -56,7 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import asyncio
 import os
 
-from shared import setup_logging
+from shared import require_local_models, setup_logging
 
 from roomkit import CLIChannel, HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.voice.backends.local import LocalAudioBackend
@@ -65,28 +63,20 @@ from roomkit.voice.tts.sherpa_onnx import SherpaOnnxTTSConfig, SherpaOnnxTTSProv
 logger = setup_logging("kokoro_tts_room")
 
 ROOM_ID = "kokoro-tts-room"
-MODEL_DIR = Path(__file__).resolve().parent / "models" / "kokoro-int8-multi-lang-v1_0"
+KOKORO = "kokoro-int8-multi-lang-v1_0"
 SAMPLE_RATE = 24000  # Kokoro's rate
 
 
 def kokoro_config() -> SherpaOnnxTTSConfig:
-    model_dir = Path(os.environ.get("KOKORO_DIR", str(MODEL_DIR)))
-    if not (model_dir / "voices.bin").exists():
-        raise SystemExit(f"No Kokoro model in {model_dir}: see the download steps above.")
-    return SherpaOnnxTTSConfig(
-        model_type="kokoro",
-        model=str(model_dir / "model.int8.onnx"),
-        voices=str(model_dir / "voices.bin"),
-        tokens=str(model_dir / "tokens.txt"),
-        data_dir=str(model_dir / "espeak-ng-data"),
-        lexicon=f"{model_dir / 'lexicon-us-en.txt'},{model_dir / 'lexicon-zh.txt'}",
+    return SherpaOnnxTTSConfig.from_local_model(
+        KOKORO,
+        voice=os.environ.get("KOKORO_VOICE", "af_heart"),
         lang=os.environ.get("KOKORO_LANG", ""),
-        speaker_id=int(os.environ.get("KOKORO_VOICE", "3")),
-        sample_rate=SAMPLE_RATE,
     )
 
 
 async def main() -> None:
+    require_local_models(KOKORO)
     tts = SherpaOnnxTTSProvider(kokoro_config())
     await tts.warmup()  # loads the model before the first line, not on it
 

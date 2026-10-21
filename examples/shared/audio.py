@@ -15,6 +15,8 @@ import wave
 from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
 from roomkit.voice.pipeline.backchannel import PhraseBackchannelDetector
 
+from .models import require_local_models
+
 logger = logging.getLogger(__name__)
 
 
@@ -108,9 +110,10 @@ def build_denoiser(sample_rate: int = 16000, *, default: str = "0") -> object | 
     """Build a denoiser provider based on the ``DENOISE`` env var.
 
     Env: ``DENOISE=webrtc|rnnoise|sherpa|dpdfnet|1|0`` (default comes from
-    *default* param). For ``sherpa`` (GTCRN) and ``dpdfnet``, ``DENOISE_MODEL``
-    sets the model file (default ``gtcrn_simple.onnx``; for DPDFNet,
-    ``dpdfnet2_48khz_hr.onnx`` on a 48 kHz pipeline, else ``dpdfnet2.onnx``).
+    *default* param). For ``sherpa`` (GTCRN) and ``dpdfnet``, the model is a
+    downloaded local model (``gtcrn-simple``; for DPDFNet, ``dpdfnet2-48khz-hr``
+    on a 48 kHz pipeline, else ``dpdfnet2``); ``DENOISE_MODEL`` sets a model
+    file instead.
     DPDFNet denoises only at its model's rate: on another pipeline rate it
     would pass the audio through, so it is left out with a warning (GTCRN
     resamples, ``DENOISE=sherpa``).
@@ -141,21 +144,24 @@ def build_denoiser(sample_rate: int = 16000, *, default: str = "0") -> object | 
     if mode in ("sherpa", "dpdfnet"):
         model_type = "dpdfnet" if mode == "dpdfnet" else "gtcrn"
         if model_type == "gtcrn":
-            default_model = "gtcrn_simple.onnx"
+            local_model = "gtcrn-simple"
         elif sample_rate == 48000:
-            default_model = "dpdfnet2_48khz_hr.onnx"
+            local_model = "dpdfnet2-48khz-hr"
         else:
-            default_model = "dpdfnet2.onnx"
-        model = os.environ.get("DENOISE_MODEL", default_model)
+            local_model = "dpdfnet2"
+        model = os.environ.get("DENOISE_MODEL") or local_model
         try:
             from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
                 SherpaOnnxDenoiserConfig,
                 SherpaOnnxDenoiserProvider,
             )
 
-            denoiser = SherpaOnnxDenoiserProvider(
-                SherpaOnnxDenoiserConfig(model_type=model_type, model=model)
-            )
+            if "DENOISE_MODEL" in os.environ:
+                config = SherpaOnnxDenoiserConfig(model_type=model_type, model=model)
+            else:
+                require_local_models(local_model)
+                config = SherpaOnnxDenoiserConfig.from_local_model(local_model)
+            denoiser = SherpaOnnxDenoiserProvider(config)
         except (ImportError, ValueError) as exc:
             logger.warning("%s — denoiser disabled", exc)
             return None
@@ -216,11 +222,12 @@ def build_vad(sample_rate: int = 24000, *, default: str = "energy") -> object | 
     """Build a VAD provider based on the ``VAD`` env var.
 
     Env: ``VAD=energy|silero|ten|1|0`` (default comes from *default* param).
-    The ``VAD_MODEL`` env var overrides the model type for sherpa-onnx.
+    ``silero`` and ``ten`` run the downloaded local model (``silero-vad``,
+    ``ten-vad``); ``VAD_MODEL`` sets a model file instead.
 
     * ``energy`` / ``1`` — Energy-based VAD (no dependencies)
-    * ``silero`` — Silero VAD via sherpa-onnx (``pip install sherpa-onnx``)
-    * ``ten`` — TEN-VAD via sherpa-onnx (``pip install sherpa-onnx``)
+    * ``silero`` — Silero VAD via sherpa-onnx (``pip install roomkit[sherpa-onnx]``)
+    * ``ten`` — TEN-VAD via sherpa-onnx (``pip install roomkit[sherpa-onnx]``)
     * ``0`` — disabled
 
     Returns the provider instance or ``None``.
@@ -244,11 +251,17 @@ def build_vad(sample_rate: int = 24000, *, default: str = "energy") -> object | 
                 SherpaOnnxVADProvider,
             )
 
-            model_type = os.environ.get("VAD_MODEL", mode)
-            logger.info("VAD enabled (sherpa-onnx %s)", model_type)
-            return SherpaOnnxVADProvider(
-                SherpaOnnxVADConfig(model_type=model_type, sample_rate=sample_rate)
-            )
+            model_file = os.environ.get("VAD_MODEL")
+            if model_file:
+                config = SherpaOnnxVADConfig(
+                    model=model_file, model_type=mode, sample_rate=sample_rate
+                )
+            else:
+                local_model = f"{mode}-vad"
+                require_local_models(local_model)
+                config = SherpaOnnxVADConfig.from_local_model(local_model, sample_rate=sample_rate)
+            logger.info("VAD enabled (sherpa-onnx %s, model=%s)", mode, config.model)
+            return SherpaOnnxVADProvider(config)
         except ImportError:
             logger.warning("sherpa-onnx not installed — falling back to energy VAD")
             from roomkit.voice.pipeline.vad.energy import EnergyVADProvider
@@ -305,7 +318,8 @@ def build_turn_detector(*, default: str = "0") -> object | None:
     """Build a turn detector based on the ``TURN_DETECTOR`` env var.
 
     Env: ``TURN_DETECTOR=smart-turn|1|0`` (default comes from *default* param).
-    ``TURN_MODEL`` sets the ONNX model path (default ``smart-turn-v3.2-cpu.onnx``).
+    The model is the downloaded local model ``smart-turn-v3.2-cpu``;
+    ``TURN_MODEL`` sets an ONNX model file instead.
     ``TURN_THRESHOLD`` sets the completion probability threshold (default ``0.5``).
 
     * ``smart-turn`` / ``1`` — pipecat-ai/smart-turn ONNX model
@@ -321,15 +335,24 @@ def build_turn_detector(*, default: str = "0") -> object | None:
         mode = "smart-turn"
 
     if mode == "smart-turn":
-        model = os.environ.get("TURN_MODEL", "smart-turn-v3.2-cpu.onnx")
+        model_file = os.environ.get("TURN_MODEL")
         threshold = float(os.environ.get("TURN_THRESHOLD", "0.5"))
         try:
             from roomkit.voice.pipeline.turn.smart_turn import SmartTurnConfig, SmartTurnDetector
 
+            if model_file:
+                config = SmartTurnConfig(model_path=model_file, threshold=threshold)
+            else:
+                require_local_models("smart-turn-v3.2-cpu")
+                config = SmartTurnConfig.from_local_model(
+                    "smart-turn-v3.2-cpu", threshold=threshold
+                )
             logger.info(
-                "Turn detector enabled (smart-turn, model=%s, threshold=%.2f)", model, threshold
+                "Turn detector enabled (smart-turn, model=%s, threshold=%.2f)",
+                config.model_path,
+                threshold,
             )
-            return SmartTurnDetector(SmartTurnConfig(model_path=model, threshold=threshold))
+            return SmartTurnDetector(config)
         except ImportError:
             logger.warning("smart-turn deps not installed — turn detector disabled")
             return None

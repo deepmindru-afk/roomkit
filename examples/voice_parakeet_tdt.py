@@ -13,32 +13,14 @@ Audio pipeline:
 Prerequisites:
     pip install roomkit[local-audio,vllm,sherpa-onnx]
 
-Download models:
-    # STT — Parakeet TDT 0.6B v3 (int8 quantized, ~640 MB)
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2
-    tar xf sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2
-
-    # VAD — TEN-VAD
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
-
-    # TTS — VITS (Piper voices)
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-low.tar.bz2
-    tar xf vits-piper-en_US-amy-low.tar.bz2
-
-    # Denoiser — GTCRN (optional)
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx
+Models (download once, while online; Parakeet is about 490 MB):
+    python -m roomkit.local_models download parakeet-tdt-0.6b-v3-int8 ten-vad \\
+        vits-piper-en_US-amy-low
+    # with VAD_MODEL_TYPE=silero: silero-vad; with DENOISE=1: gtcrn-simple
 
 Run:
-    LLM_MODEL=qwen3:8b \
-    LLM_BASE_URL=http://localhost:11434/v1 \
-    VAD_MODEL=ten-vad.onnx \
-    STT_ENCODER=sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/encoder.int8.onnx \
-    STT_DECODER=sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/decoder.int8.onnx \
-    STT_JOINER=sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/joiner.int8.onnx \
-    STT_TOKENS=sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/tokens.txt \
-    TTS_MODEL=vits-piper-en_US-amy-low/en_US-amy-low.onnx \
-    TTS_TOKENS=vits-piper-en_US-amy-low/tokens.txt \
-    TTS_DATA_DIR=vits-piper-en_US-amy-low/espeak-ng-data \
+    LLM_MODEL=qwen3:8b \\
+    LLM_BASE_URL=http://localhost:11434/v1 \\
     uv run python examples/voice_parakeet_tdt.py
 
 Environment variables:
@@ -46,18 +28,10 @@ Environment variables:
     LLM_BASE_URL    Server endpoint (default: http://localhost:11434/v1)
     LLM_API_KEY     API key if server requires auth (default: none)
     LLM_MAX_TOKENS  Max response tokens (default: 256)
-    VAD_MODEL       (required) Path to VAD .onnx model
-    VAD_MODEL_TYPE  VAD model type: ten | silero (default: ten)
+    VAD_MODEL_TYPE  VAD model: ten (ten-vad) | silero (silero-vad) (default: ten)
     VAD_THRESHOLD   Speech probability threshold 0-1 (default: 0.35)
-    STT_ENCODER     (required) Path to Parakeet encoder .onnx
-    STT_DECODER     (required) Path to Parakeet decoder .onnx
-    STT_JOINER      (required) Path to Parakeet joiner .onnx
-    STT_TOKENS      (required) Path to Parakeet tokens.txt
-    TTS_MODEL       (required) Path to TTS VITS/Piper .onnx model
-    TTS_TOKENS      (required) Path to TTS tokens.txt
-    TTS_DATA_DIR    Path to espeak-ng data dir (Piper models)
     TTS_SPEAKER_ID  Speaker ID for multi-speaker models (default: 0)
-    DENOISE_MODEL   Path to GTCRN denoiser .onnx (optional)
+    DENOISE         1 enables the GTCRN denoiser (gtcrn-simple) (default: 0)
     ONNX_PROVIDER   ONNX provider for STT/TTS: cpu | cuda (default: cpu)
     CONSOLE         1 shows the RoomKit console dashboard (default: 0)
 
@@ -72,13 +46,23 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import require_env, run_until_stopped, setup_console, setup_logging
+from shared import (
+    require_env,
+    require_local_models,
+    run_until_stopped,
+    setup_console,
+    setup_logging,
+)
 
 from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.channels.ai import AIChannel
 from roomkit.providers.vllm import VLLMConfig, create_vllm_provider
 from roomkit.voice.backends.local import LocalAudioBackend
 from roomkit.voice.pipeline import AudioPipelineConfig
+from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
+    SherpaOnnxDenoiserConfig,
+    SherpaOnnxDenoiserProvider,
+)
 from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
 from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
 from roomkit.voice.tts.sherpa_onnx import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
@@ -87,28 +71,32 @@ logger = setup_logging("voice_parakeet_tdt")
 
 
 async def main() -> None:
-    env = require_env(
-        "LLM_MODEL",
-        "VAD_MODEL",
-        "STT_ENCODER",
-        "STT_DECODER",
-        "STT_JOINER",
-        "STT_TOKENS",
-        "TTS_MODEL",
-        "TTS_TOKENS",
+    vad_model = f"{os.environ.get('VAD_MODEL_TYPE', 'ten')}-vad"
+    denoise = os.environ.get("DENOISE", "0") == "1"
+    require_local_models(
+        "parakeet-tdt-0.6b-v3-int8",
+        vad_model,
+        "vits-piper-en_US-amy-low",
+        *(["gtcrn-simple"] if denoise else []),
     )
+    env = require_env("LLM_MODEL")
 
     kit = RoomKit()
     console_cleanup = setup_console(kit)
 
     onnx_provider = os.environ.get("ONNX_PROVIDER", "cpu")
     sample_rate = 16000
-    tts_sample_rate = 22050
+    # Built first: the speaker plays at the voice's own rate (16 kHz for amy).
+    tts_config = SherpaOnnxTTSConfig.from_local_model(
+        "vits-piper-en_US-amy-low",
+        speaker_id=int(os.environ.get("TTS_SPEAKER_ID", "0")),
+        provider=onnx_provider,
+    )
 
     # --- Backend: local mic + speakers ----------------------------------------
     backend = LocalAudioBackend(
         input_sample_rate=sample_rate,
-        output_sample_rate=tts_sample_rate,
+        output_sample_rate=tts_config.sample_rate,
         channels=1,
         block_duration_ms=20,
         mute_mic_during_playback=True,
@@ -116,9 +104,8 @@ async def main() -> None:
 
     # --- VAD (sherpa-onnx neural VAD) -----------------------------------------
     vad = SherpaOnnxVADProvider(
-        SherpaOnnxVADConfig(
-            model=env["VAD_MODEL"],
-            model_type=os.environ.get("VAD_MODEL_TYPE", "ten"),
+        SherpaOnnxVADConfig.from_local_model(
+            vad_model,
             threshold=float(os.environ.get("VAD_THRESHOLD", "0.35")),
             silence_threshold_ms=600,
             min_speech_duration_ms=200,
@@ -128,28 +115,19 @@ async def main() -> None:
 
     # --- Denoiser (optional) --------------------------------------------------
     denoiser = None
-    denoise_model = os.environ.get("DENOISE_MODEL", "")
-    if denoise_model:
-        from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-            SherpaOnnxDenoiserConfig,
-            SherpaOnnxDenoiserProvider,
+    if denoise:
+        denoiser = SherpaOnnxDenoiserProvider(
+            SherpaOnnxDenoiserConfig.from_local_model("gtcrn-simple")
         )
-
-        denoiser = SherpaOnnxDenoiserProvider(SherpaOnnxDenoiserConfig(model=denoise_model))
-        logger.info("Denoiser: GTCRN (%s)", denoise_model)
+        logger.info("Denoiser: GTCRN")
 
     # --- Pipeline config ------------------------------------------------------
     pipeline_config = AudioPipelineConfig(vad=vad, denoiser=denoiser)
 
     # --- STT: Parakeet TDT (offline, via sherpa-onnx) -------------------------
     stt = SherpaOnnxSTTProvider(
-        SherpaOnnxSTTConfig(
-            mode="transducer",
-            model_type="nemo_transducer",
-            encoder=env["STT_ENCODER"],
-            decoder=env["STT_DECODER"],
-            joiner=env["STT_JOINER"],
-            tokens=env["STT_TOKENS"],
+        SherpaOnnxSTTConfig.from_local_model(
+            "parakeet-tdt-0.6b-v3-int8",
             sample_rate=sample_rate,
             provider=onnx_provider,
         )
@@ -157,16 +135,7 @@ async def main() -> None:
     logger.info("STT: Parakeet TDT 0.6B v3 (offline, provider=%s)", onnx_provider)
 
     # --- TTS (sherpa-onnx VITS/Piper) -----------------------------------------
-    tts = SherpaOnnxTTSProvider(
-        SherpaOnnxTTSConfig(
-            model=env["TTS_MODEL"],
-            tokens=env["TTS_TOKENS"],
-            data_dir=os.environ.get("TTS_DATA_DIR", ""),
-            speaker_id=int(os.environ.get("TTS_SPEAKER_ID", "0")),
-            sample_rate=tts_sample_rate,
-            provider=onnx_provider,
-        )
-    )
+    tts = SherpaOnnxTTSProvider(tts_config)
 
     # --- LLM (local via OpenAI-compatible API) --------------------------------
     ai_provider = create_vllm_provider(

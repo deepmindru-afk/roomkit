@@ -23,15 +23,10 @@ Requirements:
     there), then run ``hf auth login`` or set HF_TOKEN. The weights (75 MB)
     and the voice you pick download on first run.
 
-Models (download once, into examples/models/):
-    mkdir -p examples/models && cd examples/models
-    # VAD: TEN-VAD
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
-    # STT: Kroko, a Zipformer transducer, French, streaming
-    # (model license: huggingface.co/Banafo/Kroko-ASR)
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-fr-kroko-2025-08-06.tar.bz2
-    tar xf sherpa-onnx-streaming-zipformer-fr-kroko-2025-08-06.tar.bz2
-    cd ../..
+Models (download once, while online): TEN-VAD, and Kroko, a French streaming
+Zipformer transducer (model license: huggingface.co/Banafo/Kroko-ASR):
+    python -m roomkit.local_models download ten-vad zipformer-fr-kroko-2025-08-06
+    (with TURN_DETECTOR=smart-turn, add smart-turn-v3.2-cpu)
 
 Run (from the repository root):
     uv run --extra local-audio --extra webrtc-aec --extra llamacpp \\
@@ -68,11 +63,12 @@ Environment variables:
     INTERRUPTION        semantic | confirmed | immediate | disabled (default: semantic:
                         an acknowledgement like "d'accord" does not stop the voice)
     TURN_DETECTOR       smart-turn | 0 (default: 0; add --extra smart-turn).
-                        TURN_MODEL names the .onnx file.
+                        Runs the smart-turn-v3.2-cpu local model; TURN_MODEL
+                        sets an .onnx file instead.
     VOICE_DEBUG         1 to log turn-taking decisions
 
     --- STT and VAD (sherpa-onnx, CPU) ---
-    MODELS_DIR          Where the models were downloaded (default: examples/models)
+    ROOMKIT_MODELS_DIR  Where the downloaded models live (default: ~/.cache/roomkit/models)
     VAD_THRESHOLD       Speech probability threshold 0-1 (default: 0.5)
 
     --- Audio ---
@@ -100,6 +96,7 @@ from shared import (
     build_interruption,
     build_turn_detector,
     enable_voice_debug,
+    require_local_models,
     run_until_stopped,
     setup_console,
     setup_logging,
@@ -123,8 +120,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 MIC_RATE = 16000
 BLOCK_MS = 20
 
-DEFAULT_MODELS_DIR = Path(__file__).resolve().parent / "models"
-STT_DIR = "sherpa-onnx-streaming-zipformer-fr-kroko-2025-08-06"
+VAD_MODEL = "ten-vad"
+STT_MODEL = "zipformer-fr-kroko-2025-08-06"
 
 SYSTEM_PROMPT = (
     "You are a warm voice assistant having a spoken conversation. "
@@ -160,25 +157,6 @@ async def start_llm(provider: AIProvider) -> None:
         await provider.start()
 
 
-def model_paths() -> dict[str, str]:
-    """The VAD and STT model files in MODELS_DIR; exits naming the missing ones."""
-    models_dir = Path(os.environ.get("MODELS_DIR", DEFAULT_MODELS_DIR))
-    paths = {
-        "vad": models_dir / "ten-vad.onnx",
-        "encoder": models_dir / STT_DIR / "encoder.onnx",
-        "decoder": models_dir / STT_DIR / "decoder.onnx",
-        "joiner": models_dir / STT_DIR / "joiner.onnx",
-        "tokens": models_dir / STT_DIR / "tokens.txt",
-    }
-    missing = [path for path in paths.values() if not path.is_file()]
-    if missing:
-        logger.error("Model files not found, see 'Models' at the top of this example:")
-        for path in missing:
-            logger.error("  %s", path)
-        sys.exit(1)
-    return {name: str(path) for name, path in paths.items()}
-
-
 def build_tts() -> PhononTTSProvider:
     """Phonon in French; the runtime's thread pool is sized before the model loads."""
     ptts.set_num_threads(int(os.environ.get("PHONON_THREADS", "2")))
@@ -194,7 +172,7 @@ def build_tts() -> PhononTTSProvider:
 
 
 async def main() -> None:
-    models = model_paths()
+    require_local_models(VAD_MODEL, STT_MODEL)
     kit = RoomKit()
     console_cleanup = setup_console(kit)
 
@@ -213,9 +191,8 @@ async def main() -> None:
 
     # --- VAD and STT (sherpa-onnx, CPU) ----------------------------------------
     vad = SherpaOnnxVADProvider(
-        SherpaOnnxVADConfig(
-            model=models["vad"],
-            model_type="ten",
+        SherpaOnnxVADConfig.from_local_model(
+            VAD_MODEL,
             threshold=float(os.environ.get("VAD_THRESHOLD", "0.5")),
             silence_threshold_ms=600,
             min_speech_duration_ms=200,
@@ -223,19 +200,10 @@ async def main() -> None:
             provider="cpu",
         )
     )
+    # The local model carries Kroko French's 1.5 s tail padding: below it the
+    # last word is dropped ("midi" -> "mid").
     stt = SherpaOnnxSTTProvider(
-        SherpaOnnxSTTConfig(
-            mode="transducer",
-            encoder=models["encoder"],
-            decoder=models["decoder"],
-            joiner=models["joiner"],
-            tokens=models["tokens"],
-            sample_rate=MIC_RATE,
-            provider="cpu",
-            # Kroko French drops the last word ("midi" -> "mid") below ~1.5 s
-            # of tail silence; the padding costs compute, not waiting time.
-            tail_padding_s=1.5,
-        )
+        SherpaOnnxSTTConfig.from_local_model(STT_MODEL, sample_rate=MIC_RATE, provider="cpu")
     )
 
     tts = build_tts()

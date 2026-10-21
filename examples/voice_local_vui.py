@@ -25,18 +25,13 @@ Requirements:
     Headphones are recommended: echo cancellation is never perfect on
     speakers, and the assistant hearing itself reads as a barge-in.
 
-Models (download once, into examples/models/):
-    mkdir -p examples/models && cd examples/models
-    # VAD: TEN-VAD
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
-    # STT: Kroko, a Zipformer transducer, English, streaming; it holds up on
-    # microphone speech (model license: huggingface.co/Banafo/Kroko-ASR)
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
-    tar xf sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
-    # Turn detection (optional): Smart Turn v3 hears whether a sentence is over;
-    # without it, a turn ends at every 0.6 s pause
-    wget https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx
-    cd ../..
+Models (download once, while online): TEN-VAD, and Kroko, an English streaming
+Zipformer transducer that holds up on microphone speech (model license:
+huggingface.co/Banafo/Kroko-ASR):
+    python -m roomkit.local_models download ten-vad zipformer-en-kroko-2025-08-06
+    # Turn detection (optional, used once downloaded): Smart Turn v3 hears
+    # whether a sentence is over; without it, a turn ends at every 0.6 s pause
+    python -m roomkit.local_models download smart-turn-v3.2-cpu
 
     Vui's weights and voice presets download from Hugging Face on first run.
 
@@ -59,10 +54,8 @@ Environment variables:
     SYSTEM_PROMPT       Custom system prompt
 
     --- STT and VAD (sherpa-onnx, CPU) ---
-    MODELS_DIR          Where the models were downloaded (default: examples/models)
+    ROOMKIT_MODELS_DIR  Where the downloaded models live (default: ~/.cache/roomkit/models)
     VAD_THRESHOLD       Speech probability threshold 0-1 (default: 0.5)
-    VAD_MODEL, STT_ENCODER, STT_DECODER, STT_JOINER, STT_TOKENS
-                        Override one model file (default: found in MODELS_DIR)
 
     --- Vui ---
     VUI_VOICE           Preset voice: maeve | abraham | rhian | harry (default: maeve)
@@ -103,6 +96,7 @@ from shared import (
     build_debug_taps,
     build_interruption,
     enable_voice_debug,
+    require_local_models,
     run_until_stopped,
     setup_logging,
 )
@@ -117,6 +111,7 @@ from roomkit import (
     VoiceChannel,
 )
 from roomkit.channels.ai import AIChannel
+from roomkit.local_models import is_downloaded
 from roomkit.providers.ai.base import AIProvider
 from roomkit.providers.llamacpp import LlamaCppAIProvider, LlamaCppConfig
 from roomkit.providers.ollama import OllamaAIProvider, OllamaConfig
@@ -138,17 +133,9 @@ logger = setup_logging("voice_local_vui")
 MIC_RATE = 16000
 BLOCK_MS = 20
 
-DEFAULT_MODELS_DIR = Path(__file__).resolve().parent / "models"
-STT_DIR = "sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06"
-MODEL_FILES = {
-    "VAD_MODEL": "ten-vad.onnx",
-    "STT_ENCODER": f"{STT_DIR}/encoder.onnx",
-    "STT_DECODER": f"{STT_DIR}/decoder.onnx",
-    "STT_JOINER": f"{STT_DIR}/joiner.onnx",
-    "STT_TOKENS": f"{STT_DIR}/tokens.txt",
-}
-
-SMART_TURN_MODEL = "smart-turn-v3.2-cpu.onnx"
+VAD_MODEL = "ten-vad"
+STT_MODEL = "zipformer-en-kroko-2025-08-06"
+SMART_TURN_MODEL = "smart-turn-v3.2-cpu"
 
 SYSTEM_PROMPT = (
     "You are a friendly voice assistant having a spoken conversation in English. "
@@ -179,39 +166,22 @@ class StripEmphasis(TTSStreamFilter):
 VUI_TEXT_FILTER = TTSFilterChain(StripEmoji(), StripEmphasis(), StripBrackets(keep=VUI_TAGS))
 
 
-def model_paths() -> dict[str, str]:
-    """Each model file: its env var when set, else its place in MODELS_DIR."""
-    models_dir = Path(os.environ.get("MODELS_DIR", DEFAULT_MODELS_DIR))
-    paths = {
-        var: os.environ.get(var) or str(models_dir / name) for var, name in MODEL_FILES.items()
-    }
-    missing = [path for path in paths.values() if not Path(path).is_file()]
-    if missing:
-        logger.error("Model files not found, see 'Models' at the top of this example:")
-        for path in missing:
-            logger.error("  %s", path)
-        sys.exit(1)
-    return paths
-
-
 def build_turn_detector() -> SmartTurnDetector | None:
-    """Smart Turn v3 when its model is in MODELS_DIR: it hears whether a sentence is over.
+    """Smart Turn v3 once its model is downloaded: it hears whether a sentence is over.
 
     The VAD alone ends a turn at every 0.6 s pause, so "I'm just making [pause]
     a test with you" became two turns and two answers. A turn Smart Turn judges
     unfinished waits for more speech, and is still answered after 1.5 s.
     """
-    models_dir = Path(os.environ.get("MODELS_DIR", DEFAULT_MODELS_DIR))
-    model = models_dir / SMART_TURN_MODEL
-    if not model.is_file():
-        logger.info("Turn detection: VAD pauses only (no %s in %s)", SMART_TURN_MODEL, models_dir)
+    if not is_downloaded(SMART_TURN_MODEL):
+        logger.info("Turn detection: VAD pauses only (%s not downloaded)", SMART_TURN_MODEL)
         return None
     try:
-        detector = SmartTurnDetector(SmartTurnConfig(model_path=str(model)))
+        detector = SmartTurnDetector(SmartTurnConfig.from_local_model(SMART_TURN_MODEL))
     except ImportError as exc:
         logger.warning("Smart Turn needs its extra (--extra smart-turn): %s", exc)
         return None
-    logger.info("Turn detection: Smart Turn v3 (%s)", model.name)
+    logger.info("Turn detection: Smart Turn v3 (%s)", SMART_TURN_MODEL)
     return detector
 
 
@@ -257,7 +227,7 @@ def build_aec() -> AECProvider | None:
 
 
 async def main() -> None:
-    env = model_paths()
+    require_local_models(VAD_MODEL, STT_MODEL)
     if os.environ.get("VUI_DISABLE_CUDNN") == "1":
         import torch
 
@@ -283,9 +253,8 @@ async def main() -> None:
 
     # --- VAD and STT (sherpa-onnx, CPU: the GPU is Vui's and the LLM's) --------
     vad = SherpaOnnxVADProvider(
-        SherpaOnnxVADConfig(
-            model=env["VAD_MODEL"],
-            model_type="ten",
+        SherpaOnnxVADConfig.from_local_model(
+            VAD_MODEL,
             threshold=float(os.environ.get("VAD_THRESHOLD", "0.5")),
             silence_threshold_ms=600,
             min_speech_duration_ms=200,
@@ -294,21 +263,15 @@ async def main() -> None:
         )
     )
     stt = SherpaOnnxSTTProvider(
-        SherpaOnnxSTTConfig(
-            mode="transducer",
-            encoder=env["STT_ENCODER"],
-            decoder=env["STT_DECODER"],
-            joiner=env["STT_JOINER"],
-            tokens=env["STT_TOKENS"],
+        SherpaOnnxSTTConfig.from_local_model(
+            STT_MODEL,
             sample_rate=MIC_RATE,
             provider="cpu",
             # Kroko drops the last word with less (measured on Kroko FR).
             tail_padding_s=1.5,
         )
     )
-    logger.info(
-        "STT: sherpa-onnx streaming transducer, %s (CPU)", Path(env["STT_ENCODER"]).parent.name
-    )
+    logger.info("STT: sherpa-onnx streaming transducer, %s (CPU)", STT_MODEL)
 
     # --- Vui: the reply is generated inside the dialogue ------------------------
     voice_name = os.environ.get("VUI_VOICE", "maeve")

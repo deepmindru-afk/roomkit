@@ -12,28 +12,25 @@ Supported VAD models:
 Prerequisites:
     pip install roomkit[local-audio,sherpa-onnx]
 
-Download models:
-    # VAD (required)
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
-    # Denoiser (optional)
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx
+Models (download once, while online):
+    python -m roomkit.local_models download ten-vad gtcrn-simple
+    python -m roomkit.local_models download silero-vad   # for VAD_MODEL=silero-vad
 
 Run with VAD only:
-    VAD_MODEL=ten-vad.onnx uv run python examples/voice_sherpa_onnx_vad.py
+    uv run python examples/voice_sherpa_onnx_vad.py
 
 Run with VAD + Denoiser:
-    VAD_MODEL=ten-vad.onnx DENOISE_MODEL=gtcrn_simple.onnx \\
-        uv run python examples/voice_sherpa_onnx_vad.py
+    DENOISE=1 uv run python examples/voice_sherpa_onnx_vad.py
 
 Or with Silero:
-    VAD_MODEL=silero_vad.onnx VAD_MODEL_TYPE=silero \\
-        uv run python examples/voice_sherpa_onnx_vad.py
+    VAD_MODEL=silero-vad uv run python examples/voice_sherpa_onnx_vad.py
 
 Environment variables:
-    VAD_MODEL       (required) Path to VAD .onnx model file
-    VAD_MODEL_TYPE  Model type: ten | silero (default: ten)
+    VAD_MODEL       VAD local model: ten-vad | silero-vad (default: ten-vad)
     VAD_THRESHOLD   Speech probability threshold 0-1 (default: 0.35)
-    DENOISE_MODEL   Path to GTCRN denoiser .onnx model (optional)
+    DENOISE         1 enables the GTCRN denoiser (gtcrn-simple) (default: 0)
+    ROOMKIT_MODELS_DIR  Where the downloaded models live
+                    (default: ~/.cache/roomkit/models)
 
 Press Ctrl+C to stop.
 """
@@ -46,7 +43,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import require_env, run_until_stopped, setup_console, setup_logging
+from shared import (
+    env_bool,
+    require_local_models,
+    run_until_stopped,
+    setup_console,
+    setup_logging,
+)
 
 from roomkit import ChannelCategory, HookExecution, HookTrigger, RoomKit, VoiceChannel
 from roomkit.channels.ai import AIChannel
@@ -61,9 +64,9 @@ logger = setup_logging("voice_sherpa_onnx_vad")
 
 
 async def main() -> None:
-    env = require_env("VAD_MODEL")
-    model_path = env["VAD_MODEL"]
-    model_type = os.environ.get("VAD_MODEL_TYPE", "ten")
+    vad_model = os.environ.get("VAD_MODEL", "ten-vad")
+    denoise = env_bool("DENOISE", default=False)
+    require_local_models(vad_model, *(["gtcrn-simple"] if denoise else []))
     threshold = float(os.environ.get("VAD_THRESHOLD", "0.35"))
 
     kit = RoomKit()
@@ -81,33 +84,28 @@ async def main() -> None:
 
     # --- Neural VAD -----------------------------------------------------------
     vad = SherpaOnnxVADProvider(
-        SherpaOnnxVADConfig(
-            model=model_path,
-            model_type=model_type,
+        SherpaOnnxVADConfig.from_local_model(
+            vad_model,
             threshold=threshold,
             silence_threshold_ms=500,
             min_speech_duration_ms=250,
             sample_rate=sample_rate,
         )
     )
-    logger.info(
-        "VAD: sherpa-onnx (model_type=%s, threshold=%.2f, model=%s)",
-        model_type,
-        threshold,
-        model_path,
-    )
+    logger.info("VAD: sherpa-onnx (model=%s, threshold=%.2f)", vad_model, threshold)
 
     # --- Denoiser (optional, GTCRN via sherpa-onnx) ----------------------------
-    denoise_model = os.environ.get("DENOISE_MODEL", "")
     denoiser = None
-    if denoise_model:
+    if denoise:
         from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
             SherpaOnnxDenoiserConfig,
             SherpaOnnxDenoiserProvider,
         )
 
-        denoiser = SherpaOnnxDenoiserProvider(SherpaOnnxDenoiserConfig(model=denoise_model))
-        logger.info("Denoiser: sherpa-onnx GTCRN (model=%s)", denoise_model)
+        denoiser = SherpaOnnxDenoiserProvider(
+            SherpaOnnxDenoiserConfig.from_local_model("gtcrn-simple")
+        )
+        logger.info("Denoiser: sherpa-onnx GTCRN (model=gtcrn-simple)")
 
     # --- Pipeline config ------------------------------------------------------
     pipeline = AudioPipelineConfig(vad=vad, denoiser=denoiser)

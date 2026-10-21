@@ -43,10 +43,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import run_until_stopped, setup_logging
+from shared import require_local_models, run_until_stopped, setup_logging
 
 from roomkit import Agent, ChannelCategory, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.local_models import ModelNotDownloadedError
 from roomkit.providers.llamacpp import LlamaCppAIProvider, LlamaCppConfig
 from roomkit.voice.backends.local import LocalAudioBackend
 from roomkit.voice.pipeline import AudioPipelineConfig
@@ -87,12 +86,11 @@ def build_pipeline() -> AudioPipelineConfig:
 
 
 async def main() -> None:
-    try:
-        stt, tts = build_speech()
-        pipeline = build_pipeline()
-    except ModelNotDownloadedError as exc:
-        logger.error("%s", exc)
-        sys.exit(1)
+    require_local_models(
+        "zipformer-en-2023-06-26", "kokoro-int8-multi-lang-v1_0", "ten-vad", "smart-turn-v3.2-cpu"
+    )
+    stt, tts = build_speech()
+    pipeline = build_pipeline()
     # CPU on purpose: the point is a loop that needs no GPU anywhere.
     llm = LlamaCppAIProvider(
         LlamaCppConfig(

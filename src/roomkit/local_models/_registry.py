@@ -6,14 +6,15 @@ import os
 from pathlib import Path
 from typing import Any
 
+from roomkit.local_models._audio import PIPELINE_MODELS
 from roomkit.local_models._install import install, is_installed
 from roomkit.local_models._model import LocalModel
-from roomkit.local_models._sherpa_onnx import SHERPA_ONNX_MODELS
-from roomkit.local_models._smart_turn import SMART_TURN_MODELS
+from roomkit.local_models._stt import STT_MODELS
+from roomkit.local_models._tts import TTS_MODELS
 
 MODELS_DIR_ENV = "ROOMKIT_MODELS_DIR"
 
-LOCAL_MODELS: tuple[LocalModel, ...] = SHERPA_ONNX_MODELS + SMART_TURN_MODELS
+LOCAL_MODELS: tuple[LocalModel, ...] = STT_MODELS + TTS_MODELS + PIPELINE_MODELS
 
 
 class ModelNotDownloadedError(FileNotFoundError):

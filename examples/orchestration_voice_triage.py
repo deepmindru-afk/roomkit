@@ -15,12 +15,12 @@ is ready, it's injected into the advisor's context and shared on the next turn.
 Requirements:
     pip install roomkit[sip,gemini,deepgram,elevenlabs,sherpa-onnx]
 
-Models (download once):
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
+Models (download once, while online):
+    python -m roomkit.local_models download ten-vad
 
 Run with:
     GEMINI_API_KEY=... DEEPGRAM_API_KEY=... ELEVENLABS_API_KEY=... \\
-    VAD_MODEL=ten-vad.onnx python examples/orchestration_voice_triage.py
+    python examples/orchestration_voice_triage.py
 
 The agents speak French, so the STT listens in French by default.
 
@@ -29,7 +29,7 @@ Environment variables:
     GEMINI_API_KEY, GEMINI_MODEL
     DEEPGRAM_API_KEY, STT_LANGUAGE (default: fr, the agents' language)
     ELEVENLABS_API_KEY, VOICE_TRIAGE, VOICE_ADVISOR
-    VAD_MODEL, VAD_THRESHOLD
+    VAD_THRESHOLD
     CONSOLE (1 for the live console dashboard)
 """
 
@@ -43,7 +43,13 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import require_env, run_until_stopped, setup_console, setup_logging
+from shared import (
+    require_env,
+    require_local_models,
+    run_until_stopped,
+    setup_console,
+    setup_logging,
+)
 
 from roomkit import (
     Agent,
@@ -105,7 +111,8 @@ pipeline = ConversationPipeline(
 
 
 async def main() -> None:
-    env = require_env("GEMINI_API_KEY", "DEEPGRAM_API_KEY", "ELEVENLABS_API_KEY", "VAD_MODEL")
+    require_local_models("ten-vad")
+    env = require_env("GEMINI_API_KEY", "DEEPGRAM_API_KEY", "ELEVENLABS_API_KEY")
 
     kit = RoomKit(delivery_strategy=WaitForIdle())
 
@@ -121,8 +128,8 @@ async def main() -> None:
     # --- VAD -----------------------------------------------------------------
 
     vad = SherpaOnnxVADProvider(
-        SherpaOnnxVADConfig(
-            model=env["VAD_MODEL"],
+        SherpaOnnxVADConfig.from_local_model(
+            "ten-vad",
             threshold=float(os.environ.get("VAD_THRESHOLD", "0.35")),
             silence_threshold_ms=600,
             min_speech_duration_ms=200,

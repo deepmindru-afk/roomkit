@@ -19,6 +19,7 @@ from .env import auto_select_provider, env_bool, os_info, require_env, voice_lan
 from .hooks import enable_voice_debug, log_tool_call
 from .lifecycle import run_until_stopped
 from .log import setup_logging
+from .models import require_local_models
 from .tools import WebSearchTool
 
 __all__ = [
@@ -41,6 +42,7 @@ __all__ = [
     "os_info",
     "pcm_from_wav_url",
     "require_env",
+    "require_local_models",
     "run_until_stopped",
     "setup_console",
     "setup_logging",

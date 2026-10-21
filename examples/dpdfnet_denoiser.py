@@ -12,22 +12,26 @@ from one frame to the next, so the output trails the input by a constant 50 ms
 (four 10 ms hops inside the model, one held back by the overlap-add). Run the
 same file with ``--model-type gtcrn`` to compare with the default GTCRN model.
 
-A 16 kHz model denoises a 16 kHz pipeline; ``dpdfnet2_48khz_hr.onnx`` a 48 kHz
-one. Frames at another rate pass through unchanged, with a warning.
+A 16 kHz model denoises a 16 kHz pipeline; the 48 kHz model
+(``dpdfnet2-48khz-hr``) a 48 kHz one. Frames at another rate pass through
+unchanged, with a warning.
 
-Models and test audio (download once, into examples/models/)::
+Models (download once, while online)::
+
+    python -m roomkit.local_models download dpdfnet2 gtcrn-simple
+
+Test audio (download once, into examples/models/)::
 
     mkdir -p examples/models && cd examples/models
-    base=https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models
-    wget $base/dpdfnet2.onnx $base/gtcrn_simple.onnx $base/speech_with_noise.wav
-    sha256sum dpdfnet2.onnx gtcrn_simple.onnx speech_with_noise.wav
-    # ce35d6025fc71df0ef10d1540e1b7916837bbfe5f6896deb744508d2cad487a9  dpdfnet2.onnx
-    # e77603ac0c23dac3227dd2d7135b3a585cbee2679048aecfa886657d3ae1b534  gtcrn_simple.onnx
+    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/speech_with_noise.wav
+    sha256sum speech_with_noise.wav
     # 9354345a6297f4522e690d337546aa9a686a7e61eefcd935478a2141b924db8f  speech_with_noise.wav
     cd ../..
 
-The same release has ``dpdfnet_baseline.onnx`` (lighter), ``dpdfnet4.onnx``,
-``dpdfnet8.onnx`` and ``dpdfnet2_48khz_hr.onnx``.
+The same release has ``dpdfnet_baseline.onnx`` (lighter), ``dpdfnet4.onnx`` and
+``dpdfnet8.onnx``: download one and pass it with ``--model``. For a 48 kHz
+file, ``python -m roomkit.local_models download dpdfnet2-48khz-hr`` and pass
+``--model "$(python -m roomkit.local_models path dpdfnet2-48khz-hr)/dpdfnet2_48khz_hr.onnx"``.
 
 Requires:
     pip install roomkit[sherpa-onnx]   # sherpa-onnx 1.12.30 or later
@@ -50,7 +54,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from shared import setup_logging
+from shared import require_local_models, setup_logging
 
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.pipeline import AudioPipeline, AudioPipelineConfig
@@ -62,7 +66,7 @@ from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
 logger = setup_logging("dpdfnet_denoiser")
 
 MODELS = Path(__file__).resolve().parent / "models"
-DEFAULT_MODEL = {"dpdfnet": "dpdfnet2.onnx", "gtcrn": "gtcrn_simple.onnx"}
+LOCAL_MODEL = {"dpdfnet": "dpdfnet2", "gtcrn": "gtcrn-simple"}
 FRAME_MS = 20
 
 
@@ -97,21 +101,26 @@ def quiet_frames_db(noisy: np.ndarray, denoised: np.ndarray, frame: int) -> floa
 def main() -> None:
     parser = argparse.ArgumentParser(description="DPDFNet on the inbound audio pipeline")
     parser.add_argument("--model-type", choices=("dpdfnet", "gtcrn"), default="dpdfnet")
-    parser.add_argument("--model", type=Path, help="model file (default: examples/models/...)")
+    parser.add_argument("--model", type=Path, help="model file (default: the local model)")
     parser.add_argument("--input", type=Path, default=MODELS / "speech_with_noise.wav")
     parser.add_argument("--output", type=Path, help="denoised WAV (default: <input>.<model>.wav)")
     args = parser.parse_args()
 
-    model = args.model or MODELS / DEFAULT_MODEL[args.model_type]
-    for path in (model, args.input):
-        if not path.exists():
+    local_model = LOCAL_MODEL[args.model_type]
+    if args.model is None:
+        require_local_models(local_model)
+    for path in (args.model, args.input):
+        if path is not None and not path.exists():
             raise SystemExit(f"{path} is missing: see the download steps at the top of this file.")
     output = args.output or args.input.with_suffix(f".{args.model_type}.wav")
 
     pcm, rate = read_wav(args.input)
-    denoiser = SherpaOnnxDenoiserProvider(
-        SherpaOnnxDenoiserConfig(model_type=args.model_type, model=str(model))
-    )
+    if args.model is None:
+        config = SherpaOnnxDenoiserConfig.from_local_model(local_model)
+    else:
+        config = SherpaOnnxDenoiserConfig(model_type=args.model_type, model=str(args.model))
+    model_name = Path(config.model).name
+    denoiser = SherpaOnnxDenoiserProvider(config)
     pipeline = AudioPipeline(AudioPipelineConfig(denoiser=denoiser))
 
     frame_bytes = rate * FRAME_MS // 1000 * 2
@@ -140,7 +149,7 @@ def main() -> None:
     logger.info(
         "%s (%s) on %s: %.1f s at %d Hz",
         args.model_type,
-        model.name,
+        model_name,
         args.input.name,
         seconds,
         rate,

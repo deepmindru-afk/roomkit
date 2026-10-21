@@ -35,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its models downloaded once by name (zipformer, Kokoro, TEN-VAD, Smart Turn),
   SmolLM2 through llama.cpp, RNNoise.
 
+- Eight more local models (RMK-894), seventeen in all: Parakeet TDT v3
+  (offline STT, 25 European languages), Whisper tiny.en and Whisper base
+  (multilingual, language detected unless `language=` fixes it), the small
+  zipformer-en-20M, the French Piper voice siwis, DPDFNet2 at 16 and 48 kHz,
+  and the Smart Turn v3.2 GPU build. The examples that downloaded sherpa-onnx
+  or Smart Turn models by hand now build them by name and say which
+  `python -m roomkit.local_models download` to run.
+
 ### Fixed
 
 - In continuous mode, an acknowledgement whose first partial was taken for

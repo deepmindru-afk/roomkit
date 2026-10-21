@@ -22,38 +22,17 @@ How it works:
 Requirements:
     pip install roomkit[local-audio,vllm,sherpa-onnx,smart-turn]
 
-Download models:
-    # smart-turn (required for this example)
-    wget https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx
-
-    # VAD — TEN-VAD
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/ten-vad.onnx
-
-    # STT — Zipformer transducer (streaming)
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
-    tar xf sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06.tar.bz2
-
-    # TTS — VITS (Piper voices)
-    wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-low.tar.bz2
-    tar xf vits-piper-en_US-amy-low.tar.bz2
+Models (download once, while online):
+    python -m roomkit.local_models download \\
+        smart-turn-v3.2-cpu ten-vad zipformer-en-kroko-2025-08-06 vits-piper-en_US-amy-low
 
 Run:
     LLM_MODEL=qwen3:8b \\
     LLM_BASE_URL=http://localhost:11434/v1 \\
-    SMART_TURN_MODEL=smart-turn-v3.2-cpu.onnx \\
-    VAD_MODEL=ten-vad.onnx \\
-    STT_ENCODER=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/encoder.onnx \\
-    STT_DECODER=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/decoder.onnx \\
-    STT_JOINER=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/joiner.onnx \\
-    STT_TOKENS=sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06/tokens.txt \\
-    TTS_MODEL=vits-piper-en_US-amy-low/en_US-amy-low.onnx \\
-    TTS_TOKENS=vits-piper-en_US-amy-low/tokens.txt \\
-    TTS_DATA_DIR=vits-piper-en_US-amy-low/espeak-ng-data \\
     uv run python examples/voice_smart_turn.py
 
 Environment variables:
     --- Smart turn detection ---
-    SMART_TURN_MODEL      (required) Path to smart-turn .onnx model
     SMART_TURN_THRESHOLD  Completion probability threshold 0-1 (default: 0.5)
                           Lower values make the detector more eager to complete turns.
                           Higher values wait longer for natural turn endings.
@@ -65,24 +44,17 @@ Environment variables:
     LLM_MAX_TOKENS        Max response tokens (default: 256)
     SYSTEM_PROMPT         Custom system prompt
 
-    --- STT (sherpa-onnx) ---
-    STT_MODE              Recognition mode: transducer | whisper (default: transducer)
-    STT_ENCODER           (required) Path to encoder .onnx
-    STT_DECODER           (required) Path to decoder .onnx
-    STT_JOINER            Path to joiner .onnx (transducer mode)
-    STT_TOKENS            (required) Path to tokens.txt
-
-    --- TTS (sherpa-onnx) ---
-    TTS_MODEL             (required) Path to VITS/Piper .onnx model
-    TTS_TOKENS            (required) Path to tokens.txt
-    TTS_DATA_DIR          Path to espeak-ng data dir (Piper models)
-    TTS_SAMPLE_RATE       Output sample rate of the voice (default: 22050)
+    --- Speech (sherpa-onnx local models) ---
+    STT_MODEL             Local STT model (default: zipformer-en-kroko-2025-08-06;
+                          python -m roomkit.local_models list --kind sherpa-onnx-stt)
+    TTS_MODEL             Local TTS model (default: vits-piper-en_US-amy-low;
+                          python -m roomkit.local_models list --kind sherpa-onnx-tts)
 
     --- VAD (sherpa-onnx) ---
-    VAD_MODEL             (required) Path to VAD .onnx model
     VAD_THRESHOLD         Speech probability threshold 0-1 (default: 0.35)
 
     --- Other ---
+    ROOMKIT_MODELS_DIR    Where the downloaded models live (default: ~/.cache/roomkit/models)
     CONSOLE               1 shows the RoomKit console dashboard (default: 0)
 
 Press Ctrl+C to stop.
@@ -96,7 +68,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared import require_env, run_until_stopped, setup_console, setup_logging
+from shared import (
+    require_env,
+    require_local_models,
+    run_until_stopped,
+    setup_console,
+    setup_logging,
+)
 
 from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.channels.ai import AIChannel
@@ -110,23 +88,21 @@ from roomkit.voice.tts.sherpa_onnx import SherpaOnnxTTSConfig, SherpaOnnxTTSProv
 
 logger = setup_logging("voice_smart_turn")
 
+SMART_TURN = "smart-turn-v3.2-cpu"
+VAD_MODEL = "ten-vad"
+
 
 async def main() -> None:
-    env = require_env(
-        "SMART_TURN_MODEL",
-        "LLM_MODEL",
-        "VAD_MODEL",
-        "STT_ENCODER",
-        "STT_DECODER",
-        "STT_TOKENS",
-        "TTS_MODEL",
-        "TTS_TOKENS",
-    )
+    env = require_env("LLM_MODEL")
+    stt_model = os.environ.get("STT_MODEL", "zipformer-en-kroko-2025-08-06")
+    tts_model = os.environ.get("TTS_MODEL", "vits-piper-en_US-amy-low")
+    require_local_models(SMART_TURN, VAD_MODEL, stt_model, tts_model)
 
     kit = RoomKit()
     console_cleanup = setup_console(kit)
     sample_rate = 16000
-    tts_sample_rate = int(os.environ.get("TTS_SAMPLE_RATE", "22050"))
+    tts_config = SherpaOnnxTTSConfig.from_local_model(tts_model)
+    tts_sample_rate = tts_config.sample_rate
 
     # --- Backend: local mic + speakers ----------------------------------------
     backend = LocalAudioBackend(
@@ -138,8 +114,8 @@ async def main() -> None:
 
     # --- VAD (sherpa-onnx neural VAD) -----------------------------------------
     vad = SherpaOnnxVADProvider(
-        SherpaOnnxVADConfig(
-            model=env["VAD_MODEL"],
+        SherpaOnnxVADConfig.from_local_model(
+            VAD_MODEL,
             threshold=float(os.environ.get("VAD_THRESHOLD", "0.35")),
             silence_threshold_ms=600,
             min_speech_duration_ms=200,
@@ -149,17 +125,13 @@ async def main() -> None:
     )
 
     # --- Smart turn detector --------------------------------------------------
-    smart_turn_model = env["SMART_TURN_MODEL"]
     smart_turn_threshold = float(os.environ.get("SMART_TURN_THRESHOLD", "0.5"))
     turn_detector = SmartTurnDetector(
-        SmartTurnConfig(
-            model_path=smart_turn_model,
-            threshold=smart_turn_threshold,
-        )
+        SmartTurnConfig.from_local_model(SMART_TURN, threshold=smart_turn_threshold)
     )
     logger.info(
         "Turn detection: smart-turn (model=%s, threshold=%.2f)",
-        smart_turn_model,
+        SMART_TURN,
         smart_turn_threshold,
     )
 
@@ -171,25 +143,11 @@ async def main() -> None:
 
     # --- STT (sherpa-onnx) ----------------------------------------------------
     stt = SherpaOnnxSTTProvider(
-        SherpaOnnxSTTConfig(
-            mode=os.environ.get("STT_MODE", "transducer"),
-            encoder=env["STT_ENCODER"],
-            decoder=env["STT_DECODER"],
-            joiner=os.environ.get("STT_JOINER", ""),
-            tokens=env["STT_TOKENS"],
-            sample_rate=sample_rate,
-        )
+        SherpaOnnxSTTConfig.from_local_model(stt_model, sample_rate=sample_rate)
     )
 
     # --- TTS (sherpa-onnx) ----------------------------------------------------
-    tts = SherpaOnnxTTSProvider(
-        SherpaOnnxTTSConfig(
-            model=env["TTS_MODEL"],
-            tokens=env["TTS_TOKENS"],
-            data_dir=os.environ.get("TTS_DATA_DIR", ""),
-            sample_rate=tts_sample_rate,
-        )
-    )
+    tts = SherpaOnnxTTSProvider(tts_config)
 
     # --- LLM (local via OpenAI-compatible API) --------------------------------
     llm_model = env["LLM_MODEL"]
