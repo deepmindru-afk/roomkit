@@ -317,6 +317,39 @@ async def test_phrase_detector_cuts_in_when_the_okay_becomes_a_question() -> Non
     await kit.close()
 
 
+async def test_phrase_detector_talks_through_an_acknowledgement_said_word_by_word() -> None:
+    """ "Je" alone may be "Je vois": the held segment waits for its next words (RMK-889)."""
+    kit, channel, session, _, seen = await _room(
+        _PartialsSTT(["Je", "Je vois"]), detector=PhraseBackchannelDetector()
+    )
+
+    channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
+    await asyncio.sleep(0.05)
+    channel._on_pipeline_speech_end(session, b"\x11\x22" * 160)  # noqa: SLF001
+    await asyncio.sleep(0.4)
+
+    assert seen["barge_in"] == []
+    assert len(seen["backchannel"]) == 1
+    assert session.id in channel._playing_sessions  # noqa: SLF001
+    await kit.close()
+
+
+async def test_phrase_detector_cuts_in_on_a_final_left_pending() -> None:
+    """ "No" might have been "noted": its final, "No", is judged whole and cuts."""
+    kit, channel, session, _, seen = await _room(
+        _PartialsSTT(["No"]), detector=PhraseBackchannelDetector()
+    )
+
+    channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
+    await asyncio.sleep(0.05)
+    channel._on_pipeline_speech_end(session, b"\x11\x22" * 160)  # noqa: SLF001
+    await asyncio.sleep(0.4)
+
+    assert len(seen["barge_in"]) == 1
+    assert [e.text for e in seen["transcription"]] == ["No"]
+    await kit.close()
+
+
 class TestHeldSpeechEndingBeforeItsWords:
     """A held segment that ends before its first word is judged on its final
     transcript, not discarded unheard (RFC §12.3.13)."""

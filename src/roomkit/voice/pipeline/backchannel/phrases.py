@@ -311,13 +311,13 @@ def _words(text: str) -> tuple[str, ...]:
     return tuple(_WORD.findall(_REPEATED.sub(r"\1", text.lower())))
 
 
-def _heard_words(transcript: str) -> tuple[str, ...]:
-    """The words of *transcript*, a hummed "no" ("mm-mm") read as "no".
+def _heard(transcript: str) -> str:
+    """*transcript* with a hummed "no" ("mm-mm") written "no".
 
     The transcript's only: a phrase list naming "mm-mm" never makes "no" an
     acknowledgement.
     """
-    return _words(_HUMMED_NO.sub(" no ", transcript))
+    return _HUMMED_NO.sub(" no ", transcript)
 
 
 class PhraseBackchannelDetector(BackchannelDetector):
@@ -332,6 +332,13 @@ class PhraseBackchannelDetector(BackchannelDetector):
     The detector reads words. Without any (the transcript is empty or not
     there yet), it judges no utterance a backchannel and the strategy falls
     back on speech duration, as ``CONFIRMED`` does (RFC §12.3.13).
+
+    A partial transcript (``BackchannelContext.is_final`` false) that is
+    acknowledgements and then the start of one gives no verdict yet
+    (``pending``): its last word may be a piece of the word being said, as a
+    streaming STT that writes pieces of words gives it ("Ou" of "Ouais"), or
+    a phrase may be half said ("Thank" of "Thank you"). Its next words decide.
+    A last word followed by a space or punctuation is whole.
 
     Args:
         phrases: The acknowledgements, matched case-insensitively and
@@ -362,17 +369,28 @@ class PhraseBackchannelDetector(BackchannelDetector):
         return "PhraseBackchannelDetector"
 
     def classify(self, context: BackchannelContext) -> BackchannelDecision:
-        words = _heard_words(context.transcript or "")
+        transcript = _heard(context.transcript or "")
+        words = _words(transcript)
         if not words:
             return BackchannelDecision(
                 is_backchannel=not self._cut_without_words, confidence=0.5, label="no words"
             )
-        if len(words) <= self._max_words and self._made_of_phrases(words):
+        if len(words) > self._max_words:
+            return BackchannelDecision(is_backchannel=False, label="interruption")
+        reachable = self._reachable(words)
+        if reachable[-1]:
             return BackchannelDecision(is_backchannel=True, label="acknowledgement")
+        # A last word the transcript ends inside may be a piece of the word.
+        open_end = _WORD.fullmatch(transcript[-1:]) is not None
+        if not context.is_final and self._may_become_phrases(words, reachable, open_end):
+            return BackchannelDecision(
+                is_backchannel=False, confidence=0.5, label="unfinished", pending=True
+            )
         return BackchannelDecision(is_backchannel=False, label="interruption")
 
-    def _made_of_phrases(self, words: tuple[str, ...]) -> bool:
-        """Whether *words* split entirely into known phrases."""
+    def _reachable(self, words: tuple[str, ...]) -> list[bool]:
+        """For each position of *words*, whether the words before it split
+        entirely into known phrases."""
         reachable = [True] + [False] * len(words)
         for start in range(len(words)):
             if not reachable[start]:
@@ -380,4 +398,27 @@ class PhraseBackchannelDetector(BackchannelDetector):
             for size in range(1, min(self._longest, len(words) - start) + 1):
                 if words[start : start + size] in self._phrases:
                     reachable[start + size] = True
-        return reachable[-1]
+        return reachable
+
+    def _may_become_phrases(
+        self, words: tuple[str, ...], reachable: list[bool], open_end: bool
+    ) -> bool:
+        """Whether *words* are known phrases, then the start of one: its first
+        words, the last of them only begun when *open_end*."""
+        return any(
+            _begins(phrase, words[start:], open_end)
+            for start in range(len(words))
+            if reachable[start]
+            for phrase in self._phrases
+        )
+
+
+def _begins(phrase: tuple[str, ...], words: tuple[str, ...], open_end: bool) -> bool:
+    """Whether *words* begin *phrase* without saying all of it."""
+    *whole, last = words
+    if len(phrase) < len(words) or phrase[: len(whole)] != tuple(whole):
+        return False
+    word = phrase[len(whole)]
+    if word == last:
+        return len(phrase) > len(words)
+    return open_end and word.startswith(last)

@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import pytest
 
+from roomkit.voice.interruption import (
+    InterruptionConfig,
+    InterruptionHandler,
+    InterruptionStrategy,
+)
 from roomkit.voice.pipeline.backchannel import (
     ENGLISH_BACKCHANNELS,
     BackchannelContext,
+    BackchannelDecision,
     PhraseBackchannelDetector,
 )
 
@@ -232,3 +238,68 @@ def test_phrases_can_be_replaced() -> None:
     assert _is_backchannel("okay", english_only)
     assert not _is_backchannel("ouais", english_only)
     assert _is_backchannel("tiens donc", PhraseBackchannelDetector(["tiens donc"]))
+
+
+def _partial(text: str) -> BackchannelDecision:
+    context = BackchannelContext(transcript=text, is_final=False)
+    return PhraseBackchannelDetector().classify(context)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Ou",  # of "Ouais", as Voxtral wrote it live (RMK-889)
+        "D",  # of "D'accord"
+        "D'",
+        "Je",  # of "Je vois", Voxtral's first partial of it
+        "Pas de",  # of "Pas de souci"
+        "Thank",  # of "Thank you"
+        "Yeah ri",  # of "Yeah, right"
+        "Ok, je",  # of "Ok, je vois"
+    ],
+)
+def test_a_partial_that_may_still_become_an_acknowledgement_is_pending(text: str) -> None:
+    decision = _partial(text)
+    assert decision.pending
+    assert not decision.is_backchannel
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["No,", "Non", "Stop", "Wait", "Attends", "Mais", "Oublie", "Ou,", "Je voudrais", "I want"],
+)
+def test_a_partial_that_cannot_become_one_cuts_at_once(text: str) -> None:
+    decision = _partial(text)
+    assert not decision.pending
+    assert not decision.is_backchannel
+
+
+def test_a_partial_acknowledgement_is_one_already() -> None:
+    assert _partial("Ouais").is_backchannel
+    assert _partial("Je vois").is_backchannel
+
+
+@pytest.mark.parametrize("text", ["Ou", "Je", "Thank"])
+def test_a_final_is_judged_as_it_is(text: str) -> None:
+    """No later words come to complete a final: what it says decides."""
+    decision = PhraseBackchannelDetector().classify(BackchannelContext(transcript=text))
+    assert not decision.pending
+    assert not decision.is_backchannel
+
+
+def test_a_pending_verdict_neither_cuts_nor_lets_through() -> None:
+    handler = InterruptionHandler(
+        InterruptionConfig(
+            strategy=InterruptionStrategy.SEMANTIC,
+            backchannel_detector=PhraseBackchannelDetector(),
+        )
+    )
+
+    partial = handler.evaluate(playback_position_ms=2000, speech_text="Ou", speech_final=False)
+    final = handler.evaluate(playback_position_ms=2000, speech_text="Ou")
+
+    assert not partial.should_interrupt
+    assert not partial.is_backchannel
+    assert partial.awaiting_transcript
+    assert partial.pending_confirmation  # a timer looks at the words again
+    assert final.should_interrupt

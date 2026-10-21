@@ -206,6 +206,7 @@ class STTHost(Protocol):
     _speech_started_at: dict[str, float]
     _burst_words: dict[str, str]
     _burst_backchannel: dict[str, str]
+    _burst_pending: dict[str, str]
     _echo_bursts: dict[str, TTSPlaybackState]
     _voices_heard_alone: dict[str, set[str]]
     _speaker_trackers: dict[str, SpeakerTracker]
@@ -248,6 +249,7 @@ class VoiceSTTMixin:
     _speech_started_at: dict[str, float]
     _burst_words: dict[str, str]
     _burst_backchannel: dict[str, str]
+    _burst_pending: dict[str, str]
     _echo_bursts: dict[str, TTSPlaybackState]
     _voices_heard_alone: dict[str, set[str]]
     _speaker_trackers: dict[str, SpeakerTracker]
@@ -455,7 +457,9 @@ class VoiceSTTMixin:
                     if result.text:
                         # A segment SEMANTIC holds during playback is judged
                         # on its words as they come (RFC §12.3.13).
-                        self._on_held_transcript(session, room_id, result.text)
+                        self._on_held_transcript(
+                            session, room_id, result.text, final=result.is_final
+                        )
             except asyncio.CancelledError:
                 state.cancelled = True
             except Exception:
@@ -584,6 +588,7 @@ class VoiceSTTMixin:
                 speech_duration_ms=speech_duration_ms,
                 speech_text=words,
                 transcript_expected=True,
+                speech_final=False,  # the latest partial: its last word may be cut
             )
             if decision.is_backchannel:
                 self._report_burst_backchannel(session, words, room_id)
@@ -612,10 +617,16 @@ class VoiceSTTMixin:
         with self._state_lock:
             self._burst_words[session_id] = text
 
+    def _words_left_pending(self, session_id: str) -> bool:
+        """Whether the utterance's last words were left with no verdict."""
+        with self._state_lock:
+            return session_id in self._burst_pending
+
     def _forget_burst_words(self, session_id: str) -> None:
         with self._state_lock:
             self._burst_words.pop(session_id, None)
             self._burst_backchannel.pop(session_id, None)
+            self._burst_pending.pop(session_id, None)
             self._echo_bursts.pop(session_id, None)
 
     def _waits_for_words(
@@ -654,6 +665,7 @@ class VoiceSTTMixin:
             if not holds and words and echoes(words, playback.text):
                 self._burst_words.pop(session_id, None)
                 self._burst_backchannel.pop(session_id, None)
+                self._burst_pending.pop(session_id, None)
         return playback.text if holds else None
 
     def _echoes_burst(self, session_id: str, text: str) -> bool:
@@ -712,13 +724,15 @@ class VoiceSTTMixin:
     def _final_cuts_in(
         self, session: VoiceSession, playback: TTSPlaybackState, text: str, room_id: str
     ) -> bool:
-        """Judge a final over *playback* whose first words were taken for its echo.
+        """Judge a final over *playback* whose first words were taken for its
+        echo, or left with no verdict, still being said.
 
         Nothing cut the response, as its partials echoed it; the final says
         words the response does not, so it is the person: judged now, as a
         whole utterance (past any minimum of sustained speech), and when the
         policy cuts, the playback is cut and the final is the turn (RFC
-        §12.3.13).
+        §12.3.13). So is a final whose last partial was pending ("No" that
+        might have been "noted"): no later words came to decide.
         """
         decision = self._judge_barge_in(
             session.id,
@@ -978,6 +992,11 @@ class VoiceSTTMixin:
                             echo_of_response = held_back_by is not None and echoes(
                                 result.text, held_back_by, cut_short=False
                             )
+                            # Words the partials left undecided, or that
+                            # were not the echo after all: the final decides.
+                            judge_final = self._words_left_pending(session.id) or (
+                                held_back_by is not None and not echo_of_response
+                            )
                             # The utterance is over: its words and verdict
                             # say nothing about the next one.
                             self._forget_burst_words(session.id)
@@ -998,8 +1017,7 @@ class VoiceSTTMixin:
                             if (
                                 not barge_in_fired
                                 and playback is not None
-                                and held_back_by is not None
-                                and not echo_of_response
+                                and judge_final
                                 and self._final_cuts_in(session, playback, result.text, room_id)
                             ):
                                 barge_in_fired = True
@@ -1081,7 +1099,10 @@ class VoiceSTTMixin:
                                     # from "wait, stop".
                                     self._note_burst_words(session.id, result.text)
                                     decision = self._judge_barge_in(
-                                        session.id, playback, speech_text=result.text
+                                        session.id,
+                                        playback,
+                                        speech_text=result.text,
+                                        speech_final=False,
                                     )
                                     if decision.is_backchannel:
                                         self._report_burst_backchannel(

@@ -702,7 +702,11 @@ async def _voices_over_a_response(
                 session_id=session.id, text=_LAMP, started_at=datetime.now(UTC)
             )
         await stt.results.put(TranscriptionResult(text="", is_speech_start=True))
-        await stt.results.put(TranscriptionResult(text=words.split()[0], is_final=False))
+        # Word by word, as a streaming STT writes them: a first word that may
+        # open an acknowledgement ("Eh" of "eh boy") decides nothing alone.
+        for count in (1, 2):
+            partial = " ".join(words.split()[:count])
+            await stt.results.put(TranscriptionResult(text=partial, is_final=False))
         await asyncio.sleep(0.05)
         playing.pop(session.id, None)  # cut, or over
         await stt.results.put(

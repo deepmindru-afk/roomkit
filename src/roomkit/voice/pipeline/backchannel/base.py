@@ -29,6 +29,12 @@ class BackchannelContext:
     metadata: dict[str, Any] = field(default_factory=dict)
     """Additional context for the classifier."""
 
+    is_final: bool = True
+    """Whether ``transcript`` is the whole utterance. ``False`` for a partial
+    transcript of speech still under way: its last word may be a piece of
+    the word being said ("Ou" of "Ouais"), as a streaming STT that writes
+    pieces of words gives it."""
+
 
 @dataclass
 class BackchannelDecision:
@@ -42,6 +48,12 @@ class BackchannelDecision:
 
     label: str | None = None
     """Classification label (e.g. ``"acknowledgement"``, ``"filler"``)."""
+
+    pending: bool = False
+    """No verdict yet: a partial transcript that may still become a
+    backchannel, as its last word is being said ("Ou" of "Ouais"). The
+    utterance is judged again on its next words; ``is_backchannel`` is then
+    ``False`` and means nothing."""
 
 
 class BackchannelDetector(ABC):

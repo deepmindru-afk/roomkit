@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Under `InterruptionStrategy.SEMANTIC`, an acknowledgement a streaming STT
+  writes word by word, or in pieces of words, no longer cuts the agent at its
+  first partial (RMK-889, RFC §12.3.13). Live, Voxtral wrote "Ou" before
+  "Ouais", "Je" before "Je vois", "D" before "D'accord": judged alone, each
+  first partial was no acknowledgement, the agent was cut, then answered the
+  acknowledgement as a turn. `PhraseBackchannelDetector` gives a partial that
+  may still become an acknowledgement no verdict yet, and the next words
+  decide; a final its partials left so is judged whole ("No" might have been
+  "noted": "No." cuts). A real interruption whose first words may open an
+  acknowledgement ("Je voudrais…", "I want…") cuts one partial later, 0.06 to
+  0.35 s on Voxtral; "non", "stop", "attends", "wait" still cut at once. For
+  a detector of one's own: `BackchannelContext.is_final` (default `True`)
+  says whether the transcript is a partial, `BackchannelDecision.pending`
+  (default `False`) gives no verdict yet, and `InterruptionHandler.evaluate`
+  takes `speech_final=` (default `True`).
+
 - The first turn of an agent no longer waits about 0.9 s before its model is
   called (RMK-888): an `AIChannel` or `ACPChannel` compiles the patterns that
   find a copy of a runtime mark (RFC §6.4) as it joins a room, as a

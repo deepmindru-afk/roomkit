@@ -379,10 +379,12 @@ class VoiceChannel(
         # SEMANTIC segments held during playback while their words are
         # transcribed (session_id -> whether ON_BACKCHANNEL already fired)
         self._held_for_transcript: dict[str, bool] = {}
-        # Continuous mode: latest words of the speech burst under way, and
-        # the words of it judged a backchannel (SEMANTIC, RFC §12.3.13)
+        # Continuous mode: latest words of the speech burst under way, the
+        # words of it judged a backchannel, and those left with no verdict
+        # yet, still being said (SEMANTIC, RFC §12.3.13)
         self._burst_words: dict[str, str] = {}
         self._burst_backchannel: dict[str, str] = {}
+        self._burst_pending: dict[str, str] = {}
         # Response audio each session played (ms), and the playback whose
         # echo the speech under way was taken for (echo_guard_ms, §12.3.13)
         self._session_played_ms: dict[str, int] = {}
@@ -1470,6 +1472,7 @@ class VoiceChannel(
         self._held_for_transcript.pop(session_id, None)
         self._burst_words.pop(session_id, None)
         self._burst_backchannel.pop(session_id, None)
+        self._burst_pending.pop(session_id, None)
         self._echo_bursts.pop(session_id, None)
         self._voices_heard_alone.pop(session_id, None)
         self._session_played_ms.pop(session_id, None)
@@ -1716,8 +1719,11 @@ class VoiceChannel(
             return ""
         return state.partial_text or state.final_text or ""
 
-    def _on_held_transcript(self, session: VoiceSession, room_id: str, text: str) -> None:
-        """Classify the words of a held SEMANTIC segment as they arrive."""
+    def _on_held_transcript(
+        self, session: VoiceSession, room_id: str, text: str, *, final: bool = True
+    ) -> None:
+        """Classify the words of a held SEMANTIC segment as they arrive; *final*
+        when they are the STT's final transcript of it."""
         with self._state_lock:
             if session.id not in self._held_for_transcript:
                 return
@@ -1730,7 +1736,11 @@ class VoiceChannel(
             return
         duration_ms = int((time.monotonic() - onset) * 1000) if onset is not None else 0
         decision = self._judge_barge_in(
-            session.id, playback, speech_duration_ms=duration_ms, speech_text=text
+            session.id,
+            playback,
+            speech_duration_ms=duration_ms,
+            speech_text=text,
+            speech_final=final,
         )
         if decision.should_interrupt:
             with self._state_lock:
@@ -1856,12 +1866,14 @@ class VoiceChannel(
                     return
                 words, transcript_expected = self._barge_in_words(session.id)
                 speech_duration_ms = int((time.monotonic() - onset) * 1000)
+                # The words of speech still under way: its last may be cut.
                 decision = self._judge_barge_in(
                     session.id,
                     playback,
                     speech_duration_ms=speech_duration_ms,
                     speech_text=words,
                     transcript_expected=transcript_expected,
+                    speech_final=False,
                 )
                 if decision.is_backchannel:
                     if from_vad:
@@ -1903,12 +1915,15 @@ class VoiceChannel(
         speech_duration_ms: int = 0,
         speech_text: str = "",
         transcript_expected: bool = False,
+        speech_final: bool = True,
     ) -> InterruptionDecision:
         """The interruption policy's verdict on speech over *playback*.
 
         It reads the response's text and the session's played audio for the
         echo guard (RFC §12.3.13), and remembers the playback whose echo the
-        speech under way was taken for: its final is then no turn.
+        speech under way was taken for: its final is then no turn. In
+        continuous mode it also remembers words left with no verdict, still
+        being said ("Ou" of "Ouais"): the utterance's final is then judged.
         """
         played = playback.played_ms
         decision = self._interruption_handler.evaluate(
@@ -1918,7 +1933,10 @@ class VoiceChannel(
             transcript_expected=transcript_expected,
             response_text=playback.text,
             session_played_ms=self._session_played(session_id, playback),
+            speech_final=speech_final,
         )
+        if self._continuous_stt and speech_text:
+            self._note_pending_words(session_id, speech_text, decision)
         if decision.is_echo:
             with self._state_lock:
                 first = self._echo_bursts.get(session_id) is not playback
@@ -1926,6 +1944,16 @@ class VoiceChannel(
             if first:  # once per utterance: the energy path asks at every frame
                 logger.info("Taken for the response's echo: %r (pos=%dms)", speech_text, played)
         return decision
+
+    def _note_pending_words(
+        self, session_id: str, words: str, decision: InterruptionDecision
+    ) -> None:
+        """Keep *words* while their verdict is pending, drop them on any other."""
+        with self._state_lock:
+            if decision.awaiting_transcript:
+                self._burst_pending[session_id] = words
+            else:
+                self._burst_pending.pop(session_id, None)
 
     def _session_played(self, session_id: str, playback: TTSPlaybackState) -> int:
         """Response audio the session played in all (ms), *playback* included."""
@@ -2189,7 +2217,11 @@ class VoiceChannel(
         # way the VAD path does.
         words, transcript_expected = self._barge_in_words(session.id)
         decision = self._judge_barge_in(
-            session.id, playback, speech_text=words, transcript_expected=transcript_expected
+            session.id,
+            playback,
+            speech_text=words,
+            transcript_expected=transcript_expected,
+            speech_final=False,
         )
         if not decision.should_interrupt:
             if decision.is_backchannel and self._continuous_stt:

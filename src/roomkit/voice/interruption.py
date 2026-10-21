@@ -14,6 +14,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.voice.interruption")
 
+_PENDING_LOOK_AGAIN_MS = 100
+"""How soon a second look at the words follows a pending verdict, when the
+caller looks again on a timer rather than on each partial transcript."""
+
 
 @unique
 class InterruptionStrategy(StrEnum):
@@ -101,10 +105,12 @@ class InterruptionDecision:
 
     awaiting_transcript: bool = False
     """True when SEMANTIC had nothing to classify yet: no words and too short
-    a speech for a duration-only judgement. The caller transcribes the held
-    speech and re-evaluates with each partial transcript; the
-    ``pending_confirmation`` second look classifies on duration alone when
-    no words arrive in time."""
+    a speech for a duration-only judgement, or a partial transcript the
+    detector gave no verdict on (``BackchannelDecision.pending``: "Ou" of
+    "Ouais"). The caller transcribes the held speech and re-evaluates with
+    each partial transcript; the ``pending_confirmation`` second look
+    classifies on duration alone when no words arrive in time, and looks
+    at the words again after a pending verdict."""
 
     queue_speech: bool = False
     """True when the speech must be queued and delivered once playback ends
@@ -144,6 +150,7 @@ class InterruptionHandler:
         transcript_expected: bool = False,
         response_text: str = "",
         session_played_ms: int | None = None,
+        speech_final: bool = True,
     ) -> InterruptionDecision:
         """Evaluate whether an interruption should proceed.
 
@@ -157,6 +164,9 @@ class InterruptionHandler:
                 it was handed to the TTS, for the echo guard.
             session_played_ms: Response audio the session played in all, this
                 playback included; ``playback_position_ms`` when not given.
+            speech_final: Whether *speech_text* is the whole utterance;
+                ``False`` for a partial transcript, whose last word may be
+                a piece of the word being said (SEMANTIC).
 
         Returns:
             An InterruptionDecision.
@@ -249,8 +259,19 @@ class InterruptionHandler:
             ctx = BackchannelContext(
                 transcript=speech_text,
                 speech_duration_ms=float(speech_duration_ms),
+                is_final=speech_final,
             )
             bc_result = self._backchannel_detector.classify(ctx)
+            if bc_result.pending:
+                # The words may still become an acknowledgement: the next
+                # ones decide, never the speech's duration.
+                return InterruptionDecision(
+                    should_interrupt=False,
+                    pending_confirmation=True,
+                    confirm_after_ms=_PENDING_LOOK_AGAIN_MS,
+                    awaiting_transcript=True,
+                    reason="words still being said",
+                )
             if bc_result.is_backchannel:
                 return InterruptionDecision(
                     should_interrupt=False,
