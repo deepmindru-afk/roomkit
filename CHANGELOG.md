@@ -51,6 +51,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   barge-in stops the runtime's workers in about 60 ms, and replies stream
   side by side from one loaded model. `examples/voice_local_phonon.py` runs a
   local French assistant on it.
+- Voxtral 3 speech, Mistral's transcription and TTS (RMK-884,
+  `pip install roomkit[mistral-voice]`), so a voice agent runs on Mistral end
+  to end beside `MistralAIProvider`. `VoxtralSTTProvider` transcribes a clip
+  on Voxtral Mini or Small Transcribe 3 (PCM, a `data:` URI, or an http(s) URL
+  Mistral fetches) and streams on Voxtral Mini Transcribe Realtime 3 with the
+  model's own turn detection: each turn is a final and its start a speech
+  start, in continuous mode, or one final per utterance behind a VAD with
+  `turn_detection=None`. A turn's last words arrive up to a streaming delay
+  after the model ends it, even after the next turn has started (measured), so
+  its final waits that delay plus 100 ms (`final_wait_ms`). The provider
+  validates the streaming delay (80–1200 ms or 2400) and the turn thresholds
+  before connecting; `VoxtralTurnDetection.aggressive()` is Mistral's faster
+  preset (the final about 0.7 s after speech at a 240 ms delay, 1.7 s with the
+  defaults). `VoxtralTTSProvider` streams Voxtral Speech 3 as 24 kHz 16-bit
+  PCM, converted from the float samples the service sends, and lists every
+  voice the workspace can use; its offline catalog holds the 36 Voxtral 3
+  presets, four of them French. `examples/voice_voxtral.py` runs the agent.
 
 ### Changed
 

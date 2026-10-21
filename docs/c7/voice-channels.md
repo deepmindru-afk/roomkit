@@ -65,6 +65,7 @@ reaches its recordings. Left unset, the read is unscoped.
 | SherpaOnnx | `SherpaOnnxSTTProvider` | `SherpaOnnxSTTConfig` | `roomkit[sherpa-onnx]` |
 | Gradium | `GradiumSTTProvider` | `GradiumSTTConfig` | `roomkit[gradium]` |
 | Qwen3 ASR | `Qwen3ASRProvider` | `Qwen3ASRConfig` | `roomkit[qwen-asr]` |
+| Voxtral 3 (Mistral, file + realtime) | `VoxtralSTTProvider` | `VoxtralSTTConfig` | `roomkit[mistral-voice]` |
 | Mock | `MockSTTProvider` | — | built-in |
 
 Use lazy loaders to avoid import-time dependency checks:
@@ -137,6 +138,7 @@ async def pin_language(event, ctx):
 | Gemini TTS | `GeminiTTSProvider` | `GeminiTTSConfig` | `roomkit[gemini]` |
 | Fish Audio (Drama 3, S2) | `FishAudioTTSProvider` | `FishAudioTTSConfig` | `roomkit[fish-audio]` |
 | Phonon (Gradium, local CPU) | `PhononTTSProvider` | `PhononTTSConfig` | `roomkit[phonon]` |
+| Voxtral 3 (Mistral) | `VoxtralTTSProvider` | `VoxtralTTSConfig` | `roomkit[mistral-voice]` |
 | Mock | `MockTTSProvider` | — | built-in |
 
 ```python

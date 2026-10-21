@@ -32,6 +32,7 @@ pip install roomkit[deepgram]     # Deepgram STT (cloud)
 pip install roomkit[sherpa-onnx]  # SherpaOnnx STT (local, offline)
 pip install roomkit[gradium]      # Gradium STT
 pip install roomkit[qwen-asr]     # Qwen3 ASR
+pip install roomkit[mistral-voice] # Voxtral 3 STT (Mistral, file + realtime)
 ```
 
 ### Voice — Text-to-Speech
@@ -44,6 +45,7 @@ pip install roomkit[qwen-tts]     # Qwen3 TTS
 pip install roomkit[neutts]       # NeuTTS
 pip install roomkit[fish-audio]   # Fish Audio TTS (Drama 3, S2)
 pip install roomkit[phonon]       # Phonon TTS (Gradium, local CPU)
+pip install roomkit[mistral-voice] # Voxtral 3 TTS (Mistral)
 ```
 
 ### Voice — Backends

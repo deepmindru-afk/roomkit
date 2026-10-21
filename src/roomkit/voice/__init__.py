@@ -359,6 +359,20 @@ def get_meta_stt_config() -> type:
     return MetaSTTConfig
 
 
+def get_voxtral_stt_provider() -> type:
+    """Get VoxtralSTTProvider class for Mistral Voxtral 3 (requires websockets, httpx)."""
+    from roomkit.voice.stt.voxtral import VoxtralSTTProvider
+
+    return VoxtralSTTProvider
+
+
+def get_voxtral_stt_config() -> type:
+    """Get VoxtralSTTConfig class."""
+    from roomkit.voice.stt.voxtral import VoxtralSTTConfig
+
+    return VoxtralSTTConfig
+
+
 def get_azure_mai_stt_provider() -> type:
     """Get AzureMAISTTProvider class for MAI-Transcribe (requires websockets)."""
     from roomkit.voice.stt.azure_mai import AzureMAISTTProvider
@@ -581,6 +595,20 @@ def get_pocket_tts_config() -> type:
     from roomkit.voice.tts.pocket import PocketTTSConfig
 
     return PocketTTSConfig
+
+
+def get_voxtral_tts_provider() -> type:
+    """Get VoxtralTTSProvider class for Mistral Voxtral Speech 3 (requires httpx)."""
+    from roomkit.voice.tts.voxtral import VoxtralTTSProvider
+
+    return VoxtralTTSProvider
+
+
+def get_voxtral_tts_config() -> type:
+    """Get VoxtralTTSConfig class."""
+    from roomkit.voice.tts.voxtral import VoxtralTTSConfig
+
+    return VoxtralTTSConfig
 
 
 def get_phonon_tts_provider() -> type:

@@ -5881,6 +5881,10 @@ meta-stt = [
 mistral = [
     { name = "mistralai" },
 ]
+mistral-voice = [
+    { name = "httpx" },
+    { name = "websockets" },
+]
 neutts = [
     { name = "neutts" },
 ]
@@ -6109,6 +6113,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'httpx'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'llamacpp'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'meta-stt'", specifier = ">=0.27" },
+    { name = "httpx", marker = "extra == 'mistral-voice'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'providers'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'sources'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'sse'", specifier = ">=0.27" },
@@ -6250,13 +6255,14 @@ requires-dist = [
     { name = "websockets", marker = "extra == 'elevenlabs'", specifier = ">=14.2" },
     { name = "websockets", marker = "extra == 'fish-audio'", specifier = ">=14.2" },
     { name = "websockets", marker = "extra == 'meta-stt'", specifier = ">=14.2" },
+    { name = "websockets", marker = "extra == 'mistral-voice'", specifier = ">=14.2" },
     { name = "websockets", marker = "extra == 'providers'", specifier = ">=14.2" },
     { name = "websockets", marker = "extra == 'realtime-deepgram'", specifier = ">=14.2" },
     { name = "websockets", marker = "extra == 'realtime-openai'", specifier = ">=14.2" },
     { name = "websockets", marker = "extra == 'sources'", specifier = ">=14.2" },
     { name = "websockets", marker = "extra == 'websocket'", specifier = ">=14.2" },
 ]
-provides-extras = ["acp", "aicoustics", "all", "anam", "anthropic", "azure", "azure-speech", "buzz", "cerebras", "console", "deepgram", "deepseek", "dev", "discord", "docs", "elevenlabs", "fastrtc", "fish-audio", "fluxions", "gemini", "gradium", "httpx", "litellm", "livekit", "llamacpp", "local-audio", "local-video", "mcp", "mediapipe", "meta", "meta-stt", "mistral", "neutts", "ollama", "openai", "openrouter", "opentelemetry", "phonenumbers", "phonon", "pocket-tts", "polargrid", "postgres", "providers", "pynacl", "pyroscope", "qwen-ai", "qwen-asr", "qwen-tts", "realtime-deepgram", "realtime-elevenlabs", "realtime-gemini", "realtime-openai", "redis", "rtp", "screen-capture", "screen-input", "sherpa-onnx", "sip", "smart-turn", "sources", "sse", "teams", "telegram", "twilio", "typesafe", "video", "video-overlay", "vllm", "vui", "webrtc-aec", "websocket", "webtransport", "whatsapp-personal", "xai", "yolo"]
+provides-extras = ["acp", "aicoustics", "all", "anam", "anthropic", "azure", "azure-speech", "buzz", "cerebras", "console", "deepgram", "deepseek", "dev", "discord", "docs", "elevenlabs", "fastrtc", "fish-audio", "fluxions", "gemini", "gradium", "httpx", "litellm", "livekit", "llamacpp", "local-audio", "local-video", "mcp", "mediapipe", "meta", "meta-stt", "mistral", "mistral-voice", "neutts", "ollama", "openai", "openrouter", "opentelemetry", "phonenumbers", "phonon", "pocket-tts", "polargrid", "postgres", "providers", "pynacl", "pyroscope", "qwen-ai", "qwen-asr", "qwen-tts", "realtime-deepgram", "realtime-elevenlabs", "realtime-gemini", "realtime-openai", "redis", "rtp", "screen-capture", "screen-input", "sherpa-onnx", "sip", "smart-turn", "sources", "sse", "teams", "telegram", "twilio", "typesafe", "video", "video-overlay", "vllm", "vui", "webrtc-aec", "websocket", "webtransport", "whatsapp-personal", "xai", "yolo"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "setuptools", specifier = "<85" }]
