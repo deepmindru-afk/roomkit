@@ -68,6 +68,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PCM, converted from the float samples the service sends, and lists every
   voice the workspace can use; its offline catalog holds the 36 Voxtral 3
   presets, four of them French. `examples/voice_voxtral.py` runs the agent.
+- `STTProvider.keeps_stream_across_turns` (RMK-887, RFC §12.2): a provider
+  whose model cuts the turns within one stream says so, and a `VoiceChannel`
+  in continuous mode keeps its stream open across turns, as it does for a
+  diarizing provider, instead of reconnecting after each final. Its finals
+  reach the room one at a time in the order they were said, the reply to one
+  never holding back the next. `VoxtralSTTProvider` claims it whenever turn
+  detection is on.
 
 ### Changed
 
@@ -116,6 +123,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A turn a person starts soon after the previous one reaches the room whole
+  with Voxtral (RMK-887). On a stream per turn, its first words went to the
+  stream the channel was closing and came back as a turn of their own ("What
+  is the capital of Italy?", "Answer", "in one word."); the stream is now
+  kept. A turn that starts while the last one waits for its last words also
+  closes that one within three quarters of the streaming delay: the new
+  turn's own words trail its start by a delay, and the ending turn's words
+  came at most 0.09 s after it (measured), so neither is joined to the other.
 - A `HandoffHandler` serving a realtime voice channel refuses an agent that
   is not an `Agent` (one the kit holds by its declaration alone, or another
   intelligence channel) with a `ValueError` naming it (RMK-831, RFC §19.5,

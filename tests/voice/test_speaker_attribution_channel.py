@@ -68,6 +68,14 @@ class _PlainSTT(STTProvider):
                 yield TranscriptionResult(text=self._finals.pop(0), is_final=True)
 
 
+class _KeptPlainSTT(_PlainSTT):
+    """A continuous STT that cuts its own turns on one stream, and labels nobody."""
+
+    @property
+    def keeps_stream_across_turns(self) -> bool:
+        return True
+
+
 class _DiarizingSTT(STTProvider):
     """Answers one scripted final per chunk it receives, all on one stream.
 
@@ -411,6 +419,21 @@ class TestTheReplyDoesNotHoldBackTheNextFinal:
 
     async def test_without_diarization(self) -> None:
         room = _Room(_PlainSTT(["Une table", "pour deux"]), ai_delay=0.8)
+        await room.start()
+
+        await room.speak()
+        await _eventually(lambda: len(room.transcriptions) == 1)
+        await asyncio.sleep(0.2)
+        await room.speak()
+        await _eventually(lambda: len(room.transcriptions) == 2)
+        messages = await room.messages(2)
+        await room.kit.close()
+
+        assert room.transcribed_at[1] < 0.7
+        assert [m.content.body for m in messages] == ["Une table", "pour deux"]
+
+    async def test_with_a_kept_stream(self) -> None:
+        room = _Room(_KeptPlainSTT(["Une table", "pour deux"]), ai_delay=0.8)
         await room.start()
 
         await room.speak()

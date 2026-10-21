@@ -96,8 +96,10 @@ class Transcript:
     nearly that delay, and even the next ``turn.start`` (measured 2026-10-21:
     "Italy?" arrived after the next turn had started). The text that comes
     before :meth:`close` is the ending turn's; a ``turn.start`` meanwhile is
-    a speech start, its turn opening at the close. Text that arrives after
-    its turn's final belongs to a turn already given: it is counted in
+    a speech start, its turn opening at the close, and
+    :attr:`next_turn_started` tells the caller to close sooner: that turn's
+    own words follow it by a streaming delay. Text that arrives after its
+    turn's final belongs to a turn already given: it is counted in
     :attr:`late_chars`, never sent as a turn of its own.
     """
 
@@ -128,6 +130,11 @@ class Transcript:
         if kind == _DONE:
             return self.close()
         return self._turn_event(kind)
+
+    @property
+    def next_turn_started(self) -> bool:
+        """Whether a turn has started while the last one is closing."""
+        return self._next_open
 
     def close(self) -> list[TranscriptionResult]:
         """Give the ending turn as a final, ``[]`` when it holds no words.

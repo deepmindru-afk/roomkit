@@ -24,6 +24,17 @@ def diarizes(stt: object) -> bool:
     return getattr(stt, "supports_diarization", False) is True
 
 
+def keeps_stream(stt: object) -> bool:
+    """Whether a channel in continuous mode keeps ``stt``'s stream across turns.
+
+    A diarizing provider's labels hold within one stream (RFC §12.2.3); a
+    provider claiming ``keeps_stream_across_turns`` cuts its own turns within
+    one stream (RFC §12.2). Only an explicit ``True`` counts, as for
+    :func:`diarizes`.
+    """
+    return diarizes(stt) or getattr(stt, "keeps_stream_across_turns", False) is True
+
+
 class STTProvider(ABC):
     """Speech-to-text provider."""
 
@@ -55,6 +66,19 @@ class STTProvider(ABC):
         Labels are stable within one stream only (RFC §12.2.3), so a channel
         that opens a stream per utterance cannot use them across turns and
         refuses such a provider.
+        """
+        return False
+
+    @property
+    def keeps_stream_across_turns(self) -> bool:
+        """Whether one stream carries turn after turn, with a final for each.
+
+        A channel in continuous mode then keeps the stream open across turns
+        instead of opening one per turn (RFC §12.2). A provider whose model
+        cuts the turns and whose text trails its turn events (Voxtral) needs
+        it: on a stream per turn, a turn started soon after the last one is
+        sent half to each stream, and split. A diarizing provider's stream is
+        kept whatever this says.
         """
         return False
 

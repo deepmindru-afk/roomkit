@@ -335,6 +335,12 @@ class TestConfig:
     ) -> None:
         assert VoxtralSTTConfig(api_key="k", **config).stream_url == url
 
+    def test_with_turn_detection_the_stream_carries_turn_after_turn(self) -> None:
+        assert VoxtralSTTProvider(VoxtralSTTConfig(api_key="k")).keeps_stream_across_turns
+        assert not VoxtralSTTProvider(
+            VoxtralSTTConfig(api_key="k", turn_detection=None)
+        ).keeps_stream_across_turns
+
     def test_language_override_is_claimed(self) -> None:
         provider = VoxtralSTTProvider(VoxtralSTTConfig(api_key="k"))
         assert provider.supports_language_override is True
@@ -532,12 +538,36 @@ class TestStreaming:
         record = _Record()
         async with _server(_scripted(record, on_audio=_ITALY, on_end=[0.4])) as url:
             results = await _collect(
-                _provider(url, streaming_delay_ms=480, final_wait_ms=116),
+                _provider(url, streaming_delay_ms=96, final_wait_ms=116),
                 AudioChunk(data=_PCM_16K, sample_rate=16000),
             )
 
         assert _finals(results) == ["What is the capital of Italy?", "Answer in one word."]
         assert [r for r in results if r.is_speech_start] == [_SPEECH_START, _SPEECH_START]
+
+    async def test_the_next_turns_own_words_are_never_the_last_ones(self) -> None:
+        # Live with the defaults: the next turn started 0.05 s after turn.end,
+        # and its first word came within the final wait. That word trails its
+        # turn.start by a streaming delay; the ending turn's tail does not.
+        record = _Record()
+        script: Script = [
+            *_TURN,
+            0.02,
+            _START,
+            _delta(" please"),  # the ending turn's tail, at once
+            0.15,
+            _delta(" For"),  # the next turn's own word, a delay after its start
+            _delta(" two."),
+            _END,
+            0.3,
+        ]
+        async with _server(_scripted(record, on_audio=script, on_end=[_done("")])) as url:
+            results = await _collect(
+                _provider(url, streaming_delay_ms=80, final_wait_ms=500),
+                AudioChunk(data=_PCM_16K, sample_rate=16000),
+            )
+
+        assert _finals(results) == ["Hi, I would like a table. please", "For two."]
 
     async def test_per_utterance_final_is_the_done_text(self) -> None:
         record = _Record()
@@ -912,3 +942,63 @@ class TestVoiceChannelContinuous:
         assert transcripts == ["Hi, I would like a table."]
         assert speech_starts
         assert record.update["session"]["turn_detection"]["min_silence_ms"] == 500
+
+    async def test_a_turn_started_during_the_wait_stays_whole(self) -> None:
+        # The live capture: the next turn starts before the first one's last
+        # words. The server plays its events while the audio comes and stops
+        # at input_audio.end, as the service does; a second session would hear
+        # only what was said after the first one ended. The channel keeps the
+        # session, so neither turn is cut.
+        record = _Record()
+        rest_of_turn_2: Script = [_START, _delta(" in one word."), _END]
+
+        async def live(ws: ServerConnection) -> None:
+            record.connections += 1
+            script = _ITALY[:-2] if record.connections == 1 else rest_of_turn_2
+            await ws.send(json.dumps(_CREATED))
+            await ws.recv()
+            await ws.send(json.dumps({"type": "session.updated", "session": {}}))
+            player: asyncio.Task[None] | None = None
+            async for message in ws:
+                kind = json.loads(message)["type"]
+                if kind == "input_audio.append" and player is None:
+                    player = asyncio.create_task(_play(ws, list(script)))
+                elif kind == "input_audio.end":
+                    break
+            if player is not None:
+                player.cancel()
+            await ws.send(json.dumps(_done("")))
+            ws.transport.abort()
+
+        transcripts: list[str] = []
+        async with _server(live) as url:
+            stt = _provider(url, streaming_delay_ms=96, final_wait_ms=116)
+            backend = MockVoiceBackend()
+            channel = VoiceChannel(
+                "voice-1", stt=stt, backend=backend, pipeline=AudioPipelineConfig()
+            )
+            kit = RoomKit(stt=stt, voice=backend)
+            kit.register_channel(channel)
+
+            @kit.hook(HookTrigger.ON_TRANSCRIPTION)
+            async def on_transcription(event: Any, ctx: Any) -> HookResult:
+                transcripts.append(event.text)
+                return HookResult.allow()
+
+            room = await kit.create_room()
+            await kit.attach_channel(room.id, "voice-1")
+            session = await kit.join(room.id, "voice-1", participant_id="user-1")
+
+            async def microphone() -> None:
+                while True:
+                    await backend.simulate_audio_received(session, AudioFrame(data=_PCM_16K))
+                    await asyncio.sleep(0.1)
+
+            mic = asyncio.create_task(microphone())
+            with contextlib.suppress(AssertionError):
+                await _eventually(lambda: len(transcripts) >= 2, timeout=3.0)
+            mic.cancel()
+            await channel.close()
+
+        assert transcripts == ["What is the capital of Italy?", "Answer in one word."]
+        assert record.connections == 1

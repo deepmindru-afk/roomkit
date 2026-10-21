@@ -25,7 +25,7 @@ from roomkit.telemetry.redaction import redact
 from roomkit.voice.base import AudioChunk, SpeakerSegment, TranscriptionResult
 from roomkit.voice.events import SpeakerChangeEvent, TranscriptionEvent
 from roomkit.voice.interruption import echoes, echoes_nearly
-from roomkit.voice.stt.base import diarizes
+from roomkit.voice.stt.base import diarizes, keeps_stream
 from roomkit.voice.utils import pcm16_rms
 
 _NOOP = NoopTelemetryProvider()
@@ -852,9 +852,11 @@ class VoiceSTTMixin:
         self._stt_streams[session.id] = state
 
         # A diarizing STT's labels hold within one stream, so its stream is kept
-        # across turns and through silence (RFC §12.2.3); other providers get
-        # a fresh stream per turn.
-        keep_stream = diarizes(self._stt)
+        # across turns and through silence (RFC §12.2.3), as is the stream of a
+        # provider that cuts its own turns in it (RFC §12.2); other providers
+        # get a fresh stream per turn.
+        diarizing = diarizes(self._stt)
+        keep_stream = keeps_stream(self._stt)
 
         async def run_continuous(state: _STTStreamState) -> None:
             backoff = 0.1
@@ -1032,9 +1034,9 @@ class VoiceSTTMixin:
                             # The pipeline stage's speaker, taken as the final
                             # lands; an STT label outranks it.
                             stage_speaker = (
-                                None if keep_stream else self._pipeline_speaker(session.id)
+                                None if diarizing else self._pipeline_speaker(session.id)
                             )
-                            segments = _segments_of(result) if keep_stream else None
+                            segments = _segments_of(result) if diarizing else None
                             over = began_over or (barge_in_playback if cut_by_it else None)
                             began_over = None
                             if segments is not None and self._agents_own_voice(
@@ -1052,6 +1054,7 @@ class VoiceSTTMixin:
                                     epoch=epoch,
                                     speaker=stage_speaker,
                                     cut_playback=cut_by_it,
+                                    in_order=keep_stream,
                                 ),
                                 name=f"continuous_stt:{session.id}",
                             )
@@ -1179,6 +1182,7 @@ class VoiceSTTMixin:
         epoch: int = 0,
         speaker: SpeakerAttribution | None = None,
         cut_playback: bool = False,
+        in_order: bool = False,
     ) -> None:
         """Process a transcription result from continuous STT.
 
@@ -1188,21 +1192,21 @@ class VoiceSTTMixin:
         words of this final cut the playback, so they are the person's even while
         the cut, a task of its own, has not removed the playback yet.
 
-        A diarized session's finals go through one at a time, in the order they
-        were scheduled: a kept stream can deliver the next speaker's final
-        while the previous one is still in its hooks, and the room must see
-        them in the order they were said. The lock covers the hooks and the
-        commit of each message, never the reply to it.
+        A kept stream's finals (``in_order``) go through one at a time, in the
+        order they were scheduled: the stream can deliver the next turn's
+        final while the previous one is still in its hooks, and the room must
+        see them in the order they were said. The lock covers the hooks and
+        the commit of each message, never the reply to it.
         """
         if not self._framework or not text.strip():
             return
-        if segments is None:
+        if not in_order:
             await self._process_continuous_final(
                 session,
                 text,
                 room_id,
                 language=language,
-                segments=None,
+                segments=segments,
                 epoch=epoch,
                 speaker=speaker,
                 cut_playback=cut_playback,
@@ -1217,7 +1221,9 @@ class VoiceSTTMixin:
                 language=language,
                 segments=segments,
                 epoch=epoch,
+                speaker=speaker,
                 cut_playback=cut_playback,
+                ordered=True,
             )
 
     async def _process_continuous_final(
@@ -1231,11 +1237,14 @@ class VoiceSTTMixin:
         epoch: int,
         speaker: SpeakerAttribution | None = None,
         cut_playback: bool = False,
+        ordered: bool = False,
     ) -> None:
         """One continuous-mode final, from the echo check to the room.
 
         ``speaker`` is the pipeline stage's, for a final the STT labelled not. A
         final that cut the playback (``cut_playback``) is never taken for echo.
+        ``ordered``: the caller holds the session's transcript lock, so the
+        message is committed under it and its delivery awaited outside it.
         """
         if not self._framework:
             return
@@ -1276,7 +1285,9 @@ class VoiceSTTMixin:
             await self._announce_speech_end(session, hooks)
 
             if segments is None:
-                await self._deliver_transcript(session, text, room_id, hooks, language, speaker)
+                await self._deliver_transcript(
+                    session, text, room_id, hooks, language, speaker, ordered=ordered
+                )
                 return
             for segment in segments:
                 labelled = SpeakerAttribution.of(segment.speaker, epoch)
@@ -1322,8 +1333,8 @@ class VoiceSTTMixin:
         diarization stage: the hook sees the label, its epoch and the name, and
         may rename the speaker (RFC §12.2.3). An STT label that changes speaker
         fires ON_SPEAKER_CHANGE; the pipeline stage fires its own. ``ordered``
-        is set under a diarized session's ordering lock: the reply is then
-        awaited outside it.
+        is set under a kept stream's ordering lock: the reply is then awaited
+        outside it.
         """
         if not self._framework or not text.strip():
             return

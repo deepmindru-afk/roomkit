@@ -76,6 +76,12 @@ followed its ``turn.end`` by up to 0.19 s at a 480 ms delay, 0.43 s at 480 ms
 with Mistral's aggressive preset, 0.16 s at 240 ms and 0.75 s at 1200 ms
 (measured 2026-10-21): never more than the delay."""
 
+_NEXT_TURN_SHARE = 0.75
+"""The share of the streaming delay a closing turn waits after the next
+``turn.start``. That turn's first words came a delay or more after it, the
+ending turn's last ones at most 0.09 s after it (measured 2026-10-21): three
+quarters of the delay parts the two."""
+
 
 def _import_httpx() -> Any:
     try:
@@ -236,6 +242,16 @@ class VoxtralSTTProvider(STTProvider):
     def supports_language_override(self) -> bool:
         return True
 
+    @property
+    def keeps_stream_across_turns(self) -> bool:
+        """With turn detection, one session carries turn after turn.
+
+        A turn's last words trail its ``turn.end``, past the next
+        ``turn.start`` at times: on a stream per turn, a turn started within
+        the final wait would be cut in two.
+        """
+        return self._config.turn_detection is not None
+
     def _supported_pcm(
         self, data: bytes, sample_rate: int, channels: int, rate: int, sample_width: int = 2
     ) -> bytes:
@@ -375,6 +391,9 @@ class VoxtralSTTProvider(STTProvider):
             rate=rate,
             turns=config.turn_detection is not None,
             final_wait_s=config.final_wait_s,
+            next_turn_wait_s=min(
+                config.final_wait_s, _NEXT_TURN_SHARE * config.streaming_delay_ms / 1000
+            ),
             handshake_timeout_s=config.handshake_timeout_s,
             final_timeout_s=config.final_timeout_s,
         )

@@ -79,7 +79,7 @@ async def test_realtime_turn_detection_gives_one_final_per_turn() -> None:
     results = await _stream(VoxtralSTTProvider(VoxtralSTTConfig(api_key=_key())), pcm)
 
     finals = [r.text for r in results if r.is_final]
-    assert [_words(text) for text in finals] == [_words(line) for line in _LINES]
+    assert [_words(text) for text in finals] == [_words(line) for line in _LINES], finals
     # The next turn can start while the last one waits for its last words.
     kinds = [
         "start" if r.is_speech_start else "final"

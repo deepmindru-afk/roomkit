@@ -62,6 +62,8 @@ class SessionSetup:
         rate: The rate of the PCM the session is sent.
         turns: Whether the settings ask for turn detection.
         final_wait_s: How long a turn's final waits after ``turn.end``.
+        next_turn_wait_s: How long it waits at most after the next
+            ``turn.start``, whose own words come a streaming delay later.
         handshake_timeout_s: How long to wait for the session to open and
             accept its settings.
         final_timeout_s: How long to wait, once the audio ended, for
@@ -74,6 +76,7 @@ class SessionSetup:
     rate: int
     turns: bool
     final_wait_s: float
+    next_turn_wait_s: float
     handshake_timeout_s: float
     final_timeout_s: float
 
@@ -164,7 +167,8 @@ class RealtimeSession:
         """Read the session's events into results, until ``transcription.done``.
 
         A turn the model ended is given once ``final_wait_s`` has passed, its
-        last words included.
+        last words included, or sooner when the next turn starts:
+        ``next_turn_wait_s`` after that ``turn.start``, before its own words.
         """
         _, exceptions = _import_websockets()
         loop = asyncio.get_running_loop()
@@ -190,8 +194,12 @@ class RealtimeSession:
                 return
             if not transcript.closing:
                 close_at = None
-            elif close_at is None:
-                close_at = loop.time() + self._setup.final_wait_s
+                continue
+            now = loop.time()
+            if close_at is None:
+                close_at = now + self._setup.final_wait_s
+            if transcript.next_turn_started:
+                close_at = min(close_at, now + self._setup.next_turn_wait_s)
 
     async def _send_audio(
         self, first: AudioChunk, audio_stream: AsyncIterator[AudioChunk]
