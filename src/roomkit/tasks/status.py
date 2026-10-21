@@ -223,9 +223,10 @@ class CancelTaskTool:
     nor a strategy's worker run, which that strategy follows itself. A running
     task ends ``cancelled``; the agent that cancelled it is not handed the
     cancellation back, the tool's answer having told it. A task of the room
-    it may not cancel is answered still running, and why; whether a task is
-    the room's, and how one ended, is what the framework knows of the tasks it
-    runs for each room, never what the bus lists alone.
+    it may not cancel is answered still running, and why: whether a task the
+    bus lists running is the room's, and whether it ended meanwhile, is what
+    the framework knows of the tasks it runs for each room, never what the bus
+    lists alone. A task the bus lists ended is answered as it lists it.
 
     Args:
         kit: The framework whose tasks the tool cancels.
@@ -273,6 +274,7 @@ class CancelTaskTool:
             return _answer(task_id, "unknown", f"No task {task_id} here.")
         if line.get("status") == "running":
             return await self._answer_running(room_id, task_id)
+        # Ended: nothing to act on, so as the bus lists it, as task_status does.
         return _answer(task_id, str(line.get("status")), "The task had already ended.")
 
     async def _answer_running(self, room_id: str, task_id: str) -> str:

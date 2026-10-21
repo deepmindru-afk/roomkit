@@ -253,9 +253,11 @@ async def test_the_owner_serves_the_task_tools_set_up_on_an_agent() -> None:
         room.kit.setup_task_tools(speaker)  # type: ignore[arg-type]
 
 
-async def test_a_task_whose_end_is_being_told_reads_ended_not_unknown() -> None:
-    """While its ON_TASK_COMPLETED hooks run, the room's own task is still the
-    room's: cancel_task says it had already ended (RFC §23.4)."""
+@pytest.mark.parametrize("door", ["inline", "background"])
+async def test_a_task_whose_end_is_being_told_reads_ended_at_once(door: str) -> None:
+    """While its ON_TASK_COMPLETED hooks run, its line still running, the
+    room's own task reads ended, answered at once: its end is recorded
+    before its hooks run (RFC §23.4)."""
     room = await _Room(MockAIProvider(responses=["A thousand."])).open()
     in_hook = asyncio.Event()
     release = asyncio.Event()
@@ -265,15 +267,18 @@ async def test_a_task_whose_end_is_being_told_reads_ended_not_unknown() -> None:
         in_hook.set()
         await release.wait()
 
-    task = await room.kit.delegate("r", "worker", "Count.", notify="speaker")
+    run = _delegated(room.kit, door)
     await asyncio.wait_for(in_hook.wait(), 5)
-    cancelling = asyncio.ensure_future(_cancel(CancelTaskTool(room.kit), task.id))
-    await asyncio.sleep(0.05)
-    release.set()
-    answer = await asyncio.wait_for(cancelling, 5)
+    (line,) = await room_task_lines(room.kit.status_bus, "r", 50)
+    try:
+        answer = await asyncio.wait_for(_cancel(CancelTaskTool(room.kit), line["task_id"]), 2)
+    finally:
+        release.set()
+    await asyncio.gather(run, return_exceptions=True)
     await room.kit.close()
 
-    assert answer["status"] == "completed"
+    assert line["status"] == "running"
+    assert (answer["status"], answer["message"]) == ("completed", "The task had already ended.")
     assert room.kit._room_tasks.running == []
 
 
@@ -592,3 +597,62 @@ def test_the_record_keeps_the_latest_ended_tasks_only() -> None:
     assert record.ended_with(f"t{ENDED_ROOM_TASKS_KEPT}", "r") == "completed"
     assert record.ended_with(f"t{ENDED_ROOM_TASKS_KEPT}", "other") is None
     assert record.running == []
+
+
+async def test_an_inline_task_that_never_completes_is_recorded_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RMK-829: an inline task whose run raises before its completion is
+    recorded ended failed, never with the status it had while running."""
+    room = await _Room(MockAIProvider(responses=["x"])).open()
+    tasks: list[str] = []
+
+    def broken(handle: Any, **kwargs: Any) -> Any:
+        tasks.append(handle.id)
+        raise RuntimeError("broken")
+
+    monkeypatch.setattr(room.kit, "_child_turn", broken)
+    with pytest.raises(RuntimeError):
+        await room.kit.delegate("r", "worker", "Count.", wait=True)
+    await room.kit.close()
+
+    assert room.kit._room_tasks.ended_with(tasks[0], "r") == "failed"
+
+
+@pytest.mark.parametrize("named", ["another kit's ended task", "a forged ended line"])
+async def test_a_line_the_bus_lists_ended_is_answered_as_it_lists_it(named: str) -> None:
+    """RMK-829: a task the room's line lists ended is answered as the bus
+    lists it, as task_status does, whoever ran it: nothing is left to act on,
+    and the line is the room's own."""
+    bus = StatusBus()
+    ours = _Room(MockAIProvider(responses=["x"]))
+    ours.kit = RoomKit(status_bus=bus)
+    await ours.open()
+    theirs = _Room(MockAIProvider(responses=["Done."]))
+    theirs.kit = RoomKit(status_bus=bus)
+    await theirs.open()
+    task_id = "task-never-run"
+    if named == "another kit's ended task":
+        task_id = (await theirs.kit.delegate("r", "worker", "Count.", wait=True)).id
+    else:
+        bus.post(
+            "worker",
+            "task",
+            "completed",
+            metadata={"room_id": "r", "task_id": task_id, "task_status": "completed"},
+        )
+    async with asyncio.timeout(5):
+        while await _listed(bus, task_id) != "completed":
+            await asyncio.sleep(0.01)
+
+    answer = await _cancel(CancelTaskTool(ours.kit), task_id)
+    await ours.kit.close()
+    await theirs.kit.close()
+
+    assert (answer["status"], answer["message"]) == ("completed", "The task had already ended.")
+
+
+async def _listed(bus: StatusBus, task_id: str) -> str | None:
+    """The status room r's line for *task_id* reads, ``None`` for no line."""
+    lines = await room_task_lines(bus, "r", 50)
+    return next((t.get("status") for t in lines if t["task_id"] == task_id), None)

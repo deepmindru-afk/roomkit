@@ -252,9 +252,7 @@ class DiscussionConsole:
         wanted = rest.strip().removeprefix("task-")
         lines = await room_task_lines(self._kit.status_bus, self._room_id, _TASK_WINDOW)
         found = [
-            t["task_id"]
-            for t in lines
-            if wanted and t["task_id"].removeprefix("task-").startswith(wanted)
+            t for t in lines if wanted and t["task_id"].removeprefix("task-").startswith(wanted)
         ]
         if len(found) != 1:
             self.view.note(
@@ -263,18 +261,23 @@ class DiscussionConsole:
                 else f"{rest.strip()!r} names several tasks: give more of its id"
             )
             return
-        self.view.note(await self._cancelled(found[0]))
+        (line,) = found
+        if line.get("status") != "running":
+            self.view.note(f"task {short_task(line['task_id'])} had ended")
+            return
+        self.view.note(await self._cancelled(line["task_id"]))
 
     async def _cancelled(self, task_id: str) -> str:
-        """What ``/cancel`` says of *task_id*, a task a line of the room names:
-        cancelled with the host's reach when the kit runs it for this room,
-        never from the line alone; else why not (RFC §23.4)."""
+        """What ``/cancel`` says of *task_id*, a task a line of the room lists
+        running: cancelled with the host's reach when the kit runs it for this
+        room, never from the line alone; else why not (RFC §23.4)."""
         short = short_task(task_id)
         record = self._kit._room_tasks
         reach = record.reach(task_id, self._room_id)
         if reach is not None and await self._kit.cancel_task(task_id):
             return f"task {short} cancelled"
-        why = why_not_cancelled(reach)
+        # Read again: the task may have ended while the cancel waited.
+        why = why_not_cancelled(record.reach(task_id, self._room_id))
         if why is not None:
             return f"task {short} is still running: {why}"
         if reach is not None or record.ended_with(task_id, self._room_id) is not None:

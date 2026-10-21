@@ -25,6 +25,7 @@ from roomkit.orchestration.strategies.discussion import (
 )
 from roomkit.providers.ai.base import AIContext, AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.tasks.handback import CALLER_HANDS_BACK
 from roomkit.tasks.status import post_task_progress
 from roomkit.tools.context import tool_turn_context
 from tests.orchestration.test_strategy_discussion import _Chunked
@@ -296,6 +297,58 @@ async def test_the_console_cancels_no_task_a_line_names_for_another_room(
 
     assert theirs.result is None
     await kit.cancel_task(theirs.id)
+    console.exit()
+    await asyncio.wait_for(running, 5)
+    await kit.close()
+
+
+async def test_the_console_reads_a_task_that_ended_while_its_cancel_waited(
+    pipe: PipeInput,
+) -> None:
+    """RMK-829: a strategy's background task ends while ``/cancel`` waits on
+    it: the console says it had ended, never that its strategy follows it."""
+    kit = RoomKit()
+    await _tasks_room(kit)
+    console, running = await _console(kit, pipe)
+    task = await kit.delegate(
+        "r1", "helper", "Read the source.", notify=CALLER_HANDS_BACK, post_status=False
+    )
+    with tool_turn_context(room_id=task.child_room_id):
+        assert await post_task_progress(kit, "2 of 9")
+    short = task.id.removeprefix("task-")[:6]
+
+    async def ends_meanwhile(task_id: str) -> bool:
+        kit._room_tasks.end(task_id, "completed")
+        return False
+
+    kit.cancel_task = ends_meanwhile  # type: ignore[method-assign]
+    pipe.send_text(f"/cancel {short}\r")
+    await _until(lambda: f"task {short} had ended" in _room(console.view))
+
+    console.exit()
+    await asyncio.wait_for(running, 5)
+    await kit.close()
+
+
+async def test_the_console_says_a_task_its_line_lists_ended_had_ended(
+    pipe: PipeInput,
+) -> None:
+    """RMK-829: a line of the room listing a task ended, one this kit never
+    ran included: ``/cancel`` says it had ended, as ``/tasks`` lists it."""
+    kit = RoomKit()
+    await _tasks_room(kit)
+    console, running = await _console(kit, pipe)
+    kit.status_bus.post(
+        "helper",
+        "task",
+        "completed",
+        metadata={"room_id": "r1", "task_id": "task-a1b2c3d4", "task_status": "completed"},
+    )
+    await asyncio.sleep(0.05)
+
+    pipe.send_text("/cancel a1b2c3\r")
+    await _until(lambda: "task a1b2c3 had ended" in _room(console.view))
+
     console.exit()
     await asyncio.wait_for(running, 5)
     await kit.close()

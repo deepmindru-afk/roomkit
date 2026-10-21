@@ -659,7 +659,8 @@ class DelegationMixin(HelpersMixin):
         try:
             await await_interruptible(run)
         finally:
-            self._room_tasks.end(handle.id, str(handle.status))
+            # Its completion recorded its end; one that never ran it failed.
+            self._room_tasks.end(handle.id, str(TaskStatus.FAILED))
         return handle
 
     async def _inline_task(
@@ -758,9 +759,11 @@ class DelegationMixin(HelpersMixin):
         on_complete: Any | None,
         span: _DelegationSpan,
     ) -> None:
-        """End an inline delegation: its span, its child room's status,
-        ON_TASK_COMPLETED, its completion callback, then its waiters. No
-        proactive delivery: the caller presents the result itself."""
+        """End an inline delegation: its end for its room's ``cancel_task``,
+        its span, its child room's status, ON_TASK_COMPLETED, its completion
+        callback, then its waiters. No proactive delivery: the caller
+        presents the result itself."""
+        self._room_tasks.end(handle.id, str(result.status))
         span.end(result)
         await record_task_end(self, result)  # ty: ignore[invalid-argument-type]
         await self._on_delegation_complete(result)

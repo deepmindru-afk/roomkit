@@ -17,7 +17,8 @@ cancel one that runs in the background); ``turn``, an inline delegation,
 which ends with the turn that asked for it."""
 
 ENDED_ROOM_TASKS_KEPT = 1024
-"""How many ended tasks the record keeps, the latest to end."""
+"""How many ended tasks the record keeps, the latest to end, all rooms
+together."""
 
 _WHY_NOT_CANCELLED: dict[TaskReach, str] = {
     "turn": "it runs inside the turn that asked for it, and ends with it",
