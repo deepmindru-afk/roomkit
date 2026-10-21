@@ -457,6 +457,12 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         await self._cancel_turn(key, turn)
         return 1
 
+    async def on_room_attached(self, room_id: str, binding: ChannelBinding) -> None:
+        """Compile the patterns that find a copy of a runtime mark as the
+        channel joins a room, off the event loop: the room's first prompt
+        then does not wait for them (RFC §6.4)."""
+        await compile_mark_patterns()
+
     async def on_room_detached(self, room_id: str) -> None:
         """The room's session, and the values the host set on it, go with the
         binding (RFC §10.6.3, §6.4): a later attachment opens a new session,

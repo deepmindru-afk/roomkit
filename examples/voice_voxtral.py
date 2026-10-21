@@ -6,10 +6,12 @@
 
 The realtime model detects the turns itself, so the pipeline runs no VAD: the
 channel streams all audio (continuous mode), each turn the model ends is a
-final, and your words, as they arrive, can cut the agent off. With Mistral's
-default settings the final comes about 1.7 s after you stop; with
-``TURNS=aggressive STREAMING_DELAY_MS=240``, about 0.7 s, and a short pause
-then ends your turn more often (measured 2026-10-21).
+final, and your words, as they arrive, can cut the agent off. The example
+runs Mistral's faster turn preset with a 240 ms streaming delay: the final
+comes about 0.7 s after you stop, and a short pause ends your turn more often
+(a pause after a question can make the agent answer twice). With Mistral's
+defaults, ``TURNS=default STREAMING_DELAY_MS=480``, it comes about 1.7 s after
+(measured 2026-10-21).
 
 One Mistral API key serves the three models.
 
@@ -26,9 +28,9 @@ Environment variables:
     MODEL                 Mistral chat model (default: mistral-small-latest)
 
     --- Audio (optional) ---
-    TURNS                 default | aggressive (default: default)
+    TURNS                 aggressive | default (default: aggressive)
     STREAMING_DELAY_MS    How long the model listens past a word, 80-1200 or
-                          2400 (default: 480)
+                          2400 (default: 240)
     AEC                   webrtc | speex | 0 (default: webrtc)
     INTERRUPTION          semantic | words | confirmed | immediate | disabled
                           (default: semantic: an "okay" does not stop the agent)
@@ -65,6 +67,7 @@ from roomkit.providers.mistral import MistralAIProvider, MistralConfig
 from roomkit.voice.backends.local import LocalAudioBackend
 from roomkit.voice.pipeline import AudioPipelineConfig
 from roomkit.voice.stt.voxtral import VoxtralSTTConfig, VoxtralSTTProvider, VoxtralTurnDetection
+from roomkit.voice.tts.filters import StripEmoji
 from roomkit.voice.tts.voxtral import DEFAULT_VOICE, VoxtralTTSConfig, VoxtralTTSProvider
 
 logger = setup_logging("voice_voxtral")
@@ -77,12 +80,12 @@ OUTPUT_RATE = 24000
 
 
 def turn_detection() -> VoxtralTurnDetection:
-    """The turn settings ``TURNS`` names: the service's defaults, or Mistral's faster preset."""
-    turns = os.environ.get("TURNS", "default").lower()
+    """The turn settings ``TURNS`` names: Mistral's faster preset, or the service's defaults."""
+    turns = os.environ.get("TURNS", "aggressive").lower()
     if turns == "aggressive":
         return VoxtralTurnDetection.aggressive()
     if turns != "default":
-        sys.exit(f"TURNS must be default or aggressive, got {turns!r}")
+        sys.exit(f"TURNS must be aggressive or default, got {turns!r}")
     return VoxtralTurnDetection()
 
 
@@ -110,7 +113,7 @@ async def main() -> None:
         VoxtralSTTConfig(
             api_key=api_key,
             language=language,
-            streaming_delay_ms=int(os.environ.get("STREAMING_DELAY_MS", "480")),
+            streaming_delay_ms=int(os.environ.get("STREAMING_DELAY_MS", "240")),
             turn_detection=turn_detection(),
         )
     )
@@ -128,6 +131,8 @@ async def main() -> None:
         tts=tts,
         backend=backend,
         pipeline=pipeline,
+        # The model adds emoji despite the prompt; spoken, they sound wrong.
+        tts_filter=StripEmoji(),
         # The agent keeps talking through an "okay" and stops for anything else.
         interruption=build_interruption(),
     )

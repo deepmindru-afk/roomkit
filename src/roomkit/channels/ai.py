@@ -37,6 +37,7 @@ from roomkit.channels._ai_thinking import AIThinkingMixin
 from roomkit.channels._ai_tools import AIToolsMixin
 from roomkit.channels._author_images import DEFAULT_MAX_AUTHOR_IMAGES, RefusedImages
 from roomkit.channels._discussion_turn import discussion_turn
+from roomkit.channels._mark_copies import compile_mark_patterns
 from roomkit.channels._served_execution import ServedExecutionGate
 from roomkit.channels._served_tools import (
     CollisionLog,
@@ -604,7 +605,11 @@ class AIChannel(
 
     async def on_room_attached(self, room_id: str, binding: ChannelBinding) -> None:
         """A room the channel joins starts from an empty thought, and open to the
-        agent, whatever an earlier room of the same id left (RFC §6.4)."""
+        agent, whatever an earlier room of the same id left (RFC §6.4). The
+        patterns that find a copy of a runtime mark are compiled now, off the
+        event loop, rather than by the first turn: the compilation takes most
+        of a second, and a voice agent's first answer would wait for it."""
+        await compile_mark_patterns()
         await self._forget_room(room_id)
 
     async def on_room_detached(self, room_id: str) -> None:

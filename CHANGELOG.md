@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The first turn of an agent no longer waits about 0.9 s before its model is
+  called (RMK-888): an `AIChannel` or `ACPChannel` compiles the patterns that
+  find a copy of a runtime mark (RFC §6.4) as it joins a room, as a
+  `RealtimeVoiceChannel` already did, rather than at its first turn. The
+  compilation also holds the interpreter while it runs; done before a voice
+  call's audio starts, it no longer stalls the speaker (output underflows
+  after the first answer's transcript). The first attach in a process takes
+  that time instead.
+
+- A Voxtral realtime session given up while open (a voice channel closing)
+  closes in 0.2 s rather than 1.1 s: the socket no longer waits for
+  Mistral's late answer to its close frame.
+
+### Changed
+
+- `examples/voice_voxtral.py` runs Mistral's faster turn preset with a 240 ms
+  streaming delay by default (`TURNS=default STREAMING_DELAY_MS=480` gives
+  the service's defaults), and drops emoji before Voxtral Speech.
+
 ## [0.107.0] — 2026-10-21
 
 ### Added

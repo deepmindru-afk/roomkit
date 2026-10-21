@@ -729,6 +729,42 @@ class TestStreaming:
         assert info.value.retryable is True
         assert elapsed < 0.45
 
+    @pytest.mark.wallclock
+    async def test_an_abandoned_session_closes_without_waiting_for_the_service(
+        self,
+    ) -> None:
+        # Mistral answers a close frame about 1.1 s late; this server never
+        # does. A stream given up mid-session (the channel closing) must not
+        # wait for it.
+        released = asyncio.Event()
+
+        async def deaf(ws: ServerConnection) -> None:
+            await ws.send(json.dumps(_CREATED))
+            await ws.recv()
+            await ws.send(json.dumps({"type": "session.updated", "session": {}}))
+            await ws.recv()  # the first append
+            await ws.send(json.dumps(_delta("Hello")))
+            ws.transport.pause_reading()  # the close frame is never read
+            await released.wait()
+            ws.transport.abort()
+
+        async def endless() -> AsyncIterator[AudioChunk]:
+            while True:
+                yield AudioChunk(data=_PCM_16K, sample_rate=16000)
+                await asyncio.sleep(0.1)
+
+        loop = asyncio.get_running_loop()
+        async with _server(deaf) as url:
+            stream = _provider(url).transcribe_stream(endless())
+            partial = await asyncio.wait_for(anext(stream), timeout=5)
+            start = loop.time()
+            await asyncio.wait_for(stream.aclose(), timeout=5)
+            elapsed = loop.time() - start
+            released.set()
+
+        assert partial.text == "Hello"
+        assert elapsed < 0.5
+
     async def test_no_audio_opens_no_connection(self) -> None:
         record = _Record()
         async with _server(_scripted(record)) as url:

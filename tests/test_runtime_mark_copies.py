@@ -945,3 +945,26 @@ async def test_attaching_a_realtime_host_compiles_the_patterns() -> None:
     await kit.close()
 
     assert _copies.cache_info().currsize == 1
+
+
+@pytest.mark.parametrize("kind", ["ai", "acp"])
+async def test_attaching_an_agent_compiles_the_patterns_before_its_first_turn(
+    kind: str, tmp_path: Any
+) -> None:
+    """The compilation takes most of a second: done as the agent joins the
+    room, a voice agent's first answer does not wait for it (RMK-888)."""
+    _copies.cache_clear()
+    header_copies.cache_clear()
+    if kind == "ai":
+        agent: AIChannel | ACPChannel = AIChannel("agent", provider=MockAIProvider())
+    else:
+        agent = ACPChannel("agent", ["agent"], cwd=tmp_path)
+    kit = RoomKit()
+    kit.register_channel(agent)
+    await kit.create_room(room_id="r1")
+
+    await kit.attach_channel("r1", "agent", category=ChannelCategory.INTELLIGENCE)
+
+    assert _copies.cache_info().currsize == 1
+    assert header_copies.cache_info().currsize == 1
+    await kit.close()

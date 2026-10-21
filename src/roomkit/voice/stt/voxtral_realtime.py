@@ -34,6 +34,14 @@ _APPEND_S = 0.1
 """Longest audio one append carries, so a backlog (the pre-roll) does not
 leave as one large frame."""
 
+_CLOSE_TIMEOUT_S = 0.2
+"""How long closing the socket waits for the service's answer to the close
+frame before dropping the connection. A session still open when its stream
+ends is abandoned, with nothing left to read, and Mistral answers the frame
+about 1.1 s later (measured 2026-10-21): a channel closing would wait that
+long. A session that ended normally has no wait: the service drops the
+connection after ``transcription.done``."""
+
 PcmOf = Callable[[AudioChunk, int], bytes]
 """A chunk's audio as mono 16-bit PCM at the given rate."""
 
@@ -117,6 +125,7 @@ class RealtimeSession:
                     setup.url,
                     additional_headers={"Authorization": f"Bearer {setup.api_key}"},
                     open_timeout=None,
+                    close_timeout=_CLOSE_TIMEOUT_S,
                 )
                 try:
                     created = await _await_event(ws, "session.created")
