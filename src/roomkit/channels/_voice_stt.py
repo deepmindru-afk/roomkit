@@ -786,7 +786,7 @@ class VoiceSTTMixin:
     async def _kept_stream_audio(
         self, state: _STTStreamState, queue: asyncio.Queue[Any], first_chunk: AudioChunk
     ) -> AsyncIterator[AudioChunk]:
-        """The audio of a kept (diarizing) stream, never behind the clock.
+        """The audio of a kept stream, never behind the clock.
 
         A provider closes a stream whose audio falls behind real time (Meta
         Muse: 1008 ~15 s after the audio stops, measured 2026-09-27), which
@@ -861,7 +861,8 @@ class VoiceSTTMixin:
         async def run_continuous(state: _STTStreamState) -> None:
             backoff = 0.1
             while not state.cancelled:
-                # Fresh queue + WebSocket per turn (avoids server-side overlap).
+                # Fresh queue + WebSocket per turn (avoids server-side overlap),
+                # or per cycle of a kept stream (an error, a language change).
                 # Keep frame_buffer intact — audio arriving during the
                 # reconnection gap (sleep + WebSocket connect) is preserved
                 # and will be flushed to the new queue on the next frame.

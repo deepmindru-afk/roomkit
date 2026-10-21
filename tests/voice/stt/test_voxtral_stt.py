@@ -37,7 +37,8 @@ from roomkit.voice.stt.voxtral import (
     VoxtralSTTProvider,
     VoxtralTurnDetection,
 )
-from roomkit.voice.stt.voxtral_protocol import Transcript, language_code
+from roomkit.voice.stt.voxtral_protocol import language_code
+from roomkit.voice.stt.voxtral_transcript import Transcript
 
 _CREATED = {
     "type": "session.created",
@@ -418,6 +419,30 @@ class TestTranscript:
         assert transcript.late_chars == 0
         assert _feed(transcript, _END) == []
         assert transcript.close() == [TranscriptionResult(text="And a window seat")]
+
+    def test_the_ending_turn_keeps_its_last_words_when_the_next_starts_quickly(self) -> None:
+        # Its last words came up to 0.9 of the delay after its end (0.43 s at
+        # 480 ms); the next turn started 0.05 s after the end. The close comes
+        # 0.95 of the delay after the end, after those words and before the
+        # next turn's own, which come a delay after it.
+        transcript = Transcript(turns=True, final_wait_s=0.58, next_turn_wait_s=0.456)
+        _feed(transcript, _START, _delta("What is the capital"), _END)
+        assert transcript.deadline(1.0, None) == 1.58
+        _feed(transcript, _START)
+        assert transcript.deadline(1.05, 1.58) == pytest.approx(1.456)
+        _feed(transcript, _delta(" of Italy?"))  # at 1.43, before the close
+        assert transcript.close() == [TranscriptionResult(text="What is the capital of Italy?")]
+        assert _feed(transcript, _delta(" Answer")) == [
+            TranscriptionResult(text="Answer", is_final=False)
+        ]
+
+    def test_late_text_is_reported_once(self) -> None:
+        transcript = Transcript(turns=True)
+        _feed(transcript, *_TURN)
+        transcript.close()
+        _feed(transcript, _delta(" please"))
+        assert transcript.take_late() == len("please")
+        assert transcript.take_late() == 0
 
     def test_done_gives_the_turn_still_open(self) -> None:
         transcript = Transcript(turns=True)

@@ -121,3 +121,40 @@ async def test_the_offline_catalog_matches_the_live_presets() -> None:
         await tts.close()
 
     assert {v.id for v in VoxtralTTSProvider.available_voices()} <= live
+
+
+_DIALOGUE = [
+    ("voice_485", "Hi Julie, did you read the report I sent yesterday?"),
+    ("voice_478", "Yes, I read it this morning. The numbers look good."),
+    ("voice_485", "Great. Can we present it to the board on Friday?"),
+]
+
+
+async def _dialogue() -> bytes:
+    pause = b"\0" * (SAMPLE_RATE * 2 * 8 // 10)
+    return pause.join([await _speech(text, voice) for voice, text in _DIALOGUE]) + pause * 3
+
+
+def _diarizing() -> VoxtralSTTProvider:
+    return VoxtralSTTProvider(VoxtralSTTConfig(api_key=_key(), diarize=True, turn_detection=None))
+
+
+async def test_a_file_names_each_voice_turn_by_turn() -> None:
+    stt = _diarizing()
+    try:
+        result = await stt.transcribe(AudioChunk(data=await _dialogue(), sample_rate=SAMPLE_RATE))
+    finally:
+        await stt.close()
+
+    speakers = [segment.speaker for segment in result.segments]
+    assert len(speakers) == 3, result.segments
+    assert speakers[0] == speakers[2] != speakers[1]
+
+
+async def test_live_each_speakers_turn_is_a_final_naming_them() -> None:
+    results = await _stream(_diarizing(), await _dialogue())
+
+    finals = [r for r in results if r.is_final]
+    assert [_words(r.text) for r in finals] == [_words(text) for _, text in _DIALOGUE], finals
+    speakers = [r.speaker for r in finals]
+    assert speakers[0] == speakers[2] != speakers[1]

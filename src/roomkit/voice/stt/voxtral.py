@@ -24,36 +24,46 @@ The wrong choice loses words: behind a VAD with turn detection on, the
 channel keeps the last turn of an utterance only; without a VAD and with it
 off, no final comes until the audio stops.
 
+``diarize=True`` labels who spoke, in a file and live; every final then names
+its speaker (RFC §12.2.3). Live, the service cannot detect turns and label
+speakers in one session, so ``turn_detection`` must be ``None``: a turn ends
+on a change of speaker or a pause without new words (``diarized_pause_ms``),
+and a ``VoiceChannel`` carries the labels in continuous mode only.
+
 Each stream is one session on the service. Voxtral 3 is in public preview
 (October 2026). Install with ``pip install roomkit[mistral-voice]``.
 """
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import logging
 import mimetypes
 import wave
 from collections.abc import AsyncIterator
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from roomkit.providers.utils import http_timeout, parse_data_uri
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.base import AudioChunk, TranscriptionResult
 from roomkit.voice.pipeline.resampler.linear import LinearResamplerProvider
 from roomkit.voice.stt.base import STTProvider
-from roomkit.voice.stt.voxtral_protocol import (
-    REALTIME_PATH,
-    STREAMING_DELAYS_MS,
-    http_error,
-    language_code,
-    rest_result,
-    valid_streaming_delay,
+from roomkit.voice.stt.voxtral_config import (
+    DEFAULT_MODEL as DEFAULT_MODEL,
 )
+from roomkit.voice.stt.voxtral_config import (
+    DEFAULT_REALTIME_MODEL as DEFAULT_REALTIME_MODEL,
+)
+from roomkit.voice.stt.voxtral_config import (
+    MAX_SPEAKER_REFERENCES as MAX_SPEAKER_REFERENCES,
+)
+from roomkit.voice.stt.voxtral_config import VoxtralSTTConfig as VoxtralSTTConfig
+from roomkit.voice.stt.voxtral_config import VoxtralTurnDetection as VoxtralTurnDetection
 from roomkit.voice.stt.voxtral_protocol import VoxtralSTTError as VoxtralSTTError
+from roomkit.voice.stt.voxtral_protocol import http_error, language_code, rest_result
 from roomkit.voice.stt.voxtral_realtime import RealtimeSession, SessionSetup, first_audio
 
 if TYPE_CHECKING:
@@ -61,26 +71,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.voice.stt.voxtral")
 
-DEFAULT_MODEL = "voxtral-mini-transcribe-3"
-DEFAULT_REALTIME_MODEL = "voxtral-mini-transcribe-realtime-3"
 
 _RATES = frozenset({8000, 16000, 22050, 24000, 44100, 48000})
 """Input rates sent as they are: the rates Mistral documents for the realtime
 model. Any other is resampled to 16 kHz, the service's default."""
 _DEFAULT_RATE = 16000
-
-
-_LATE_TEXT_MARGIN_MS = 100
-"""Added to the streaming delay to give the final wait. A turn's last words
-followed its ``turn.end`` by up to 0.19 s at a 480 ms delay, 0.43 s at 480 ms
-with Mistral's aggressive preset, 0.16 s at 240 ms and 0.75 s at 1200 ms
-(measured 2026-10-21): never more than the delay."""
-
-_NEXT_TURN_SHARE = 0.75
-"""The share of the streaming delay a closing turn waits after the next
-``turn.start``. That turn's first words came a delay or more after it, the
-ending turn's last ones at most 0.09 s after it (measured 2026-10-21): three
-quarters of the delay parts the two."""
 
 
 def _import_httpx() -> Any:
@@ -92,134 +87,6 @@ def _import_httpx() -> Any:
             "Install with: pip install roomkit[mistral-voice]"
         ) from exc
     return httpx
-
-
-@dataclass(frozen=True)
-class VoxtralTurnDetection:
-    """When the realtime model says a turn starts and ends.
-
-    The model scores, from 0 to 1, how likely the person is still speaking;
-    the thresholds turn that score into turn events. The defaults are the
-    service's own (an empty ``turn_detection`` object), and
-    :meth:`aggressive` is Mistral's faster preset.
-
-    Attributes:
-        start_threshold: Score above which a turn starts or resumes. Raise it
-            when noise starts turns.
-        eager_end_threshold: Score below which the person has probably
-            finished (an eager end, which RoomKit does not act on).
-        end_threshold: Score below which the turn ends. Lower it to cut
-            people off less often, at the cost of a later answer.
-        min_silence_ms: Shortest pause before a turn can end.
-        end_timeout_ms: Longest pause before a turn ends anyway.
-    """
-
-    start_threshold: float = 0.5
-    eager_end_threshold: float = 0.5
-    end_threshold: float = 0.33
-    min_silence_ms: int = 500
-    end_timeout_ms: int = 3000
-
-    def __post_init__(self) -> None:
-        if not 0.0 <= self.end_threshold < self.eager_end_threshold <= self.start_threshold <= 1:
-            raise ValueError(
-                "turn detection thresholds must keep their order, "
-                "1 >= start_threshold >= eager_end_threshold > end_threshold >= 0"
-            )
-        if self.min_silence_ms < 0 or self.end_timeout_ms < self.min_silence_ms:
-            raise ValueError("end_timeout_ms must be at least min_silence_ms, itself at least 0")
-
-    @classmethod
-    def aggressive(cls) -> VoxtralTurnDetection:
-        """Mistral's preset for fast exchanges: turns end sooner, and cut more often."""
-        return cls(eager_end_threshold=0.4, min_silence_ms=300, end_timeout_ms=2500)
-
-
-@dataclass
-class VoxtralSTTConfig:
-    """Configuration for :class:`VoxtralSTTProvider`.
-
-    Attributes:
-        api_key: Mistral API key (sent as ``Bearer``).
-        model: File transcription model: ``voxtral-mini-transcribe-3``, or
-            ``voxtral-small-transcribe-3`` for the most accurate.
-        realtime_model: Realtime transcription model.
-        language: Language to transcribe, as a BCP-47 tag or an ISO 639-1
-            code (``"fr-CA"`` is sent as ``"fr"``). ``None`` lets the model
-            detect it.
-        context_bias: Names and terms the model should spell right (a
-            product, a person, a place), phrases included.
-        streaming_delay_ms: How long the realtime model listens past a word
-            before writing it: shorter is sooner, longer is more accurate.
-            Any value from 80 to 1200, or 2400.
-        turn_detection: The realtime model's turn detection, for a channel
-            without a pipeline VAD; ``None`` behind one, where a turn ended
-            inside an utterance would otherwise be lost (see the module
-            docstring).
-        final_wait_ms: How long a turn's final waits after the model ends the
-            turn, for its last words, which the text brings up to a streaming
-            delay later. ``None`` is the delay plus 100 ms (0.58 s with the
-            defaults). Words later than it are dropped, with a warning.
-        base_url: API root, without a version.
-        realtime_url: Realtime WebSocket endpoint; ``None`` derives it from
-            ``base_url``.
-        timeout: Read budget of a file transcription, in seconds.
-        connect_timeout: TCP connect budget, in seconds, apart from ``timeout``.
-        handshake_timeout_s: How long a stream waits, in all, for the
-            connection and for the session to accept its settings.
-        final_timeout_s: How long a stream waits, once its audio has ended,
-            for the end of the transcript.
-    """
-
-    api_key: str = field(repr=False)
-    model: str = DEFAULT_MODEL
-    realtime_model: str = DEFAULT_REALTIME_MODEL
-    language: str | None = None
-    context_bias: list[str] = field(default_factory=list)
-    streaming_delay_ms: int = 480
-    turn_detection: VoxtralTurnDetection | None = field(default_factory=VoxtralTurnDetection)
-    final_wait_ms: int | None = None
-    base_url: str = "https://api.mistral.ai"
-    realtime_url: str | None = None
-    timeout: float = 60.0
-    connect_timeout: float = 5.0
-    handshake_timeout_s: float = 10.0
-    final_timeout_s: float = 10.0
-
-    def __post_init__(self) -> None:
-        if not self.api_key:
-            raise ValueError("VoxtralSTTConfig.api_key is required")
-        if not self.api_key.isascii():
-            # Refused here, not as a UnicodeEncodeError from the HTTP client.
-            raise ValueError(
-                "VoxtralSTTConfig.api_key holds a non-ASCII character (a placeholder such as "
-                "'…' copied as is?): an HTTP Authorization header cannot carry it"
-            )
-        language_code(self.language)
-        if not valid_streaming_delay(self.streaming_delay_ms):
-            raise ValueError(
-                f"streaming_delay_ms must be {STREAMING_DELAYS_MS}, got {self.streaming_delay_ms}"
-            )
-        if self.final_wait_ms is not None and self.final_wait_ms < 0:
-            raise ValueError("final_wait_ms must not be negative")
-        if self.handshake_timeout_s <= 0 or self.final_timeout_s <= 0:
-            raise ValueError("VoxtralSTTConfig timeouts must be positive")
-
-    @property
-    def final_wait_s(self) -> float:
-        """The wait for a turn's last words after its end, in seconds."""
-        if self.final_wait_ms is not None:
-            return self.final_wait_ms / 1000
-        return (self.streaming_delay_ms + _LATE_TEXT_MARGIN_MS) / 1000
-
-    @property
-    def stream_url(self) -> str:
-        """The realtime endpoint, the model in its query string."""
-        base = self.realtime_url or self.base_url.rstrip("/") + REALTIME_PATH
-        parts = urlsplit(base)
-        scheme = {"https": "wss", "http": "ws"}.get(parts.scheme, parts.scheme)
-        query = urlencode([*parse_qsl(parts.query), ("model", self.realtime_model)])
-        return urlunsplit((scheme, parts.netloc, parts.path, query, ""))
 
 
 class VoxtralSTTProvider(STTProvider):
@@ -241,6 +108,11 @@ class VoxtralSTTProvider(STTProvider):
     @property
     def supports_language_override(self) -> bool:
         return True
+
+    @property
+    def supports_diarization(self) -> bool:
+        """True with ``diarize``: every final then names its speaker."""
+        return self._config.diarize
 
     @property
     def keeps_stream_across_turns(self) -> bool:
@@ -291,6 +163,10 @@ class VoxtralSTTProvider(STTProvider):
         if self._config.context_bias:
             # One multipart field per entry, as the endpoint reads them.
             fields["context_bias"] = list(self._config.context_bias)
+        if self._config.diarize:
+            # Speakers are labelled per segment: the endpoint refuses diarize without them.
+            fields["diarize"] = "true"
+            fields["timestamp_granularities"] = "segment"
         part, value = self._clip_part(audio)
         response = await self._http_client().post(
             f"{self._config.base_url.rstrip('/')}/v1/audio/transcriptions",
@@ -300,7 +176,7 @@ class VoxtralSTTProvider(STTProvider):
         )
         if response.status_code >= 400:
             raise http_error(response)
-        return rest_result(response.json())
+        return rest_result(response.json(), diarized=self._config.diarize)
 
     def _clip_part(self, audio: AudioContent | AudioChunk | AudioFrame) -> tuple[str, Any]:
         """The multipart part carrying *audio*: the file, or the URL Mistral fetches."""
@@ -345,7 +221,9 @@ class VoxtralSTTProvider(STTProvider):
 
         Yields the text so far as partials, and finals as the module docstring
         says: one per turn with turn detection, with a speech start when each
-        turn begins; one once the stream ends without. The input rate is read
+        turn begins; with ``diarize``, one per speaker's run of words, ended by
+        another voice or a pause, each naming its speaker; one once the stream
+        ends otherwise. The input rate is read
         off the first chunk: the documented rates go through as they are, any
         other is resampled to 16 kHz.
 
@@ -384,16 +262,23 @@ class VoxtralSTTProvider(STTProvider):
             settings["context_bias"] = list(config.context_bias)
         if config.turn_detection is not None:
             settings["turn_detection"] = asdict(config.turn_detection)
+        if config.diarize:
+            settings["diarize"] = True
+        if config.speaker_references:
+            settings["speaker_references"] = {
+                name: base64.b64encode(clip).decode("ascii")
+                for name, clip in config.speaker_references.items()
+            }
         return SessionSetup(
             url=config.stream_url,
             api_key=config.api_key,
             settings=settings,
             rate=rate,
             turns=config.turn_detection is not None,
+            diarize=config.diarize,
+            pause_s=config.diarized_pause_ms / 1000,
             final_wait_s=config.final_wait_s,
-            next_turn_wait_s=min(
-                config.final_wait_s, _NEXT_TURN_SHARE * config.streaming_delay_ms / 1000
-            ),
+            next_turn_wait_s=config.next_turn_wait_s,
             handshake_timeout_s=config.handshake_timeout_s,
             final_timeout_s=config.final_timeout_s,
         )

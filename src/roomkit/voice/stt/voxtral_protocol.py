@@ -2,8 +2,9 @@
 
 What the service sends and how it fails, kept apart from
 :mod:`roomkit.voice.stt.voxtral`, which drives the connection: the language
-codes, the realtime event mapping, the file endpoint's answer, and the error
-shapes of the REST and WebSocket endpoints. The public import path stays
+codes, the file endpoint's answer, and the error shapes of the REST and
+WebSocket endpoints. The realtime text is cut into results by
+:mod:`roomkit.voice.stt.voxtral_transcript`. The public import path stays
 ``roomkit.voice.stt.voxtral``.
 """
 
@@ -12,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from roomkit.providers.ai.base import ProviderError
-from roomkit.voice.base import TranscriptionResult
+from roomkit.voice.base import SpeakerSegment, TranscriptionResult, speaker_label
 
 REALTIME_PATH = "/v1/audio/transcriptions/realtime"
 
@@ -20,7 +21,6 @@ STREAMING_DELAYS_MS = "80 to 1200, or 2400"
 """The streaming delays the realtime model was trained for: any other value is
 refused when the session is configured (measured 2026-10-21)."""
 
-_DELTA = "transcription.text.delta"
 _DONE = "transcription.done"
 
 # 1011 is a server fault and 1013 a rate limit: both are worth a new stream.
@@ -80,119 +80,51 @@ def language_code(language: str | None) -> str | None:
     return code
 
 
-class Transcript:
-    """The text of one realtime session, as RoomKit results.
-
-    Each ``transcription.text.delta`` adds text after the text already sent,
-    final as it arrives and carrying its own spaces, so a partial is the text
-    so far. Without turn detection the session is one utterance, and
-    ``transcription.done`` gives its text of record.
-
-    With turn detection the text is cut into turns. ``turn.start`` opens one
-    (a speech start) and ``turn.end`` sets :attr:`closing`; the caller then
-    calls :meth:`close` once the turn's last words have had time to arrive.
-    The turn events come at once while the text runs a streaming delay
-    behind the audio, so a turn's last words can follow its ``turn.end`` by
-    nearly that delay, and even the next ``turn.start`` (measured 2026-10-21:
-    "Italy?" arrived after the next turn had started). The text that comes
-    before :meth:`close` is the ending turn's; a ``turn.start`` meanwhile is
-    a speech start, its turn opening at the close, and
-    :attr:`next_turn_started` tells the caller to close sooner: that turn's
-    own words follow it by a streaming delay. Text that arrives after its
-    turn's final belongs to a turn already given: it is counted in
-    :attr:`late_chars`, never sent as a turn of its own.
-    """
-
-    def __init__(self, *, turns: bool) -> None:
-        self._turns = turns
-        self._text = ""
-        self._given = False
-        self._next_open = False
-        self._next_ended = False
-        self.closing = False
-        self.late_chars = 0
-
-    def feed(self, event: dict[str, Any]) -> list[TranscriptionResult]:
-        """The results one server event gives, in order.
-
-        Raises:
-            VoxtralSTTError: The event reports an error.
-        """
-        kind = event.get("type")
-        if kind == "error":
-            raise event_error(event)
-        if kind == _DELTA:
-            return self._delta(str(event.get("text") or ""))
-        if not self._turns:
-            if kind == _DONE:
-                return self._final(str(event.get("text") or self._text))
-            return []
-        if kind == _DONE:
-            return self.close()
-        return self._turn_event(kind)
-
-    @property
-    def next_turn_started(self) -> bool:
-        """Whether a turn has started while the last one is closing."""
-        return self._next_open
-
-    def close(self) -> list[TranscriptionResult]:
-        """Give the ending turn as a final, ``[]`` when it holds no words.
-
-        A turn that started while this one was closing is open from here, and
-        :attr:`closing` again if it has ended too.
-        """
-        text, self._text = self._text, ""
-        self._given = not self._next_open
-        self.closing = self._next_open and self._next_ended
-        self._next_open = self._next_ended = False
-        return self._final(text)
-
-    def _turn_event(self, kind: Any) -> list[TranscriptionResult]:
-        if kind == "turn.start":
-            if self.closing:
-                # The latest turn to start is the one open after the close.
-                self._next_open, self._next_ended = True, False
-            else:
-                self._given = False
-            return [TranscriptionResult(text="", is_final=False, is_speech_start=True)]
-        if kind == "turn.end":
-            if self._next_open:
-                self._next_ended = True
-            else:
-                self.closing = True
-        return []
-
-    def _delta(self, text: str) -> list[TranscriptionResult]:
-        if self._turns and self._given:
-            self.late_chars += len(text.strip())
-            return []
-        self._text += text
-        so_far = self._text.strip()
-        return [TranscriptionResult(text=so_far, is_final=False)] if so_far else []
-
-    @staticmethod
-    def _final(text: str) -> list[TranscriptionResult]:
-        text = text.strip()
-        return [TranscriptionResult(text=text, is_final=True)] if text else []
-
-
 def is_done(event: dict[str, Any]) -> bool:
     """Whether *event* ends the session: the service then drops the connection."""
     return event.get("type") == _DONE
 
 
-def rest_result(body: dict[str, Any]) -> TranscriptionResult:
+def rest_result(body: dict[str, Any], *, diarized: bool = False) -> TranscriptionResult:
     """The file endpoint's answer ``{text, language, segments, usage}``.
 
     ``language`` is ``null`` in every answer measured, pinned or detected
-    (2026-10-21); it is passed on as the service reports it.
+    (2026-10-21); it is passed on as the service reports it. A diarized
+    answer's segments, a sentence or so each with its speaker and times in
+    seconds, become one speaker segment per run of consecutive segments of
+    one speaker (RFC §12.2.3); text with no segment is nobody's.
     """
     language = body.get("language")
+    text = str(body.get("text") or "").strip()
+    segments = _speaker_runs(body.get("segments") or []) if diarized else []
+    if diarized and text and not segments:
+        segments = [SpeakerSegment(None, text)]
     return TranscriptionResult(
-        text=str(body.get("text") or "").strip(),
+        text=text,
         language=language if isinstance(language, str) and language else None,
+        segments=segments,
     )
+
+
+def _speaker_runs(items: list[Any]) -> list[SpeakerSegment]:
+    runs: list[SpeakerSegment] = []
+    for item in items:
+        if not isinstance(item, dict) or not str(item.get("text") or "").strip():
+            continue
+        speaker = speaker_label(item.get("speaker_id"))
+        text = str(item["text"]).strip()
+        start, end = _ms(item.get("start")), _ms(item.get("end"))
+        if runs and runs[-1].speaker == speaker:
+            last = runs[-1]
+            joined = f"{last.text} {text}"
+            runs[-1] = SpeakerSegment(speaker, joined, last.start_ms, end or last.end_ms)
+        else:
+            runs.append(SpeakerSegment(speaker, text, start, end))
+    return runs
+
+
+def _ms(seconds: Any) -> int | None:
+    return round(seconds * 1000) if isinstance(seconds, int | float) else None
 
 
 def event_error(event: dict[str, Any]) -> VoxtralSTTError:

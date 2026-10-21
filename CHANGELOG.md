@@ -75,6 +75,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reach the room one at a time in the order they were said, the reply to one
   never holding back the next. `VoxtralSTTProvider` claims it whenever turn
   detection is on.
+- Speaker labels on Voxtral (RMK-885): `VoxtralSTTConfig(diarize=True,
+  turn_detection=None)` makes `VoxtralSTTProvider` report
+  `supports_diarization`, and every final name its speaker in `segments`
+  (RFC §12.2.3), Mistral's `speaker_1` arriving as `"1"`. A file comes back
+  with one segment per run of a speaker and its times. Live, the service
+  cannot label speakers and detect turns in one session (the config refuses
+  both), so a turn ends when another voice starts or after a pause without
+  new words (`diarized_pause_ms`, 1.5 s: one person's words came up to 2 s
+  apart, a new speaker's 1.5 s after the last, measured); a `VoiceChannel`
+  carries the labels in continuous mode on one session.
+  `speaker_references` names known voices live from 3 to 15 s clips, at most
+  8; the model's matching is partial (a voice came back under its name, then
+  as "3", in one measured session), and the file endpoint ignored them.
+  `examples/voice_voxtral_diarization.py` labels the voices around one
+  microphone.
 
 ### Changed
 
@@ -128,9 +143,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stream the channel was closing and came back as a turn of their own ("What
   is the capital of Italy?", "Answer", "in one word."); the stream is now
   kept. A turn that starts while the last one waits for its last words also
-  closes that one within three quarters of the streaming delay: the new
-  turn's own words trail its start by a delay, and the ending turn's words
-  came at most 0.09 s after it (measured), so neither is joined to the other.
+  closes that one sooner, 0.95 of the streaming delay after its end: its last
+  words came up to 0.9 of the delay after the end (0.43 s at 480 ms,
+  measured), and the new turn's first word comes no sooner than a delay after
+  it, where the plain wait (the delay plus 100 ms) had joined that word to
+  the last turn.
 - A `HandoffHandler` serving a realtime voice channel refuses an agent that
   is not an `Agent` (one the kit holds by its declaration alone, or another
   intelligence channel) with a `ValueError` naming it (RMK-831, RFC §19.5,

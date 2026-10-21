@@ -21,12 +21,12 @@ from typing import Any
 from roomkit.core.task_utils import cancel_and_wait
 from roomkit.voice.base import AudioChunk, TranscriptionResult
 from roomkit.voice.stt.voxtral_protocol import (
-    Transcript,
     VoxtralSTTError,
     event_error,
     is_done,
     stream_error,
 )
+from roomkit.voice.stt.voxtral_transcript import SpeakerTurns, Transcript
 
 logger = logging.getLogger("roomkit.voice.stt.voxtral")
 
@@ -61,9 +61,11 @@ class SessionSetup:
         settings: The ``session`` object of the one ``session.update``.
         rate: The rate of the PCM the session is sent.
         turns: Whether the settings ask for turn detection.
+        diarize: Whether they ask for speaker labels (no turn events then).
         final_wait_s: How long a turn's final waits after ``turn.end``.
         next_turn_wait_s: How long it waits at most after the next
             ``turn.start``, whose own words come a streaming delay later.
+        pause_s: How long without new words ends a diarized turn.
         handshake_timeout_s: How long to wait for the session to open and
             accept its settings.
         final_timeout_s: How long to wait, once the audio ended, for
@@ -79,6 +81,8 @@ class SessionSetup:
     next_turn_wait_s: float
     handshake_timeout_s: float
     final_timeout_s: float
+    diarize: bool = False
+    pause_s: float = 0.0
 
 
 @dataclass
@@ -144,7 +148,16 @@ class RealtimeSession:
 
         The session is closed when the generator ends, however it ends.
         """
-        transcript = Transcript(turns=self._setup.turns)
+        setup = self._setup
+        transcript: Transcript | SpeakerTurns = (
+            SpeakerTurns(pause_s=setup.pause_s)
+            if setup.diarize
+            else Transcript(
+                turns=setup.turns,
+                final_wait_s=setup.final_wait_s,
+                next_turn_wait_s=setup.next_turn_wait_s,
+            )
+        )
         sender = asyncio.create_task(self._send_audio(first, audio_stream))
         try:
             async with contextlib.aclosing(self._results(transcript)) as results:
@@ -155,20 +168,16 @@ class RealtimeSession:
                 await cancel_and_wait(sender)
             finally:
                 await self._ws.close()
-            if transcript.late_chars:
-                logger.warning(
-                    "Voxtral STT: %d characters of a turn arrived after its final and were "
-                    "dropped; raise final_wait_ms (now %.2f s) to keep them",
-                    transcript.late_chars,
-                    self._setup.final_wait_s,
-                )
 
-    async def _results(self, transcript: Transcript) -> AsyncGenerator[TranscriptionResult, None]:
+    async def _results(
+        self, transcript: Transcript | SpeakerTurns
+    ) -> AsyncGenerator[TranscriptionResult, None]:
         """Read the session's events into results, until ``transcription.done``.
 
-        A turn the model ended is given once ``final_wait_s`` has passed, its
-        last words included, or sooner when the next turn starts:
-        ``next_turn_wait_s`` after that ``turn.start``, before its own words.
+        A turn is given when the transcript's :meth:`deadline` passes: once
+        ``final_wait_s`` has passed after the model ended it, its last words
+        included, or sooner when the next turn starts, before that turn's own
+        words; for a diarized session, after ``pause_s`` without new words.
         """
         _, exceptions = _import_websockets()
         loop = asyncio.get_running_loop()
@@ -181,7 +190,7 @@ class RealtimeSession:
                 for result in transcript.close():
                     yield result
                 # A turn that started and ended during the wait now closes.
-                close_at = loop.time() + self._setup.final_wait_s if transcript.closing else None
+                close_at = transcript.deadline(loop.time(), None)
                 continue
             except exceptions.ConnectionClosed as exc:
                 raise self._ended_early(exc) from exc
@@ -190,16 +199,17 @@ class RealtimeSession:
             event = json.loads(message)
             for result in transcript.feed(event):
                 yield result
+            if late := transcript.take_late():
+                # A kept stream lasts the whole call: say it when it happens.
+                logger.warning(
+                    "Voxtral STT: %d characters of a turn arrived after its final and were "
+                    "dropped; raise final_wait_ms (now %.2f s) to keep them",
+                    late,
+                    self._setup.final_wait_s,
+                )
             if is_done(event):
                 return
-            if not transcript.closing:
-                close_at = None
-                continue
-            now = loop.time()
-            if close_at is None:
-                close_at = now + self._setup.final_wait_s
-            if transcript.next_turn_started:
-                close_at = min(close_at, now + self._setup.next_turn_wait_s)
+            close_at = transcript.deadline(loop.time(), close_at)
 
     async def _send_audio(
         self, first: AudioChunk, audio_stream: AsyncIterator[AudioChunk]

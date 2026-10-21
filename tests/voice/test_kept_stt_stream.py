@@ -21,7 +21,7 @@ from roomkit.models.enums import EventType
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.base import AudioChunk, TranscriptionResult
-from roomkit.voice.pipeline import AudioPipelineConfig
+from roomkit.voice.pipeline import AudioPipelineConfig, MockTurnDetector, TurnDecision
 from roomkit.voice.stt.base import STTProvider, keeps_stream
 
 _FRAME = AudioFrame(data=b"\x01\x00" * 1600)  # 3200 bytes: one STT buffer flush
@@ -76,10 +76,10 @@ async def _eventually(predicate: Callable[[], bool], timeout: float = 3.0) -> No
 class _Room:
     """A kit with one continuous VoiceChannel, and the transcripts its hook saw."""
 
-    def __init__(self, stt: STTProvider) -> None:
+    def __init__(self, stt: STTProvider, pipeline: AudioPipelineConfig | None = None) -> None:
         self.backend = MockVoiceBackend()
         self.channel = VoiceChannel(
-            "voice-1", stt=stt, backend=self.backend, pipeline=AudioPipelineConfig()
+            "voice-1", stt=stt, backend=self.backend, pipeline=pipeline or AudioPipelineConfig()
         )
         self.kit = RoomKit(stt=stt, voice=self.backend)
         self.kit.register_channel(self.channel)
@@ -197,6 +197,27 @@ class TestVoiceChannelKeepsTheStream:
         assert any(not any(c.data) for c in stt.chunks)
         audio = sum(len(c.data) for c in stt.chunks) / (2 * 16000)
         assert audio >= elapsed - 0.35
+
+    async def test_a_turn_detector_joins_the_turns_it_finds_incomplete(self) -> None:
+        # The kept stream's finals are routed under the ordering lock and their
+        # delivery is not awaited there: a turn the detector holds waits for
+        # the next final, and the two reach the room as one message.
+        detector = MockTurnDetector(
+            decisions=[TurnDecision(is_complete=False), TurnDecision(is_complete=True)]
+        )
+        pipeline = AudioPipelineConfig(turn_detector=detector, turn_incomplete_wait_ms=2000)
+        stt = _TurnsSTT(["I would like", "a table for two."])
+        room = _Room(stt, pipeline)
+        await room.start()
+
+        await room.speak()
+        await _eventually(lambda: len(room.transcripts) == 1)
+        await room.speak()
+        messages = await room.said(1)
+        await room.channel.close()
+
+        assert stt.streams == 1
+        assert messages == ["I would like a table for two."]
 
     async def test_a_language_change_opens_a_new_stream_with_it(self) -> None:
         # A language holds for the life of a stream (RFC §12.2).
