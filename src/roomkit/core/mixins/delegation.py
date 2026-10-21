@@ -659,7 +659,8 @@ class DelegationMixin(HelpersMixin):
         try:
             await await_interruptible(run)
         finally:
-            # Its completion recorded its end; one that never ran it failed.
+            # Its completion recorded its end; a run that never reached its
+            # completion is recorded failed.
             self._room_tasks.end(handle.id, str(TaskStatus.FAILED))
         return handle
 

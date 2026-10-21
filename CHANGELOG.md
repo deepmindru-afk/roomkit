@@ -110,15 +110,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   room's task, an id the kit never ran, or a task another kit runs for the
   room on a bus both share, still answers `unknown`; a task the bus lists
   ended is answered as it lists it, as `task_status` does. A task of the room
-  that ended answers that it had ended, with its status, as soon as it ends,
-  before its hooks run and while the bus still shows it running (the kit keeps
+  that ended answers that it had ended, with its status, while the bus still
+  shows it running (an inline task from its completion's start, before its
+  hooks; a background one once its runner hands its end over; the kit keeps
   the latest 1024 ended, all rooms together), where it answered `unknown`. A
   task whose pending entry left the bus's window, its progress alone left, is
   listed running as the turn's notes read it, and `cancel_task` cancels it,
   where it answered that it had ended. The console's `/cancel` says why an
   inline run is still running, in the tool's words, where it said it had
-  ended, and cancels only a task the kit runs for its room: a line of the room
-  naming another room's task cancelled that task.
+  ended, says a task its line lists ended had ended, and cancels only a task
+  the kit runs for its room: a line of the room naming another room's task
+  cancelled that task.
 
 - A Redis turn backend whose Redis goes silent without closing a connection
   (a NAT or a load balancer forgot it) keeps the process among the living

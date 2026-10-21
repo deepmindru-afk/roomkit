@@ -253,12 +253,21 @@ async def test_the_owner_serves_the_task_tools_set_up_on_an_agent() -> None:
         room.kit.setup_task_tools(speaker)  # type: ignore[arg-type]
 
 
+class _Failing(MockAIProvider):
+    """A worker whose model fails."""
+
+    async def generate(self, context: AIContext) -> AIResponse:
+        raise RuntimeError("the model is down")
+
+
+@pytest.mark.parametrize("ended", ["completed", "failed"])
 @pytest.mark.parametrize("door", ["inline", "background"])
-async def test_a_task_whose_end_is_being_told_reads_ended_at_once(door: str) -> None:
+async def test_a_task_whose_end_is_being_told_reads_ended_at_once(door: str, ended: str) -> None:
     """While its ON_TASK_COMPLETED hooks run, its line still running, the
-    room's own task reads ended, answered at once: its end is recorded
-    before its hooks run (RFC §23.4)."""
-    room = await _Room(MockAIProvider(responses=["A thousand."])).open()
+    room's own task reads ended, with the status it ended with, answered at
+    once: its end is recorded before its hooks run (RFC §23.4)."""
+    worker = MockAIProvider(responses=["A thousand."]) if ended == "completed" else _Failing()
+    room = await _Room(worker).open()
     in_hook = asyncio.Event()
     release = asyncio.Event()
 
@@ -278,7 +287,7 @@ async def test_a_task_whose_end_is_being_told_reads_ended_at_once(door: str) -> 
     await room.kit.close()
 
     assert line["status"] == "running"
-    assert (answer["status"], answer["message"]) == ("completed", "The task had already ended.")
+    assert (answer["status"], answer["message"]) == (ended, "The task had already ended.")
     assert room.kit._room_tasks.running == []
 
 
