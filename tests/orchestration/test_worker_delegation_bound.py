@@ -30,7 +30,11 @@ from tests.test_framework import SimpleChannel
 
 _LOOKUP = AITool(name="lookup", description="Look it up.", parameters={"type": "object"})
 _BOUND = 0.3
-_WORK = 1.5
+# A delegating call is cut once its worker works: longer than the supervisor
+# takes to frame the worker's task first (a turn of its own, across Redis on
+# a slow runner too), shorter than the worker's work.
+_CALL_BOUND = 1.0
+_WORK = 2.5
 
 DOORS = {
     "parallel": ("delegate_workers", {"strategy": "parallel"}),
@@ -131,7 +135,7 @@ async def test_a_worker_past_its_bound_is_cut_and_the_call_answers_once(door: st
 
 @EVERY_DOOR
 async def test_a_delegation_its_call_cut_posts_the_worker_failed(door: str) -> None:
-    turn = await _run(door, bound=30.0, call_bound=_BOUND)
+    turn = await _run(door, bound=30.0, call_bound=_CALL_BOUND)
 
     assert turn.ends == ["cancelled"]
     assert turn.entries[-1] == (StatusLevel.FAILED, "cancelled")
