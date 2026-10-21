@@ -2,7 +2,7 @@
 
 The person asks for the weather in Québec, the agent delegates it to a weather
 agent and keeps talking. Half a second later the person changes their mind:
-"Ah non, plutôt Montréal." The agent cancels the Québec task with its
+"Oh no, Montréal instead." The agent cancels the Québec task with its
 ``cancel_task`` tool and delegates Montréal (RFC §23.4):
 
 1. The Québec task ends ``cancelled``: ``ON_TASK_COMPLETED`` fires, the
@@ -70,8 +70,8 @@ class _WeatherAgentAI(MockAIProvider):
         await asyncio.sleep(_LOOKUP_SECONDS)
         asked = " ".join(str(m.content) for m in context.messages)
         if "Montréal" in asked:
-            return AIResponse(content="Demain à Montréal : 13 °C, pluie faible.")
-        return AIResponse(content="Demain à Québec : 8 °C, averses.")
+            return AIResponse(content="Tomorrow in Montréal: 13 °C, light rain.")
+        return AIResponse(content="Tomorrow in Québec: 8 °C, showers.")
 
 
 class _AssistantAI(MockAIProvider):
@@ -85,18 +85,18 @@ class _AssistantAI(MockAIProvider):
     async def generate(self, context: AIContext) -> AIResponse:
         self.calls.append(context)
         turn = len(self.calls)
-        if turn == 1:  # "la météo de demain à Québec ?"
-            return _calls(_delegate("q", "Météo de demain à Québec"))
+        if turn == 1:  # "What's the weather tomorrow in Québec?"
+            return _calls(_delegate("q", "Tomorrow's weather in Québec"))
         if turn == 2:
-            return AIResponse(content="Je regarde la météo de Québec.")
-        if turn == 3:  # "Ah non, plutôt Montréal."
+            return AIResponse(content="Let me check the weather in Québec.")
+        if turn == 3:  # "Oh no, Montréal instead."
             cancel = AIToolCall(
                 id="c", name=CANCEL_TASK_TOOL, arguments={"task_id": self._delegated[0]}
             )
-            return _calls(cancel, _delegate("m", "Météo de demain à Montréal"))
+            return _calls(cancel, _delegate("m", "Tomorrow's weather in Montréal"))
         if turn == 4:
-            return AIResponse(content="D'accord : j'arrête Québec et je regarde Montréal.")
-        return AIResponse(content="Demain à Montréal, 13 °C et un peu de pluie.")
+            return AIResponse(content="Sure: I am stopping Québec and checking Montréal.")
+        return AIResponse(content="Tomorrow in Montréal, 13 °C and a little rain.")
 
 
 def _delegate(call_id: str, task: str) -> AIToolCall:
@@ -117,9 +117,9 @@ async def main() -> None:
     assistant = AIChannel(
         "assistant",
         provider=_AssistantAI(delegated),
-        system_prompt="Tu es l'assistant météo. Tu délègues les recherches.",
+        system_prompt="You are the weather assistant. You delegate the lookups.",
     )
-    weather = Agent("meteo", provider=_WeatherAgentAI(), role="Météo")
+    weather = Agent("meteo", provider=_WeatherAgentAI(), role="Weather")
     for channel in (sms, assistant, weather):
         kit.register_channel(channel)
     # Follow the room's tasks, and stop one the person no longer wants: the
@@ -128,7 +128,7 @@ async def main() -> None:
     setup_delegation(
         assistant,
         DelegateHandler(kit),
-        tool=build_delegate_tool([("meteo", "la météo d'une ville")]),
+        tool=build_delegate_tool([("meteo", "a city's weather")]),
     )
 
     @kit.hook(HookTrigger.ON_TASK_DELEGATED, execution=HookExecution.ASYNC)
@@ -165,9 +165,9 @@ async def main() -> None:
             room_id=ROOM,
         )
 
-    await say("Tu peux regarder la météo de demain à Québec ?")
+    await say("Can you check tomorrow's weather in Québec?")
     await asyncio.sleep(0.5)
-    await say("Ah non, plutôt Montréal.")
+    await say("Oh no, Montréal instead.")
     await asyncio.sleep(_LOOKUP_SECONDS + 1.0)  # Montréal's result comes back
 
     quebec, montreal = delegated
