@@ -243,6 +243,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection) was interrupted halfway and the turn's end was written before it
   had finished.
 
+- Mistral Large 4 (`mistral-large-4-0`, `mistral-large-4`) carries its list
+  price in the Mistral catalog, $1.36 / $4.18 per million, cache reads $0.14
+  (verified 2026-10-21 on its model card). Its launch price, half of that,
+  ended, so the catalog's $0.68 / $2.09 / $0.07 since 0.96.0 halved every
+  cost a host computed for it.
+
 ## [0.106.0] — 2026-10-19
 
 ### Added
