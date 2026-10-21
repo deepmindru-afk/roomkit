@@ -677,11 +677,41 @@ class TestSherpaOnnxTTSProvider:
         assert "vits" not in kwargs
         assert provider.default_voice == "30"
 
+    def test_kitten_model_is_built_with_its_voices(self) -> None:
+        sherpa = _mock_sherpa_module()
+        provider = self._make_provider(
+            sherpa,
+            model_type="kitten",
+            model="model.int8.onnx",
+            voices="voices.bin",
+            tokens="tokens.txt",
+            data_dir="espeak-ng-data",
+            speaker_id=1,
+            voice_names=("expr-voice-2-m", "expr-voice-2-f"),
+        )
+
+        provider._get_tts()
+
+        sherpa.OfflineTtsVitsModelConfig.assert_not_called()
+        sherpa.OfflineTtsKokoroModelConfig.assert_not_called()
+        sherpa.OfflineTtsKittenModelConfig.assert_called_once_with(
+            model="model.int8.onnx",
+            voices="voices.bin",
+            tokens="tokens.txt",
+            data_dir="espeak-ng-data",
+        )
+        kwargs = sherpa.OfflineTtsModelConfig.call_args.kwargs
+        assert kwargs["kitten"] is sherpa.OfflineTtsKittenModelConfig.return_value
+        assert "vits" not in kwargs
+        assert provider.default_voice == "expr-voice-2-f"
+
     def test_config_refuses_kokoro_without_voices_and_unknown_types(self) -> None:
         from roomkit.voice.tts.sherpa_onnx import SherpaOnnxTTSConfig
 
         with pytest.raises(ValueError, match=r"voices\.bin"):
             SherpaOnnxTTSConfig(model_type="kokoro", model="model.onnx")
+        with pytest.raises(ValueError, match=r"kitten model needs its voices\.bin"):
+            SherpaOnnxTTSConfig(model_type="kitten", model="model.onnx")
         with pytest.raises(ValueError, match="Unknown sherpa-onnx TTS model_type"):
             SherpaOnnxTTSConfig(model_type="matcha")
 

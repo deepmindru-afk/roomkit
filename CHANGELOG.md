@@ -43,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or Smart Turn models by hand now build them by name and say which
   `python -m roomkit.local_models download` to run.
 
+- Kitten TTS (RMK-896): `SherpaOnnxTTSConfig(model_type="kitten")` runs a
+  Kitten model (model, voices.bin, tokens, espeak-ng data), and the local
+  model list carries Kitten v0.8 nano (int8, 31 MB) and mini (68 MB), English,
+  24 kHz, their eight voices named (`voice="expr-voice-2-f"`).
+
 ### Fixed
 
 - In continuous mode, an acknowledgement whose first partial was taken for

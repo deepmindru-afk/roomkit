@@ -20,6 +20,34 @@ KOKORO_V1_VOICES = (
 )  # fmt: skip
 
 
+# The speaker table of Kitten v0.8, from the models' own `speaker_names`
+# metadata (nano and mini share it): the position of a name is its speaker id.
+KITTEN_V08_VOICES = (
+    "expr-voice-2-m", "expr-voice-2-f", "expr-voice-3-m", "expr-voice-3-f",
+    "expr-voice-4-m", "expr-voice-4-f", "expr-voice-5-m", "expr-voice-5-f",
+)  # fmt: skip
+
+
+def _kitten(
+    directory: str, model: str, sha256: str, *, description: str, size_mb: int
+) -> LocalModel:
+    return LocalModel(
+        name=directory,
+        kind=SHERPA_ONNX_TTS,
+        description=description,
+        size_mb=size_mb,
+        files=(ModelFile(f"{_RELEASES}/tts-models/{directory}.tar.bz2", sha256),),
+        paths={
+            "model": f"{directory}/{model}",
+            "voices": f"{directory}/voices.bin",
+            "tokens": f"{directory}/tokens.txt",
+            "data_dir": f"{directory}/espeak-ng-data",
+        },
+        settings={"model_type": "kitten", "sample_rate": 24000},
+        voices=KITTEN_V08_VOICES,
+    )
+
+
 def _piper(
     voice: str, sha256: str, *, description: str, size_mb: int, sample_rate: int
 ) -> LocalModel:
@@ -79,5 +107,19 @@ TTS_MODELS = (
         description="TTS, FR, Piper 'siwis' voice, 22 kHz",
         size_mb=67,
         sample_rate=22050,
+    ),
+    _kitten(
+        "kitten-nano-en-v0_8-int8",
+        "model.int8.onnx",
+        "6fa5be852612ce761094ba74ee6123b4fc4acfefa79bf64dc63acae4a83af2fd",
+        description="TTS, EN, Kitten nano v0.8 (int8, 15M params), 8 voices, 24 kHz",
+        size_mb=31,
+    ),
+    _kitten(
+        "kitten-mini-en-v0_8",
+        "model.onnx",
+        "518f9b130320f690d5b5476df77bde4215fca67773cda16710318e5081234b9d",
+        description="TTS, EN, Kitten mini v0.8 (80M params), 8 voices, 24 kHz",
+        size_mb=68,
     ),
 )

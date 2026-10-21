@@ -1,4 +1,4 @@
-"""sherpa-onnx text-to-speech provider: VITS/Piper and Kokoro models."""
+"""sherpa-onnx text-to-speech provider: VITS/Piper, Kokoro and Kitten models."""
 
 from __future__ import annotations
 
@@ -27,7 +27,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-_MODEL_TYPES = ("vits", "kokoro")
+_MODEL_TYPES = ("vits", "kokoro", "kitten")
+# Model types whose voices are rows of a voices.bin.
+_VOICES_BIN_TYPES = ("kokoro", "kitten")
 
 
 @dataclass
@@ -41,7 +43,7 @@ class SherpaOnnxTTSConfig(FromLocalModel):
     Attributes:
         model: Path to the ``.onnx`` model.
         tokens: Path to ``tokens.txt``.
-        data_dir: Path to espeak-ng data directory (Piper and Kokoro models).
+        data_dir: Path to espeak-ng data directory (Piper, Kokoro and Kitten).
         lexicon: Path to optional lexicon file. A multi-lang Kokoro takes
             several, comma-separated (``lexicon-us-en.txt,lexicon-zh.txt``).
         speaker_id: Speaker ID for multi-speaker models; for Kokoro, the
@@ -52,8 +54,9 @@ class SherpaOnnxTTSConfig(FromLocalModel):
             Audio always carries the model's own rate.
         num_threads: Number of CPU threads for inference.
         provider: ONNX execution provider (``"cpu"`` or ``"cuda"``).
-        model_type: ``"vits"`` (VITS/Piper) or ``"kokoro"``.
-        voices: Path to Kokoro's ``voices.bin``, required with ``"kokoro"``.
+        model_type: ``"vits"`` (VITS/Piper), ``"kokoro"`` or ``"kitten"``.
+        voices: Path to the ``voices.bin`` of a Kokoro or Kitten model,
+            required with those two.
         lang: Language espeak-ng reads the text in for a multi-lang Kokoro
             (``"fr"``, ``"es"``, ``"it"``...). Empty, any text that is not
             Chinese is read as English: French comes out mispronounced.
@@ -85,8 +88,10 @@ class SherpaOnnxTTSConfig(FromLocalModel):
                 f"Unknown sherpa-onnx TTS model_type {self.model_type!r}; expected one of "
                 f"{_MODEL_TYPES}"
             )
-        if self.model_type == "kokoro" and not self.voices:
-            raise ValueError("A Kokoro model needs its voices.bin in SherpaOnnxTTSConfig.voices")
+        if self.model_type in _VOICES_BIN_TYPES and not self.voices:
+            raise ValueError(
+                f"A {self.model_type} model needs its voices.bin in SherpaOnnxTTSConfig.voices"
+            )
 
     @classmethod
     def from_local_model(
@@ -203,7 +208,7 @@ def _split_text(text: str, max_chars: int = 300) -> list[str]:
 
 
 class SherpaOnnxTTSProvider(TTSProvider):
-    """Text-to-speech provider using sherpa-onnx with VITS/Piper or Kokoro models."""
+    """Text-to-speech provider using sherpa-onnx with VITS/Piper, Kokoro or Kitten models."""
 
     def __init__(self, config: SherpaOnnxTTSConfig) -> None:
         try:
@@ -287,6 +292,14 @@ class SherpaOnnxTTSProvider(TTSProvider):
                 lang=cfg.lang,
             )
             return {"kokoro": kokoro}
+        if cfg.model_type == "kitten":
+            kitten = self._sherpa.OfflineTtsKittenModelConfig(
+                model=cfg.model,
+                voices=cfg.voices,
+                tokens=cfg.tokens,
+                data_dir=cfg.data_dir,
+            )
+            return {"kitten": kitten}
         vits = self._sherpa.OfflineTtsVitsModelConfig(
             model=cfg.model,
             tokens=cfg.tokens,

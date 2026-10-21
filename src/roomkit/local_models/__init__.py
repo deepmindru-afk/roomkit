@@ -44,10 +44,11 @@ from roomkit.local_models._registry import (
     local_model_config,
     local_model_dir,
 )
-from roomkit.local_models._tts import KOKORO_V1_VOICES
+from roomkit.local_models._tts import KITTEN_V08_VOICES, KOKORO_V1_VOICES
 
 __all__ = [
     "KINDS",
+    "KITTEN_V08_VOICES",
     "KOKORO_V1_VOICES",
     "LOCAL_MODELS",
     "MODELS_DIR_ENV",
