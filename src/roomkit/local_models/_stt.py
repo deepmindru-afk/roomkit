@@ -61,6 +61,23 @@ def _whisper(
     )
 
 
+def _moonshine(size: str, sha256: str, *, description: str, size_mb: int) -> LocalModel:
+    directory = f"sherpa-onnx-moonshine-{size}-en-quantized-2026-02-27"
+    return LocalModel(
+        name=f"moonshine-{size}-en-2026-02-27",
+        kind=SHERPA_ONNX_STT,
+        description=description,
+        size_mb=size_mb,
+        files=(ModelFile(f"{_RELEASES}/asr-models/{directory}.tar.bz2", sha256),),
+        paths={
+            "encoder": f"{directory}/encoder_model.ort",
+            "decoder": f"{directory}/decoder_model_merged.ort",
+            "tokens": f"{directory}/tokens.txt",
+        },
+        settings={"mode": "moonshine", "language": "en"},
+    )
+
+
 _ZIPFORMER_EN_SUFFIX = "epoch-99-avg-1-chunk-16-left-128"
 
 STT_MODELS = (
@@ -176,5 +193,17 @@ STT_MODELS = (
         description="Offline STT, multilingual, Whisper base (int8), language detected",
         size_mb=161,
         language="",
+    ),
+    _moonshine(
+        "tiny",
+        "9ec31b342d8fa3240c3b81b8f82e1cf7e3ac467c93ca5a999b741d5887164f8d",
+        description="Offline STT, EN, Moonshine v2 tiny (quantized)",
+        size_mb=30,
+    ),
+    _moonshine(
+        "base",
+        "43232c1d13013d37317163baec3135bd771a186a4356f28c889bab453bb0e891",
+        description="Offline STT, EN, Moonshine v2 base (quantized)",
+        size_mb=111,
     ),
 )

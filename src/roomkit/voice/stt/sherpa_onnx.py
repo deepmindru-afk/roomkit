@@ -22,6 +22,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Modes whose models transcribe a whole utterance, never a stream.
+_OFFLINE_MODES = ("whisper", "moonshine")
+
 
 @dataclass
 class SherpaOnnxSTTConfig(FromLocalModel):
@@ -31,10 +34,13 @@ class SherpaOnnxSTTConfig(FromLocalModel):
     ``SherpaOnnxSTTConfig.from_local_model("zipformer-en-2023-06-26")``.
 
     Attributes:
-        mode: Recognition mode — ``"transducer"`` or ``"whisper"``.
+        mode: Recognition mode — ``"transducer"``, ``"whisper"`` or
+            ``"moonshine"`` (Moonshine v2: an encoder and a merged decoder,
+            ``.ort`` files). Whisper and Moonshine transcribe each utterance
+            once it ends.
         tokens: Path to ``tokens.txt``.
-        encoder: Path to encoder ``.onnx`` model.
-        decoder: Path to decoder ``.onnx`` model.
+        encoder: Path to encoder ``.onnx`` (or ``.ort``) model.
+        decoder: Path to decoder ``.onnx`` (or ``.ort``) model.
         joiner: Path to joiner ``.onnx`` model (transducer only).
         model_type: Model type hint for sherpa-onnx (e.g.
             ``"nemo_transducer"`` for NeMo TDT/transducer models).
@@ -191,6 +197,14 @@ class SherpaOnnxSTTProvider(STTProvider):
                 num_threads=cfg.num_threads,
                 provider=cfg.provider,
             )
+        if cfg.mode == "moonshine":
+            return self._sherpa.OfflineRecognizer.from_moonshine_v2(
+                encoder=cfg.encoder,
+                decoder=cfg.decoder,
+                tokens=cfg.tokens,
+                num_threads=cfg.num_threads,
+                provider=cfg.provider,
+            )
         kwargs: dict[str, Any] = dict(
             encoder=cfg.encoder,
             decoder=cfg.decoder,
@@ -222,7 +236,7 @@ class SherpaOnnxSTTProvider(STTProvider):
         """Transcribe complete audio.
 
         For transducer mode, uses the OnlineRecognizer (feeds all audio then
-        reads the result).  For whisper mode, uses the OfflineRecognizer.
+        reads the result).  For Whisper and Moonshine, the OfflineRecognizer.
 
         Args:
             audio: Audio content or raw audio chunk (PCM S16LE expected).
@@ -284,7 +298,7 @@ class SherpaOnnxSTTProvider(STTProvider):
     ) -> AsyncIterator[TranscriptionResult]:
         """Stream transcription with partial results using OnlineRecognizer.
 
-        Only supported for transducer mode. Whisper mode raises ValueError.
+        Only supported for transducer mode. Whisper and Moonshine raise ValueError.
 
         Args:
             audio_stream: Async iterator of audio chunks.
@@ -292,9 +306,9 @@ class SherpaOnnxSTTProvider(STTProvider):
         Yields:
             TranscriptionResult with partial and final transcripts.
         """
-        if self._config.mode == "whisper":
+        if self._config.mode in _OFFLINE_MODES:
             raise ValueError(
-                "Streaming transcription is not supported for Whisper mode. "
+                f"Streaming transcription is not supported for {self._config.mode} mode. "
                 "Use transcribe() for batch recognition instead."
             )
 

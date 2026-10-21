@@ -48,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model list carries Kitten v0.8 nano (int8, 31 MB) and mini (68 MB), English,
   24 kHz, their eight voices named (`voice="expr-voice-2-f"`).
 
+- Moonshine STT (RMK-897): `SherpaOnnxSTTConfig(mode="moonshine")` runs a
+  Moonshine v2 model (encoder, merged decoder, tokens) through sherpa-onnx's
+  offline recognizer, one utterance at a time like Whisper; the local model
+  list carries the English tiny (30 MB) and base (111 MB) models.
+
 ### Fixed
 
 - In continuous mode, an acknowledgement whose first partial was taken for

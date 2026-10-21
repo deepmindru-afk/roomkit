@@ -103,6 +103,53 @@ class TestSherpaOnnxSTTProvider:
         recognizer_mock.decode_stream.assert_called_once_with(stream_mock)
 
     @pytest.mark.asyncio
+    async def test_batch_transcribe_moonshine(self) -> None:
+        sherpa = _mock_sherpa_module()
+        stream_mock = MagicMock()
+        stream_mock.result.text = " moonshine result "
+        recognizer_mock = MagicMock()
+        recognizer_mock.create_stream.return_value = stream_mock
+        sherpa.OfflineRecognizer.from_moonshine_v2.return_value = recognizer_mock
+
+        provider = self._make_provider(
+            sherpa,
+            mode="moonshine",
+            tokens="tokens.txt",
+            encoder="encoder_model.ort",
+            decoder="decoder_model_merged.ort",
+        )
+
+        audio = AudioChunk(data=_make_pcm_s16le([0.1, 0.2]), sample_rate=16000)
+        result = await provider.transcribe(audio)
+
+        assert result.text == "moonshine result"
+        assert not provider.supports_streaming
+        kwargs = sherpa.OfflineRecognizer.from_moonshine_v2.call_args.kwargs
+        assert (kwargs["encoder"], kwargs["decoder"], kwargs["tokens"]) == (
+            "encoder_model.ort",
+            "decoder_model_merged.ort",
+            "tokens.txt",
+        )
+        sherpa.OfflineRecognizer.from_whisper.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_moonshine_streaming_raises(self) -> None:
+        provider = self._make_provider(
+            _mock_sherpa_module(),
+            mode="moonshine",
+            tokens="tokens.txt",
+            encoder="encoder_model.ort",
+            decoder="decoder_model_merged.ort",
+        )
+
+        async def _audio_stream() -> Any:
+            yield AudioChunk(data=b"\x00\x00", sample_rate=16000)
+
+        with pytest.raises(ValueError, match="not supported for moonshine mode"):
+            async for _ in provider.transcribe_stream(_audio_stream()):
+                pass
+
+    @pytest.mark.asyncio
     async def test_streaming_transducer(self) -> None:
         sherpa = _mock_sherpa_module()
         stream_mock = MagicMock()
