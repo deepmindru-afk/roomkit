@@ -90,6 +90,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the runtime did not label is still scanned whole, the new input with it, for
   a copy split over them.
 
+- What a turn's request costs, carrying the room's recent history with each
+  event's full metadata, is documented and kept as it is (RMK-843): with 51
+  events, about 0.4 ms of CPU per turn for plain messages and about 1 ms when
+  each stored answer carries some 7 KB of metadata. Data that heavy, wanted on
+  every message, is better kept in a store of the application's own and
+  referenced from the event by an id.
+
 ### Fixed
 
 - A `HandoffHandler` serving a realtime voice channel refuses an agent that
