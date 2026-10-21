@@ -107,6 +107,10 @@ async def _run(door: str, *, bound: float = _BOUND, call_bound: float | None = N
         InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Find it."))
     )
     turn.elapsed = time.monotonic() - started
+    # The worker's end reaches an async hook: wait for it, not a fixed delay.
+    async with asyncio.timeout(5):
+        while not turn.ends:
+            await asyncio.sleep(0.01)
     await asyncio.sleep(0.05)
     entries = await kit.status_bus.recent(20, agent_id="worker")
     turn.entries = [(entry.status, entry.detail) for entry in entries]
