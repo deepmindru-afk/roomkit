@@ -53,13 +53,15 @@ class SpeakerAttribution:
     """Who said a routed transcript: the STT's label, its epoch, the room name.
 
     ``sender_name`` starts as :func:`default_sender_name` and is what an
-    ``ON_TRANSCRIPTION`` hook left, a label matched to a known voice.
+    ``ON_TRANSCRIPTION`` hook left, a label matched to a known voice;
+    ``participant_id`` is the room participant the hook matched it to, if any.
     """
 
     label: str | None
     epoch: int
     sender_name: str
     source: Literal["stt", "pipeline"] = "stt"
+    participant_id: str | None = None
 
     @classmethod
     def of(
@@ -77,6 +79,15 @@ class SpeakerAttribution:
         if self.label is not None:
             meta["speaker_label"] = self.label
         return meta
+
+
+def routed_sender(stream_owner: str, speaker: SpeakerAttribution | None) -> str:
+    """Who a routed transcript is from: the room participant an
+    ``ON_TRANSCRIPTION`` hook matched its speaker to, else *stream_owner*,
+    the session's participant (RFC §12.2.3)."""
+    if speaker is not None and speaker.participant_id:
+        return speaker.participant_id
+    return stream_owner
 
 
 class SpeakerTracker:

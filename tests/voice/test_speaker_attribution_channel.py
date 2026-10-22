@@ -154,6 +154,7 @@ class _Room:
         self.transcribed_at: list[float] = []
         self.speaker_changes: list[Any] = []
         self.rename: dict[str, str] = {}
+        self.participants: dict[str, str] = {}
         self.slow_hook: dict[str, float] = {}
         self.started = time.monotonic()
 
@@ -165,7 +166,11 @@ class _Room:
                 await asyncio.sleep(self.slow_hook[event.speaker])
             if event.speaker in self.rename:
                 return HookResult.modify(
-                    dataclasses.replace(event, sender_name=self.rename[event.speaker])
+                    dataclasses.replace(
+                        event,
+                        sender_name=self.rename[event.speaker],
+                        participant_id=self.participants.get(event.speaker),
+                    )
                 )
             return HookResult.allow()
 
@@ -310,6 +315,23 @@ class TestVoiceChannelCarriesLabels:
 
         assert _said(messages) == [("Alice", "Bonjour.")]
         assert messages[0].metadata["speaker_label"] == "A"
+        assert messages[0].source.participant_id == "owner"
+
+    async def test_a_hook_names_the_participant_who_spoke(self) -> None:
+        """A label matched to a known person (RFC §12.2.3): each segment's
+        message is its person's, not the stream owner's."""
+        stt = _DiarizingSTT([[SpeakerSegment("A", "Bonjour."), SpeakerSegment("B", "Salut.")]])
+        room = _Room(stt)
+        room.rename = {"A": "Alice", "B": "Bob"}
+        room.participants = {"A": "p-alice"}
+        await room.start()
+
+        await room.speak()
+        messages = await room.messages(2)
+        await room.channel.close()
+
+        assert _said(messages) == [("Alice", "Bonjour."), ("Bob", "Salut.")]
+        assert [m.source.participant_id for m in messages] == ["p-alice", "owner"]
 
     async def test_a_new_stream_starts_a_new_epoch(self) -> None:
         # The provider ends its stream after each final: the second "A" is

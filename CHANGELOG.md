@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- An `ON_TRANSCRIPTION` hook can match a voice to the room participant it is
+  (RMK-904): `TranscriptionEvent.participant_id`, read for words a speaker
+  was attributed to (a diarizing STT, or `pipeline_speakers=True`). The room
+  message is then that participant's, not the session's participant (the
+  owner of the stream): it reads under their name and rank, and their role
+  applies to it. A meeting bridged into one stream writes its people on the
+  roster on the voice channel and matches each voice to its person, so its
+  first turn reads `Alice: "..."`. A voice only named like a participant,
+  without being matched to them, reads as another person (`Alice (2)`), as
+  before: a name proves nothing.
+
 - Local models by name (RMK-893). `roomkit.local_models` knows the files of
   nine local models (sherpa-onnx STT, TTS, VAD and denoiser, Smart Turn), each
   pinned to its URLs and SHA-256. `python -m roomkit.local_models download

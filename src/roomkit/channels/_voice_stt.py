@@ -70,11 +70,16 @@ def _transcription_event(
     )
 
 
-def _with_hook_sender_name(speaker: SpeakerAttribution, hook_event: Any) -> SpeakerAttribution:
-    """The attribution with the name an ON_TRANSCRIPTION hook gave, if it gave one."""
-    if isinstance(hook_event, TranscriptionEvent) and hook_event.sender_name:
-        return dataclasses.replace(speaker, sender_name=hook_event.sender_name)
-    return speaker
+def _with_hook_attribution(speaker: SpeakerAttribution, hook_event: Any) -> SpeakerAttribution:
+    """The attribution with the name and the participant an ON_TRANSCRIPTION
+    hook gave, each where it gave one."""
+    if not isinstance(hook_event, TranscriptionEvent):
+        return speaker
+    return dataclasses.replace(
+        speaker,
+        sender_name=hook_event.sender_name or speaker.sender_name,
+        participant_id=hook_event.participant_id or speaker.participant_id,
+    )
 
 
 _CARRY_OVER_MAX_S = 5.0
@@ -1388,7 +1393,7 @@ class VoiceSTTMixin:
 
         final_text = _extract_transcription_text(transcription_result.event, text)
         if speaker is not None:
-            speaker = _with_hook_sender_name(speaker, transcription_result.event)
+            speaker = _with_hook_attribution(speaker, transcription_result.event)
             if speaker.source == "stt":
                 self._note_stt_speaker(session, speaker, room_id)
         # Continuous STT keeps no utterance audio: the turn is text only.
@@ -1708,7 +1713,7 @@ class VoiceSTTMixin:
             # Use potentially modified text
             final_text = _extract_transcription_text(transcription_result.event, text)
             if speaker is not None:
-                speaker = _with_hook_sender_name(speaker, transcription_result.event)
+                speaker = _with_hook_attribution(speaker, transcription_result.event)
             self._record_user_turn(
                 session,
                 text,

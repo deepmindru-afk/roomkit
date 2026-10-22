@@ -51,6 +51,7 @@ class _Room:
         self.kit = RoomKit(stt=stt, voice=backend)
         self.kit.register_channel(channel)
         self.rename: dict[str, str] = {}
+        self.participants: dict[str, str] = {}
         self.transcriptions: list[Any] = []
 
         @self.kit.hook(HookTrigger.ON_TRANSCRIPTION)
@@ -58,7 +59,11 @@ class _Room:
             self.transcriptions.append(event)
             if event.speaker in self.rename:
                 return HookResult.modify(
-                    dataclasses.replace(event, sender_name=self.rename[event.speaker])
+                    dataclasses.replace(
+                        event,
+                        sender_name=self.rename[event.speaker],
+                        participant_id=self.participants.get(event.speaker),
+                    )
                 )
             return HookResult.allow()
 
@@ -228,6 +233,28 @@ class TestVADMode:
         await room.channel.close()
         assert message.metadata["sender_name"] == "Sylvain"
         assert room.transcriptions[0].speaker == "0"
+
+    async def test_a_hook_names_the_participant_who_spoke(self) -> None:
+        """A label matched to a known person (RFC §12.2.3): the message is
+        theirs, not the stream owner's."""
+        room = _vad_room(["speaker_0"] * 6, 2, pipeline_speakers=True)
+        room.rename = {"0": "Sylvain"}
+        room.participants = {"0": "p-sylvain"}
+        await room.start()
+        await room.frames(6)
+        messages = await room.messages(2)
+        await room.channel.close()
+        assert [m.source.participant_id for m in messages] == ["p-sylvain", "p-sylvain"]
+        assert [m.metadata["sender_name"] for m in messages] == ["Sylvain", "Sylvain"]
+
+    async def test_without_a_participant_the_stream_owner_sends(self) -> None:
+        room = _vad_room(["speaker_0"] * 3, 1, pipeline_speakers=True)
+        room.rename = {"0": "Sylvain"}
+        await room.start()
+        await room.frames(3)
+        [message] = await room.messages(1)
+        await room.channel.close()
+        assert message.source.participant_id == "owner"
 
     async def test_without_the_option_nothing_changes(self) -> None:
         room = _vad_room(["speaker_0"] * 3, 1)

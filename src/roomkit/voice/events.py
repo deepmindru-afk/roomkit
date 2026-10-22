@@ -107,6 +107,14 @@ class TranscriptionEvent:
     return the event with another name — a label matched to a known voice.
     ``None`` when the STT does not diarize."""
 
+    participant_id: str | None = None
+    """The room participant who said ``text``, when a hook matched the
+    speaker to a known person (RFC §12.2.3): the room message is then theirs,
+    not the session's participant, the owner of the stream. Read only for
+    words a speaker was attributed to (``sender_name`` set). An id names its
+    participant only on a channel they are reached through (RFC §5.5): one
+    added to the room on this voice channel."""
+
 
 @dataclass(frozen=True)
 class PartialTranscriptionEvent:

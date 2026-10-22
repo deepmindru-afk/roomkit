@@ -10,6 +10,7 @@ import time
 from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.channels._voice_speakers import routed_sender
 from roomkit.channels._voice_unheard import UnheardTurns
 from roomkit.models.delivery import SUPERSEDED, InboundResult
 from roomkit.models.enums import EventType, HookTrigger
@@ -416,8 +417,10 @@ class VoiceTurnMixin:
         """Route transcribed text through the inbound pipeline.
 
         The sender stays the session's participant, the owner of the audio
-        stream; ``speaker`` adds who said it when a diarizing STT labelled it
-        (``speaker_label``, ``speaker_epoch``, ``sender_name``, RFC §12.2.3).
+        stream, unless an ``ON_TRANSCRIPTION`` hook matched the speaker to a
+        room participant; ``speaker`` adds who said it when a diarizing STT
+        labelled it (``speaker_label``, ``speaker_epoch``, ``sender_name``,
+        RFC §12.2.3).
 
         ``await_delivery=False`` returns once the message is committed and
         waits for its delivery (the reply) in a task of its own: a diarized
@@ -435,7 +438,7 @@ class VoiceTurnMixin:
             metadata.update(speaker.metadata())
         inbound = InboundMessage(
             channel_id=self.channel_id,
-            sender_id=session.participant_id,
+            sender_id=routed_sender(session.participant_id, speaker),
             content=TextContent(body=text),
             metadata=metadata,
         )
