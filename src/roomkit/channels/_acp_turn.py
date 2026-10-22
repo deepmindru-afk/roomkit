@@ -41,6 +41,7 @@ from roomkit.channels._acp_usage import (
     _usage_report,
     _usage_tokens,
 )
+from roomkit.channels._speaker import people_taking_part
 from roomkit.channels._turn_notes import without_header_copies
 from roomkit.channels.acp_transport import ACPSessionInvalidatedError
 from roomkit.models.context import RoomContext
@@ -305,7 +306,11 @@ class ACPTurnMixin:
             )
         )
         request, labelled = labelled_request(
-            labels, trigger, text, session_labelled=room_id in self._labelled_rooms
+            labels,
+            trigger,
+            text,
+            people=people_taking_part(context, self.channel_id),
+            session_labelled=room_id in self._labelled_rooms,
         )
         instructions = self._instructions
         instructed = instructions is not None and (

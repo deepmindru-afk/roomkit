@@ -8,12 +8,13 @@ words, named by the strategy that hands them on (:func:`asking_label`);
 agent wrote in a tool call (:func:`~roomkit.tools.current_tool_requester`).
 Only the block's heading names the asker: the runtime's own prompts and the
 input a worker acts on as its own carry none. A one-to-one conversation names
-no one.
+no one; one where several people take part names the asker from the first
+turn, as the conversation does.
 """
 
 from __future__ import annotations
 
-from roomkit.channels._speaker import several_speakers, turn_labels
+from roomkit.channels._speaker import people_taking_part, several_speakers, turn_labels
 from roomkit.core.visibility import visible_events
 from roomkit.memory.token_estimator import extract_event_text
 from roomkit.models.context import RoomContext
@@ -26,7 +27,8 @@ _NOT_TURNS = frozenset({EventType.TOOL_CALL_START, EventType.TOOL_CALL_END})
 
 def asking_label(event: RoomEvent, context: RoomContext, channel_id: str) -> str | None:
     """The label of *event*'s author when the turns *channel_id* may read and
-    *event* hold several speakers; ``None`` in a one-to-one conversation."""
+    *event* hold several speakers, or several people take part; ``None`` in a
+    one-to-one conversation."""
     window = [
         e
         for e in visible_events(context, channel_id)
@@ -34,7 +36,8 @@ def asking_label(event: RoomEvent, context: RoomContext, channel_id: str) -> str
     ]
     labels = turn_labels([*window, event], context)
     counted = (labels.get(e.id) for e in (*window, event) if _a_turn(e))
-    return labels.get(event.id) if several_speakers(counted) else None
+    people = people_taking_part(context, channel_id)
+    return labels.get(event.id) if several_speakers(counted, people) else None
 
 
 def _a_turn(event: RoomEvent) -> bool:

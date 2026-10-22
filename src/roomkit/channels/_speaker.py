@@ -2,8 +2,10 @@
 
 A model reads a participant's turn under one label wherever it reads it (the
 conversation, the room context handed to an ACP agent, a line broadcast into a
-realtime session): :func:`turn_labels`, from :func:`author_name`. The console
-names a person for a human reader, with their channel (:func:`speaker_label`).
+realtime session): :func:`turn_labels`, from :func:`author_name`. Who takes
+part, silent people included, is read from the room's roster under the same
+labels (:func:`people_taking_part`). The console names a person for a human
+reader, with their channel (:func:`speaker_label`).
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ from __future__ import annotations
 import functools
 import json
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 
 from roomkit._lookalike import skeletons
 from roomkit._text import identifier, json_text_line, person_name, quoted
@@ -27,7 +29,7 @@ from roomkit.core._authors import (
 )
 from roomkit.core._authors import author_name as _author_name
 from roomkit.models.context import RoomContext
-from roomkit.models.enums import ChannelType
+from roomkit.models.enums import ChannelType, ParticipantRole, ParticipantStatus
 from roomkit.models.event import RoomEvent
 from roomkit.models.participant import Participant
 
@@ -54,11 +56,49 @@ of it in a participant's text is replaced
 (:mod:`~roomkit.channels._mark_copies`)."""
 
 
-def several_speakers(labels: Iterable[str | None]) -> bool:
-    """Whether *labels* name two speakers or more: the threshold at which a
-    transcript labels its participants' turns, a one-to-one conversation
-    left as it is (RFC §6.4)."""
-    return len({label for label in labels if label}) >= 2
+PEOPLE_NOTE_OPENING = "[People taking part besides you"
+"""The opening of the note that names who takes part (:func:`people_note`):
+one of the runtime's marks, a copy of it in a participant's text replaced
+(:mod:`~roomkit.channels._mark_copies`)."""
+
+_NOT_PEOPLE = frozenset({ParticipantRole.AGENT, ParticipantRole.BOT})
+
+
+def several_speakers(labels: Iterable[str | None], people: Sequence[str]) -> bool:
+    """Whether a transcript labels its participants' turns (RFC §6.4): *labels*
+    name two speakers or more, or two people or more take part
+    (:func:`people_taking_part`), those who have not spoken included; a
+    one-to-one conversation is left as it is."""
+    return len(people) >= 2 or len({label for label in labels if label}) >= 2
+
+
+def people_taking_part(context: RoomContext, channel_id: str | None) -> tuple[str, ...]:
+    """Who takes part besides the agent of *channel_id*, silent or not, by the
+    label their turns open with (RFC §6.4): the room's active participants
+    who are neither agents nor bots nor on the agent's own channel, one per
+    person, in the order they joined."""
+    unrecorded = _Unrecorded(context)
+    return tuple(
+        unrecorded.person(person)
+        for person in unrecorded.people.persons
+        if person.status == ParticipantStatus.ACTIVE
+        and person.role not in _NOT_PEOPLE
+        and person.channel_id != channel_id
+    )
+
+
+def people_note(people: Sequence[str]) -> str | None:
+    """The note that names who takes part (:func:`people_taking_part`) when
+    two people or more do, those who have not spoken yet included, so the
+    agent knows who is there before each has spoken (RFC §6.4); ``None``
+    otherwise."""
+    if len(people) < 2:
+        return None
+    return (
+        f"{PEOPLE_NOTE_OPENING}, from the runtime: {', '.join(people)}. Each is "
+        "present whether or not they have spoken yet, named as their messages "
+        "are labelled.]"
+    )
 
 
 def speaker_label(
@@ -136,6 +176,13 @@ def _label(event: RoomEvent, unrecorded: _Unrecorded) -> str | None:
             channel_id = event.source.channel_id
             return channel_label(unrecorded.handles.get(channel_id, channel_id))
         rank = unrecorded.rank(source, name_keys(salt, name))
+    return _ranked(name, rank)
+
+
+def _ranked(name: str, rank: int) -> str:
+    """*name* as a label: with its *rank* when an earlier name reads like it,
+    and ``(a participant)`` when it reads as a label the agent's own turns
+    carry."""
     label = name if rank == 1 else f"{name} ({rank})"
     if skeletons(name) & _agent_labels():
         return f"{label} (a participant)"
@@ -163,6 +210,15 @@ class _Unrecorded:
             self._register = stored.copy() if stored is not None else AuthorRegister()
             self._register.seed(self.people, self.salt)
         return self._register.rank(source, names)
+
+    def person(self, person: Participant) -> str:
+        """The label *person*'s turns open with, whether or not they have
+        spoken: their name and its rank, or their channel without a name."""
+        name = person_name(person.display_name)
+        if not name:
+            return channel_label(self.handles.get(person.channel_id, person.channel_id))
+        source = digest(self.salt, ["participant", person.id])
+        return _ranked(name, self.rank(source, name_keys(self.salt, name)))
 
 
 @functools.cache

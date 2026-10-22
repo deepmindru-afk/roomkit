@@ -15,7 +15,7 @@ from roomkit.channels._runtime_record import (
     runtime_record,
     written_by_runtime,
 )
-from roomkit.channels._speaker import several_speakers, turn_labels
+from roomkit.channels._speaker import people_taking_part, several_speakers, turn_labels
 from roomkit.memory.token_estimator import extract_event_text
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType, EventType
@@ -36,11 +36,12 @@ class SummaryLines:
 
     The threshold is the conversation's, over every turn the memory
     retrieved and *current* (a turn with no text, the agent's own and the
-    application's instruction aside): when they hold several speakers, a
-    participant's line opens with the label the runtime gives its author,
-    out of the quote, and ``[assistant]`` names only *channel_id*'s agent
-    (another agent speaks under its label, ``@ai2``); otherwise, as in a
-    one-to-one conversation, a line reads ``[assistant]`` or ``[user]``."""
+    application's instruction aside): when they hold several speakers, or
+    several people take part, a participant's line opens with the label the
+    runtime gives its author, out of the quote, and ``[assistant]`` names
+    only *channel_id*'s agent (another agent speaks under its label,
+    ``@ai2``); otherwise, as in a one-to-one conversation, a line reads
+    ``[assistant]`` or ``[user]``."""
 
     context: RoomContext
     current: RoomEvent | None = None
@@ -58,12 +59,14 @@ class SummaryLines:
         return sorted({label for e in events if (label := labels.get(e.id)) and not self._own(e)})
 
     def _labels(self, events: Sequence[RoomEvent]) -> dict[str, str | None]:
-        """Each turn's label, or none when the turns hold one speaker."""
+        """Each turn's label, or none when the turns hold one speaker and
+        fewer than two people take part."""
         current = [self.current] if self.current is not None else []
         turns = list({e.id: e for e in (*events, *self.kept, *current)}.values())
         labels = turn_labels(turns, self.context)
         counted = (labels.get(e.id) for e in turns if self._counts(e))
-        return labels if several_speakers(counted) else {}
+        people = people_taking_part(self.context, self.channel_id)
+        return labels if several_speakers(counted, people) else {}
 
     def _counts(self, event: RoomEvent) -> bool:
         """Whether *event* counts toward the threshold, as the conversation's

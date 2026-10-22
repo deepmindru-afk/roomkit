@@ -9,9 +9,9 @@ import time
 from typing import TYPE_CHECKING
 
 from roomkit.channels._ai_cuts import cut_records, cut_reply
-from roomkit.channels._speaker import author_name, participant_name, turn_labels
+from roomkit.channels._speaker import author_name, people_taking_part, turn_labels
 from roomkit.core.visibility import visible_events
-from roomkit.models.enums import ChannelType, EventType, ParticipantRole, ParticipantStatus
+from roomkit.models.enums import ChannelType, EventType
 from roomkit.models.event import is_tool_call_record
 from roomkit.speaking.base import SpeakDecision, SpeakDecisionEvent, SpeakPolicy, SpeakTurn
 
@@ -30,8 +30,6 @@ OFFER_NOTE = (
 """The block an ``offer`` decision adds to the turn's notes."""
 
 _FALLBACK = "fallback"
-
-_NOT_PEOPLE = frozenset({ParticipantRole.AGENT, ParticipantRole.BOT})
 
 
 class AISpeakingMixin:
@@ -153,16 +151,10 @@ def _people(
     speakers: dict[str, str],
     channel_id: str,
 ) -> tuple[str, ...]:
-    """The room's active participants that are neither agents nor bots nor on the
-    agent's channel, or the distinct speakers of *events* when more: one
-    microphone is one participant but may carry several diarized voices."""
-    participants = tuple(
-        participant_name(p)
-        for p in context.participants
-        if p.status == ParticipantStatus.ACTIVE
-        and p.role not in _NOT_PEOPLE
-        and p.channel_id != channel_id
-    )
+    """Who takes part besides the agent (:func:`people_taking_part`), or the
+    distinct speakers of *events* when more: one microphone is one
+    participant but may carry several diarized voices."""
+    participants = people_taking_part(context, channel_id)
     voices = tuple(
         dict.fromkeys(
             speakers[e.id]

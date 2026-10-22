@@ -46,6 +46,8 @@ from roomkit.channels._speaker import (
     SPEAKER_ATTRIBUTION_NOTE,
     SPEAKER_KEY,
     labelled_lines,
+    people_note,
+    people_taking_part,
     several_speakers,
     turn_labels,
 )
@@ -258,7 +260,7 @@ class AIContextMixin(_AIChannelContract):
 
         own_notes = await self._own_notes(loop_ctx, context, standalone=standalone)
         own_notes += discussion_notes(event)
-        self._measure_turn(loop_ctx, system_prompt, own_notes, settings.get("max_tokens"))
+        self._measure_turn(loop_ctx, context, system_prompt, own_notes, settings.get("max_tokens"))
         messages = await self._turn_conversation(event, context, loop_ctx, standalone, own_notes)
         loop_ctx.turn_input = turn_input(messages)
 
@@ -342,8 +344,9 @@ class AIContextMixin(_AIChannelContract):
         event = with_attached_media(event, self._attached_media)
         memory_result = await self._visible_memory(event, context, standalone)
         loop_ctx.author_images = await self._author_images(event, memory_result)
+        people = self._people(context, standalone)
         messages, attribute_speakers, requester = self._turn_messages(
-            event, context, memory_result, loop_ctx
+            event, context, memory_result, loop_ctx, people
         )
         # Who a task this turn delegates names as having asked (RFC §19.7).
         loop_ctx.requester = requester
@@ -351,6 +354,7 @@ class AIContextMixin(_AIChannelContract):
         notes = self._turn_notes(
             own_notes,
             speakers=attribute_speakers,
+            people=people,
             cut=bool(self._cut_answers(context, memory_result)),
             retrieved=memory_result.notes,
         )
@@ -472,12 +476,18 @@ class AIContextMixin(_AIChannelContract):
             tools.append(ToolEviction.tool_definition())
         return (system_prompt or "") + (self._prompt_identity(context) or "") or None
 
+    def _people(self, context: RoomContext, standalone: bool) -> tuple[str, ...]:
+        """Who takes part besides the agent (RFC §6.4); no one for a standalone
+        turn, which reads nothing of the room (RFC §10.1.1)."""
+        return () if standalone else people_taking_part(context, self.channel_id)
+
     def _turn_messages(
         self,
         event: RoomEvent,
         context: RoomContext,
         memory_result: MemoryResult,
         loop_ctx: _ToolLoopContext,
+        people: tuple[str, ...],
     ) -> tuple[list[AIMessage], bool, str | None]:
         """The turn's messages, its history then its input, whether several
         speakers are labelled in them, and the label of the turn's author
@@ -489,7 +499,8 @@ class AIContextMixin(_AIChannelContract):
         The speaker is a fact of the event (``metadata["sender_name"]``,
         stamped at ingress by hosts and transport providers, or the channel
         of a sender without a name), so when the window holds two or more
-        distinct speakers each user turn opens with its label
+        distinct speakers, or two *people* or more take part, silent ones
+        included, each user turn opens with its label
         (:func:`~roomkit.channels._speaker.turn_labels`). A single-speaker room (a 1:1 DM) is left
         untouched, except in a thinker's context, which names its one speaker too
         (``loop_ctx.names_every_speaker``, RFC §6.4).
@@ -503,7 +514,7 @@ class AIContextMixin(_AIChannelContract):
         # The people a summary named count too: a summary that names Alice
         # leaves no unlabelled "Alice: ..." turn after it (RFC §6.4).
         speakers.update(memory_result.speakers)
-        attribute_speakers = several_speakers(speakers) or (
+        attribute_speakers = several_speakers(speakers, people) or (
             loop_ctx.names_every_speaker and bool(speakers)
         )
 
@@ -600,17 +611,25 @@ class AIContextMixin(_AIChannelContract):
 
     @staticmethod
     def _turn_notes(
-        own: list[str], *, speakers: bool, retrieved: list[str], cut: bool = False
+        own: list[str],
+        *,
+        speakers: bool,
+        people: tuple[str, ...],
+        retrieved: list[str],
+        cut: bool = False,
     ) -> str | None:
         """What changes from one turn to the next, as the notes the turn's
         input carries (RFC §6.4): how speakers are named when several speak,
-        how a cut answer reads when the history holds one, what the memory
-        retrieved for this turn, then the channel's *own*.
+        who takes part when several people do, how a cut answer reads when
+        the history holds one, what the memory retrieved for this turn, then
+        the channel's *own*.
         What the memory retrieved and the channel's own blocks quote others
         (a passage, a tool's result, a task, what a camera read, a plan): a
-        copy of a runtime mark in them is replaced; the speaker note is the
-        runtime's."""
+        copy of a runtime mark in them is replaced; the speaker and people
+        notes are the runtime's."""
         blocks = [SPEAKER_ATTRIBUTION_NOTE] if speakers else []
+        if note := people_note(people):
+            blocks.append(note)
         if cut:
             blocks.append(CUT_NOTE)
         quoting = [without_mark_copies(block) for block in (*retrieved, *own)]
@@ -865,6 +884,7 @@ class AIContextMixin(_AIChannelContract):
     def _measure_turn(
         self,
         loop_ctx: _ToolLoopContext,
+        context: RoomContext,
         system_prompt: str | None,
         own_notes: list[str],
         max_tokens: int | None,
@@ -873,13 +893,15 @@ class AIContextMixin(_AIChannelContract):
         round 0 will send it, before the memory reads the room (RFC §20): the
         system prompt, the tools declared (Tool Search's collapse and the
         re-read tool included), the channel's notes with room for the speaker
-        attribution and the cut answer's note the history may call for, the
-        images the input replays,
+        attribution, the people taking part and the cut answer's note the
+        history may call for, the images the input replays,
         and the reply budget."""
         declared = self._eviction.with_reread_tool(
             self._apply_tool_filters(list(loop_ctx.all_context_tools or []))
         )
-        notes = self._turn_notes(own_notes, speakers=True, retrieved=[], cut=True) or ""
+        people = self._people(context, loop_ctx.standalone)
+        notes = self._turn_notes(own_notes, speakers=True, people=people, retrieved=[], cut=True)
+        notes = notes or ""
         images = self._turn_images(loop_ctx)
         loop_ctx.turn_footprint = TurnFootprint(
             input_tokens=estimate_tokens(system_prompt or "")

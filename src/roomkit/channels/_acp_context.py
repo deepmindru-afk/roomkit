@@ -270,12 +270,19 @@ def window_labels(
 
 
 def labelled_request(
-    labels: dict[str, str | None], trigger: RoomEvent, text: str, *, session_labelled: bool
+    labels: dict[str, str | None],
+    trigger: RoomEvent,
+    text: str,
+    *,
+    people: Sequence[str],
+    session_labelled: bool,
 ) -> tuple[str, bool]:
     """The request an ACP turn sends for *trigger*, and whether it opens with
     its sender's label (RFC §6.4): it does when *labels* (:func:`window_labels`)
-    name several speakers, or once the session was sent a labelled request
-    (*session_labelled*), since the session keeps what it was sent; the first
+    name several speakers, or several *people* take part
+    (:func:`~roomkit.channels._speaker.people_taking_part`), or once the
+    session was sent a labelled request (*session_labelled*), since the
+    session keeps what it was sent; the first
     labelled request of a session carries the note that says how labels read.
     So an unnamed sender who writes ``Alice:`` does not read as Alice. A
     one-to-one room's request, and the application's instruction, are sent
@@ -283,7 +290,7 @@ def labelled_request(
     if trigger.type == EventType.INSTRUCTION or not text.strip():
         return text, False
     label = labels.get(trigger.id)
-    if label is None or not (session_labelled or several_speakers(labels.values())):
+    if label is None or not (session_labelled or several_speakers(labels.values(), people)):
         return text, False
     request = labelled_lines(text, label)
     return (request if session_labelled else f"{SPEAKER_ATTRIBUTION_NOTE}\n\n{request}"), True
