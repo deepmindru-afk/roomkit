@@ -54,12 +54,14 @@ class AISpeakingMixin:
         thought: Thought | None = None,
         *,
         asked_again: bool = False,
+        late: bool = False,
     ) -> SpeakDecision | None:
         """The decision on *event*: the policy's, as the ``ON_SPEAK_DECISION``
         hooks leave it (told how long the policy took), or None when nothing is
         decided: no policy, an instruction (the application asked for that
         turn), the channel's own event or a tool record. *asked_again*: the
-        policy decides again once the agent thought (RFC §6.4)."""
+        policy decides again once the agent thought (RFC §6.4); *late*: with a
+        thought that came back after the event was decided."""
         policy = self._speak_policy
         if policy is None or not self._submitted_to_policy(event):
             return None
@@ -69,7 +71,16 @@ class AISpeakingMixin:
         duration_ms = round((time.monotonic() - started) * 1000)
         room_id = context.room.id if context.room else event.room_id
         return await self._hooked_decision(
-            SpeakDecisionEvent(room_id, self.channel_id, event, decision, duration_ms, asked_again)
+            SpeakDecisionEvent(
+                room_id,
+                self.channel_id,
+                event,
+                decision,
+                duration_ms,
+                asked_again,
+                thought=thought,
+                late=late,
+            )
         )
 
     async def _bounded_decision(self, policy: SpeakPolicy, turn: SpeakTurn) -> SpeakDecision:

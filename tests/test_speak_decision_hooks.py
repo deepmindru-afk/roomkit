@@ -9,6 +9,7 @@ hooks observe the decision that stands.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 from typing import Any
@@ -223,3 +224,107 @@ async def test_the_decision_taken_again_once_the_agent_thought_goes_through_the_
 
     assert provider.calls == []
     assert [(e.asked_again, e.decision.reason) for e in seen][-1] == (True, "hand raised")
+
+
+# -- a thought that comes back late ----------------------------------------------------
+
+_PRICE = Thought("They look for the licence price; I know it.", ("It costs 1,200 $.",))
+
+
+def _decisions(kit: RoomKit) -> list[SpeakDecisionEvent]:
+    """Every decision, through a SYNC hook that turns an offer into a raised hand."""
+    seen: list[SpeakDecisionEvent] = []
+
+    @kit.hook(HookTrigger.ON_SPEAK_DECISION)
+    async def hand(event: SpeakDecisionEvent, ctx: Any) -> HookResult:
+        seen.append(event)
+        if event.decision.mode != "offer":
+            return HookResult.allow()
+        return _decided(event, "silent", "hand raised")
+
+    return seen
+
+
+async def _said_and_thought(kit: RoomKit, *bodies: str) -> None:
+    for body in bodies:
+        await kit.process_inbound(
+            InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body=body))
+        )
+    await asyncio.sleep(0.5)  # the thinker's delay, past the channel's wait
+    await kit.close()
+
+
+async def test_a_thought_back_late_is_decided_again_for_the_hooks_and_runs_no_turn() -> None:
+    kit, provider = await _kit(
+        MockSpeakPolicy(["silent", SpeakDecision("offer", reason="has something to add")]),
+        thinker=MockThinker([_PRICE], delay=0.2),
+        think_wait=0.05,
+    )
+    seen = _decisions(kit)
+
+    await _said_and_thought(kit, "We are looking for the licence price.")
+
+    first, late = seen
+    assert (first.late, first.decision.mode) == (False, "silent")
+    assert (late.late, late.asked_again, late.decision.mode) == (True, True, "offer")
+    assert late.thought == _PRICE
+    assert provider.calls == []  # the hook raised the hand; no turn runs on it
+
+
+async def test_a_late_decision_to_speak_runs_no_turn_either() -> None:
+    kit, provider = await _kit(
+        MockSpeakPolicy(["silent", "speak"]),
+        thinker=MockThinker([_PRICE], delay=0.2),
+        think_wait=0.05,
+    )
+    seen = _decisions(kit)
+
+    await _said_and_thought(kit, "We are looking for the licence price.")
+
+    assert [(e.late, e.decision.mode) for e in seen] == [(False, "silent"), (True, "speak")]
+    assert provider.calls == []
+
+
+async def test_only_the_latest_event_s_thought_is_decided_late() -> None:
+    kit, _ = await _kit(
+        MockSpeakPolicy(
+            ["silent", "silent", SpeakDecision("offer", reason="has something to add")]
+        ),
+        thinker=MockThinker([_PRICE], delay=0.2),
+        think_wait=0.05,
+    )
+    seen = _decisions(kit)
+
+    await _said_and_thought(kit, "We are looking for the licence price.", "Anyone knows?")
+
+    late = [e for e in seen if e.late]
+    assert [e.event.content.body for e in late] == ["Anyone knows?"]  # ty: ignore[unresolved-attribute]
+
+
+async def test_a_thought_with_nothing_to_say_is_not_decided_late() -> None:
+    kit, _ = await _kit(
+        MockSpeakPolicy(["silent", "offer"]),
+        thinker=MockThinker([Thought("They talk about the weather.")], delay=0.2),
+        think_wait=0.05,
+    )
+    seen = _decisions(kit)
+
+    await _said_and_thought(kit, "Nice weather today.")
+
+    assert [e.late for e in seen] == [False]
+
+
+async def test_a_decision_event_carries_the_thought_the_policy_read(advance: Any) -> None:
+    kit, _ = await _kit(
+        MockSpeakPolicy(["silent", SpeakDecision("offer", reason="has something to add")]),
+        thinker=MockThinker([_PRICE]),
+        think_wait=1.0,
+    )
+    seen = _decisions(kit)
+
+    await _say(kit, "We are looking for the licence price.", advance)
+
+    assert [(e.asked_again, e.late, e.thought) for e in seen] == [
+        (False, False, Thought()),
+        (True, False, _PRICE),
+    ]

@@ -68,6 +68,7 @@ class _AIChannelContract:
         thought: Thought | None = None,
         *,
         asked_again: bool = False,
+        late: bool = False,
     ) -> SpeakDecision | None: ...
 
     def _served_tool_names(self, room_id: str | None) -> set[str]: ...

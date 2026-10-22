@@ -123,6 +123,16 @@ class SpeakDecisionEvent:
     """The policy was asked again on the event once the agent thought, with the
     thought (RFC §6.4): not its first decision on it."""
 
+    thought: Thought | None = None
+    """What the agent had in mind as the policy decided, when its channel has a
+    thinker: what an action taken on the decision is about (what the agent
+    would say once given the floor)."""
+
+    late: bool = False
+    """The thought came back after the event was decided, and the policy decided
+    again with it: no turn runs on this decision, the hooks act on it (raise a
+    hand, deliver an instruction for the agent to speak)."""
+
 
 class SpeakPolicy(ABC):
     """Decides, on every event an AI channel would answer, whether its agent speaks.

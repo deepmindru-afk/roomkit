@@ -2,9 +2,11 @@
 
 A channel that has a speak policy and a thinker keeps, per room, the agent's
 thought. On an event the policy leaves silent, the thinker rewrites it from the
-event's context, one call at a time per room; back in time with something to
-say, the policy is asked again. When the agent speaks, the turn's notes carry
-its thought and what it wanted to say is emptied.
+event's context, one call at a time per room; back with something to say, the
+policy is asked again: in time, on the event's own decision; later, when no
+event came since, on a decision of its own that runs no turn, for the
+``ON_SPEAK_DECISION`` hooks to act on. When the agent speaks, the turn's notes
+carry its thought and what it wanted to say is emptied.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import contextlib
 import contextvars
 import logging
 import time
+from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING
 
 from roomkit.speaking.thought import Thought, ThoughtEvent, thought_note
@@ -52,6 +55,9 @@ class _RoomMind:
         self._asked = 0
         self._done = 0
         self._spoke = 0
+        self._late: tuple[int, Callable[[Thought], Coroutine[None, None, None]]] | None = None
+        """The ticket whose event was decided before its thought came back, and
+        what decides again on it once it does."""
 
     def think(self, context: AIContext) -> int:
         """Have the thinker think about *context*; the ticket :meth:`settled` waits on."""
@@ -69,8 +75,29 @@ class _RoomMind:
                     self._changed.wait_for(lambda: self._done >= ticket), timeout
                 )
             except TimeoutError:
-                return False
+                # Back as the wait ran out: read in time, or no late decision
+                # would ever be owed to it.
+                return self._done >= ticket
         return True
+
+    def when_late(
+        self, ticket: int, decide: Callable[[Thought], Coroutine[None, None, None]]
+    ) -> None:
+        """*ticket*'s event was decided without its thought: once the thought
+        comes back with something to say, and no later event was given to think
+        about, *decide* is called with it."""
+        self._late = (ticket, decide)
+
+    def _late_decision(self, ticket: int, thought: Thought) -> Coroutine[None, None, None] | None:
+        """The decision owed to *ticket*'s thought, now back: when its event was
+        decided without it, it has something to say and no later event came."""
+        late = self._late
+        if late is None or late[0] != ticket:
+            return None  # another event's, or none owed
+        self._late = None
+        if self._asked != ticket or not thought.want_to_say:
+            return None  # a later event reads the thought, or it brings nothing
+        return late[1](thought)
 
     def spoke(self) -> Thought:
         """The agent speaks with its thought: what it wanted to say is on the table.
@@ -105,6 +132,8 @@ class _RoomMind:
                     self.room_id, thought, replaced, duration_ms
                 )
                 await asyncio.get_running_loop().create_task(report, context=asked_in)
+            if (late := self._late_decision(ticket, thought)) is not None:
+                await asyncio.get_running_loop().create_task(late, context=asked_in)
 
     async def _next(self, previous: Thought, context: AIContext) -> Thought:
         try:
@@ -168,11 +197,22 @@ class AIThinkingMixin(_AIChannelContract):
         if decision.final:
             return decision  # no thought changes it: nothing to wait for
         if not self._think_wait or not await mind.settled(ticket, self._think_wait):
+            mind.when_late(ticket, lambda thought: self._decide_late(event, context, thought))
             return decision
         if not mind.thought.want_to_say:
             return decision
         again = await self._speak_decision(event, context, mind.thought, asked_again=True)
         return again if again is not None else decision
+
+    async def _decide_late(self, event: RoomEvent, context: RoomContext, thought: Thought) -> None:
+        """A thought that came back after *event* was decided, with something to
+        say: the policy decides again on *event* with it, and the
+        ``ON_SPEAK_DECISION`` hooks act on the decision; no turn runs on it, the
+        event's turn is over (RFC §6.4)."""
+        try:
+            await self._speak_decision(event, context, thought, asked_again=True, late=True)
+        except Exception:
+            logger.warning("Late speak decision failed on %s", event.id, exc_info=True)
 
     async def _thought_notes(self, room_id: str) -> tuple[str, ...]:
         """The agent speaks on a decided event: its thought joins the turn's notes,
