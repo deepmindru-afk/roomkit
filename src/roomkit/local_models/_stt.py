@@ -78,6 +78,7 @@ def _moonshine(size: str, sha256: str, *, description: str, size_mb: int) -> Loc
     )
 
 
+_NEMOTRON = "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11"
 _ZIPFORMER_EN_SUFFIX = "epoch-99-avg-1-chunk-16-left-128"
 
 STT_MODELS = (
@@ -148,6 +149,27 @@ STT_MODELS = (
         "fr",
         "e6ffd3dc43725cd6c8137b05c739f15607d0df946b9b90eb141e10059efca024",
         tail_padding_s=1.5,
+    ),
+    # Multilingual streaming: told its language per stream ("auto" detects it;
+    # stream_language="fr" fixes it). 6.5 % WER on our French bench.
+    LocalModel(
+        name="nemotron-3.5-asr-streaming-0.6b-560ms-int8",
+        kind=SHERPA_ONNX_STT,
+        description="Streaming STT, multilingual (EN, FR, DE, ES...), Nemotron 3.5, 560 ms",
+        size_mb=475,
+        files=(
+            ModelFile(
+                f"{_RELEASES}/asr-models/{_NEMOTRON}.tar.bz2",
+                "c6bf5e0df765f9d5b43bc9e0536d4b4b3e7d40bdf5ecf13e45f134c51c05ae3a",
+            ),
+        ),
+        paths={
+            "encoder": f"{_NEMOTRON}/encoder.int8.onnx",
+            "decoder": f"{_NEMOTRON}/decoder.int8.onnx",
+            "joiner": f"{_NEMOTRON}/joiner.int8.onnx",
+            "tokens": f"{_NEMOTRON}/tokens.txt",
+        },
+        settings={"mode": "transducer", "stream_language": "auto"},
     ),
     LocalModel(
         name="parakeet-tdt-0.6b-v3-int8",

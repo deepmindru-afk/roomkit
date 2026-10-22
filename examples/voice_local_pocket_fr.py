@@ -88,6 +88,10 @@ Environment variables:
     --- STT and VAD (sherpa-onnx, CPU) ---
     ROOMKIT_MODELS_DIR  Where the downloaded models live
                         (default: ~/.cache/roomkit/models)
+    STT_MODEL           Streaming STT local model (default:
+                        zipformer-fr-kroko-2025-08-06). With
+                        nemotron-3.5-asr-streaming-0.6b-560ms-int8
+                        (multilingual, 475 MB) the stream is told French.
     VAD_THRESHOLD       Speech probability threshold 0-1 (default: 0.5)
 
     --- Pocket TTS ---
@@ -118,6 +122,7 @@ import os
 import shlex
 import sys
 from contextlib import AsyncExitStack
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -160,7 +165,7 @@ for _noisy in ("httpx", "pocket_tts"):
 MIC_RATE = 16000
 BLOCK_MS = 20
 
-STT_MODEL = "zipformer-fr-kroko-2025-08-06"
+STT_MODEL = os.environ.get("STT_MODEL", "zipformer-fr-kroko-2025-08-06")
 TURN_MODEL = "smart-turn-v3.2-cpu"
 
 SYSTEM_PROMPT = (
@@ -308,9 +313,13 @@ async def run(stack: AsyncExitStack) -> None:
     )
     # Kroko French's local model pads 1.5 s of tail silence: below that it
     # drops the last word ("midi" -> "mid").
-    stt = SherpaOnnxSTTProvider(
-        SherpaOnnxSTTConfig.from_local_model(STT_MODEL, sample_rate=MIC_RATE, provider="cpu")
+    stt_config = SherpaOnnxSTTConfig.from_local_model(
+        STT_MODEL, sample_rate=MIC_RATE, provider="cpu"
     )
+    if stt_config.stream_language:
+        # A multilingual streaming model (Nemotron 3.5) is told French.
+        stt_config = replace(stt_config, stream_language="fr")
+    stt = SherpaOnnxSTTProvider(stt_config)
 
     # --- Pocket TTS: French, on the CPU or the GPU -----------------------------
     voice_name = os.environ.get("POCKET_VOICE", "estelle")

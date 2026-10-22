@@ -46,6 +46,10 @@ class SherpaOnnxSTTConfig(FromLocalModel):
             ``"nemo_transducer"`` for NeMo TDT/transducer models).
             When set, the model is treated as offline-only (no streaming).
         language: Language code (Whisper only).
+        stream_language: Language a multilingual streaming transducer is
+            told on each stream (Nemotron 3.5: ``"fr"``, ``"en"``,
+            ``"auto"``...). Empty, no language is set, which a model with
+            one language needs. Set, a per-call ``language`` overrides it.
         task: Whisper task — ``"transcribe"`` (default) or ``"translate"``
             (translates to English).
         sample_rate: Expected audio sample rate.
@@ -75,6 +79,7 @@ class SherpaOnnxSTTConfig(FromLocalModel):
     joiner: str = ""
     model_type: str = ""
     language: str = "en"
+    stream_language: str = ""
     task: str = "transcribe"
     sample_rate: int = 16000
     num_threads: int = 2
@@ -126,11 +131,23 @@ class SherpaOnnxSTTProvider(STTProvider):
         return "SherpaOnnxSTT"
 
     @property
+    def supports_language_override(self) -> bool:
+        # Only a model told its language per stream can take one per call.
+        return bool(self._config.stream_language)
+
+    @property
     def supports_streaming(self) -> bool:
         # NeMo TDT models are offline-only (no streaming support).
         if self._config.model_type:
             return False
         return self._config.mode == "transducer"
+
+    def _online_stream(self, recognizer: Any, language: str | None) -> Any:
+        """A new stream of the online recognizer, told its language if it reads one."""
+        stream = recognizer.create_stream()
+        if self._config.stream_language:
+            stream.set_option("language", language or self._config.stream_language)
+        return stream
 
     def _finish(self, stream: Any, sample_rate: int) -> None:
         """End a streaming transducer's input, tail padding first."""
@@ -257,7 +274,7 @@ class SherpaOnnxSTTProvider(STTProvider):
             recognizer = await self._online()
 
             def _run() -> str:
-                stream = recognizer.create_stream()
+                stream = self._online_stream(recognizer, language)
                 stream.accept_waveform(sample_rate, samples)
                 self._finish(stream, sample_rate)
                 n = 0
@@ -313,7 +330,7 @@ class SherpaOnnxSTTProvider(STTProvider):
             )
 
         recognizer = await self._online()
-        stream = recognizer.create_stream()
+        stream = self._online_stream(recognizer, language)
         last_text = ""
         sample_rate = self._config.sample_rate
 

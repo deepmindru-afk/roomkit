@@ -103,6 +103,63 @@ class TestSherpaOnnxSTTProvider:
         recognizer_mock.decode_stream.assert_called_once_with(stream_mock)
 
     @pytest.mark.asyncio
+    async def test_a_stream_is_told_its_language(self) -> None:
+        sherpa = _mock_sherpa_module()
+        streams: list[MagicMock] = []
+        recognizer_mock = MagicMock()
+        recognizer_mock.create_stream.side_effect = lambda: (
+            streams.append(MagicMock()) or (streams[-1])
+        )
+        recognizer_mock.get_result.return_value = " bonjour "
+        recognizer_mock.is_endpoint.return_value = False
+        recognizer_mock.is_ready.return_value = False
+        sherpa.OnlineRecognizer.from_transducer.return_value = recognizer_mock
+        provider = self._make_provider(
+            sherpa,
+            tokens="tokens.txt",
+            encoder="encoder.onnx",
+            decoder="decoder.onnx",
+            joiner="joiner.onnx",
+            stream_language="fr",
+        )
+
+        async def _audio_stream() -> Any:
+            yield AudioChunk(data=_make_pcm_s16le([0.1, 0.2]), sample_rate=16000, is_final=True)
+
+        _ = [r async for r in provider.transcribe_stream(_audio_stream())]
+        await provider.transcribe(AudioChunk(data=_make_pcm_s16le([0.1]), sample_rate=16000))
+        _ = [r async for r in provider.transcribe_stream(_audio_stream(), language="en")]
+
+        assert provider.supports_language_override
+        assert [s.set_option.call_args.args for s in streams] == [
+            ("language", "fr"),
+            ("language", "fr"),
+            ("language", "en"),  # a per-call language overrides the configured one
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_single_language_model_gets_no_language_option(self) -> None:
+        sherpa = _mock_sherpa_module()
+        stream_mock = MagicMock()
+        recognizer_mock = MagicMock()
+        recognizer_mock.create_stream.return_value = stream_mock
+        recognizer_mock.get_result.return_value = " hello "
+        recognizer_mock.is_ready.return_value = False
+        sherpa.OnlineRecognizer.from_transducer.return_value = recognizer_mock
+        provider = self._make_provider(
+            sherpa,
+            tokens="tokens.txt",
+            encoder="encoder.onnx",
+            decoder="decoder.onnx",
+            joiner="joiner.onnx",
+        )
+
+        await provider.transcribe(AudioChunk(data=_make_pcm_s16le([0.1]), sample_rate=16000))
+
+        assert not provider.supports_language_override
+        stream_mock.set_option.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_batch_transcribe_moonshine(self) -> None:
         sherpa = _mock_sherpa_module()
         stream_mock = MagicMock()

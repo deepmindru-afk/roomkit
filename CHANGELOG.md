@@ -53,6 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   offline recognizer, one utterance at a time like Whisper; the local model
   list carries the English tiny (30 MB) and base (111 MB) models.
 
+- Nemotron 3.5 streaming STT (RMK-895): `SherpaOnnxSTTConfig.stream_language`
+  tells a multilingual streaming transducer its language on each stream
+  (`"fr"`, `"en"`, `"auto"`); set, the provider also takes a per-call
+  `language` (`supports_language_override`). The local model list carries
+  Nemotron 3.5 ASR streaming 0.6B (560 ms, 475 MB), which detects the language
+  unless `stream_language` fixes it. `examples/voice_local_pocket_fr.py` takes
+  it with `STT_MODEL`.
+
 ### Fixed
 
 - In continuous mode, an acknowledgement whose first partial was taken for
