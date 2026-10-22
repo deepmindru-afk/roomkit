@@ -126,10 +126,13 @@ class NamedDelivery:
             return  # a later cascade runs the delivery now
         self.cascade = None
         self._cancelled = cascade.cancelled
+        if self.held is not None and self._cancelled is not None:
+            self._owner.held_cancelled(self.held, self._cancelled)
+        elif self.held is not None and self.key is None:
+            # No key names it past its cascade: nothing can cancel it now.
+            self._owner.unhold(self.held[1])
         if self.held is None:
             self.release()
-        elif self._cancelled is not None:
-            self._owner.held_cancelled(self.held, self._cancelled)
 
 
 class DeliveryKeys:

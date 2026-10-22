@@ -237,6 +237,12 @@ class DeliveryCascade:
         self.reader_detached = True
         task.add_done_callback(lambda _: self.over())
 
+    def call_returned(self) -> None:
+        """The caller's call returned: its delivery is over, unless a reader
+        it detached (a deferred tail, a stream read off the lane) ends it."""
+        if not self.reader_detached:
+            self.over()
+
     def when_over(self, callback: Callable[[], None]) -> None:
         """Call *callback* once the caller's delivery is over (:meth:`over`)."""
         self._when_over.append(callback)

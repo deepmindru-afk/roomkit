@@ -239,7 +239,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   waits counts 1, one during the answer cuts it, and a cancelled message is
   released (its visibility restored) with no answer. When the last released
   message was cancelled, no agent answers the release. The cancellation is
-  written on the held event, so a release in another process honours it.
+  written on the held event, so a release in another process honours it. A
+  `defer_delivery` handle follows the delivery set alone: it cancels a held
+  message while that set runs; past it, the key is what names the message.
 
 - In continuous mode, an acknowledgement whose first partial was taken for
   the response's echo ("Ou" for the response's "où") fires ON_BACKCHANNEL

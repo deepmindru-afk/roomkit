@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import hashlib
 import hmac
 import logging
@@ -469,30 +470,48 @@ class VerificationMixin(HelpersMixin):
         """Run the room's agents on the last of *released*, named by its
         delivery's key, unless that delivery was cancelled (RFC §10.1): no
         agent answers it then. The earlier ones are its context."""
-        named = [self._delivery_keys.unhold(event.id) for event in released]
-        for earlier in named[:-1]:
-            if earlier is not None:
-                earlier.release()
-        answer, last = released[-1], named[-1]
+        last = self._unhold_released(released)
+        answer = released[-1]
         if answer.id in cancelled or (last is not None and last.cancelled is not None):
             if last is not None:
                 last.release()
             return
         await self._rerun_agents_on(room_id, answer.id, named=last)
 
-    def _name_held(self, named: NamedDelivery, event: RoomEvent | None) -> None:
-        """Keep *named* naming a delivery whose event is held, until the
-        event's release or the policy's last moment for it (RFC §11.7.6)."""
-        if event is None or not isinstance(event.metadata.get(HELD_KEY), dict):
-            return
+    def _unhold_released(self, released: list[RoomEvent]) -> NamedDelivery | None:
+        """Stop holding the deliveries of *released*: the last one's, which
+        names its answer, or ``None`` when this process holds none."""
+        named = [self._delivery_keys.unhold(event.id) for event in released]
+        for earlier in named[:-1]:
+            if earlier is not None:
+                earlier.release()
+        return named[-1]
+
+    def _name_held(self, named: NamedDelivery, result: InboundResult) -> None:
+        """Keep *named* naming a delivery whose committed event is held, until
+        its release or the policy's last moment for it (RFC §11.7.6). Called
+        under the room's lock, so no release reaches the event before."""
+        event = result.event
+        if (
+            result.blocked
+            or event is None
+            or not self._verification_policy.release_on_verify
+            or not isinstance(event.metadata.get(HELD_KEY), dict)
+        ):
+            return  # nothing will release it
         lifetime = self._verification_policy.release_max_age
         self._delivery_keys.hold(named, event.room_id, event.id, lifetime)
 
     def _record_held_cancellation(self, held: tuple[str, str], reason: str) -> None:
         """Record on a held event that its delivery was cancelled, so that its
-        release answers it with no agent in any process. Off the canceller:
-        a cancellation returns at once, under the room's lock too."""
-        task = asyncio.get_running_loop().create_task(self._write_held_cancellation(*held, reason))
+        release answers it with no agent in any process. Off the canceller,
+        in a context of its own: a cancellation returns at once, under the
+        room's lock too, and the write takes that lock in its turn. A write
+        still pending when the kit closes is dropped with its other pending
+        work; the process itself no longer releases anything then."""
+        task = asyncio.get_running_loop().create_task(
+            self._write_held_cancellation(*held, reason), context=contextvars.Context()
+        )
         task.add_done_callback(self._pending_hook_tasks.discard)
         self._pending_hook_tasks.add(task)
 

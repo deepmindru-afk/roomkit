@@ -384,7 +384,7 @@ Code without the handle names the delivery by a key the caller set on the
 message, `InboundMessage(..., delivery_key="task-42")`, and cancels it from
 anywhere in the process, a tool handler included:
 `await kit.cancel_delivery("task-42", reason="lead_cancelled")`. It answers how
-many deliveries in flight the key named and cancelled (0 once they are over),
+many deliveries the key named and cancelled (0 once they are over),
 returns at once, and each call's caller reads `cancellation_reason` on its
 result. The key names the delivery from the start of `process_inbound`: a
 message cancelled before its commit (while it is routed, parsed, or its sender

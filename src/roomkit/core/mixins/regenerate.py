@@ -278,7 +278,7 @@ class RegenerateMixin(HelpersMixin):
             await cascade.abandon("caller_cancelled")
             raise
         finally:
-            cascade.over()
+            cascade.call_returned()
 
     async def _plan_regeneration(
         self, room_id: str, trigger_id: str | None, cascade: DeliveryCascade

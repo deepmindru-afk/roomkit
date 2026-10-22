@@ -256,10 +256,10 @@ class InboundMixin(HelpersMixin):
         reason: str = "caller_cancelled",
         organization_id: str | None = None,
     ) -> int:
-        """Cancel the deliveries in flight of the messages sent with
+        """Cancel the deliveries the key names of the messages sent with
         ``InboundMessage(delivery_key=key)`` (RFC §10.1, *Explicit delivery
         cancellation*): how many it cancelled, 0 when the key names nothing
-        in flight (the deliveries are over, or were never sent).
+        (the deliveries are over, or were never sent).
 
         *organization_id* is the organization the caller acts for (RFC
         §17.2): only the deliveries of its rooms are cancelled, so two
@@ -504,18 +504,16 @@ class InboundMixin(HelpersMixin):
                 room_id,
                 deadline,
                 cascade,
+                named,
                 defer_delivery=defer_delivery,
             )
-            self._name_held(named, result.event)
         except BaseException:
             # The caller owns this cascade even if setup failed after commit,
             # before it could receive a deferred handle. Drain off the lock.
             cascade.over()
             await cascade.abandon("caller_cancelled")
             raise
-        if not cascade.reader_detached:
-            # Over: a reader it detached (a deferred tail) ends it instead.
-            cascade.over()
+        cascade.call_returned()
         return result
 
     async def _complete_inbound_delivery(
@@ -529,6 +527,7 @@ class InboundMixin(HelpersMixin):
         room_id: str,
         deadline: float,
         cascade: DeliveryCascade,
+        named: NamedDelivery,
         *,
         defer_delivery: bool,
     ) -> InboundResult:
@@ -555,6 +554,7 @@ class InboundMixin(HelpersMixin):
                 deadline=deadline,
                 precheck=precheck,
             )
+            self._name_held(named, result)
 
         if defer_delivery:
             # Every result that reached this locked region gets a handle — a
