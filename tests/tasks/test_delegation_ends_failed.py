@@ -16,6 +16,7 @@ import pytest
 
 import roomkit.core.mixins.delegation as delegation_module
 import roomkit.tasks.memory as memory_runner
+from roomkit import HookExecution, HookTrigger
 from roomkit.models.enums import TaskStatus
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks import CancelTaskTool
@@ -42,12 +43,14 @@ def _raises_outside_the_outcome(raises: str, module: Any, monkeypatch: pytest.Mo
         monkeypatch.setattr(delegation_module, "run_agent_in_child_room", _aborting_turn)
         return
     read = module.finished_task_fields
+    reads: list[None] = []
 
     def broken(response: Any, failure: Any, context: Any, turns: Any = None) -> dict[str, Any]:
-        # The ending's own read (no turn record) still works.
-        if turns is not None:
+        # The run's read of its result fails; the ending's own read works.
+        reads.append(None)
+        if len(reads) == 1:
             raise _Abort("the result could not be read")
-        return read(response, failure, context)
+        return read(response, failure, context, turns)
 
     monkeypatch.setattr(module, "finished_task_fields", broken)
 
@@ -78,6 +81,50 @@ async def _assert_ended_failed(
     assert answer["status"] == "failed"
     assert span.status == "error"
     assert room.kit._room_tasks.running == []
+
+
+def _assert_turn_kept(raises: str, completed: list[DelegatedTaskResult]) -> None:
+    """RMK-910: a task whose turn ran and recorded itself keeps that record
+    under ``turns`` when what raised came after (RFC §23.3 step 6); a turn
+    that raised at once recorded nothing."""
+    turns = completed[0].metadata.get("turns", {})
+    assert list(turns) == (["worker"] if raises == "its-result" else [])
+
+
+async def test_a_task_failing_before_it_is_announced_fires_no_completion() -> None:
+    """RMK-910: reading the parent room's context to announce the task fails
+    before ``ON_TASK_DELEGATED`` fires: the delegation raises to its caller,
+    and nothing reports the end of a task never announced (RFC §23.3)."""
+    room, telemetry, completed = await _room()
+    delegated: list[str] = []
+    build = room.kit._build_context
+
+    async def unreadable(room_id: str) -> Any:
+        if room_id == "r":
+            raise RuntimeError("the store is down")
+        return await build(room_id)
+
+    @room.kit.hook(HookTrigger.ON_TASK_DELEGATED, execution=HookExecution.ASYNC)
+    async def announced(event: Any, ctx: Any) -> None:
+        delegated.append(event.room_id)
+
+    async def record(result: DelegatedTaskResult) -> None:
+        completed.append(result)
+
+    room.kit._build_context = unreadable  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="store is down"):
+        await room.kit.delegate("r", "worker", "Count.", wait=True, on_complete=record)
+    room.kit._build_context = build  # type: ignore[method-assign]
+    await asyncio.sleep(0.05)
+    lines = await room_task_lines(room.kit.status_bus, "r", 50)
+    [span] = telemetry.get_spans(SpanKind.DELEGATION)
+    await room.kit.close()
+
+    assert delegated == []
+    assert room.ended == []
+    assert completed == []
+    assert lines == []
+    assert span.status == "error"
 
 
 async def test_a_task_its_runner_refuses_ends_failed() -> None:
@@ -112,6 +159,7 @@ async def test_an_inline_run_that_raises_outside_its_turn_s_outcome_ends_failed(
         await room.kit.delegate("r", "worker", "Count.", wait=True, on_complete=record)
 
     await _assert_ended_failed(room, telemetry, completed)
+    _assert_turn_kept(raises, completed)
     await room.kit.close()
 
 
@@ -130,6 +178,7 @@ async def test_a_background_run_that_raises_outside_its_turn_s_outcome_ends_fail
 
     assert result.status == TaskStatus.FAILED
     await _assert_ended_failed(room, telemetry, completed)
+    _assert_turn_kept(raises, completed)
     # No caller holds the error: the notified channel is told it failed.
     await until(lambda: bool(room.handed_back), timeout=5)
     assert room.handed_back[0]["task_status"] == "failed"

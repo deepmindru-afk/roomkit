@@ -97,6 +97,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   either: the room's teardown waited out its budget for it, then logged
   that it went ahead.
 
+- Three ends of a delegated task follow RFC §23.3 and §23.4 (RMK-910). A
+  delegation that fails reading its room's context, before
+  `ON_TASK_DELEGATED` fires, raises to its caller and reports no end:
+  `ON_TASK_COMPLETED`, the StatusBus and the completion callback reported
+  the end of a task never announced. A task that fails after its turn ran
+  (computing its result raised) keeps that turn's record under `turns`, as
+  every other end does. And an agent that calls `cancel_task` while the
+  host's cancel of the same task is being completed (its `ON_TASK_COMPLETED`
+  hooks still running) joins that cancel: it is answered cancelled and no
+  longer handed the cancellation back.
+
 - A location delivered as text with neither a label nor an address reads
   `[Location: (45.5, -73.6)]` (RFC §6.6, RMK-902); it read with two spaces.
 

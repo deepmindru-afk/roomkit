@@ -57,6 +57,9 @@ class DelegatedTask:
         # Whether the delegation posts the task on the StatusBus (RFC §23.3):
         # off for a caller that follows its tasks there itself.
         self._post_status = True
+        # Whether ON_TASK_DELEGATED fired for it: only an announced task's
+        # end is reported (RFC §23.3).
+        self._announced = False
 
     def _get_done_event(self) -> asyncio.Event:
         """Lazily create the Event on first use (inside a running loop)."""

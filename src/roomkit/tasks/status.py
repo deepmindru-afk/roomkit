@@ -319,11 +319,14 @@ class CancelTaskTool:
         running and why, or no task of the room."""
         record = self._kit._room_tasks
         reach = record.reach(task_id, room_id)
-        if reach == "tool" and await self._cancel(task_id, room_id):
+        ours = reach == "tool" or record.ended_with(task_id, room_id) is not None
+        # One ended meanwhile may still be a cancel's end being completed,
+        # which the call joins.
+        if ours and await self._cancel(task_id, room_id):
             return _answer(
                 task_id, str(TaskStatus.CANCELLED), "Cancelled: its result will not come back."
             )
-        if reach == "tool" or record.ended_with(task_id, room_id) is not None:
+        if ours:
             return await self._answer_ended(room_id, task_id)
         return _out_of_reach(task_id, reach)
 

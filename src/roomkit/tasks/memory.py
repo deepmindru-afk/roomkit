@@ -108,7 +108,7 @@ class InMemoryTaskRunner(TaskRunner):
             raise
         except BaseException as exc:
             # Raised outside its turn's outcome: it ends failed, once (RFC §23.3).
-            failed = finished_task_fields(None, exc, context)
+            failed = finished_task_fields(None, exc, context, turns)
             await self._end_ran(kit, task, failed, start, on_complete)
             raise
         await self._end_ran(kit, task, fields, start, on_complete)

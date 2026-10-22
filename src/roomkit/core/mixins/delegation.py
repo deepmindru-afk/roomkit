@@ -165,12 +165,15 @@ async def _turn_outcome(
         return None, exc, False
 
 
-def _cut_task_fields(cut: BaseException, context: dict[str, Any] | None) -> dict[str, Any]:
+def _cut_task_fields(
+    cut: BaseException, context: dict[str, Any] | None, turns: TurnEntries | None
+) -> dict[str, Any]:
     """The outcome of a task cut outside its turn's outcome (its delegation
-    before it ran, or its run): cancelled, or failed with what cut it."""
+    before it ran, or its run): cancelled, or failed with what cut it and the
+    record of the turn it ran (RFC §23.3 step 6)."""
     if isinstance(cut, asyncio.CancelledError):
         return cancelled_task_fields(context)
-    return finished_task_fields(None, cut, context)
+    return finished_task_fields(None, cut, context, turns)
 
 
 def _result_from_handle(
@@ -443,10 +446,9 @@ class DelegationMixin(HelpersMixin):
             ),
         )
         start = time.monotonic()
-        announced = started = False
+        started = False
         try:
             await self._open_child_room(handle, parent_room, context, share_channels)
-            announced = True
             await self._announce_task(handle)
             if self._closed:
                 # The kit's close began while the task was being set up: it
@@ -469,7 +471,7 @@ class DelegationMixin(HelpersMixin):
             return await self._run_background(handle, context, notify, on_complete, span)
         except BaseException as exc:
             if not started:
-                cut = self._end_cut(handle, exc, context, on_complete, span, start, announced)
+                cut = self._end_cut(handle, exc, context, on_complete, span, start)
                 await shielded(cut)
             raise
 
@@ -516,18 +518,19 @@ class DelegationMixin(HelpersMixin):
         on_complete: Any | None,
         span: _DelegationSpan,
         start: float,
-        announced: bool = True,
+        turns: TurnEntries | None = None,
     ) -> None:
         """End a task *cut* ended outside its turn's outcome, its delegation
         before it ran (its runner refusing it included) or its run (RFC
-        §23.3): cancelled, or failed with *cut*; once announced, as an inline
-        task ends, before that, only its span."""
+        §23.3): cancelled, or failed with *cut* and the record of the turn it
+        ran (*turns*); once announced, as an inline task ends, before that,
+        only its span."""
         ended = _result_from_handle(
             handle,
             duration_ms=(time.monotonic() - start) * 1000,
-            **_cut_task_fields(cut, context),
+            **_cut_task_fields(cut, context, turns),
         )
-        if announced:
+        if handle._announced:
             await self._complete_inline(handle, ended, on_complete, span)
         else:
             span.end(ended)
@@ -625,6 +628,7 @@ class DelegationMixin(HelpersMixin):
             metadata=hook_meta,
         )
         room_context = await self._build_context(room_id)
+        handle._announced = True
         await self._hook_engine.run_async_hooks(
             room_id, HookTrigger.ON_TASK_DELEGATED, hook_event, room_context
         )
@@ -718,7 +722,8 @@ class DelegationMixin(HelpersMixin):
             raise
         except BaseException as exc:
             # Raised outside its turn's outcome: it ends failed, once.
-            await _finish_cleanup(self._end_cut(handle, exc, context, on_complete, span, start))
+            cut = self._end_cut(handle, exc, context, on_complete, span, start, turns)
+            await _finish_cleanup(cut)
             raise
         # Its work ran: it ends as it stands, whatever cancels its caller now.
         await _finish_cleanup(self._complete_inline(handle, result, on_complete, span))
@@ -868,10 +873,22 @@ class DelegationMixin(HelpersMixin):
         a task of that room; when *channel_id*, the caller, is the one the
         result was going to, it is not handed the cancellation back, the
         tool's answer having told it. Calls asking at once cancel it once,
-        each answered as the first is (RFC §23.4)."""
-        if self._room_tasks.reach(task_id, room_id) != "tool":
-            return False
-        return await self._cancel_joined(task_id, channel_id)
+        each answered as the first is, one asking as a cancel's end is being
+        completed included (RFC §23.4)."""
+        if self._room_tasks.reach(task_id, room_id) == "tool" or self._cancel_ending(
+            task_id, room_id
+        ):
+            return await self._cancel_joined(task_id, channel_id)
+        return False
+
+    def _cancel_ending(self, task_id: str, room_id: str) -> bool:
+        """Whether *task_id*, a task of *room_id*, has ended while a cancel of
+        it is still under way: its end is being completed (its hooks run,
+        its hand-back is not decided yet)."""
+        return (
+            task_id in self._task_cancels
+            and self._room_tasks.ended_with(task_id, room_id) is not None
+        )
 
     async def _cancel_joined(self, task_id: str, channel_id: str | None) -> bool:
         """Cancel *task_id* once, whichever doors ask at once (the host's, an
