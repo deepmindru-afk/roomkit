@@ -1236,10 +1236,13 @@ def test_another_case_of_a_form_is_not_read_as_its_letter() -> None:
 
 def test_the_first_fence_reads_no_unicode_table_at_run_time() -> None:
     """The look-alike tables are generated ahead of time: the first ``fence()``
-    of a process compiles its pattern and folds no code point."""
+    of a process compiles its pattern and folds no code point. The collector
+    runs first: a full collection of everything ``roomkit`` imported, falling
+    inside the call by the allocation count alone, would double its time."""
     probe = (
-        "import time; from roomkit._text import fence; started = time.perf_counter(); "
-        "fence('tool_result', 'x'); print(time.perf_counter() - started)"
+        "import gc, time; from roomkit._text import fence; gc.collect(); "
+        "started = time.perf_counter(); fence('tool_result', 'x'); "
+        "print(time.perf_counter() - started)"
     )
     took = subprocess.run(
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True
