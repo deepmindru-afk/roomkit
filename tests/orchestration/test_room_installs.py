@@ -357,6 +357,41 @@ async def test_a_handoff_in_one_room_leaves_another_room_s_sessions() -> None:
     await kit.close()
 
 
+async def test_the_pipeline_strategy_runs_its_agents_in_a_realtime_channel_s_sessions() -> None:
+    """RMK-873: Pipeline(voice_channel_id=...) on a realtime channel: a
+    session starts with its room's active agent and a handoff reconfigures
+    that room's sessions, one wiring serving every room the strategy is
+    installed in (RFC §19.5)."""
+    provider = MockRealtimeProvider()
+    voice = RealtimeVoiceChannel(
+        "voice",
+        provider=provider,
+        transport=MockRealtimeTransport(),
+        system_prompt="I am the channel",
+    )
+    triage = Agent("triage", system_prompt="I am TRIAGE")
+    billing = Agent("billing", system_prompt="I am BILLING")
+    kit = RoomKit()
+    for channel in (voice, triage, billing):
+        kit.register_channel(channel)
+    strategy = Pipeline(agents=[triage, billing], voice_channel_id="voice")
+    for room_id in ("room-A", "room-B"):
+        await kit.create_room(room_id=room_id, orchestration=strategy)
+        await kit.attach_channel(room_id, "voice")
+    in_a = await voice.start_session("room-A", "caller-a", "ws")
+
+    handed = {"target": "billing", "reason": "r", "summary": "s"}
+    await provider.simulate_tool_call(in_a, "c1", "handoff_conversation", handed)
+    await _until(lambda: len(provider.tool_results) == 1)
+    in_b = await voice.start_session("room-B", "caller-b", "ws")
+
+    assert json.loads(provider.tool_results[0][2])["accepted"] is True
+    in_a_again = await voice.start_session("room-A", "caller-a2", "ws")
+    assert _connected(provider, in_a_again)["system_prompt"].startswith("I am BILLING")
+    assert _connected(provider, in_b)["system_prompt"].startswith("I am TRIAGE")
+    await kit.close()
+
+
 async def test_reconfiguring_a_session_changes_that_session_only() -> None:
     """An application changing one call's instructions leaves the channel's
     configuration, so the next session of another room starts with it (RFC §12.4)."""

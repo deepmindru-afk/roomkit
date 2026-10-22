@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from roomkit import RoomKit
 from roomkit.channels.agent import Agent
+from roomkit.channels.voice import VoiceChannel
 from roomkit.models.channel import ChannelBinding
-from roomkit.models.enums import ChannelCategory, ChannelType
+from roomkit.models.context import RoomContext
+from roomkit.models.delivery import InboundMessage
+from roomkit.models.enums import ChannelCategory, ChannelType, HookTrigger
+from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.room import Room
 from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.pipeline import Pipeline, _build_stages
@@ -159,3 +167,63 @@ class TestPipelineInstall:
             for room_id in ("r1", "r2"):
                 names = room_tool_names(kit, agent.channel_id, room_id)
                 assert names.count("handoff_conversation") == 1
+
+
+async def test_greet_on_handoff_without_a_voice_channel_is_refused() -> None:
+    """RMK-873: the refusal ConversationPipeline.install makes, at construction."""
+    with pytest.raises(ValueError, match="voice_channel_id"):
+        Pipeline(agents=[_make_agent("a")], greet_on_handoff=True)
+
+
+async def test_the_pipeline_strategy_speaks_and_greets_on_its_voice_channel() -> None:
+    """RMK-873: on a voice channel the agents' voices are set, and a handoff
+    in a room the strategy runs cues the new agent to introduce itself, its
+    hooks the room's, never another room's."""
+    kit = RoomKit()
+    voice = VoiceChannel("voice")
+    kit.register_channel(voice)
+    for channel_id, speaks in (("a", "v-a"), ("b", "v-b")):
+        kit.register_channel(
+            Agent(channel_id, provider=MockAIProvider(responses=["x"]), voice=speaks)
+        )
+    strategy = Pipeline(
+        agents=["a", "b"],
+        voice_channel_id="voice",
+        greet_on_handoff=True,
+        greeting_prompt="Introduce yourself.",
+        farewell_prompt="Goodbye.",
+    )
+    await kit.create_room(room_id="r1", orchestration=strategy)
+    await kit.create_room(room_id="r2")
+    cues: list[tuple[str, str, list[str] | None]] = []
+
+    async def cue(message: InboundMessage, *, room_id: str) -> None:
+        cues.append((room_id, message.content.body, message.addressed_to))
+
+    kit.process_inbound = cue  # type: ignore[method-assign]
+    handoff = RoomEvent(
+        room_id="r1",
+        source=EventSource(channel_id="a", channel_type=ChannelType.AI),
+        content=TextContent(body="handoff"),
+        metadata={"from_agent": "a", "to_agent": "b"},
+    )
+    for room_id in ("r1", "r2"):
+        context = RoomContext(room=await kit.get_room(room_id), bindings=[])
+        await kit.hook_engine.run_async_hooks(
+            room_id,
+            HookTrigger.ON_HANDOFF,
+            handoff.model_copy(update={"room_id": room_id}),
+            context,
+        )
+    for _ in range(100):
+        if cues:
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+    triggers = {hook.trigger for hook in kit.hook_engine._room_hooks.get("r1", [])}
+    await kit.close()
+
+    assert voice._voice_map == {"a": "v-a", "b": "v-b"}
+    assert cues == [("r1", "Introduce yourself.", ["b"])]
+    assert {HookTrigger.ON_HANDOFF, HookTrigger.BEFORE_TTS} <= triggers
+    assert not kit.hook_engine._room_hooks.get("r2")

@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from roomkit.channels.agent import Agent
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+from roomkit.channels.voice import VoiceChannel
 from roomkit.models.enums import HookExecution, HookTrigger
 from roomkit.orchestration._agents import held
 from roomkit.orchestration._handoff_greeting import HandoffGreeting
@@ -217,7 +218,7 @@ class ConversationPipeline:
             self._wire_handoff(held_agents, handler)
 
             if voice_channel_id:
-                self._wire_voice_map(kit, held_agents, voice_channel_id)
+                wire_voice_map(kit, held_agents, voice_channel_id)
 
             if greet_on_handoff:
                 greeting = HandoffGreeting(
@@ -276,29 +277,6 @@ class ConversationPipeline:
             tool = build_handoff_tool(targets)
             setup_handoff(agent, handler, tool=tool)
 
-    def _wire_voice_map(
-        self,
-        kit: RoomKit,
-        agents: Sequence[HeldAgent],
-        voice_channel_id: str,
-    ) -> None:
-        """Auto-wire voice map entries from Agent.voice fields."""
-        from roomkit.channels.voice import VoiceChannel
-
-        auto_map: dict[str, str] = {a.channel_id: a.voice for a in agents if a.voice is not None}
-        if not auto_map:
-            return
-
-        vc = kit.channels.get(voice_channel_id)
-        if isinstance(vc, VoiceChannel):
-            vc.update_voice_map(auto_map)
-        else:
-            logger.warning(
-                "voice_channel_id=%r does not point to a VoiceChannel; "
-                "skipping voice map auto-wiring",
-                voice_channel_id,
-            )
-
     def _wire_realtime(
         self,
         kit: RoomKit,
@@ -341,4 +319,20 @@ class ConversationPipeline:
             "Wired speech-to-speech orchestration: %d agents on %s",
             len(agents),
             rtv_channel_id,
+        )
+
+
+def wire_voice_map(kit: RoomKit, agents: Sequence[HeldAgent], voice_channel_id: str) -> None:
+    """Auto-wire voice map entries from Agent.voice fields."""
+    auto_map: dict[str, str] = {a.channel_id: a.voice for a in agents if a.voice is not None}
+    if not auto_map:
+        return
+
+    vc = kit.channels.get(voice_channel_id)
+    if isinstance(vc, VoiceChannel):
+        vc.update_voice_map(auto_map)
+    else:
+        logger.warning(
+            "voice_channel_id=%r does not point to a VoiceChannel; skipping voice map auto-wiring",
+            voice_channel_id,
         )

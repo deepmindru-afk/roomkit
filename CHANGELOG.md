@@ -320,6 +320,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a handoff kept it. One function now builds an agent's realtime prompt
   for all three, and sets nothing when there is nothing to set.
 
+- The `Pipeline` strategy's `voice_channel_id`, `greet_on_handoff`,
+  `greeting_prompt` and `farewell_prompt` take effect (RMK-873); they were
+  stored and never read. On a realtime voice channel, each room's session
+  runs its active agent and a handoff reconfigures the room's sessions, one
+  wiring serving every room the strategy is installed in, with
+  `ConversationPipeline.install`'s refusals (live agents only). On another
+  voice channel, the agents' voices are set, and `greet_on_handoff` greets in
+  the room of the handoff only, through room hooks. `greet_on_handoff=True`
+  without `voice_channel_id` is refused at construction.
+
 - An answer a barge-in cut reads, in the AI context, with how far the person
   heard it (RFC §6.4): `[The person cut you off during this answer, 5.7 s in:
   they heard it up to “…” and not the rest.]`, where it read "[You were
