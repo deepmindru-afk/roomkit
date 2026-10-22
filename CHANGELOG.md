@@ -111,14 +111,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - An answer a barge-in cut reads, in the AI context, with how far the person
   heard it (RFC §6.4): `[The person cut you off during this answer, 5.7 s in:
-  they heard it up to "…" and not the rest.]`, where it read "[You were
+  they heard it up to “…” and not the rest.]`, where it read "[You were
   interrupted while saying this: the person may not have heard the end of
   it.]". The quote is an estimate, ending early rather than late: no TTS word
   is timed, so the words are taken by their letters at the share of the
   answer's audio that played, less two words, or at 11 letters a second when
-  that share is unknown. While the history holds a cut answer, the turn's
-  notes say how one reads, and that an answer without the mark was heard to
-  its end. Measured on Voxtral audio with four models (Mistral Small and
+  that share is unknown. The words are the agent's, which a participant may
+  have led it to say: they are quoted on one line between quotes they cannot
+  close, a long quote keeping its end. While the history holds a cut answer,
+  the turn's notes say how one reads, and that an answer without the mark was
+  heard to its end. Measured on Voxtral audio with four models (Mistral Small and
   Large, Claude Haiku, GPT-6 Luna), eight answers cut at 40%: "did I cut you
   off?" was answered yes 156 times in 160 (105 with the old mark), and "pick
   up where you left off" resumed from where the person stopped hearing 119

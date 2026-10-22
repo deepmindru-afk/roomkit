@@ -14,6 +14,7 @@ import re
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
+from roomkit._text import named_blocks, quoted
 from roomkit.models.enums import ChannelType, Visibility
 from roomkit.models.event import TextContent
 from roomkit.speaking.base import CutReply
@@ -45,6 +46,10 @@ ends late costs the words the person never heard."""
 _MARGIN_WORDS = 2
 """Words taken off the estimate made from the audio's share: on Voxtral it was
 within 3 words of what an STT heard, one way or the other."""
+
+_QUOTE_CHARS = 400
+"""The longest quote of what was heard: its end is kept, where the person
+stopped hearing."""
 
 _LETTERS = re.compile(r"\w")
 
@@ -95,14 +100,31 @@ def cut_answers(
 
 def cut_mark(record: RoomEvent, clean: Callable[[str], str]) -> str:
     """The mark that follows the answer *record* cut: when it was cut, and the
-    words the person heard of it, quoted once *clean* made them safe to place in
-    a runtime mark."""
+    words the person heard of it, *clean* having replaced any copy of a runtime
+    mark in them.
+
+    The words are the agent's, which a participant may have led it to say:
+    they are quoted on one line between quotes they cannot close (RFC §6.4),
+    the start of a long quote left out.
+    """
     played_ms = _played_ms(record)
     when = f"{CUT_MARK_OPENING}, {played_ms / 1000:.1f} s in"
     heard = heard_part(_record_text(record), played_ms, _played_share(record))
     if not heard:
         return f"{when}: they heard little or none of it.]"
-    return f'{when}: they heard it up to "{clean(heard)}" and not the rest.]'
+    quote = quoted(_ending(named_blocks(clean(heard)), _QUOTE_CHARS), _QUOTE_CHARS)
+    return f"{when}: they heard it up to {quote} and not the rest.]"
+
+
+def _ending(text: str, limit: int) -> str:
+    """*text*'s end within *limit* characters, cut at a word, opening on "…"."""
+    if len(text) <= limit:
+        return text
+    tail = text[len(text) - limit + 1 :]
+    space = tail.find(" ")
+    if 0 <= space < limit // 2:
+        tail = tail[space + 1 :]
+    return "…" + tail.lstrip()
 
 
 def heard_part(text: str, played_ms: int, share: float | None) -> str:
