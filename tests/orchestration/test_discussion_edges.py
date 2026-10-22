@@ -311,6 +311,20 @@ async def test_a_room_with_nobody_to_wait_for_is_idle_after_a_depth_stop() -> No
     await kit.close()
 
 
+async def test_a_human_agent_is_someone_the_discussion_waits_for() -> None:
+    """An AGENT is a human advisor (RFC §5), a person of the discussion
+    (§19.7.5 rule 2): after a depth stop, the room waits for them."""
+    a, b = _provider("@b go"), _provider("@a go")
+    kit = RoomKit()
+    await _room(kit, {"a": a, "b": b}, max_depth=3)
+    await _person(kit, "adv1", "Claire", ParticipantRole.AGENT)
+
+    await _say(kit, "@a start", sender="adv1")
+    await _settle(kit)
+    assert _queue(kit).waiting
+    await kit.close()
+
+
 async def test_a_persons_message_ends_the_wait_even_asking_no_one() -> None:
     a = _provider("@ops may I?", "@b please look")
     b = _provider("b looked")

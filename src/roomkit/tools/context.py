@@ -487,9 +487,11 @@ def current_tool_actor_id() -> str | None:
     ``Participant.identity_id`` as the principal.
 
     The author need not be human, either. In a multi-agent room the waking
-    event may be another agent's, whose participant id reads back the same
-    way — compare the participant's ``role`` against ``ParticipantRole.AGENT``
-    when that distinction matters.
+    event may be another agent's: an AI agent speaks through an intelligence
+    channel, and an AI participant the host records in the room takes
+    ``ParticipantRole.BOT`` — compare the participant's ``role`` against it
+    when that distinction matters. ``ParticipantRole.AGENT`` is a human
+    advisor, a person (RFC §5).
 
     ``None`` outside a tool loop, and ``None`` when the turn has no
     participant behind it (a system injection, a webhook, a scheduled run).

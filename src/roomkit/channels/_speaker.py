@@ -63,9 +63,12 @@ PEOPLE_NOTE_OPENING = "[People taking part besides you"
 one of the runtime's marks, a copy of it in a participant's text replaced
 (:mod:`~roomkit.channels._mark_copies`)."""
 
-_NOT_PEOPLE = frozenset({ParticipantRole.AGENT, ParticipantRole.BOT, ParticipantRole.OBSERVER})
-"""Roles that take no part in the conversation: an agent and a bot are no
-person, and an observer reads without taking part (a supervisor, an auditor)."""
+NOT_PEOPLE = frozenset({ParticipantRole.BOT, ParticipantRole.OBSERVER})
+"""Roles that take no part in the conversation (RFC §5, §6.4): a bot is no
+person (an AI participant the host records is one), and an observer reads
+without taking part (a supervisor, an auditor). An agent, a human advisor,
+takes part like any member. The discussion's people are the same (§19.7.5
+rule 2)."""
 
 _PERSON_LIMIT = 96
 """Characters of a person's label the people note quotes at most: a name's
@@ -95,7 +98,7 @@ def people_taking_part(context: RoomContext, channel_id: str | None) -> tuple[st
         unrecorded.person(person)
         for person in unrecorded.people.persons
         if person.status == ParticipantStatus.ACTIVE
-        and person.role not in _NOT_PEOPLE
+        and person.role not in NOT_PEOPLE
         and person.channel_id != channel_id
         and _reaches(person, bindings, reader)
     )

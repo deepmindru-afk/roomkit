@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Collection, Sequence
 
 from roomkit._text import person_name
-from roomkit.channels._speaker import channel_label, label_name, turn_labels
+from roomkit.channels._speaker import NOT_PEOPLE, channel_label, label_name, turn_labels
 from roomkit.core._authors import People, source_of
 from roomkit.core.visibility import visibility_allows
 from roomkit.models.context import RoomContext
@@ -19,7 +19,6 @@ from roomkit.models.delivery import SYSTEM_SENDER_ID
 from roomkit.models.enums import (
     Access,
     ChannelCategory,
-    ParticipantRole,
     ParticipantStatus,
 )
 from roomkit.models.event import RoomEvent
@@ -27,7 +26,6 @@ from roomkit.models.participant import Participant
 
 from ._names import NAME_LIMIT, name_key
 
-_NOT_PEOPLE = frozenset({ParticipantRole.AGENT, ParticipantRole.BOT})
 _READS = frozenset({Access.READ_WRITE, Access.READ_ONLY})
 
 Source = tuple[str, ...]
@@ -63,7 +61,7 @@ def is_person(event: RoomEvent, context: RoomContext, people: People | None = No
     if binding is None or binding.category != ChannelCategory.TRANSPORT:
         return False
     participant = (people or People(context.participants)).named(event)
-    return participant is None or participant.role not in _NOT_PEOPLE
+    return participant is None or participant.role not in NOT_PEOPLE
 
 
 def records_people(context: RoomContext) -> bool:
@@ -127,7 +125,7 @@ def one_person(index: PeopleIndex, name: str) -> str | None:
 
 
 def _active_person(participant: Participant) -> bool:
-    return participant.status == ParticipantStatus.ACTIVE and participant.role not in _NOT_PEOPLE
+    return participant.status == ParticipantStatus.ACTIVE and participant.role not in NOT_PEOPLE
 
 
 def _label_of(participant: Participant) -> str:

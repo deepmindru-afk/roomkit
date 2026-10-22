@@ -351,6 +351,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — `ParticipantRole.AGENT` is a human agent** (RFC §5, §6.4,
+  §19.7.5 rule 2, RMK-911), an advisor or a support representative, as the
+  role table says: a participant with that role takes part like a member.
+  The agent's people note names them, a customer's first turn is labelled
+  when one is present, `SpeakTurn.people` counts them, and a discussion
+  treats their messages as a person's. They were left out as if they were an
+  AI. An AI participant the host records in the room takes
+  `ParticipantRole.BOT`; an AI agent takes part through an intelligence
+  channel. A discussion now reads its people as every other reader does: an
+  observer is no person of it either.
+
 - **Security:** an id names its participant only on a channel the room
   reached them through (RMK-915, RFC §5.5). The label a transcript gave a
   sender already followed this rule; what the sender was granted did not.

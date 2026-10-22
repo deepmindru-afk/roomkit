@@ -357,7 +357,7 @@ class TestDiscussionPerson:
         self, channel: str, person: bool
     ) -> None:
         agent = Participant(
-            id="bot-1", room_id=ROOM, channel_id="console", role=ParticipantRole.AGENT
+            id="bot-1", room_id=ROOM, channel_id="console", role=ParticipantRole.BOT
         )
         bindings = [
             ChannelBinding(room_id=ROOM, channel_id=c, channel_type=ChannelType.WEBSOCKET)
@@ -366,3 +366,19 @@ class TestDiscussionPerson:
         context = RoomContext(room=Room(id=ROOM), bindings=bindings, participants=[agent])
 
         assert is_person(_event(channel, "bot-1"), context) is person
+
+    @pytest.mark.parametrize(
+        ("role", "person"), [(ParticipantRole.AGENT, True), (ParticipantRole.OBSERVER, False)]
+    )
+    def test_a_person_of_the_discussion_takes_part_as_the_room_s_people_do(
+        self, role: ParticipantRole, person: bool
+    ) -> None:
+        """Rule 2 of §19.7.5 is who takes part (§6.4): a human agent does, an
+        observer reads without taking part (RMK-911)."""
+        someone = Participant(id="p-1", room_id=ROOM, channel_id="web", role=role)
+        binding = ChannelBinding(
+            room_id=ROOM, channel_id="web", channel_type=ChannelType.WEBSOCKET
+        )
+        context = RoomContext(room=Room(id=ROOM), bindings=[binding], participants=[someone])
+
+        assert is_person(_event("web", "p-1"), context) is person

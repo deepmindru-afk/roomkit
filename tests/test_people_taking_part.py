@@ -108,7 +108,17 @@ class TestWhoTakesPart:
             Participant(id="u-self", room_id=ROOM, channel_id="ai1", display_name="Self"),
         ]
 
-        assert people_taking_part(_context(people, []), "ai1") == ("Alice", "Bob")
+        assert people_taking_part(_context(people, []), "ai1") == ("Alice", "Bob", "Helper")
+
+    def test_a_human_agent_takes_part_and_a_bot_does_not(self) -> None:
+        """An AGENT is a human advisor (RFC §5); an AI participant is a BOT."""
+        people = [
+            _person("u-alice", "Alice"),
+            _person("u-advisor", "Claire", role=ParticipantRole.AGENT),
+            _person("u-bot", "Relay", role=ParticipantRole.BOT),
+        ]
+
+        assert people_taking_part(_context(people, []), "ai1") == ("Alice", "Claire")
 
     def test_a_nameless_person_reads_as_their_channel_and_a_look_alike_carries_a_rank(
         self,
@@ -184,6 +194,16 @@ class TestEveryReaderTakesTheRoster:
         assert reader(context, turn)
 
     @pytest.mark.parametrize("reader", _READERS.values(), ids=_READERS.keys())
+    def test_a_customer_with_a_human_agent_present_is_labelled(
+        self, reader: Callable[[RoomContext, RoomEvent], bool]
+    ) -> None:
+        turn = _turn("u-alice", "Who is here?", 1)
+        advisor = _person("u-advisor", "Claire", role=ParticipantRole.AGENT)
+        context = _context([_person("u-alice", "Alice"), advisor], [turn])
+
+        assert reader(context, turn)
+
+    @pytest.mark.parametrize("reader", _READERS.values(), ids=_READERS.keys())
     def test_a_one_to_one_conversation_is_unchanged(
         self, reader: Callable[[RoomContext, RoomEvent], bool]
     ) -> None:
@@ -242,6 +262,26 @@ class TestTheAgentKnowsWhoIsThere:
         said, notes = await _input(provider)
         assert said == "Who is here?"
         assert notes == ""
+
+    async def test_a_human_agent_is_named_and_the_customer_s_first_turn_labelled(
+        self,
+    ) -> None:
+        """RMK-911: a support representative registered as an AGENT, as the
+        role table invites (RFC §5), is a person the agent knows is there."""
+        kit, provider = await _sms_room("Alice")
+        await kit.add_member(
+            ROOM, "sms1", "u-claire", display_name="Claire", role=ParticipantRole.AGENT
+        )
+
+        await kit.process_inbound(
+            InboundMessage(
+                channel_id="sms1", sender_id="u-alice", content=TextContent(body="Who is here?")
+            )
+        )
+
+        said, notes = await _input(provider)
+        assert said == 'Alice: "Who is here?"'
+        assert people_note(("Alice", "Claire")) in notes
 
     async def test_an_observer_does_not_make_a_one_to_one_conversation_several(self) -> None:
         kit, provider = await _sms_room("Alice")

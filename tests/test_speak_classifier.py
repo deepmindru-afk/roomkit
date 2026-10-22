@@ -259,17 +259,18 @@ def test_the_turn_names_speakers_and_marks_the_agents_answers() -> None:
     assert turn.by_agent(answer) and not turn.by_agent(before)
 
 
-def test_people_leave_out_agents_bots_and_the_agents_channel() -> None:
+def test_people_count_a_human_agent_and_leave_out_bots_and_the_agents_channel() -> None:
     participants = [
         _person("p1", "Sylvain"),
         _person("p2", "Paul", status="left"),
-        _person("a1", "Codex", role=ParticipantRole.AGENT),
-        _person("b1", "Notifier", role=ParticipantRole.BOT),
+        _person("a1", "Claire", role=ParticipantRole.AGENT),
+        _person("b1", "Codex", role=ParticipantRole.BOT),
         Participant(id="n1", room_id="r1", channel_id="ai1", display_name="Nova"),
     ]
     event = _said("Nova ?")
     assert _speak_turn(event, _context(event, participants=participants), "ai1").people == (
         "Sylvain",
+        "Claire",
     )
 
 
