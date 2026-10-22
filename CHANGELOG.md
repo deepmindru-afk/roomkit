@@ -255,6 +255,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   RMK-902): a composite holding an edit of a five-level composite is six
   levels deep and refused.
 
+- A turn's scan for a runtime mark's copy split over consecutive user
+  messages reads only the new boundary of a run of unanswered messages it
+  already found clean (RMK-882), in a window that holds any copy across it,
+  gaps of spacing or markup of any length included; a copy found there goes
+  through the whole scan as before. Measured on runs of 8 KB messages, one
+  more each turn: 1.9 ms per turn for 25 messages instead of 89 ms, 2.4 ms
+  for 50 instead of 180 ms.
+
 - The Redis turn backend guide's prerequisites say redis-py 8.0.0 does not
   serve a backend on a unix socket (RMK-869): its sync client, which the
   beat thread uses, fails the first call of each new `unix://` connection and

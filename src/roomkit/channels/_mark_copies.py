@@ -19,7 +19,7 @@ import re
 import threading
 from typing import Any
 
-from roomkit._lookalike import phrase_pattern
+from roomkit._lookalike import phrase_pattern, phrase_space
 from roomkit._provider_marks import CONTEXT_UPDATE_MARK, SAID_BEFORE_MARK
 from roomkit.channels._acp_marks import (
     INSTRUCTIONS_MARKER as ACP_INSTRUCTIONS_MARKER,
@@ -33,6 +33,7 @@ from roomkit.channels._runtime_record import SUMMARY_HEADER as MEMORY_SUMMARY_HE
 from roomkit.channels._speaker import PEOPLE_NOTE_OPENING, SPEAKER_ATTRIBUTION_NOTE, SPEAKER_KEY
 from roomkit.channels._turn_notes import (
     COPIED_HEADER_MARK,
+    TURN_NOTES_HEADER,
     cleaned_content,
     header_copies,
     without_header_copies,
@@ -209,9 +210,14 @@ def _cut_run(out: list[AIMessage], run: range) -> set[int]:
 
 def _cut_texts(texts: list[str]) -> bool:
     """Cut, in place, each copy that runs over two or more of *texts*; whether
-    there was one. A run seen before to hold none is not scanned again."""
+    there was one. A run seen before to hold none is not scanned again, nor
+    one that grew by a text from such a run without a copy across its new
+    boundary (a turn's run of unanswered messages)."""
     key = "\x00".join(texts)
     if key in _KNOWN_UNSPLIT:
+        return False
+    if _grew_clean(texts):
+        _KNOWN_UNSPLIT.add(key)
         return False
     cut = False
     # A cut leaves the replacement before the boundary it crossed, which no
@@ -229,6 +235,65 @@ def _cut_texts(texts: list[str]) -> bool:
     if not cut:
         _KNOWN_UNSPLIT.add(key)
     return cut
+
+
+def _grew_clean(texts: list[str]) -> bool:
+    """Whether *texts* hold no split copy, read from the run without its last
+    text, seen before to hold none: a copy over two or more of *texts* then
+    runs across the last boundary, which alone is scanned."""
+    if len(texts) < 3 or "\x00".join(texts[:-1]) not in _KNOWN_UNSPLIT:
+        return False
+    merged = _MERGED.join(texts)
+    last = len(merged) - len(texts[-1])
+    start = _past_letters(merged, last - len(_MERGED), -1)
+    end = _past_letters(merged, last, 1)
+    return not _copy_across(merged[start:end], last - start)
+
+
+@functools.cache
+def _window_letters() -> int:
+    """How many characters other than spacing, markup or punctuation a copy
+    holds at most, with room to spare: the longest mark's letters, each
+    read as one character at most, its brackets and its closing marks."""
+    phrases = [*_MARKS, *_SHORT_MARKS, TURN_NOTES_HEADER]
+    return 2 * max(len(re.findall(r"[\w']", phrase)) for phrase in phrases) + 16
+
+
+@functools.cache
+def _filler() -> re.Pattern[str]:
+    """One character a copy may hold any number of: between words, inside a
+    word, after the last (spacing, invisible and combining characters,
+    markup, the marks' own punctuation)."""
+    phrases = [*_MARKS, *_SHORT_MARKS, TURN_NOTES_HEADER]
+    marks = re.escape("".join(sorted(set(re.findall(r"[^\w\s'\[\]]", "".join(phrases))))))
+    return re.compile(phrase_space(marks))
+
+
+def _past_letters(text: str, at: int, step: int) -> int:
+    """Where a window of *text* from *at* ends, going by *step* (-1, 1): past
+    :func:`_window_letters` characters a copy counts, however many it may
+    hold beside them, so no copy that reaches *at* runs out of it."""
+    filler, left = _filler(), _window_letters()
+    position = at
+    while left and (position > 0 if step < 0 else position < len(text)):
+        char = position - 1 if step < 0 else position
+        if not filler.fullmatch(text, char, char + 1):
+            left -= 1
+        position += step
+    return position
+
+
+def _copy_across(window: str, boundary: int) -> bool:
+    """Whether a copy of a mark, or of the notes' header, in *window* starts
+    before *boundary* and ends after it: every match is tried, overlapping
+    ones included, so none hides another."""
+    for pattern in (_copies(), header_copies()):
+        position = 0
+        while (found := pattern.search(window, position)) is not None and found.start() < boundary:
+            if found.end() > boundary:
+                return True
+            position = found.start() + 1
+    return False
 
 
 def _texts(message: AIMessage) -> list[tuple[int | None, str]]:
