@@ -26,6 +26,7 @@ from roomkit.orchestration.handoff import (
     HANDOFF_TOOL_NAME,
     HandoffHandler,
     build_handoff_tool,
+    realtime_prompt,
 )
 from roomkit.orchestration.state import get_conversation_state
 from roomkit.tools.context import _current_turn_chain_depth, current_tool_room_id
@@ -155,23 +156,13 @@ class RealtimePipeline:
 
     def _prompt_for(self, agent_id: str, room: Room) -> str | None:
         """*agent_id*'s prompt in *room*, its identity in the room's language."""
-        prompt = self.agent_configs[agent_id]["system_prompt"]
-        lang = self._handler.get_room_language(room, agent_id)
-        agent = self._agent_map.get(agent_id)
-        if lang and agent is not None:
-            base = getattr(agent, "system_prompt", None) or ""
-            identity = agent.build_identity_block(language=lang)
-            prompt = (base + identity) if identity else prompt
-        return prompt
+        language = self._handler.get_room_language(room, agent_id)
+        return realtime_prompt(self._agent_map[agent_id], language)
 
     def _agent_config(self, agent: Agent, stages: list[PipelineStage]) -> dict[str, Any]:
         """The prompt, voice and handoff tool *agent*'s sessions run with."""
-        prompt = agent.system_prompt or ""
-        identity = agent.build_identity_block()
-        if identity:
-            prompt = prompt + identity
         return {
-            "system_prompt": prompt or None,
+            "system_prompt": realtime_prompt(agent),
             "voice": agent.voice,
             "handoff": self._handoff_tool(agent, stages),
         }

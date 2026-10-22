@@ -230,7 +230,6 @@ class HandoffHandler:
         # Populated by pipeline.install() from Agent fields
         self._greeting_map: dict[str, str] = {}
         self._agents: dict[str, Any] = {}  # agent_id -> Agent
-        self._agent_configs: dict[str, dict[str, Any]] = {}  # for realtime reconfigure
 
     @property
     def greeting_map(self) -> dict[str, str]:
@@ -615,7 +614,10 @@ class HandoffHandler:
 
         if channel is None or agent is None:
             return
-        prompt = _language_prompt(agent, language)
+        # Nothing to set (no prompt, no identity) keeps the session's own.
+        prompt = realtime_prompt(agent, language)
+        if prompt is None:
+            return
         for session in channel.get_room_sessions(room_id):
             await channel.reconfigure_session(session, system_prompt=prompt)
         logger.info(
@@ -644,11 +646,12 @@ class HandoffHandler:
         return self._aliases.get(target, target)
 
 
-def _language_prompt(agent: Agent, language: str) -> str:
-    """*agent*'s prompt with its identity block in *language*."""
-    prompt = agent.system_prompt or ""
-    identity = agent.build_identity_block(language=language)
-    return prompt + identity if identity else prompt
+def realtime_prompt(agent: Agent, language: str | None = None) -> str | None:
+    """*agent*'s realtime session prompt, its identity block in *language*
+    (else its own): ``None`` when it has neither a prompt nor an identity, so
+    a session keeps the prompt it has (RFC §19.6)."""
+    prompt = (agent.system_prompt or "") + (agent.build_identity_block(language=language) or "")
+    return prompt or None
 
 
 # -- HandoffMemoryProvider ----------------------------------------------------

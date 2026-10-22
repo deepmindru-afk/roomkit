@@ -313,6 +313,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each attach, for turns it never runs. A channel the kit holds by its
   declaration alone still reaches every executor that declares it.
 
+- `HandoffHandler.set_language()` no longer empties a realtime session's
+  prompt for an agent with no `system_prompt` and no identity block
+  (`identity_in_prompt=False`) (RMK-872). It sent `system_prompt=""`, which
+  wiped the session's prompt, the channel's included, where a session's start
+  and a handoff kept it. One function now builds an agent's realtime prompt
+  for all three, and sets nothing when there is nothing to set.
+
 - An answer a barge-in cut reads, in the AI context, with how far the person
   heard it (RFC §6.4): `[The person cut you off during this answer, 5.7 s in:
   they heard it up to “…” and not the rest.]`, where it read "[You were

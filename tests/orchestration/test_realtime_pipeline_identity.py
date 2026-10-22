@@ -45,3 +45,12 @@ def test_without_the_opt_out_the_block_is_written_on_both() -> None:
 
     assert "--- Agent Identity ---" in pipeline.agent_configs["triage"]["system_prompt"]
     assert "Always respond in French" in (pipeline._prompt_for("triage", Room(id="r1")) or "")
+
+
+def test_an_agent_with_nothing_to_set_keeps_the_session_prompt_on_both() -> None:
+    """RMK-872: no prompt and no identity block: nothing is set at the install
+    nor in a language, so the session keeps its own (the channel's)."""
+    pipeline = _pipeline(Agent("triage", role="Triage", identity_in_prompt=False))
+
+    assert pipeline.agent_configs["triage"]["system_prompt"] is None
+    assert pipeline._prompt_for("triage", Room(id="r1")) is None

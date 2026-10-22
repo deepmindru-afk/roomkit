@@ -1025,6 +1025,34 @@ class TestSetLanguage:
         prompt = mock_rtv.reconfigure_session.call_args[1]["system_prompt"]
         assert prompt == "Route the caller."
 
+    async def test_set_language_keeps_the_session_prompt_when_there_is_nothing_to_set(self):
+        """RMK-872: an agent with no prompt and no identity block leaves the
+        session's prompt (the channel's included) as it is, never empties it."""
+        room = Room(id="r1")
+        room = set_conversation_state(
+            room, ConversationState(phase="intake", active_agent_id="agent-triage")
+        )
+        kit = _make_mock_kit(room, [])
+
+        from roomkit.channels.agent import Agent
+        from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+
+        mock_rtv = MagicMock()
+        mock_rtv.__class__ = RealtimeVoiceChannel
+        mock_rtv.get_room_sessions.return_value = [MagicMock()]
+        mock_rtv.reconfigure_session = AsyncMock()
+        kit.channels = {"voice": mock_rtv}
+
+        agent = Agent("agent-triage", role="Triage", identity_in_prompt=False)
+        handler = HandoffHandler(kit=kit, router=MagicMock(), event_channel_id="voice")
+        handler.agents = {"agent-triage": agent}
+
+        await handler.set_language("r1", "French", channel_id="voice")
+
+        mock_rtv.reconfigure_session.assert_not_called()
+        state = get_conversation_state(kit.store.update_room.call_args[0][0])
+        assert state.context["language"] == "French"
+
 
 class TestSendGreetingOnARealKit:
     async def test_the_greeting_is_the_agents_line_in_the_room(self):
