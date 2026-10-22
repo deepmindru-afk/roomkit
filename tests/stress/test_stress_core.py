@@ -145,4 +145,4 @@ class TestLongConversationTransientState:
         if kit._pending_hook_tasks:
             await asyncio.gather(*kit._pending_hook_tasks, return_exceptions=True)
         assert not kit._pending_hook_tasks
-        assert kit._lock_manager.size <= 1024  # InMemoryLockManager LRU cap
+        assert kit.lock_manager.size <= 1024  # InMemoryLockManager LRU cap

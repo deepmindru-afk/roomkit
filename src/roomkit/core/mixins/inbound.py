@@ -17,6 +17,7 @@ from roomkit.core.inbound_router import (
     recordable_sender,
     sender_known_as,
 )
+from roomkit.core.locks import collecting_release_failures, failed_release
 from roomkit.core.mixins.channel_ops import is_channel_detached
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.core.mixins.inbound_identity import _IdentityBlockedError
@@ -306,9 +307,14 @@ class InboundMixin(HelpersMixin):
     ) -> InboundResult:
         """Inner inbound processing (extracted for telemetry wrapping), its
         delivery named by the message's key from the call's start (RFC
-        §10.1): nothing awaited before this point."""
-        with self._delivery_keys.naming(message.delivery_key, organization_id) as named:
-            return await self._route_and_deliver(
+        §10.1): nothing awaited before this point. A failed release of the
+        room lock is the result's error when no earlier error was met
+        (§13.5)."""
+        with (
+            self._delivery_keys.naming(message.delivery_key, organization_id) as named,
+            collecting_release_failures() as failed_releases,
+        ):
+            result = await self._route_and_deliver(
                 message,
                 channel,
                 room_id,
@@ -318,6 +324,10 @@ class InboundMixin(HelpersMixin):
                 named,
                 organization_id=organization_id,
             )
+        if result.error is None and failed_releases:
+            # In place: a detached delivery's handle holds this result.
+            result.error = failed_releases[0]
+        return result
 
     async def _route_and_deliver(
         self,
@@ -555,6 +565,10 @@ class InboundMixin(HelpersMixin):
                 precheck=precheck,
             )
             self._name_held(named, result)
+        if result.error is None:
+            # The lock's release comes before anything the delivery set
+            # meets, so its failure is the earlier error (RFC §13.5).
+            result.error = failed_release()
 
         if defer_delivery:
             # Every result that reached this locked region gets a handle — a

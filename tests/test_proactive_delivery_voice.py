@@ -122,7 +122,7 @@ async def test_intelligence_address_never_becomes_direct_voice_injection(address
         assert first.status == ("unavailable" if address else "sent")
         assert replay.duplicate and first.event_id == replay.event_id
         assert provider.injected_texts == []
-        event = await kit.store.get_event_by_idempotency_key("r", "k")
+        event = await kit.store.get_event_by_idempotency_key("r", "k", channel_id="voice")
         assert event.addressed_to == address
 
 

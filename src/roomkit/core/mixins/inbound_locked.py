@@ -448,11 +448,12 @@ class InboundLockedMixin(HelpersMixin):
         # §13.4) — the caller retried because it never saw that answer, and a
         # refusal does not tell it the message was in fact accepted. A store
         # that cannot resolve the key still reports the duplicate as blocked.
+        # A key is unique per room and per source channel (RFC §13.4).
         if event.idempotency_key and await self._store.check_idempotency(
-            room_id, event.idempotency_key
+            room_id, event.idempotency_key, channel_id=event.source.channel_id
         ):
             original = await self._store.get_event_by_idempotency_key(
-                room_id, event.idempotency_key
+                room_id, event.idempotency_key, channel_id=event.source.channel_id
             )
             logger.info(
                 "Duplicate event %s",
@@ -463,6 +464,12 @@ class InboundLockedMixin(HelpersMixin):
                     "original_event_id": original.id if original is not None else None,
                 },
             )
+            if original is not None and original.status == EventStatus.BLOCKED:
+                # The first delivery was refused: so is its replay, with the
+                # record and the reason it was stored with (RFC §13.4).
+                return InboundResult(
+                    event=original, blocked=True, reason=original.blocked_by, duplicate=True
+                )
             if original is not None:
                 return InboundResult(event=original, duplicate=True)
             return InboundResult(blocked=True, reason="duplicate", duplicate=True)

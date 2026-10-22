@@ -1132,21 +1132,27 @@ class PostgresStore(ConversationStore):
             for row in rows
         }
 
-    async def check_idempotency(self, room_id: str, key: str) -> bool:
+    async def check_idempotency(self, room_id: str, key: str, *, channel_id: str) -> bool:
         async with self._acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT 1 FROM events WHERE room_id = $1 AND idempotency_key = $2",
+                "SELECT 1 FROM events WHERE room_id = $1 AND source_channel_id = $2"
+                " AND idempotency_key = $3",
                 room_id,
+                channel_id,
                 key,
             )
         return row is not None
 
-    async def get_event_by_idempotency_key(self, room_id: str, key: str) -> RoomEvent | None:
+    async def get_event_by_idempotency_key(
+        self, room_id: str, key: str, *, channel_id: str
+    ) -> RoomEvent | None:
         with self._query_span("get_event_by_idempotency_key", "events"):
             async with self._acquire() as conn:
                 row = await conn.fetchrow(
-                    "SELECT * FROM events WHERE room_id = $1 AND idempotency_key = $2",
+                    "SELECT * FROM events WHERE room_id = $1 AND source_channel_id = $2"
+                    " AND idempotency_key = $3",
                     room_id,
+                    channel_id,
                     key,
                 )
         return _row_to_event(row) if row is not None else None

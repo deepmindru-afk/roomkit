@@ -226,8 +226,13 @@ CREATE INDEX IF NOT EXISTS idx_events_source ON events(source_channel_id);
 -- A request's answers: the events of a room that answer a given event.
 CREATE INDEX IF NOT EXISTS idx_events_room_responds_to
     ON events(room_id, responds_to) WHERE responds_to IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency
-    ON events(room_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+-- An idempotency key is unique per room and per source channel (RFC §13.4):
+-- the per-room index gives way to one that names the channel. Keys unique
+-- per room are unique per room and channel, so the new index always builds.
+DROP INDEX IF EXISTS idx_events_idempotency;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency_channel
+    ON events(room_id, source_channel_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
 
 -- Per-room high-water marks make indexes monotonic even when the latest
 -- event is deleted. The UPSERT is an additive backfill for deployments that

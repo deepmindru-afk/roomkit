@@ -50,10 +50,6 @@ class RespondingChannel(Channel):
     channel_type = ChannelType.AI
     category = ChannelCategory.INTELLIGENCE
 
-    def __init__(self, channel_id: str, chain_depth: int = 0) -> None:
-        super().__init__(channel_id)
-        self._chain_depth = chain_depth
-
     async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
         raise NotImplementedError
 
@@ -64,7 +60,6 @@ class RespondingChannel(Channel):
             channel_id=self.channel_id,
             channel_type=ChannelType.AI,
             body="AI response",
-            chain_depth=self._chain_depth,
         )
         return ChannelOutput(responded=True, response_events=[resp])
 
@@ -341,7 +336,7 @@ class TestTranscoding:
 class TestChainDepth:
     async def test_response_within_limit(self) -> None:
         ch1 = StubChannel("ch1")
-        ch2 = RespondingChannel("ch2", chain_depth=1)
+        ch2 = RespondingChannel("ch2")
         router = _make_router({"ch1": ch1, "ch2": ch2}, max_chain_depth=5)
 
         b1 = make_binding("ch1")
@@ -352,13 +347,14 @@ class TestChainDepth:
             category=ChannelCategory.INTELLIGENCE,
         )
 
-        event = make_event(channel_id="ch1")
+        # The response is written at its trigger's depth plus one (RFC §8.5).
+        event = make_event(channel_id="ch1", chain_depth=3)
         result = await router.broadcast(event, b1, _make_context([b1, b2]))
         assert len(result.reentry_events) == 1
 
     async def test_response_exceeding_limit_dropped(self) -> None:
         ch1 = StubChannel("ch1")
-        ch2 = RespondingChannel("ch2", chain_depth=5)
+        ch2 = RespondingChannel("ch2")
         router = _make_router({"ch1": ch1, "ch2": ch2}, max_chain_depth=5)
 
         b1 = make_binding("ch1")
@@ -369,7 +365,7 @@ class TestChainDepth:
             category=ChannelCategory.INTELLIGENCE,
         )
 
-        event = make_event(channel_id="ch1")
+        event = make_event(channel_id="ch1", chain_depth=4)
         result = await router.broadcast(event, b1, _make_context([b1, b2]))
         assert len(result.reentry_events) == 0
 

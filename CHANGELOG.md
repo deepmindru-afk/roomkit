@@ -139,6 +139,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handed the cancellation back. The console's `/cancel` joins it the same
   way; a task that ended otherwise is answered as it ended, at once.
 
+- A failed release of the room lock changes nothing the locked section did
+  (RFC §13.5, RMK-902): the event it committed stays committed and delivered,
+  a refusal stays a refusal, and the next section asks the lock manager for
+  the lock again. The release error was raised from the operation, so a
+  sender whose message had been committed read a failure and retried.
+  It is logged as a warning (`roomkit.locks`), and `process_inbound` and
+  `regenerate_response` return it as the result's `error` when no earlier
+  error was met; an error raised inside the section stays the one raised.
+  `kit.lock_manager` is still the manager given.
+
+- A redelivered message the room blocked is answered blocked (RFC §13.4,
+  RMK-902): `blocked=True`, the record stored `BLOCKED` as its event, the
+  record's `blocked_by` as its reason, and `duplicate=True`. It was answered
+  with the record as if delivered, `blocked=False`.
+
 - A location delivered as text with neither a label nor an address reads
   `[Location: (45.5, -73.6)]` (RFC §6.6, RMK-902); it read with two spaces.
 
@@ -348,6 +363,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   named as the room's record names them (a nameless one by their channel,
   `@sms1`, rather than their id; a look-alike name with its rank). See
   `examples/ai_people_taking_part.py`.
+
+- **BREAKING — the pipeline writes who a response comes from** (RFC §8.5,
+  RMK-902): each response a channel returns is committed as its responder's,
+  the responder's channel id and type with direction OUTBOUND, in the
+  trigger's room, at the trigger's chain depth plus one, answering the trigger
+  unless it names the event it answers, and with no idempotency key. A
+  response claiming another source is committed as its responder's, keeping
+  nothing of the claimed one (participant, provider ids, verification), with
+  a warning: it was write-checked against the claimed channel's binding. A
+  streamed answer, the event a streaming target renders it under, and the
+  stand-in for an answer a guard stopped travel OUTBOUND; they read INBOUND.
+
+- **BREAKING — an idempotency key is unique per room and per source
+  channel** (RFC §13.4, RMK-902): two channels of one room sending one key for
+  two messages are both processed, where the second was answered as a replay
+  of the first. `ConversationStore.check_idempotency()` and
+  `get_event_by_idempotency_key()` take a keyword-only `channel_id`, which a
+  custom store must accept. At its first start, SQLiteStore (schema 8) scopes
+  the keys it recorded to their event's source channel, and PostgresStore
+  replaces its unique index `idx_events_idempotency` with
+  `idx_events_idempotency_channel`. An older worker recreates the per-room
+  index, so every worker sharing a store must run this version before one of
+  them starts against it.
 
 - **BREAKING — a hook's name is unique within its scope** (RFC §9.1,
   RMK-902), the kit's hooks or one room's: registering an explicit name a

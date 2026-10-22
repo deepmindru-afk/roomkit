@@ -818,7 +818,7 @@ class ConferenceChannel(
         self._voice.set_framework(framework)
         self._realtime.set_framework(framework)
         self._roster.set_store(
-            framework.store, framework.lock_manager, lease=framework._resource_lease
+            framework.store, framework._lock_manager, lease=framework._resource_lease
         )
         self._identity.set_framework(framework)
         self._recording_events.set_framework(framework)
@@ -1004,7 +1004,7 @@ class ConferenceChannel(
         """
         if self._framework is None:
             return contextlib.nullcontext()
-        return self._framework.lock_manager.locked(room_id)
+        return self._framework._lock_manager.locked(room_id)
 
     def _resource_lease(self) -> AbstractContextManager[None]:
         """The framework's lease on the store and the room lock, or nothing.

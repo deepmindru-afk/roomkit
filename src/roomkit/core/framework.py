@@ -52,7 +52,11 @@ from roomkit.core.hooks import (
 )
 from roomkit.core.inbound_router import DefaultInboundRoomRouter, InboundRoomRouter
 from roomkit.core.lanes import DeliveryCascade
-from roomkit.core.locks import InMemoryLockManager, RoomLockManager
+from roomkit.core.locks import (
+    InMemoryLockManager,
+    ReleaseTolerantLockManager,
+    RoomLockManager,
+)
 from roomkit.core.mixins import (
     BackgroundMixin,
     ChannelOpsMixin,
@@ -364,7 +368,9 @@ class RoomKit(
         # executor's (RFC §10.6.6).
         self._kit_turn_hooks = KitTurnHooks(self._turn_hooks, self._channels)
         self._hook_engine.turn_side = self._kit_turn_hooks
-        self._lock_manager = lock_manager or InMemoryLockManager()
+        self._given_lock_manager = lock_manager or InMemoryLockManager()
+        # A failed release never undoes a locked section (RFC §13.5).
+        self._lock_manager = ReleaseTolerantLockManager(self._given_lock_manager)
         # Admission tickets for off-lock BEFORE_BROADCAST checks (RFC §9.5.1).
         self._admission = RoomAdmission(self._hook_engine, self._lock_manager, self._build_context)
         # A persistent store paired with an in-process lock is unsafe if the
@@ -372,7 +378,7 @@ class RoomKit(
         # the full inbound pipeline, its idempotency decisions or the room's
         # register of authors (RFC §10.1 step 12, §13.5).
         if not self._store.is_process_local and isinstance(
-            self._lock_manager, InMemoryLockManager
+            self._given_lock_manager, InMemoryLockManager
         ):
             logger.warning(
                 "%s is paired with InMemoryLockManager. This is safe only in a "
@@ -681,7 +687,7 @@ class RoomKit(
     @property
     def lock_manager(self) -> RoomLockManager:
         """The per-room lock manager."""
-        return self._lock_manager
+        return self._given_lock_manager
 
     @property
     def status_bus(self) -> StatusBus:

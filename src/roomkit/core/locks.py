@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
+
+logger = logging.getLogger("roomkit.locks")
 
 # ContextVar tracking which rooms the current execution context holds locks
 # for.  asyncio.gather() copies the parent context to child tasks, so
@@ -32,6 +35,8 @@ _held_leases: contextvars.ContextVar[tuple[_LockLease, ...]] = contextvars.Conte
 
 def _has_room_lock(room_id: str, manager: RoomLockManager | None = None) -> bool:
     """Inherited context grants reentrancy only while its acquisition is live."""
+    if isinstance(manager, ReleaseTolerantLockManager):
+        manager = manager.inner
     return room_id in _held_rooms.get() and any(
         lease.active and lease.room_id == room_id and (manager is None or lease.manager is manager)
         for lease in _held_leases.get()
@@ -162,3 +167,70 @@ class InMemoryLockManager(RoomLockManager):
     def size(self) -> int:
         """Return the number of locks currently held."""
         return len(self._locks)
+
+
+# The failed releases met by the operation that set the list (RFC §13.5).
+_release_failures: contextvars.ContextVar[list[Exception] | None] = contextvars.ContextVar(
+    "_room_lock_release_failures", default=None
+)
+
+
+@contextmanager
+def collecting_release_failures() -> Generator[list[Exception], None, None]:
+    """Collect the failed releases of the room locks taken within, so that
+    the operation can report them (RFC §13.5)."""
+    failures: list[Exception] = []
+    token = _release_failures.set(failures)
+    try:
+        yield failures
+    finally:
+        _release_failures.reset(token)
+
+
+def failed_release() -> Exception | None:
+    """The first failed release the collecting operation met so far, if any."""
+    failures = _release_failures.get()
+    return failures[0] if failures else None
+
+
+class ReleaseTolerantLockManager(RoomLockManager):
+    """The kit's hold on a lock manager: a release that fails changes
+    nothing the locked section decided or wrote (RFC §13.5).
+
+    The failure is logged and handed to the operation collecting it, never
+    raised: an event committed stays committed, a refusal stays a refusal.
+    A failure met inside the section stays the one raised. What a failed
+    release leaves behind is the wrapped manager's to recover; the next
+    section asks it for the lock again.
+    """
+
+    def __init__(self, inner: RoomLockManager) -> None:
+        self.inner = inner
+
+    @asynccontextmanager
+    async def locked(self, room_id: str) -> AsyncGenerator[None, None]:
+        lock = self.inner.locked(room_id)
+        await lock.__aenter__()
+        try:
+            yield
+        except BaseException as exc:
+            try:
+                await lock.__aexit__(type(exc), exc, exc.__traceback__)
+            except BaseException as release_error:
+                if release_error is not exc:
+                    _log_failed_release(room_id, release_error)
+            raise
+        try:
+            await lock.__aexit__(None, None, None)
+        except Exception as release_error:
+            _log_failed_release(room_id, release_error)
+            failures = _release_failures.get()
+            if failures is not None:
+                failures.append(release_error)
+
+    async def close(self) -> None:
+        await self.inner.close()
+
+
+def _log_failed_release(room_id: str, error: BaseException) -> None:
+    logger.warning("Releasing the lock of room %s failed: %r", room_id, error)

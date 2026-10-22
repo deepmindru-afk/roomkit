@@ -302,7 +302,7 @@ class HandoffHandler:
         rejected_result: HandoffResult | None = None
         new_phase: str = "handling"
         new_agent: str | None = None
-        async with self._kit.lock_manager.locked(room_id):
+        async with self._kit._lock_manager.locked(room_id):
             room = await self._kit.get_room(room_id)
             bindings = await self._kit.store.list_bindings(room_id)
             target_binding = None
@@ -601,7 +601,7 @@ class HandoffHandler:
                 written.
         """
         channel = self._realtime_channel(channel_id or self._event_channel_id)
-        async with self._kit.lock_manager.locked(room_id):
+        async with self._kit._lock_manager.locked(room_id):
             room = await self._kit.get_room(room_id)
             state = get_conversation_state(room)
             agent = self._agents.get(state.active_agent_id or "")

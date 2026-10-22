@@ -25,6 +25,7 @@ from roomkit.models.enums import (
     AgentResponsePolicy,
     ChannelCategory,
     ChannelMediaType,
+    EventDirection,
     EventStatus,
     EventType,
     Visibility,
@@ -113,7 +114,10 @@ def unanswered(trigger: RoomEvent, channel_id: str, channel_type: Any) -> RoomEv
     """
     return RoomEvent(
         room_id=trigger.room_id,
-        source=EventSource(channel_id=channel_id, channel_type=channel_type),
+        # Travelling outbound, as the answer it stands in for would (RFC §8.3).
+        source=EventSource(
+            channel_id=channel_id, channel_type=channel_type, direction=EventDirection.OUTBOUND
+        ),
         content=TextContent(body=""),
         chain_depth=trigger.chain_depth + 1,
         visibility=trigger.response_visibility or Visibility.ALL,
@@ -153,17 +157,50 @@ def _cut_content(content: EventContent, max_length: int) -> EventContent:
     return content
 
 
-def _answering(responses: list[RoomEvent], trigger: RoomEvent) -> list[RoomEvent]:
-    """*responses*, each with an id the pipeline gives (RFC §8.1) and naming
-    *trigger* as the event it answers when it named none."""
-    return [
-        with_pipeline_id(
-            resp
-            if resp.responds_to is not None
-            else resp.model_copy(update={"responds_to": trigger.id})
+def _answering(
+    responses: list[RoomEvent], trigger: RoomEvent, responder: ChannelBinding
+) -> list[RoomEvent]:
+    """*responses* as the pipeline commits them (RFC §8.5): each one its
+    responder's, travelling outbound, in the trigger's room at the next
+    depth, answering *trigger* unless it named the event it answers, under an
+    id the pipeline gives (§8.1) and with no idempotency key (§13.4)."""
+    return [_as_response(resp, trigger, responder) for resp in responses]
+
+
+def _as_response(resp: RoomEvent, trigger: RoomEvent, responder: ChannelBinding) -> RoomEvent:
+    """One response of *responder* to *trigger*, as :func:`_answering` writes it."""
+    source = resp.source.model_copy(
+        update={
+            "channel_id": responder.channel_id,
+            "channel_type": responder.channel_type,
+            "direction": EventDirection.OUTBOUND,
+        }
+    )
+    if resp.source.channel_id != responder.channel_id:
+        logger.warning(
+            "Channel %s returned a response under another source, %s: it is its own",
+            responder.channel_id,
+            resp.source.channel_id,
+            extra={"room_id": trigger.room_id, "channel_id": responder.channel_id},
         )
-        for resp in responses
-    ]
+        # Nothing of the claimed source is kept: not its participant, nor
+        # its provider's ids, nor its verification.
+        source = EventSource(
+            channel_id=responder.channel_id,
+            channel_type=responder.channel_type,
+            direction=EventDirection.OUTBOUND,
+        )
+    return with_pipeline_id(
+        resp.model_copy(
+            update={
+                "source": source,
+                "room_id": trigger.room_id,
+                "chain_depth": trigger.chain_depth + 1,
+                "responds_to": resp.responds_to or trigger.id,
+                "idempotency_key": None,
+            }
+        )
+    )
 
 
 def chain_depth_exceeded(blocked: RoomEvent, max_chain_depth: int) -> Observation:
@@ -654,7 +691,7 @@ class EventRouter:
                     # A buffered answer names the event it answers (RFC §8.5),
                     # unless its channel named one itself; written back so every
                     # reader of the output (a delegated turn's) sees it.
-                    output.response_events = _answering(output.response_events, event)
+                    output.response_events = _answering(output.response_events, event, binding)
                     limit = plan.max_chain_depth or self._max_chain_depth
                     for resp in output.response_events:
                         if resp.chain_depth < limit:

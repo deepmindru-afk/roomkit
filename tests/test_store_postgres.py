@@ -273,8 +273,10 @@ class TestEventOperations:
         await store.create_room(Room(id="r1"))
         event = _make_event(room_id="r1", idempotency_key="key1")
         await store.add_event(event)
-        assert await store.check_idempotency("r1", "key1") is True
-        assert await store.check_idempotency("r1", "key2") is False
+        assert await store.check_idempotency("r1", "key1", channel_id="ch1") is True
+        assert await store.check_idempotency("r1", "key2", channel_id="ch1") is False
+        # A key is unique per room and per source channel (RFC §13.4).
+        assert await store.check_idempotency("r1", "key1", channel_id="ch2") is False
 
     async def test_event_count(self, store) -> None:
         await store.create_room(Room(id="r1"))

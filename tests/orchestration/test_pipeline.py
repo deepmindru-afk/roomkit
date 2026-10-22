@@ -1084,8 +1084,8 @@ class TestRealtimeInstall:
         kit.store.update_room = AsyncMock()
         kit.send_event = AsyncMock()
         kit.hook_engine.run_async_hooks = AsyncMock()
-        kit.lock_manager = MagicMock()
-        kit.lock_manager.locked = MagicMock(return_value=_NoopLock())
+        kit._lock_manager = MagicMock()
+        kit._lock_manager.locked = MagicMock(return_value=_NoopLock())
 
         pipeline.install(kit, [triage, advisor], voice_channel_id="rtv")
 
@@ -1149,8 +1149,8 @@ class TestRealtimeInstall:
         kit.store.update_room = AsyncMock()
         kit.send_event = AsyncMock()
         kit.hook_engine.run_async_hooks = AsyncMock()
-        kit.lock_manager = MagicMock()
-        kit.lock_manager.locked = MagicMock(return_value=_NoopLock())
+        kit._lock_manager = MagicMock()
+        kit._lock_manager.locked = MagicMock(return_value=_NoopLock())
 
         _, handler = pipeline.install(
             kit,
@@ -1211,8 +1211,8 @@ class TestRealtimeInstall:
         kit.store.update_room = AsyncMock()
         kit.send_event = AsyncMock()
         kit.hook_engine.run_async_hooks = AsyncMock()
-        kit.lock_manager = MagicMock()
-        kit.lock_manager.locked = MagicMock(return_value=_NoopLock())
+        kit._lock_manager = MagicMock()
+        kit._lock_manager.locked = MagicMock(return_value=_NoopLock())
 
         pipeline.install(
             kit,
@@ -1270,8 +1270,8 @@ class TestRealtimeInstall:
         kit.store.update_room = AsyncMock()
         kit.send_event = AsyncMock()
         kit.hook_engine.run_async_hooks = AsyncMock()
-        kit.lock_manager = MagicMock()
-        kit.lock_manager.locked = MagicMock(return_value=_NoopLock())
+        kit._lock_manager = MagicMock()
+        kit._lock_manager.locked = MagicMock(return_value=_NoopLock())
 
         pipeline.install(kit, [triage, advisor], voice_channel_id="rtv", greet_on_handoff=True)
         session = await rtv.start_session("r1", "user1", object())

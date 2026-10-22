@@ -456,12 +456,17 @@ class ConversationStore(ABC):
         ...
 
     @abstractmethod
-    async def check_idempotency(self, room_id: str, key: str) -> bool:
-        """Check if an idempotency key has been seen. Returns ``True`` if duplicate."""
+    async def check_idempotency(self, room_id: str, key: str, *, channel_id: str) -> bool:
+        """Whether *channel_id* already committed *key* in the room: a key is
+        unique per room and per source channel (RFC §13.4). ``True`` if
+        duplicate."""
         ...
 
-    async def get_event_by_idempotency_key(self, room_id: str, key: str) -> RoomEvent | None:
-        """The event a previously-seen idempotency key committed (RFC §13.4).
+    async def get_event_by_idempotency_key(
+        self, room_id: str, key: str, *, channel_id: str
+    ) -> RoomEvent | None:
+        """The event *channel_id* committed with a previously-seen idempotency
+        key in the room (RFC §13.4).
 
         A redelivered message must observe what its first delivery did, not a
         refusal — a webhook that retries because it never saw the first

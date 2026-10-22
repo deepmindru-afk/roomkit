@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT
 from roomkit.core.exceptions import RoomClosedError
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan, anchor_index
+from roomkit.core.locks import collecting_release_failures, failed_release
 from roomkit.core.mixins.helpers import _REFUSING_STATUSES, HelpersMixin
 from roomkit.core.visibility import intersect_visibility
 from roomkit.models.delivery import InboundResult
@@ -218,6 +219,17 @@ class RegenerateMixin(HelpersMixin):
         discussion = self._discussions.get(room_id)
         if discussion is not None:
             return await self._regenerate_in_discussion(discussion, room_id, trigger_id)
+        with collecting_release_failures() as failed_releases:
+            result = await self._regenerate_alone(room_id, trigger_id)
+        if result is not None and result.error is None and failed_releases:
+            # A failed release of the room lock, as on the inbound path (RFC §13.5).
+            result.error = failed_releases[0]
+        return result
+
+    async def _regenerate_alone(
+        self, room_id: str, trigger_id: str | None
+    ) -> InboundResult | None:
+        """A regenerate in a room no discussion holds."""
         cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
         try:
             planned = await self._plan_regeneration(room_id, trigger_id, cascade)
@@ -412,7 +424,9 @@ class RegenerateMixin(HelpersMixin):
         stream_error, stream_meta = await self._finish_cascade(cascade, room_id, caller_logs=True)
         if plan.refusal is not None:
             return plan.refusal
-        result = InboundResult(event=trigger)
+        # A failed release of the planning lock is met before the cascade's
+        # errors (RFC §13.5).
+        result = InboundResult(event=trigger, error=failed_release())
         result.report_cascade(cascade)
         if stream_error is not None and result.error is None:
             result.error = stream_error

@@ -110,8 +110,8 @@ def _make_mock_kit(room: Room, bindings: list[ChannelBinding] | None = None) -> 
     kit.hook_engine = MagicMock()
     kit.hook_engine.add_room_hook = MagicMock()
     kit.hook_engine.run_async_hooks = AsyncMock()
-    kit.lock_manager = MagicMock()
-    kit.lock_manager.locked = MagicMock(return_value=_NoopLock())
+    kit._lock_manager = MagicMock()
+    kit._lock_manager.locked = MagicMock(return_value=_NoopLock())
     kit.channels = {}
     kit.register_channel = MagicMock()
     # The kit keeps the tools the install sets up for an agent (RFC §10.6.2).

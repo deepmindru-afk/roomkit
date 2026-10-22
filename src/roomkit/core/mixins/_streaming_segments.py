@@ -14,7 +14,7 @@ from roomkit.core.event_router import stream_record
 from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT
 from roomkit.core.mixins.inbound_locked import _Blocked
 from roomkit.core.task_utils import cancel_reason
-from roomkit.models.enums import EventStatus, EventType, Visibility
+from roomkit.models.enums import EventDirection, EventStatus, EventType, Visibility
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.response_metadata import recorded_turn_end
 from roomkit.models.streaming import (
@@ -478,6 +478,7 @@ class SegmentWriter:
             source=EventSource(
                 channel_id=self._sr.source_channel_id,
                 channel_type=self._sr.source_channel_type,
+                direction=EventDirection.OUTBOUND,
             ),
             type=event_type,
             content=content,

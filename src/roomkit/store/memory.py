@@ -33,8 +33,9 @@ class InMemoryStore(ConversationStore):
         self._next_event_index: dict[str, int] = {}
         self._bindings: dict[str, dict[str, ChannelBinding]] = {}
         self._participants: dict[str, dict[str, Participant]] = {}
-        # room -> idempotency key -> the event id it committed (RFC §13.4)
-        self._idempotency: dict[str, dict[str, str]] = {}
+        # room -> (source channel, idempotency key) -> the event id it
+        # committed: a key is unique per room and source channel (RFC §13.4)
+        self._idempotency: dict[str, dict[tuple[str, str], str]] = {}
         # room -> channel -> the highest read event index (a high-water mark)
         self._read_markers: dict[str, dict[str, int]] = {}
         self._identities: dict[str, Identity] = {}
@@ -351,7 +352,9 @@ class InMemoryStore(ConversationStore):
             self._next_event_index.get(event.room_id, 0), event.index + 1
         )
         if event.idempotency_key:
-            self._idempotency.setdefault(event.room_id, {})[event.idempotency_key] = event.id
+            self._idempotency.setdefault(event.room_id, {})[
+                (event.source.channel_id, event.idempotency_key)
+            ] = event.id
         return event
 
     async def get_event(self, event_id: str) -> RoomEvent | None:
@@ -384,7 +387,9 @@ class InMemoryStore(ConversationStore):
         for eid in deleted:
             event = self._events.pop(eid, None)
             if event is not None and event.idempotency_key:
-                self._idempotency.get(room_id, {}).pop(event.idempotency_key, None)
+                self._idempotency.get(room_id, {}).pop(
+                    (event.source.channel_id, event.idempotency_key), None
+                )
         room_ids = self._room_events.get(room_id)
         if room_ids is not None:
             gone = set(deleted)
@@ -510,11 +515,13 @@ class InMemoryStore(ConversationStore):
                 summary.last_reply_at = event.created_at
         return summaries
 
-    async def check_idempotency(self, room_id: str, key: str) -> bool:
-        return key in self._idempotency.get(room_id, {})
+    async def check_idempotency(self, room_id: str, key: str, *, channel_id: str) -> bool:
+        return (channel_id, key) in self._idempotency.get(room_id, {})
 
-    async def get_event_by_idempotency_key(self, room_id: str, key: str) -> RoomEvent | None:
-        event_id = self._idempotency.get(room_id, {}).get(key)
+    async def get_event_by_idempotency_key(
+        self, room_id: str, key: str, *, channel_id: str
+    ) -> RoomEvent | None:
+        event_id = self._idempotency.get(room_id, {}).get((channel_id, key))
         return self._events.get(event_id) if event_id is not None else None
 
     async def get_event_count(self, room_id: str, event_filter: EventFilter | None = None) -> int:
@@ -538,7 +545,9 @@ class InMemoryStore(ConversationStore):
             self._events[indexed.id] = indexed
             events.append(indexed.id)
             if indexed.idempotency_key:
-                self._idempotency.setdefault(room_id, {})[indexed.idempotency_key] = indexed.id
+                self._idempotency.setdefault(room_id, {})[
+                    (indexed.source.channel_id, indexed.idempotency_key)
+                ] = indexed.id
             return indexed
 
     async def commit_event(self, room_id: str, event: RoomEvent) -> RoomEvent:
@@ -552,7 +561,9 @@ class InMemoryStore(ConversationStore):
             self._events[indexed.id] = indexed
             events.append(indexed.id)
             if indexed.idempotency_key:
-                self._idempotency.setdefault(room_id, {})[indexed.idempotency_key] = indexed.id
+                self._idempotency.setdefault(room_id, {})[
+                    (indexed.source.channel_id, indexed.idempotency_key)
+                ] = indexed.id
             room = self._rooms.get(room_id)
             if room is not None:
                 timers = room.timers.model_copy(update={"last_activity_at": datetime.now(UTC)})

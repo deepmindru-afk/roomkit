@@ -953,13 +953,13 @@ class TestPostgresStore:
     async def test_check_idempotency_exists(self) -> None:
         store, mock_conn = _make_store_with_pool()
         mock_conn.fetchrow.return_value = {"?column?": 1}
-        result = await store.check_idempotency("room-1", "key-1")
+        result = await store.check_idempotency("room-1", "key-1", channel_id="ch1")
         assert result is True
 
     async def test_check_idempotency_not_exists(self) -> None:
         store, mock_conn = _make_store_with_pool()
         mock_conn.fetchrow.return_value = None
-        result = await store.check_idempotency("room-1", "key-missing")
+        result = await store.check_idempotency("room-1", "key-missing", channel_id="ch1")
         assert result is False
 
     async def test_get_event_count(self) -> None:

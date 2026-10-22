@@ -1299,7 +1299,7 @@ class RealtimeVoiceChannel(
         if self._framework is not None:
             kit = self._framework
             await record_reached(
-                kit.store, kit.lock_manager, room_id, participant_id, self.channel_id
+                kit.store, kit._lock_manager, room_id, participant_id, self.channel_id
             )
         session = VoiceSession(
             id=uuid4().hex,

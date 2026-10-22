@@ -264,6 +264,46 @@ class TestPersistence:
         finally:
             await store.close()
 
+    async def test_v7_database_scopes_its_keys_to_their_source_channel(self, tmp_path) -> None:
+        """A v7 file kept one key per room: the keys it recorded stay found
+        under the channel that sent them, and a second channel may reuse one."""
+        path = tmp_path / "v7.db"
+        store = SQLiteStore(path)
+        await store.create_room(Room(id="r1"))
+        await store.add_event(
+            make_event(room_id="r1", channel_id="sms", body="first", index=0, idempotency_key="k")
+        )
+        await store.close()
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            DROP INDEX idx_events_idempotency_channel;
+            CREATE UNIQUE INDEX idx_events_idempotency
+                ON events(room_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+            DROP TABLE idempotency;
+            CREATE TABLE idempotency(
+                room_id TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY(room_id, key)
+            );
+            INSERT INTO idempotency(room_id, key) VALUES('r1', 'k');
+            PRAGMA user_version=7;
+            """
+        )
+        conn.close()
+
+        store = SQLiteStore(path)
+        try:
+            assert await store.check_idempotency("r1", "k", channel_id="sms")
+            assert not await store.check_idempotency("r1", "k", channel_id="email")
+            await store.add_event(
+                make_event(
+                    room_id="r1", channel_id="email", body="second", index=1, idempotency_key="k"
+                )
+            )
+            found = await store.get_event_by_idempotency_key("r1", "k", channel_id="email")
+            assert found is not None and found.content.body == "second"
+        finally:
+            await store.close()
+
     async def test_two_connections_allocate_one_monotonic_sequence(self, tmp_path) -> None:
         path = tmp_path / "shared.db"
         first = SQLiteStore(path)

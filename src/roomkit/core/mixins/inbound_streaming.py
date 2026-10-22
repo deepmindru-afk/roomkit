@@ -22,6 +22,7 @@ from roomkit.core.visibility import visibility_allows
 from roomkit.models.enums import (
     Access,
     ChannelCategory,
+    EventDirection,
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.response_metadata import (
@@ -253,6 +254,7 @@ class InboundStreamingMixin(HelpersMixin):
             source=EventSource(
                 channel_id=sr.source_channel_id,
                 channel_type=sr.source_channel_type,
+                direction=EventDirection.OUTBOUND,
             ),
             content=TextContent(body=""),
             chain_depth=scope.chain_depth,

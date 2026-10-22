@@ -97,7 +97,7 @@ async def replay_explicit_session(ctx: DeliveryContext) -> DeliveryOutcome | Non
         return None
     record = _record(ctx, ctx.channel_id, ctx.session_id)
     try:
-        async with ctx.kit.lock_manager.locked(_lock_key(record)):
+        async with ctx.kit._lock_manager.locked(_lock_key(record)):
             stored = await ctx.kit.store.get_voice_delivery(ctx.room_id, record.key_hash)
             outcome = _replay(stored, record) if stored is not None else None
             return _aggregate({ctx.session_id: outcome}) if outcome is not None else None
@@ -214,7 +214,7 @@ async def _deliver_session(channel: Any, session: Any, ctx: DeliveryContext) -> 
     record = (
         _record(ctx, channel.channel_id, session.id) if ctx.idempotency_key is not None else None
     )
-    lock = ctx.kit.lock_manager.locked(_lock_key(record)) if record is not None else nullcontext()
+    lock = ctx.kit._lock_manager.locked(_lock_key(record)) if record is not None else nullcontext()
     async with lock:
         if record is not None:
             try:

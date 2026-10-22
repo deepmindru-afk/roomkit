@@ -46,7 +46,7 @@ from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import ConversationStore
 
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS rooms(
@@ -76,8 +76,8 @@ CREATE TABLE IF NOT EXISTS events(
 CREATE INDEX IF NOT EXISTS idx_events_room ON events(room_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_room_idx ON events(room_id, idx);
 CREATE INDEX IF NOT EXISTS idx_events_room_parent ON events(room_id, parent_event_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency
-    ON events(room_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency_channel
+    ON events(room_id, source_channel_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
 CREATE TABLE IF NOT EXISTS event_sequences(
     room_id TEXT PRIMARY KEY,
     next_index INTEGER NOT NULL DEFAULT 0 CHECK(next_index >= 0)
@@ -152,8 +152,9 @@ CREATE TABLE IF NOT EXISTS voice_deliveries(
 );
 CREATE TABLE IF NOT EXISTS idempotency(
     room_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
     key TEXT NOT NULL,
-    PRIMARY KEY(room_id, key)
+    PRIMARY KEY(room_id, channel_id, key)
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts
     USING fts5(text, event_id UNINDEXED, room_id UNINDEXED);
@@ -423,6 +424,44 @@ def _migrate_v6_to_v7(conn: sqlite3.Connection) -> None:
         raise
 
 
+def _migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
+    """An idempotency key is unique per room and per source channel (RFC
+    §13.4): the key table and the events' unique index name the channel.
+    Keys unique per room are unique per room and channel, so nothing
+    conflicts."""
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if int(conn.execute("PRAGMA user_version").fetchone()[0]) >= 8:
+            conn.execute("COMMIT")
+            return
+        conn.execute("DROP INDEX IF EXISTS idx_events_idempotency")
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency_channel
+               ON events(room_id, source_channel_id, idempotency_key)
+               WHERE idempotency_key IS NOT NULL"""
+        )
+        conn.execute("DROP TABLE IF EXISTS idempotency")
+        conn.execute(
+            """CREATE TABLE idempotency(
+                   room_id TEXT NOT NULL,
+                   channel_id TEXT NOT NULL,
+                   key TEXT NOT NULL,
+                   PRIMARY KEY(room_id, channel_id, key)
+               )"""
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO idempotency(room_id, channel_id, key)
+               SELECT room_id, source_channel_id, idempotency_key FROM events
+               WHERE idempotency_key IS NOT NULL AND source_channel_id IS NOT NULL"""
+        )
+        conn.execute("PRAGMA user_version=8")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
@@ -430,6 +469,7 @@ _MIGRATIONS = {
     4: _migrate_v4_to_v5,
     5: _migrate_v5_to_v6,
     6: _migrate_v6_to_v7,
+    7: _migrate_v7_to_v8,
 }
 """Each step takes a file from its version to the next."""
 
@@ -631,8 +671,8 @@ class SQLiteStore(ConversationStore):
         )
         if event.idempotency_key:
             conn.execute(
-                "INSERT OR IGNORE INTO idempotency(room_id, key) VALUES(?, ?)",
-                (event.room_id, event.idempotency_key),
+                "INSERT OR IGNORE INTO idempotency(room_id, channel_id, key) VALUES(?, ?, ?)",
+                (event.room_id, event.source.channel_id, event.idempotency_key),
             )
         conn.execute("DELETE FROM events_fts WHERE event_id = ?", (event.id,))
         text = _fts_text(event)
@@ -1043,13 +1083,14 @@ class SQLiteStore(ConversationStore):
                 deleted.extend(row[0] for row in rows)
             marks = ",".join("?" for _ in deleted)
             keys = conn.execute(
-                f"SELECT idempotency_key FROM events WHERE id IN ({marks})"  # nosec B608  # fragments are internal, values parameterised
+                f"SELECT source_channel_id, idempotency_key FROM events WHERE id IN ({marks})"  # nosec B608  # fragments are internal, values parameterised
                 " AND idempotency_key IS NOT NULL",
                 deleted,
             ).fetchall()
-            for (key,) in keys:
+            for channel_id, key in keys:
                 conn.execute(
-                    "DELETE FROM idempotency WHERE room_id = ? AND key = ?", (room_id, key)
+                    "DELETE FROM idempotency WHERE room_id = ? AND channel_id = ? AND key = ?",
+                    (room_id, channel_id, key),
                 )
             conn.execute(f"DELETE FROM events WHERE id IN ({marks})", deleted)  # nosec B608  # fragments are internal, values parameterised
             conn.execute(f"DELETE FROM events_fts WHERE event_id IN ({marks})", deleted)  # nosec B608  # fragments are internal, values parameterised
@@ -1215,26 +1256,34 @@ class SQLiteStore(ConversationStore):
             for root, count, last_ts in rows
         }
 
-    async def check_idempotency(self, room_id: str, key: str) -> bool:
-        return await self._run(self._x_check_idempotency, room_id, key)
+    async def check_idempotency(self, room_id: str, key: str, *, channel_id: str) -> bool:
+        return await self._run(self._x_check_idempotency, room_id, channel_id, key)
 
-    def _x_check_idempotency(self, room_id: str, key: str) -> bool:
+    def _x_check_idempotency(self, room_id: str, channel_id: str, key: str) -> bool:
         row = (
             self._db()
-            .execute("SELECT 1 FROM idempotency WHERE room_id = ? AND key = ?", (room_id, key))
+            .execute(
+                "SELECT 1 FROM idempotency WHERE room_id = ? AND channel_id = ? AND key = ?",
+                (room_id, channel_id, key),
+            )
             .fetchone()
         )
         return row is not None
 
-    async def get_event_by_idempotency_key(self, room_id: str, key: str) -> RoomEvent | None:
-        return await self._run(self._x_get_event_by_idempotency_key, room_id, key)
+    async def get_event_by_idempotency_key(
+        self, room_id: str, key: str, *, channel_id: str
+    ) -> RoomEvent | None:
+        return await self._run(self._x_get_event_by_idempotency_key, room_id, channel_id, key)
 
-    def _x_get_event_by_idempotency_key(self, room_id: str, key: str) -> RoomEvent | None:
+    def _x_get_event_by_idempotency_key(
+        self, room_id: str, channel_id: str, key: str
+    ) -> RoomEvent | None:
         row = (
             self._db()
             .execute(
-                "SELECT data FROM events WHERE room_id = ? AND idempotency_key = ?",
-                (room_id, key),
+                "SELECT data FROM events WHERE room_id = ? AND source_channel_id = ?"
+                " AND idempotency_key = ?",
+                (room_id, channel_id, key),
             )
             .fetchone()
         )

@@ -96,8 +96,8 @@ def _make_mock_kit(room: Room) -> MagicMock:
     kit.store.get_binding = AsyncMock(return_value=MagicMock())
     kit.hook_engine = MagicMock()
     kit.hook_engine.replace_room_hook = MagicMock()
-    kit.lock_manager = MagicMock()
-    kit.lock_manager.locked = MagicMock(return_value=_NoopLock())
+    kit._lock_manager = MagicMock()
+    kit._lock_manager.locked = MagicMock(return_value=_NoopLock())
     kit.channels = {}
     kit.register_channel = MagicMock()
     kit.deliver = AsyncMock()
