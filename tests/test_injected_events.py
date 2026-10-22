@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from roomkit import RoomKit
+from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import (
@@ -19,6 +20,7 @@ from roomkit.models.event import EventContent, EventSource, RichContent, RoomEve
 from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.identity import IdentityHookResult, IdentityResult
 from roomkit.models.store_filter import EventFilter
+from roomkit.models.task import Task
 from tests.test_framework import AILikeChannel, SimpleChannel
 from tests.test_identity_unknown_outcomes import UnknownResolver
 
@@ -342,3 +344,26 @@ class TestAnIdentityChallenge:
             assert ([e.blocked_by for e in challenges], sms.delivered) == (["no_challenge"], [])
         finally:
             await kit.close()
+
+
+class _FilesATask(SimpleChannel):
+    """A transport that files a task for every notice it is told about."""
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        if _body(event) != "notice":
+            return ChannelOutput.empty()
+        return ChannelOutput(tasks=[Task(id="read-notice", room_id="r1", title="Read it")])
+
+
+async def test_its_targets_side_effects_are_collected() -> None:
+    kit, _, _ = await _room()
+    kit.register_channel(_FilesATask("desk"))
+    await kit.attach_channel("r1", "desk")
+    _on_hello(kit, InjectedEvent(event=_notice(), target_channel_ids=["desk"]))
+    try:
+        await _hello(kit)
+        assert [task.id for task in await kit.store.list_tasks("r1")] == ["read-notice"]
+    finally:
+        await kit.close()

@@ -414,8 +414,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in its history at its next turn. It ran a whole turn, tools included,
   whose answer was then discarded. The event is delivered to its transport
   targets as any delivery is (transcoded for each, `on_event()` for each and
-  `deliver()` for those that send) and never to its own source; it was
-  delivered untranscoded. `TurnRequest.answers` and the `answers` argument of
+  `deliver()` for those that send, their tasks and observations collected)
+  and never to its own source; it was delivered untranscoded, and what its
+  targets filed was dropped. `TurnRequest.answers` and the `answers` argument of
   `EventRouter.react()`, `EventRouter.react_for()` and `TurnClient.run()` are
   removed.
 

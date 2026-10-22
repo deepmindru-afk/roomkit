@@ -714,6 +714,11 @@ class LaneExecutionMixin(HelpersMixin):
             await self._hook_engine.run_async_hooks(room_id, trigger, target, context)
 
         if plan.injected:
+            # Its targets' side effects are collected, as at any delivery
+            # (RFC §9.4, §10.2 step 3); nothing else follows it.
+            await self._persist_side_effects(
+                room_id, result.tasks, result.observations, event, context
+            )
             return
 
         # A failure before the cascade holds the streams leaves nobody to read them.
