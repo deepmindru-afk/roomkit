@@ -15,7 +15,9 @@ import sqlite3
 import pytest
 
 from roomkit import RoomKit
-from roomkit.models.enums import EventStatus
+from roomkit.core.mixins.verification import HELD_KEY
+from roomkit.models.channel import ChannelBinding
+from roomkit.models.enums import ChannelType, EventStatus
 from roomkit.models.room import Room
 from roomkit.store.sqlite import _SCHEMA_VERSION, SQLiteSchemaError, SQLiteStore
 from tests.conftest import make_event
@@ -209,6 +211,58 @@ class TestPersistence:
             assert conn.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION
         finally:
             conn.close()
+
+    async def test_a_v6_file_stamps_its_events_visibility(self, tmp_path) -> None:
+        """v7 stores an event's visibility stamped with its source binding's
+        (RFC §7.3). An event stored ``all`` under a narrowed binding takes the
+        binding's scope once; an event with a scope of its own, or whose
+        source is no longer bound, keeps its own."""
+        path = tmp_path / "v6.db"
+        store = SQLiteStore(path)
+        await store.create_room(Room(id="r1"))
+        await store.add_binding(
+            ChannelBinding(
+                room_id="r1", channel_id="sms", channel_type=ChannelType.SMS, visibility="ws"
+            )
+        )
+        bodies = {"under the binding": "all", "its own scope": "ai", "gone": "all"}
+        for index, (body, scope) in enumerate(bodies.items()):
+            source = "gone" if body == "gone" else "sms"
+            await store.add_event(
+                make_event(
+                    room_id="r1", channel_id=source, body=body, index=index, visibility=scope
+                )
+            )
+        held = {HELD_KEY: {"visibility": "all", "identity_id": "i1", "organization_id": None}}
+        await store.add_event(
+            make_event(
+                room_id="r1",
+                channel_id="sms",
+                body="held",
+                index=3,
+                visibility="transport",
+                metadata=held,
+            )
+        )
+        await store.close()
+        conn = sqlite3.connect(path)
+        conn.execute("PRAGMA user_version=6")
+        conn.commit()
+        conn.close()
+
+        store = SQLiteStore(path)
+        try:
+            events = await store.list_events("r1")
+            assert {e.content.body: e.visibility for e in events} == {
+                "under the binding": "ws",
+                "its own scope": "ai",
+                "gone": "all",
+                "held": "transport",
+            }
+            held_event = next(e for e in events if e.content.body == "held")
+            assert held_event.metadata[HELD_KEY]["visibility"] == "ws"
+        finally:
+            await store.close()
 
     async def test_two_connections_allocate_one_monotonic_sequence(self, tmp_path) -> None:
         path = tmp_path / "shared.db"

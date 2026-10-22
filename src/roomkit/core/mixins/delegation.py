@@ -33,6 +33,7 @@ from roomkit.core.task_utils import (
     hold_task,
     shielded,
 )
+from roomkit.core.visibility import normal_visibility
 from roomkit.models.enums import (
     ChannelCategory,
     ChannelType,
@@ -591,8 +592,11 @@ class DelegationMixin(HelpersMixin):
                     ch_id,
                     category=parent_binding.category,
                     access=parent_binding.access,
-                    visibility=parent_binding.visibility,
+                    # A value stored before the grammar was enforced is read
+                    # leniently, never widened (RFC §7.3).
+                    visibility=normal_visibility(parent_binding.visibility),
                     muted=parent_binding.muted,
+                    direction=parent_binding.direction,
                     metadata=parent_binding.metadata,
                 )
 

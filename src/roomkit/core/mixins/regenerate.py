@@ -11,8 +11,9 @@ from roomkit.core.event_router import CHAIN_DEPTH_LIMIT
 from roomkit.core.exceptions import RoomClosedError
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan, anchor_index
 from roomkit.core.mixins.helpers import _REFUSING_STATUSES, HelpersMixin
+from roomkit.core.visibility import intersect_visibility
 from roomkit.models.delivery import InboundResult
-from roomkit.models.enums import ChannelCategory, EventStatus
+from roomkit.models.enums import ChannelCategory, EventStatus, Visibility
 from roomkit.models.event import RoomEvent
 from roomkit.models.response_metadata import merge_caller_record
 
@@ -369,8 +370,18 @@ class RegenerateMixin(HelpersMixin):
         """Put *trigger*'s re-broadcast in the room's lane, behind every
         event committed so far, as a rerun (``DeliveryPlan.rerun``); its plan."""
         # Scope the re-broadcast to intelligence channels: only the agent
-        # regenerates, no transport re-delivery of the user's message.
-        intel_trigger = trigger.model_copy(update={"visibility": "intelligence"})
+        # regenerates, no transport re-delivery of the user's message. The
+        # trigger's stored scope still holds (RFC §7.3): a message no agent
+        # may see (one held for verification, a transports-only notice) asks
+        # none.
+        categories = {b.channel_id: b.category for b in context.bindings}
+        intel_trigger = trigger.model_copy(
+            update={
+                "visibility": intersect_visibility(
+                    trigger.visibility, Visibility.INTELLIGENCE, categories.get
+                )
+            }
+        )
         plan = self._get_router().plan(intel_trigger, source_binding, context)
         plan.rerun = True
         plan.response_visibility = trigger.response_visibility

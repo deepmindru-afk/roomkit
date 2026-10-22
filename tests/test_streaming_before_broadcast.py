@@ -330,7 +330,14 @@ async def test_stream_hook_effects_without_persistence_or_source_binding(detache
         assert await kit.store.list_tasks("r1") == [task]
         assert await kit.store.list_observations("r1") == [observation]
         events = await kit.store.list_events("r1")
-        assert len(_ai_messages(events)) == int(detached)
+        # Not stored by the policy, or stored refused: a source with no
+        # binding writes nothing into the room (RFC §7.5 rules 2 and 7).
+        assert _ai_messages(events) == []
+        if detached:
+            refused = await kit.store.list_events(
+                "r1", event_filter=EventFilter(include_blocked=True)
+            )
+            assert [e.blocked_by for e in _ai_messages(refused)] == ["source_unbound"]
         assert [_body(event) for event in events].count("notice") == 1
         assert [_body(event) for event in audit.delivered].count("notice") == 1
     finally:

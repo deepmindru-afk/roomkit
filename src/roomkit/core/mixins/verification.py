@@ -20,7 +20,7 @@ from uuid import uuid4
 
 from roomkit.core.exceptions import VerificationRefusedError
 from roomkit.core.mixins.helpers import HelpersMixin
-from roomkit.core.visibility import effective_visibility, visibility_allows
+from roomkit.core.visibility import committed_visibility, visibility_allows
 from roomkit.models.delivery import InboundResult
 from roomkit.models.enums import (
     ChannelCategory,
@@ -895,15 +895,17 @@ def _held(
 ) -> RoomEvent:
     """*event* held from the room's agents; the transports it reached still see it.
 
-    Holding only narrows: the scope the event had (its own, or its source
-    binding's) keeps its transports and loses its intelligence channels, never
-    gaining a channel it did not reach. The marker records the visibility the
-    event itself carried, which its release restores, and whose it is.
+    Holding only narrows: the scope the event is committed with (its own
+    intersected with its source binding's, RFC §7.3) keeps its transports and
+    loses its intelligence channels, never gaining a channel it did not
+    reach. The marker records that scope, which its release restores, and
+    whose it is.
     """
     source_binding = context.get_binding(event.source.channel_id)
-    held = _transport_part(effective_visibility(event, source_binding), context)
+    scope = committed_visibility(event.visibility, source_binding, context.bindings)
+    held = _transport_part(scope, context)
     marker = {
-        "visibility": event.visibility,
+        "visibility": scope,
         "identity_id": identity_id,
         "organization_id": organization_id,
     }
@@ -923,7 +925,8 @@ def _transport_part(visibility: str, context: RoomContext) -> str:
         for binding in context.bindings
         if binding.category == ChannelCategory.TRANSPORT and visibility_allows(visibility, binding)
     ]
-    return ",".join(reached) if reached else Visibility.NONE
+    # The normal form of a list (RFC §7.3): its ids sorted.
+    return ",".join(sorted(reached)) if reached else Visibility.NONE
 
 
 def _held_for(event: RoomEvent, request: VerificationRequest) -> bool:

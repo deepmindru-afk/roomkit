@@ -21,6 +21,7 @@ from roomkit.core.mixins.helpers import (
     HelpersMixin,
     _source_block_reason,
 )
+from roomkit.core.visibility import with_committed_visibility
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundResult
 from roomkit.models.enums import (
@@ -563,6 +564,7 @@ class InboundLockedMixin(HelpersMixin):
                 event, context, sync_result, reason=reason, blocked_by=reason
             )
 
+        event = with_committed_visibility(event, source_binding, context.bindings)
         return _Ready(event, source_binding, sync_result, context, None)
 
     async def _source_binding(
@@ -861,10 +863,13 @@ class InboundLockedMixin(HelpersMixin):
             # Commit the injected event atomically as DELIVERED (index + room
             # counters, RFC §8.1 / §14.3) — it is a real, delivered timeline
             # event, not a PENDING draft.
+            event = with_pipeline_id(
+                injected.event.model_copy(update={"status": EventStatus.DELIVERED})
+            )
             stored = await self._commit_indexed(
                 room_id,
-                with_pipeline_id(
-                    injected.event.model_copy(update={"status": EventStatus.DELIVERED})
+                with_committed_visibility(
+                    event, context.get_binding(event.source.channel_id), context.bindings
                 ),
             )
 
@@ -882,7 +887,7 @@ class InboundLockedMixin(HelpersMixin):
                         await self._get_router().react(
                             channel, stored, binding, context, answers=False
                         )
-                        if binding.category == ChannelCategory.TRANSPORT:
+                        if binding.category == ChannelCategory.TRANSPORT and binding.sends:
                             await channel.deliver(stored, binding, context)
                     except Exception:
                         logger.exception(

@@ -273,6 +273,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `@sms1`, rather than their id; a look-alike name with its rank). See
   `examples/ai_people_taking_part.py`.
 
+- **BREAKING — an event is committed with its own visibility intersected
+  with its source binding's** (RFC §7.3, RMK-902), and the stored field is the
+  whole answer, at broadcast and when history is rebuilt. An event's own
+  scope (a sender's, a hook's) can no longer widen what its binding allows,
+  and a binding changed later no longer changes what past events reached.
+  Every path that commits an agent's or a hook's event stamps it: greetings,
+  streamed rows, hook-injected events; a record from `commit_event()` keeps
+  the scope it was given. A live stream reaches no transport the agent's
+  binding excludes, and a regenerated turn asks only the agents the
+  message's own scope reaches. `visible_events()` hands a reader with no
+  binding in the room nothing (it handed back its own events). A message
+  held for verification records its committed scope, which its release
+  restores. Each store rewrites once the events it stored `all` under a
+  narrowed binding with that binding's scope, and so the held messages'
+  recorded `all` (SQLite schema 7, PostgresStore schema version 3), so their
+  readers stay the same; `list_events(visibility_filter=...)` matches the
+  stamped value, in its normal form.
+
+- **BREAKING — the visibility grammar is enforced** (RFC §7.3, RMK-902). A
+  value is written back in its normal form, its ids sorted and once; an empty
+  value, an empty item, or a keyword inside a list raises `ValueError` from
+  `attach_channel`, `set_visibility`, `send_event` and `InboundMessage`. A
+  channel id a visibility could not name (`all`, `none`, `internal`,
+  `transport`, `intelligence`, one holding a comma, or one with surrounding
+  whitespace) is refused by `register_channel`. A CLI or console line whose
+  visibility factory returns an invalid scope is not sent, and says why.
+
+- **BREAKING — a binding's direction decides delivery, not reception**
+  (RFC §4.2, §10.2, RMK-902). Every receiver gets `on_event()`; only a
+  transport whose direction sends (`OUTBOUND` or `BIDIRECTIONAL`) also gets
+  `deliver()` and live streams, hook-injected deliveries included. An
+  `OUTBOUND` binding was skipped entirely, and an `INBOUND` one was
+  delivered to. Direction never filters an intelligence channel. A binding
+  takes its channel's `direction` unless the attachment names one, and a
+  channel shared into a delegated room keeps its parent binding's.
+
+- **BREAKING — a source with no binding in the room is refused** (RFC §7.5
+  rules 2 and 7, RMK-902): its event is stored `BLOCKED` with
+  `source_unbound`, and a detached channel parses its message seeing no
+  event. It was committed `DELIVERED` and only not broadcast, so a revoked
+  channel still wrote into the history agents read. A proactive delivery
+  whose channel is detached between the call and the commit answers
+  `blocked` with that reason (one already detached still answers
+  `unavailable`). A source both read-only and muted is refused as
+  `source_read_only`, the lasting cause.
+
 - **BREAKING — `Room.latest_index` is `None` while the room has no event**
   (RFC §5.1, RMK-902). It was 0, which reads as the first event's index. A
   room stored with 0 and no event reads back as `None`; PostgresStore drops
@@ -385,6 +431,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the service's defaults), and drops emoji before Voxtral Speech.
 
 ### Removed
+
+- **BREAKING — `roomkit.core.visibility.effective_visibility`** (RMK-902). An
+  event's stored `visibility` is now the whole answer (RFC §7.3); read it, or
+  `committed_visibility()` for an event not yet committed.
 
 - **BREAKING — `DeliveryMode` and `ChannelCapabilities.delivery_mode`**
   (RMK-902). Nothing read them, and the RFC no longer defines them. Stored

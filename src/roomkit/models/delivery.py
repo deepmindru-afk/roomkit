@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from roomkit.models._time import UtcDatetime
+from roomkit.models._visibility import parse_visibility
 from roomkit.models.enums import EventType, Visibility
 from roomkit.models.event import EventContent, RoomEvent
 from roomkit.models.response_metadata import ResponseMetadata, merge_caller_record
@@ -134,6 +135,12 @@ class InboundMessage(BaseModel):
         if self.standalone and self.event_type != EventType.INSTRUCTION:
             raise ValueError("standalone applies to an INSTRUCTION only")
         return self
+
+    @field_validator("visibility", "response_visibility")
+    @classmethod
+    def _visibility_grammar(cls, value: str | None) -> str | None:
+        """A visibility in its normal form, an invalid one refused (RFC §7.3)."""
+        return None if value is None else parse_visibility(value)
 
 
 STANDALONE = "standalone"

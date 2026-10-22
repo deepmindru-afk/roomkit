@@ -240,7 +240,11 @@ async def run_console_shell(
                 if stripped.lower() in _QUIT_COMMANDS:
                     break
 
-                scope = resolve_visibility(visibility, stripped)
+                try:
+                    scope = resolve_visibility(visibility, stripped)
+                except ValueError as exc:
+                    logger.warning("Line not sent, its visibility is invalid: %s", exc)
+                    continue
                 match = match_command(commands, stripped)
                 if match is not None:
                     handler, argument = match

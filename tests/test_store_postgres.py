@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from roomkit.core.mixins.verification import HELD_KEY
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import ChannelType, RoomStatus
 from roomkit.models.identity import Identity
@@ -106,6 +107,37 @@ class TestRoomOperations:
         async with store._pool.acquire() as conn:
             stored = await conn.fetchval("SELECT latest_index FROM rooms WHERE id = 'old'")
         assert stored is None
+
+    async def test_init_stamps_the_visibility_of_events_stored_before(self, store) -> None:
+        """An event stored ``all`` under a narrowed binding takes the
+        binding's scope, once (RFC §7.3)."""
+        await store.create_room(Room(id="r1"))
+        await store.add_binding(
+            ChannelBinding(
+                room_id="r1", channel_id="ch1", channel_type=ChannelType.SMS, visibility="ws"
+            )
+        )
+        await store.add_event(_make_event(body="under the binding"))
+        await store.add_event(_make_event(body="its own scope", visibility="ai"))
+        await store.add_event(
+            _make_event(
+                body="held",
+                visibility="transport",
+                metadata={HELD_KEY: {"visibility": "all", "identity_id": "i1"}},
+            )
+        )
+        async with store._pool.acquire() as conn:
+            await conn.execute("UPDATE events SET visibility = 'all' WHERE visibility = 'ws'")
+            await conn.execute("DELETE FROM schema_version WHERE version >= 3")
+        await store.init(min_size=1, max_size=3)
+        events = await store.list_events("r1")
+        assert {e.content.body: e.visibility for e in events} == {
+            "under the binding": "ws",
+            "its own scope": "ai",
+            "held": "transport",
+        }
+        held = next(e for e in events if e.content.body == "held")
+        assert held.metadata[HELD_KEY]["visibility"] == "ws"
 
     async def test_delivered_index_defaults_to_minus_one(self, store) -> None:
         await store.create_room(Room(id="r1"))

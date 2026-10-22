@@ -228,7 +228,7 @@ async def test_the_answer_scope_holds_along_a_streamed_chain(streaming: bool) ->
 
     answers = [e for e in await _agent_rows(kit, "a", "b") if e.status == EventStatus.DELIVERED]
     assert {e.chain_depth for e in answers} == {1, 2}
-    assert {e.visibility for e in answers} == {"sms1,a,b"}
+    assert {e.visibility for e in answers} == {"a,b,sms1"}
     assert [e for e in outsider.delivered if e.source.channel_id in ("a", "b")] == []
     await kit.close()
 
@@ -258,7 +258,7 @@ async def test_the_answer_scope_holds_along_a_regenerated_chain(streaming: bool)
     new = [e for e in await _agent_rows(kit, "a", "b") if e.id not in before]
     delivered = [e for e in new if e.status == EventStatus.DELIVERED]
     assert {e.chain_depth for e in delivered} == {1, 2}
-    assert {e.visibility for e in delivered} == {"sms1,a,b"}
+    assert {e.visibility for e in delivered} == {"a,b,sms1"}
     assert [e for e in outsider.delivered if e.source.channel_id in ("a", "b")] == []
     await kit.close()
 

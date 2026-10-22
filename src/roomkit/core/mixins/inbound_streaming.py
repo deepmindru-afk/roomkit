@@ -22,7 +22,6 @@ from roomkit.core.visibility import visibility_allows
 from roomkit.models.enums import (
     Access,
     ChannelCategory,
-    ChannelDirection,
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.response_metadata import (
@@ -452,7 +451,8 @@ class InboundStreamingMixin(HelpersMixin):
         agent's stream is read to its end, each row stored BLOCKED by the
         commit gate, and nothing of it is piped live.
         """
-        if _source_block_reason(context.get_binding(sr.source_channel_id)) is not None:
+        source_binding = context.get_binding(sr.source_channel_id)
+        if _source_block_reason(source_binding) is not None:
             return []
         response_vis = sr.trigger_event.response_visibility
         targets: list[Any] = []
@@ -463,9 +463,17 @@ class InboundStreamingMixin(HelpersMixin):
                 continue
             if binding.access in (Access.WRITE_ONLY, Access.NONE):
                 continue
-            if binding.direction == ChannelDirection.OUTBOUND:
+            # A live stream is a delivery: an INBOUND-only transport is not
+            # delivered to (RFC §10.2 step 3d).
+            if not binding.sends:
                 continue
+            # The rows are committed with the answer's scope intersected with
+            # the agent's binding (RFC §7.3): the live pipe reaches no more.
             if response_vis is not None and not visibility_allows(response_vis, binding):
+                continue
+            if source_binding is not None and not visibility_allows(
+                source_binding.visibility, binding
+            ):
                 continue
             channel = router.get_channel(binding.channel_id)
             # Asked per room: a channel can hold streaming clients for one room

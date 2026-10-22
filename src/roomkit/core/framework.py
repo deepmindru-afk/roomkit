@@ -85,6 +85,7 @@ from roomkit.core.mixins import (
 from roomkit.core.task_utils import cancel_and_wait, held_runs
 from roomkit.core.transcoder import DefaultContentTranscoder
 from roomkit.identity.base import IdentityResolver
+from roomkit.models._visibility import parse_visibility
 from roomkit.models.channel import ChannelBinding, ChannelOutput, RateLimit
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import STANDALONE, InboundResult
@@ -1087,6 +1088,11 @@ class RoomKit(
         """
         from roomkit.telemetry.base import SpanKind
         from roomkit.telemetry.context import get_current_span, reset_span, set_current_span
+
+        # The visibility grammar (RFC §7.3): an invalid scope is refused.
+        visibility = parse_visibility(visibility)
+        if response_visibility is not None:
+            response_visibility = parse_visibility(response_visibility)
 
         # An instruction the pipeline would refuse (RFC §10.1.1) is refused
         # here, loudly: this API's contract is the committed event, and an

@@ -17,14 +17,13 @@ from roomkit.core.lanes import DeliveryCascade, DeliveryPlan
 from roomkit.core.rate_limiter import TokenBucketRateLimiter
 from roomkit.core.retry import retry_with_backoff
 from roomkit.core.transcoder import DefaultContentTranscoder
-from roomkit.core.visibility import effective_visibility, visibility_allows
+from roomkit.core.visibility import committed_visibility, visibility_allows
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import (
     Access,
     AgentResponsePolicy,
     ChannelCategory,
-    ChannelDirection,
     ChannelMediaType,
     EventStatus,
     EventType,
@@ -360,9 +359,13 @@ class EventRouter:
             )
             targets: list[ChannelBinding] = []
         else:
-            # Stamp visibility from source binding
-            if event.visibility == Visibility.ALL and source_binding.visibility != Visibility.ALL:
-                event = event.model_copy(update={"visibility": source_binding.visibility})
+            # A committed event's visibility is already its own intersected
+            # with its source binding's (RFC §7.3); intersecting again with
+            # the binding the plan reads changes nothing for it, and holds
+            # the rule for an event a caller broadcasts without a commit.
+            stamped = committed_visibility(event.visibility, source_binding, context.bindings)
+            if stamped != event.visibility:
+                event = event.model_copy(update={"visibility": stamped})
             # Target bindings include muted channels — they can still read.
             targets = self._filter_targets(event, source_binding, context.bindings)
         # The caller's span, carried across the lane boundary so the
@@ -542,8 +545,10 @@ class EventRouter:
                     target_results.append(tr)
                     return
 
-                # deliver — only transport channels push to external.
-                if binding.category == ChannelCategory.TRANSPORT:
+                # deliver — only a transport that sends pushes to external;
+                # an INBOUND-only one is told through on_event() alone (RFC
+                # §10.2 step 3d).
+                if binding.category == ChannelCategory.TRANSPORT and binding.sends:
                     # Skip delivery for channels that already received streaming content
                     if exclude_delivery and binding.channel_id in exclude_delivery:
                         tr.observations.extend(output.observations)
@@ -852,10 +857,6 @@ class EventRouter:
             if binding.access in (Access.WRITE_ONLY, Access.NONE):
                 continue
 
-            # Check direction - must accept inbound delivery
-            if binding.direction == ChannelDirection.OUTBOUND:
-                continue
-
             # NOTE: muted channels are NOT skipped here — they receive events,
             # and their response events are stored BLOCKED when they re-enter
 
@@ -875,17 +876,11 @@ class EventRouter:
     ) -> bool:
         """Check if source is visible to target based on visibility rules.
 
-        Uses the event's visibility field which already incorporates the source
-        binding's visibility (merged in broadcast() before this is called).
-        This allows callers of send_event() to override visibility per-event.
-
-        Delegates the resolution to :func:`effective_visibility` so delivery and
-        the history rebuilt for a channel (RFC §7.5 rule 8) answer the same
-        question the same way. The stamp makes the two indistinguishable here:
-        by the time this runs, a non-default binding scope is already on the
-        event.
+        The event's visibility field is the whole answer: its own intersected
+        with its source binding's at its commit (RFC §7.3), which the history
+        rebuilt for a channel reads too (§7.5 rule 8).
         """
-        return visibility_allows(effective_visibility(event, source_binding), target_binding)
+        return visibility_allows(event.visibility, target_binding)
 
     @staticmethod
     def _content_media_type(content: Any) -> ChannelMediaType | None:

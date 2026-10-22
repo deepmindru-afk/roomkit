@@ -1,0 +1,325 @@
+"""Visibility, direction and source refusal (RFC §4.2, §7.3, §7.5, §10.2)."""
+
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+from roomkit import RoomKit
+from roomkit.channels.agent import Agent
+from roomkit.channels.ai import AIChannel
+from roomkit.channels.websocket import WebSocketChannel
+from roomkit.models._visibility import check_channel_id, parse_visibility
+from roomkit.models.channel import ChannelBinding, ChannelOutput
+from roomkit.models.context import RoomContext
+from roomkit.models.delivery import InboundMessage
+from roomkit.models.enums import (
+    Access,
+    ChannelCategory,
+    ChannelDirection,
+    ChannelType,
+    HookTrigger,
+)
+from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.hook import HookResult, InjectedEvent
+from roomkit.models.store_filter import EventFilter
+from roomkit.providers.ai.base import AIResponse
+from roomkit.providers.ai.mock import MockAIProvider
+from tests.test_framework import AILikeChannel, SimpleChannel
+
+
+class _Told(SimpleChannel):
+    """A transport that records what it is told and what it is delivered."""
+
+    def __init__(self, channel_id: str) -> None:
+        super().__init__(channel_id)
+        self.told: list[RoomEvent] = []
+        self.parse_contexts: list[RoomContext] = []
+
+    async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
+        self.parse_contexts.append(context)
+        return await super().handle_inbound(message, context)
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        self.told.append(event)
+        return ChannelOutput.empty()
+
+
+def _message(body: str, channel_id: str = "sms", **fields: object) -> InboundMessage:
+    return InboundMessage(
+        channel_id=channel_id, sender_id="u", content=TextContent(body=body), **fields
+    )
+
+
+class TestTheGrammar:
+    def test_a_list_is_written_back_sorted_and_once(self) -> None:
+        assert parse_visibility(" ws , sms,ws ") == "sms,ws"
+
+    def test_a_keyword_is_kept_as_written(self) -> None:
+        assert parse_visibility(" internal ") == "internal"
+
+    @pytest.mark.parametrize("value", ["", "  ", "sms,,ws", "sms,", "all,sms"])
+    def test_an_invalid_value_is_refused(self, value: str) -> None:
+        with pytest.raises(ValueError):
+            parse_visibility(value)
+
+    @pytest.mark.parametrize("channel_id", ["all", "internal", "a,b", " ws", ""])
+    def test_a_channel_id_a_visibility_cannot_name_is_refused(self, channel_id: str) -> None:
+        with pytest.raises(ValueError):
+            check_channel_id(channel_id)
+
+    def test_a_keyword_in_another_case_is_a_channel_id(self) -> None:
+        check_channel_id("All")
+
+    def test_an_inbound_message_refuses_an_empty_visibility(self) -> None:
+        with pytest.raises(ValidationError):
+            _message("x", visibility="")
+
+    def test_a_channel_named_after_a_keyword_cannot_register(self) -> None:
+        with pytest.raises(ValueError):
+            RoomKit().register_channel(SimpleChannel("all"))
+
+
+async def _room(*channels: SimpleChannel | AILikeChannel, **attach: dict) -> RoomKit:
+    kit = RoomKit()
+    await kit.create_room(room_id="r1")
+    for channel in channels:
+        kit.register_channel(channel)
+        await kit.attach_channel("r1", channel.channel_id, **attach.get(channel.channel_id, {}))
+    return kit
+
+
+class TestTheCommittedVisibility:
+    async def test_a_message_s_own_scope_cannot_widen_its_binding(self) -> None:
+        sms, ai = _Told("sms"), AILikeChannel("ai")
+        kit = await _room(sms, ai, sms={"visibility": "transport"})
+        try:
+            result = await kit.process_inbound(_message("hello", visibility="all"))
+            assert result.event is not None
+            assert (result.event.visibility, ai.delivered) == ("transport", [])
+        finally:
+            await kit.close()
+
+    async def test_narrowing_a_binding_later_hides_nothing_already_committed(self) -> None:
+        sms, ws, ai = _Told("sms"), _Told("ws"), AILikeChannel("ai")
+        kit = await _room(sms, ws, ai)
+        try:
+            await kit.process_inbound(_message("before"))
+            await kit.set_visibility("r1", "sms", "ws")
+            await kit.process_inbound(_message("after"))
+            events = await kit.store.list_events("r1")
+            scopes = {
+                e.content.body: e.visibility
+                for e in events
+                if e.source.channel_id == "sms" and isinstance(e.content, TextContent)
+            }
+            assert scopes == {"before": "all", "after": "ws"}
+        finally:
+            await kit.close()
+
+
+class TestDirection:
+    async def test_an_inbound_only_transport_is_told_but_not_delivered_to(self) -> None:
+        sms, kiosk = _Told("sms"), _Told("kiosk")
+        kit = await _room(sms, kiosk, kiosk={"direction": ChannelDirection.INBOUND})
+        try:
+            await kit.process_inbound(_message("hello"))
+            assert (len(kiosk.told), kiosk.delivered) == (1, [])
+        finally:
+            await kit.close()
+
+    async def test_an_outbound_only_transport_is_delivered_to(self) -> None:
+        sms, push = _Told("sms"), _Told("push")
+        kit = await _room(sms, push, push={"direction": ChannelDirection.OUTBOUND})
+        try:
+            await kit.process_inbound(_message("hello"))
+            assert (len(push.told), len(push.delivered)) == (1, 1)
+        finally:
+            await kit.close()
+
+    async def test_direction_does_not_filter_an_agent(self) -> None:
+        sms, ai = _Told("sms"), AILikeChannel("ai")
+        kit = await _room(
+            sms,
+            ai,
+            ai={"category": ChannelCategory.INTELLIGENCE, "direction": ChannelDirection.OUTBOUND},
+        )
+        try:
+            await kit.process_inbound(_message("hello"))
+            assert len(ai.delivered) == 1
+        finally:
+            await kit.close()
+
+
+class TestARefusedSource:
+    async def test_read_only_wins_over_muted(self) -> None:
+        sms, ws = _Told("sms"), _Told("ws")
+        kit = await _room(sms, ws, sms={"access": Access.READ_ONLY})
+        try:
+            await kit.mute("r1", "sms")
+            result = await kit.process_inbound(_message("hello"))
+            assert (result.blocked, result.reason) == (True, "source_read_only")
+        finally:
+            await kit.close()
+
+    async def test_a_detached_channel_s_message_is_stored_refused(self) -> None:
+        sms, ws = _Told("sms"), _Told("ws")
+        kit = await _room(sms, ws)
+        try:
+            await kit.process_inbound(_message("before"))
+            await kit.detach_channel("r1", "sms")
+            result = await kit.process_inbound(_message("after"), room_id="r1")
+            assert (result.blocked, result.reason) == (True, "source_unbound")
+            assert sms.parse_contexts[-1].recent_events == []
+            stored = await kit.store.list_events(
+                "r1", event_filter=EventFilter(include_blocked=True)
+            )
+            assert [e.blocked_by for e in stored if _body(e) == "after"] == ["source_unbound"]
+            assert [_body(e) for e in ws.delivered] == ["before"]
+        finally:
+            await kit.close()
+
+
+def _body(event: RoomEvent) -> str | None:
+    return event.content.body if isinstance(event.content, TextContent) else None
+
+
+class TestTheEntriesRefuseAnInvalidVisibility:
+    async def test_set_visibility_refuses_an_empty_item(self) -> None:
+        kit = await _room(_Told("sms"))
+        try:
+            with pytest.raises(ValueError):
+                await kit.set_visibility("r1", "sms", "sms,,ws")
+        finally:
+            await kit.close()
+
+    async def test_attach_channel_refuses_an_empty_visibility(self) -> None:
+        kit = await _room(_Told("sms"))
+        kit.register_channel(_Told("ws"))
+        try:
+            with pytest.raises(ValueError):
+                await kit.attach_channel("r1", "ws", visibility="")
+        finally:
+            await kit.close()
+
+    async def test_send_event_refuses_a_keyword_in_a_list(self) -> None:
+        kit = await _room(_Told("sms"))
+        try:
+            with pytest.raises(ValueError):
+                await kit.send_event("r1", "sms", TextContent(body="x"), visibility="all,sms")
+        finally:
+            await kit.close()
+
+
+class TestEveryCommitPathStampsTheVisibility:
+    async def test_a_greeting_takes_its_agent_binding_s_scope(self) -> None:
+        kit = RoomKit()
+        kit.register_channel(SimpleChannel("advisor"))
+        kit.register_channel(SimpleChannel("customer"))
+        kit.register_channel(
+            Agent("ai", provider=MockAIProvider(responses=["x"]), greeting="Hi!", auto_greet=False)
+        )
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "advisor")
+        await kit.attach_channel("r1", "customer")
+        await kit.attach_channel(
+            "r1", "ai", category=ChannelCategory.INTELLIGENCE, visibility="advisor"
+        )
+        try:
+            await kit.send_greeting("r1")
+            events = await kit.store.list_events("r1")
+            greetings = [e for e in events if (e.metadata or {}).get("auto_greeting")]
+            assert [e.visibility for e in greetings] == ["advisor"]
+        finally:
+            await kit.close()
+
+    async def test_an_injected_event_takes_its_source_binding_s_scope(self) -> None:
+        sms, ws, other = _Told("sms"), _Told("ws"), _Told("other")
+        kit = await _room(sms, ws, other, sms={"visibility": "ws"})
+        notice = RoomEvent(
+            room_id="r1",
+            source=EventSource(channel_id="sms", channel_type=ChannelType.SMS),
+            content=TextContent(body="notice"),
+        )
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST)
+        async def inject(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if _body(event) != "hello":
+                return HookResult.allow()
+            return HookResult.allow(
+                injected=[InjectedEvent(event=notice, target_channel_ids=["ws"])]
+            )
+
+        try:
+            await kit.process_inbound(_message("hello"))
+            events = await kit.store.list_events("r1")
+            assert [e.visibility for e in events if _body(e) == "notice"] == ["ws"]
+        finally:
+            await kit.close()
+
+
+async def _streaming_room(
+    agent_binding: dict, *transports: tuple[str, dict]
+) -> tuple[RoomKit, dict[str, list[str]]]:
+    """A streaming agent answering an SMS sender, and WebSocket transports
+    that record the chunks they are streamed."""
+    kit = RoomKit()
+    provider = MockAIProvider(
+        streaming=True, ai_responses=[AIResponse(content="answer", finish_reason="stop")]
+    )
+    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(AIChannel("ai", provider=provider))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms")
+    streamed: dict[str, list[str]] = {}
+    for channel_id, binding in transports:
+        ws = WebSocketChannel(channel_id)
+        chunks = streamed.setdefault(channel_id, [])
+
+        async def send_fn(conn_id: str, event: RoomEvent) -> None:
+            pass
+
+        async def stream_send_fn(conn_id: str, msg: object, chunks: list[str] = chunks) -> None:
+            delta = getattr(msg, "delta", None)
+            if delta:
+                chunks.append(delta)
+
+        ws.register_connection("c1", send_fn, stream_send_fn=stream_send_fn, room_id="r1")
+        kit.register_channel(ws)
+        await kit.attach_channel("r1", channel_id, **binding)
+    await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE, **agent_binding)
+    return kit, streamed
+
+
+class TestALiveStream:
+    async def test_reaches_no_transport_the_agent_s_binding_excludes(self) -> None:
+        kit, streamed = await _streaming_room(
+            {"visibility": "advisor"}, ("customer", {}), ("advisor", {})
+        )
+        try:
+            await kit.process_inbound(_message("hello"))
+            assert streamed["customer"] == []
+        finally:
+            await kit.close()
+
+    async def test_reaches_no_inbound_only_transport(self) -> None:
+        kit, streamed = await _streaming_room(
+            {}, ("kiosk", {"direction": ChannelDirection.INBOUND})
+        )
+        try:
+            await kit.process_inbound(_message("hello"))
+            assert streamed["kiosk"] == []
+        finally:
+            await kit.close()
+
+    async def test_reaches_an_outbound_only_transport(self) -> None:
+        kit, streamed = await _streaming_room(
+            {}, ("push", {"direction": ChannelDirection.OUTBOUND})
+        )
+        try:
+            await kit.process_inbound(_message("hello"))
+            assert "".join(streamed["push"]) == "answer"
+        finally:
+            await kit.close()

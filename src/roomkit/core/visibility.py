@@ -9,11 +9,94 @@ one turn later that the broadcast answered at delivery.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
+
+from roomkit.models._visibility import KEYWORDS
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelCategory, Visibility
 from roomkit.models.event import RoomEvent
 from roomkit.models.store_filter import received_events
+
+_CATEGORIES = {
+    Visibility.TRANSPORT: ChannelCategory.TRANSPORT,
+    Visibility.INTELLIGENCE: ChannelCategory.INTELLIGENCE,
+}
+
+
+def intersect_visibility(
+    first: str, second: str, category_of: Callable[[str], ChannelCategory | None]
+) -> str:
+    """The visibility that includes exactly the channels both include (RFC
+    §7.3).
+
+    ``all`` is neutral; ``internal`` absorbs and keeps the mark of a
+    framework record; ``none`` absorbs; ``transport`` and ``intelligence``
+    exclude each other; two lists intersect. A category intersected with a
+    list keeps the listed channels of that category, which *category_of*
+    tells from the room's bindings; a channel it does not know matches
+    nothing. An empty result is ``none``.
+    """
+    a, b = normal_visibility(first), normal_visibility(second)
+    if a == Visibility.ALL:
+        return b
+    if b == Visibility.ALL:
+        return a
+    if Visibility.INTERNAL in (a, b):
+        return Visibility.INTERNAL
+    if Visibility.NONE in (a, b):
+        return Visibility.NONE
+    if a in _CATEGORIES and b in _CATEGORIES:
+        return a if a == b else Visibility.NONE
+    if a in _CATEGORIES:
+        return _listing(i for i in _ids(b) if category_of(i) == _CATEGORIES[a])
+    if b in _CATEGORIES:
+        return _listing(i for i in _ids(a) if category_of(i) == _CATEGORIES[b])
+    return _listing(_ids(a) & _ids(b))
+
+
+def committed_visibility(
+    visibility: str, source_binding: ChannelBinding | None, bindings: Iterable[ChannelBinding]
+) -> str:
+    """The visibility an event is committed with: *visibility*, its own,
+    intersected with its source binding's (RFC §7.3). A list is matched
+    against the categories of the room's *bindings*. An event with no source
+    binding, which only the framework or a hook writes, keeps its own."""
+    if source_binding is None:
+        return visibility
+    categories = {binding.channel_id: binding.category for binding in bindings}
+    categories[source_binding.channel_id] = source_binding.category
+    return intersect_visibility(visibility, source_binding.visibility, categories.get)
+
+
+def with_committed_visibility(
+    event: RoomEvent, source_binding: ChannelBinding | None, bindings: Iterable[ChannelBinding]
+) -> RoomEvent:
+    """*event* carrying the visibility it is committed with
+    (:func:`committed_visibility`), whichever path commits it."""
+    stamped = committed_visibility(event.visibility, source_binding, bindings)
+    if stamped == event.visibility:
+        return event
+    return event.model_copy(update={"visibility": stamped})
+
+
+def normal_visibility(visibility: str) -> str:
+    """*visibility* in the normal form (RFC §7.3), leniently: a value
+    stored before the grammar was enforced (an unsorted list, an empty item)
+    is read as the channels it names, ``none`` when it names none."""
+    stripped = visibility.strip()
+    if stripped in KEYWORDS:
+        return stripped
+    return _listing(_ids(stripped))
+
+
+def _ids(visibility: str) -> set[str]:
+    return {item.strip() for item in visibility.split(",") if item.strip()}
+
+
+def _listing(ids: Iterable[str]) -> str:
+    listed = sorted(set(ids))
+    return ",".join(listed) if listed else Visibility.NONE
 
 
 def visibility_allows(visibility: str, target_binding: ChannelBinding) -> bool:
@@ -35,34 +118,7 @@ def visibility_allows(visibility: str, target_binding: ChannelBinding) -> bool:
         return target_binding.category == ChannelCategory.TRANSPORT
     if visibility == Visibility.INTELLIGENCE:
         return target_binding.category == ChannelCategory.INTELLIGENCE
-    if "," in visibility:
-        allowed = {cid.strip() for cid in visibility.split(",") if cid.strip()}
-        return target_binding.channel_id in allowed
-    return target_binding.channel_id == visibility
-
-
-def effective_visibility(event: RoomEvent, source_binding: ChannelBinding | None) -> str:
-    """The scope that decides who may see ``event``.
-
-    An event carries its own scope when the sender set one; otherwise the scope
-    comes from the binding it was sent through. The broadcast router stamps the
-    binding's scope onto its copy of the event before delivering
-    (:meth:`EventRouter.plan`), but that stamp happens *after* the commit — the
-    stored event keeps ``"all"``. So anything resolving visibility from storage
-    (history rebuilt for a channel) MUST go back to the source binding, and only
-    the event's own non-default scope overrides it.
-
-    ``source_binding`` is ``None`` when the sending channel has since been
-    detached: the event's own scope is then the whole answer (RFC §7.5 rule 8).
-    Treating an unresolvable source as hidden would empty a room's context the
-    moment a transport leaves, while every framework-internal event states its
-    scope on the event itself and stays correctly hidden either way.
-    """
-    if event.visibility and event.visibility != Visibility.ALL:
-        return event.visibility
-    if source_binding is not None:
-        return source_binding.visibility
-    return Visibility.ALL
+    return target_binding.channel_id in _ids(visibility)
 
 
 def visible_events(context: RoomContext, channel_id: str) -> list[RoomEvent]:
@@ -79,7 +135,11 @@ def visible_events(context: RoomContext, channel_id: str) -> list[RoomEvent]:
     own prompt whenever it is bound with a narrow visibility (the §7.4
     assistant pattern).
 
-    A channel with no binding in this room sees only what it produced itself.
+    A channel with no binding in this room is handed none of its events.
+
+    The event's ``visibility`` is the whole answer: the intersection of its
+    own and its source binding's, stamped at its commit (RFC §7.3), so a
+    binding changed later does not change what its past events reached.
 
     An event stored BLOCKED was delivered to nobody — a hook refused it (§10.1
     step 10), its source could not write, read-only or muted (step 11, §7.5
@@ -102,14 +162,11 @@ def visible_events(context: RoomContext, channel_id: str) -> list[RoomEvent]:
     that check. READ_ONLY and muted channels do read, and keep the history they
     were handed; their own refused turns are the one thing they lose, as above.
     """
-    bindings = {b.channel_id: b for b in context.bindings}
-    reader = bindings.get(channel_id)
-    accepted = received_events(context.recent_events)
+    reader = next((b for b in context.bindings if b.channel_id == channel_id), None)
     if reader is None:
-        return [e for e in accepted if e.source.channel_id == channel_id]
+        return []
     return [
         e
-        for e in accepted
-        if e.source.channel_id == channel_id
-        or visibility_allows(effective_visibility(e, bindings.get(e.source.channel_id)), reader)
+        for e in received_events(context.recent_events)
+        if e.source.channel_id == channel_id or visibility_allows(e.visibility, reader)
     ]

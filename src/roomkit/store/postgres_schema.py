@@ -4,9 +4,11 @@ Owns the DDL used by ``PostgresStore``. Two concerns are kept strictly
 separate:
 
 * ``SCHEMA`` — **additive, idempotent** schema setup (``CREATE TABLE IF NOT
-  EXISTS``, index touch-ups, and bounded repairs for newly added columns).
-  Safe to run on every connect; never drops a table or discards user data.
-  This is the only schema batch ``PostgresStore.init()`` executes.
+  EXISTS``, index touch-ups, bounded repairs for newly added columns, and
+  one-time rewrites a rule change needs, each recorded in ``schema_version``
+  so it runs once). Safe to run on every connect; never drops a table or
+  discards user data. This is the only schema batch ``PostgresStore.init()``
+  executes.
 * ``V1_TO_V2_DROP`` — the **destructive** v1→v2 migration. It drops every
   table (data loss) and is *never* run automatically. It is applied only by
   the explicit, opt-in ``PostgresStore.migrate()`` after the caller confirms
@@ -19,6 +21,8 @@ Keeping the destructive DDL out of the connect path means a routine
 from __future__ import annotations
 
 SCHEMA_VERSION = 2
+"""The table layout's generation, which ``migrate()`` reports. The rows of
+``schema_version`` above 2 record one-time data rewrites, not a new layout."""
 
 # Tables owned by RoomKit, in dependency order (children before parents) so a
 # CASCADE-free reading of the list still makes sense. Used to build the
@@ -422,4 +426,31 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 INSERT INTO schema_version (version)
     SELECT 2 WHERE NOT EXISTS (SELECT 1 FROM schema_version WHERE version >= 2);
+
+-- An event's visibility is stamped at its commit (RFC §7.3): its own
+-- intersected with its source binding's. An event stored 'all' before read its
+-- source binding's when history was rebuilt; it takes that binding's now,
+-- once, so the stored field is the whole answer and its readers stay the
+-- same. A message held for verification records the visibility its release
+-- restores; a recorded 'all' takes the binding's too. Version 3 records the
+-- rewrite as done.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_version WHERE version >= 3) THEN
+        UPDATE events e SET visibility = b.visibility
+        FROM bindings b
+        WHERE b.room_id = e.room_id
+          AND b.channel_id = e.source_channel_id
+          AND e.visibility = 'all'
+          AND COALESCE(b.visibility, 'all') <> 'all';
+        UPDATE events e SET metadata = jsonb_set(
+            e.metadata, '{roomkit:verification_held,visibility}', to_jsonb(b.visibility))
+        FROM bindings b
+        WHERE b.room_id = e.room_id
+          AND b.channel_id = e.source_channel_id
+          AND e.metadata -> 'roomkit:verification_held' ->> 'visibility' = 'all'
+          AND COALESCE(b.visibility, 'all') <> 'all';
+        INSERT INTO schema_version (version) VALUES (3);
+    END IF;
+END $$;
 """

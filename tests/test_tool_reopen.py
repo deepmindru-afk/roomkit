@@ -209,7 +209,7 @@ async def _turn_after(ch: AIChannel, tools: list[AITool], event: RoomEvent) -> L
         category=ChannelCategory.INTELLIGENCE,
         metadata={"tools": [tool.model_dump() for tool in tools]},
     )
-    context = RoomContext(room=Room(id="r1"), recent_events=_history())
+    context = RoomContext(room=Room(id="r1"), bindings=[binding], recent_events=_history())
     return await respond(ch, event, binding, context)
 
 

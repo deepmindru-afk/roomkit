@@ -115,7 +115,7 @@ async def _turn(ch: AIChannel, body: str, history: list[RoomEvent] | None = None
         ch,
         make_event(room_id="r1", body=body, channel_id="sms1"),
         binding,
-        RoomContext(room=Room(id="r1"), recent_events=history or []),
+        RoomContext(room=Room(id="r1"), bindings=[binding], recent_events=history or []),
     )
 
 

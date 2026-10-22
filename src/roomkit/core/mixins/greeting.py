@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core.mixins.helpers import HelpersMixin
+from roomkit.core.visibility import with_committed_visibility
 from roomkit.models.enums import (
     ChannelCategory,
     ChannelType,
@@ -190,10 +191,15 @@ class GreetingMixin(HelpersMixin):
         goes through :meth:`_commit_and_deliver` instead.
         """
         # Commit atomically (index + room counters, §14.3): the greeting is a
-        # DELIVERED timeline event and must be reflected in the counters.
-        return await self._persist_committed(
-            room_id, self._make_greeting_event(room_id, agent_channel_id, text)
+        # DELIVERED timeline event and must be reflected in the counters. Its
+        # visibility is narrowed by the agent's binding (RFC §7.3), as any
+        # event its agent writes.
+        bindings = await self._store.list_bindings(room_id)
+        agent_binding = next((b for b in bindings if b.channel_id == agent_channel_id), None)
+        event = with_committed_visibility(
+            self._make_greeting_event(room_id, agent_channel_id, text), agent_binding, bindings
         )
+        return await self._persist_committed(room_id, event)
 
     def _set_greeting_gate(self, room_id: str) -> None:
         """Increment the reference-counted gate for *room_id*.

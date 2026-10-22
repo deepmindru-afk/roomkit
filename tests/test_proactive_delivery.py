@@ -190,7 +190,9 @@ async def test_agent_detaching_after_solicitation_does_not_change_outcome() -> N
         assert result.inbound.unavailable_targets == []
 
 
-async def test_source_detaching_before_commit_reports_unreached_agents() -> None:
+async def test_source_detaching_before_commit_refuses_the_delivery() -> None:
+    """A source detached before the commit writes nothing into the room (RFC
+    §7.5 rules 2 and 7): the delivery is refused, its record stored."""
     kit, _, agents = await _room("a")
 
     @kit.hook(HookTrigger.BEFORE_BROADCAST)
@@ -200,17 +202,15 @@ async def test_source_detaching_before_commit_reports_unreached_agents() -> None
 
     async with kit:
         result = await kit.deliver("room-1", "external result", addressed_to=["a"])
-        assert result.status == "unavailable"
-        assert result.unavailable_targets == ["a"]
+        assert (result.status, result.reason) == ("blocked", "source_unbound")
         assert result.event_id is not None
-        assert not result.error.retryable
         assert agents["a"].solicited == []
 
 
-async def test_source_detaching_before_the_lock_reports_unreached_agents() -> None:
+async def test_source_detaching_before_the_lock_refuses_the_delivery() -> None:
     """A detach landing between the call and the commit's room lock is seen
     by the commit, which reads the bindings under that lock (RFC §10.1 step
-    6): the addressed agents are reported unreached."""
+    6): the delivery is refused as its source's."""
     kit, _, agents = await _room("a")
     locked = kit._lock_manager.locked
     detached: list[str] = []
@@ -227,10 +227,8 @@ async def test_source_detaching_before_the_lock_reports_unreached_agents() -> No
 
     async with kit:
         result = await kit.deliver("room-1", "external result", addressed_to=["a"])
-        assert result.status == "unavailable"
-        assert result.unavailable_targets == ["a"]
+        assert (result.status, result.reason) == ("blocked", "source_unbound")
         assert result.event_id is not None
-        assert not result.error.retryable
         assert agents["a"].solicited == []
 
 

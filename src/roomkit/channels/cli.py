@@ -33,6 +33,7 @@ from roomkit._text import identifier
 from roomkit.channels._discussion_turn import discussion_handles
 from roomkit.channels._speaker import speaker_label
 from roomkit.channels.base import Channel
+from roomkit.models._visibility import parse_visibility
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -62,13 +63,17 @@ VisibilityFactory = Callable[[str], str | Sequence[str] | None]
 
 
 def resolve_visibility(factory: VisibilityFactory | None, line: str) -> str | None:
-    """Turn what *factory* returns into a visibility spec.
+    """Turn what *factory* returns into a visibility spec, in its normal
+    form (RFC §7.3).
 
-    A string is a spec verbatim — a keyword (``"transport"``) or an already
-    written id list. A sequence is joined into an id list, which is the form
-    worth encouraging: ``"transport,codex"`` looks like "the transports plus
-    codex" and means nothing of the sort, because the comma form matches
-    channel ids only. Handing ids avoids inventing that sentence at all.
+    A string is a spec — a keyword (``"transport"``) or an already written id
+    list. A sequence is joined into an id list, which is the form worth
+    encouraging: ``"transport,codex"`` looks like "the transports plus codex"
+    and is refused, since a keyword cannot sit in a list. Handing ids avoids
+    inventing that sentence at all.
+
+    Raises:
+        ValueError: the spec is not a visibility the grammar accepts.
     """
     if factory is None:
         return None
@@ -76,9 +81,9 @@ def resolve_visibility(factory: VisibilityFactory | None, line: str) -> str | No
     if scope is None:
         return None
     if isinstance(scope, str):
-        return scope or None
+        return parse_visibility(scope) if scope else None
     ids = [str(item).strip() for item in scope if str(item).strip()]
-    return ",".join(ids) if ids else None
+    return parse_visibility(",".join(ids)) if ids else None
 
 
 def resolve_address(factory: AddressFactory | None, line: str) -> list[str] | None:
@@ -546,7 +551,12 @@ class CLIChannel(Channel):
             if stripped.lower() in ("quit", "exit", "q"):
                 break
 
-            scope = resolve_visibility(visibility, stripped)
+            try:
+                scope = resolve_visibility(visibility, stripped)
+            except ValueError as exc:
+                logger.warning("Line not sent, its visibility is invalid: %s", exc)
+                print(f"\n(not sent: {exc})\n")
+                continue
             match = match_command(commands, stripped)
             if match is not None:
                 handler, argument = match

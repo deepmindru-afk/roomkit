@@ -14,7 +14,7 @@ import pytest
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.websocket import WebSocketChannel
 from roomkit.core.framework import RoomKit
-from roomkit.core.visibility import effective_visibility, visible_events
+from roomkit.core.visibility import committed_visibility, visible_events
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -312,25 +312,42 @@ def _event(
     )
 
 
-class TestEffectiveVisibility:
-    """The event's own scope wins; the binding answers for the default."""
+class TestCommittedVisibility:
+    """An event is committed with its own visibility intersected with its
+    source binding's (RFC §7.3)."""
 
-    def test_a_non_default_event_scope_wins(self) -> None:
-        event = _event("ws1", "x", visibility=Visibility.NONE)
-        assert effective_visibility(event, _binding("ws1", visibility="all")) == Visibility.NONE
+    @staticmethod
+    def _committed(own: str, binding: str, **bindings: str) -> str:
+        source = _binding("ws1", visibility=binding)
+        others = [_binding(cid, visibility="all") for cid in bindings]
+        return committed_visibility(own, source, others)
 
-    def test_the_binding_answers_for_the_default(self) -> None:
-        # The stored event keeps "all": the router's stamp lands on a copy made
-        # after the commit, so storage never sees the binding's scope.
-        event = _event("ws1", "x")
-        assert effective_visibility(event, _binding("ws1", visibility="transport")) == "transport"
+    def test_all_is_neutral(self) -> None:
+        assert self._committed("all", "transport") == "transport"
+
+    def test_the_event_s_own_scope_cannot_widen_its_binding(self) -> None:
+        assert self._committed("all", "ws2", ws2="all") == "ws2"
+        assert self._committed("ws2,ws3", "ws2", ws2="all", ws3="all") == "ws2"
+
+    def test_internal_absorbs_and_keeps_its_mark(self) -> None:
+        assert self._committed("internal", "transport") == Visibility.INTERNAL
+
+    def test_none_absorbs(self) -> None:
+        assert self._committed("none", "all") == Visibility.NONE
+
+    def test_transport_and_intelligence_exclude_each_other(self) -> None:
+        assert self._committed("transport", "intelligence") == Visibility.NONE
+
+    def test_disjoint_lists_reach_nobody(self) -> None:
+        assert self._committed("ws2", "ws3", ws2="all", ws3="all") == Visibility.NONE
+
+    def test_a_category_keeps_the_listed_channels_of_that_category(self) -> None:
+        source = _binding("ws1", visibility="ws2,ai1")
+        bindings = [_binding("ws2"), _binding("ai1", category=ChannelCategory.INTELLIGENCE)]
+        assert committed_visibility("transport", source, bindings) == "ws2"
 
     def test_a_detached_source_leaves_the_event_speaking_for_itself(self) -> None:
-        assert effective_visibility(_event("ws1", "x"), None) == Visibility.ALL
-        assert (
-            effective_visibility(_event("ws1", "x", visibility=Visibility.INTERNAL), None)
-            == Visibility.INTERNAL
-        )
+        assert committed_visibility(Visibility.INTERNAL, None, []) == Visibility.INTERNAL
 
 
 class TestVisibleEvents:
@@ -341,9 +358,14 @@ class TestVisibleEvents:
             recent_events=list(events),
         )
 
-    def test_a_binding_scope_hides_the_event_from_a_later_reader(self) -> None:
+    def test_the_stored_visibility_is_the_whole_answer(self) -> None:
+        """A binding changed after the commit changes nothing of the past
+        (RFC §7.5 rule 8): its events keep the visibility stamped on them."""
         ctx = self._context(
-            _event("ws1", "hidden"), _event("ws2", "shown"), ws1="ws2", ws2="all", reader="all"
+            _event("ws1", "hidden", visibility="ws2"),
+            _event("ws1", "shown"),
+            ws1="ws2",
+            reader="all",
         )
         assert [str(e.content.body) for e in visible_events(ctx, "reader")] == ["shown"]
 
@@ -351,9 +373,9 @@ class TestVisibleEvents:
         ctx = self._context(_event("reader", "mine"), reader="ws1", ws1="all")
         assert [str(e.content.body) for e in visible_events(ctx, "reader")] == ["mine"]
 
-    def test_an_unbound_reader_sees_only_what_it_produced(self) -> None:
+    def test_an_unbound_reader_is_handed_no_event(self) -> None:
         ctx = self._context(_event("ws1", "theirs"), _event("ghost", "mine"), ws1="all")
-        assert [str(e.content.body) for e in visible_events(ctx, "ghost")] == ["mine"]
+        assert visible_events(ctx, "ghost") == []
 
     def test_a_blocked_event_reaches_no_reader(self) -> None:
         ctx = self._context(

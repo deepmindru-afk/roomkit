@@ -550,8 +550,9 @@ class TestResponseVisibility:
 
         events = await kit.store.list_events("room-1")
         inbound = next(e for e in events if e.source.channel_id == "human")
-        assert inbound.visibility == "human,codex"
-        assert inbound.response_visibility == "human,codex"
+        # Stored in the normal form, the ids sorted (RFC §7.3).
+        assert inbound.visibility == "codex,human"
+        assert inbound.response_visibility == "codex,human"
         await kit.close()
 
     async def test_a_channel_that_resolved_one_keeps_it(self) -> None:

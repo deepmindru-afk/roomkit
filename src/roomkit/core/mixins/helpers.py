@@ -34,6 +34,7 @@ from roomkit.core.hooks import SyncPipelineResult
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundResult
 from roomkit.models.enums import (
+    Access,
     ChannelCategory,
     ChannelType,
     EventStatus,
@@ -83,11 +84,20 @@ def _refuses_writes(room: Room | None) -> bool:
 
 def _source_block_reason(binding: ChannelBinding | None) -> str | None:
     """Why an event from a source bound by *binding* is stored BLOCKED
-    (RFC §7.5 rule 2): ``source_muted`` or ``source_read_only`` for a source
-    that cannot write, ``None`` for one that can or has no binding."""
-    if binding is None or binding.can_write:
+    (RFC §7.5 rule 2), ``None`` for a source that can write.
+
+    ``source_unbound`` for a source with no binding in the room, such as a
+    channel the integrator detached (rule 7); ``source_read_only`` for an
+    access without writing, ``NONE`` included, which wins over a mute since
+    it is the lasting cause; ``source_muted`` for a muted source that could
+    write."""
+    if binding is None:
+        return "source_unbound"
+    if binding.can_write:
         return None
-    return "source_muted" if binding.muted else "source_read_only"
+    if binding.access not in (Access.READ_WRITE, Access.WRITE_ONLY):
+        return "source_read_only"
+    return "source_muted"
 
 
 if TYPE_CHECKING:

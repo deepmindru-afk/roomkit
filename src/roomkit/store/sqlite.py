@@ -46,7 +46,7 @@ from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import ConversationStore
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS rooms(
@@ -370,12 +370,66 @@ def _migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
         raise
 
 
+def _migrate_v6_to_v7(conn: sqlite3.Connection) -> None:
+    """An event's visibility is stamped at its commit (RFC §7.3): its own
+    intersected with its source binding's. An event stored ``all`` before
+    read its source binding's when history was rebuilt; it takes that
+    binding's now, once, so the stored field is the whole answer and its
+    readers stay the same. A message held for verification (§11.7.3)
+    records the visibility its release restores; a recorded ``all`` takes
+    the binding's too."""
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        # Another process may have migrated the file since it was opened.
+        if int(conn.execute("PRAGMA user_version").fetchone()[0]) >= 7:
+            conn.execute("COMMIT")
+            return
+        conn.execute(
+            """UPDATE events SET data = json_set(
+                   data, '$.metadata."roomkit:verification_held".visibility', (
+                       SELECT json_extract(b.data, '$.visibility') FROM bindings b
+                       WHERE b.room_id = events.room_id
+                         AND b.channel_id = events.source_channel_id))
+               WHERE json_extract(
+                       data, '$.metadata."roomkit:verification_held".visibility') = 'all'
+                 AND EXISTS (
+                     SELECT 1 FROM bindings b
+                     WHERE b.room_id = events.room_id
+                       AND b.channel_id = events.source_channel_id
+                       AND COALESCE(json_extract(b.data, '$.visibility'), 'all') <> 'all')"""
+        )
+        conn.execute(
+            """UPDATE events SET
+                   visibility = (
+                       SELECT json_extract(b.data, '$.visibility') FROM bindings b
+                       WHERE b.room_id = events.room_id
+                         AND b.channel_id = events.source_channel_id),
+                   data = json_set(data, '$.visibility', (
+                       SELECT json_extract(b.data, '$.visibility') FROM bindings b
+                       WHERE b.room_id = events.room_id
+                         AND b.channel_id = events.source_channel_id))
+               WHERE visibility = 'all'
+                 AND EXISTS (
+                     SELECT 1 FROM bindings b
+                     WHERE b.room_id = events.room_id
+                       AND b.channel_id = events.source_channel_id
+                       AND COALESCE(json_extract(b.data, '$.visibility'), 'all') <> 'all')"""
+        )
+        conn.execute("PRAGMA user_version=7")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
     3: _migrate_v3_to_v4,
     4: _migrate_v4_to_v5,
     5: _migrate_v5_to_v6,
+    6: _migrate_v6_to_v7,
 }
 """Each step takes a file from its version to the next."""
 

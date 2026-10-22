@@ -27,6 +27,7 @@ from roomkit.core.mixins.helpers import (
 )
 from roomkit.core.mixins.inbound_locked import _Blocked, _Ready
 from roomkit.core.task_utils import await_unless_cut, start_named
+from roomkit.core.visibility import with_committed_visibility
 from roomkit.models.delivery import DeliveryError, DeliveryResult
 from roomkit.models.enums import ChannelCategory, EventStatus, EventType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent, with_pipeline_id
@@ -148,6 +149,14 @@ class DeliverySource:
         binding there, or its id alone when the context holds none."""
         binding = next((b for b in context.bindings if b.channel_id == channel_id), None)
         return cls(binding=binding, context=context) if binding is not None else channel_id
+
+
+def _stamped(event: RoomEvent, source: DeliverySource | None) -> RoomEvent:
+    """*event* with the visibility it is committed with: its own narrowed by
+    its sender's binding (RFC §7.3), when the room binds the sender."""
+    if source is None:
+        return event
+    return with_committed_visibility(event, source.binding, source.context.bindings)
 
 
 def _delivery_source(context: RoomContext, channel_id: str) -> DeliverySource | None:
@@ -360,7 +369,7 @@ class LaneExecutionMixin(HelpersMixin):
                 resolved = _delivery_source(context, source)
                 committed = await self._commit_to_lane(
                     room_id,
-                    event,
+                    _stamped(event, resolved),
                     cascade,
                     self._plan_factory(resolved, exclude_delivery, hook_result),
                     policy_aware=policy_aware,
@@ -373,7 +382,7 @@ class LaneExecutionMixin(HelpersMixin):
             resolved = source
             committed = await self._commit_to_lane(
                 room_id,
-                event,
+                _stamped(event, resolved),
                 cascade,
                 self._plan_factory(resolved, exclude_delivery, hook_result),
                 policy_aware=policy_aware,
@@ -485,6 +494,11 @@ class LaneExecutionMixin(HelpersMixin):
         for injected in injected_events:
             event = with_pipeline_id(
                 injected.event.model_copy(update={"status": EventStatus.DELIVERED})
+            )
+            # Committed with its visibility narrowed by its source's binding,
+            # when the room binds its source (RFC §7.3).
+            event = with_committed_visibility(
+                event, context.get_binding(event.source.channel_id), context.bindings
             )
             target_ids = injected.target_channel_ids
 
@@ -724,7 +738,7 @@ class LaneExecutionMixin(HelpersMixin):
                 await self._get_router().react_for(
                     cascade, channel, plan.event, binding, plan.context, answers=False
                 )
-                if binding.category == ChannelCategory.TRANSPORT:
+                if binding.category == ChannelCategory.TRANSPORT and binding.sends:
                     await channel.deliver(plan.event, binding, plan.context)
             except Exception:
                 logger.exception(

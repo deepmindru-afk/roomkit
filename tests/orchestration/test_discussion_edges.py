@@ -17,8 +17,8 @@ from roomkit.memory.sliding_window import SlidingWindowMemory
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import (
+    Access,
     ChannelCategory,
-    ChannelDirection,
     EventType,
     HookExecution,
     HookTrigger,
@@ -784,7 +784,8 @@ async def test_an_agents_memory_learns_every_message_it_may_see() -> None:
 
 async def test_an_agent_the_room_never_delivers_to_learns_nothing_and_is_not_queued() -> None:
     """The router's delivery set decides who an event reaches: an agent bound
-    outbound only is neither handed the message nor queued by its name."""
+    write-only is neither handed the message nor queued by its name. A
+    binding's direction does not filter an intelligence channel (RFC §4.2)."""
     learned: list[str] = []
 
     class _Recording(SlidingWindowMemory):
@@ -801,7 +802,7 @@ async def test_an_agent_the_room_never_delivers_to_learns_nothing_and_is_not_que
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "chat")
     await kit.attach_channel(
-        "r1", "b", category=ChannelCategory.INTELLIGENCE, direction=ChannelDirection.OUTBOUND
+        "r1", "b", category=ChannelCategory.INTELLIGENCE, access=Access.WRITE_ONLY
     )
     await Discussion([a, b]).install(kit, "r1")
 

@@ -166,6 +166,13 @@ class ChannelBinding(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @property
+    def sends(self) -> bool:
+        """Whether the binding's direction delivers to the outside (RFC
+        §4.2): a transport is delivered to only when it sends. Every binding
+        that reads still receives through ``on_event()``."""
+        return self.direction in (ChannelDirection.OUTBOUND, ChannelDirection.BIDIRECTIONAL)
+
+    @property
     def can_write(self) -> bool:
         """RFC §7.5 — whether this binding may write events into the room.
 

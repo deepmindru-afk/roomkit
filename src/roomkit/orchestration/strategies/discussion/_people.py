@@ -13,13 +13,12 @@ from collections.abc import Collection, Sequence
 from roomkit._text import person_name
 from roomkit.channels._speaker import channel_label, label_name, turn_labels
 from roomkit.core._authors import People, source_of
-from roomkit.core.visibility import effective_visibility, visibility_allows
+from roomkit.core.visibility import visibility_allows
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import SYSTEM_SENDER_ID
 from roomkit.models.enums import (
     Access,
     ChannelCategory,
-    ChannelDirection,
     ParticipantRole,
     ParticipantStatus,
 )
@@ -42,16 +41,14 @@ their label and their source. Two sources behind one name make it ambiguous."""
 
 def sees(agent: str, event: RoomEvent, context: RoomContext) -> bool:
     """Whether *agent* may read *event*, as the router's delivery set says
-    (§10.1 step 12): a binding that reads and receives, and a scope that is
-    the event's own, else its source binding's (§7.5). A name is no way
-    around it. Where the event's plan is at hand, its targets say it."""
+    (§10.1 step 12): a binding that reads, and the event's visibility, its
+    own intersected with its source binding's at its commit (§7.3). A name
+    is no way around it. Where the event's plan is at hand, its targets say
+    it."""
     binding = context.get_binding(agent)
     if binding is None or binding.access not in _READS:
         return False
-    if binding.direction == ChannelDirection.OUTBOUND:
-        return False
-    scope = effective_visibility(event, context.get_binding(event.source.channel_id))
-    return visibility_allows(scope, binding)
+    return visibility_allows(event.visibility, binding)
 
 
 def is_person(event: RoomEvent, context: RoomContext) -> bool:

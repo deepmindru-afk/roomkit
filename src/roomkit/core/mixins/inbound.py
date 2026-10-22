@@ -427,8 +427,15 @@ class InboundMixin(HelpersMixin):
                 message.sender_id or "",
             )
 
-        # Let channel process inbound
-        event = await channel.handle_inbound(message, context)
+        # Let channel process inbound. A channel with no binding in the room
+        # (one the integrator detached, RFC §7.5 rule 7) parses its message
+        # seeing no event; its commit gate stores it ``source_unbound``.
+        parse_context = (
+            context
+            if context.get_binding(message.channel_id) is not None
+            else context.model_copy(update={"recent_events": []})
+        )
+        event = await channel.handle_inbound(message, parse_context)
 
         event = _apply_message_fields(event, message)
         event = with_pipeline_id(event)

@@ -152,16 +152,21 @@ async def test_detached_response_still_obeys_broadcast_hooks(blocked: bool) -> N
         release.set()
         result = await result.delivery.wait()
         assert len(inspected) == 1
-        assert [e.content.body for e in result.response_events] == (
-            [] if blocked else ["safe answer"]
-        )
+        # A detached source writes nothing into the room (RFC §7.5 rules 2
+        # and 7): its answer is the hooks' to decide, then stored refused.
+        assert result.response_events == []
         events = await kit.store.list_events(
             "room", event_filter=EventFilter(include_blocked=True)
         )
         response = next(e for e in events if e.source.channel_id == "assistant")
-        assert response.status == (EventStatus.BLOCKED if blocked else EventStatus.DELIVERED)
-        if not blocked:
-            assert response.content.body == "safe answer"
+        assert response.status == EventStatus.BLOCKED
+        if blocked:
+            assert response.blocked_by == "gate"
+        else:
+            assert (response.blocked_by, response.content.body) == (
+                "source_unbound",
+                "safe answer",
+            )
     finally:
         release.set()
         await kit.close()
