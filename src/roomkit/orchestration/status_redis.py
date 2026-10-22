@@ -27,7 +27,11 @@ RoomKit this means each worker re-emits all entries as ``status_posted``
 framework events, which is the point (distributed observability).
 Pub/sub is fire-and-forget: notifications published while a process is
 disconnected are lost, but the shared history remains available through
-``recent()``. If loss-free consumption is ever required, Redis Streams
+``recent()``. Every call gives up after 5 s on a connection a NAT or a load
+balancer forgot (half-open); the reader pings its connection after 5 s of
+silence and, with no answer within 5 s more, drops it, then reconnects and
+subscribes again, so a dead connection costs about 11 s of notifications
+and a warning, never a silent end. If loss-free consumption is ever required, Redis Streams
 (the ``RedisDeliveryBackend`` approach) is the upgrade path.
 """
 
@@ -39,6 +43,7 @@ import inspect
 import logging
 from typing import Any
 
+from roomkit._redis import PubSubWatch, client_options
 from roomkit.core.task_utils import cancel_and_wait
 from roomkit.orchestration.status_bus import StatusBackend, StatusCallback, StatusEntry
 
@@ -52,8 +57,11 @@ class RedisStatusBackend(StatusBackend):
     """Status bus backend backed by a capped Redis list + pub/sub.
 
     Args:
-        url: Redis connection URL (ignored if *client* is provided).
-        client: Inject an existing ``redis.asyncio.Redis`` instance.
+        url: Redis connection URL (ignored if *client* is provided). Its
+            query's options (``?socket_timeout=...``) take precedence over
+            the backend's bounds.
+        client: Inject an existing ``redis.asyncio.Redis`` instance; it
+            keeps its own options (redis-py before 8.0 bounds no call).
         key_prefix: Namespace for the list key and pub/sub channel.
         max_entries: Maximum entries retained in the shared history.
     """
@@ -78,7 +86,7 @@ class RedisStatusBackend(StatusBackend):
             self._client = client
             self._owns_client = False
         else:
-            self._client = _aioredis.from_url(url)
+            self._client = _aioredis.from_url(url, **client_options())
             self._owns_client = True
 
         self._entries_key = f"{key_prefix}:entries"
@@ -87,6 +95,7 @@ class RedisStatusBackend(StatusBackend):
         self._subscribers: list[StatusCallback] = []
         self._pubsub: Any = None
         self._reader_task: asyncio.Task[None] | None = None
+        self._watch = PubSubWatch("status bus pub/sub")
         self._lock = asyncio.Lock()
         self._confirmed = asyncio.Event()
         self._closed = False
@@ -194,9 +203,7 @@ class RedisStatusBackend(StatusBackend):
         """Reader loop dispatching pub/sub notifications to local callbacks."""
         while not self._closed:
             try:
-                message = await self._pubsub.get_message(
-                    ignore_subscribe_messages=False, timeout=1.0
-                )
+                message = await self._watch.read(self._pubsub, timeout=1.0)
             except asyncio.CancelledError:
                 raise
             except Exception:

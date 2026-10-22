@@ -21,7 +21,11 @@ Semantics
 Redis pub/sub is fire-and-forget: events published while a process is
 disconnected are lost, and there is no replay. That matches the
 ephemeral contract (RFC section 8.4) — typing indicators and presence
-are safe to drop. Local subscribers receive events through the Redis
+are safe to drop. Every call gives up after 5 s on a connection a NAT
+or a load balancer forgot (half-open); the reader pings its connection
+after 5 s of silence and, with no answer within 5 s more, drops it, then
+reconnects and subscribes again, so a dead connection costs about 11 s of
+events and a warning, never a silent end. Local subscribers receive events through the Redis
 round-trip, so delivery is asynchronous even within the publishing
 process (unlike ``InMemoryRealtime``).
 """
@@ -35,6 +39,7 @@ import logging
 from typing import Any
 from uuid import uuid4
 
+from roomkit._redis import PubSubWatch, client_options
 from roomkit.core.task_utils import cancel_and_wait
 from roomkit.realtime._subscription import _Subscription
 from roomkit.realtime.base import EphemeralCallback, EphemeralEvent, RealtimeBackend
@@ -63,8 +68,11 @@ class RedisRealtimeBackend(RealtimeBackend):
     lost (see module docstring).
 
     Args:
-        url: Redis connection URL (ignored if *client* is provided).
-        client: Inject an existing ``redis.asyncio.Redis`` instance.
+        url: Redis connection URL (ignored if *client* is provided). Its
+            query's options (``?socket_timeout=...``) take precedence over
+            the backend's bounds.
+        client: Inject an existing ``redis.asyncio.Redis`` instance; it
+            keeps its own options (redis-py before 8.0 bounds no call).
         channel_prefix: Namespace prepended to every Redis channel.
         max_queue_size: Maximum events queued per subscription; oldest
             events are dropped when full.
@@ -90,13 +98,14 @@ class RedisRealtimeBackend(RealtimeBackend):
             self._client = client
             self._owns_client = False
         else:
-            self._client = _aioredis.from_url(url)
+            self._client = _aioredis.from_url(url, **client_options())
             self._owns_client = True
 
         self._prefix = channel_prefix
         self._max_queue_size = max_queue_size
         self._pubsub: Any = None
         self._reader_task: asyncio.Task[None] | None = None
+        self._watch = PubSubWatch("realtime pub/sub")
         self._lock = asyncio.Lock()
         self._subscriptions: dict[str, _Subscription] = {}
         self._channels: dict[str, set[str]] = {}  # logical channel -> subscription_ids
@@ -238,9 +247,7 @@ class RedisRealtimeBackend(RealtimeBackend):
         """Single reader loop dispatching pub/sub messages to subscriptions."""
         while not self._closed:
             try:
-                message = await self._pubsub.get_message(
-                    ignore_subscribe_messages=False, timeout=1.0
-                )
+                message = await self._watch.read(self._pubsub, timeout=1.0)
             except asyncio.CancelledError:
                 raise
             except Exception:

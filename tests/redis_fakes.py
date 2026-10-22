@@ -19,6 +19,8 @@ class FakePubSub:
         self.unsubscribed: list[str] = []
         self.closed = False
         self.confirm_subscribes = True
+        # No connection to watch: a reader never pings a fake.
+        self.connection = None
 
     async def subscribe(self, channel: str) -> None:
         self.subscribed.append(channel)

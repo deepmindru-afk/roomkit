@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -56,6 +57,12 @@ def _make_backend(client: AsyncMock | None = None):
     return backend, mock_client
 
 
+async def _reads_nothing(*args: object, block: int | None = None, **kwargs: object) -> list:
+    """An XREADGROUP that finds nothing: it waits its *block*, as Redis does."""
+    await asyncio.sleep((block or 0) / 1000)
+    return []
+
+
 def _make_item(**kwargs) -> DeliveryItem:
     return DeliveryItem(room_id="r1", content="hello", **kwargs)
 
@@ -108,16 +115,31 @@ class TestDequeue:
 
     async def test_calls_xreadgroup_with_correct_args(self) -> None:
         backend, client = _make_backend()
-        client.xreadgroup = AsyncMock(return_value=[])
-        await backend.dequeue("w1", batch_size=3, timeout=2.0)
+        client.xreadgroup = AsyncMock(side_effect=_reads_nothing)
+        await backend.dequeue("w1", batch_size=3, timeout=0.5)
 
         client.xreadgroup.assert_called_once_with(
             backend._group,
             "w1",
             {"roomkit:delivery:pending": ">"},
             count=3,
-            block=2000,
+            block=500,
         )
+
+    async def test_a_wait_longer_than_a_read_slice_reads_in_slices(self) -> None:
+        """No read outlasts a slice, so none outlasts its client's call bound
+        on a half-open connection (RMK-868); the wait still lasts its timeout."""
+        backend, client = _make_backend()
+        # The private copy's own globals: what its dequeue reads.
+        type(backend).dequeue.__globals__["_READ_SLICE_S"] = 0.1
+        client.xreadgroup = AsyncMock(side_effect=_reads_nothing)
+
+        assert await backend.dequeue("w1", timeout=0.35) == []
+
+        blocks = [call.kwargs["block"] for call in client.xreadgroup.call_args_list]
+        assert len(blocks) >= 3
+        assert max(blocks) <= 100
+        assert sum(blocks) >= 300
 
     async def test_tracks_entry_id(self) -> None:
         backend, client = _make_backend()
@@ -158,10 +180,11 @@ class TestDequeue:
             return [0, 60_000] if script == PROMOTE else 1
 
         client.eval.side_effect = promote_far_off
+        client.xreadgroup = AsyncMock(side_effect=_reads_nothing)
 
-        assert await backend.dequeue("w1", timeout=2.0) == []
+        assert await backend.dequeue("w1", timeout=0.5) == []
         client.xreadgroup.assert_called_once()
-        assert client.xreadgroup.call_args.kwargs["block"] == 2000
+        assert client.xreadgroup.call_args.kwargs["block"] == 500
 
     async def test_parses_string_mode_response(self) -> None:
         """redis-py with decode_responses=True returns strings, not bytes."""

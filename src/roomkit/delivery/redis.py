@@ -24,6 +24,7 @@ import math
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from roomkit._redis import client_options
 from roomkit.core.task_utils import cancel_and_wait
 from roomkit.delivery._redis_scripts import PROMOTE, RENEW, TRANSITION
 from roomkit.delivery.base import (
@@ -43,6 +44,24 @@ logger = logging.getLogger("roomkit.delivery.redis")
 # Shortest wait for a retry about to fall due: a pass costs a round trip.
 _MIN_BLOCK_MS = 10
 
+_READ_SLICE_S = 1.0
+"""The longest a read waits for new work: ``dequeue()`` waits in slices of
+it, so no read outlasts its client's call bound, on any redis-py version."""
+
+
+def _read_block_ms(remaining: float, next_due_ms: int | None) -> int | None:
+    """How long one read for new work waits, in ms: until the wait's
+    *remaining* seconds end, a retry falls due (*next_due_ms*), or a read
+    slice ends, whichever comes first; ``None`` reads without waiting."""
+    if remaining <= 0:
+        return None
+    block = min(remaining, _READ_SLICE_S) * 1000
+    # XREADGROUP does not wake for the delayed set: a retry falling due
+    # first cuts the read short, and the next pass queues it.
+    if next_due_ms is not None:
+        block = min(block, max(_MIN_BLOCK_MS, next_due_ms))
+    return max(1, int(block))
+
 
 class RedisDeliveryBackend(DeliveryBackend):
     """Redis Streams delivery backend with consumer groups.
@@ -50,9 +69,20 @@ class RedisDeliveryBackend(DeliveryBackend):
     Items are serialized as JSON and stored in a Redis Stream.
     Consumer groups distribute items across workers automatically.
 
+    Every call gives up after 6 s (5 s, and the second a read for new work
+    waits) on a connection a NAT or a load balancer forgot (half-open), and
+    is tried again on a new one: the worker loop's next pass, the next
+    renewal. A live worker keeps its leases across such a connection while
+    *claim_idle_seconds* stays above three times that bound (18 s; 60 s by
+    default).
+
     Args:
-        url: Redis connection URL (ignored if *client* is provided).
-        client: Inject an existing ``redis.asyncio.Redis`` instance.
+        url: Redis connection URL (ignored if *client* is provided). Its
+            query's options (``?socket_timeout=...``) take precedence over
+            the backend's bounds; one under a second fails idle reads.
+        client: Inject an existing ``redis.asyncio.Redis`` instance; it
+            keeps its own options (redis-py before 8.0 bounds no call): give
+            it a ``socket_timeout`` over a second.
         stream_prefix: Namespace for stream keys.
         group_name: Consumer group name — all workers in the same
             group share the workload.
@@ -99,7 +129,7 @@ class RedisDeliveryBackend(DeliveryBackend):
             self._client = client
             self._owns_client = False
         else:
-            self._client = _aioredis.from_url(url)
+            self._client = _aioredis.from_url(url, **client_options(_READ_SLICE_S))
             self._owns_client = True
 
         self._pending_key = f"{stream_prefix}:pending"
@@ -136,18 +166,10 @@ class RedisDeliveryBackend(DeliveryBackend):
         remaining = timeout
         while True:
             next_due_ms = await self._promote_due(batch_size)
-            # A retry falling due before the wait ends cuts the wait short:
-            # XREADGROUP does not wake for the delayed set, only the next pass does.
-            retry_first = (
-                remaining > 0 and next_due_ms is not None and next_due_ms < remaining * 1000
-            )
-            if retry_first:
-                block: int | None = max(_MIN_BLOCK_MS, next_due_ms or 0)
-            else:
-                block = max(1, int(remaining * 1000)) if remaining > 0 else None
+            block = _read_block_ms(remaining, next_due_ms)
             resp = await self._claim_or_read(worker_id, batch_size, block)
             remaining = deadline - loop.time()
-            if resp or not retry_first or remaining <= 0:
+            if resp or remaining <= 0:
                 break
         if not resp:
             return []

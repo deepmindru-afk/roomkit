@@ -68,6 +68,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `RedisDeliveryBackend`, `RedisStatusBackend` and `RedisRealtimeBackend`
+  survive a connection a NAT or a load balancer forgot (half-open) (RMK-868).
+  Their clients bound every call at 5 s, the bound redis-py 8 sets, on every
+  redis-py version: before 8.0 a call waited about 15 minutes for TCP, so a
+  delivery worker's lease renewal stalled and another worker ran its
+  deliveries again. The delivery queue's `dequeue()` now waits in reads of a
+  second at most until its timeout, so its client gives a dead connection up
+  after 6 s; this also stops `dequeue(timeout=...)` over 5 s raising
+  `TimeoutError` on redis-py 8. The two pub/sub readers ping their connection
+  after 5 s of silence and drop it when no answer comes within 5 s more, then
+  reconnect and subscribe again with a warning: before, a silent pub/sub
+  connection stopped delivering status entries and realtime events without
+  any error, on every version (`health_check_interval` does not detect it).
+  A client passed as `client=` keeps its own options.
+
 - A voice channel's record of a cut answer carries `played_percentage` once
   the answer's synthesis ended before the cut (RFC §12.3.13): the
   utterance's total duration was never set, so the share was never written.
