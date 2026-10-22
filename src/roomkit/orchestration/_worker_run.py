@@ -138,7 +138,7 @@ async def run_worker(
     post(StatusLevel.PENDING, task)
     # The run learns its task once it ends, before the cut that timed it out
     # or cancelled it reaches the run: its terminal entry then names it.
-    delegation = {**delegation, "on_complete": post.task_ended}
+    delegation = {**delegation, "on_complete": post.task_ended_then(delegation.get("on_complete"))}
     return await _posted(
         post, status, _delegate(kit, room_id, worker_id, task, timeout, delegation)
     )
@@ -224,10 +224,19 @@ class _Posts:
         self._status = status
         self._task_id = task_id
 
-    async def task_ended(self, result: DelegatedTaskResult) -> None:
-        """Remember the task the run's delegation ended, so the run's terminal
-        entry names it however the run itself ends."""
-        self._task_id = result.task_id
+    def task_ended_then(
+        self, on_complete: Callable[[DelegatedTaskResult], Awaitable[None]] | None
+    ) -> Callable[[DelegatedTaskResult], Awaitable[None]]:
+        """The completion callback that remembers the task the run's
+        delegation ended, so the run's terminal entry names it however the
+        run itself ends, then calls *on_complete*, the caller's, when given."""
+
+        async def ended(result: DelegatedTaskResult) -> None:
+            self._task_id = result.task_id
+            if on_complete is not None:
+                await on_complete(result)
+
+        return ended
 
     def __call__(
         self,

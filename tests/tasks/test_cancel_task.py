@@ -144,6 +144,32 @@ async def test_two_cancels_at_once_cancel_the_task_once(second: str) -> None:
     assert room.kit._task_cancels == {}
 
 
+@pytest.mark.parametrize("first", ["host", "agent"])
+async def test_the_host_and_an_agent_cancelling_at_once_cancel_once(first: str) -> None:
+    """RMK-874 review: the host's cancel_task and an agent's at once, in
+    either order: one cancellation, both told it was cancelled, the agent the
+    result was going to not handed it back."""
+    room = await _Room(_Endless()).open()
+    task = await room.running_task()
+    tool = CancelTaskTool(room.kit)
+
+    async def host() -> bool:
+        return await room.kit.cancel_task(task.id)
+
+    calls = [host(), _cancel(tool, task.id, channel_id="speaker")]
+    if first == "agent":
+        calls.reverse()
+    answers = await asyncio.gather(*calls)
+    await until(lambda: bool(room.ended), timeout=5)
+    await asyncio.sleep(0.1)  # a hand-back would be under way by now
+    await room.kit.close()
+
+    host_said, agent_said = answers if first == "host" else answers[::-1]
+    assert (host_said, agent_said["status"]) == (True, "cancelled")
+    assert [e["task_status"] for e in room.ended] == [TaskStatus.CANCELLED]
+    assert room.handed_back == []
+
+
 async def test_a_task_the_host_cancels_is_still_handed_back_to_the_agent() -> None:
     room = await _Room(_Endless()).open()
     task = await room.running_task()

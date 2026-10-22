@@ -23,9 +23,10 @@ class TaskRunner(ABC):
     A task ends exactly once, through *on_complete*, whatever ends it (RFC
     §23.1, §23.3): run to its end, it ends completed or failed; cancelled
     (:meth:`cancel`, :meth:`close`, even before it ran), it ends with a
-    ``cancelled`` result (:func:`~roomkit.tasks.models.cancelled_task_fields`).
-    The framework closes the task's span, fires ``ON_TASK_COMPLETED`` and
-    hands the result back from that call.
+    ``cancelled`` result (:func:`~roomkit.tasks.models.cancelled_task_fields`);
+    its run raising outside its turn's outcome, it ends failed with what was
+    raised. The framework closes the task's span, fires ``ON_TASK_COMPLETED``
+    and hands the result back from that call.
 
     The worker is given ``task.description``, what it reads (the brief,
     else the task, with the room's conversation when the delegation hands
@@ -43,6 +44,9 @@ class TaskRunner(ABC):
         on_complete: OnCompleteCallback | None = None,
     ) -> None:
         """Start background execution of *task*.
+
+        A submit that raises has not taken the task: the framework ends it
+        failed itself, so the runner must never end it too (RFC §23.3).
 
         Args:
             kit: The RoomKit instance (used to interact with rooms/channels).

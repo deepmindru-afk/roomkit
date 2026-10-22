@@ -464,7 +464,7 @@ class DelegationMixin(HelpersMixin):
                     max_result_retries=max_result_retries,
                     result_tool=result_tool,
                 )
-            # A task its runner refused never started: it ends here.
+            # A task its runner refused never started: the except below ends it.
             return await self._run_background(handle, context, notify, on_complete, span)
         except BaseException as exc:
             if not started:
@@ -684,8 +684,9 @@ class DelegationMixin(HelpersMixin):
         result_tool: ResultTool | None,
     ) -> None:
         """Run an inline task's turn and end it, as one run the kit holds: a
-        cut from its caller or from the kit's close ends it cancelled, its
-        completion run to its end (RFC §23.3)."""
+        cut from its caller or from the kit's close ends it cancelled, a raise
+        outside its turn's outcome failed, its completion run to its end (RFC
+        §23.3)."""
         turns: TurnEntries = {}
         turn = self._child_turn(
             handle,
@@ -848,12 +849,13 @@ class DelegationMixin(HelpersMixin):
         ``ON_TASK_COMPLETED`` fires, the StatusBus posts its end, and the
         channel its result was going to is told it was cancelled. A task that
         already ended, or that the framework's task runner does not hold (an
-        inline delegation), is left as it stands.
+        inline delegation), is left as it stands. Calls cancelling it at once,
+        this one and an agent's ``cancel_task`` among them, cancel it once.
 
         Returns:
             ``True`` when the task was running and is now cancelled.
         """
-        return await self._task_runner.cancel(task_id)
+        return await self._cancel_joined(task_id, None)
 
     async def _cancel_task_for(
         self, task_id: str, channel_id: str | None, *, room_id: str
@@ -865,6 +867,12 @@ class DelegationMixin(HelpersMixin):
         each answered as the first is (RFC §23.4)."""
         if self._room_tasks.reach(task_id, room_id) != "tool":
             return False
+        return await self._cancel_joined(task_id, channel_id)
+
+    async def _cancel_joined(self, task_id: str, channel_id: str | None) -> bool:
+        """Cancel *task_id* once, whichever doors ask at once (the host's, an
+        agent's ``cancel_task``), each answered as the first is; *channel_id*,
+        a calling agent, is not handed the cancellation back (RFC §23.4)."""
         under_way = self._task_cancels.get(task_id)
         if under_way is None:
             return await self._cancel_first(task_id, channel_id)
@@ -873,8 +881,8 @@ class DelegationMixin(HelpersMixin):
         return await asyncio.shield(under_way.cancelled)
 
     async def _cancel_first(self, task_id: str, channel_id: str | None) -> bool:
-        """Cancel *task_id* for the first ``cancel_task`` call asking, its
-        outcome kept for the calls asking meanwhile."""
+        """Cancel *task_id* for the first call asking, its outcome kept for
+        the calls asking meanwhile."""
         cancel = self._task_cancels[task_id] = TaskCancel(channel_id)
         cancelled = False
         try:

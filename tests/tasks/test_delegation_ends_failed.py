@@ -130,4 +130,7 @@ async def test_a_background_run_that_raises_outside_its_turn_s_outcome_ends_fail
 
     assert result.status == TaskStatus.FAILED
     await _assert_ended_failed(room, telemetry, completed)
+    # No caller holds the error: the notified channel is told it failed.
+    await until(lambda: bool(room.handed_back), timeout=5)
+    assert room.handed_back[0]["task_status"] == "failed"
     await room.kit.close()
