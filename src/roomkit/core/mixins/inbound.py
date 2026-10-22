@@ -9,7 +9,7 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._runtime_record import RUNTIME_RECORD
-from roomkit.core._delivery_keys import DeliveryKeys
+from roomkit.core._delivery_keys import DeliveryKeys, NamedDelivery
 from roomkit.core.exceptions import ChannelNotRegisteredError, RoomNotFoundError
 from roomkit.core.inbound_router import (
     binding_admits,
@@ -261,12 +261,19 @@ class InboundMixin(HelpersMixin):
         *organization_id* is the organization the caller acts for (RFC
         §17.2): only the deliveries of its rooms are cancelled, so two
         tenants that chose the same key never cancel each other's. Left
-        unset, every delivery the key names in the process is.
+        unset, every delivery the key names in the process is. A delivery
+        whose ``process_inbound`` named no organization has no room known
+        before its commit: a scoped cancellation reaching it earlier is
+        applied at the commit if the room is the organization's, and is not
+        counted. Pass ``organization_id`` to ``process_inbound`` too, and
+        the count is exact from the call's start.
 
+        A key names its delivery from the start of ``process_inbound``.
         Each delivery's agents stop: a turn not started yet never starts, a
         running one is cut, and nothing answers it after. The message itself
         is still delivered to the room's other channels and its
-        AFTER_BROADCAST hooks fire. Returns at once, from anywhere in the
+        AFTER_BROADCAST hooks fire; one cancelled before its commit is
+        committed all the same. Returns at once, from anywhere in the
         process, a tool handler included; each delivery's caller reads its
         cancelled end on its result, as after ``result.delivery.cancel()``.
 
@@ -290,7 +297,34 @@ class InboundMixin(HelpersMixin):
         defer_delivery: bool,
         organization_id: str | None = None,
     ) -> InboundResult:
-        """Inner inbound processing (extracted for telemetry wrapping)."""
+        """Inner inbound processing (extracted for telemetry wrapping), its
+        delivery named by the message's key from the call's start (RFC
+        §10.1): nothing awaited before this point."""
+        with self._delivery_keys.naming(message.delivery_key, organization_id) as named:
+            return await self._route_and_deliver(
+                message,
+                channel,
+                room_id,
+                telemetry,
+                inbound_span_id,
+                defer_delivery,
+                named,
+                organization_id=organization_id,
+            )
+
+    async def _route_and_deliver(
+        self,
+        message: InboundMessage,
+        channel: Channel,
+        room_id: str | None,
+        telemetry: Any,
+        inbound_span_id: str,
+        defer_delivery: bool,
+        named: NamedDelivery,
+        *,
+        organization_id: str | None,
+    ) -> InboundResult:
+        """RFC §10.1 steps 1-18 for *message*, whose delivery *named* names."""
 
         # Route to room (or auto-create). Deliberately outside the pre-commit
         # window below: routing is RFC §10.1 steps 1-2, the phase
@@ -334,6 +368,7 @@ class InboundMixin(HelpersMixin):
             channel,
             room_id,
             deadline,
+            named,
             defer_delivery=defer_delivery,
         )
 
@@ -418,6 +453,7 @@ class InboundMixin(HelpersMixin):
         channel: Channel,
         room_id: str,
         deadline: float,
+        named: NamedDelivery,
         *,
         defer_delivery: bool = False,
     ) -> InboundResult:
@@ -430,12 +466,13 @@ class InboundMixin(HelpersMixin):
         remains on the pre-commit gates and stops there. That timeout never
         invalidates a committed event. Explicit caller cancellation instead
         stops the message's turns, retaining the committed timeline record.
+        The cascade becomes the delivery *named* since the call's start,
+        cancelled before its commit when a cancellation reached it earlier.
         """
         from roomkit.core.lanes import DeliveryCascade
 
         cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
-        organization_id = context.room.organization_id if context.room else None
-        self._delivery_keys.hold(message.delivery_key, cascade, organization_id)
+        named.attach(cascade, context.room.organization_id if context.room else None)
         try:
             result = await self._complete_inbound_delivery(
                 event,

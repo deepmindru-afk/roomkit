@@ -72,6 +72,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the answer's synthesis ended before the cut (RFC §12.3.13): the
   utterance's total duration was never set, so the share was never written.
 
+- A `delivery_key` names its message's delivery from the start of
+  `process_inbound`, as documented (RMK-899, RFC §10.1), no longer from its
+  commit only. A `kit.cancel_delivery(key)` reaching the call while it routed
+  the message, parsed it or resolved its sender answered 0, and the agent's
+  turn then ran to its end. It now counts that delivery and applies the
+  cancellation when the call commits: the message is committed and delivered
+  to the room's other channels, its turns never start, and the result carries
+  `cancellation_reason`. An awaited call cancelled so returns without waiting
+  for a turn ahead of it in the room's lane, as one cancelled just after its
+  commit does. A call that does not pass `organization_id` has no room known
+  before its commit: a cancellation scoped to an organization reaching it
+  then is applied at the commit if the room is that organization's, and is
+  not counted; pass `organization_id` to `process_inbound` too for a count
+  exact from the call's start.
+
 - In continuous mode, an acknowledgement whose first partial was taken for
   the response's echo ("Ou" for the response's "où") fires ON_BACKCHANNEL
   once, as RFC §12.3.13 says, not twice (RMK-892). Its final, judged whole,

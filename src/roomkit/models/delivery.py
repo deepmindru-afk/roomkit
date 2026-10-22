@@ -118,11 +118,13 @@ class InboundMessage(BaseModel):
     # pass that must start from a blank page — a summary re-run that would
     # otherwise read, and copy, its previous answer. Instructions only.
     standalone: bool = False
-    # A key the caller chooses that names this message's delivery while it
-    # runs (RFC §10.1): ``kit.cancel_delivery(key)`` cancels it from anywhere
-    # in the process, without the handle, so an agent's tool can pass it on
-    # as text. The agents it asks stop, queued or running; the message itself
-    # is still delivered. Several messages may share one key. Never stored;
+    # A key the caller chooses that names this message's delivery from the
+    # start of ``process_inbound`` until the delivery is over (RFC §10.1):
+    # ``kit.cancel_delivery(key)`` cancels it from anywhere in the process,
+    # without the handle, so an agent's tool can pass it on as text. The
+    # agents it asks stop, queued or running, or never start when the cancel
+    # comes before the commit; the message itself is still committed and
+    # delivered. Several messages may share one key. Never stored;
     # it names, it does not authorize: check who may cancel before calling.
     delivery_key: str | None = None
 

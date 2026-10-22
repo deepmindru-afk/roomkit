@@ -24,6 +24,8 @@ from acp.schema import PromptResponse
 
 from roomkit import Agent, ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit
 from roomkit.channels.base import Channel
+from roomkit.core.exceptions import RoomNotFoundError
+from roomkit.identity.mock import MockIdentityResolver
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage, InboundResult
@@ -32,6 +34,7 @@ from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.hook import InjectedEvent
 from roomkit.providers.ai.base import AIContext, AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.store.memory import InMemoryStore
 from roomkit.turns import InMemoryTurnBackend
 from roomkit.turns.base import TurnLink
 from roomkit.turns.wire import TurnRequest
@@ -204,16 +207,22 @@ class Room:
 
 
 async def _room(
-    path: str, tmp_path: Path, *, turn_backend: InMemoryTurnBackend | None = None
+    path: str,
+    tmp_path: Path,
+    *,
+    turn_backend: InMemoryTurnBackend | None = None,
+    sms: Channel | None = None,
+    organization_id: str | None = None,
+    **options: Any,
 ) -> Room:
     seen = Seen()
-    kit = RoomKit(turn_backend=turn_backend)
+    kit = RoomKit(turn_backend=turn_backend, **options)
     ws = _Transport()
-    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(sms or SimpleChannel("sms"))
     kit.register_channel(ws)
     agent = PATHS[path](seen, tmp_path)
     kit.register_channel(agent)
-    await kit.create_room(room_id="r")
+    await kit.create_room(room_id="r", organization_id=organization_id)
     await kit.attach_channel("r", "sms")
     await kit.attach_channel("r", "ws")
     await kit.attach_channel("r", agent.channel_id, category=ChannelCategory.INTELLIGENCE)
@@ -648,3 +657,226 @@ async def test_a_cancel_for_an_organization_reaches_only_its_rooms(tmp_path: Pat
         for gate in seen.gates.values():
             gate.set()
         await kit.close()
+
+
+# -- before its commit: the key names the delivery from the call's start --------------
+
+
+@dataclass
+class _Pause:
+    """A point before the commit (RFC §10.1 steps 1-5) where the next call
+    waits, once armed, until let go."""
+
+    armed: bool = False
+    reached: asyncio.Event = field(default_factory=asyncio.Event)
+    go: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def here(self) -> None:
+        if not self.armed:
+            return
+        self.armed = False
+        self.reached.set()
+        await self.go.wait()
+
+    async def until_reached(self) -> None:
+        async with asyncio.timeout(WAIT):
+            await self.reached.wait()
+
+
+class _RoutingStore(InMemoryStore):
+    """Routing (step 2) asks the store whether the channel is bound."""
+
+    def __init__(self, pause: _Pause) -> None:
+        super().__init__()
+        self._pause = pause
+
+    async def binding_exists(self, room_id: str, channel_id: str) -> bool:
+        await self._pause.here()
+        return await super().binding_exists(room_id, channel_id)
+
+
+class _ParsingChannel(SimpleChannel):
+    """The channel's own parsing of the message (step 4)."""
+
+    def __init__(self, pause: _Pause) -> None:
+        super().__init__("sms")
+        self._pause = pause
+
+    async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
+        await self._pause.here()
+        return await super().handle_inbound(message, context)
+
+
+class _IdentifyingResolver(MockIdentityResolver):
+    """Identity resolution (step 5): the sender stays unknown, so every
+    message asks again."""
+
+    def __init__(self, pause: _Pause) -> None:
+        super().__init__()
+        self._pause = pause
+
+    async def resolve(self, message: InboundMessage, context: RoomContext) -> Any:
+        await self._pause.here()
+        return await super().resolve(message, context)
+
+
+PAUSES: dict[str, Callable[[_Pause], dict[str, Any]]] = {
+    "routing": lambda pause: {"store": _RoutingStore(pause)},
+    "parsing": lambda pause: {"sms": _ParsingChannel(pause)},
+    "identity": lambda pause: {"identity_resolver": _IdentifyingResolver(pause)},
+}
+
+
+@pytest.fixture(params=sorted(PAUSES))
+def step(request: pytest.FixtureRequest) -> str:
+    return str(request.param)
+
+
+async def _paused(path: str, tmp_path: Path, step: str, **options: Any) -> tuple[Room, _Pause]:
+    pause = _Pause()
+    return await _room(path, tmp_path, **PAUSES[step](pause), **options), pause
+
+
+def _task(body: str, key: str) -> InboundMessage:
+    return InboundMessage(
+        channel_id="sms", sender_id="user", content=TextContent(body=body), delivery_key=key
+    )
+
+
+async def test_a_delivery_cancelled_before_its_commit_starts_no_turn(
+    path: str, step: str, tmp_path: Path
+) -> None:
+    """A cancel that reaches the call while it routes, parses or identifies
+    its message is the delivery's: the message is committed and delivered
+    all the same, and its turn never starts."""
+    room, pause = await _paused(path, tmp_path, step)
+    try:
+        pause.armed = True
+        call = asyncio.create_task(room.send("task A", "a"))
+        await pause.until_reached()
+
+        assert await room.kit.cancel_delivery("a", reason="stopped") == 1
+        pause.go.set()
+        result = await asyncio.wait_for(call, WAIT)
+        assert result.delivery is not None
+        done = await asyncio.wait_for(result.delivery.wait(), WAIT)
+        await room.until_broadcast("task A")
+
+        assert done.cancellation_reason == "stopped"
+        assert room.seen.started == []
+        assert room.delivered() == ["task A"]
+        await _settled(lambda: not room.kit._delivery_keys._named)
+    finally:
+        await _closed(room)
+
+
+async def test_an_awaited_call_cancelled_before_its_commit_waits_for_no_turn(
+    step: str, tmp_path: Path
+) -> None:
+    """Queued behind the room's running turn, an awaited call cancelled
+    before its commit returns at once, as one cancelled just after it does:
+    its plan waiting in the lane is not its turns' work."""
+    room, pause = await _paused("agent", tmp_path, step)
+    try:
+        await room.send("task A", "a")
+        await room.seen.until_started("task A")
+        pause.armed = True
+        call = asyncio.create_task(room.kit.process_inbound(_task("task B", "b"), room_id="r"))
+        await pause.until_reached()
+
+        assert await room.kit.cancel_delivery("b", reason="stopped") == 1
+        pause.go.set()
+        result = await asyncio.wait_for(call, WAIT)
+
+        assert result.cancellation_reason == "stopped"
+        assert room.seen.finished == []
+        room.seen.gate("task A").set()
+        await room.until_broadcast("task B")
+        assert room.seen.started == ["task A"]
+    finally:
+        await _closed(room)
+
+
+@pytest.mark.parametrize(
+    ("call_scope", "cancel_scope", "counted", "stopped"),
+    [
+        pytest.param("org-1", "org-1", 1, True, id="named-its-organization"),
+        pytest.param(None, "org-1", 0, True, id="located-at-its-commit"),
+        pytest.param(None, "org-2", 0, False, id="unscoped-other-organization"),
+        pytest.param("org-1", "org-2", 0, False, id="scoped-other-organization"),
+    ],
+)
+async def test_a_scoped_cancel_before_the_commit_reaches_only_its_organization(
+    call_scope: str | None, cancel_scope: str, counted: int, stopped: bool, tmp_path: Path
+) -> None:
+    """A call that names its organization is that organization's from its
+    start, so a cancel for it is counted at once. One that does not is
+    located at its commit: a cancel for its room's organization is applied
+    then, uncounted, since until then it is no organization's; another
+    organization's never reaches it."""
+    room, pause = await _paused("steerless", tmp_path, "identity", organization_id="org-1")
+    try:
+        pause.armed = True
+        call = asyncio.create_task(
+            room.kit.process_inbound(
+                _task("task A", "t"),
+                room_id="r",
+                organization_id=call_scope,
+                defer_delivery=True,
+            )
+        )
+        await pause.until_reached()
+
+        cancelled = await room.kit.cancel_delivery(
+            "t", reason="stopped", organization_id=cancel_scope
+        )
+        assert cancelled == counted
+        room.seen.gate("task A").set()
+        pause.go.set()
+        result = await asyncio.wait_for(call, WAIT)
+        assert result.delivery is not None
+        done = await asyncio.wait_for(result.delivery.wait(), WAIT)
+        await room.until_broadcast("task A")
+
+        assert done.cancellation_reason == ("stopped" if stopped else None)
+        assert room.seen.started == ([] if stopped else ["task A"])
+    finally:
+        await _closed(room)
+
+
+async def test_a_call_refused_before_its_commit_names_nothing_after(tmp_path: Path) -> None:
+    """A room of another organization is not found to the call: its key
+    names nothing once the call has raised."""
+    room = await _room("steerless", tmp_path, organization_id="org-1")
+    try:
+        with pytest.raises(RoomNotFoundError):
+            await room.kit.process_inbound(
+                _task("task A", "t"), room_id="r", organization_id="org-2"
+            )
+
+        assert room.kit._delivery_keys._named == {}
+        assert await room.kit.cancel_delivery("t") == 0
+    finally:
+        await _closed(room)
+
+
+async def test_a_cancelled_call_that_times_out_before_its_commit_names_nothing_after(
+    tmp_path: Path,
+) -> None:
+    """A call refused before its commit (its pre-commit budget spent) is
+    refused, whatever cancel reached it: no delivery, and its key released."""
+    room, pause = await _paused("steerless", tmp_path, "parsing", process_timeout=0.2)
+    try:
+        pause.armed = True
+        call = asyncio.create_task(room.send("task A", "a"))
+        await pause.until_reached()
+
+        assert await room.kit.cancel_delivery("a") == 1
+        result = await asyncio.wait_for(call, WAIT)
+
+        assert result.blocked and result.delivery is None
+        assert room.kit._delivery_keys._named == {}
+        assert room.seen.started == []
+    finally:
+        pause.go.set()
+        await _closed(room)

@@ -339,7 +339,7 @@ kit = RoomKit(
 | Method | Description |
 |--------|-------------|
 | `process_inbound(message, room_id?, defer_delivery=False)` | Process an inbound message; deferred results are backfilled by `DeliveryHandle.wait()` |
-| `cancel_delivery(key, *, reason="caller_cancelled", organization_id=None)` | Stop the turns of the deliveries in flight of the messages sent with `delivery_key=key` (of the organization's rooms when given); the messages are still delivered; returns how many it cancelled |
+| `cancel_delivery(key, *, reason="caller_cancelled", organization_id=None)` | Stop the turns of the deliveries in flight of the messages sent with `delivery_key=key`, from the start of `process_inbound` (of the organization's rooms when given); the messages are still delivered; returns how many it cancelled |
 | `regenerate_response(room_id, *, trigger_id=None)` | Re-run the intelligence channel on the newest accepted transport message; `InboundResult(blocked=True, reason="room_closed")` on a closed or archived room; with `trigger_id`, `reason="trigger_moved"` when the selection under the lock is no longer that event |
 | `regenerate_target(room_id)` | The event `regenerate_response` would replay, or `None`; raises `RoomClosedError` when the room refuses events |
 

@@ -349,9 +349,12 @@ class DeliveryCascade:
             raise asyncio.CancelledError
 
     def retain(self) -> None:
-        """Account one pending unit. Call before any await can fail."""
+        """Account one pending unit. Call before any await can fail. A
+        cancelled cascade holds no waiter, whether it was cancelled before
+        or after its units were retained (RFC §10.1)."""
         self._pending += 1
-        self._done.clear()
+        if self.cancelled is None:
+            self._done.clear()
 
     def release(self) -> None:
         """Release one unit; the last release resolves ``wait()``."""
