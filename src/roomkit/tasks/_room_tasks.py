@@ -58,10 +58,6 @@ class RoomTaskRecord:
         if len(self._ended) > ENDED_ROOM_TASKS_KEPT:
             del self._ended[next(iter(self._ended))]
 
-    def forget(self, task_id: str) -> None:
-        """*task_id* never ran: its submit failed."""
-        self._running.pop(task_id, None)
-
     def reach(self, task_id: str, room_id: str) -> TaskReach | None:
         """How *task_id*, running for *room_id*, can end; ``None`` for any
         other task: another room's, one ended, one the framework never ran."""

@@ -164,9 +164,9 @@ async def _turn_outcome(
         return None, exc, False
 
 
-def _unstarted_task_fields(cut: BaseException, context: dict[str, Any] | None) -> dict[str, Any]:
-    """The outcome of a task its delegation cut before it ran: cancelled,
-    or failed with what cut it."""
+def _cut_task_fields(cut: BaseException, context: dict[str, Any] | None) -> dict[str, Any]:
+    """The outcome of a task cut outside its turn's outcome (its delegation
+    before it ran, or its run): cancelled, or failed with what cut it."""
     if isinstance(cut, asyncio.CancelledError):
         return cancelled_task_fields(context)
     return finished_task_fields(None, cut, context)
@@ -447,13 +447,14 @@ class DelegationMixin(HelpersMixin):
             await self._open_child_room(handle, parent_room, context, share_channels)
             announced = True
             await self._announce_task(handle)
-            started = True
             if self._closed:
                 # The kit's close began while the task was being set up: it
                 # ends as the close ends a running one, on both doors.
+                started = True
                 await self._end_inline_cancelled(handle, context, on_complete, span, start)
                 return handle
             if wait:
+                started = True  # its run ends it, however it ends
                 return await self._run_inline(
                     handle,
                     context,
@@ -463,15 +464,12 @@ class DelegationMixin(HelpersMixin):
                     max_result_retries=max_result_retries,
                     result_tool=result_tool,
                 )
+            # A task its runner refused never started: it ends here.
             return await self._run_background(handle, context, notify, on_complete, span)
         except BaseException as exc:
             if not started:
-                ended = _result_from_handle(
-                    handle,
-                    duration_ms=(time.monotonic() - start) * 1000,
-                    **_unstarted_task_fields(exc, context),
-                )
-                await shielded(self._end_unstarted(handle, ended, on_complete, span, announced))
+                cut = self._end_cut(handle, exc, context, on_complete, span, start, announced)
+                await shielded(cut)
             raise
 
     async def _check_hand_back(
@@ -509,20 +507,29 @@ class DelegationMixin(HelpersMixin):
         )
         return conversation_block(context, reader, count)
 
-    async def _end_unstarted(
+    async def _end_cut(
         self,
         handle: DelegatedTask,
-        result: DelegatedTaskResult,
+        cut: BaseException,
+        context: dict[str, Any] | None,
         on_complete: Any | None,
         span: _DelegationSpan,
-        announced: bool,
+        start: float,
+        announced: bool = True,
     ) -> None:
-        """End a task its delegation cut before it ran (RFC §23.3): once
-        announced, as an inline task ends; before that, only its span."""
+        """End a task *cut* ended outside its turn's outcome, its delegation
+        before it ran (its runner refusing it included) or its run (RFC
+        §23.3): cancelled, or failed with *cut*; once announced, as an inline
+        task ends, before that, only its span."""
+        ended = _result_from_handle(
+            handle,
+            duration_ms=(time.monotonic() - start) * 1000,
+            **_cut_task_fields(cut, context),
+        )
         if announced:
-            await self._complete_inline(handle, result, on_complete, span)
+            await self._complete_inline(handle, ended, on_complete, span)
         else:
-            span.end(result)
+            span.end(ended)
 
     async def _open_child_room(
         self,
@@ -689,6 +696,13 @@ class DelegationMixin(HelpersMixin):
         )
         try:
             agent_response, failure, caller_cut = await _turn_outcome(turn)
+            if failure is not None:
+                log_failure(_tasks_logger, failure, f"Inline task {handle.id}")
+            result = _result_from_handle(
+                handle,
+                duration_ms=(time.monotonic() - start) * 1000,
+                **finished_task_fields(agent_response, failure, context, turns),
+            )
         except asyncio.CancelledError:
             # A cut from outside (a supervisor's per-task timeout through
             # asyncio.wait_for, the kit's close): the task ends as any task
@@ -697,14 +711,10 @@ class DelegationMixin(HelpersMixin):
                 handle, context, on_complete, span, start, turns=turns
             )
             raise
-        if failure is not None:
-            log_failure(_tasks_logger, failure, f"Inline task {handle.id}")
-        elapsed = (time.monotonic() - start) * 1000
-        result = _result_from_handle(
-            handle,
-            duration_ms=elapsed,
-            **finished_task_fields(agent_response, failure, context, turns),
-        )
+        except BaseException as exc:
+            # Raised outside its turn's outcome: it ends failed, once.
+            await _finish_cleanup(self._end_cut(handle, exc, context, on_complete, span, start))
+            raise
         # Its work ran: it ends as it stands, whatever cancels its caller now.
         await _finish_cleanup(self._complete_inline(handle, result, on_complete, span))
         if caller_cut:
@@ -821,16 +831,14 @@ class DelegationMixin(HelpersMixin):
         # follow, never a room's cancel_task's (RFC §23.4).
         reach: TaskReach = "tool" if handle._post_status else "strategy"
         self._room_tasks.start(handle.id, handle.parent_room_id, reach)
-        try:
-            await self._task_runner.submit(
-                self,  # ty: ignore[invalid-argument-type]
-                handle,
-                context=context,
-                on_complete=_on_bg_complete,
-            )
-        except BaseException:
-            self._room_tasks.forget(handle.id)
-            raise
+        # A submit that raises leaves the task to its delegation, which ends
+        # it failed (RFC §23.3).
+        await self._task_runner.submit(
+            self,  # ty: ignore[invalid-argument-type]
+            handle,
+            context=context,
+            on_complete=_on_bg_complete,
+        )
         return handle
 
     async def cancel_task(self, task_id: str) -> bool:

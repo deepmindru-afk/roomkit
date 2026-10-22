@@ -132,6 +132,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now names the task once the task exists, on both doors (inline and
   background).
 
+- A delegated task its task runner refuses (its `submit` raises), or whose
+  run raises outside its turn's outcome (inline or in the background), ends
+  `failed`, once, as a task that ran does (RMK-871). It never ended: the
+  status bus and the turn's notes showed it running, `ON_TASK_COMPLETED` and
+  the completion callback never ran, the child room stayed `pending`,
+  `task.wait()` hung and `cancel_task` answered `unknown`. Its end is now
+  posted, its hooks fire, its child room reads `failed`, its waiters return,
+  its span ends `error`, and `cancel_task` answers `failed`. The caller of a
+  refused or inline delegation still receives the error.
+
 - A voice channel's record of a cut answer carries `played_percentage` once
   the answer's synthesis ended before the cut (RFC §12.3.13): the
   utterance's total duration was never set, so the share was never written.

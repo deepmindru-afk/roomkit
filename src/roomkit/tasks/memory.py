@@ -102,11 +102,30 @@ class InMemoryTaskRunner(TaskRunner):
     ) -> None:
         start = time.monotonic()
         task.status = TaskStatus.IN_PROGRESS
-        fields = await self._run(kit, task, context, turns)
+        try:
+            fields = await self._run(kit, task, context, turns)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            # Raised outside its turn's outcome: it ends failed, once (RFC §23.3).
+            failed = finished_task_fields(None, exc, context)
+            await self._end_ran(kit, task, failed, start, on_complete)
+            raise
+        await self._end_ran(kit, task, fields, start, on_complete)
+
+    async def _end_ran(
+        self,
+        kit: RoomKit,
+        task: DelegatedTask,
+        fields: dict[str, Any],
+        start: float,
+        on_complete: OnCompleteCallback | None,
+    ) -> None:
+        """End *task*, whose run is over, with its outcome *fields*, to its
+        end whatever cancels it now; unless ``cancel`` took its end first."""
         if self._cancelled_ends.pop(task.id, None) is None:
             # ``cancel`` took its end: it ends the task, cancelled.
             return
-        # Its work ran: it ends as it stands, whatever cancels it now.
         await shielded(self._finish(kit, task, fields, start, on_complete))
 
     async def _end_cancelled(
