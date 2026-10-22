@@ -9,10 +9,11 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from roomkit._media_url import is_data_uri, is_link, is_safe_reference, lowercase_scheme
+from roomkit.models._time import UtcDatetime
 from roomkit.models.enums import (
-    ChannelDirection,
     ChannelType,
     DeleteType,
+    EventDirection,
     EventStatus,
     EventType,
     ToolCallOutcome,
@@ -136,6 +137,9 @@ class CompositeContent(BaseModel):
     @staticmethod
     def _nesting_depth(content: object, current: int = 1) -> int:
         """Recursively compute nesting depth of CompositeContent."""
+        if isinstance(content, EditContent):
+            # An edit's new content stands in the edit's place (RFC §5.3).
+            return CompositeContent._nesting_depth(content.new_content, current)
         if not isinstance(content, CompositeContent):
             return 0
         max_child = 0
@@ -242,7 +246,7 @@ class EventSource(BaseModel):
 
     channel_id: str
     channel_type: ChannelType
-    direction: ChannelDirection = ChannelDirection.INBOUND
+    direction: EventDirection = EventDirection.INBOUND
     participant_id: str | None = None
     external_id: str | None = None
     provider: str | None = None
@@ -284,7 +288,7 @@ class RoomEvent(BaseModel):
     responds_to: str | None = None
     correlation_id: str | None = None
     idempotency_key: str | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = Field(default_factory=dict)
     channel_data: ChannelData = Field(default_factory=ChannelData)
     delivery_results: dict[str, Any] = Field(default_factory=dict)
@@ -295,6 +299,12 @@ class RoomEvent(BaseModel):
 #: Distinct from ``interrupted``, which marks a spoken reply a barge-in cut
 #: (RFC §12.3.13).
 INTERRUPTION_MARKER_KEY = "interruption_marker"
+
+
+def with_pipeline_id(event: RoomEvent) -> RoomEvent:
+    """*event* with a fresh id: the pipeline gives every event it commits its
+    id, whatever id a channel or a hook built it with (RFC §8.1)."""
+    return event.model_copy(update={"id": uuid4().hex})
 
 
 def is_interruption_marker(event: RoomEvent) -> bool:
@@ -337,4 +347,4 @@ class ThreadSummary(BaseModel):
 
     root_event_id: str
     reply_count: int = 0
-    last_reply_at: datetime | None = None
+    last_reply_at: UtcDatetime | None = None

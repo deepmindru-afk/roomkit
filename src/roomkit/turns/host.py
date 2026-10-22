@@ -23,11 +23,11 @@ from __future__ import annotations
 
 import contextvars
 from collections.abc import Awaitable, Callable
-from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from roomkit.models._time import UtcDatetime
 from roomkit.models.enums import EventType, Visibility
 from roomkit.models.event import EventContent, RoomEvent
 from roomkit.models.room import Room
@@ -59,7 +59,7 @@ class SendEvent(_Verb):
     visibility: str = Visibility.ALL
     provider: str | None = None
     response_visibility: str | None = None
-    created_at: datetime | None = None
+    created_at: UtcDatetime | None = None
     parent_event_id: str | None = None
     idempotency_key: str | None = None
     addressed_to: list[str] | None = None

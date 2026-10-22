@@ -88,6 +88,25 @@ class TestRoomOperations:
         assert result is not None
         assert result.status == RoomStatus.CLOSED
 
+    async def test_an_empty_room_stores_no_latest_index(self, store) -> None:
+        await store.create_room(Room(id="r1"))
+        async with store._pool.acquire() as conn:
+            stored = await conn.fetchval("SELECT latest_index FROM rooms WHERE id = 'r1'")
+        assert stored is None
+
+    async def test_init_clears_the_zero_an_empty_room_was_stored_with(self, store) -> None:
+        """A deployment from before latest_index was nullable (RFC §5.1)."""
+        async with store._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO rooms (id, event_count, latest_index) VALUES ('old', 0, 0)"
+            )
+            await conn.execute("ALTER TABLE rooms ALTER COLUMN latest_index SET NOT NULL")
+            await conn.execute("ALTER TABLE rooms ALTER COLUMN latest_index SET DEFAULT 0")
+        await store.init(min_size=1, max_size=3)
+        async with store._pool.acquire() as conn:
+            stored = await conn.fetchval("SELECT latest_index FROM rooms WHERE id = 'old'")
+        assert stored is None
+
     async def test_delivered_index_defaults_to_minus_one(self, store) -> None:
         await store.create_room(Room(id="r1"))
         room = await store.get_room("r1")

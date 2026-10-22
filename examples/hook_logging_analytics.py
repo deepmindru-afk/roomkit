@@ -28,7 +28,7 @@ from roomkit import (
     WebSocketChannel,
 )
 from roomkit.channels.ai import AIChannel
-from roomkit.models.enums import ChannelDirection
+from roomkit.models.enums import EventDirection
 from roomkit.providers.ai.mock import MockAIProvider
 
 # Simulated analytics log
@@ -83,7 +83,7 @@ async def main() -> None:
         name="ws_audit",
         priority=1,
         channel_types={ChannelType.WEBSOCKET},
-        directions={ChannelDirection.INBOUND},
+        directions={EventDirection.INBOUND},
     )
     async def ws_audit(event: RoomEvent, ctx: RoomContext) -> None:
         if isinstance(event.content, TextContent):

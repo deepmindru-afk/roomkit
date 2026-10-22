@@ -7,10 +7,9 @@ who they are (a page behind a link, a code, a login) is the integrator's.
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from pydantic import BaseModel, Field
 
+from roomkit.models._time import UtcDatetime
 from roomkit.models.enums import VerificationRequestStatus, VerificationStatus
 
 
@@ -24,8 +23,8 @@ class Verification(BaseModel):
     """The integrator's name for how it was proven ("link", "code", "sso")."""
     verified_via: str | None = None
     """The channel the completing request was opened on."""
-    verified_at: datetime | None = None
-    expires_at: datetime | None = None
+    verified_at: UtcDatetime | None = None
+    expires_at: UtcDatetime | None = None
     ended_reason: str | None = None
     """Why it ended: "expired", "revoked", "failed"."""
     request_id: str | None = None
@@ -48,11 +47,11 @@ class VerificationRequest(BaseModel):
     channel_id: str
     method: str
     secret_hash: str
-    window_start: datetime
+    window_start: UtcDatetime
     """When the message that opened it was received: the start of the window
     whose held messages are released once verified (§11.7.6)."""
-    created_at: datetime
-    expires_at: datetime
+    created_at: UtcDatetime
+    expires_at: UtcDatetime
     attempts: int = 0
     max_attempts: int
     status: VerificationRequestStatus = VerificationRequestStatus.OPEN

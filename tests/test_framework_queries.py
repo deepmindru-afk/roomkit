@@ -322,7 +322,6 @@ class TestPublicExports:
         from roomkit.models.enums import (
             ChannelDirection,
             ChannelMediaType,
-            DeliveryMode,
             IdentificationStatus,
             ParticipantRole,
             ParticipantStatus,
@@ -330,7 +329,6 @@ class TestPublicExports:
 
         assert ChannelDirection is not None
         assert ChannelMediaType is not None
-        assert DeliveryMode is not None
         assert IdentificationStatus is not None
         assert ParticipantRole is not None
         assert ParticipantStatus is not None

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from roomkit.models._time import UtcDatetime
 from roomkit.models.enums import EventType, Visibility
 from roomkit.models.event import EventContent, RoomEvent
 from roomkit.models.response_metadata import ResponseMetadata, merge_caller_record
@@ -348,7 +349,7 @@ class DeliveryResult(BaseModel):
     status: Literal["sent", "queued", "failed"]
     provider_message_id: str | None = None
     error: DeliveryError | None = None
-    retry_after: datetime | None = None
+    retry_after: UtcDatetime | None = None
     provider_result: ProviderResult | None = None
 
 
@@ -402,7 +403,7 @@ class DeliveryStatus(BaseModel):
     sender: str = ""
     error_code: str | None = None
     error_message: str | None = None
-    timestamp: datetime | None = None
+    timestamp: UtcDatetime | None = None
     raw: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("timestamp", mode="before")

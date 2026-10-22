@@ -50,6 +50,15 @@ class ChannelDirection(StrEnum):
 
 
 @unique
+class EventDirection(StrEnum):
+    """The way an event travelled (RFC §5.2): unlike a channel, an event is
+    never both."""
+
+    INBOUND = "inbound"
+    OUTBOUND = "outbound"
+
+
+@unique
 class ChannelMediaType(StrEnum):
     TEXT = "text"
     RICH = "rich"
@@ -217,13 +226,6 @@ class RoomStatus(StrEnum):
     PAUSED = "paused"
     CLOSED = "closed"
     ARCHIVED = "archived"
-
-
-@unique
-class DeliveryMode(StrEnum):
-    BROADCAST = "broadcast"
-    DIRECT = "direct"
-    ROUND_ROBIN = "round_robin"
 
 
 @unique

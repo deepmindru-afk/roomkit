@@ -183,6 +183,10 @@ async def test_streaming_transport_persists_modified_but_streams_raw() -> None:
     assert "".join(chunks) == "Hi [PERSON_1]"  # live chunks = raw (by design)
 
 
+def _body(event: RoomEvent) -> str | None:
+    return event.content.body if isinstance(event.content, TextContent) else None
+
+
 @pytest.mark.parametrize("action", ["allow", "modify", "block"])
 @pytest.mark.parametrize("live_transport", [False, True])
 async def test_streamed_hook_side_effects_survive_decision(
@@ -255,9 +259,10 @@ async def test_streamed_hook_side_effects_survive_decision(
         assert await kit.store.list_observations("r1") == [observation]
         assert created_tasks == [task.id]
         events = await kit.store.list_events("r1")
-        injections = [e for e in events if e.id == injected.id]
+        # The pipeline gives the injected event its id (RFC §8.1).
+        injections = [e for e in events if _body(e) == "audit notice"]
         assert len(injections) == 1
-        assert [e.id for e in audit.delivered].count(injected.id) == 1
+        assert [_body(e) for e in audit.delivered].count("audit notice") == 1
         replies = _ai_messages(events)
         if action == "block":
             assert replies == []
@@ -326,8 +331,8 @@ async def test_stream_hook_effects_without_persistence_or_source_binding(detache
         assert await kit.store.list_observations("r1") == [observation]
         events = await kit.store.list_events("r1")
         assert len(_ai_messages(events)) == int(detached)
-        assert [event.id for event in events].count(notice.id) == 1
-        assert [event.id for event in audit.delivered].count(notice.id) == 1
+        assert [_body(event) for event in events].count("notice") == 1
+        assert [_body(event) for event in audit.delivered].count("notice") == 1
     finally:
         await kit.close()
 
@@ -455,8 +460,8 @@ async def test_streamed_tool_call_events_dropped_when_before_broadcast_blocks() 
         assert [e.content.body for e in _ai_messages(events)] == ["Looking.", "Found."]
         assert await kit.store.list_tasks("r1") == [task]
         assert await kit.store.list_observations("r1") == [observation]
-        assert [e.id for e in events].count(notice.id) == 1
-        assert [e.id for e in transport.delivered].count(notice.id) == 1
+        assert [_body(e) for e in events].count("tool call withheld") == 1
+        assert [_body(e) for e in transport.delivered].count("tool call withheld") == 1
         # The audit record: refused, kept, and announced once per event.
         audited = _tool_events(
             await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))

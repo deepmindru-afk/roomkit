@@ -33,6 +33,7 @@ from roomkit.models.enums import (
     HookTrigger,
     Visibility,
 )
+from roomkit.models.event import with_pipeline_id
 from roomkit.models.response_metadata import merge_caller_record
 
 if TYPE_CHECKING:
@@ -430,6 +431,7 @@ class InboundMixin(HelpersMixin):
         event = await channel.handle_inbound(message, context)
 
         event = _apply_message_fields(event, message)
+        event = with_pipeline_id(event)
 
         # Identity resolution pipeline (RFC §11)
         try:

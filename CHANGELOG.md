@@ -68,6 +68,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A room's first stored message is delivered when an event the persistence
+  policy does not store came before it (RMK-902). An empty room's
+  `latest_index` read 0, the first event's index, so the unstored event waited
+  out the delivery gap timeout and the message at index 0 was then dropped as
+  `delivery_stale`.
+
 - `RedisDeliveryBackend`, `RedisStatusBackend` and `RedisRealtimeBackend`
   survive a connection a NAT or a load balancer forgot (half-open) (RMK-868).
   Their clients bound every call at 5 s, the bound redis-py 8 sets, on every
@@ -153,6 +159,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — `Room.latest_index` is `None` while the room has no event**
+  (RFC §5.1, RMK-902). It was 0, which reads as the first event's index. A
+  room stored with 0 and no event reads back as `None`; PostgresStore drops
+  the column's `NOT NULL` and default, and clears the 0 of empty rooms, at its
+  first start. An older version cannot read a room without an index: every
+  worker sharing a store must run this version before one of them starts
+  against it.
+
+- **BREAKING — `EventSource.direction` is an `EventDirection`**, INBOUND or
+  OUTBOUND (RFC §5.2, RMK-902): an event never travels both ways, so a
+  `bidirectional` source is refused, a stored one included. A
+  `ChannelDirection.INBOUND` or `OUTBOUND` value is still read as the event's.
+  A hook's `directions` filter takes `EventDirection` values.
+
+- **BREAKING — the pipeline gives every event it commits its id** (RFC §8.1,
+  RMK-902): an inbound event, a buffered response and an event a hook injects
+  (an identity challenge included) are committed under a fresh id, whatever id
+  their channel or hook built them with. Read the committed id from
+  `InboundResult.event` or from the hooks; a provider's own id belongs in
+  `source.provider_message_id`, and a replayed message is caught by its
+  `idempotency_key`. A response that names another response of the same
+  output by id (as its `parent_event_id`, or the target of an edit) names an
+  id that is never stored.
+
+- **BREAKING — a record's timestamps hold their instant in UTC** (RFC §1.4,
+  RMK-902): one given with an offset is converted, one without an offset is
+  read as UTC, so code comparing a record's timestamp with a naive `datetime`
+  now raises. A turn message's `created_at` follows the same rule. The session
+  audit wrote its `ts` without an offset; it writes UTC, and its transcript
+  still shows local time.
+
+- A composite counts the nesting of an edit's new content (RFC §5.3,
+  RMK-902): a composite holding an edit of a five-level composite is six
+  levels deep and refused.
+
 - The Redis turn backend guide's prerequisites say redis-py 8.0.0 does not
   serve a backend on a unix socket (RMK-869): its sync client fails on a
   `unix://` URL, so the beat thread never beats and the process is taken for
@@ -196,6 +237,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `examples/voice_voxtral.py` runs Mistral's faster turn preset with a 240 ms
   streaming delay by default (`TURNS=default STREAMING_DELAY_MS=480` gives
   the service's defaults), and drops emoji before Voxtral Speech.
+
+### Removed
+
+- **BREAKING — `DeliveryMode` and `ChannelCapabilities.delivery_mode`**
+  (RMK-902). Nothing read them, and the RFC no longer defines them. Stored
+  capabilities that carry the field still load.
 
 ## [0.107.0] — 2026-10-21
 

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN
 from roomkit.channels.declared import register_strategy_agents
-from roomkit.core.lanes import DeliveryCascade
+from roomkit.core.lanes import DeliveryCascade, anchor_index
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.models.enums import ChannelCategory, ChannelType, HookTrigger
 from roomkit.orchestration.strategies.discussion._config import DiscussionConfig
@@ -442,7 +442,7 @@ class DiscussionMixin(HelpersMixin):
         cascade = DeliveryCascade(room_id, reentry_budget=10 * max_depth)
         cascade.retain()
         self._enqueue_exec(
-            room_id, plan, cascade, index=None, after_index=context.room.latest_index
+            room_id, plan, cascade, index=None, after_index=anchor_index(context.room.latest_index)
         )
         return cascade
 

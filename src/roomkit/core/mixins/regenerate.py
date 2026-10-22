@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT
 from roomkit.core.exceptions import RoomClosedError
-from roomkit.core.lanes import DeliveryCascade, DeliveryPlan
+from roomkit.core.lanes import DeliveryCascade, DeliveryPlan, anchor_index
 from roomkit.core.mixins.helpers import _REFUSING_STATUSES, HelpersMixin
 from roomkit.models.delivery import InboundResult
 from roomkit.models.enums import ChannelCategory, EventStatus
@@ -376,7 +376,7 @@ class RegenerateMixin(HelpersMixin):
         plan.response_visibility = trigger.response_visibility
         cascade.retain()
         self._enqueue_exec(
-            room_id, plan, cascade, index=None, after_index=context.room.latest_index
+            room_id, plan, cascade, index=None, after_index=anchor_index(context.room.latest_index)
         )
         return plan
 

@@ -142,6 +142,10 @@ class TestReentryBlockEmitsFrameworkEvent:
         assert len(ai_blocks) == 1
 
 
+def _text(event: RoomEvent) -> str | None:
+    return event.content.body if isinstance(event.content, TextContent) else None
+
+
 class TestReentryBlockDeliversInjectedEvents:
     async def test_injected_events_reach_target_on_reentry_block(self) -> None:
         kit, _sms, _ai = _ai_room_setup()
@@ -166,7 +170,7 @@ class TestReentryBlockDeliversInjectedEvents:
 
         await kit.process_inbound(_user_msg())
 
-        assert any(e.id == followup.id for e in recorder.on_event_calls), (
+        assert any(_text(e) == "injected from block" for e in recorder.on_event_calls), (
             "RecordingChannel.on_event must be invoked for the injected event "
             "delivered by _handle_block on the reentry block path."
         )
@@ -198,7 +202,7 @@ class TestReentryAllowDeliversInjectedEvents:
 
         await kit.process_inbound(_user_msg())
 
-        assert any(e.id == followup.id for e in recorder.on_event_calls)
+        assert any(_text(e) == "injected on allow" for e in recorder.on_event_calls)
 
 
 class TestReentryModifyDeliversInjectedEvents:
@@ -228,4 +232,29 @@ class TestReentryModifyDeliversInjectedEvents:
 
         await kit.process_inbound(_user_msg())
 
-        assert any(e.id == followup.id for e in recorder.on_event_calls)
+        assert any(_text(e) == "injected on modify" for e in recorder.on_event_calls)
+
+    async def test_an_injected_event_is_committed_under_an_id_of_the_pipeline(self) -> None:
+        """The pipeline gives every event it commits its id (RFC §8.1)."""
+        kit, _sms, _ai = _ai_room_setup()
+        recorder = RecordingChannel("rec1")
+        kit.register_channel(recorder)
+        await _attach(kit, "sms1", "ai1", "rec1")
+        followup = RoomEvent(
+            room_id="r1",
+            source=EventSource(channel_id="hook", channel_type=ChannelType.SMS),
+            content=TextContent(body="injected"),
+        )
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="allow_with_inject")
+        async def allow_and_inject(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if event.source.channel_type == ChannelType.AI:
+                return HookResult.allow(
+                    injected=[InjectedEvent(event=followup, target_channel_ids=["rec1"])],
+                )
+            return HookResult.allow()
+
+        await kit.process_inbound(_user_msg())
+
+        delivered = [e for e in recorder.on_event_calls if _text(e) == "injected"]
+        assert [e.id == followup.id for e in delivered] == [False]

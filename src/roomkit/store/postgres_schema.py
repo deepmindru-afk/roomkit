@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS rooms (
     organization_id TEXT,
     status          TEXT NOT NULL DEFAULT 'active',
     event_count     INTEGER NOT NULL DEFAULT 0,
-    latest_index    INTEGER NOT NULL DEFAULT 0,
+    latest_index    INTEGER,
     delivered_index INTEGER NOT NULL DEFAULT -1,
     metadata        JSONB NOT NULL DEFAULT '{}',
     timers          JSONB NOT NULL DEFAULT '{}',
@@ -121,8 +121,7 @@ CREATE TABLE IF NOT EXISTS rooms (
 -- room's first laned delivery would wait out a delivery_gap_timeout
 -- against a purely historical hole. Guarded (not re-run per boot):
 -- re-applying it against a live multi-worker deployment would declare
--- an in-flight first delivery lost. Empty rooms keep -1 (latest_index
--- defaults to 0 with no event behind it).
+-- an in-flight first delivery lost. Empty rooms keep -1.
 --
 -- The lookup is scoped to the schema this session actually writes to:
 -- information_schema.columns spans every schema the role can see, so an
@@ -140,6 +139,23 @@ BEGIN
     ) THEN
         ALTER TABLE rooms ADD COLUMN delivered_index INTEGER NOT NULL DEFAULT -1;
         UPDATE rooms SET delivered_index = latest_index WHERE event_count > 0;
+    END IF;
+END $$;
+-- latest_index is NULL while a room has no event (RFC §5.1): an empty room
+-- stored 0, which reads as the first event's index. Guarded on the column's
+-- nullability, so it runs once and no later boot scans the table.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'rooms'
+          AND column_name = 'latest_index'
+          AND is_nullable = 'NO'
+    ) THEN
+        ALTER TABLE rooms ALTER COLUMN latest_index DROP NOT NULL;
+        ALTER TABLE rooms ALTER COLUMN latest_index DROP DEFAULT;
+        UPDATE rooms SET latest_index = NULL WHERE event_count = 0;
     END IF;
 END $$;
 -- Additive: the default IS the behaviour every existing room ran under, so

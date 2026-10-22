@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -148,7 +148,7 @@ class SessionAuditor(ABC):
                 return
             self.record(
                 SessionAuditEntry(
-                    ts=datetime.now().isoformat(),
+                    ts=datetime.now(UTC).isoformat(),
                     type="speech",
                     role=role,
                     content=text,
@@ -163,7 +163,7 @@ class SessionAuditor(ABC):
         async def _on_barge_in(event: object, ctx: object) -> None:
             self.record(
                 SessionAuditEntry(
-                    ts=datetime.now().isoformat(),
+                    ts=datetime.now(UTC).isoformat(),
                     type="barge_in",
                     role="user",
                     content="User interrupted",
@@ -180,7 +180,7 @@ class SessionAuditor(ABC):
             participant = getattr(event, "participant_id", "")
             self.record(
                 SessionAuditEntry(
-                    ts=datetime.now().isoformat(),
+                    ts=datetime.now(UTC).isoformat(),
                     type="session",
                     role="system",
                     content="Session started",
@@ -202,7 +202,7 @@ class SessionAuditor(ABC):
                 return
             self.record(
                 SessionAuditEntry(
-                    ts=datetime.now().isoformat(),
+                    ts=datetime.now(UTC).isoformat(),
                     type="vision",
                     role="system",
                     content=description[:_MAX_CONTENT_LEN],
@@ -317,10 +317,11 @@ class _SessionToolAuditorBridge(ToolAuditor):
 
 
 def _format_time(ts: str) -> str:
-    """Extract HH:MM:SS from an ISO timestamp."""
+    """Extract HH:MM:SS from an ISO timestamp, in local time: entries are
+    stored in UTC (RFC §1.4), the transcript is read by a person."""
     try:
         dt = datetime.fromisoformat(ts)
-        return dt.strftime("%H:%M:%S")
+        return dt.astimezone().strftime("%H:%M:%S")
     except (ValueError, TypeError):
         return ts[:8]
 

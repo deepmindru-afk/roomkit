@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from roomkit.models._time import UtcDatetime
 from roomkit.models.delivery import ProviderResult
 from roomkit.models.enums import (
     Access,
@@ -14,7 +15,6 @@ from roomkit.models.enums import (
     ChannelDirection,
     ChannelMediaType,
     ChannelType,
-    DeliveryMode,
     Visibility,
 )
 from roomkit.models.event import RoomEvent
@@ -75,7 +75,6 @@ class ChannelCapabilities(BaseModel):
     supports_video: bool = False
     max_video_duration_seconds: int | None = Field(default=None, gt=0)
     supported_video_formats: list[str] = Field(default_factory=list)
-    delivery_mode: DeliveryMode = DeliveryMode.BROADCAST
     custom: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -160,7 +159,7 @@ class ChannelBinding(BaseModel):
     # field is an optional per-binding hint only and is not advanced by the
     # read API — read receipts and unread counts derive from ``read_markers``.
     last_read_index: int | None = Field(default=None, ge=0)
-    attached_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    attached_at: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))
     capabilities: ChannelCapabilities = Field(default_factory=ChannelCapabilities)
     rate_limit: RateLimit | None = None
     retry_policy: RetryPolicy | None = None

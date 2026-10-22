@@ -44,6 +44,7 @@ from roomkit.models.event import (
     VideoContent,
     is_interruption_marker,
     is_tool_call_record,
+    with_pipeline_id,
 )
 from roomkit.models.response_metadata import TurnEntries, turn_summary
 from roomkit.models.task import Observation, Task
@@ -121,11 +122,14 @@ def unanswered(trigger: RoomEvent, channel_id: str, channel_type: Any) -> RoomEv
 
 
 def _answering(responses: list[RoomEvent], trigger: RoomEvent) -> list[RoomEvent]:
-    """*responses*, each naming *trigger* as the event it answers when it named none."""
+    """*responses*, each with an id the pipeline gives (RFC §8.1) and naming
+    *trigger* as the event it answers when it named none."""
     return [
-        resp
-        if resp.responds_to is not None
-        else resp.model_copy(update={"responds_to": trigger.id})
+        with_pipeline_id(
+            resp
+            if resp.responds_to is not None
+            else resp.model_copy(update={"responds_to": trigger.id})
+        )
         for resp in responses
     ]
 

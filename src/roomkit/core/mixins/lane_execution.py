@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from roomkit.core._failure_log import needs_reporting
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT, BroadcastResult, reply_turn_entry
 from roomkit.core.exceptions import RoomNotFoundError, error_type_name
+from roomkit.core.lanes import anchor_index
 from roomkit.core.mixins.helpers import (
     _RECENT_EVENTS_LIMIT,
     HelpersMixin,
@@ -28,7 +29,7 @@ from roomkit.core.mixins.inbound_locked import _Blocked, _Ready
 from roomkit.core.task_utils import await_unless_cut, start_named
 from roomkit.models.delivery import DeliveryError, DeliveryResult
 from roomkit.models.enums import ChannelCategory, EventStatus, EventType, HookTrigger
-from roomkit.models.event import EventSource, RoomEvent
+from roomkit.models.event import EventSource, RoomEvent, with_pipeline_id
 from roomkit.models.response_metadata import (
     ResponseMetadata,
     add_turn_entry,
@@ -258,7 +259,7 @@ class LaneExecutionMixin(HelpersMixin):
                 plan = plan_factory(event)
                 if plan is not None:
                     room = await self._store.get_room(room_id)
-                    anchor = -1 if room is None else room.latest_index
+                    anchor = anchor_index(None if room is None else room.latest_index)
                     cascade.retain()
                     self._enqueue_exec(room_id, plan, cascade, index=None, after_index=anchor)
             return None
@@ -482,7 +483,9 @@ class LaneExecutionMixin(HelpersMixin):
         from roomkit.core.lanes import DeliveryPlan
 
         for injected in injected_events:
-            event = injected.event.model_copy(update={"status": EventStatus.DELIVERED})
+            event = with_pipeline_id(
+                injected.event.model_copy(update={"status": EventStatus.DELIVERED})
+            )
             target_ids = injected.target_channel_ids
 
             # Bindings are resolved under the lock so the delivery set is

@@ -290,7 +290,7 @@ async def log_event(event: RoomEvent, ctx: RoomContext) -> None:
     HookTrigger.AFTER_BROADCAST,
     execution=HookExecution.ASYNC,
     channel_types={ChannelType.SMS},
-    directions={ChannelDirection.INBOUND},
+    directions={EventDirection.INBOUND},
     priority=10,  # Lower runs first
 )
 async def sms_audit(event: RoomEvent, ctx: RoomContext) -> None:

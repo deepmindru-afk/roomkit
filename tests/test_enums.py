@@ -10,7 +10,6 @@ from roomkit.models.enums import (
     ChannelDirection,
     ChannelMediaType,
     ChannelType,
-    DeliveryMode,
     EventStatus,
     EventType,
     HookExecution,
@@ -130,14 +129,6 @@ class TestRoomStatus:
 
     def test_count(self) -> None:
         assert len(RoomStatus) == 4
-
-
-class TestDeliveryMode:
-    def test_values(self) -> None:
-        assert DeliveryMode.BROADCAST == "broadcast"
-
-    def test_count(self) -> None:
-        assert len(DeliveryMode) == 3
 
 
 class TestHookTrigger:

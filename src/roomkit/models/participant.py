@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from roomkit.models._time import UtcDatetime
 from roomkit.models.enums import (
     IdentificationStatus,
     ParticipantRole,
@@ -33,9 +34,9 @@ class Participant(BaseModel):
     # moves. Order is order of first sight.
     connected_via: list[str] = Field(default_factory=list)
     external_id: str | None = None
-    resolved_at: datetime | None = None
+    resolved_at: UtcDatetime | None = None
     resolved_by: str | None = None
-    joined_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    joined_at: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")

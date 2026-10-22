@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 from roomkit.orchestration.session_audit import (
     JSONLSessionAuditor,
     SessionAuditEntry,
+    _format_time,
 )
 from roomkit.orchestration.tool_audit import ToolAuditEntry
 
@@ -322,3 +324,9 @@ def test_attach_registers_hooks(tmp_path: Path) -> None:
     assert "on_barge_in" in trigger_values
     assert "on_session_started" in trigger_values
     assert "on_vision_result" in trigger_values
+
+
+def test_a_transcript_shows_a_utc_entry_in_local_time() -> None:
+    stored = "2026-03-20T12:00:00+00:00"
+    expected = datetime.fromisoformat(stored).astimezone().strftime("%H:%M:%S")
+    assert _format_time(stored) == expected

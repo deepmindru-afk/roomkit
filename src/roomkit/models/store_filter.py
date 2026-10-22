@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime
 
 from pydantic import BaseModel, Field, model_validator
 
+from roomkit.models._time import UtcDatetime
 from roomkit.models.enums import ChannelType, EventStatus, EventType
 from roomkit.models.event import RoomEvent
 
@@ -52,10 +52,10 @@ class EventFilter(BaseModel):
     and non-threaded messages, excluding replies. Mutually exclusive with
     *parent_event_id*."""
 
-    after_time: datetime | None = None
+    after_time: UtcDatetime | None = None
     """Return events created after this timestamp (exclusive)."""
 
-    before_time: datetime | None = None
+    before_time: UtcDatetime | None = None
     """Return events created before this timestamp (exclusive)."""
 
     include_blocked: bool = False

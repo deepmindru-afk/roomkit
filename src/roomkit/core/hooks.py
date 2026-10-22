@@ -11,8 +11,8 @@ from typing import Any, ClassVar, Protocol, cast
 
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import (
-    ChannelDirection,
     ChannelType,
+    EventDirection,
     EventType,
     HookExecution,
     HookTrigger,
@@ -69,7 +69,7 @@ class HookRegistration:
     # Filters (None = match all)
     channel_types: set[ChannelType] | None = None
     channel_ids: set[str] | None = None
-    directions: set[ChannelDirection] | None = None
+    directions: set[EventDirection] | None = None
     event_types: set[EventType] | None = None
     fail_closed: bool = False
     needs_lock: bool = True
@@ -135,7 +135,7 @@ def hook_decorator(
     timeout: float = 30.0,
     channel_types: set[ChannelType] | None = None,
     channel_ids: set[str] | None = None,
-    directions: set[ChannelDirection] | None = None,
+    directions: set[EventDirection] | None = None,
     event_types: set[EventType] | None = None,
     fail_closed: bool = False,
     needs_lock: bool = True,
@@ -181,7 +181,7 @@ class IdentityHookRegistration:
     fn: Any  # IdentityHookFn - using Any to avoid circular import
     channel_types: set[ChannelType] | None = None
     channel_ids: set[str] | None = None
-    directions: set[ChannelDirection] | None = None
+    directions: set[EventDirection] | None = None
 
 
 @dataclass

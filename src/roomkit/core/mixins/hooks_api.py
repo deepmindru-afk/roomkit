@@ -19,8 +19,8 @@ from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import DeliveryStatus
 from roomkit.models.enums import (
-    ChannelDirection,
     ChannelType,
+    EventDirection,
     EventType,
     HookExecution,
     HookTrigger,
@@ -99,7 +99,7 @@ class HooksApiMixin(HelpersMixin):
         timeout: float = 30.0,
         channel_types: set[ChannelType] | None = None,
         channel_ids: set[str] | None = None,
-        directions: set[ChannelDirection] | None = None,
+        directions: set[EventDirection] | None = None,
         event_types: set[EventType] | None = None,
         fail_closed: bool = False,
         needs_lock: bool = True,
@@ -172,7 +172,7 @@ class HooksApiMixin(HelpersMixin):
         trigger: HookTrigger,
         channel_types: set[ChannelType] | None = None,
         channel_ids: set[str] | None = None,
-        directions: set[ChannelDirection] | None = None,
+        directions: set[EventDirection] | None = None,
     ) -> Callable[..., Any]:
         """Decorator to register an identity-resolution hook.
 

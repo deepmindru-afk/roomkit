@@ -209,10 +209,9 @@ def _populate_event_sequences(conn: sqlite3.Connection) -> None:
     )
     for room_id, data in conn.execute("SELECT id, data FROM rooms"):
         room = Room.model_validate_json(data)
-        # event_count is a never-decremented tally, so it distinguishes an
-        # untouched room (latest_index's model default is 0) from one whose
-        # highest event was deleted.
-        historical_next = room.latest_index + 1 if room.event_count > 0 else 0
+        # latest_index survives the deletion of the room's highest event, so
+        # the next index never reuses a deleted one.
+        historical_next = room.latest_index + 1 if room.latest_index is not None else 0
         conn.execute(
             """INSERT INTO event_sequences(room_id, next_index) VALUES(?, ?)
                ON CONFLICT(room_id) DO UPDATE SET
@@ -673,7 +672,9 @@ class SQLiteStore(ConversationStore):
                 update={
                     "delivered_index": stored[0],
                     "event_count": stored[1],
-                    "latest_index": stored[2],
+                    # A room stored before latest_index was nullable kept 0
+                    # with no event; that 0 names no event (RFC §5.1).
+                    "latest_index": stored[2] if stored[1] else None,
                 }
             )
             conn.execute(

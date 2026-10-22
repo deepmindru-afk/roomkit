@@ -15,12 +15,13 @@ from roomkit.identity.mock import MockIdentityResolver
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import (
-    ChannelDirection,
     ChannelType,
+    EventDirection,
     HookTrigger,
     IdentificationStatus,
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.hook import InjectedEvent
 from roomkit.models.identity import Identity, IdentityHookResult, IdentityResult
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
@@ -176,6 +177,37 @@ class TestAmbiguousIdentityHooks:
         result = await kit.process_inbound(_msg())
         assert result.blocked is True
         assert result.reason == "identity_challenge_sent"
+
+    async def test_two_challenges_from_one_event_are_two_events(self) -> None:
+        """The pipeline gives each injected challenge its own id (RFC §8.1),
+        so a hook that injects one prebuilt event twice commits two."""
+        kit = RoomKit(identity_resolver=AmbiguousResolver())
+        await _setup_room(kit)
+        challenge_event = RoomEvent(
+            room_id="r1",
+            source=EventSource(channel_id="system", channel_type="webhook"),
+            content=TextContent(body="Please identify yourself"),
+        )
+
+        @kit.identity_hook(HookTrigger.ON_IDENTITY_AMBIGUOUS)
+        async def challenge(
+            event: RoomEvent, ctx: RoomContext, id_result: IdentityResult
+        ) -> IdentityHookResult:
+            return IdentityHookResult.challenge(
+                inject=InjectedEvent(event=challenge_event, target_channel_ids=["sms1"]),
+                message="Identify yourself",
+            )
+
+        await kit.process_inbound(_msg())
+        await kit.process_inbound(_msg())
+        events = await kit.store.list_events("r1")
+        challenges = [
+            e
+            for e in events
+            if isinstance(e.content, TextContent) and e.content.body == "Please identify yourself"
+        ]
+        assert len({e.id for e in challenges}) == 2
+        assert challenge_event.id not in {e.id for e in challenges}
 
     async def test_hook_rejects(self) -> None:
         """Identity hook rejects → message blocked."""
@@ -513,7 +545,7 @@ class TestIdentityHookFiltering:
 
         @kit.identity_hook(
             HookTrigger.ON_IDENTITY_AMBIGUOUS,
-            directions={ChannelDirection.INBOUND},
+            directions={EventDirection.INBOUND},
         )
         async def resolve(
             event: RoomEvent, ctx: RoomContext, id_result: IdentityResult
@@ -533,7 +565,7 @@ class TestIdentityHookFiltering:
 
         @kit.identity_hook(
             HookTrigger.ON_IDENTITY_AMBIGUOUS,
-            directions={ChannelDirection.OUTBOUND},  # Inbound won't match
+            directions={EventDirection.OUTBOUND},  # Inbound won't match
         )
         async def resolve(
             event: RoomEvent, ctx: RoomContext, id_result: IdentityResult
@@ -556,7 +588,7 @@ class TestIdentityHookFiltering:
             HookTrigger.ON_IDENTITY_AMBIGUOUS,
             channel_types={ChannelType.SMS},
             channel_ids={"sms1"},
-            directions={ChannelDirection.INBOUND},
+            directions={EventDirection.INBOUND},
         )
         async def resolve(
             event: RoomEvent, ctx: RoomContext, id_result: IdentityResult
@@ -578,7 +610,7 @@ class TestIdentityHookFiltering:
             HookTrigger.ON_IDENTITY_AMBIGUOUS,
             channel_types={ChannelType.SMS},  # Matches
             channel_ids={"sms1"},  # Matches
-            directions={ChannelDirection.OUTBOUND},  # Does NOT match (inbound)
+            directions={EventDirection.OUTBOUND},  # Does NOT match (inbound)
         )
         async def resolve(
             event: RoomEvent, ctx: RoomContext, id_result: IdentityResult

@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.models.enums import (
     ChannelCategory,
-    ChannelDirection,
     ChannelType,
+    EventDirection,
     EventStatus,
     EventType,
 )
@@ -172,7 +172,7 @@ class GreetingMixin(HelpersMixin):
             source=EventSource(
                 channel_id=agent_channel_id,
                 channel_type=ChannelType.AI,
-                direction=ChannelDirection.OUTBOUND,
+                direction=EventDirection.OUTBOUND,
             ),
             content=TextContent(body=text),
             status=EventStatus.DELIVERED,

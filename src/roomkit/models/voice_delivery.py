@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from roomkit.models._time import UtcDatetime
 from roomkit.models.delivery import DeliveryOutcome
 
 
@@ -26,7 +27,7 @@ class VoiceDeliveryRecord(BaseModel):
     idempotency_key: str
     content_hash: str
     attempt_id: str = Field(default_factory=lambda: uuid4().hex)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))
     outcome: DeliveryOutcome | None = None
 
     @property

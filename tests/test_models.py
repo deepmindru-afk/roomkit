@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta, timezone
+
 import pytest
 from pydantic import ValidationError
 
@@ -18,6 +20,7 @@ from roomkit.models import (
     CompositeContent,
     DeliveryError,
     DeliveryResult,
+    EventDirection,
     EventSource,
     EventStatus,
     EventType,
@@ -300,7 +303,7 @@ class TestRoom:
         r = Room(id="r1")
         assert r.status == RoomStatus.ACTIVE
         assert r.event_count == 0
-        assert r.latest_index == 0
+        assert r.latest_index is None
         assert r.closed_at is None
 
     def test_custom(self) -> None:
@@ -582,6 +585,16 @@ class TestCompositeContentConstraints:
         with pytest.raises(ValidationError, match="nesting depth"):
             CompositeContent.model_validate(inner)
 
+    def test_nesting_counts_through_an_edit(self) -> None:
+        """An edit's new content stands in the edit's place: a composite
+        holding an edit of a 5-level composite is 6 levels deep."""
+        inner: dict[str, object] = {"type": "text", "body": "leaf"}
+        for _ in range(5):
+            inner = {"type": "composite", "parts": [inner]}
+        edit = {"type": "edit", "target_event_id": "evt_1", "new_content": inner}
+        with pytest.raises(ValidationError, match="nesting depth"):
+            CompositeContent.model_validate({"type": "composite", "parts": [edit]})
+
     def test_nesting_within_limit(self) -> None:
         """5 levels should be accepted."""
         inner = CompositeContent(parts=[TextContent(body="leaf")])
@@ -686,3 +699,33 @@ class TestTaskStatusExport:
         from roomkit.models.enums import TaskStatus
 
         assert TaskStatus.IN_PROGRESS == "in_progress"
+
+
+class TestEventSourceDirection:
+    def test_an_event_travels_one_way(self) -> None:
+        """An event is inbound or outbound, never both (RFC §5.2)."""
+        with pytest.raises(ValidationError):
+            EventSource(channel_id="sms", channel_type=ChannelType.SMS, direction="bidirectional")
+
+    def test_a_channel_direction_value_is_read_as_the_event_s(self) -> None:
+        source = EventSource(
+            channel_id="sms", channel_type=ChannelType.SMS, direction=ChannelDirection.OUTBOUND
+        )
+        assert source.direction is EventDirection.OUTBOUND
+
+
+class TestRecordTimestamps:
+    """A record's timestamps hold their instant in UTC (RFC §1.4)."""
+
+    def test_a_timestamp_without_an_offset_is_read_as_utc(self) -> None:
+        room = Room(id="r1", created_at=datetime(2026, 1, 1, 12, 0))
+        assert room.created_at == datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+
+    def test_a_timestamp_with_an_offset_is_held_in_utc(self) -> None:
+        paris = timezone(timedelta(hours=2))
+        room = Room(id="r1", created_at=datetime(2026, 1, 1, 14, 0, tzinfo=paris))
+        assert (room.created_at.utcoffset(), room.created_at.hour) == (timedelta(0), 12)
+
+    def test_a_timestamp_is_written_in_utc(self) -> None:
+        room = Room(id="r1", created_at=datetime(2026, 1, 1, 12, 0, 30, 250000))
+        assert room.model_dump(mode="json")["created_at"] == "2026-01-01T12:00:30.250000Z"

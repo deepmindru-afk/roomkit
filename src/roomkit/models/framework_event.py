@@ -7,6 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from roomkit.models._time import UtcDatetime
+
 
 class FrameworkEvent(BaseModel):
     """An event emitted by the framework for observability."""
@@ -15,5 +17,5 @@ class FrameworkEvent(BaseModel):
     room_id: str | None = None
     channel_id: str | None = None
     event_id: str | None = None
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    timestamp: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))
     data: dict[str, Any] = Field(default_factory=dict)

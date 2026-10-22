@@ -436,7 +436,7 @@ class TestHookFiltering:
 
     async def test_filter_by_direction_matches(self) -> None:
         """Hook runs when direction matches."""
-        from roomkit.models.enums import ChannelDirection
+        from roomkit.models.enums import EventDirection
         from roomkit.models.event import EventSource
 
         engine = HookEngine()
@@ -452,7 +452,7 @@ class TestHookFiltering:
                 execution=HookExecution.SYNC,
                 fn=inbound_hook,
                 name="inbound_only",
-                directions={ChannelDirection.INBOUND},
+                directions={EventDirection.INBOUND},
             )
         )
 
@@ -462,7 +462,7 @@ class TestHookFiltering:
             source=EventSource(
                 channel_id="sms",
                 channel_type=ChannelType.SMS,
-                direction=ChannelDirection.INBOUND,
+                direction=EventDirection.INBOUND,
             ),
             content=TextContent(body="hello"),
         )
@@ -471,7 +471,7 @@ class TestHookFiltering:
 
     async def test_filter_by_direction_skips(self) -> None:
         """Hook is skipped when direction doesn't match."""
-        from roomkit.models.enums import ChannelDirection
+        from roomkit.models.enums import EventDirection
         from roomkit.models.event import EventSource
 
         engine = HookEngine()
@@ -487,7 +487,7 @@ class TestHookFiltering:
                 execution=HookExecution.SYNC,
                 fn=inbound_hook,
                 name="inbound_only",
-                directions={ChannelDirection.INBOUND},
+                directions={EventDirection.INBOUND},
             )
         )
 
@@ -497,7 +497,7 @@ class TestHookFiltering:
             source=EventSource(
                 channel_id="sms",
                 channel_type=ChannelType.SMS,
-                direction=ChannelDirection.OUTBOUND,
+                direction=EventDirection.OUTBOUND,
             ),
             content=TextContent(body="hello"),
         )
@@ -506,7 +506,7 @@ class TestHookFiltering:
 
     async def test_combined_filters(self) -> None:
         """Hook with multiple filters only runs when all match."""
-        from roomkit.models.enums import ChannelDirection
+        from roomkit.models.enums import EventDirection
         from roomkit.models.event import EventSource
 
         engine = HookEngine()
@@ -524,7 +524,7 @@ class TestHookFiltering:
                 name="rehost_voicemeup_mms",
                 channel_types={ChannelType.SMS, ChannelType.MMS},
                 channel_ids={"sms-voicemeup"},
-                directions={ChannelDirection.INBOUND},
+                directions={EventDirection.INBOUND},
             )
         )
 
@@ -534,7 +534,7 @@ class TestHookFiltering:
             source=EventSource(
                 channel_id="sms-voicemeup",
                 channel_type=ChannelType.MMS,
-                direction=ChannelDirection.INBOUND,
+                direction=EventDirection.INBOUND,
             ),
             content=TextContent(body="hello"),
         )
@@ -548,7 +548,7 @@ class TestHookFiltering:
             source=EventSource(
                 channel_id="sms-twilio",
                 channel_type=ChannelType.MMS,
-                direction=ChannelDirection.INBOUND,
+                direction=EventDirection.INBOUND,
             ),
             content=TextContent(body="hello"),
         )
@@ -562,7 +562,7 @@ class TestHookFiltering:
             source=EventSource(
                 channel_id="sms-voicemeup",
                 channel_type=ChannelType.MMS,
-                direction=ChannelDirection.OUTBOUND,
+                direction=EventDirection.OUTBOUND,
             ),
             content=TextContent(body="hello"),
         )

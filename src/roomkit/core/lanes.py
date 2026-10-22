@@ -464,6 +464,12 @@ class DeliveryCascade:
         return _active_lane_room.get() == self.room_id or _has_room_lock(self.room_id)
 
 
+def anchor_index(latest_index: int | None) -> int:
+    """The ``after_index`` of an index-less plan: the room's latest index, or
+    -1 while the room has no event (RFC §5.1), the cursor's own start."""
+    return -1 if latest_index is None else latest_index
+
+
 @dataclass(slots=True)
 class ExecEntry:
     """A plan waiting in a lane.

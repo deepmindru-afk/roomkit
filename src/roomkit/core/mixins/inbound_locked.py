@@ -33,7 +33,7 @@ from roomkit.models.enums import (
     ParticipantRole,
     Visibility,
 )
-from roomkit.models.event import DeleteContent, EditContent, RoomEvent
+from roomkit.models.event import DeleteContent, EditContent, RoomEvent, with_pipeline_id
 from roomkit.models.hook import InjectedEvent
 from roomkit.models.identity import Identity, IdentityResult
 from roomkit.models.task import Observation, Task
@@ -862,7 +862,10 @@ class InboundLockedMixin(HelpersMixin):
             # counters, RFC §8.1 / §14.3) — it is a real, delivered timeline
             # event, not a PENDING draft.
             stored = await self._commit_indexed(
-                room_id, injected.event.model_copy(update={"status": EventStatus.DELIVERED})
+                room_id,
+                with_pipeline_id(
+                    injected.event.model_copy(update={"status": EventStatus.DELIVERED})
+                ),
             )
 
             # Deliver to target channels

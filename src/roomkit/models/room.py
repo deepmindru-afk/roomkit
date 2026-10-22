@@ -5,8 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from roomkit.models._time import UtcDatetime
 from roomkit.models.enums import AgentResponsePolicy, RoomStatus
 
 
@@ -15,7 +16,7 @@ class RoomTimers(BaseModel):
 
     inactive_after_seconds: int | None = Field(default=None, ge=0)
     closed_after_seconds: int | None = Field(default=None, ge=0)
-    last_activity_at: datetime | None = None
+    last_activity_at: UtcDatetime | None = None
 
 
 class Room(BaseModel):
@@ -24,9 +25,9 @@ class Room(BaseModel):
     id: str
     organization_id: str | None = None
     status: RoomStatus = RoomStatus.ACTIVE
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    closed_at: datetime | None = None
+    created_at: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))
+    closed_at: UtcDatetime | None = None
     timers: RoomTimers = Field(default_factory=RoomTimers)
     # What an agent's own output solicits here (RFC §19.3.1). Room state, not
     # a construction option: broadcast happens in whichever worker owns the
@@ -36,9 +37,19 @@ class Room(BaseModel):
     # Store-managed, like delivered_index: committing an event moves them, and
     # update_room() keeps the stored values over a caller's copy.
     event_count: int = Field(default=0, ge=0)
-    latest_index: int = Field(default=0, ge=0)
+    # The highest index committed in the room; None while it has no event
+    # (RFC §5.1, §8.1). 0 would read as the first event's index.
+    latest_index: int | None = Field(default=None, ge=0)
     # Highest event index whose delivery set has executed (RFC §10.1 step 14);
     # -1 = none yet. Store-managed: advanced only through
     # ConversationStore.advance_delivered_index() — update_room() never
     # rewinds it from a caller's stale copy.
     delivered_index: int = Field(default=-1, ge=-1)
+
+    @model_validator(mode="after")
+    def _no_index_without_events(self) -> Room:
+        # A room stored before latest_index was nullable recorded 0 while it
+        # had no event; that 0 names no event.
+        if self.event_count == 0:
+            self.latest_index = None
+        return self

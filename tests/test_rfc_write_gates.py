@@ -10,6 +10,8 @@ lifecycle system events and the responses of a muted source.
 
 from __future__ import annotations
 
+import re
+
 from roomkit.channels.base import Channel
 from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -132,7 +134,11 @@ class TestReentryMeetsTheStatusGate:
         # the inbound gate and a regenerate — ``operation`` names this path.
         assert len(refused) == 1
         assert refused[0].room_id == "r1"
-        assert refused[0].event_id == ai.responses[0].id
+        # The pipeline gave the response its id (RFC §8.1); nothing was
+        # stored under it.
+        assert re.fullmatch(r"[0-9a-f]{32}", refused[0].event_id or "")
+        assert refused[0].event_id != ai.responses[0].id
+        assert refused[0].event_id not in {e.id for e in await kit.store.list_events("r1")}
         assert refused[0].data == {
             "status": str(RoomStatus.CLOSED),
             "operation": "reentry",
@@ -159,7 +165,11 @@ class TestReentryMeetsTheStatusGate:
 
         assert await kit.store.get_room("r1") is None
         assert len(refused) == 1
-        assert refused[0].event_id == ai.responses[0].id
+        # The pipeline gave the response its id (RFC §8.1); nothing was
+        # stored under it.
+        assert re.fullmatch(r"[0-9a-f]{32}", refused[0].event_id or "")
+        assert refused[0].event_id != ai.responses[0].id
+        assert refused[0].event_id not in {e.id for e in await kit.store.list_events("r1")}
         assert refused[0].data == {
             "status": None,
             "operation": "reentry",
