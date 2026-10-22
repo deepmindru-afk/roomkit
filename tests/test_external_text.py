@@ -1250,19 +1250,31 @@ def test_another_case_of_a_form_is_not_read_as_its_letter() -> None:
 
 def test_the_first_fence_reads_no_unicode_table_at_run_time() -> None:
     """The look-alike tables are generated ahead of time: the first ``fence()``
-    of a process compiles its pattern and folds no code point. The collector
-    runs first: a full collection of everything ``roomkit`` imported, falling
-    inside the call by the allocation count alone, would double its time."""
+    of a process compiles its pattern and folds no code point. Counted, not
+    timed: building the tables reads every code point from U+0080 up (over a
+    million ``unicodedata`` calls), fencing ``x`` reads a handful at most, and
+    a count does not move with the load of the machine running the suite."""
     probe = (
-        "import gc, time; from roomkit._text import fence; gc.collect(); "
-        "started = time.perf_counter(); fence('tool_result', 'x'); "
-        "print(time.perf_counter() - started)"
+        "import unicodedata\n"
+        "calls = 0\n"
+        "def counted(read):\n"
+        "    def wrapper(*args):\n"
+        "        global calls\n"
+        "        calls += 1\n"
+        "        return read(*args)\n"
+        "    return wrapper\n"
+        "for name in ('normalize', 'category', 'combining', 'name', 'decomposition'):\n"
+        "    setattr(unicodedata, name, counted(getattr(unicodedata, name)))\n"
+        "from roomkit._text import fence\n"
+        "calls = 0\n"
+        "fence('tool_result', 'x')\n"
+        "print(calls)\n"
     )
-    took = subprocess.run(
+    reads = subprocess.run(
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True
     ).stdout
 
-    assert float(took) < 0.05
+    assert int(reads) < 100
 
 
 def test_neutralising_a_closing_tag_keeps_what_follows_it() -> None:
