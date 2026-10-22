@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import weakref
 from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
@@ -457,6 +458,7 @@ class RealtimeDelegationMixin:
         bound; the one difference is where the outcome goes — back to the
         backend model, with whether it failed, not to the provider (RFC §12.4.1).
         """
+        await _no_call_after_own_ending()
         # Under the id the backend's model gave it, as its other reports are
         # (RFC §9.3). Read as a provider's call is: one naming no tool is
         # refused before the gate (RFC §12.4).
@@ -617,13 +619,35 @@ def _take_back_ending_cut(call: RealtimeToolCall) -> bool:
     return True
 
 
+# The delegations one of their own calls ended: their cancellation is
+# scheduled (_end_delegation_after), and no call of theirs runs before it.
+_ENDED_BY_OWN_CALL: weakref.WeakSet[asyncio.Task[Any]] = weakref.WeakSet()
+
+
 def _end_delegation_after(call: RealtimeToolCall) -> None:
     """End the delegation holding *call* once the call returned on the
     session its own ending closed: nothing is left to answer it, and no
     further round runs (RFC §12.4)."""
     carrier = call.carrier
     if carrier is not None and call.caused_ending:
+        _ENDED_BY_OWN_CALL.add(carrier)
         asyncio.get_running_loop().call_soon(carrier.cancel)
+
+
+async def _no_call_after_own_ending() -> None:
+    """Cut a call its delegation makes after one that ended the delegation:
+    it neither runs, nor is reported, nor returns to the backend (RFC §12.4).
+
+    The ending's cancellation is already scheduled; without waiting for it,
+    a call refused at once (its session is gone) would hand the backend a
+    result before the cancellation lands.
+    """
+    carrier = carrying_task()
+    if carrier is None or carrier not in _ENDED_BY_OWN_CALL:
+        return
+    if asyncio.current_task() is carrier:
+        await asyncio.get_running_loop().create_future()  # the cancellation lands here
+    raise asyncio.CancelledError("the delegation ended")
 
 
 async def _without_mark_copies(transcript: list[TranscriptLine]) -> list[TranscriptLine]:

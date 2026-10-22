@@ -813,6 +813,9 @@ class RoomKit(
         # A turn still running after the lanes (a stream nobody reads) is cut
         # before its channel closes.
         await self._turns.close()
+        # The ASYNC observers still running finish while the channels they may
+        # use are open; each is bounded by its hook's timeout.
+        await self._hook_engine.drain_observers()
         # Then close the channels. In sequence, but shielded from one another:
         # they close one at a time, so a close that raises would leave every
         # channel behind it holding its media — for a conference channel, a

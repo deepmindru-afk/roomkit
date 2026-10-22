@@ -159,6 +159,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lost. 8.0.1 and later work, as do 5.0.2 to 7.4; the `redis` extra is
   unchanged.
 
+- An ASYNC hook on a trigger that runs a SYNC chain (BEFORE_TTS,
+  ON_TRANSCRIPTION, ON_TOOL_CALL…) no longer holds up the operation it
+  observes (RFC §9, RMK-903). Its observers start as background tasks once
+  the chain has run, on the payload the chain left; the operation used to
+  wait for them, up to each hook's timeout. Measured: an ASYNC BEFORE_TTS
+  hook that waited up to 5 s delayed every answer's synthesis by 5.3 s.
+  `RoomKit.close()` waits for the observers still running before the
+  channels close, and `HookEngine.drain_observers()` does so on demand.
+  Migration: a hook whose work the operation needs before it goes on (state
+  a later step of the turn reads) is registered SYNC and returns
+  `HookResult.allow()`.
+  A realtime delegation that one of its own calls ended (a hang-up) cuts the
+  call its backend makes next before it runs, so the backend gets no result
+  for it: that held only because the refusal's report waited for its
+  observers.
+
 - An answer a barge-in cut reads, in the AI context, with how far the person
   heard it (RFC §6.4): `[The person cut you off during this answer, 5.7 s in:
   they heard it up to “…” and not the rest.]`, where it read "[You were

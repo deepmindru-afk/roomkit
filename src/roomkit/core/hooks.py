@@ -260,6 +260,9 @@ class HookEngine:
             "on_output_audio_level",
             "on_vad_audio_level",
         }
+        # The ASYNC observers still running: the operation they observe went
+        # on without them (RFC §9), and close() waits for them.
+        self._observers: set[asyncio.Task[None]] = set()
 
     async def _emit_hook_timeout(
         self, room_id: str, hook: HookRegistration, trigger: HookTrigger
@@ -978,15 +981,7 @@ class HookEngine:
             HookExecution.ASYNC,
             event=filter_ev,
         )
-        if async_hooks:
-            await self._run_async_hooks_list(
-                async_hooks,
-                room_id,
-                trigger,
-                final_event,
-                context,
-            )
-
+        self._observe(async_hooks, room_id, trigger, final_event, context)
         return result
 
     async def run_async_hooks(
@@ -1077,9 +1072,47 @@ class HookEngine:
             HookExecution.ASYNC,
             event=None if skip_event_filter else event,
         )
+        self._observe(hooks, room_id, trigger, event, context)
+
+    def _observe(
+        self,
+        hooks: list[HookRegistration],
+        room_id: str,
+        trigger: HookTrigger,
+        event: RoomEvent | Any,
+        context: RoomContext,
+    ) -> None:
+        """Start *hooks* as observers of *event* and return at once.
+
+        An ASYNC hook runs after the operation that fired it and cannot hold
+        it up (RFC §9): a slow observer of BEFORE_TTS delays no synthesis,
+        one of ON_TOOL_CALL no tool loop. A hook that must have run before the
+        operation goes on is a SYNC one.
+        """
         if not hooks:
             return
-        await self._run_async_hooks_list(hooks, room_id, trigger, event, context)
+        task = asyncio.get_running_loop().create_task(
+            self._run_async_hooks_list(hooks, room_id, trigger, event, context),
+            name=f"roomkit-observers-{trigger}",
+        )
+        self._observers.add(task)
+        task.add_done_callback(self._observers.discard)
+
+    async def drain_observers(self) -> None:
+        """Wait for the observers still running, this engine's and its turn side's.
+
+        Each hook is bounded by its own timeout; an observer that fires
+        another trigger is waited for too.
+        """
+        engines = [self]
+        if self.turn_side is not None and self.turn_side.engine is not self:
+            engines.append(self.turn_side.engine)
+        # Only the tasks still running: a done one leaves the set on its done
+        # callback, which awaiting it again would never let run.
+        while running := [
+            task for engine in engines for task in engine._observers if not task.done()
+        ]:
+            await asyncio.gather(*running, return_exceptions=True)
 
     async def _run_async_hooks_list(
         self,

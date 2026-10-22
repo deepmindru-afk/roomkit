@@ -1141,7 +1141,9 @@ the engine invokes the trigger: SYNC triggers run through the sequential,
 priority-ordered sync pipeline (can block/modify); ASYNC triggers run
 concurrently, fire-and-forget, errors logged. Registration mode is forgiving in
 both directions: ASYNC-registered hooks on a SYNC trigger fire as observers
-after the sync pass; SYNC-registered hooks (the default) on an ASYNC trigger
+after the sync pass, in the background: the operation goes on without waiting
+for them, so a hook whose work it needs first is registered SYNC (RMK-903);
+SYNC-registered hooks (the default) on an ASYNC trigger
 fire like any other observer. Triggers marked *Reserved* exist in the enum but
 are not fired by any built-in code.
 
