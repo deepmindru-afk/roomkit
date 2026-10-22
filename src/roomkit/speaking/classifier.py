@@ -46,12 +46,23 @@ DIRECTNESS = ScoreQuestion(
     "a 'tu' or 'you', or a question that names no one else is direct. When `people` lists "
     "several people, a 'tu' or 'you' said to one of them does not bring in the assistant.",
     (
-        "Not mentioned: `last_turn` does not name or refer to the assistant.",
+        "Not mentioned: `last_turn` does not name or refer to the assistant, talks about it "
+        "to someone else ('she is listening'), or asks someone else to tell or explain "
+        "something to it ('explain it to her'): that person speaks next.",
         "Tentatively: the speaker wonders whether the assistant could help or might know.",
-        "Indirectly: the speaker proposes that someone asks the assistant.",
+        "Indirectly: the speaker proposes that the assistant be asked something it could "
+        "answer now ('we could ask the assistant').",
         "Directly: the assistant is asked by name or as 'you', even with polite conditionals.",
     ),
 )
+"""A turn about the assistant said to someone else, or asking someone to talk to
+it, read "indirectly" (1.5-2.2: "she is ready to listen to you, go ahead",
+"explain it to her", "Alain, explain to Nova what you want"), and the agent
+answered in that person's place. With "not mentioned" covering them and
+"indirectly" kept to a question the agent could answer now: 14/14 on live and
+written turns, three calls each (the former 9/14); those read 0.03-0.21, out of
+the tentative band, and the agent asked to explain something to someone else
+1.73-2.99."""
 DEFERRED = YesNoQuestion(
     "In `last_turn`, does the speaker postpone or decline asking the assistant or the "
     "question being discussed (for example 'later', 'after the meeting', 'we will check "
@@ -72,8 +83,13 @@ maybe you remember"). This wording: 17/19 right on live and written turns, three
 calls each (the former 12/19), every unfinished one still held (0.91-0.98)."""
 HUSH = YesNoQuestion(
     "In `last_turn`, does the speaker ask the assistant not to answer, to stay quiet, or "
-    "only to listen?"
+    "only to listen from now on? Asking whether it is ready to listen, or to listen to "
+    "what they are about to say, expects an answer: it is not a request for quiet."
 )
+"""Asked "are you ready to listen to me?" before an explanation, the agent read a
+request for quiet (0.65-0.71) and stayed silent; "are you listening?" read 0.55.
+They read 0.10-0.22 now, and a request for quiet 0.86-0.97 (7/7, three calls
+each; the former 5/7)."""
 REQUEST = YesNoQuestion(
     "Does `last_turn` ask the assistant to answer a question or to do something now? A "
     "remark or a reproach about the assistant is not a request."
