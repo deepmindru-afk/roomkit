@@ -29,7 +29,7 @@ from pydantic_core import to_jsonable_python
 
 from roomkit.channels._video_hooks import room_vision_note
 from roomkit.models.enums import TaskStatus
-from roomkit.tasks.status import TASK_ACTION
+from roomkit.tasks.status import RUN_ENTRY, TASK_ACTION
 from roomkit.tools.context import _current_turn_chain_depth
 from roomkit.turns._error_codec import error_record
 from roomkit.turns.base import OwnerHost
@@ -160,6 +160,9 @@ class KitHost(OwnerHost):
         if args.action == TASK_ACTION:
             raise ValueError(f"A turn's host posts no {TASK_ACTION!r} status: the framework does")
         metadata = dict(args.metadata or {})
+        if RUN_ENTRY in metadata:
+            # A worker run's entry ends its task's line: the framework's too.
+            raise ValueError(f"A turn's host posts no {RUN_ENTRY!r} status: the framework does")
         _same_room(scope, metadata.setdefault("room_id", scope.room_id))
         self._kit.status_bus.post(
             args.agent_id, args.action, args.status, detail=args.detail, metadata=metadata

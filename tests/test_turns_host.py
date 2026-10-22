@@ -241,6 +241,29 @@ async def test_a_status_post_names_its_turn_s_room() -> None:
     await kit.close()
 
 
+async def test_a_turn_s_host_posts_no_worker_run_entry() -> None:
+    """A worker run's terminal entry ends the line of the task it names,
+    whatever its action: a turn forging one would end a running task for
+    task_status and cancel_task (RMK-875 review)."""
+
+    async def use(host: TurnHost) -> Any:
+        try:
+            await host.post_status(
+                "agent", "iteration", "failed", metadata={"task_id": "t1", "task_run": True}
+            )
+        except ValueError as exc:
+            return exc
+        return None
+
+    kit, _, seen = await _kit(use)
+
+    await _say(kit)
+
+    assert isinstance(seen["result"], ValueError)
+    assert await kit.status_bus.recent(5, agent_id="agent") == []
+    await kit.close()
+
+
 async def test_a_turn_s_host_posts_no_task_status() -> None:
     """The room's task tools read the bus's task statuses to know which tasks
     are the room's: a forged one would let cancel_task reach another room's."""

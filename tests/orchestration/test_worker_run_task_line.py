@@ -54,3 +54,18 @@ async def test_a_worker_cut_after_its_progress_leaves_its_line_ended(
         (True, "failed")
     ]
     assert lines[0]["progress"] == "3 of 5"
+
+
+async def test_an_entry_no_worker_run_posted_never_ends_a_task_s_line() -> None:
+    """A terminal entry under another action naming a running task, but not
+    a worker run's (RUN_ENTRY), leaves the task's line running."""
+    room = await _Room(_Endless()).open()
+    task = await room.running_task()
+    room.kit.status_bus.post(
+        "worker", "iteration", "failed", metadata={"room_id": "r", "task_id": task.id}
+    )
+
+    lines = await room_task_lines(room.kit.status_bus, "r", 50)
+    await room.kit.close()
+
+    assert [(line["task_id"], line["status"]) for line in lines] == [(task.id, "running")]

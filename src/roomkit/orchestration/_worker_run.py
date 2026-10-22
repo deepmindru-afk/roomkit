@@ -21,6 +21,7 @@ from roomkit.models.enums import TaskStatus
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.orchestration.status_bus import StatusLevel, post_agent_lifecycle
 from roomkit.tasks.models import task_work
+from roomkit.tasks.status import RUN_ENTRY
 from roomkit.tools.timeout import answer_within
 
 if TYPE_CHECKING:
@@ -249,7 +250,7 @@ class _Posts:
         status = self._status
         if status is None:
             return
-        metadata = {**status.metadata, **(metadata or {})}
+        metadata = {**status.metadata, **(metadata or {}), RUN_ENTRY: True}
         task_id = task.id if task is not None else self._task_id
         if task_id:
             metadata["task_id"] = task_id

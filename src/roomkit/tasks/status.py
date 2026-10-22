@@ -27,6 +27,11 @@ if TYPE_CHECKING:
 TASK_ACTION = "task"
 """The action a task's entries carry, a delegation's as an orchestration worker's."""
 
+RUN_ENTRY = "task_run"
+"""The metadata key a strategy's worker run sets on its own entries, the
+framework's alone (a turn's host refuses it): its terminal entry, whatever
+action it posts under, ends the line of the task it names."""
+
 TASK_STATUS_TOOL = "task_status"
 CANCEL_TASK_TOOL = "cancel_task"
 
@@ -233,10 +238,14 @@ async def room_task_lines(bus: StatusBus, room_id: str, window: int) -> list[dic
 
 def _of_a_task(entry: StatusEntry) -> bool:
     """Whether a task's line reads *entry*: one posted under the task action,
-    or the end of a strategy's run that names its task."""
+    or the end of a strategy's run that names its task (:data:`RUN_ENTRY`),
+    never an entry a turn posted."""
     if entry.action == TASK_ACTION:
         return True
-    return bool(entry.metadata.get("task_id")) and entry.status != StatusLevel.PENDING
+    metadata = entry.metadata
+    return bool(metadata.get(RUN_ENTRY) and metadata.get("task_id")) and (
+        entry.status != StatusLevel.PENDING
+    )
 
 
 class CancelTaskTool:
