@@ -306,9 +306,8 @@ pythonpath = ["src"]
 asyncio_mode = "auto"
 # Stress tests are opt-in: `make stress` (or `pytest -m stress`, whose -m
 # overrides this one). The default run — and CI's coverage run — skips them.
-# Under `-n`, an idle worker takes tests queued for a busy one: a few tests
-# wait seconds in real time, and the suite ends 20% sooner than split evenly.
-addopts = "-m 'not stress' --dist worksteal"
+# No plugin option here: the smoke and fastrtc CI jobs run a bare pytest.
+addopts = "-m 'not stress'"
 markers = [
     "stress: load/contention tests, excluded from the default run (run with `make stress`)",
     "wallclock: asserts real elapsed-time budgets; deselect on loaded CI runners",

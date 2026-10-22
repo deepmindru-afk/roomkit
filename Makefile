@@ -35,19 +35,24 @@ audit:
 	  uvx --python 3.12 pip-audit --requirement "$$tmp/all.txt" || \
 	  echo "audit: the extras pass failed or found advisories (reported, not gating)"; }
 
-# The whole suite, one worker per core (pytest-xdist).
+# One worker per core (pytest-xdist); an idle worker takes tests queued for a
+# busy one, since a few tests wait seconds in real time (20% sooner than an
+# even split). Not in addopts: a bare pytest, as the smoke job runs, lacks it.
+PARALLEL = -n auto --dist worksteal
+
+# The whole suite.
 test:
-	uv run pytest -n auto
+	uv run pytest $(PARALLEL)
 
 # Only the tests whose code changed since the last run (pytest-testmon; the
 # first run records, and runs everything). A dependency testmon cannot see —
 # a data file, a module installed into sys.modules — needs `make test`, which
 # `make all` and CI run.
 test-changed:
-	uv run pytest -n auto --testmon --testmon-forceselect
+	uv run pytest $(PARALLEL) --testmon --testmon-forceselect
 
 coverage:
-	uv run pytest -n auto --cov=roomkit --cov-report=term-missing
+	uv run pytest $(PARALLEL) --cov=roomkit --cov-report=term-missing
 
 stress:
 	uv run pytest -m stress -v

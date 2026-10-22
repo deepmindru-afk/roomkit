@@ -271,7 +271,7 @@ echo "    Updated src/roomkit/_version.py"
 
 # --- Run tests ---
 echo "==> Running tests..."
-uv run pytest -n auto
+uv run pytest -n auto --dist worksteal
 echo "    Tests passed."
 
 # --- Build + SBOM BEFORE any Git mutation ---
