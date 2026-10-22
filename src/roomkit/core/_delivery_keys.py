@@ -8,8 +8,8 @@ carries it, from the call's start until its delivery is over: a delivery
 cancelled before its event is committed is committed and delivered all the
 same, and none of its turns starts. A cancellation scoped to an organization
 reaches only the deliveries of its rooms (RFC §17.2); a delivery whose room is
-not known yet (a call that did not name its organization, before its commit)
-takes it once its room proves the organization's, uncounted.
+not known yet (a call that did not name its organization, before its room is
+read) takes it once its room proves the organization's, uncounted.
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ if TYPE_CHECKING:
 
 
 class NamedDelivery:
-    """A delivery a key names, from its call's start: its cascade once the
-    call commits, the organization of its room once known."""
+    """A delivery a key names, from its call's start: the organization of
+    its room once read, its cascade once the call commits."""
 
     __slots__ = ("_cancelled", "_located", "_organization_id", "_release", "_requests", "cascade")
 
@@ -68,18 +68,24 @@ class NamedDelivery:
             self.cascade.cancel(reason)
         return True
 
-    def attach(self, cascade: DeliveryCascade, organization_id: str | None) -> None:
-        """Make *cascade*, in a room of *organization_id*, the delivery named:
-        cancelled at once when the delivery already was, named until it is
-        over."""
-        self.cascade = cascade
+    def locate(self, organization_id: str | None) -> None:
+        """The delivery's room is read, of *organization_id*: a scoped
+        cancellation that waited for it cancels the delivery when it is that
+        organization's."""
         self._organization_id = organization_id
         self._located = True
-        reason = self._cancelled or next(
-            (asked for owner, asked in self._requests if owner == organization_id), None
-        )
-        if reason is not None:
-            cascade.cancel(reason)
+        if self._cancelled is None:
+            self._cancelled = next(
+                (asked for owner, asked in self._requests if owner == organization_id), None
+            )
+        self._requests.clear()
+
+    def attach(self, cascade: DeliveryCascade) -> None:
+        """Make *cascade* the delivery named: cancelled at once when the
+        delivery already was, named until it is over."""
+        self.cascade = cascade
+        if self._cancelled is not None:
+            cascade.cancel(self._cancelled)
         cascade.when_over(partial(self._release, self))
 
     def release(self) -> None:

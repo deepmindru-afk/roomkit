@@ -695,6 +695,19 @@ class _RoutingStore(InMemoryStore):
         return await super().binding_exists(room_id, channel_id)
 
 
+class _ContextStore(InMemoryStore):
+    """The context build (step 3) reads the room, its bindings and its
+    participants."""
+
+    def __init__(self, pause: _Pause) -> None:
+        super().__init__()
+        self._pause = pause
+
+    async def load_room_context(self, room_id: str) -> Any:
+        await self._pause.here()
+        return await super().load_room_context(room_id)
+
+
 class _ParsingChannel(SimpleChannel):
     """The channel's own parsing of the message (step 4)."""
 
@@ -722,6 +735,7 @@ class _IdentifyingResolver(MockIdentityResolver):
 
 PAUSES: dict[str, Callable[[_Pause], dict[str, Any]]] = {
     "routing": lambda pause: {"store": _RoutingStore(pause)},
+    "context": lambda pause: {"store": _ContextStore(pause)},
     "parsing": lambda pause: {"sms": _ParsingChannel(pause)},
     "identity": lambda pause: {"identity_resolver": _IdentifyingResolver(pause)},
 }
@@ -746,9 +760,9 @@ def _task(body: str, key: str) -> InboundMessage:
 async def test_a_delivery_cancelled_before_its_commit_starts_no_turn(
     path: str, step: str, tmp_path: Path
 ) -> None:
-    """A cancel that reaches the call while it routes, parses or identifies
-    its message is the delivery's: the message is committed and delivered
-    all the same, and its turn never starts."""
+    """A cancel that reaches the call while it routes its message, reads its
+    room, parses or identifies it is the delivery's: the message is committed
+    and delivered all the same, and its turn never starts."""
     room, pause = await _paused(path, tmp_path, step)
     try:
         pause.armed = True
@@ -776,7 +790,7 @@ async def test_an_awaited_call_cancelled_before_its_commit_waits_for_no_turn(
     """Queued behind the room's running turn, an awaited call cancelled
     before its commit returns at once, as one cancelled just after it does:
     its plan waiting in the lane is not its turns' work."""
-    room, pause = await _paused("agent", tmp_path, step)
+    room, pause = await _paused("steerless", tmp_path, step)
     try:
         await room.send("task A", "a")
         await room.seen.until_started("task A")
@@ -798,23 +812,32 @@ async def test_an_awaited_call_cancelled_before_its_commit_waits_for_no_turn(
 
 
 @pytest.mark.parametrize(
-    ("call_scope", "cancel_scope", "counted", "stopped"),
+    ("step", "call_scope", "cancel_scope", "counted", "stopped"),
     [
-        pytest.param("org-1", "org-1", 1, True, id="named-its-organization"),
-        pytest.param(None, "org-1", 0, True, id="located-at-its-commit"),
-        pytest.param(None, "org-2", 0, False, id="unscoped-other-organization"),
-        pytest.param("org-1", "org-2", 0, False, id="scoped-other-organization"),
+        pytest.param("routing", "org-1", "org-1", 1, True, id="named-its-organization"),
+        pytest.param("routing", None, "org-1", 0, True, id="room-not-read-yet"),
+        pytest.param("context", None, "org-1", 0, True, id="room-being-read"),
+        pytest.param("parsing", None, "org-1", 1, True, id="room-read"),
+        pytest.param("identity", None, "org-1", 1, True, id="room-read-identifying"),
+        pytest.param("routing", None, "org-2", 0, False, id="unread-other-organization"),
+        pytest.param("parsing", None, "org-2", 0, False, id="read-other-organization"),
+        pytest.param("routing", "org-1", "org-2", 0, False, id="named-other-organization"),
     ],
 )
 async def test_a_scoped_cancel_before_the_commit_reaches_only_its_organization(
-    call_scope: str | None, cancel_scope: str, counted: int, stopped: bool, tmp_path: Path
+    step: str,
+    call_scope: str | None,
+    cancel_scope: str,
+    counted: int,
+    stopped: bool,
+    tmp_path: Path,
 ) -> None:
     """A call that names its organization is that organization's from its
     start, so a cancel for it is counted at once. One that does not is
-    located at its commit: a cancel for its room's organization is applied
-    then, uncounted, since until then it is no organization's; another
-    organization's never reaches it."""
-    room, pause = await _paused("steerless", tmp_path, "identity", organization_id="org-1")
+    located once it reads its room: a cancel for its room's organization
+    arriving before is applied then, uncounted, since until then it is no
+    organization's; another organization's never reaches it."""
+    room, pause = await _paused("steerless", tmp_path, step, organization_id="org-1")
     try:
         pause.armed = True
         call = asyncio.create_task(
@@ -860,12 +883,14 @@ async def test_a_call_refused_before_its_commit_names_nothing_after(tmp_path: Pa
         await _closed(room)
 
 
+@pytest.mark.parametrize("budgeted", ["context", "parsing", "identity"])
 async def test_a_cancelled_call_that_times_out_before_its_commit_names_nothing_after(
-    tmp_path: Path,
+    budgeted: str, tmp_path: Path
 ) -> None:
-    """A call refused before its commit (its pre-commit budget spent) is
-    refused, whatever cancel reached it: no delivery, and its key released."""
-    room, pause = await _paused("steerless", tmp_path, "parsing", process_timeout=0.2)
+    """A call refused before its commit (its pre-commit budget spent, steps
+    3 to 5) reports its refusal, whatever cancel reached it: no delivery,
+    and its key released."""
+    room, pause = await _paused("steerless", tmp_path, budgeted, process_timeout=0.2)
     try:
         pause.armed = True
         call = asyncio.create_task(room.send("task A", "a"))
@@ -874,9 +899,50 @@ async def test_a_cancelled_call_that_times_out_before_its_commit_names_nothing_a
         assert await room.kit.cancel_delivery("a") == 1
         result = await asyncio.wait_for(call, WAIT)
 
-        assert result.blocked and result.delivery is None
+        assert result.blocked and result.reason == "process_timeout"
+        assert result.delivery is None and result.cancellation_reason is None
         assert room.kit._delivery_keys._named == {}
         assert room.seen.started == []
     finally:
         pause.go.set()
+        await _closed(room)
+
+
+async def test_an_awaited_call_cancelled_while_it_waits_for_the_room_lock_waits_for_no_turn(
+    tmp_path: Path,
+) -> None:
+    """Named by its cascade and still waiting for the room's lock, a call
+    cancelled before its plan is queued returns at once once committed:
+    the turn ahead of it in the lane is not its turns' work."""
+    room = await _room("steerless", tmp_path)
+    holding = asyncio.Event()
+    let_go = asyncio.Event()
+
+    @room.kit.hook(HookTrigger.BEFORE_BROADCAST)
+    async def hold(event: RoomEvent, ctx: Any) -> HookResult:
+        if isinstance(event.content, TextContent) and event.content.body == "task A":
+            holding.set()
+            await let_go.wait()
+        return HookResult.allow()
+
+    try:
+        a = asyncio.create_task(room.send("task A", "a"))
+        await asyncio.wait_for(holding.wait(), WAIT)
+        call = asyncio.create_task(room.kit.process_inbound(_task("task B", "b"), room_id="r"))
+        named = room.kit._delivery_keys._named
+        await _settled(lambda: "b" in named and named["b"][0].cascade is not None)
+
+        assert await room.kit.cancel_delivery("b", reason="stopped") == 1
+        let_go.set()
+        await asyncio.wait_for(a, WAIT)
+        await room.seen.until_started("task A")
+        result = await asyncio.wait_for(call, WAIT)
+
+        assert result.cancellation_reason == "stopped"
+        assert room.seen.finished == []
+        room.seen.gate("task A").set()
+        await room.until_broadcast("task B")
+        assert room.seen.started == ["task A"]
+    finally:
+        let_go.set()
         await _closed(room)

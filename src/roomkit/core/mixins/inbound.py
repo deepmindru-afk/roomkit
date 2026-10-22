@@ -262,11 +262,11 @@ class InboundMixin(HelpersMixin):
         §17.2): only the deliveries of its rooms are cancelled, so two
         tenants that chose the same key never cancel each other's. Left
         unset, every delivery the key names in the process is. A delivery
-        whose ``process_inbound`` named no organization has no room known
-        before its commit: a scoped cancellation reaching it earlier is
-        applied at the commit if the room is the organization's, and is not
-        counted. Pass ``organization_id`` to ``process_inbound`` too, and
-        the count is exact from the call's start.
+        whose ``process_inbound`` named no organization belongs to none until
+        the call reads its room, right after routing (step 3): a scoped
+        cancellation reaching it earlier is applied once the room proves the
+        organization's, and is not counted. Pass ``organization_id`` to
+        ``process_inbound`` too, and the count is exact from the call's start.
 
         A key names its delivery from the start of ``process_inbound``.
         Each delivery's agents stop: a turn not started yet never starts, a
@@ -275,7 +275,8 @@ class InboundMixin(HelpersMixin):
         AFTER_BROADCAST hooks fire; one cancelled before its commit is
         committed all the same. Returns at once, from anywhere in the
         process, a tool handler included; each delivery's caller reads its
-        cancelled end on its result, as after ``result.delivery.cancel()``.
+        cancelled end on its result, as after ``result.delivery.cancel()``;
+        a call refused before its commit reports its refusal instead.
 
         The key names, it does not authorize: check who may cancel before
         calling.
@@ -324,7 +325,7 @@ class InboundMixin(HelpersMixin):
         *,
         organization_id: str | None,
     ) -> InboundResult:
-        """RFC §10.1 steps 1-18 for *message*, whose delivery *named* names."""
+        """RFC §10.1 steps 2-18 for *message*, whose delivery *named* names."""
 
         # Route to room (or auto-create). Deliberately outside the pre-commit
         # window below: routing is RFC §10.1 steps 1-2, the phase
@@ -352,7 +353,7 @@ class InboundMixin(HelpersMixin):
         deadline = asyncio.get_running_loop().time() + self._process_timeout
         try:
             prepared = await self._prepare_event(
-                message, channel, room_id, room_just_created, deadline, telemetry
+                message, channel, room_id, room_just_created, deadline, telemetry, named
             )
         except TimeoutError:
             return await self._refuse_on_timeout(room_id, channel_id=message.channel_id)
@@ -380,6 +381,7 @@ class InboundMixin(HelpersMixin):
         room_just_created: bool,
         deadline: float,
         telemetry: Any,
+        named: NamedDelivery,
     ) -> tuple[Any, RoomContext, Identity | None, IdentityResult | None] | InboundResult:
         """RFC §10.1 steps 3-5, under the caller's pre-commit budget.
 
@@ -396,7 +398,7 @@ class InboundMixin(HelpersMixin):
         """
         async with asyncio.timeout_at(deadline):
             return await self._prepare_event_inner(
-                message, channel, room_id, room_just_created, telemetry
+                message, channel, room_id, room_just_created, telemetry, named
             )
 
     async def _prepare_event_inner(
@@ -406,8 +408,11 @@ class InboundMixin(HelpersMixin):
         room_id: str,
         room_just_created: bool,
         telemetry: Any,
+        named: NamedDelivery,
     ) -> tuple[Any, RoomContext, Identity | None, IdentityResult | None] | InboundResult:
         context = await self._build_context(room_id)
+        # The room is read: its organization is the delivery's (RFC §10.1).
+        named.locate(context.room.organization_id if context.room else None)
 
         # Fire ON_SESSION_STARTED for text channels when a new room is created
         if room_just_created and channel.channel_type not in (
@@ -472,7 +477,7 @@ class InboundMixin(HelpersMixin):
         from roomkit.core.lanes import DeliveryCascade
 
         cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
-        named.attach(cascade, context.room.organization_id if context.room else None)
+        named.attach(cascade)
         try:
             result = await self._complete_inbound_delivery(
                 event,

@@ -87,11 +87,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the room's other channels, its turns never start, and the result carries
   `cancellation_reason`. An awaited call cancelled so returns without waiting
   for a turn ahead of it in the room's lane, as one cancelled just after its
-  commit does. A call that does not pass `organization_id` has no room known
-  before its commit: a cancellation scoped to an organization reaching it
-  then is applied at the commit if the room is that organization's, and is
-  not counted; pass `organization_id` to `process_inbound` too for a count
-  exact from the call's start.
+  commit does. A call that does not pass `organization_id` belongs to no
+  organization until it reads its room, right after routing: a cancellation
+  scoped to an organization reaching it before is applied once the room
+  proves that organization's, and is not counted; pass `organization_id` to
+  `process_inbound` too for a count exact from the call's start. A call
+  refused before its commit (a pre-commit timeout, an identity block)
+  reports its refusal, not the cancellation.
 
 - In continuous mode, an acknowledgement whose first partial was taken for
   the response's echo ("Ou" for the response's "où") fires ON_BACKCHANNEL
