@@ -14,7 +14,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._agent_features import UnservedFeature, unserved_in_pipeline
@@ -51,7 +51,9 @@ logger = logging.getLogger("roomkit.orchestration.pipeline")
 
 class RealtimePipeline:
     """A pipeline's agents on one realtime channel: each agent's session
-    configuration, the calls its sessions make, and its handoffs."""
+    configuration, the calls its sessions make, and its handoffs, in the
+    rooms it runs: every room, or those *handler_for* gives a handler (a
+    strategy installed room by room)."""
 
     def __init__(
         self,
@@ -64,10 +66,12 @@ class RealtimePipeline:
         *,
         greet_on_handoff: bool,
         greeting_prompt: str | None,
+        handler_for: Callable[[str], HandoffHandler | None] | None = None,
     ) -> None:
         self._kit = kit
         self._rtv = rtv
         self._handler = handler
+        self._handler_for = handler_for
         self._agent_map: dict[str, Agent] = {a.channel_id: a for a in agents}
         self._default_agent_id = default_agent_id
         self._greet_on_handoff = greet_on_handoff
@@ -128,8 +132,16 @@ class RealtimePipeline:
                     tools.setdefault(tool.name, []).append(tool)
         return tools
 
+    def _handler_of(self, room_id: str) -> HandoffHandler | None:
+        """The handler of *room_id*'s handoffs; ``None`` for a room the
+        pipeline does not run, whose sessions keep the channel's own."""
+        return self._handler_for(room_id) if self._handler_for is not None else self._handler
+
     async def session_config(self, room_id: str) -> SessionConfig | None:
-        """What a new session of *room_id* starts with: its active agent's."""
+        """What a new session of *room_id* starts with: its active agent's,
+        none in a room the pipeline does not run."""
+        if self._handler_of(room_id) is None:
+            return None
         room = await self._kit.get_room(room_id)
         state = get_conversation_state(room)
         agent_id = state.active_agent_id or self._default_agent_id
@@ -156,7 +168,8 @@ class RealtimePipeline:
 
     def _prompt_for(self, agent_id: str, room: Room) -> str | None:
         """*agent_id*'s prompt in *room*, its identity in the room's language."""
-        language = self._handler.get_room_language(room, agent_id)
+        handler = self._handler_of(room.id) or self._handler
+        language = handler.get_room_language(room, agent_id)
         return realtime_prompt(self._agent_map[agent_id], language)
 
     def _agent_config(self, agent: Agent, stages: list[PipelineStage]) -> dict[str, Any]:
@@ -216,12 +229,15 @@ class RealtimePipeline:
         room_id = self._rtv.session_rooms.get(session_id) if session_id else None
         if not room_id:
             return json.dumps({"error": "No room context for this session"})
+        handler = self._handler_of(room_id)
+        if handler is None:
+            raise UnservedToolCallError(f"{HANDOFF_TOOL_NAME!r} is not served in room {room_id!r}")
 
         room = await kit.get_room(room_id)
         state = get_conversation_state(room)
         calling_agent = state.active_agent_id or self._default_agent_id
 
-        result = await self._handler.handle(
+        result = await handler.handle(
             room_id=room_id,
             calling_agent_id=calling_agent,
             arguments=arguments,
@@ -232,7 +248,7 @@ class RealtimePipeline:
             target = arguments.get("target", "")
             # Re-read room for current language
             room = await kit.get_room(room_id)
-            lang = self._handler.get_room_language(room, target)
+            lang = handler.get_room_language(room, target)
             output["message"] = self.greeting(target, language=lang)
         return json.dumps(output)
 
@@ -255,7 +271,7 @@ class RealtimePipeline:
     async def _active_agent(self) -> Agent | None:
         """The agent the call's room is talking to, by its conversation state."""
         room_id = current_tool_room_id()
-        if room_id is None:
+        if room_id is None or self._handler_of(room_id) is None:
             return None
         state = get_conversation_state(await self._kit.get_room(room_id))
         return self._agent_map.get(state.active_agent_id or self._default_agent_id)
@@ -269,7 +285,7 @@ class RealtimePipeline:
         rtv = self._rtv
         room = await self._kit.get_room(room_id)
         prompt = self._prompt_for(new_id, room)
-        lang = self._handler.get_room_language(room, new_id)
+        lang = (self._handler_of(room_id) or self._handler).get_room_language(room, new_id)
         tools = self._session_tools(new_id)
         policy = self._agent_map[new_id]._tool_policy
         sessions = rtv.get_room_sessions(room_id)

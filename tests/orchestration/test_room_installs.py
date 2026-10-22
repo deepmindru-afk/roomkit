@@ -378,6 +378,9 @@ async def test_the_pipeline_strategy_runs_its_agents_in_a_realtime_channel_s_ses
     for room_id in ("room-A", "room-B"):
         await kit.create_room(room_id=room_id, orchestration=strategy)
         await kit.attach_channel(room_id, "voice")
+    # A room the strategy does not run, on the same channel.
+    await kit.create_room(room_id="room-C")
+    await kit.attach_channel("room-C", "voice")
     in_a = await voice.start_session("room-A", "caller-a", "ws")
 
     handed = {"target": "billing", "reason": "r", "summary": "s"}
@@ -389,6 +392,11 @@ async def test_the_pipeline_strategy_runs_its_agents_in_a_realtime_channel_s_ses
     in_a_again = await voice.start_session("room-A", "caller-a2", "ws")
     assert _connected(provider, in_a_again)["system_prompt"].startswith("I am BILLING")
     assert _connected(provider, in_b)["system_prompt"].startswith("I am TRIAGE")
+    in_c = await voice.start_session("room-C", "caller-c", "ws")
+    assert _connected(provider, in_c)["system_prompt"] == "I am the channel"
+    await kit.uninstall_strategy("room-B")
+    in_b_again = await voice.start_session("room-B", "caller-b2", "ws")
+    assert _connected(provider, in_b_again)["system_prompt"] == "I am the channel"
     await kit.close()
 
 

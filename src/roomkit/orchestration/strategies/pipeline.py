@@ -110,8 +110,10 @@ class Pipeline(Orchestration):
         self._farewell_prompt = farewell_prompt
         # The realtime channel's wiring, built at the first install: the
         # channel serves the handoff and reads its sessions' configuration
-        # from one wiring, for every room the strategy is installed in.
+        # from one wiring, which runs the rooms the strategy is installed in
+        # only, each with its install's handler.
         self._realtime: RealtimePipeline | None = None
+        self._realtime_rooms: dict[str, HandoffHandler] = {}
 
     def agents(self) -> list[Agent | str]:
         """Return all pipeline agents."""
@@ -145,7 +147,7 @@ class Pipeline(Orchestration):
         )
 
         if rtv is not None:
-            self._wire_realtime(kit, agents, handler, cp, rtv)
+            self._wire_realtime(kit, agents, handler, cp, rtv, room_id)
         else:
             self._wire_handoff(kit, agents, handler, cp, room_id)
             self._wire_voice(kit, agents, room_id)
@@ -156,6 +158,11 @@ class Pipeline(Orchestration):
             active_agent_id=id_of(self._agents[0]),
         )
         await save_conversation_state(kit.store, room_id, initial_state)
+
+    async def uninstall(self, kit: RoomKit, room_id: str) -> None:
+        """The realtime channel's wiring stops running *room_id*: its next
+        session keeps the channel's own configuration."""
+        self._realtime_rooms.pop(room_id, None)
 
     def _realtime_channel(self, kit: RoomKit) -> RealtimeVoiceChannel | None:
         """The realtime voice channel *voice_channel_id* names, if it names one."""
@@ -169,10 +176,13 @@ class Pipeline(Orchestration):
         handler: HandoffHandler,
         cp: ConversationPipeline,
         rtv: RealtimeVoiceChannel,
+        room_id: str,
     ) -> None:
-        """Run the room's active agent in *rtv*'s sessions, through the one
-        wiring of the strategy, built at its first install; a handoff in the
-        room reconfigures the room's sessions (RFC §19.5)."""
+        """Run *room_id*'s active agent in *rtv*'s sessions, through the one
+        wiring of the strategy, built at its first install, which runs the
+        strategy's rooms alone; a handoff in the room reconfigures the room's
+        sessions (RFC §19.5)."""
+        self._realtime_rooms[room_id] = handler
         if self._realtime is None:
             live = [a for a in agents if isinstance(a, Agent)]
             self._realtime = RealtimePipeline(
@@ -184,6 +194,7 @@ class Pipeline(Orchestration):
                 cp.stages[0].agent_id,
                 greet_on_handoff=self._greet_on_handoff,
                 greeting_prompt=self._greeting_prompt,
+                handler_for=self._realtime_rooms.get,
             )
             self._realtime.install()
         handler.on_handoff_complete = self._realtime.on_handoff_complete
