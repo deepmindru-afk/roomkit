@@ -159,8 +159,22 @@ RESUME_NOTE = (
 _CUT_TEXT_LIMIT = 600
 """Characters of the cut answer the classifier reads."""
 
+WAITING = YesNoQuestion(
+    "Is a question in `last_turn` or `recent_turns`, put to a person other than the "
+    "assistant (by their name, or as 'you' to one of them), still waiting for that "
+    "person's first try: they have not answered it, said they do not know, nor given up "
+    "yet? A question put to everyone ('does anyone know?') waits for no one."
+)
+"""A question put to someone else is theirs to answer first. In a quiz a person
+put to the participants, an agent that knew every answer raised its hand as each
+question was asked ("let me answer first, then raise your hand"). Offering when
+what the agent has in mind answers and no one is still waiting to try, on the
+quiz's live turns and two questions put to everyone: 14/15 right (three calls
+each), the hand up only once the person asked said "I do not remember" or "no
+idea". Without the last sentence, "does anyone know?" waited (0.69-0.81)."""
+
 THOUGHT_QUESTIONS: Mapping[str, Question] = MappingProxyType(
-    {"answers": ANSWERS, "corrects": CORRECTS}
+    {"answers": ANSWERS, "corrects": CORRECTS, "waiting": WAITING}
 )
 """Asked too when the agent has something to say (``SpeakTurn.thought``)."""
 
@@ -202,7 +216,9 @@ def compose(
     or corrects the turn (``answers``, ``corrects``). Not addressed, it offers when
     that reaches *proactivity* (lower is more eager), half of it when what it
     wants to say is *urgent*: urgency alone made an agent ask the same question
-    four times over unrelated turns.
+    four times over unrelated turns. Unless urgent, what it has in mind waits
+    while a question put to someone else has not had their first try
+    (``waiting``).
     """
     j = {name: judgments.get(name, 0.0) for name in (*QUESTIONS, *THOUGHT_QUESTIONS)}
     if j["unfinished"] >= 0.5:
@@ -216,11 +232,21 @@ def compose(
     if addressed(j["directness"], j["request"], alone=alone):
         return "speak", "addressed"
     knows = max(j["answers"], j["corrects"])
+    theirs = theirs_first(j, urgent=urgent)
     if j["directness"] >= 0.75:
-        return ("speak", "knows the answer") if knows >= 0.5 else ("offer", "wondered about")
+        knows_it = knows >= 0.5 and not theirs
+        return ("speak", "knows the answer") if knows_it else ("offer", "wondered about")
     if knows >= (proactivity / 2 if urgent else proactivity):
+        if theirs:
+            return "silent", "theirs to answer"
         return "offer", "urgent" if urgent else "has something to add"
     return "silent", "not addressed"
+
+
+def theirs_first(judgments: Mapping[str, float], *, urgent: bool = False) -> bool:
+    """Whether what the agent has in mind waits: a question put to someone else
+    has not had their first try yet. What cannot wait does not."""
+    return not urgent and judgments.get("waiting", 0.0) >= 0.5
 
 
 def resume_after_cut(
@@ -433,6 +459,8 @@ class ClassifierSpeakPolicy(SpeakPolicy):
         if turn.thought is None or not turn.thought.want_to_say:
             return False
         if any(judgments.get(n, 0.0) >= 0.5 for n in ("unfinished", "deferred", "hush")):
+            return False
+        if theirs_first(judgments, urgent=turn.thought.urgent):
             return False
         knows = max(judgments.get("answers", 0.0), judgments.get("corrects", 0.0))
         return knows >= self._proactivity

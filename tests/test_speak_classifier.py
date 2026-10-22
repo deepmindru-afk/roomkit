@@ -296,3 +296,19 @@ def test_the_turn_holds_only_what_the_channel_may_know() -> None:
     turn = _speak_turn(event, _context(shown, to_sms_only, internal, own, event), "ai1")
 
     assert [e.id for e in turn.recent] == [shown.id, own.id]
+
+
+@pytest.mark.parametrize(
+    ("judgments", "urgent", "decided"),
+    [
+        ({"answers": 0.9, "waiting": 0.8}, False, ("silent", "theirs to answer")),
+        ({"answers": 0.9, "waiting": 0.2}, False, ("offer", "has something to add")),
+        ({"answers": 0.9, "waiting": 0.8}, True, ("offer", "urgent")),
+        ({"directness": 1.0, "answers": 0.9, "waiting": 0.8}, False, ("offer", "wondered about")),
+    ],
+)
+def test_a_question_put_to_someone_else_is_theirs_to_answer_first(
+    judgments: dict[str, float], urgent: bool, decided: tuple[str, str]
+) -> None:
+    """RMK-914: in a quiz, the agent raised its hand as each question was asked."""
+    assert compose(judgments, urgent=urgent) == decided
