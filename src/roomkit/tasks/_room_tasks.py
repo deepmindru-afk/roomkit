@@ -7,6 +7,7 @@ the framework ran there ended with, even before the bus shows that end.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Literal, NamedTuple
 
 TaskReach = Literal["tool", "strategy", "turn"]
@@ -69,6 +70,17 @@ class RoomTaskRecord:
         any other task, or one ended before the latest kept."""
         ended = self._ended.get(task_id)
         return ended[1] if ended is not None and ended[0] == room_id else None
+
+
+class TaskCancel:
+    """A ``cancel_task`` cancel under way for one task: the channels whose
+    calls asked for it, none of which is handed the cancellation back, and
+    whether it cancelled the task, which a call asking meanwhile is answered
+    (RFC §23.4)."""
+
+    def __init__(self, channel_id: str | None) -> None:
+        self.callers: set[str] = {channel_id} if channel_id else set()
+        self.cancelled: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
 
 
 def why_not_cancelled(reach: TaskReach | None) -> str | None:

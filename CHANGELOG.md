@@ -142,6 +142,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its span ends `error`, and `cancel_task` answers `failed`. The caller of a
   refused or inline delegation still receives the error.
 
+- Two `cancel_task` calls on one running task at once (two agents, or one
+  agent calling twice in a turn) cancel it once, and both are answered
+  `cancelled` (RMK-874). The second call overwrote the first's channel and
+  then cleared it, so the agent that cancelled was handed the cancellation
+  back and said it twice, and the second answer read `ended`, which is no
+  task status.
+
 - A voice channel's record of a cut answer carries `played_percentage` once
   the answer's synthesis ended before the cut (RFC §12.3.13): the
   utterance's total duration was never set, so the share was never written.

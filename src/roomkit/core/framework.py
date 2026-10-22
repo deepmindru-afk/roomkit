@@ -108,7 +108,7 @@ from roomkit.realtime.memory import InMemoryRealtime
 from roomkit.sources.base import SourceProvider
 from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
-from roomkit.tasks._room_tasks import RoomTaskRecord
+from roomkit.tasks._room_tasks import RoomTaskRecord, TaskCancel
 from roomkit.tasks.background import BackgroundSetup
 from roomkit.tasks.base import TaskRunner
 from roomkit.turns._registry_tools import OwnerToolStore
@@ -462,9 +462,9 @@ class RoomKit(
         # so close() cuts it: the strategies' runs and the delegations'
         # hand-backs under way (RFC §19.7.3, §19.7.4, §23.3).
         self._background_runs: set[asyncio.Task[None]] = set()
-        # The tasks a ``cancel_task`` call is cancelling, by the channel that
-        # made it: that channel is not handed the cancellation back (RFC §23.4).
-        self._task_cancelled_by: dict[str, str] = {}
+        # The ``cancel_task`` cancels under way, by task: the channels whose
+        # calls asked are not handed the cancellation back (RFC §23.4).
+        self._task_cancels: dict[str, TaskCancel] = {}
         # What the framework knows of the tasks it runs for each room: whether
         # a task is the room's, how it can end, how it ended; a cancel_task
         # call answers from it, never from the bus alone (RFC §23.4).

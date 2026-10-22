@@ -45,7 +45,7 @@ from roomkit.models.enums import (
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.response_metadata import TurnEntries
 from roomkit.tasks._child_status import record_task_end
-from roomkit.tasks._room_tasks import RoomTaskRecord, TaskReach
+from roomkit.tasks._room_tasks import RoomTaskRecord, TaskCancel, TaskReach
 from roomkit.tasks.brief import conversation_block, worker_description
 from roomkit.tasks.handback import CALLER_HANDS_BACK, bounded, hand_back, result_text
 from roomkit.tasks.models import (
@@ -216,8 +216,8 @@ class DelegationHost(Protocol):
         _closed: Whether the framework is closing (no delegation starts).
         _background_runs: The background work the framework holds until it
             ends, so its close cuts it (a hand-back under way included).
-        _task_cancelled_by: The tasks a ``cancel_task`` call is cancelling,
-            by the channel that made the call.
+        _task_cancels: The ``cancel_task`` cancels under way, by task: the
+            channels whose calls asked, and the cancel's outcome.
         _room_tasks: What the framework knows of the tasks it runs for
             each room: those running, how each can end, and how the latest
             ended (RFC §23.4).
@@ -237,7 +237,7 @@ class DelegationHost(Protocol):
     _telemetry: TelemetryProvider | None
     _closed: bool
     _background_runs: set[asyncio.Task[None]]
-    _task_cancelled_by: dict[str, str]
+    _task_cancels: dict[str, TaskCancel]
     _room_tasks: RoomTaskRecord
 
 
@@ -297,7 +297,7 @@ class DelegationMixin(HelpersMixin):
     _task_runner: TaskRunner
     _closed: bool
     _background_runs: set[asyncio.Task[None]]
-    _task_cancelled_by: dict[str, str]
+    _task_cancels: dict[str, TaskCancel]
     _room_tasks: RoomTaskRecord
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
@@ -861,21 +861,36 @@ class DelegationMixin(HelpersMixin):
         """Cancel *task_id* for a ``cancel_task`` call made in *room_id*: only
         a task of that room; when *channel_id*, the caller, is the one the
         result was going to, it is not handed the cancellation back, the
-        tool's answer having told it (RFC §23.4)."""
+        tool's answer having told it. Calls asking at once cancel it once,
+        each answered as the first is (RFC §23.4)."""
         if self._room_tasks.reach(task_id, room_id) != "tool":
             return False
+        under_way = self._task_cancels.get(task_id)
+        if under_way is None:
+            return await self._cancel_first(task_id, channel_id)
         if channel_id:
-            self._task_cancelled_by[task_id] = channel_id
+            under_way.callers.add(channel_id)
+        return await asyncio.shield(under_way.cancelled)
+
+    async def _cancel_first(self, task_id: str, channel_id: str | None) -> bool:
+        """Cancel *task_id* for the first ``cancel_task`` call asking, its
+        outcome kept for the calls asking meanwhile."""
+        cancel = self._task_cancels[task_id] = TaskCancel(channel_id)
+        cancelled = False
         try:
-            return await self._task_runner.cancel(task_id)
+            cancelled = await self._task_runner.cancel(task_id)
         finally:
-            self._task_cancelled_by.pop(task_id, None)
+            del self._task_cancels[task_id]
+            cancel.cancelled.set_result(cancelled)
+        return cancelled
 
     def _cancelled_by_notified(self, result: DelegatedTaskResult, notify_channel: str) -> bool:
         """Whether *result* is a cancellation its notified channel asked for."""
+        cancel = self._task_cancels.get(result.task_id)
         return (
             result.status == TaskStatus.CANCELLED
-            and self._task_cancelled_by.get(result.task_id) == notify_channel
+            and cancel is not None
+            and notify_channel in cancel.callers
         )
 
     async def _on_delegation_complete(self, result: DelegatedTaskResult) -> None:
