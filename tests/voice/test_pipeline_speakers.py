@@ -226,30 +226,30 @@ class TestVADMode:
 
     async def test_a_hook_names_the_voice(self) -> None:
         room = _vad_room(["speaker_0"] * 3, 1, pipeline_speakers=True)
-        room.rename = {"0": "Sylvain"}
+        room.rename = {"0": "Dana"}
         await room.start()
         await room.frames(3)
         [message] = await room.messages(1)
         await room.channel.close()
-        assert message.metadata["sender_name"] == "Sylvain"
+        assert message.metadata["sender_name"] == "Dana"
         assert room.transcriptions[0].speaker == "0"
 
     async def test_a_hook_names_the_participant_who_spoke(self) -> None:
         """A label matched to a known person (RFC §12.2.3): the message is
         theirs, not the stream owner's."""
         room = _vad_room(["speaker_0"] * 6, 2, pipeline_speakers=True)
-        room.rename = {"0": "Sylvain"}
-        room.participants = {"0": "p-sylvain"}
+        room.rename = {"0": "Dana"}
+        room.participants = {"0": "p-dana"}
         await room.start()
         await room.frames(6)
         messages = await room.messages(2)
         await room.channel.close()
-        assert [m.source.participant_id for m in messages] == ["p-sylvain", "p-sylvain"]
-        assert [m.metadata["sender_name"] for m in messages] == ["Sylvain", "Sylvain"]
+        assert [m.source.participant_id for m in messages] == ["p-dana", "p-dana"]
+        assert [m.metadata["sender_name"] for m in messages] == ["Dana", "Dana"]
 
     async def test_without_a_participant_the_stream_owner_sends(self) -> None:
         room = _vad_room(["speaker_0"] * 3, 1, pipeline_speakers=True)
-        room.rename = {"0": "Sylvain"}
+        room.rename = {"0": "Dana"}
         await room.start()
         await room.frames(3)
         [message] = await room.messages(1)
