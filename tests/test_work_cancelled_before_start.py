@@ -17,11 +17,13 @@ from roomkit import RealtimeVoiceChannel, RoomKit
 from roomkit.channels import VoiceChannel
 from roomkit.channels._conference_activity import RoomActivity
 from roomkit.channels._conference_realtime import ConferenceRealtime
+from roomkit.channels.base import _safe_invoke
 from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.core.task_utils import held_runs
 from roomkit.models.delivery import InboundResult
 from roomkit.models.enums import ChannelType, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.providers.anam.avatar import AnamAvatarProvider
 from roomkit.turns import TurnExecutor
 from roomkit.turns.base import ExecutorLink
 from roomkit.voice.backends.mock import MockVoiceBackend
@@ -362,5 +364,26 @@ async def test_a_session_start_refused_closes_its_connection() -> None:
     with never_awaited() as unawaited, pytest.raises(RoomNotFoundError):
         await channel.start_session("elsewhere", "p", _answered(), organization_id="org")
     await kit.close()
+
+    assert unawaited == []
+
+
+# -- work returned where no loop runs ------------------------------------------
+
+
+async def _sent(*_: Any) -> None:
+    """A host's callback work, or an avatar's send."""
+
+
+def test_a_trace_callback_s_coroutine_returned_where_no_loop_runs_is_closed() -> None:
+    with never_awaited() as unawaited:
+        _safe_invoke(_sent, cast(Any, None))
+
+    assert unawaited == []
+
+
+def test_an_avatar_s_send_scheduled_where_no_loop_runs_is_closed() -> None:
+    with never_awaited() as unawaited:
+        AnamAvatarProvider._schedule_async(_sent())
 
     assert unawaited == []

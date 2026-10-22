@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import inspect
 import logging
 from abc import ABC, abstractmethod
@@ -41,12 +40,16 @@ _trace_logger = logging.getLogger("roomkit.trace")
 
 
 def _safe_invoke(cb: TraceCallback, trace: ProtocolTrace) -> None:
-    """Invoke a trace callback, scheduling coroutines as tasks."""
+    """Invoke a trace callback, scheduling coroutines as tasks; one returned
+    where no loop runs is closed, never left unawaited."""
     try:
         result = cb(trace)
         if inspect.iscoroutine(result):
-            with contextlib.suppress(RuntimeError):
+            try:
                 task = asyncio.get_running_loop().create_task(result)
+            except RuntimeError:
+                result.close()
+            else:
                 task.add_done_callback(log_task_exception)
     except Exception:
         _trace_logger.exception("Trace callback error")

@@ -30,7 +30,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from roomkit.core.task_utils import cancel_and_wait, log_task_exception
+from roomkit.core.task_utils import cancel_and_wait, close_unstarted, log_task_exception
 from roomkit.providers.anam.config import AnamConfig
 from roomkit.video.avatar.base import AvatarProvider
 
@@ -232,14 +232,15 @@ class AnamAvatarProvider(AvatarProvider):
 
     @staticmethod
     def _schedule_async(coro: Any) -> None:
-        """Schedule an async coroutine from sync context."""
+        """Schedule an async coroutine from sync context; where no loop runs
+        it is closed, never left unawaited."""
         try:
             loop = asyncio.get_running_loop()
-            if loop.is_running():
-                task = loop.create_task(coro)
-                task.add_done_callback(log_task_exception)
         except RuntimeError:
-            pass
+            close_unstarted(coro)
+            return
+        task = loop.create_task(coro)
+        task.add_done_callback(log_task_exception)
 
     # -- Video callbacks -------------------------------------------------------
 
