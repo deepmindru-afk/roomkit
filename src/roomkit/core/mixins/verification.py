@@ -36,6 +36,7 @@ from roomkit.models.hook import VERIFICATION_DECISION_KEY
 from roomkit.models.verification import Verification, VerificationPolicy, VerificationRequest
 
 if TYPE_CHECKING:
+    from roomkit.core._delivery_keys import NamedDelivery
     from roomkit.core.hooks import HookEngine
     from roomkit.core.locks import RoomLockManager
     from roomkit.models.context import RoomContext
@@ -100,6 +101,7 @@ class VerificationMixin(HelpersMixin):
 
     # Cross-mixin methods — attribute annotation avoids MRO shadowing
     _rerun_agents_on: Any  # see RegenerateMixin
+    _delivery_keys: Any  # see InboundMixin
     get_room: Any  # see RoomLifecycleMixin
 
     async def request_verification(
@@ -420,17 +422,37 @@ class VerificationMixin(HelpersMixin):
         the store (ON_EVENT_UPDATED fires), and the room's agents then run on
         the last one as on any inbound message of its author: the earlier ones
         are its context. Nothing is copied, and nothing becomes an instruction.
+        A last one whose delivery was cancelled gets no answer (RFC §10.1).
         """
         held = await self._held_window(request)
         if not held:
             return []
+        released, cancelled = await self._restore_held(request.room_id, held)
+        if not released:
+            return []
+        context = await self._build_context(request.room_id)
+        for event in released:
+            await self._hook_engine.run_async_hooks(
+                request.room_id, HookTrigger.ON_EVENT_UPDATED, event, context
+            )
+        await self._answer_released(request.room_id, released, cancelled)
+        return released
+
+    async def _restore_held(
+        self, room_id: str, held: list[RoomEvent]
+    ) -> tuple[list[RoomEvent], set[str]]:
+        """Restore *held* to the visibility each had before it was held: the
+        restored, and the ids of those whose delivery was cancelled."""
         released: list[RoomEvent] = []
-        async with self._lock_manager.locked(request.room_id):
+        cancelled: set[str] = set()
+        async with self._lock_manager.locked(room_id):
             for event in held:
                 current = await self._store.get_event(event.id)
                 marker = current.metadata.get(HELD_KEY) if current is not None else None
                 if current is None or not isinstance(marker, dict):
                     continue  # released already, or changed under us
+                if marker.get("cancelled"):
+                    cancelled.add(current.id)
                 metadata = {k: v for k, v in current.metadata.items() if k != HELD_KEY}
                 restored = current.model_copy(
                     update={
@@ -439,15 +461,53 @@ class VerificationMixin(HelpersMixin):
                     }
                 )
                 released.append(await self._store.update_event(restored))
-        if not released:
-            return []
-        context = await self._build_context(request.room_id)
-        for event in released:
-            await self._hook_engine.run_async_hooks(
-                request.room_id, HookTrigger.ON_EVENT_UPDATED, event, context
-            )
-        await self._rerun_agents_on(request.room_id, released[-1].id)
-        return released
+        return released, cancelled
+
+    async def _answer_released(
+        self, room_id: str, released: list[RoomEvent], cancelled: set[str]
+    ) -> None:
+        """Run the room's agents on the last of *released*, named by its
+        delivery's key, unless that delivery was cancelled (RFC §10.1): no
+        agent answers it then. The earlier ones are its context."""
+        named = [self._delivery_keys.unhold(event.id) for event in released]
+        for earlier in named[:-1]:
+            if earlier is not None:
+                earlier.release()
+        answer, last = released[-1], named[-1]
+        if answer.id in cancelled or (last is not None and last.cancelled is not None):
+            if last is not None:
+                last.release()
+            return
+        await self._rerun_agents_on(room_id, answer.id, named=last)
+
+    def _name_held(self, named: NamedDelivery, event: RoomEvent | None) -> None:
+        """Keep *named* naming a delivery whose event is held, until the
+        event's release or the policy's last moment for it (RFC §11.7.6)."""
+        if event is None or not isinstance(event.metadata.get(HELD_KEY), dict):
+            return
+        lifetime = self._verification_policy.release_max_age
+        self._delivery_keys.hold(named, event.room_id, event.id, lifetime)
+
+    def _record_held_cancellation(self, held: tuple[str, str], reason: str) -> None:
+        """Record on a held event that its delivery was cancelled, so that its
+        release answers it with no agent in any process. Off the canceller:
+        a cancellation returns at once, under the room's lock too."""
+        task = asyncio.get_running_loop().create_task(self._write_held_cancellation(*held, reason))
+        task.add_done_callback(self._pending_hook_tasks.discard)
+        self._pending_hook_tasks.add(task)
+
+    async def _write_held_cancellation(self, room_id: str, event_id: str, reason: str) -> None:
+        """Write *reason* on *event_id*'s hold marker, if it is still held."""
+        try:
+            async with self._lock_manager.locked(room_id):
+                current = await self._store.get_event(event_id)
+                marker = current.metadata.get(HELD_KEY) if current is not None else None
+                if current is None or not isinstance(marker, dict) or marker.get("cancelled"):
+                    return  # released already, or recorded
+                metadata = {**current.metadata, HELD_KEY: {**marker, "cancelled": reason}}
+                await self._store.update_event(current.model_copy(update={"metadata": metadata}))
+        except Exception:
+            logger.exception("Recording the cancellation of held event %s failed", event_id)
 
     async def _held_window(self, request: VerificationRequest) -> list[RoomEvent]:
         """The held messages a completed request releases, oldest first.

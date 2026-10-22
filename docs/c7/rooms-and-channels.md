@@ -389,6 +389,8 @@ returns at once, and each call's caller reads `cancellation_reason` on its
 result. The key names the delivery from the start of `process_inbound`: a
 message cancelled before its commit (while it is routed, parsed, or its sender
 resolved) is committed and delivered all the same, and its turns never start.
+A message held for verification stays named until its release is answered: a
+cancel while it waits counts 1, and its release gets no answer.
 Several messages may share a key. The key is never stored and grants
 nothing: check who may cancel before calling, and pass `organization_id=` so a
 key two tenants both chose only reaches the caller's rooms. Pass it to

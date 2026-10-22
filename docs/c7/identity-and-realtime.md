@@ -106,7 +106,11 @@ await kit.revoke_verification(identity_id, reason="advisor")
 ```
 
 On completion the held messages of the request's window are released to the
-agents as the author's own turns. `ON_VERIFICATION_COMPLETED` and
+agents as the author's own turns. A held message whose delivery was cancelled
+(`kit.cancel_delivery(key)`, its handle) is released with no answer: when it
+is the last released, no agent answers, and the earlier ones are not answered
+in its place. The cancellation is written on the held event, so a release in
+another process honours it. `ON_VERIFICATION_COMPLETED` and
 `ON_VERIFICATION_ENDED` (ASYNC; `ended` is `"verification"` or `"request"`)
 fire when it happens; a timer ends a verification at its expiry, and a
 request left unanswered at its own (the identity then has none open, so the

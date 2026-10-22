@@ -126,7 +126,9 @@ class InboundMessage(BaseModel):
     # without the handle, so an agent's tool can pass it on as text. The
     # agents it asks stop, queued or running, or never start when the cancel
     # comes before the commit; the message itself is still committed and
-    # delivered. Several messages may share one key. Never stored;
+    # delivered. A message held for verification stays named until its
+    # release is answered: cancelled, it is released with no answer.
+    # Several messages may share one key. Never stored;
     # it names, it does not authorize: check who may cancel before calling.
     delivery_key: str | None = None
 

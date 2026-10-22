@@ -18,6 +18,7 @@ from roomkit.models.event import RoomEvent
 from roomkit.models.response_metadata import merge_caller_record
 
 if TYPE_CHECKING:
+    from roomkit.core._delivery_keys import NamedDelivery
     from roomkit.core.locks import RoomLockManager
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
@@ -230,7 +231,9 @@ class RegenerateMixin(HelpersMixin):
             await cascade.abandon("caller_cancelled")
             raise
 
-    async def _rerun_agents_on(self, room_id: str, event_id: str) -> InboundResult | None:
+    async def _rerun_agents_on(
+        self, room_id: str, event_id: str, *, named: NamedDelivery | None = None
+    ) -> InboundResult | None:
         """Run the room's agents on one stored transport event, as on a new one.
 
         :meth:`regenerate_response` picks the newest transport message itself;
@@ -239,9 +242,12 @@ class RegenerateMixin(HelpersMixin):
         came after it (a confirmation the host sent) do not take its place.
         ``None`` when it cannot run: no such event in the room, or its source
         binding is gone or cannot write. Otherwise the same path, refusals and
-        result as a regenerate.
+        result as a regenerate. *named* is the delivery whose key names the
+        run, until it is over (RFC §10.1).
         """
         cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
+        if named is not None:
+            named.attach(cascade)
         try:
             async with AsyncExitStack() as stack:
                 try:
@@ -271,6 +277,8 @@ class RegenerateMixin(HelpersMixin):
         except BaseException:
             await cascade.abandon("caller_cancelled")
             raise
+        finally:
+            cascade.over()
 
     async def _plan_regeneration(
         self, room_id: str, trigger_id: str | None, cascade: DeliveryCascade

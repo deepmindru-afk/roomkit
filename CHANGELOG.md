@@ -205,6 +205,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused before its commit (a pre-commit timeout, an identity block)
   reports its refusal, not the cancellation.
 
+- A message held for verification whose delivery was cancelled is no longer
+  answered when its sender verifies (RMK-908, RFC §10.1, §11.7.6). The
+  release ran the room's agents on it through a new delivery that nothing
+  named, so a `kit.cancel_delivery(key)` that had counted 1 still let the
+  agent answer, and one sent after `process_inbound` returned (the message
+  waiting for its sender, up to `release_max_age`) answered 0. The key now
+  names a held message until its release is answered: a cancel while it
+  waits counts 1, one during the answer cuts it, and a cancelled message is
+  released (its visibility restored) with no answer. When the last released
+  message was cancelled, no agent answers the release. The cancellation is
+  written on the held event, so a release in another process honours it.
+
 - In continuous mode, an acknowledgement whose first partial was taken for
   the response's echo ("Ou" for the response's "où") fires ON_BACKCHANNEL
   once, as RFC §12.3.13 says, not twice (RMK-892). Its final, judged whole,

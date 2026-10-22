@@ -121,6 +121,8 @@ class InboundMixin(HelpersMixin):
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _resolve_identity: Any  # see InboundHost
     _apply_verification: Any  # see VerificationMixin
+    _name_held: Any  # see VerificationMixin
+    _record_held_cancellation: Any  # see VerificationMixin
     _process_locked: Any  # see InboundHost
     _consume_streams_when_cascade_completes: Any  # see LaneExecutionMixin
     _finish_cascade: Any  # see LaneExecutionMixin
@@ -274,10 +276,13 @@ class InboundMixin(HelpersMixin):
         running one is cut, and nothing answers it after. The message itself
         is still delivered to the room's other channels and its
         AFTER_BROADCAST hooks fire; one cancelled before its commit is
-        committed all the same. Returns at once, from anywhere in the
-        process, a tool handler included; each delivery's caller reads its
-        cancelled end on its result, as after ``result.delivery.cancel()``;
-        a call refused before its commit reports its refusal instead.
+        committed all the same. A message held for verification stays named
+        until its release is answered: cancelled while it waits, it is
+        released with no answer, in any process. Returns at once, from
+        anywhere in the process, a tool handler included; each delivery's
+        caller reads its cancelled end on its result, as after
+        ``result.delivery.cancel()``; a call refused before its commit
+        reports its refusal instead.
 
         The key names, it does not authorize: check who may cancel before
         calling.
@@ -286,8 +291,8 @@ class InboundMixin(HelpersMixin):
 
     @cached_property
     def _delivery_keys(self) -> DeliveryKeys:
-        """The deliveries in flight a caller named by a key (RFC §10.1)."""
-        return DeliveryKeys()
+        """The deliveries a caller named by a key (RFC §10.1)."""
+        return DeliveryKeys(self._record_held_cancellation)
 
     async def _process_inbound_inner(
         self,
@@ -481,7 +486,8 @@ class InboundMixin(HelpersMixin):
         invalidates a committed event. Explicit caller cancellation instead
         stops the message's turns, retaining the committed timeline record.
         The cascade becomes the delivery *named* since the call's start,
-        cancelled before its commit when a cancellation reached it earlier.
+        cancelled before its commit when a cancellation reached it earlier;
+        an event held for verification keeps it named until its release.
         """
         from roomkit.core.lanes import DeliveryCascade
 
@@ -500,6 +506,7 @@ class InboundMixin(HelpersMixin):
                 cascade,
                 defer_delivery=defer_delivery,
             )
+            self._name_held(named, result.event)
         except BaseException:
             # The caller owns this cascade even if setup failed after commit,
             # before it could receive a deferred handle. Drain off the lock.
