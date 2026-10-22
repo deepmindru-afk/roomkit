@@ -28,8 +28,8 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
-from contextvars import ContextVar
+from collections.abc import Awaitable, Callable, Coroutine
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -1152,10 +1152,14 @@ class ConferenceRealtime:
         a detach as after an unplug: the report needs no realtime config."""
         self._track_report(report_cancelled_call(self, call, _LEFT_THE_ROOM))
 
-    def _track_report(self, coro: Awaitable[None]) -> None:
+    def _track_report(self, coro: Coroutine[Any, Any, None]) -> None:
         """Run a report, an announcement or a disconnect beside the teardown;
-        a disconnect of the channel's waits for it."""
-        report = asyncio.ensure_future(_run_tracked(coro))
+        a disconnect of the channel's waits for it. Its task runs it, named
+        to what runs under it before its first step: a wrapper cancelled
+        before it starts would leave the report never awaited."""
+        context = copy_context()
+        report = asyncio.get_running_loop().create_task(coro, context=context)
+        context.run(_RUNNING_REPORT.set, report)
         self._reports.add(report)
         report.add_done_callback(self._reports.discard)
         report.add_done_callback(log_task_exception)
@@ -1233,12 +1237,6 @@ class ConferenceRealtime:
         config = self._config
         if config is not None:
             await config.provider.close()
-
-
-async def _run_tracked(coro: Awaitable[None]) -> None:
-    """Run a tracked report, naming its task to what runs under it."""
-    _RUNNING_REPORT.set(asyncio.current_task())
-    await coro
 
 
 class _ConferenceDoor:

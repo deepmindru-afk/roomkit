@@ -551,11 +551,15 @@ class RealtimeAVBridge:
         """Call *callback* with *event*; a failure is logged, the video goes on.
 
         What it returns may be any awaitable (a coroutine, a future): it is
-        awaited in a task of its own.
+        awaited in a task of its own. A coroutine is that task's own, so a
+        task cancelled before its first step closes it rather than leave it
+        never awaited.
         """
         try:
             result = callback(event)
-            if inspect.isawaitable(result):
+            if inspect.iscoroutine(result):
+                self._safe_create_task(result)
+            elif inspect.isawaitable(result):
                 self._safe_create_task(_awaited(result))
         except Exception:
             logger.exception("on_video_detection failed (kind=%s)", event.kind)

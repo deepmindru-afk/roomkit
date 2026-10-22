@@ -7,7 +7,7 @@ import contextlib
 import logging
 import threading
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._voice_speakers import routed_sender
@@ -508,7 +508,7 @@ class VoiceTurnMixin:
             # Still draining: its events are marked once it has.
             logger.warning("Superseded turn still draining for session %s", session.id)
             task = asyncio.get_running_loop().create_task(
-                self._mark_superseded(handle.wait()), name=f"superseded:{session.id}"
+                self._mark_superseded(handle.wait), name=f"superseded:{session.id}"
             )
             task.add_done_callback(self._task_done)
             self._scheduled_tasks.add(task)
@@ -516,15 +516,20 @@ class VoiceTurnMixin:
         await self._mark_superseded(result)
         return True
 
-    async def _mark_superseded(self, result: InboundResult | Awaitable[InboundResult]) -> None:
+    async def _mark_superseded(
+        self, result: InboundResult | Callable[[], Awaitable[InboundResult]]
+    ) -> None:
         """Mark a superseded turn's responses so no intelligence channel replays them.
 
         A response already fully generated was stored as finished, though nobody
         heard it: the mark is the voice channel's to add. Best effort, per event:
-        a failed mark must not keep the user's new words from being routed.
+        a failed mark must not keep the user's new words from being routed. A
+        turn still draining is waited for here (*result* its ``wait``), begun
+        by the task marking it: begun before, a task cancelled before its first
+        step would leave the wait never awaited.
         """
         if not isinstance(result, InboundResult):
-            result = await result
+            result = await result()
         for event in result.response_events:
             if event.type != EventType.MESSAGE or self._framework is None:
                 continue

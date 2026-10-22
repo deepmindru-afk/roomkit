@@ -86,6 +86,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Work a channel hands to a task of its own leaves nothing unawaited when the
+  task is cancelled before its first step, a close or a teardown right after
+  the work was scheduled (RMK-909): a conference room's publication and its
+  utterance's close, a conference realtime report, a superseded voice turn's
+  marking, and the coroutine an `on_video_detection` callback returns. Each
+  raised `RuntimeWarning: coroutine ... was never awaited`, which fails a
+  host's tests under `-W error`; the task now runs the work itself. A
+  conference room's publication cancelled that early no longer stays held
+  either: the room's teardown waited out its budget for it, then logged
+  that it went ahead.
+
 - A location delivered as text with neither a label nor an address reads
   `[Location: (45.5, -73.6)]` (RFC §6.6, RMK-902); it read with two spaces.
 

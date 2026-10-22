@@ -134,7 +134,10 @@ class RoomActivity:
         exists precisely to make it impossible.
 
         So the room is holding this before the task exists, and goes on holding
-        it until the work is done rather than until whoever asked for it is.
+        it until the work's task ends rather than until whoever asked for it
+        is: however it ends, cancelled before its first step included. The task
+        runs the work itself, which its cancellation then closes: a wrapper
+        cancelled before it starts would leave the work never awaited.
 
         The marker is set around the task's creation so the task inherits it: a
         teardown triggered from inside this work recognises it as enclosing and
@@ -144,16 +147,11 @@ class RoomActivity:
         self._rooms.setdefault(room_id, set()).add(activity)
         token = _enclosing.set(_enclosing.get() | {activity.id})
         try:
-            return asyncio.ensure_future(self._held(room_id, activity, work))
+            task = asyncio.create_task(work)
         finally:
             _enclosing.reset(token)
-
-    async def _held[T](self, room_id: str, activity: _Activity, work: Coroutine[Any, Any, T]) -> T:
-        """Run work the room is already holding, and let go when it is done."""
-        try:
-            return await work
-        finally:
-            self._done(room_id, activity)
+        task.add_done_callback(lambda _task: self._done(room_id, activity))
+        return task
 
     def _done(self, room_id: str, activity: _Activity) -> None:
         """Stop holding one piece of in-flight work."""
