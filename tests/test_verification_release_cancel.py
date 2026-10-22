@@ -8,6 +8,7 @@ import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -39,8 +40,8 @@ KEY = "task-42"
 class _SlowResolver(MockIdentityResolver):
     """Identity resolution that reads a slow store: the call is in flight."""
 
-    def __init__(self) -> None:
-        super().__init__(mapping={ALICE: Identity(id="id-alice")})
+    def __init__(self, sender: str) -> None:
+        super().__init__(mapping={sender: Identity(id=_identity(sender))})
         self.reading = asyncio.Event()
 
     async def resolve(self, message: Any, context: Any) -> Any:
@@ -62,14 +63,19 @@ class _SlowAgent(MockAIProvider):
         return await super().generate(context)
 
 
+def _identity(sender: str) -> str:
+    return f"id-{sender}"
+
+
 def _kit(
     *,
     store: ConversationStore | None = None,
     ai: MockAIProvider | None = None,
+    sender: str = ALICE,
     **policy: Any,
 ) -> tuple[RoomKit, MockAIProvider, _SlowResolver]:
     ai = ai or MockAIProvider(responses=["answer"] * 20)
-    resolver = _SlowResolver()
+    resolver = _SlowResolver(sender)
     kit = RoomKit(
         store=store or InMemoryStore(),
         identity_resolver=resolver,
@@ -87,9 +93,9 @@ def _kit(
     return kit, ai, resolver
 
 
-def _message(body: str, key: str | None = KEY) -> InboundMessage:
+def _message(body: str, key: str | None = KEY, sender: str = ALICE) -> InboundMessage:
     return InboundMessage(
-        channel_id="sms", sender_id=ALICE, content=TextContent(body=body), delivery_key=key
+        channel_id="sms", sender_id=sender, content=TextContent(body=body), delivery_key=key
     )
 
 
@@ -105,18 +111,18 @@ def _named_nothing(kit: RoomKit) -> bool:
     return kit._delivery_keys._named == {} and kit._delivery_keys._held == {}
 
 
-async def _verify(kit: RoomKit, first: Any, door: str = "link") -> None:
+async def _verify(kit: RoomKit, first: Any, door: str = "link", sender: str = ALICE) -> None:
     """The sender verifies through *door*: the integrator's page completing
     the request (``link``), or the code replied in the conversation."""
     request, secret = await kit.request_verification(
-        "id-alice",
+        _identity(sender),
         room_id=first.room_id,
         channel_id="sms",
         method=door,
         window_start=first.created_at,
     )
     if door == "code":
-        await kit.process_inbound(_message(secret, key=None))
+        await kit.process_inbound(_message(secret, key=None, sender=sender))
     else:
         await kit.complete_verification(request.id, secret)
     await _settle()
@@ -224,16 +230,18 @@ async def test_a_release_in_another_process_reads_the_cancellation(
     cancel: bool, two_stores: tuple[ConversationStore, ConversationStore]
 ) -> None:
     """One store, two processes: the message arrives and is cancelled in the
-    first, the sender verifies through the second."""
-    first, first_ai, _ = _kit(store=two_stores[0])
-    second, second_ai, _ = _kit(store=two_stores[1])
-    result = await first.process_inbound(_message("Wire 500 to Bob"))
+    first, the sender verifies through the second. A sender of its own: a
+    database store outlives the test, and its verifications with it."""
+    sender = f"+1555{uuid4().int % 10**7:07d}"
+    first, first_ai, _ = _kit(store=two_stores[0], sender=sender)
+    second, second_ai, _ = _kit(store=two_stores[1], sender=sender)
+    result = await first.process_inbound(_message("Wire 500 to Bob", sender=sender))
     await _settle()
     if cancel:
         assert await first.cancel_delivery(KEY, reason="user_stopped") == 1
         await _settle()
 
-    await _verify(second, result.event)
+    await _verify(second, result.event, sender=sender)
 
     assert first_ai.calls == []
     assert len(second_ai.calls) == (0 if cancel else 1)
@@ -323,7 +331,7 @@ async def test_a_release_from_a_hook_keeps_its_answer_named() -> None:
     held = await kit.process_inbound(_message("Wire 500 to Bob"))
     await _settle()
     request, secret = await kit.request_verification(
-        "id-alice",
+        _identity(ALICE),
         room_id=held.event.room_id,
         channel_id="sms",
         window_start=held.event.created_at,
