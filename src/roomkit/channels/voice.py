@@ -163,6 +163,7 @@ class TTSPlaybackState:
     text: str
     started_at: datetime = field(default_factory=_utcnow)
     total_duration_ms: int | None = None
+    """The utterance's audio once its synthesis ended; None while it renders."""
     first_audio_at: float | None = None
     """Monotonic time the first audio chunk was handed to the transport."""
     audio_ms: float | None = None

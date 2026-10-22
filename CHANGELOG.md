@@ -68,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A voice channel's record of a cut answer carries `played_percentage` once
+  the answer's synthesis ended before the cut (RFC §12.3.13): the
+  utterance's total duration was never set, so the share was never written.
+
 - In continuous mode, an acknowledgement whose first partial was taken for
   the response's echo ("Ou" for the response's "où") fires ON_BACKCHANNEL
   once, as RFC §12.3.13 says, not twice (RMK-892). Its final, judged whole,
@@ -104,6 +108,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Mistral's late answer to its close frame.
 
 ### Changed
+
+- An answer a barge-in cut reads, in the AI context, with how far the person
+  heard it (RFC §6.4): `[The person cut you off during this answer, 5.7 s in:
+  they heard it up to "…" and not the rest.]`, where it read "[You were
+  interrupted while saying this: the person may not have heard the end of
+  it.]". The quote is an estimate, ending early rather than late: no TTS word
+  is timed, so the words are taken by their letters at the share of the
+  answer's audio that played, less two words, or at 11 letters a second when
+  that share is unknown. While the history holds a cut answer, the turn's
+  notes say how one reads, and that an answer without the mark was heard to
+  its end. Measured on Voxtral audio with four models (Mistral Small and
+  Large, Claude Haiku, GPT-6 Luna), eight answers cut at 40%: "did I cut you
+  off?" was answered yes 156 times in 160 (105 with the old mark), and "pick
+  up where you left off" resumed from where the person stopped hearing 119
+  times in 160 (9). Keeping only the words heard, without a mark, as LiveKit
+  Agents and Pipecat do, let the models answer yes 33 times in 160.
 
 - `examples/voice_voxtral.py` runs Mistral's faster turn preset with a 240 ms
   streaming delay by default (`TURNS=default STREAMING_DELAY_MS=480` gives

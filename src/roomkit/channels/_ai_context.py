@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from roomkit._media import content_text, media_label
-from roomkit.channels._ai_cuts import CUT_MARK, cut_answer_ids, cut_records
+from roomkit.channels._ai_cuts import CUT_NOTE, cut_answers, cut_mark, cut_records
 from roomkit.channels._ai_policy import policy_check
 from roomkit.channels._author_images import (
     AuthorImages,
@@ -349,7 +349,10 @@ class AIContextMixin(_AIChannelContract):
         loop_ctx.requester = requester
         messages = conversation_without_header_copies(messages)
         notes = self._turn_notes(
-            own_notes, speakers=attribute_speakers, retrieved=memory_result.notes
+            own_notes,
+            speakers=attribute_speakers,
+            cut=bool(self._cut_answers(context, memory_result)),
+            retrieved=memory_result.notes,
         )
         messages = with_turn_notes(messages, notes)
         # The latest images the room's tools returned, after the notes: the
@@ -544,8 +547,7 @@ class AIContextMixin(_AIChannelContract):
         past_turns: list[tuple[str, str | list[_ContentPart], str | None]] = []
         indexes: list[int | None] = []
         # An answer cut off by a barge-in reads as cut, not as heard whole (§6.4).
-        records = cut_records(context, self.channel_id)
-        cut_ids = cut_answer_ids(memory_result.events, records, self.channel_id)
+        cuts = self._cut_answers(context, memory_result)
         images = loop_ctx.author_images or _NO_IMAGES
         for past_event in memory_result.events:
             if past_event.metadata.get("cancellation_reason") == SUPERSEDED:
@@ -554,8 +556,10 @@ class AIContextMixin(_AIChannelContract):
                 continue
             role = self._determine_role(past_event)
             content = self._transcript_content(past_event, images)
-            if content and past_event.id in cut_ids:
-                content = _with_cut_mark(content)
+            if content and past_event.id in cuts:
+                content = _with_cut_mark(
+                    content, cut_mark(cuts[past_event.id], without_mark_copies)
+                )
             if content:
                 label = labels.get(past_event.id) if role == "user" else None
                 past_turns.append((role, content, label))
@@ -586,16 +590,29 @@ class AIContextMixin(_AIChannelContract):
             loop_ctx.response_metadata["instruction"] = instruction_fingerprint(instruction)
         return current_content, current_label
 
+    def _cut_answers(
+        self, context: RoomContext, memory_result: MemoryResult
+    ) -> dict[str, RoomEvent]:
+        """The cut record of each of this channel's answers the history holds
+        cut off by a barge-in, by the id of the event that ends the answer."""
+        records = cut_records(context, self.channel_id)
+        return cut_answers(memory_result.events, records, self.channel_id)
+
     @staticmethod
-    def _turn_notes(own: list[str], *, speakers: bool, retrieved: list[str]) -> str | None:
+    def _turn_notes(
+        own: list[str], *, speakers: bool, retrieved: list[str], cut: bool = False
+    ) -> str | None:
         """What changes from one turn to the next, as the notes the turn's
         input carries (RFC §6.4): how speakers are named when several speak,
-        what the memory retrieved for this turn, then the channel's *own*.
+        how a cut answer reads when the history holds one, what the memory
+        retrieved for this turn, then the channel's *own*.
         What the memory retrieved and the channel's own blocks quote others
         (a passage, a tool's result, a task, what a camera read, a plan): a
         copy of a runtime mark in them is replaced; the speaker note is the
         runtime's."""
         blocks = [SPEAKER_ATTRIBUTION_NOTE] if speakers else []
+        if cut:
+            blocks.append(CUT_NOTE)
         quoting = [without_mark_copies(block) for block in (*retrieved, *own)]
         return turn_notes([*blocks, *without_split_blocks(quoting)])
 
@@ -856,12 +873,13 @@ class AIContextMixin(_AIChannelContract):
         round 0 will send it, before the memory reads the room (RFC §20): the
         system prompt, the tools declared (Tool Search's collapse and the
         re-read tool included), the channel's notes with room for the speaker
-        attribution the history may call for, the images the input replays,
+        attribution and the cut answer's note the history may call for, the
+        images the input replays,
         and the reply budget."""
         declared = self._eviction.with_reread_tool(
             self._apply_tool_filters(list(loop_ctx.all_context_tools or []))
         )
-        notes = self._turn_notes(own_notes, speakers=True, retrieved=[]) or ""
+        notes = self._turn_notes(own_notes, speakers=True, retrieved=[], cut=True) or ""
         images = self._turn_images(loop_ctx)
         loop_ctx.turn_footprint = TurnFootprint(
             input_tokens=estimate_tokens(system_prompt or "")
@@ -1079,11 +1097,11 @@ def _answered_position(event: RoomEvent, past_indexes: list[int | None]) -> int 
     return before if before < len(past_indexes) else None
 
 
-def _with_cut_mark(content: str | list[_ContentPart]) -> str | list[_ContentPart]:
-    """An answer cut off by a barge-in, marked as such (RFC §6.4)."""
+def _with_cut_mark(content: str | list[_ContentPart], mark: str) -> str | list[_ContentPart]:
+    """An answer cut off by a barge-in, followed by *mark* (RFC §6.4)."""
     if isinstance(content, str):
-        return f"{content}\n{CUT_MARK}"
-    return [*content, AITextPart(text=CUT_MARK)]
+        return f"{content}\n{mark}"
+    return [*content, AITextPart(text=mark)]
 
 
 def _turn_message(role: str, content: str | list[_ContentPart], speaker: str | None) -> AIMessage:

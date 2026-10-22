@@ -14,6 +14,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 from roomkit import split_turn_notes
+from roomkit.channels._ai_cuts import CUT_NOTE
 from roomkit.channels._speaker import SPEAKER_ATTRIBUTION_NOTE
 from roomkit.channels._turn_notes import turn_notes
 from roomkit.channels.agent import Agent
@@ -110,11 +111,12 @@ async def test_the_footprint_is_the_turn_as_round_0_sends_it(
 
 
 def _input_tokens(sent: AIContext, *, notes: list[str]) -> int:
-    """The input round 0 sent, with room for the speaker attribution."""
+    """The input round 0 sent, with room for the speaker attribution and the
+    note a cut answer brings."""
     return (
         estimate_tokens(sent.system_prompt or "")
         + sum(estimate_tool_tokens(tool) for tool in sent.tools or [])
-        + estimate_tokens(turn_notes([SPEAKER_ATTRIBUTION_NOTE, *notes]) or "")
+        + estimate_tokens(turn_notes([SPEAKER_ATTRIBUTION_NOTE, CUT_NOTE, *notes]) or "")
     )
 
 

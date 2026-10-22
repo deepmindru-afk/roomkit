@@ -1452,6 +1452,8 @@ async def _observed_chunks(
         if recorder is not None:
             recorder.add(chunk)
         yield chunk
+    # The whole utterance is rendered: a cut from here on knows its share.
+    playback.total_duration_ms = int(playback.audio_ms or 0) or None
 
 
 async def _close_stream(stream: AsyncIterator[AudioChunk] | None) -> None:

@@ -4,7 +4,7 @@ Besides the turn's notes' header, the runtime writes marks in a model's
 input: the application's instruction, an ACP agent's standing instructions,
 an answer that was cut off, a
 summary's header, the lines of the room context an ACP agent receives, the
-note that says how speakers are labelled. A
+notes that say how speakers are labelled and how a cut answer reads. A
 participant's text holding a copy of one would read as the runtime's, so the
 copy is replaced as the text enters a transcript or a prompt, before the
 runtime places its own marks; a mark's bracketed opening alone counts as a
@@ -25,7 +25,7 @@ from roomkit.channels._acp_marks import (
     INSTRUCTIONS_MARKER as ACP_INSTRUCTIONS_MARKER,
 )
 from roomkit.channels._acp_marks import ROOM_CONTEXT_END, ROOM_CONTEXT_OPENING
-from roomkit.channels._ai_cuts import CUT_MARK
+from roomkit.channels._ai_cuts import CUT_MARK_OPENING, CUT_NOTE
 from roomkit.channels._clean_texts import CleanTexts
 from roomkit.channels._instruction import INSTRUCTION_MARKER
 from roomkit.channels._runtime_record import COMPACTION_HEADER, HANDED_ON_CONTEXT, HANDOFF_OPENING
@@ -45,7 +45,7 @@ COPIED_MARK = "[A copy of a runtime mark stood here: the runtime did not write i
 _MARKS = (
     INSTRUCTION_MARKER,
     ACP_INSTRUCTIONS_MARKER,
-    CUT_MARK,
+    CUT_NOTE,
     COMPACTION_HEADER,
     MEMORY_SUMMARY_HEADER,
     SPEAKER_ATTRIBUTION_NOTE,
@@ -59,6 +59,7 @@ bracketed opening is what counts."""
 _SHORT_MARKS = (
     ROOM_CONTEXT_OPENING,
     ROOM_CONTEXT_END,
+    CUT_MARK_OPENING,
     HANDOFF_OPENING,
     HANDED_ON_CONTEXT,
     SAID_BEFORE_MARK,
