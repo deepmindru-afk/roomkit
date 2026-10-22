@@ -18,7 +18,7 @@ logger = logging.getLogger("roomkit.telemetry.otel")
 
 _ENDED_SPANS_KEPT = 10_000
 """How many ended spans a provider keeps as parents for late children, the
-latest to end: a context each, about 2 MB at most."""
+latest to end: a context each, about 5 MB at most."""
 
 
 class OpenTelemetryProvider(TelemetryProvider):

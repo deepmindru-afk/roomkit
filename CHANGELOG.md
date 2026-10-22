@@ -121,7 +121,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `OpenTelemetryProvider` no longer keeps every span it ended for its whole
   life (RMK-877). It keeps the latest 10,000 as parents for late children
   (an `AFTER_TTS` hook after its voice session ended), and of each only its
-  context, never the span and its attributes: about 2 MB at most, where a
+  context, never the span and its attributes: about 5 MB at most, where a
   process serving turns for days grew without bound.
 
 - A strategy's worker run cut by its timeout or cancelled, after its worker
