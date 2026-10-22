@@ -50,10 +50,12 @@ class SpeakTurn:
     the room's messages, without tool records."""
 
     people: tuple[str, ...] = ()
-    """Who takes part besides the agent, by name: one name is a conversation
-    between the agent and one person. The room's active participants that are
-    neither agents nor bots, or the distinct speakers of the recent events when
-    more (one microphone may carry several diarized voices)."""
+    """Who takes part besides the agent, as the conversation labels them
+    (``Alice``, ``ALICE (2)``, ``@sms1``): one is a conversation between the
+    agent and one person. The room's active participants who are neither
+    agents, bots nor observers, nor on the agent's channel, and whose messages
+    reach it, or the distinct speakers of the recent events when more (one
+    microphone may carry several diarized voices)."""
 
     channel_id: str = ""
     """The agent's channel: its own answers in ``recent`` come from it."""

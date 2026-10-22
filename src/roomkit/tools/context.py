@@ -204,8 +204,8 @@ class _ToolLoopContext:
     # ``current_tool_actor_id()`` documents the resolution a host owes it.
     actor_id: str | None = None
     # The label the conversation gives the turn's author when several people
-    # speak (RFC §6.4), ``None`` in a one-to-one conversation: who a task
-    # delegated in this turn names as having asked for it (RFC §19.7).
+    # speak or take part (RFC §6.4), ``None`` in a one-to-one conversation:
+    # who a task delegated in this turn names as having asked for it (RFC §19.7).
     requester: str | None = None
     # A thinker's context (RFC §6.4): every speaker is named, the one person of a
     # one-to-one conversation too, whom an answer's context leaves unlabelled.
@@ -460,8 +460,8 @@ def current_tool_room() -> Room | None:
 
 def current_tool_requester() -> str | None:
     """Who asked, by the label the conversation gives the author of the turn
-    the caller executes under, when several people speak in the room
-    (``Alice``, ``ALICE (2)``, ``@sms1``; RFC §6.4): what a task delegated in
+    the caller executes under, when several people speak or take part in the
+    room (``Alice``, ``ALICE (2)``, ``@sms1``; RFC §6.4): what a task delegated in
     this turn names out of its block (RFC §19.7). ``None`` in a one-to-one
     conversation, for a turn with no author, and outside a tool loop.
     """

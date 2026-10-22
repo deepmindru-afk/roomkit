@@ -75,9 +75,11 @@ def _with_hook_attribution(speaker: SpeakerAttribution, hook_event: Any) -> Spea
     hook gave, each where it gave one."""
     if not isinstance(hook_event, TranscriptionEvent):
         return speaker
+    renamed = bool(hook_event.sender_name) and hook_event.sender_name != speaker.sender_name
     return dataclasses.replace(
         speaker,
-        sender_name=hook_event.sender_name or speaker.sender_name,
+        sender_name=hook_event.sender_name if renamed else speaker.sender_name,
+        named=speaker.named or renamed,
         participant_id=hook_event.participant_id or speaker.participant_id,
     )
 

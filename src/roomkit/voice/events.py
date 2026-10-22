@@ -110,10 +110,11 @@ class TranscriptionEvent:
     participant_id: str | None = None
     """The room participant who said ``text``, when a hook matched the
     speaker to a known person (RFC §12.2.3): the room message is then theirs,
-    not the session's participant, the owner of the stream. Read only for
-    words a speaker was attributed to (``sender_name`` set). An id names its
-    participant only on a channel they are reached through (RFC §5.5): one
-    added to the room on this voice channel."""
+    not the session's participant, the owner of the stream, and their record
+    names it unless the hook also gave ``sender_name`` another name. Read
+    only for words a speaker was attributed to (``sender_name`` set). An id
+    names its participant only on a channel they are reached through (RFC
+    §5.5): one added to the room on this voice channel."""
 
 
 @dataclass(frozen=True)

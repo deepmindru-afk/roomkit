@@ -67,7 +67,7 @@ async def main() -> None:
     await say(kit, "u-alice", "Who is here?")
     show("two people on the roster, one has spoken", provider.calls[-1])
 
-    # 2. Bob leaves: a one-to-one conversation reads as it always did.
+    # 2. Bob leaves: one person on the roster, no label and no note.
     await kit.remove_member(ROOM, "u-bob")
     await say(kit, "u-alice", "And now?")
     show("Bob left, one person on the roster", provider.calls[-1])

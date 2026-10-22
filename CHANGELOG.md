@@ -9,30 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Who takes part, silent people included (RMK-904). An agent that joins a
-  meeting where one person speaks while others listen read that person's
-  words as an anonymous user's until a second one spoke, and did not know
-  the others were there. Who takes part is now read from the room's roster:
-  its active participants who are neither agents nor bots nor on the agent's
-  own channel. When two people or more take part, every turn is labelled
-  from the first (`Alice: "..."`), by every reader of the room alike (the
-  AI channel's conversation, an ACP agent's request, a `<task>` block's
-  asker, a memory summarizer's lines), and the AI channel's turn notes name
-  them (`[People taking part besides you, from the runtime: Alice, Bob.
-  ...]`), so the agent can address someone who has not spoken yet. A
-  `ConferenceChannel` keeps the roster; an integration that bridges a
-  meeting into one stream writes it with `kit.add_member`. A one-to-one
-  conversation reads as before. A speak policy's `SpeakTurn.people` is the
-  same list, each person named as their turns are labelled (a nameless one
-  by their channel, `@sms1`, rather than their id; a look-alike name with
-  its rank). See `examples/ai_people_taking_part.py`.
-
 - An `ON_TRANSCRIPTION` hook can match a voice to the room participant it is
   (RMK-904): `TranscriptionEvent.participant_id`, read for words a speaker
   was attributed to (a diarizing STT, or `pipeline_speakers=True`). The room
   message is then that participant's, not the session's participant (the
-  owner of the stream): it reads under their name and rank, and their role
-  applies to it. A meeting bridged into one stream writes its people on the
+  owner of the stream): it reads under their name and rank (their record's
+  name, unless the hook also renamed the voice), and their role applies to
+  it. A turn detector never joins two participants' words into one turn,
+  even under one label. A meeting bridged into one stream writes its people on the
   roster on the voice channel and matches each voice to its person, so its
   first turn reads `Alice: "..."`. A voice only named like a participant,
   without being matched to them, reads as another person (`Alice (2)`), as
@@ -265,6 +249,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its own task, never before it (RMK-901).
 
 ### Changed
+
+- Who takes part, silent people included (RMK-904). An agent that joins a
+  meeting where one person speaks while others listen read that person's
+  words as an anonymous user's until a second one spoke, and did not know
+  the others were there. Who takes part is now read from the room's roster:
+  its active participants who are neither agents, bots nor observers (an
+  observer reads without taking part), nor on the agent's own channel, and
+  whose messages reach the agent (a person reached only through a channel
+  whose visibility withholds it from the agent is not named). When two
+  people or more take part, every turn is labelled from the first
+  (`Alice: "..."`), by every reader of the room alike (the AI channel's
+  conversation, an ACP agent's request, a `<task>` block's asker, a memory
+  summarizer's lines), and the AI channel's turn notes name them, each
+  quoted (`[People taking part besides you, from the runtime: “Alice”,
+  “Bob”. ...]`), so the agent can address someone who has not spoken yet.
+  A `ConferenceChannel` keeps the roster; an integration that bridges a
+  meeting into one stream writes it with `kit.add_member`. A room with one
+  person on its roster, or none, is unchanged. A speak policy's
+  `SpeakTurn.people` is the same list: an observer, and a person whose
+  messages do not reach the agent, are no longer in it, and each person is
+  named as the room's record names them (a nameless one by their channel,
+  `@sms1`, rather than their id; a look-alike name with its rank). See
+  `examples/ai_people_taking_part.py`.
 
 - **BREAKING — `Room.latest_index` is `None` while the room has no event**
   (RFC §5.1, RMK-902). It was 0, which reads as the first event's index. A

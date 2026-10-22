@@ -28,6 +28,8 @@ from roomkit.core._authors import (
     source_of,
 )
 from roomkit.core._authors import author_name as _author_name
+from roomkit.core.visibility import visibility_allows
+from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType, ParticipantRole, ParticipantStatus
 from roomkit.models.event import RoomEvent
@@ -61,7 +63,13 @@ PEOPLE_NOTE_OPENING = "[People taking part besides you"
 one of the runtime's marks, a copy of it in a participant's text replaced
 (:mod:`~roomkit.channels._mark_copies`)."""
 
-_NOT_PEOPLE = frozenset({ParticipantRole.AGENT, ParticipantRole.BOT})
+_NOT_PEOPLE = frozenset({ParticipantRole.AGENT, ParticipantRole.BOT, ParticipantRole.OBSERVER})
+"""Roles that take no part in the conversation: an agent and a bot are no
+person, and an observer reads without taking part (a supervisor, an auditor)."""
+
+_PERSON_LIMIT = 96
+"""Characters of a person's label the people note quotes at most: a name's
+64, its rank and ``(a participant)``."""
 
 
 def several_speakers(labels: Iterable[str | None], people: Sequence[str]) -> bool:
@@ -74,9 +82,14 @@ def several_speakers(labels: Iterable[str | None], people: Sequence[str]) -> boo
 
 def people_taking_part(context: RoomContext, channel_id: str | None) -> tuple[str, ...]:
     """Who takes part besides the agent of *channel_id*, silent or not, by the
-    label their turns open with (RFC §6.4): the room's active participants
-    who are neither agents nor bots nor on the agent's own channel, one per
-    person, in the order they joined."""
+    room's record of them (RFC §6.4): the room's active participants who are
+    neither agents, bots nor observers, nor on the agent's own channel, and
+    whose messages reach the agent (RFC §7.5), one per person, in the order
+    they joined. No one for an agent the room does not bind."""
+    bindings = {binding.channel_id: binding for binding in context.bindings}
+    reader = bindings.get(channel_id) if channel_id is not None else None
+    if reader is None:
+        return ()
     unrecorded = _Unrecorded(context)
     return tuple(
         unrecorded.person(person)
@@ -84,6 +97,21 @@ def people_taking_part(context: RoomContext, channel_id: str | None) -> tuple[st
         if person.status == ParticipantStatus.ACTIVE
         and person.role not in _NOT_PEOPLE
         and person.channel_id != channel_id
+        and _reaches(person, bindings, reader)
+    )
+
+
+def _reaches(
+    person: Participant, bindings: dict[str, ChannelBinding], reader: ChannelBinding
+) -> bool:
+    """Whether *person*'s messages reach *reader*: a channel they are reached
+    through is bound in the room, and its visibility lets what comes through
+    it reach *reader* (RFC §7.5). A person the agent would never hear is not
+    named to it."""
+    return any(
+        (binding := bindings.get(channel)) is not None
+        and visibility_allows(binding.visibility, reader)
+        for channel in person.connected_via
     )
 
 
@@ -91,13 +119,14 @@ def people_note(people: Sequence[str]) -> str | None:
     """The note that names who takes part (:func:`people_taking_part`) when
     two people or more do, those who have not spoken yet included, so the
     agent knows who is there before each has spoken (RFC §6.4); ``None``
-    otherwise."""
+    otherwise. Each name is quoted: a participant may choose theirs, and it
+    must not read as the runtime's words."""
     if len(people) < 2:
         return None
+    names = ", ".join(quoted(person, _PERSON_LIMIT) for person in people)
     return (
-        f"{PEOPLE_NOTE_OPENING}, from the runtime: {', '.join(people)}. Each is "
-        "present whether or not they have spoken yet, named as their messages "
-        "are labelled.]"
+        f"{PEOPLE_NOTE_OPENING}, from the runtime: {names}. Each is present "
+        "whether or not they have spoken yet.]"
     )
 
 

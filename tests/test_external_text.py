@@ -59,6 +59,7 @@ from roomkit.channels._speaker import (
     SPEAKER_KEY,
     author_name,
     labelled_lines,
+    people_note,
     said_by,
     speaker_label,
     turn_labels,
@@ -228,6 +229,7 @@ QUOTED: dict[str, Callable[[str], str]] = {
     "tools digest": _tools_digest,
     "realtime broadcast": _realtime_broadcast,
     "realtime assistant line": say_line_instruction,
+    "people note": lambda text: people_note((text, "Bob")) or "",
     "handoff line": lambda text: _handoff_line(
         "a", HandoffRequest(target_agent_id="b", reason=text)
     ),
@@ -1516,9 +1518,9 @@ def test_a_name_keeps_its_letters_and_their_marks(name: str) -> None:
 
 def test_the_classifier_reads_the_people_by_the_same_names() -> None:
     person = Participant(id="p1", room_id="test-room", channel_id="ch1", display_name=HOSTILE)
-    context = RoomContext(room=Room(id="test-room"), participants=[person])
+    context = RoomContext(room=Room(id="test-room"), bindings=_ACP_BINDINGS, participants=[person])
 
-    (name,) = _people(context, (), {}, "ai1")
+    (name,) = _people(context, (), {}, "acp")
 
     assert name == speaker_label(make_event(participant_id="p1"), context).split(" · ")[0]
     assert not set(name) & set('\n[]:“”"')

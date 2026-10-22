@@ -53,8 +53,9 @@ class SpeakerAttribution:
     """Who said a routed transcript: the STT's label, its epoch, the room name.
 
     ``sender_name`` starts as :func:`default_sender_name` and is what an
-    ``ON_TRANSCRIPTION`` hook left, a label matched to a known voice;
-    ``participant_id`` is the room participant the hook matched it to, if any.
+    ``ON_TRANSCRIPTION`` hook left, a label matched to a known voice (``named``
+    when the hook gave it); ``participant_id`` is the room participant the
+    hook matched it to, if any.
     """
 
     label: str | None
@@ -62,6 +63,7 @@ class SpeakerAttribution:
     sender_name: str
     source: Literal["stt", "pipeline"] = "stt"
     participant_id: str | None = None
+    named: bool = False
 
     @classmethod
     def of(
@@ -70,12 +72,18 @@ class SpeakerAttribution:
         return cls(label, epoch, default_sender_name(label, epoch), source)
 
     def same_voice(self, other: SpeakerAttribution) -> bool:
-        """Same label in the same stream, whatever name a hook gave either."""
-        return (self.label, self.epoch) == (other.label, other.epoch)
+        """Same label in the same stream matched to the same participant,
+        whatever name a hook gave either: a turn has one speaker (RFC §12.2.3)."""
+        mine = (self.label, self.epoch, self.participant_id)
+        return mine == (other.label, other.epoch, other.participant_id)
 
     def metadata(self) -> dict[str, Any]:
-        """The keys the inbound message carries; no label for unattributed words."""
-        meta: dict[str, Any] = {"sender_name": self.sender_name, "speaker_epoch": self.epoch}
+        """The keys the inbound message carries; no label for unattributed
+        words, and no name for words matched to a participant without one:
+        the participant's record names them, not the stream's default name."""
+        meta: dict[str, Any] = {"speaker_epoch": self.epoch}
+        if self.named or self.participant_id is None:
+            meta["sender_name"] = self.sender_name
         if self.label is not None:
             meta["speaker_label"] = self.label
         return meta

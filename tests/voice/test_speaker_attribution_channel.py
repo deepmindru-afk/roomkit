@@ -164,12 +164,15 @@ class _Room:
             self.transcribed_at.append(time.monotonic() - self.started)
             if event.speaker in self.slow_hook:
                 await asyncio.sleep(self.slow_hook[event.speaker])
-            if event.speaker in self.rename:
+            # A participant matched by the label, or by the words for a test
+            # where one label stands for two people.
+            person = self.participants.get(event.text) or self.participants.get(event.speaker)
+            if event.speaker in self.rename or person:
                 return HookResult.modify(
                     dataclasses.replace(
                         event,
-                        sender_name=self.rename[event.speaker],
-                        participant_id=self.participants.get(event.speaker),
+                        sender_name=self.rename.get(event.speaker, event.sender_name),
+                        participant_id=person,
                     )
                 )
             return HookResult.allow()
@@ -433,6 +436,31 @@ class TestVoiceChannelCarriesLabels:
         await room.channel.close()
 
         assert _said(messages) == [("Speaker A", "Je voudrais"), ("Speaker B", "Non.")]
+
+    async def test_one_label_matched_to_two_people_is_two_turns(self) -> None:
+        """A turn has one speaker (RFC §12.2.3): the detector would join both
+        segments, but a hook matched them to two participants."""
+        detector = MockTurnDetector(
+            decisions=[TurnDecision(is_complete=False), TurnDecision(is_complete=True)]
+        )
+        pipeline = AudioPipelineConfig(turn_detector=detector, turn_incomplete_wait_ms=100)
+        stt = _DiarizingSTT(
+            [[SpeakerSegment("A", "Je voudrais")], [SpeakerSegment("A", "le remboursement.")]]
+        )
+        room = _Room(stt, pipeline)
+        room.participants = {"Je voudrais": "p-alice", "le remboursement.": "p-bob"}
+        await room.start()
+
+        await room.speak()
+        await _eventually(lambda: len(room.transcriptions) == 1)
+        await room.speak()
+        messages = await room.messages(2)
+        await room.channel.close()
+
+        assert [(m.source.participant_id, m.content.body) for m in messages] == [
+            ("p-alice", "Je voudrais"),
+            ("p-bob", "le remboursement."),
+        ]
 
 
 class TestTheReplyDoesNotHoldBackTheNextFinal:
