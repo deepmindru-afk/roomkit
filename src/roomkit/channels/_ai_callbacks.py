@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from roomkit.core.hooks import SyncPipelineResult
     from roomkit.models.context import RoomContext
     from roomkit.models.tool_call import AIGenerationEvent, ToolRoundEvent
-    from roomkit.speaking.base import SpeakDecisionEvent
+    from roomkit.speaking.base import SpeakDecision, SpeakDecisionEvent
     from roomkit.speaking.thought import ThoughtEvent
 
 BeforeGenerationHook = Callable[["AIGenerationEvent"], Awaitable["SyncPipelineResult"]]
@@ -30,8 +30,9 @@ event, the loop then applies what they asked."""
 ThinkingHook = Callable[[str, str, int], Awaitable[None]]
 """ON_AI_THINKING: ``(room_id, thinking, round_idx)``."""
 
-SpeakDecisionHook = Callable[["SpeakDecisionEvent"], Awaitable[None]]
-"""ON_SPEAK_DECISION for one channel's decision on one event (RFC §6.4)."""
+SpeakDecisionHook = Callable[["SpeakDecisionEvent"], Awaitable["SpeakDecision"]]
+"""ON_SPEAK_DECISION for one channel's decision on one event (RFC §6.4): the
+decision that stands once the room's SYNC hooks had their say."""
 
 ThoughtHook = Callable[["ThoughtEvent"], Awaitable[None]]
 """ON_THOUGHT for one channel's new thought in one room (RFC §6.4)."""

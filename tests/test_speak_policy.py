@@ -150,8 +150,9 @@ async def test_a_policy_that_fails_or_is_late_does_not_silence_the_agent(
     channel, provider = _channel(policy, speak_timeout=0.1)
     decisions: list[SpeakDecisionEvent] = []
 
-    async def hook(event: SpeakDecisionEvent) -> None:
+    async def hook(event: SpeakDecisionEvent) -> SpeakDecision:
         decisions.append(event)
+        return event.decision
 
     channel._speak_decision_hook = hook
     with caplog.at_level(logging.WARNING, logger="roomkit.channels.ai"):
@@ -183,8 +184,9 @@ async def test_a_decision_reports_how_long_the_policy_took(
     channel, _ = _channel(policy, speak_timeout=bound)
     decisions: list[SpeakDecisionEvent] = []
 
-    async def hook(event: SpeakDecisionEvent) -> None:
+    async def hook(event: SpeakDecisionEvent) -> SpeakDecision:
         decisions.append(event)
+        return event.decision
 
     channel._speak_decision_hook = hook
     await respond(

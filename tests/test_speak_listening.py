@@ -278,8 +278,9 @@ def _channel(policy: Any, thinker: MockThinker) -> tuple[AIChannel, list[SpeakDe
     )
     decisions: list[SpeakDecisionEvent] = []
 
-    async def hook(event: SpeakDecisionEvent) -> None:
+    async def hook(event: SpeakDecisionEvent) -> SpeakDecision:
         decisions.append(event)
+        return event.decision
 
     channel._speak_decision_hook = hook
     return channel, decisions

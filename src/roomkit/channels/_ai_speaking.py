@@ -55,11 +55,11 @@ class AISpeakingMixin:
         *,
         asked_again: bool = False,
     ) -> SpeakDecision | None:
-        """The policy's decision on *event*, reported to ``ON_SPEAK_DECISION``
-        with how long it took, or None when nothing is decided: no policy, an
-        instruction (the application asked for that turn), the channel's own
-        event or a tool record. *asked_again*: the policy decides again once the
-        agent thought (RFC §6.4)."""
+        """The decision on *event*: the policy's, as the ``ON_SPEAK_DECISION``
+        hooks leave it (told how long the policy took), or None when nothing is
+        decided: no policy, an instruction (the application asked for that
+        turn), the channel's own event or a tool record. *asked_again*: the
+        policy decides again once the agent thought (RFC §6.4)."""
         policy = self._speak_policy
         if policy is None or not self._submitted_to_policy(event):
             return None
@@ -68,10 +68,9 @@ class AISpeakingMixin:
         decision = await self._bounded_decision(policy, turn)
         duration_ms = round((time.monotonic() - started) * 1000)
         room_id = context.room.id if context.room else event.room_id
-        await self._report_speak_decision(
+        return await self._hooked_decision(
             SpeakDecisionEvent(room_id, self.channel_id, event, decision, duration_ms, asked_again)
         )
-        return decision
 
     async def _bounded_decision(self, policy: SpeakPolicy, turn: SpeakTurn) -> SpeakDecision:
         """The policy's decision on *turn* within the channel's bound: a policy
@@ -96,14 +95,17 @@ class AISpeakingMixin:
             and not is_tool_call_record(event)
         )
 
-    async def _report_speak_decision(self, report: SpeakDecisionEvent) -> None:
+    async def _hooked_decision(self, report: SpeakDecisionEvent) -> SpeakDecision:
+        """The decision in *report* once the ``ON_SPEAK_DECISION`` hooks had
+        their say; the policy's when they fail."""
         hook = self._speak_decision_hook
         if hook is None:
-            return
+            return report.decision
         try:
-            await hook(report)
+            return await hook(report)
         except Exception:
             logger.warning("ON_SPEAK_DECISION failed on %s", report.event.id, exc_info=True)
+            return report.decision
 
 
 def speak_notes(decision: SpeakDecision | None) -> tuple[str, ...]:

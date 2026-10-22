@@ -273,8 +273,9 @@ async def test_the_decision_taken_again_after_thinking_says_so() -> None:
     channel, _ = _channel(MockSpeakPolicy(["silent", "offer"]), MockThinker([PRICE]))
     decisions: list[SpeakDecisionEvent] = []
 
-    async def hook(event: SpeakDecisionEvent) -> None:
+    async def hook(event: SpeakDecisionEvent) -> SpeakDecision:
         decisions.append(event)
+        return event.decision
 
     channel._speak_decision_hook = hook
     event = _said("We are looking for the licence price.")

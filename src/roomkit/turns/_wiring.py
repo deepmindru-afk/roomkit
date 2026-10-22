@@ -11,6 +11,7 @@ the owner during a turn (``ephemeral`` and ``framework_event`` frames).
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,7 @@ from roomkit.models.pending_input import PendingInputEvent
 from roomkit.models.plan_event import PlanUpdatedEvent
 from roomkit.models.thinking_event import ThinkingEvent
 from roomkit.models.tool_call import AIGenerationEvent, AIResponseEvent
+from roomkit.speaking.base import SpeakDecision, SpeakDecisionEvent
 from roomkit.tools._outcome import kept_in_tool_memory
 from roomkit.turns._outlet import TurnRealtime, emit_framework_event
 from roomkit.turns._tool_hooks import ToolHooks
@@ -44,7 +46,6 @@ if TYPE_CHECKING:
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
     from roomkit.models.tool_call import AfterResponseCallback, ToolRoundEvent
-    from roomkit.speaking.base import SpeakDecisionEvent
     from roomkit.speaking.thought import ThoughtEvent
     from roomkit.tools.external import ExternalToolHandler
     from roomkit.turns._wiring_env import WiringEnv
@@ -54,6 +55,28 @@ logger = logging.getLogger("roomkit.turns")
 TOOL_MEMORY_CALLS = 30
 """Calls a channel's tool memory is refilled with (digest 8 + reveal 12,
 after the infra rows are filtered out)."""
+
+
+def _standing_decision(event: SpeakDecisionEvent, result: SyncPipelineResult) -> SpeakDecision:
+    """The decision *event*'s SYNC hooks leave: silent when one blocked, the
+    decision a MODIFY's event carries, else the policy's. Only the decision
+    is read from a MODIFY: the event decided on and the room stay the
+    channel's."""
+    if not result.allowed:
+        hook = result.blocked_by or "a hook"
+        reason = f"hook_error:{hook}" if result.failed_closed else f"blocked by {hook}"
+        return SpeakDecision("silent", reason=reason)
+    changed = result.event
+    if changed is None or changed is event:
+        return event.decision
+    if isinstance(changed, SpeakDecisionEvent):
+        return changed.decision
+    logger.error(
+        "An ON_SPEAK_DECISION hook returned a %s where a SpeakDecisionEvent was "
+        "expected; the decision stands",
+        type(changed).__name__,
+    )
+    return event.decision
 
 
 def remembered_calls(events: list[RoomEvent]) -> list[dict[str, Any]]:
@@ -284,12 +307,37 @@ class TurnWiring:
         return _callback
 
     def build_speak_decision_hook(self) -> SpeakDecisionHook:
-        """An ON_SPEAK_DECISION callback (RFC §6.4)."""
+        """An ON_SPEAK_DECISION callback (RFC §6.4): the room's SYNC hooks, in
+        order, may change the decision before the channel acts on it (a
+        MODIFY's event carries the decision that replaces it, a BLOCK leaves
+        the agent silent); the ASYNC hooks then observe the decision that
+        stands. Returns that decision."""
 
-        async def _callback(event: SpeakDecisionEvent) -> None:
-            await self._observe(event.room_id, HookTrigger.ON_SPEAK_DECISION, event)
+        async def _callback(event: SpeakDecisionEvent) -> SpeakDecision:
+            trigger = HookTrigger.ON_SPEAK_DECISION
+            if not event.room_id or not self._hooks.has_hooks(trigger):
+                return event.decision
+            context = await self.hook_context(event.room_id, trigger)
+            if context is None:
+                return self._unreachable_speak_decision(event)
+            result = await self._hooks.run_sync_hooks(
+                event.room_id, trigger, event, context, fire_observers=False
+            )
+            standing = dataclasses.replace(event, decision=_standing_decision(event, result))
+            await self._hooks.run_observers(event.room_id, trigger, standing, context)
+            return standing.decision
 
         return _callback
+
+    def _unreachable_speak_decision(self, event: SpeakDecisionEvent) -> SpeakDecision:
+        """The decision on an event whose ON_SPEAK_DECISION hooks could not run
+        (the room's context would not build): the policy's, unless a hook there
+        fails closed: then silent, as that hook's own failure would leave it."""
+        trigger = HookTrigger.ON_SPEAK_DECISION
+        closed = self._hooks.fail_closed_hook(event.room_id, trigger, event)
+        if closed is None:
+            return event.decision
+        return SpeakDecision("silent", reason=f"hook_error:{closed}")
 
     def build_thought_hook(self) -> ThoughtHook:
         """An ON_THOUGHT callback (RFC §6.4)."""

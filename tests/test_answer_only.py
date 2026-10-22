@@ -14,6 +14,7 @@ from roomkit import (
     MockClassifier,
     MockSpeakPolicy,
     MockThinker,
+    SpeakDecision,
     SpeakDecisionEvent,
     SpeakTurn,
     Thought,
@@ -181,8 +182,9 @@ async def test_a_voice_only_listened_to_is_thought_about_and_never_answered() ->
     )
     decisions: list[SpeakDecisionEvent] = []
 
-    async def hook(event: SpeakDecisionEvent) -> None:
+    async def hook(event: SpeakDecisionEvent) -> SpeakDecision:
         decisions.append(event)
+        return event.decision
 
     channel._speak_decision_hook = hook
     tv = _said("So how much does this licence cost, do you think?", "TV")
