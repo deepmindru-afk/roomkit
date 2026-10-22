@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import gc
-import warnings
 from typing import Any
 
 import pytest
@@ -31,6 +29,7 @@ from roomkit.turns.wire import (
     ToolResult,
     TurnRequest,
 )
+from tests.unawaited import never_awaited
 
 PROBE = AITool(name="probe", description="Probe.", parameters={"type": "object"})
 
@@ -195,15 +194,13 @@ async def test_a_call_cancelled_before_it_starts_leaves_no_coroutine_unawaited(k
         if kind == "tool"
         else HostCall(call_id="x", verb="emit", arguments={}, context=context)
     )
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
+    with never_awaited() as unawaited:
         calls.start(call, None)
         tasks = list(held)
         calls.cancel_all()
         await asyncio.gather(*tasks, return_exceptions=True)
-        # The task freed, what it never awaited is collected here, inside.
+        # The task freed, what it never awaited is collected inside.
         del tasks
         await asyncio.sleep(0)
-        gc.collect()
 
-    assert [str(w.message) for w in caught if "never awaited" in str(w.message)] == []
+    assert unawaited == []

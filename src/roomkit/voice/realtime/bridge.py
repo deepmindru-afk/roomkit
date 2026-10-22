@@ -427,8 +427,17 @@ class RealtimeAVBridge:
                 state.frame_count,
                 state.audio_out_count,
             )
-            if hasattr(result, "__await__"):
-                self._safe_create_task(result)
+            self._run_returned(result)
+
+    def _run_returned(self, result: Any) -> None:
+        """Run what a host's callback returned, when it is awaitable, on a
+        task of its own: a coroutine as that task's own, so a task cancelled
+        before its first step closes it rather than leave it never awaited;
+        any other awaitable (a future) awaited by the task."""
+        if inspect.iscoroutine(result):
+            self._safe_create_task(result)
+        elif inspect.isawaitable(result):
+            self._safe_create_task(_awaited(result))
 
     @staticmethod
     def _safe_create_task(coro: Any) -> None:
@@ -551,16 +560,10 @@ class RealtimeAVBridge:
         """Call *callback* with *event*; a failure is logged, the video goes on.
 
         What it returns may be any awaitable (a coroutine, a future): it is
-        awaited in a task of its own. A coroutine is that task's own, so a
-        task cancelled before its first step closes it rather than leave it
-        never awaited.
+        awaited in a task of its own (:meth:`_run_returned`).
         """
         try:
-            result = callback(event)
-            if inspect.iscoroutine(result):
-                self._safe_create_task(result)
-            elif inspect.isawaitable(result):
-                self._safe_create_task(_awaited(result))
+            self._run_returned(callback(event))
         except Exception:
             logger.exception("on_video_detection failed (kind=%s)", event.kind)
 

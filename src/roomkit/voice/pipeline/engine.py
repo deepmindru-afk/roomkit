@@ -11,7 +11,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from roomkit.core.task_utils import log_task_exception
+from roomkit.core.task_utils import close_unstarted, log_task_exception
 from roomkit.voice.base import VoiceCapability, speaker_label
 from roomkit.voice.pipeline._ended_streams import EndedStreams
 from roomkit.voice.pipeline._telemetry import _PipelineTelemetry, active_stage_names
@@ -34,8 +34,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger("roomkit.voice.pipeline")
 
 
-def _maybe_schedule(result: object, home_loop: asyncio.AbstractEventLoop | None = None) -> None:
-    """Schedule a coroutine if the callback returned one.
+def _maybe_schedule(
+    result: object, home_loop: asyncio.AbstractEventLoop | None = None
+) -> asyncio.Task[Any] | concurrent.futures.Future[Any] | None:
+    """Schedule a coroutine if the callback returned one; what runs it, or
+    ``None`` when nothing does.
 
     A frame chain running off the loop sends its callbacks home first
     (:meth:`AudioPipeline._fanout`), so they create their coroutines on the
@@ -45,21 +48,34 @@ def _maybe_schedule(result: object, home_loop: asyncio.AbstractEventLoop | None 
     dropping it would silently unplug whoever registered the callback.
     """
     if not asyncio.coroutines.iscoroutine(result):
-        return
+        return None
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         if home_loop is not None and not home_loop.is_closed():
             future = asyncio.run_coroutine_threadsafe(result, home_loop)
             future.add_done_callback(_log_future_exception)
-            return
+            return future
         # No loop to send it to — log and close to avoid a "never awaited"
         # warning. Only reachable for a pipeline built outside async context.
         logger.warning("Async callback returned outside event loop; dropping")
         result.close()
-        return
+        return None
     task = loop.create_task(result)
     task.add_done_callback(log_task_exception)
+    return task
+
+
+def _close_unheard(
+    publishing: asyncio.Task[Any] | concurrent.futures.Future[Any] | None, pending: list[Any]
+) -> None:
+    """Close the announcement subscribers' coroutines *publishing* did not
+    await, once it ends however it ends (cancelled before its first step,
+    or between two of them), or at once when nothing runs it."""
+    if publishing is None:
+        close_unstarted(*pending)
+        return
+    publishing.add_done_callback(lambda _done: close_unstarted(*pending))
 
 
 def _log_future_exception(future: concurrent.futures.Future[Any]) -> None:
@@ -1041,9 +1057,10 @@ class AudioPipeline:
             return
 
         self._pending_recording_handles[session.id] = handle
-        _maybe_schedule(
+        publishing = _maybe_schedule(
             self._publish_after_announcement(session, handle, pending), self._home_loop
         )
+        _close_unheard(publishing, pending)
 
     async def _publish_after_announcement(
         self, session: VoiceSession, handle: RecordingHandle, pending: list[Any]

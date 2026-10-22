@@ -110,16 +110,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (OpenAI's refusal text, which may quote the conversation) is logged by
   its length only.
 
-- Work a channel hands to a task of its own leaves nothing unawaited when the
-  task is cancelled before its first step, a close or a teardown right after
-  the work was scheduled (RMK-909): a conference room's publication and its
+- Work handed to a task of its own leaves nothing unawaited when the task is
+  cancelled before its first step, a close or a teardown right after the
+  work was scheduled (RMK-909): a conference room's publication and its
   utterance's close, a conference realtime report, a superseded voice turn's
-  marking, and the coroutine an `on_video_detection` callback returns. Each
-  raised `RuntimeWarning: coroutine ... was never awaited`, which fails a
-  host's tests under `-W error`; the task now runs the work itself. A
+  marking, the coroutine an `on_video_detection` callback returns, a turn's
+  channel an executor builds, and the `ON_RECORDING_STARTED` subscribers a
+  recording's announcement had not reached. A realtime voice session's start
+  cut or refused before its transport takes the connection closes the
+  coroutine its caller handed it. Each raised `RuntimeWarning: coroutine ...
+  was never awaited`, which fails a host's tests under `-W error`. A
   conference room's publication cancelled that early no longer stays held
   either: the room's teardown waited out its budget for it, then logged
-  that it went ahead.
+  that it went ahead. And an `on_call_ended` callback of
+  `RealtimeAVBridge` may return a future, as `on_video_detection` may: it
+  raised `TypeError` from the call's end.
 
 - Three ends of a delegated task follow RFC §23.3 and §23.4 (RMK-910). A
   delegation that fails reading its room's context, before

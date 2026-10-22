@@ -269,7 +269,7 @@ class TurnExecutor:
         turn = ExecutorTurn(
             link,
             self.executor_id,
-            self._turn_channel(link.request, stale),
+            partial(self._turn_channel, link.request, stale),
             self._timeouts,
             self._errors,
             owner=self._owner,

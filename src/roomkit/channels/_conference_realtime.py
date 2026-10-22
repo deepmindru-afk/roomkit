@@ -29,7 +29,6 @@ import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine
-from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -74,7 +73,7 @@ from roomkit.channels._realtime_tool_executor import (
 from roomkit.channels._served_tools import CollisionLog, dict_tool_name, warn_tools_uncallable
 from roomkit.channels._tool_registry import schema_tool
 from roomkit.core.exceptions import UnservedToolCallError
-from roomkit.core.task_utils import log_task_exception
+from roomkit.core.task_utils import held_runs, log_task_exception, start_named
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.tool_call import ToolCallEvent
@@ -115,12 +114,6 @@ CONNECT_COOLDOWN_S = 5.0
 The mixer asks again every window; without this a provider outage would be
 retried fifty times a second from every conference the channel serves.
 """
-
-_RUNNING_REPORT: ContextVar[asyncio.Task[Any] | None] = ContextVar(
-    "conference_running_report", default=None
-)
-"""The tracked report (or announcement) the current code runs under, so a
-teardown its hook starts never waits for the report that is running it."""
 
 
 @dataclass
@@ -1155,11 +1148,10 @@ class ConferenceRealtime:
     def _track_report(self, coro: Coroutine[Any, Any, None]) -> None:
         """Run a report, an announcement or a disconnect beside the teardown;
         a disconnect of the channel's waits for it. Its task runs it, named
-        to what runs under it before its first step: a wrapper cancelled
-        before it starts would leave the report never awaited."""
-        context = copy_context()
-        report = asyncio.get_running_loop().create_task(coro, context=context)
-        context.run(_RUNNING_REPORT.set, report)
+        to what runs under it from its first step (:func:`start_named`): a
+        wrapper cancelled before it starts would leave the report never
+        awaited."""
+        report = start_named(coro)
         self._reports.add(report)
         report.add_done_callback(self._reports.discard)
         report.add_done_callback(log_task_exception)
@@ -1174,8 +1166,8 @@ class ConferenceRealtime:
         hook that unplugs or closes from an ON_ERROR announcement would wait
         for itself. A wait cancelled leaves them running: they are not this
         waiter's to cut."""
-        running = _RUNNING_REPORT.get()
-        pending = [report for report in self._reports if report is not running]
+        running = held_runs()
+        pending = [report for report in self._reports if report not in running]
         if pending:
             await asyncio.wait(pending)
 

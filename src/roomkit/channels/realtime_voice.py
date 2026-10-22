@@ -87,7 +87,7 @@ from roomkit.channels.base import (
 )
 from roomkit.core._participant_channels import record_reached
 from roomkit.core._voice_delivery import injection_silent
-from roomkit.core.task_utils import CLOSE_WAIT_S, _finish_cleanup
+from roomkit.core.task_utils import CLOSE_WAIT_S, _finish_cleanup, close_unstarted
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -1275,6 +1275,24 @@ class RealtimeVoiceChannel(
                 missing, another organization's, or unreadable because the
                 channel is not registered with a framework.
         """
+        try:
+            return await self._start_checked(
+                room_id, participant_id, connection, metadata, organization_id
+            )
+        finally:
+            # A caller's coroutine the start never reached (refused, cut or
+            # failed before its transport took it) is never awaited now.
+            close_unstarted(connection)
+
+    async def _start_checked(
+        self,
+        room_id: str,
+        participant_id: str,
+        connection: Any,
+        metadata: dict[str, Any] | None,
+        organization_id: str | None,
+    ) -> VoiceSession:
+        """Start the session on a task of its own, once its room is checked."""
         if self._closing:
             raise RuntimeError("Realtime voice channel is closing")
         await _check_room_scope(self._framework, room_id, organization_id)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import inspect
 import logging
 from collections.abc import Awaitable, Coroutine
 from typing import Any, Protocol
@@ -88,6 +89,16 @@ def start_named[T](
     )
     cell.append(task)
     return task
+
+
+def close_unstarted(*works: object) -> None:
+    """Close each of *works* that is a coroutine never started: what was to
+    await it ended first (a task cancelled before its first step, a start
+    given up), and nothing will now. Python would warn, at an unrelated
+    moment, that it was never awaited."""
+    for work in works:
+        if inspect.iscoroutine(work) and inspect.getcoroutinestate(work) == inspect.CORO_CREATED:
+            work.close()
 
 
 async def _finish_cleanup(coro: Coroutine[Any, Any, object]) -> None:

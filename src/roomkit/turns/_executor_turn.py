@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-from collections.abc import AsyncIterator, Awaitable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from roomkit.channels._discussion_turn import DISCUSSION_TURN, issue_mark, retire_mark
@@ -91,7 +91,7 @@ class ExecutorTurn:
         self,
         link: ExecutorLink,
         executor_id: str,
-        channel: Awaitable[Channel | None],
+        channel: Callable[[], Awaitable[Channel | None]],
         timeouts: TurnTimeouts,
         errors: ErrorClasses,
         owner: RoomOwner | None = None,
@@ -183,7 +183,10 @@ class ExecutorTurn:
     async def _turn(self) -> None:
         """``on_event``, its output, then its stream as the owner pulls it."""
         try:
-            channel = await self._channel
+            # Built by the turn's task, never before: a task cancelled before
+            # its first step (a close as the turn arrives) leaves nothing
+            # unawaited.
+            channel = await self._channel()
         except Exception as exc:
             await self._send(Error(error=error_record(exc)))
             return
