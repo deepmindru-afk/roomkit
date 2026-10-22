@@ -86,16 +86,31 @@ async def _settle(completed: list[Any]) -> None:
 
 
 async def test_an_inline_delegation_its_caller_times_out_ends_cancelled() -> None:
-    kit, telemetry, completed = await _kit()
+    """The caller's timeout lands while the worker's turn runs its tool, on a
+    slow machine as on a fast one: a fixed timeout could land before the task
+    was announced, when nothing reports its end (RFC §23.3)."""
+    in_turn = asyncio.Event()
+
+    async def slow(name: str, arguments: dict[str, Any]) -> str:
+        in_turn.set()
+        return await _slow(name, arguments)
+
+    kit, telemetry, completed = await _kit(handler=slow)
     ended: list[DelegatedTaskResult] = []
+    loop = asyncio.get_running_loop()
 
     async def on_complete(result: DelegatedTaskResult) -> None:
         ended.append(result)
 
+    async def times_out_in_turn(deadline: asyncio.Timeout) -> None:
+        await in_turn.wait()
+        deadline.reschedule(loop.time())
+
     with pytest.raises(TimeoutError):
-        await asyncio.wait_for(
-            kit.delegate("p", "worker", "go", wait=True, on_complete=on_complete), 0.2
-        )
+        async with asyncio.timeout(None) as deadline:
+            watcher = asyncio.ensure_future(times_out_in_turn(deadline))
+            await kit.delegate("p", "worker", "go", wait=True, on_complete=on_complete)
+    await watcher
     await _settle(completed)
 
     assert completed == [(TaskStatus.CANCELLED, "cancelled")]
