@@ -72,6 +72,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the answer's synthesis ended before the cut (RFC §12.3.13): the
   utterance's total duration was never set, so the share was never written.
 
+- A `process_timeout` that expires while the identity resolver is still
+  answering refuses the message (`blocked`, reason `process_timeout`), as
+  elsewhere in the pre-commit phase, instead of raising `UnboundLocalError`
+  from the resolution's telemetry span. A resolver raising an error with an
+  empty message no longer did the same.
+
 - A `delivery_key` names its message's delivery from the start of
   `process_inbound`, as documented (RMK-899, RFC §10.1), no longer from its
   commit only. A `kit.cancel_delivery(key)` reaching the call while it routed

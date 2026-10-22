@@ -176,8 +176,10 @@ class InboundIdentityMixin(HelpersMixin):
             event, resolved_identity, pending_id_result = await self._apply_identity_result(
                 id_result, event, room_id, context
             )
-        except Exception as exc:
-            _identity_error = str(exc)
+        except BaseException as exc:
+            # A cancellation (the pre-commit budget spent) or an error with no
+            # message leaves no result for the span to read.
+            _identity_error = str(exc) or type(exc).__name__
             raise
         finally:
             if _identity_error:

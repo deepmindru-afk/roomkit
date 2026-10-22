@@ -14,6 +14,7 @@ from roomkit.core.framework import (
     RoomKitError,
     RoomNotFoundError,
 )
+from roomkit.identity.base import IdentityResolver
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -810,6 +811,34 @@ class TestTimeouts:
         room_after = await kit.get_room("r1")
         assert room_after is not None
         assert room_after.event_count == base_count
+
+    async def test_process_timeout_during_identity_resolution_returns_blocked(self) -> None:
+        """The pre-commit budget spent while the resolver is still asked
+        refuses the message, as anywhere else in that phase (RFC §13.6): the
+        cancelled resolution leaves no result behind, and the span closing
+        it must not read one."""
+
+        class SlowResolver(IdentityResolver):
+            async def resolve(
+                self, message: InboundMessage, context: RoomContext
+            ) -> IdentityResult:
+                await asyncio.sleep(5.0)
+                return IdentityResult(status=IdentificationStatus.IDENTIFIED)
+
+        kit = RoomKit(
+            identity_resolver=SlowResolver(), identity_timeout=10.0, process_timeout=0.05
+        )
+        kit.register_channel(SimpleChannel("sms1"))
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "sms1")
+        before = len(await kit.get_timeline("r1"))
+
+        msg = InboundMessage(channel_id="sms1", sender_id="user1", content=TextContent(body="hi"))
+        result = await kit.process_inbound(msg, room_id="r1")
+
+        assert result.blocked
+        assert result.reason == "process_timeout"
+        assert len(await kit.get_timeline("r1")) == before
 
     async def test_slow_broadcast_after_commit_is_not_blocked(self) -> None:
         """A slow post-commit broadcast MUST NOT be cancelled or re-marked
