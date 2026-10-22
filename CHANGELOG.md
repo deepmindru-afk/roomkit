@@ -303,6 +303,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while it serves, closed or not, for a backend of your own to keep the same
   rule (RFC §10.6.7).
 
+- A room's `room_attached` and `room_detached` of a channel the kit holds
+  live reach only the kit's own executor (RMK-881). They reached every
+  executor declaring the channel, so a host executor created without
+  `hosts=` built a copy of a live agent (its provider, its MCP clients) at
+  each attach, for turns it never runs. A channel the kit holds by its
+  declaration alone still reaches every executor that declares it.
+
 - An answer a barge-in cut reads, in the AI context, with how far the person
   heard it (RFC §6.4): `[The person cut you off during this answer, 5.7 s in:
   they heard it up to “…” and not the rest.]`, where it read "[You were

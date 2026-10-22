@@ -243,9 +243,9 @@ class RedisTurnBackend(TurnBackend):
             return None
         if isinstance(message, RoomDetached):
             await self._placement.forget(message.channel_id, message.room_id)
-        for here in [e for e in self._placement.here if e.declares(message.channel_id)]:
-            await here.control(_crossed(raw))
-        elsewhere = await self._placement.declaring_elsewhere(message.channel_id)
+        here, elsewhere = await self._placement.told(message.channel_id)
+        for executor in here:
+            await executor.control(_crossed(raw))
         results = await asyncio.gather(
             *(self._apply(executor, raw) for executor in elsewhere), return_exceptions=True
         )

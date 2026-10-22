@@ -235,7 +235,7 @@ class InMemoryTurnBackend(TurnBackend):
             return None
         if isinstance(message, RoomDetached):
             self._holders.pop(message.channel_id, message.room_id)
-        for executor in [e for e in self._executors if e.declares(message.channel_id)]:
+        for executor in self._told(message.channel_id):
             await executor.control(_crossed(raw))
         return None
 
@@ -274,14 +274,29 @@ class InMemoryTurnBackend(TurnBackend):
         owner holds live; else the one holding the room's state while it
         takes it, else the first that takes it (RFC §10.6.7); ``None`` when
         none does."""
-        own = self._owner.executor if self._owner is not None else None
-        if own is not None and own.hosts_channel(channel_id):
+        own = self._owning(channel_id)
+        if own is not None:
             # Its live channels never run on a copy, even once it closed.
             return own if own in self._executors and own.takes(channel_id, room_hooks) else None
         holder = self._holders.get(channel_id, room_id)
         if holder is not None and holder.takes(channel_id, room_hooks):
             return holder
         return next((e for e in self._executors if e.takes(channel_id, room_hooks)), None)
+
+    def _told(self, channel_id: str) -> list[TurnExecutor]:
+        """The executors a room's attach or detach of *channel_id* reaches:
+        those that may run its turns, the owner's own alone for a channel it
+        hosts (RFC §10.6.3)."""
+        own = self._owning(channel_id)
+        if own is not None:
+            return [own] if own in self._executors and own.declares(channel_id) else []
+        return [e for e in self._executors if e.declares(channel_id)]
+
+    def _owning(self, channel_id: str) -> TurnExecutor | None:
+        """The owner's own executor when it hosts *channel_id*, closed or not:
+        no other executor runs the channels the owner holds live (RFC §10.6.7)."""
+        own = self._owner.executor if self._owner is not None else None
+        return own if own is not None and own.hosts_channel(channel_id) else None
 
     def _forget(self, turn: _MemoryTurn) -> None:
         self._turns.discard(turn)

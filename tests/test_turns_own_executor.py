@@ -14,8 +14,10 @@ from typing import Any
 import pytest
 
 from roomkit import (
+    AgentIdentity,
     AIChannel,
     ChannelCategory,
+    ChannelDeclaration,
     HookExecution,
     HookResult,
     HookTrigger,
@@ -152,6 +154,35 @@ async def test_a_live_agent_s_turn_fails_once_the_kit_s_executor_closed(
     assert all(not provider.calls for provider in providers)
     refusals = [r.exc_info[1] for r in caplog.records if r.exc_info]
     assert [e.reason for e in refusals if isinstance(e, TurnLinkError)] == ["no_executor"]
+
+
+async def test_a_host_executor_builds_no_copy_of_a_live_agent_it_never_runs() -> None:
+    """RMK-881: a host executor declaring every channel is not told a live
+    agent was attached to a room, nor detached: it never runs its turns, so it
+    builds no copy of it; a channel the host alone serves is still told (RFC
+    §10.6.3)."""
+    built: list[str] = []
+
+    def build(channel_id: str) -> AIChannel:
+        built.append(channel_id)
+        return AIChannel(channel_id, provider=MockAIProvider(responses=["from the host"]))
+
+    kit = RoomKit()
+    host = TurnExecutor(build)
+    await kit._turns.backend.serve(host)
+    kit.register_channel(WebSocketChannel("ws"))
+    kit.register_channel(AIChannel("ai", provider=MockAIProvider(responses=["from the kit"])))
+    kit.register_channel(ChannelDeclaration(channel_id="remote", identity=AgentIdentity()))
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "ws")
+    await kit.attach_channel("r", "ai", category=ChannelCategory.INTELLIGENCE)
+    await kit.attach_channel("r", "remote", category=ChannelCategory.INTELLIGENCE)
+    await kit.detach_channel("r", "ai")
+    await kit.close()
+    await host.close()
+
+    assert "ai" not in built
+    assert "remote" in built
 
 
 class _Tagged(AIChannel):

@@ -141,7 +141,17 @@ class Placement:
         """The room detached the channel: nothing holds its state any more."""
         await self._client.delete(self._holder_key(channel_id, room_id))
 
-    async def declaring_elsewhere(self, channel_id: str) -> list[Elsewhere]:
+    async def told(self, channel_id: str) -> tuple[list[TurnExecutor], list[Elsewhere]]:
+        """The executors a room's attach or detach of *channel_id* reaches,
+        here and elsewhere: those that may run its turns, the owner's own
+        alone for a channel it hosts (RFC §10.6.3)."""
+        own = self._owning(channel_id)
+        if own is not None:
+            return ([own] if own.declares(channel_id) else []), []
+        here = [e for e in self.here if e.declares(channel_id)]
+        return here, await self._declaring_elsewhere(channel_id)
+
+    async def _declaring_elsewhere(self, channel_id: str) -> list[Elsewhere]:
         """The executors of other processes alive that declare *channel_id*."""
         return [
             Elsewhere(declared.executor_id, declared.node)
