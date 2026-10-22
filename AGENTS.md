@@ -51,9 +51,10 @@ uv run ty check src/roomkit/            # Type check (enforced in CI)
 uv run bandit -r src/ -c pyproject.toml # Security scan (enforced in CI)
 
 # Run tests
-uv run pytest tests/ -q                # All tests
+make test                              # All tests, one worker per core
+make test-changed                      # Only the tests whose code changed
 uv run pytest tests/test_framework.py -v  # Specific test file
-uv run pytest --cov=roomkit --cov-report=term-missing  # With coverage
+make coverage                          # With coverage
 ```
 
 ## Project Structure

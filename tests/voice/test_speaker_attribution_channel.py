@@ -415,6 +415,7 @@ class TestVoiceChannelCarriesLabels:
         await room.speak()
         messages = await room.messages(2)
         await room.channel.close()
+        await room.kit.close()
 
         assert _said(messages) == [("Speaker A", "Premier."), ("Speaker B", "Second.")]
 

@@ -21,6 +21,7 @@ env/
 *.env
 .mypy_cache/
 .pytest_cache/
+.testmondata*
 .ruff_cache/
 htmlcov/
 .coverage

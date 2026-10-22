@@ -7,6 +7,7 @@ import contextlib
 import sys
 import time
 import types
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import MagicMock
@@ -319,10 +320,29 @@ class TestInboundAuthChallenge:
         assert backend._auth_users is None
 
 
+StubAuth = Callable[[dict[str, str]], None]
+
+
+@pytest.fixture
+def parsed_auth(monkeypatch: pytest.MonkeyPatch) -> StubAuth:
+    """Make ``aiosipua.parse_auth`` return credentials carrying the given params.
+
+    For tests that exercise ``_validate_invite_auth`` with a pre-built header;
+    monkeypatch takes the stub off after the test, so it never reaches another.
+    """
+
+    def stub(params: dict[str, str]) -> None:
+        creds = MagicMock()
+        creds.params = params
+        monkeypatch.setattr(sys.modules["aiosipua"], "parse_auth", lambda _s: creds, raising=False)
+
+    return stub
+
+
 class TestInboundAuthValidation:
     """Test digest credential validation."""
 
-    def test_valid_credentials_accepted(self) -> None:
+    def test_valid_credentials_accepted(self, parsed_auth: StubAuth) -> None:
         backend = _make_backend(
             auth_users={"alice": "pass123"},
             auth_realm="test.com",
@@ -343,32 +363,24 @@ class TestInboundAuthValidation:
         )
         call.invite.set_header("authorization", auth_value)
 
-        # Mock parse_auth to return the credentials
-        import aiosipua
+        parsed_auth(
+            {
+                "username": "alice",
+                "realm": "test.com",
+                "nonce": nonce,
+                "uri": uri,
+                "response": digest,
+                "algorithm": "MD5",
+            }
+        )
 
-        original_parse_auth = getattr(aiosipua, "parse_auth", None)
-        mock_creds = MagicMock()
-        mock_creds.params = {
-            "username": "alice",
-            "realm": "test.com",
-            "nonce": nonce,
-            "uri": uri,
-            "response": digest,
-            "algorithm": "MD5",
-        }
-        aiosipua.parse_auth = lambda s: mock_creds  # type: ignore[attr-defined]
+        result = backend._validate_invite_auth(call)
+        assert result is True
+        assert not call._rejected
+        # Nonce consumed (one-time use)
+        assert nonce not in backend._auth_nonces
 
-        try:
-            result = backend._validate_invite_auth(call)
-            assert result is True
-            assert not call._rejected
-            # Nonce consumed (one-time use)
-            assert nonce not in backend._auth_nonces
-        finally:
-            if original_parse_auth is not None:
-                aiosipua.parse_auth = original_parse_auth  # type: ignore[attr-defined]
-
-    def test_invalid_password_rejected(self) -> None:
+    def test_invalid_password_rejected(self, parsed_auth: StubAuth) -> None:
         backend = _make_backend(
             auth_users={"alice": "pass123"},
             auth_realm="test.com",
@@ -384,28 +396,21 @@ class TestInboundAuthValidation:
         call = FakeIncomingCall()
         call.invite.set_header("authorization", "Digest ...")
 
-        import aiosipua
+        parsed_auth(
+            {
+                "username": "alice",
+                "nonce": nonce,
+                "uri": uri,
+                "response": wrong_digest,
+            }
+        )
 
-        original_parse_auth = getattr(aiosipua, "parse_auth", None)
-        mock_creds = MagicMock()
-        mock_creds.params = {
-            "username": "alice",
-            "nonce": nonce,
-            "uri": uri,
-            "response": wrong_digest,
-        }
-        aiosipua.parse_auth = lambda s: mock_creds  # type: ignore[attr-defined]
+        result = backend._validate_invite_auth(call)
+        assert result is False
+        assert call._rejected
+        assert call._reject_code == 403
 
-        try:
-            result = backend._validate_invite_auth(call)
-            assert result is False
-            assert call._rejected
-            assert call._reject_code == 403
-        finally:
-            if original_parse_auth is not None:
-                aiosipua.parse_auth = original_parse_auth  # type: ignore[attr-defined]
-
-    def test_unknown_user_rejected(self) -> None:
+    def test_unknown_user_rejected(self, parsed_auth: StubAuth) -> None:
         backend = _make_backend(
             auth_users={"alice": "pass123"},
             auth_realm="test.com",
@@ -417,28 +422,21 @@ class TestInboundAuthValidation:
         call = FakeIncomingCall()
         call.invite.set_header("authorization", "Digest ...")
 
-        import aiosipua
+        parsed_auth(
+            {
+                "username": "bob",  # not in auth_users
+                "nonce": nonce,
+                "uri": "sip:bot@example.com",
+                "response": "whatever",
+            }
+        )
 
-        original_parse_auth = getattr(aiosipua, "parse_auth", None)
-        mock_creds = MagicMock()
-        mock_creds.params = {
-            "username": "bob",  # not in auth_users
-            "nonce": nonce,
-            "uri": "sip:bot@example.com",
-            "response": "whatever",
-        }
-        aiosipua.parse_auth = lambda s: mock_creds  # type: ignore[attr-defined]
+        result = backend._validate_invite_auth(call)
+        assert result is False
+        assert call._rejected
+        assert call._reject_code == 403
 
-        try:
-            result = backend._validate_invite_auth(call)
-            assert result is False
-            assert call._rejected
-            assert call._reject_code == 403
-        finally:
-            if original_parse_auth is not None:
-                aiosipua.parse_auth = original_parse_auth  # type: ignore[attr-defined]
-
-    def test_expired_nonce_rechallenges(self) -> None:
+    def test_expired_nonce_rechallenges(self, parsed_auth: StubAuth) -> None:
         backend = _make_backend(
             auth_users={"alice": "pass123"},
             auth_realm="test.com",
@@ -451,29 +449,22 @@ class TestInboundAuthValidation:
         call = FakeIncomingCall()
         call.invite.set_header("authorization", "Digest ...")
 
-        import aiosipua
+        parsed_auth(
+            {
+                "username": "alice",
+                "nonce": nonce,
+                "uri": "sip:bot@example.com",
+                "response": "whatever",
+            }
+        )
 
-        original_parse_auth = getattr(aiosipua, "parse_auth", None)
-        mock_creds = MagicMock()
-        mock_creds.params = {
-            "username": "alice",
-            "nonce": nonce,
-            "uri": "sip:bot@example.com",
-            "response": "whatever",
-        }
-        aiosipua.parse_auth = lambda s: mock_creds  # type: ignore[attr-defined]
-
-        try:
-            result = backend._validate_invite_auth(call)
-            assert result is False
-            # Should re-challenge (new nonce), not 403
-            assert not call._rejected
-            transport: FakeTransport = backend._transport  # type: ignore[assignment]
-            assert len(transport.replies) == 1
-            assert transport.replies[0].status_code == 401
-        finally:
-            if original_parse_auth is not None:
-                aiosipua.parse_auth = original_parse_auth  # type: ignore[attr-defined]
+        result = backend._validate_invite_auth(call)
+        assert result is False
+        # Should re-challenge (new nonce), not 403
+        assert not call._rejected
+        transport: FakeTransport = backend._transport  # type: ignore[assignment]
+        assert len(transport.replies) == 1
+        assert transport.replies[0].status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -546,32 +537,10 @@ class TestUnknownByeClassification:
 # ---------------------------------------------------------------------------
 
 
-def _stub_parse_auth(creds_params: dict[str, str]):
-    """Patch ``aiosipua.parse_auth`` to return ``creds_params``.
-
-    Returns the original so the caller can restore it. Used by tests
-    that exercise ``_validate_invite_auth`` with a pre-built header.
-    """
-    import aiosipua
-
-    original = getattr(aiosipua, "parse_auth", None)
-    mock_creds = MagicMock()
-    mock_creds.params = creds_params
-    aiosipua.parse_auth = lambda s: mock_creds  # type: ignore[attr-defined]
-    return original
-
-
-def _restore_parse_auth(original) -> None:
-    import aiosipua
-
-    if original is not None:
-        aiosipua.parse_auth = original  # type: ignore[attr-defined]
-
-
 class TestAuthResolver:
     """Test the ``set_auth_resolver`` runtime credential lookup."""
 
-    def test_resolver_authenticates(self) -> None:
+    def test_resolver_authenticates(self, parsed_auth: StubAuth) -> None:
         """A resolver returning the right password authenticates the call."""
         backend = _make_backend(auth_users=None, auth_realm="test.com")
 
@@ -590,7 +559,7 @@ class TestAuthResolver:
 
         call = FakeIncomingCall()
         call.invite.set_header("authorization", "Digest ...")
-        original = _stub_parse_auth(
+        parsed_auth(
             {
                 "username": "alice",
                 "nonce": nonce,
@@ -598,14 +567,11 @@ class TestAuthResolver:
                 "response": digest,
             }
         )
-        try:
-            assert backend._validate_invite_auth(call) is True
-            assert resolver_calls == ["alice"]
-            assert not call._rejected
-        finally:
-            _restore_parse_auth(original)
+        assert backend._validate_invite_auth(call) is True
+        assert resolver_calls == ["alice"]
+        assert not call._rejected
 
-    def test_resolver_returning_none_rejects(self) -> None:
+    def test_resolver_returning_none_rejects(self, parsed_auth: StubAuth) -> None:
         backend = _make_backend(auth_users=None, auth_realm="test.com")
         backend.set_auth_resolver(lambda _username: None)
 
@@ -614,7 +580,7 @@ class TestAuthResolver:
 
         call = FakeIncomingCall()
         call.invite.set_header("authorization", "Digest ...")
-        original = _stub_parse_auth(
+        parsed_auth(
             {
                 "username": "anyone",
                 "nonce": nonce,
@@ -622,14 +588,11 @@ class TestAuthResolver:
                 "response": "whatever",
             }
         )
-        try:
-            assert backend._validate_invite_auth(call) is False
-            assert call._rejected
-            assert call._reject_code == 403
-        finally:
-            _restore_parse_auth(original)
+        assert backend._validate_invite_auth(call) is False
+        assert call._rejected
+        assert call._reject_code == 403
 
-    def test_resolver_takes_precedence_over_dict(self) -> None:
+    def test_resolver_takes_precedence_over_dict(self, parsed_auth: StubAuth) -> None:
         """When both resolver and auth_users provide credentials, resolver wins.
 
         Lets the application override stale dict entries without restart
@@ -650,7 +613,7 @@ class TestAuthResolver:
 
         call = FakeIncomingCall()
         call.invite.set_header("authorization", "Digest ...")
-        original = _stub_parse_auth(
+        parsed_auth(
             {
                 "username": "alice",
                 "nonce": nonce,
@@ -658,12 +621,9 @@ class TestAuthResolver:
                 "response": digest,
             }
         )
-        try:
-            assert backend._validate_invite_auth(call) is True
-        finally:
-            _restore_parse_auth(original)
+        assert backend._validate_invite_auth(call) is True
 
-    def test_resolver_falls_through_to_dict(self) -> None:
+    def test_resolver_falls_through_to_dict(self, parsed_auth: StubAuth) -> None:
         """When the resolver returns None, the static dict is consulted."""
         backend = _make_backend(
             auth_users={"alice": "from-dict"},
@@ -678,7 +638,7 @@ class TestAuthResolver:
 
         call = FakeIncomingCall()
         call.invite.set_header("authorization", "Digest ...")
-        original = _stub_parse_auth(
+        parsed_auth(
             {
                 "username": "alice",
                 "nonce": nonce,
@@ -686,12 +646,9 @@ class TestAuthResolver:
                 "response": digest,
             }
         )
-        try:
-            assert backend._validate_invite_auth(call) is True
-        finally:
-            _restore_parse_auth(original)
+        assert backend._validate_invite_auth(call) is True
 
-    def test_resolver_exception_denies(self) -> None:
+    def test_resolver_exception_denies(self, parsed_auth: StubAuth) -> None:
         """A raising resolver is caught and treated as a denied user.
 
         Otherwise a buggy lookup callback would crash the SIP message
@@ -709,7 +666,7 @@ class TestAuthResolver:
 
         call = FakeIncomingCall()
         call.invite.set_header("authorization", "Digest ...")
-        original = _stub_parse_auth(
+        parsed_auth(
             {
                 "username": "alice",
                 "nonce": nonce,
@@ -717,12 +674,9 @@ class TestAuthResolver:
                 "response": "whatever",
             }
         )
-        try:
-            assert backend._validate_invite_auth(call) is False
-            assert call._rejected
-            assert call._reject_code == 403
-        finally:
-            _restore_parse_auth(original)
+        assert backend._validate_invite_auth(call) is False
+        assert call._rejected
+        assert call._reject_code == 403
 
     def test_has_auth_reflects_both_sources(self) -> None:
         """``has_auth`` is True iff at least one credential source exists."""
@@ -946,17 +900,6 @@ class TestNonceEviction:
 
         # Left in place — and still refused on use, which is what matters.
         assert "old1" in backend._auth_nonces
-
-    def test_an_expired_nonce_is_refused_even_when_still_present(self) -> None:
-        backend = _make_backend(auth_users={"alice": "pass123"})
-        backend._auth_nonces = {"stale": time.monotonic() - 1.0}
-        call = FakeIncomingCall()
-        call.invite._headers_raw["authorization"] = (
-            'Digest username="alice", nonce="stale", '
-            'uri="sip:bob@example.com", response="whatever"'
-        )
-
-        assert backend._validate_invite_auth(call) is False
 
 
 # ---------------------------------------------------------------------------

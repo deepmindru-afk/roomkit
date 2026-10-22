@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Parallel test runs, and only the tests a change reaches (RMK-919).**
+  `make test` runs the suite on one worker per core (pytest-xdist, idle
+  workers taking queued tests): `make all` takes about a minute instead of
+  ten. `make test-changed` runs only the tests whose code changed since its
+  last run (pytest-testmon); `make all` and CI still run everything. CI's
+  test jobs and its run with the turns across Redis use the same workers.
+  CLAUDE.md states the rules a test meets: it checks a behaviour, takes
+  under 0.1 s, passes alone and in any order, and is deleted when a change
+  makes it redundant.
+
 - An `ON_TRANSCRIPTION` hook can match a voice to the room participant it is
   (RMK-904): `TranscriptionEvent.participant_id`, read for words a speaker
   was attributed to (a diarizing STT, or `pipeline_speakers=True`). The room

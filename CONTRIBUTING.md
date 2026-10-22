@@ -33,7 +33,7 @@ If you want to contribute but nothing in the tracker appeals to you, here are ar
 
 - **New provider integrations** — add support for a new SMS, email, or chat platform
 - **Example scripts** — runnable demos in `examples/` showing real-world usage
-- **Test coverage** — we target 80%+; run `uv run pytest --cov=roomkit --cov-report=term-missing` to find gaps
+- **Test coverage** — we target 80%+; run `make coverage` to find gaps
 - **Documentation** — guides, tutorials, and API doc improvements in `../roomkit-docs/`
 
 ## Development Workflow
@@ -50,7 +50,7 @@ uv run ruff check src/ tests/       # Lint (E/F/I/N/UP/B/SIM rules)
 uv run ruff format --check src/ tests/  # Format check
 uv run ty check src/roomkit/        # Type check (ty)
 uv run bandit -r src/ -c pyproject.toml  # Security scan
-uv run pytest                        # Tests
+make test                            # Tests, one worker per core
 ```
 
 You can run these individually while developing. Use `uv run ruff check --fix` to auto-fix lint issues.
@@ -77,16 +77,19 @@ every test passes while the library hands out model ids the vendor has retired.
 ## Testing
 
 ```bash
-uv run pytest                              # Run all tests
+make test                                  # Run all tests, one worker per core
+make test-changed                          # Only the tests whose code changed
 uv run pytest tests/test_X.py -v           # Run a specific file
 uv run pytest -k "keyword" -v              # Run by keyword
-uv run pytest --cov=roomkit --cov-report=term-missing  # With coverage
+make coverage                              # With coverage
 ```
 
 - Framework: **pytest** with `asyncio_mode = "auto"` — no `@pytest.mark.asyncio` needed
 - Use mock providers (`MockVADProvider`, `MockSTTProvider`, etc.) for voice tests
 - Use `make_event()` from `tests/conftest.py` for building test events
 - Run with `uv run pytest` (not `python -m pytest`)
+- What a test must check, how fast it must be, and when one is deleted: see
+  [CLAUDE.md, *Rules for a test*](CLAUDE.md#rules-for-a-test)
 
 ## Adding New Features
 

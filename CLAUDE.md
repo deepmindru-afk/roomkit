@@ -43,14 +43,15 @@ When adding new features, update the corresponding docs page in `roomkit-docs`. 
 ```bash
 uv sync --extra dev              # Install dependencies
 make all                         # Lint + typecheck + security + test (run before committing)
-uv run pytest                    # Run tests
+make test                        # Whole suite, one worker per core (pytest-xdist)
+make test-changed                # Only the tests whose code changed (pytest-testmon)
 uv run pytest tests/test_X.py -v # Run specific test file
 uv run ruff check src/ tests/    # Lint
 uv run ruff check --fix          # Lint with auto-fix
 uv run ruff format src/ tests/   # Format
 uv run ty check src/roomkit/     # Type check (ty)
 uv run bandit -r src/ -c pyproject.toml  # Security scan
-uv run pytest --cov=roomkit --cov-report=term-missing  # Coverage (80% minimum)
+make coverage                    # Coverage (80% minimum)
 make check-models                # Verify providers/*/models.py against upstream (run by make release)
 make llms-sync                   # Rebuild llms-full.txt from docs/c7, copy both llms files into roomkit-docs
 make release VERSION=x.y.z      # Release workflow
@@ -227,6 +228,48 @@ Each of the 12 pipeline stages lives in `voice/pipeline/<stage>/`:
 - Use mock providers (`MockVADProvider`, `MockSTTProvider`, etc.) with event sequences
 - Voice pipeline tests: `backend.simulate_audio_received()` to trigger processing
 - Run `uv run pytest` (not `python -m pytest`)
+
+#### Rules for a test
+
+The suite is run in parallel, in any order, and only in part while
+developing (`make test-changed`). Every test is paid for at each run and at
+each refactoring; it has to earn that.
+
+- **A test checks a behaviour someone relies on**: what a caller, a channel or
+  the wire observes. Not a private attribute's value, not the order of
+  internal calls, unless that order is the contract.
+- **A bug fix brings the test that failed before the fix**, next to the tests
+  of that behaviour: extend or parametrize the existing test before adding a
+  sibling. Cases that differ only by their input are one parametrized test.
+- **Search before adding.** A test for the same behaviour may already exist:
+  look for it by the function under test, or run `make test-changed` after
+  the change and read which tests ran. Two tests that set up the same
+  scenario and assert the same thing are one too many.
+- **Nothing Python, pydantic or `enum` already guarantees**: no member counts,
+  no `Enum("invalid")` raising, no restated field defaults. A value that
+  crosses the wire or the store is pinned once, in one place.
+- **A change that makes a test redundant deletes it** in the same commit, and
+  the commit says which test now covers the behaviour. Deleting a test is a
+  normal change, not a loss of coverage to avoid.
+- **Under 0.1 s.** Wait on an event, a future or `asyncio.wait_for`, never on
+  a fixed sleep; poll with a deadline only when nothing can be awaited.
+  Delays and timeouts under test are configured in milliseconds, not left at
+  their production defaults. A test that must measure real time is marked
+  `wallclock`; load and contention go under `stress`.
+- **Passes alone and in any order.** No `sys.modules[...] = fake` at import
+  time and no manual patch/restore: use `monkeypatch` or a fixture, which
+  undo themselves. No fixed port: bind port 0. Close what the test opened —
+  `await kit.close()`, not only the channel: a kit left open makes the
+  test's teardown wait for its delivery lane.
+- **Real services self-skip**: a test that needs Postgres, Redis, a LiveKit
+  server or downloaded models reads its DSN, URL, key or directory from the
+  environment and skips without it (`ROOMKIT_LIVEKIT_URL`,
+  `ROOMKIT_LIVE_MODELS_DIR`). CI's integration job provides Postgres and
+  Redis. A vendor's API is reached through a fake of its SDK or its wire,
+  never over the network.
+- **A new test file sits with its subsystem**: `tests/voice/`,
+  `tests/conference/`, `tests/orchestration/`… mirroring `src/roomkit/`.
+  The flat root of `tests/` is for the core.
 
 ### Adding New Components
 

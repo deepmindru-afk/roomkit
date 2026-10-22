@@ -1,4 +1,4 @@
-.PHONY: audit install lint format typecheck security test coverage stress llms-full check-models update-llamacpp all clean docs docs-serve llms-sync llms-check deploy deploy-status release
+.PHONY: audit install lint format typecheck security test test-changed coverage stress llms-full check-models update-llamacpp all clean docs docs-serve llms-sync llms-check deploy deploy-status release
 
 install:
 	uv sync --extra dev
@@ -35,11 +35,19 @@ audit:
 	  uvx --python 3.12 pip-audit --requirement "$$tmp/all.txt" || \
 	  echo "audit: the extras pass failed or found advisories (reported, not gating)"; }
 
+# The whole suite, one worker per core (pytest-xdist).
 test:
-	uv run pytest
+	uv run pytest -n auto
+
+# Only the tests whose code changed since the last run (pytest-testmon; the
+# first run records, and runs everything). A dependency testmon cannot see —
+# a data file, a module installed into sys.modules — needs `make test`, which
+# `make all` and CI run.
+test-changed:
+	uv run pytest -n auto --testmon --testmon-forceselect
 
 coverage:
-	uv run pytest --cov=roomkit --cov-report=term-missing
+	uv run pytest -n auto --cov=roomkit --cov-report=term-missing
 
 stress:
 	uv run pytest -m stress -v
@@ -62,7 +70,7 @@ update-llamacpp:
 all: lint typecheck security test
 
 clean:
-	rm -rf dist/ build/ .pytest_cache/ .ruff_cache/ htmlcov/ .coverage
+	rm -rf dist/ build/ .pytest_cache/ .ruff_cache/ htmlcov/ .coverage .testmondata*
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name '*.egg-info' -exec rm -rf {} + 2>/dev/null || true
 
