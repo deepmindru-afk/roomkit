@@ -302,12 +302,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   levels deep and refused.
 
 - A turn's scan for a runtime mark's copy split over consecutive user
-  messages reads only the new boundary of a run of unanswered messages it
-  already found clean (RMK-882), in a window that holds any copy across it,
-  gaps of spacing or markup of any length included; a copy found there goes
-  through the whole scan as before. Measured on runs of 8 KB messages, one
-  more each turn: 1.9 ms per turn for 25 messages instead of 89 ms, 2.4 ms
-  for 50 instead of 180 ms.
+  messages reads only the boundaries of a run of unanswered messages it has
+  not seen before (RMK-882): each boundary is read in a window that holds
+  any copy across it, gaps of spacing or markup of any length included, and
+  remembered once found clean, so a run grown at its end or slid at its head
+  out of a memory's window scans its new boundary alone. A run that holds a
+  split copy goes through the whole scan on every turn, as before. Measured
+  on runs of 8 KB messages, one more each turn: about 4 ms per turn for 50
+  messages, growing or slid out of a window of 50 events, instead of 177 ms;
+  one message's own scan takes about 3.5 ms.
 
 - The Redis turn backend guide's prerequisites say redis-py 8.0.0 does not
   serve a backend on a unix socket (RMK-869): its sync client, which the

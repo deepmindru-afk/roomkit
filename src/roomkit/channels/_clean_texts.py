@@ -2,7 +2,7 @@
 
 The marks' scan and the notes' header's scan each keep one, so a text a turn
 already read is not scanned again by either; the scan for a copy split over
-consecutive messages keeps one of the runs it read.
+consecutive messages keeps one of the boundaries it read, each by its window.
 """
 
 from __future__ import annotations

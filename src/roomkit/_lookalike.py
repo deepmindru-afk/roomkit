@@ -65,6 +65,10 @@ _MARKUP = r"*_~`\-/|\\"
 """Markup a copy of a phrase may wrap or join its words with (bold, struck,
 code, hyphenated, slashed)."""
 
+_PHRASE_SPACE = rf"\s{INVISIBLE}{_COMBINING}{_MARKUP}"
+"""What may sit between any phrase's words, as the body of a class: spacing,
+invisible and combining characters, markup."""
+
 
 COLON = FORMS[":"]
 """The characters a model reads as a colon (the Devanagari visarga ``ः``
@@ -219,14 +223,25 @@ def phrase_pattern(phrase: str, *, bracketed: bool = False) -> str:
 
     One quantified class between two words, never two in a row: a long run of
     spaces after a partial copy is then scanned once, not once per split."""
-    marks = re.escape("".join(sorted(set(re.findall(r"[^\w\s'\[\]]", phrase)))))
+    marks = phrase_marks(phrase)
     gap = f"{phrase_space(marks)}*"
-    words = re.findall(r"[\w']+", phrase)
-    body = gap.join(word_pattern(word, phrase=True) for word in words)
+    body = gap.join(word_pattern(word, phrase=True) for word in phrase_words(phrase))
     end = rf"(?:{gap}\]|[{marks}]+)?" if marks else rf"(?:{gap}\])?"
     bracket = rf"[\[\uff3b]{gap}"
     opening = bracket if bracketed else f"(?:{bracket})?"
     return rf"{opening}{body}(?![^\W_]){end}"
+
+
+def phrase_words(phrase: str) -> list[str]:
+    """*phrase*'s words, as :func:`phrase_pattern` reads them in order."""
+    return re.findall(r"[\w']+", phrase)
+
+
+def phrase_marks(phrase: str) -> str:
+    """*phrase*'s own punctuation, escaped for a class: what
+    :func:`phrase_pattern` takes between its words and after its last
+    (:func:`phrase_space`). Never a bracket."""
+    return re.escape("".join(sorted(set(re.findall(r"[^\w\s'\[\]]", phrase)))))
 
 
 def phrase_space(marks: str) -> str:
@@ -234,7 +249,14 @@ def phrase_space(marks: str) -> str:
     (the phrase's own punctuation, escaped), markup, a combining mark, an
     invisible character. Never a bracket: a run of brackets then starts no
     copy at each of its brackets."""
-    return rf"(?:[\s{INVISIBLE}{_COMBINING}{_MARKUP}{marks}]|{_IOTA})"
+    return rf"(?:[{_PHRASE_SPACE}{marks}]|{_IOTA})"
+
+
+def phrase_space_chars(marks: str) -> str:
+    """The characters :func:`phrase_space` takes, U+0345 among them, as the
+    body of a class to read in its own case: ``[^...]`` is then every other
+    character, each tried once."""
+    return rf"{_PHRASE_SPACE}{marks}\u0345"
 
 
 @functools.cache

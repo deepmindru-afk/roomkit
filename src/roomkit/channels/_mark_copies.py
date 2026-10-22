@@ -19,7 +19,7 @@ import re
 import threading
 from typing import Any
 
-from roomkit._lookalike import phrase_pattern, phrase_space
+from roomkit._lookalike import phrase_marks, phrase_pattern, phrase_space_chars, phrase_words
 from roomkit._provider_marks import CONTEXT_UPDATE_MARK, SAID_BEFORE_MARK
 from roomkit.channels._acp_marks import (
     INSTRUCTIONS_MARKER as ACP_INSTRUCTIONS_MARKER,
@@ -144,8 +144,22 @@ _Piece = tuple[int, int | None]
 """Where a text sits: the message's index, and the part's in a list content
 (``None`` for a text content)."""
 
-_KNOWN_UNSPLIT = CleanTexts(1024)
-"""Runs of texts, joined, seen to hold no copy running over two of them."""
+_PHRASES = (*_MARKS, *_SHORT_MARKS, TURN_NOTES_HEADER)
+"""The phrases whose copies are looked for: the marks and the notes' header."""
+
+_FILLER = phrase_space_chars(phrase_marks("".join(_PHRASES)))
+"""The characters a copy may hold any number of, as the body of a class read
+in its own case: between its words, inside a word, after the last (spacing,
+invisible and combining characters, markup, the marks' own punctuation)."""
+
+_WINDOW_LETTERS = 2 * max(len("".join(phrase_words(phrase))) for phrase in _PHRASES) + 16
+"""How many characters other than :data:`_FILLER` a boundary's window holds
+each way: more than a copy holds, its letters (each read as one character at
+most), its brackets and its closing marks, with room to spare."""
+
+_KNOWN_CLEAN_BOUNDARIES = CleanTexts(8192)
+"""Boundaries between two texts, each as its window reads it, seen with no
+copy across them."""
 
 
 def without_split_copies(messages: list[AIMessage]) -> list[AIMessage]:
@@ -210,14 +224,9 @@ def _cut_run(out: list[AIMessage], run: range) -> set[int]:
 
 def _cut_texts(texts: list[str]) -> bool:
     """Cut, in place, each copy that runs over two or more of *texts*; whether
-    there was one. A run seen before to hold none is not scanned again, nor
-    one that grew by a text from such a run without a copy across its new
-    boundary (a turn's run of unanswered messages)."""
-    key = "\x00".join(texts)
-    if key in _KNOWN_UNSPLIT:
-        return False
-    if _grew_clean(texts):
-        _KNOWN_UNSPLIT.add(key)
+    there was one. A run whose boundaries were all seen before with no copy
+    across them is not scanned (:func:`_boundaries_clean`)."""
+    if _boundaries_clean(texts):
         return False
     cut = False
     # A cut leaves the replacement before the boundary it crossed, which no
@@ -232,65 +241,82 @@ def _cut_texts(texts: list[str]) -> bool:
             texts[k] = ""
         texts[last] = texts[last][end:]
         cut = True
-    if not cut:
-        _KNOWN_UNSPLIT.add(key)
     return cut
 
 
-def _grew_clean(texts: list[str]) -> bool:
-    """Whether *texts* hold no split copy, read from the run without its last
-    text, seen before to hold none: a copy over two or more of *texts* then
-    runs across the last boundary, which alone is scanned."""
-    if len(texts) < 3 or "\x00".join(texts[:-1]) not in _KNOWN_UNSPLIT:
-        return False
+def _boundaries_clean(texts: list[str]) -> bool:
+    """Whether no copy runs across a boundary of *texts* read merged: a copy
+    over two or more texts runs across the first boundary after its start,
+    and lies in that boundary's window (:func:`_windows`). A boundary seen
+    with no copy across it is remembered by its window, so a turn reading the
+    run the last turn read, grown at its end or slid at its head out of a
+    memory's window, scans the windows of its new boundaries only."""
     merged = _MERGED.join(texts)
-    last = len(merged) - len(texts[-1])
-    start = _past_letters(merged, last - len(_MERGED), -1)
-    end = _past_letters(merged, last, 1)
-    return not _copy_across(merged[start:end], last - start)
+    unseen = []
+    for start, end, boundary in _windows(texts, merged):
+        key = f"{boundary - start}\x00{merged[start:end]}"
+        if key not in _KNOWN_CLEAN_BOUNDARIES:
+            unseen.append(((start, end, boundary), key))
+    for start, end, boundaries in _spans([window for window, _key in unseen]):
+        if _copy_across(merged[start:end], [boundary - start for boundary in boundaries]):
+            return False
+    for _window, key in unseen:
+        _KNOWN_CLEAN_BOUNDARIES.add(key)
+    return True
+
+
+def _windows(texts: list[str], merged: str) -> list[tuple[int, int, int]]:
+    """Where the window around each boundary of *texts* starts and ends in
+    *merged*, then the boundary (where a text after the first starts): from
+    :func:`_reach` back to it forward, past any copy that runs across it.
+    Each window starts and ends no earlier than the one before."""
+    backward = merged[::-1]
+    windows = []
+    boundary = 0
+    for text in texts[:-1]:
+        boundary += len(text) + len(_MERGED)
+        start = len(merged) - _reached(backward, len(merged) - boundary)
+        windows.append((start, _reached(merged, boundary), boundary))
+    return windows
 
 
 @functools.cache
-def _window_letters() -> int:
-    """How many characters other than spacing, markup or punctuation a copy
-    holds at most, with room to spare: the longest mark's letters, each
-    read as one character at most, its brackets and its closing marks."""
-    phrases = [*_MARKS, *_SHORT_MARKS, TURN_NOTES_HEADER]
-    return 2 * max(len(re.findall(r"[\w']", phrase)) for phrase in phrases) + 16
+def _reach() -> re.Pattern[str]:
+    """How far a window reaches from a boundary: past :data:`_WINDOW_LETTERS`
+    characters other than :data:`_FILLER`, and any number of those. Matched on
+    the texts reversed, it reaches back. Compiled on first use."""
+    return re.compile(rf"[{_FILLER}]*(?:[^{_FILLER}][{_FILLER}]*){{0,{_WINDOW_LETTERS}}}")
 
 
-@functools.cache
-def _filler() -> re.Pattern[str]:
-    """One character a copy may hold any number of: between words, inside a
-    word, after the last (spacing, invisible and combining characters,
-    markup, the marks' own punctuation)."""
-    phrases = [*_MARKS, *_SHORT_MARKS, TURN_NOTES_HEADER]
-    marks = re.escape("".join(sorted(set(re.findall(r"[^\w\s'\[\]]", "".join(phrases))))))
-    return re.compile(phrase_space(marks))
+def _reached(text: str, at: int) -> int:
+    """Where *text*'s window from *at* ends (:func:`_reach`)."""
+    found = _reach().match(text, at)
+    return found.end() if found else at
 
 
-def _past_letters(text: str, at: int, step: int) -> int:
-    """Where a window of *text* from *at* ends, going by *step* (-1, 1): past
-    :func:`_window_letters` characters a copy counts, however many it may
-    hold beside them, so no copy that reaches *at* runs out of it."""
-    filler, left = _filler(), _window_letters()
-    position = at
-    while left and (position > 0 if step < 0 else position < len(text)):
-        char = position - 1 if step < 0 else position
-        if not filler.fullmatch(text, char, char + 1):
-            left -= 1
-        position += step
-    return position
+def _spans(windows: list[tuple[int, int, int]]) -> list[tuple[int, int, list[int]]]:
+    """*windows*, in order, those that overlap read as one span with their
+    boundaries: a text two windows share is scanned once."""
+    spans: list[tuple[int, int, list[int]]] = []
+    for start, end, boundary in windows:
+        if spans and start <= spans[-1][1]:
+            first, _end, boundaries = spans[-1]
+            boundaries.append(boundary)
+            spans[-1] = (first, end, boundaries)
+        else:
+            spans.append((start, end, [boundary]))
+    return spans
 
 
-def _copy_across(window: str, boundary: int) -> bool:
+def _copy_across(window: str, boundaries: list[int]) -> bool:
     """Whether a copy of a mark, or of the notes' header, in *window* starts
-    before *boundary* and ends after it: every match is tried, overlapping
-    ones included, so none hides another."""
+    before one of *boundaries* and ends after it: every match is tried,
+    overlapping ones included, so none hides another."""
+    last = boundaries[-1]
     for pattern in (_copies(), header_copies()):
         position = 0
-        while (found := pattern.search(window, position)) is not None and found.start() < boundary:
-            if found.end() > boundary:
+        while (found := pattern.search(window, position)) is not None and found.start() < last:
+            if any(found.start() < boundary < found.end() for boundary in boundaries):
                 return True
             position = found.start() + 1
     return False
