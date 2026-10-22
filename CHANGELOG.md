@@ -124,6 +124,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   context, never the span and its attributes: about 2 MB at most, where a
   process serving turns for days grew without bound.
 
+- A strategy's worker run cut by its timeout or cancelled, after its worker
+  posted progress, no longer leaves its task `running` on the status bus
+  (RMK-875). Its terminal entry carried no `task_id`, so it opened a line of
+  its own and the task's line, named by the progress entry, stayed running
+  for `task_status`, the turn's notes and the console's `/tasks`. The entry
+  now names the task once the task exists, on both doors (inline and
+  background).
+
 - A voice channel's record of a cut answer carries `played_percentage` once
   the answer's synthesis ended before the cut (RFC §12.3.13): the
   utterance's total duration was never set, so the share was never written.

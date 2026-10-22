@@ -136,6 +136,9 @@ async def run_worker(
     """
     post = _Posts(kit, worker_id, status)
     post(StatusLevel.PENDING, task)
+    # The run learns its task once it ends, before the cut that timed it out
+    # or cancelled it reaches the run: its terminal entry then names it.
+    delegation = {**delegation, "on_complete": post.task_ended}
     return await _posted(
         post, status, _delegate(kit, room_id, worker_id, task, timeout, delegation)
     )
@@ -148,8 +151,8 @@ async def follow_worker(
     (``kit.delegate(wait=False)``), within *timeout*, past which the runner
     cancels it and it reads as failed; posted on the status bus as
     :func:`run_worker` posts, its pending entry once it was started."""
-    post = _Posts(kit, task.agent_id, status)
-    post(StatusLevel.PENDING, task.task, task=task)
+    post = _Posts(kit, task.agent_id, status, task_id=task.id)
+    post(StatusLevel.PENDING, task.task)
     return await _posted(post, status, _await_started(kit, task, timeout))
 
 
@@ -205,12 +208,26 @@ async def _delegate(
 
 
 class _Posts:
-    """A worker delegation's entries on the status bus, as its status says."""
+    """A worker delegation's entries on the status bus, as its status says,
+    each naming the task once the run knows it (RFC §19.7.3)."""
 
-    def __init__(self, kit: RoomKit, worker_id: str, status: WorkerStatus | None) -> None:
+    def __init__(
+        self,
+        kit: RoomKit,
+        worker_id: str,
+        status: WorkerStatus | None,
+        *,
+        task_id: str | None = None,
+    ) -> None:
         self._kit = kit
         self._worker_id = worker_id
         self._status = status
+        self._task_id = task_id
+
+    async def task_ended(self, result: DelegatedTaskResult) -> None:
+        """Remember the task the run's delegation ended, so the run's terminal
+        entry names it however the run itself ends."""
+        self._task_id = result.task_id
 
     def __call__(
         self,
@@ -224,8 +241,9 @@ class _Posts:
         if status is None:
             return
         metadata = {**status.metadata, **(metadata or {})}
-        if task is not None:
-            metadata["task_id"] = task.id
+        task_id = task.id if task is not None else self._task_id
+        if task_id:
+            metadata["task_id"] = task_id
         post_agent_lifecycle(
             self._kit,
             self._worker_id,
