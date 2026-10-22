@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from roomkit.providers.ai.base import AIContext
     from roomkit.speaking.base import SpeakDecision, SpeakPolicy
     from roomkit.speaking.thinker import Thinker
+    from roomkit.tools.context import _ToolLoopContext
 else:
     _AIChannelContract = object
 
@@ -49,10 +50,11 @@ class _RoomMind:
         self._channel = channel
         self._task: asyncio.Task[None] | None = None
         self._changed = asyncio.Condition()
-        self._pending: tuple[AIContext, int, contextvars.Context] | None = None
+        self._pending: tuple[AIContext, int, bool, contextvars.Context] | None = None
         """The latest context to think about, how often the agent had spoken
-        then, and the context of the turn that asked: its thought is that
-        turn's work, reported under it (RFC §10.6.5)."""
+        then and whether it was answering in the room, and the context of the
+        turn that asked: its thought is that turn's work, reported under it
+        (RFC §10.6.5)."""
         self._asked = 0
         self._done = 0
         self._spoke = 0
@@ -60,10 +62,11 @@ class _RoomMind:
         """The ticket whose event was decided before its thought came back, and
         what decides again on it once it does."""
 
-    def think(self, context: AIContext) -> int:
-        """Have the thinker think about *context*; the ticket :meth:`settled` waits on."""
+    def think(self, context: AIContext, *, answering: bool = False) -> int:
+        """Have the thinker think about *context*, taken while the agent was
+        *answering* in the room or not; the ticket :meth:`settled` waits on."""
         self._asked += 1
-        self._pending = (context, self._spoke, contextvars.copy_context())
+        self._pending = (context, self._spoke, answering, contextvars.copy_context())
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run(), name=f"thinker:{self.room_id}")
         return self._asked
@@ -115,13 +118,15 @@ class _RoomMind:
 
     async def _run(self) -> None:
         while self._pending is not None:
-            (context, spoke, asked_in), ticket = self._pending, self._asked
+            (context, spoke, answering, asked_in), ticket = self._pending, self._asked
             self._pending = None
             started = time.monotonic()
             thought = await self._next(self.thought, context)
             duration_ms = round((time.monotonic() - started) * 1000)
-            if self._spoke != spoke:
-                thought = thought.said()  # it spoke since the context: that is said now
+            if self._spoke != spoke or answering:
+                # It spoke since the context, or was answering as it was taken:
+                # what it wants to say is that answer, not in the context yet.
+                thought = thought.said()
             async with self._changed:
                 # What the thought replaces is read now: the agent may have
                 # spoken during the call, emptying the one the call started from.
@@ -152,6 +157,7 @@ class AIThinkingMixin(_AIChannelContract):
     _think_wait: float
     _thought_hook: ThoughtHook | None
     _minds: dict[str, _RoomMind]
+    _active_loops: dict[str, _ToolLoopContext]
 
     def _store_thinker(
         self, thinker: Thinker | None, wait: float, policy: SpeakPolicy | None
@@ -166,6 +172,10 @@ class AIThinkingMixin(_AIChannelContract):
         self._think_wait = wait
         self._thought_hook = None
         self._minds = {}
+
+    def _answering_in(self, room_id: str) -> bool:
+        """Whether one of the agent's turns is under way in *room_id*."""
+        return any(loop.room_id == room_id for loop in self._active_loops.values())
 
     def _thought_of(self, room_id: str) -> Thought | None:
         """What the agent has in mind in *room_id*; ``None`` without a thinker."""
@@ -194,7 +204,7 @@ class AIThinkingMixin(_AIChannelContract):
         ai_context = await self._thinking_context(event, binding, context)
         if ai_context is None:
             return decision  # BEFORE_AI_GENERATION kept it from the thinker
-        ticket = mind.think(ai_context)
+        ticket = mind.think(ai_context, answering=self._answering_in(room_id))
         late = partial(self._decide_late, event, context)
         if decision.final:
             mind.when_late(ticket, late)

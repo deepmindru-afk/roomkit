@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -328,3 +329,35 @@ async def test_a_decision_event_carries_the_thought_the_policy_read(advance: Any
         (False, False, Thought()),
         (True, False, _PRICE),
     ]
+
+
+async def test_a_thought_taken_while_the_agent_answers_wants_to_say_nothing() -> None:
+    """Thinking about an event while the agent is still answering the one before,
+    the thought's context lacks that answer: what it wants to say is the answer
+    itself, so it is said, and decided on neither in time nor late."""
+    kit = RoomKit()
+    channel = AIChannel(
+        "ai1",
+        provider=MockAIProvider(responses=["Yes?"]),
+        speak_policy=MockSpeakPolicy(["silent", SpeakDecision("offer", reason="has more")]),
+        thinker=MockThinker([_PRICE], delay=0.1),
+        think_wait=0.01,
+    )
+    kit.register_channel(channel)
+    kit.register_channel(SMSChannel("sms1", provider=MockSMSProvider()))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    await kit.attach_channel("r1", "sms1")
+    seen = _decisions(kit)
+    channel._active_loops["answering"] = SimpleNamespace(room_id="r1")  # ty: ignore[invalid-assignment]
+
+    await kit.process_inbound(
+        InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="I have it."))
+    )
+    await asyncio.sleep(0.3)  # the thinker's delay, past the channel's wait
+    del channel._active_loops["answering"]
+    thought = channel._thought_of("r1")
+    await kit.close()
+
+    assert [e.late for e in seen] == [False]
+    assert thought == _PRICE.said()
