@@ -153,6 +153,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Redis turn backend guide's prerequisites say redis-py 8.0.0 does not
+  serve a backend on a unix socket (RMK-869): its sync client fails on a
+  `unix://` URL, so the beat thread never beats and the process is taken for
+  lost. 8.0.1 and later work, as do 5.0.2 to 7.4; the `redis` extra is
+  unchanged.
+
 - An answer a barge-in cut reads, in the AI context, with how far the person
   heard it (RFC §6.4): `[The person cut you off during this answer, 5.7 s in:
   they heard it up to “…” and not the rest.]`, where it read "[You were
