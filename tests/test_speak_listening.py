@@ -4,6 +4,7 @@ let the channel think without waiting."""
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
@@ -301,9 +302,11 @@ async def test_the_channel_forgets_the_state_of_a_room_it_leaves_or_joins() -> N
 
 
 async def test_a_listening_room_thinks_without_holding_the_turn_back() -> None:
-    """A final silence is thought about, but the channel neither waits for the
-    thought (think_wait is 5 s here) nor asks the policy again with it."""
-    policy, classifier = _policy({"directness": 0.0}, ASKED)
+    """A final silence is thought about, and the channel does not wait for the
+    thought (think_wait is 5 s here); back with something that answers the
+    turn, it is decided late: the agent asks for the floor, for the hooks, and
+    no turn runs on it."""
+    policy, classifier = _policy({"directness": 0.0}, {"answers": 0.9}, ASKED)
     thinker = MockThinker([Thought("Sylvain lists what is broken.", ("Check the printer.",))])
     channel, decisions = _channel(policy, thinker)
     request, aside = _said(STAY_QUIET), _said("My printer does not work either.")
@@ -318,9 +321,33 @@ async def test_a_listening_room_thinks_without_holding_the_turn_back() -> None:
     ]
     [mind] = channel._minds.values()
     assert await mind.settled(2, 1.0)
+    for _ in range(50):  # the late decision runs once the thought is in
+        if len(decisions) == 3:
+            break
+        await asyncio.sleep(0.01)
     question = _said("What do you think, Nova?")
     run = await respond(channel, question, _BINDING, _context(request, aside, question))
 
     assert run.text == "I would start with the printer."
-    assert decisions[-1].decision.reason == "asked while listening"
-    assert len(classifier.calls) == 3
+    assert [(d.decision.mode, d.decision.reason, d.late) for d in decisions[2:]] == [
+        ("offer", "listening, has something to add", True),
+        ("speak", "asked while listening", False),
+    ]
+    assert len(classifier.calls) == 4
+
+
+async def test_while_listening_the_agent_asks_for_the_floor_only_with_what_answers() -> None:
+    """A thought that answers the turn makes a listening room offer, never speak;
+    one that does not, or a speaker not done, leaves it silent."""
+    answers = {**ASIDE, "answers": 0.9}
+    policy, _ = _policy(answers, {**answers, "unfinished": 0.9}, {**ASIDE, "answers": 0.2})
+    await policy.decide(_turn(STAY_QUIET))
+    thought = Thought("They look for the price.", ("It costs 69 $.",))
+
+    decisions = [await policy.decide(_turn("How much is it?", thought=thought)) for _ in range(3)]
+
+    assert [(d.mode, d.final) for d in decisions] == [
+        ("offer", False),
+        ("silent", True),
+        ("silent", True),
+    ]

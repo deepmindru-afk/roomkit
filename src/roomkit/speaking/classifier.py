@@ -256,7 +256,9 @@ class ClassifierSpeakPolicy(SpeakPolicy):
     A request to stay quiet or only listen from now on puts the room in a
     listening state the policy keeps (RFC §6.4): the agent is silent, a
     question put to it and addressing it directly is answered while the room
-    goes on listening, and only a turn that lets it talk again ends it. A turn
+    goes on listening, what it has in mind that answers or corrects a turn
+    makes it offer (ask for the floor, which an application may show as a
+    raised hand), and only a turn that lets it talk again ends it. A turn
     it cannot judge there (no text, a classifier that fails) stays silent.
     """
 
@@ -387,7 +389,21 @@ class ClassifierSpeakPolicy(SpeakPolicy):
         if _asked_while_listening(judgments):
             notes = self._language_notes(answers)
             return SpeakDecision("speak", "asked while listening", judgments, notes)
+        if self._wants_the_floor(turn, judgments):
+            return SpeakDecision("offer", "listening, has something to add", judgments)
         return SpeakDecision("silent", "listening", judgments, final=True)
+
+    def _wants_the_floor(self, turn: SpeakTurn, judgments: Mapping[str, float]) -> bool:
+        """While the room listens, the agent may ask for the floor, never take
+        it: what it has in mind answers or corrects the turn as surely as an
+        open room asks of an unasked offer, and the speaker is done and asks
+        for no quiet."""
+        if turn.thought is None or not turn.thought.want_to_say:
+            return False
+        if any(judgments.get(n, 0.0) >= 0.5 for n in ("unfinished", "hush")):
+            return False
+        knows = max(judgments.get("answers", 0.0), judgments.get("corrects", 0.0))
+        return knows >= self._proactivity
 
     def _composed(self, turn: SpeakTurn, answers: Answers) -> SpeakDecision:
         """The decision of an open room: :func:`compose`, and the language's note."""

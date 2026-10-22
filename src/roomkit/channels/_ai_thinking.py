@@ -17,6 +17,7 @@ import contextvars
 import logging
 import time
 from collections.abc import Callable, Coroutine
+from functools import partial
 from typing import TYPE_CHECKING
 
 from roomkit.speaking.thought import Thought, ThoughtEvent, thought_note
@@ -194,10 +195,12 @@ class AIThinkingMixin(_AIChannelContract):
         if ai_context is None:
             return decision  # BEFORE_AI_GENERATION kept it from the thinker
         ticket = mind.think(ai_context)
+        late = partial(self._decide_late, event, context)
         if decision.final:
-            return decision  # no thought changes it: nothing to wait for
+            mind.when_late(ticket, late)
+            return decision  # no thought changes it now: nothing to wait for
         if not self._think_wait or not await mind.settled(ticket, self._think_wait):
-            mind.when_late(ticket, lambda thought: self._decide_late(event, context, thought))
+            mind.when_late(ticket, late)
             return decision
         if not mind.thought.want_to_say:
             return decision

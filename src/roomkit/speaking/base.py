@@ -93,9 +93,11 @@ class SpeakDecision:
     """Blocks the turn's notes carry when the agent speaks or offers (RFC §6.4)."""
 
     final: bool = False
-    """A silence the agent's thought will not change (a room that listens, a voice
-    only listened to): the thinker thinks, and the channel neither waits for it
-    nor asks again, so the next turn is not held back (RFC §6.4)."""
+    """A silence the agent's thought will not change now (a room that listens, a
+    voice only listened to): the thinker thinks and the channel does not wait for
+    it, so the next turn is not held back (RFC §6.4). A thought back with
+    something to say is decided late, for the hooks: a room that listens may
+    let the agent ask for the floor."""
 
     def __post_init__(self) -> None:
         if self.mode not in _MODES:
