@@ -126,12 +126,14 @@ class TestDequeue:
             block=500,
         )
 
-    async def test_a_wait_longer_than_a_read_slice_reads_in_slices(self) -> None:
+    async def test_a_wait_longer_than_a_read_slice_reads_in_slices(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """No read outlasts a slice, so none outlasts its client's call bound
         on a half-open connection (RMK-868); the wait still lasts its timeout."""
         backend, client = _make_backend()
         # The private copy's own globals: what its dequeue reads.
-        type(backend).dequeue.__globals__["_READ_SLICE_S"] = 0.1
+        monkeypatch.setitem(type(backend).dequeue.__globals__, "_READ_SLICE_S", 0.1)
         client.xreadgroup = AsyncMock(side_effect=_reads_nothing)
 
         assert await backend.dequeue("w1", timeout=0.35) == []

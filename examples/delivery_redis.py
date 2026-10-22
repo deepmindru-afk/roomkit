@@ -70,7 +70,9 @@ NOTIFICATIONS = [
 
 async def connect_redis(url: str) -> aioredis.Redis:
     """Return a connected client, or exit with a clean message."""
-    client = aioredis.from_url(url)
+    # A client you pass keeps its own options: bound its calls, over the
+    # second a read for new work waits (redis-py before 8.0 sets no bound).
+    client = aioredis.from_url(url, socket_timeout=6.0, socket_connect_timeout=5.0)
     try:
         await client.ping()
     except (RedisError, OSError) as exc:

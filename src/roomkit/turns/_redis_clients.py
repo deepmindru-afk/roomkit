@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, NamedTuple
 
+from roomkit._redis import client_options
 from roomkit.turns._redis_inbox import READ_BLOCK_S
 from roomkit.turns.base import TurnTimeouts
 
@@ -54,13 +55,13 @@ def redis_clients(address: str, timeouts: TurnTimeouts, client: Any = None) -> R
             "redis is required for RedisTurnBackend. Install it with: pip install roomkit[redis]"
         ) from exc
     bound = call_bound(timeouts)
-    options = {"socket_timeout": bound, "socket_connect_timeout": bound}
+    options = client_options(call_bound=bound)
     if client is None:
         pool = aioredis.BlockingConnectionPool.from_url(
             address, max_connections=_MAX_CONNECTIONS, timeout=_POOL_WAIT, **options
         )
         client = aioredis.Redis(connection_pool=pool)
-    inbox_options = {**options, "socket_timeout": bound + read_block(timeouts)}
+    inbox_options = client_options(read_block(timeouts), call_bound=bound)
     return RedisClients(
         pooled=client,
         inbox=aioredis.from_url(address, **inbox_options),

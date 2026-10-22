@@ -3,7 +3,7 @@
 Uses Redis Streams with consumer groups for persistent, distributed
 delivery across multiple worker processes.
 
-Requires Redis server 6.2+ and ``redis>=5.0``::
+Requires Redis server 6.2+ and ``redis>=5.0.2``::
 
     pip install roomkit[redis]
 

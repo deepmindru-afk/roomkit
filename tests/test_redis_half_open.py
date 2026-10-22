@@ -6,6 +6,7 @@ REDIS_URL to run against Redis."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -122,7 +123,8 @@ async def test_a_reader_hears_again_once_its_connection_is_silenced(
 ) -> None:
     """A reader whose connection goes silent pings it, drops it unanswered,
     and subscribes again on a new one: what is published then reaches it."""
-    listening, publishing, publish = listener(await proxy.url(), f"roomkit:test:{uuid4().hex}")
+    prefix = f"roomkit:test:{uuid4().hex}"
+    listening, publishing, publish = listener(await proxy.url(), prefix)
     received: list[str] = []
     try:
         await _subscribe(listening, received)
@@ -141,3 +143,55 @@ async def test_a_reader_hears_again_once_its_connection_is_silenced(
     finally:
         await listening.close()
         await publishing.close()
+        await _delete_keys(prefix)
+
+
+async def _delete_keys(prefix: str) -> None:
+    redis = pytest.importorskip("redis.asyncio")
+    client = redis.from_url(os.environ["REDIS_URL"])
+    keys = [key async for key in client.scan_iter(f"{prefix}:*")]
+    if keys:
+        await client.delete(*keys)
+    await client.aclose()
+
+
+async def _status_call(url: str, prefix: str) -> tuple[Any, Callable[[], Awaitable[object]]]:
+    backend = RedisStatusBackend(url, key_prefix=prefix)
+    entry = StatusEntry(
+        ts=datetime.now(UTC).isoformat(), agent_id="w", action="task", status=StatusLevel.INFO
+    )
+    return backend, lambda: backend.publish(entry)
+
+
+async def _realtime_call(url: str, prefix: str) -> tuple[Any, Callable[[], Awaitable[object]]]:
+    backend = RedisRealtimeBackend(url, channel_prefix=prefix)
+    event = EphemeralEvent(room_id="r", type=EphemeralEventType.TYPING_START, user_id="u")
+    return backend, lambda: backend.publish("r", event)
+
+
+async def _delivery_call(url: str, prefix: str) -> tuple[Any, Callable[[], Awaitable[object]]]:
+    backend = RedisDeliveryBackend(url, stream_prefix=prefix)
+    return backend, lambda: backend.enqueue(DeliveryItem(room_id="r", content="hello"))
+
+
+@pytest.mark.parametrize("call", [_status_call, _realtime_call, _delivery_call])
+async def test_a_call_on_a_silenced_connection_gives_up_within_its_bound(
+    short_bounds: None, proxy: Silencing, call: Any
+) -> None:
+    """A call whose pooled connection went silent gives it up within the
+    client's bound (0.3 s here, 0.5 s with the delivery's read), however
+    redis-py then reports it: never the 5 s of redis-py 8's default, nor
+    TCP's 15 minutes before 8.0."""
+    prefix = f"roomkit:test:{uuid4().hex}"
+    backend, once = await call(await proxy.url(), prefix)
+    try:
+        await once()  # the pool now holds the connection about to be silenced
+        proxy.silence()
+        started = asyncio.get_running_loop().time()
+        with contextlib.suppress(Exception):
+            async with asyncio.timeout(4.0):
+                await once()
+        assert asyncio.get_running_loop().time() - started < 2.0
+    finally:
+        await backend.close()
+        await _delete_keys(prefix)

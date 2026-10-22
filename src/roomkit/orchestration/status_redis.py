@@ -5,7 +5,7 @@ updates across processes: entries are stored in a capped Redis list
 (shared history for ``recent()``) and fanned out to subscribers via
 Redis pub/sub.
 
-Requires ``redis>=5.0.1``::
+Requires ``redis>=5.0.2``::
 
     pip install roomkit[redis]
 

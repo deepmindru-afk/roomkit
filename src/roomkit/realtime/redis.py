@@ -3,7 +3,7 @@
 Distributes ephemeral events (typing, presence, reactions, thinking
 deltas, ...) across processes via Redis pub/sub.
 
-Requires ``redis>=5.0.1``::
+Requires ``redis>=5.0.2``::
 
     pip install roomkit[redis]
 

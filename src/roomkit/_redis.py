@@ -7,8 +7,8 @@ raises nothing. redis-py before 8.0 sets no bound of its own, so a call on it
 waits until TCP gives up, about 15 minutes; a pub/sub read never notices on
 any version, since a read past its own timeout just finds no message, and
 redis-py's ``health_check_interval`` writes its ping without waiting for the
-answer. The turn backend bounds its connections from its own silence bound
-(``turns/_redis_clients.py``, RFC §10.6.8).
+answer. The turn backend bounds its connections with the same options, from
+its own silence bound (``turns/_redis_clients.py``, RFC §10.6.8).
 """
 
 from __future__ import annotations
@@ -31,10 +31,14 @@ PONG_WAIT_S = 5.0
 connection."""
 
 
-def client_options(read_block: float = 0.0) -> dict[str, float]:
-    """The options that bound every call of a client at :data:`CALL_BOUND_S`,
-    *read_block* more for one whose blocking reads the server holds that long."""
-    return {"socket_timeout": CALL_BOUND_S + read_block, "socket_connect_timeout": CALL_BOUND_S}
+def client_options(
+    read_block: float = 0.0, *, call_bound: float | None = None
+) -> dict[str, float]:
+    """The options that bound every call of a client at *call_bound*
+    (:data:`CALL_BOUND_S` when ``None``), *read_block* more for one whose
+    blocking reads the server holds that long."""
+    bound = CALL_BOUND_S if call_bound is None else call_bound
+    return {"socket_timeout": bound + read_block, "socket_connect_timeout": bound}
 
 
 class PubSubWatch:
