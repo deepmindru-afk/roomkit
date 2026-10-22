@@ -70,9 +70,15 @@ def _transcription_event(
     )
 
 
-def _with_hook_attribution(speaker: SpeakerAttribution, hook_event: Any) -> SpeakerAttribution:
+def _with_hook_attribution(
+    speaker: SpeakerAttribution | None, hook_event: Any
+) -> SpeakerAttribution | None:
     """The attribution with the name and the participant an ON_TRANSCRIPTION
-    hook gave, each where it gave one."""
+    hook gave, each where it gave one; none for words no speaker was
+    attributed to, whatever the hook gave (:func:`_note_unattributed`)."""
+    if speaker is None:
+        _note_unattributed(hook_event)
+        return None
     if not isinstance(hook_event, TranscriptionEvent):
         return speaker
     renamed = bool(hook_event.sender_name) and hook_event.sender_name != speaker.sender_name
@@ -82,6 +88,21 @@ def _with_hook_attribution(speaker: SpeakerAttribution, hook_event: Any) -> Spea
         named=speaker.named or renamed,
         participant_id=hook_event.participant_id or speaker.participant_id,
     )
+
+
+def _note_unattributed(hook_event: Any) -> None:
+    """Log the participant or the name an ON_TRANSCRIPTION hook gave words no
+    speaker was attributed to: the hook's attribution is read only with a
+    speaker's (RFC §12.2.3), so the words stay the session participant's, and
+    an integrator whose hook seems ignored learns why."""
+    if isinstance(hook_event, TranscriptionEvent) and (
+        hook_event.participant_id or hook_event.sender_name
+    ):
+        logger.debug(
+            "ON_TRANSCRIPTION attribution unused for session %s: no speaker was "
+            "attributed to the words",
+            hook_event.session.id,
+        )
 
 
 _CARRY_OVER_MAX_S = 5.0
@@ -1389,10 +1410,9 @@ class VoiceSTTMixin:
             return
 
         final_text = _extract_transcription_text(transcription_result.event, text)
-        if speaker is not None:
-            speaker = _with_hook_attribution(speaker, transcription_result.event)
-            if speaker.source == "stt":
-                self._note_stt_speaker(session, speaker, room_id)
+        speaker = _with_hook_attribution(speaker, transcription_result.event)
+        if speaker is not None and speaker.source == "stt":
+            self._note_stt_speaker(session, speaker, room_id)
         # Continuous STT keeps no utterance audio: the turn is text only.
         self._record_user_turn(session, text, final_text)
 
@@ -1709,8 +1729,7 @@ class VoiceSTTMixin:
 
             # Use potentially modified text
             final_text = _extract_transcription_text(transcription_result.event, text)
-            if speaker is not None:
-                speaker = _with_hook_attribution(speaker, transcription_result.event)
+            speaker = _with_hook_attribution(speaker, transcription_result.event)
             self._record_user_turn(
                 session,
                 text,
@@ -1847,6 +1866,7 @@ class VoiceSTTMixin:
                 transcription_result = await hooks.run_sync(HookTrigger.ON_TRANSCRIPTION, tx_event)
 
                 if transcription_result.allowed:
+                    _note_unattributed(transcription_result.event)
                     final_text = _extract_transcription_text(
                         transcription_result.event, result.text
                     )

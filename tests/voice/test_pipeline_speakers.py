@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -50,8 +51,9 @@ class _Room:
         self.channel, self.backend = channel, backend
         self.kit = RoomKit(stt=stt, voice=backend)
         self.kit.register_channel(channel)
-        self.rename: dict[str, str] = {}
-        self.participants: dict[str, str] = {}
+        # Keyed by the speaker label the hook is given, None when there is none.
+        self.rename: dict[str | None, str] = {}
+        self.participants: dict[str | None, str] = {}
         self.transcriptions: list[Any] = []
 
         @self.kit.hook(HookTrigger.ON_TRANSCRIPTION)
@@ -255,6 +257,23 @@ class TestVADMode:
         [message] = await room.messages(1)
         await room.channel.close()
         assert message.source.participant_id == "owner"
+
+    async def test_a_participant_given_words_no_speaker_was_attributed_to_is_unused(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A hook's attribution is read only with a speaker's (RFC §12.2.3):
+        without one, the words stay the stream owner's, and the log says why."""
+        room = _vad_room(["speaker_0"] * 3, 1)
+        room.rename = {None: "Dana"}
+        room.participants = {None: "p-dana"}
+        await room.start()
+        with caplog.at_level(logging.DEBUG, logger="roomkit.voice"):
+            await room.frames(3)
+            [message] = await room.messages(1)
+        await room.channel.close()
+        assert message.source.participant_id == "owner"
+        assert "sender_name" not in message.metadata
+        assert "ON_TRANSCRIPTION attribution unused" in caplog.text
 
     async def test_without_the_option_nothing_changes(self) -> None:
         room = _vad_room(["speaker_0"] * 3, 1)
