@@ -36,21 +36,27 @@ class KitTurnHooks:
         # What the kit gave its executor: each hook, and its room (None: global).
         self._given: list[tuple[HookRegistration, str | None]] = []
 
-    def register(self, hook: HookRegistration) -> None:
+    def register(self, hook: HookRegistration) -> HookRegistration:
         self._refuse_where_declared(hook, global_hook=True)
-        self._engine.register(hook)
-        self._given.append((hook, None))
+        # The engine may name the hook (RFC §9.1): keep what it holds.
+        registered = self._engine.register(hook)
+        self._given.append((registered, None))
+        return registered
 
-    def add_room_hook(self, room_id: str, hook: HookRegistration) -> None:
+    def add_room_hook(self, room_id: str, hook: HookRegistration) -> HookRegistration:
         self._refuse_where_declared(hook, global_hook=False)
-        self._engine.add_owner_room_hook(room_id, hook)
-        self._given.append((hook, room_id))
+        registered = self._engine.add_owner_room_hook(room_id, hook)
+        self._given.append((registered, room_id))
+        return registered
 
     def remove_global_hook(self, name: str) -> bool:
         return self._remove(name, None)
 
     def remove_room_hook(self, room_id: str, name: str) -> bool:
         return self._remove(name, room_id)
+
+    def global_hook_names(self) -> list[str]:
+        return [hook.name for hook, given_room in self._still_given() if given_room is None]
 
     def room_hook_names(self, room_id: str) -> list[str]:
         return [hook.name for hook, given_room in self._still_given() if given_room == room_id]

@@ -235,7 +235,7 @@ class Supervisor(
             router = ConversationRouter(
                 default_agent_id=self._supervisor.channel_id,
             )
-            kit.hook_engine.add_room_hook(
+            kit.hook_engine.replace_room_hook(
                 room_id,
                 HookRegistration(
                     trigger=HookTrigger.BEFORE_BROADCAST,

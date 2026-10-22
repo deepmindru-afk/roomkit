@@ -173,7 +173,8 @@ def register_console_hooks(kit: RoomKit, state: ConsoleState) -> list[str]:
     """
     names: list[str] = []
     for trigger, tag in _HOOK_DEFS:
-        name = f"{HOOK_PREFIX}{tag}"
+        # One console's hooks among others on the kit: names of its own.
+        name = f"{HOOK_PREFIX}{tag}@{id(state):x}"
         kit.hooks_for(trigger).register(
             HookRegistration(
                 trigger=trigger,
@@ -189,6 +190,7 @@ def register_console_hooks(kit: RoomKit, state: ConsoleState) -> list[str]:
 
 def unregister_console_hooks(kit: RoomKit, names: list[str]) -> None:
     """Remove previously registered console hooks from *kit*."""
-    triggers = {f"{HOOK_PREFIX}{tag}": trigger for trigger, tag in _HOOK_DEFS}
+    triggers = {tag: trigger for trigger, tag in _HOOK_DEFS}
     for name in names:
-        kit.hooks_for(triggers[name]).remove_global_hook(name)
+        tag = name.removeprefix(HOOK_PREFIX).split("@", 1)[0]
+        kit.hooks_for(triggers[tag]).remove_global_hook(name)

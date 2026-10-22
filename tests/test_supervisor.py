@@ -95,7 +95,7 @@ def _make_mock_kit(room: Room) -> MagicMock:
     # Every channel asked about is attached to the room.
     kit.store.get_binding = AsyncMock(return_value=MagicMock())
     kit.hook_engine = MagicMock()
-    kit.hook_engine.add_room_hook = MagicMock()
+    kit.hook_engine.replace_room_hook = MagicMock()
     kit.lock_manager = MagicMock()
     kit.lock_manager.locked = MagicMock(return_value=_NoopLock())
     kit.channels = {}
@@ -251,7 +251,7 @@ class TestSupervisorInstall:
         s = Supervisor(supervisor=boss, workers=[_make_agent("w1")])
         await s.install(kit, "r1")
 
-        kit.hook_engine.add_room_hook.assert_called_once()
+        kit.hook_engine.replace_room_hook.assert_called_once()
 
     async def test_registers_workers_on_kit(self) -> None:
         boss = _make_agent("boss")
@@ -380,7 +380,7 @@ class TestSupervisorInstall:
         )
         await s.install(kit, "r1")
 
-        kit.hook_engine.add_room_hook.assert_called_once()
+        kit.hook_engine.replace_room_hook.assert_called_once()
 
     async def test_no_router_hook_in_voice_auto_delegate_async_delivery(self) -> None:
         """Voice auto_delegate + async_delivery: voice channel owns routing,
@@ -401,7 +401,7 @@ class TestSupervisorInstall:
         # hook is installed, since the voice channel owns routing.
         await s.install(kit, "r1")
 
-        kit.hook_engine.add_room_hook.assert_not_called()
+        kit.hook_engine.replace_room_hook.assert_not_called()
 
 
 # -- Tests: Per-worker delegation tool handler --------------------------------

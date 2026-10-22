@@ -342,6 +342,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `@sms1`, rather than their id; a look-alike name with its rank). See
   `examples/ai_people_taking_part.py`.
 
+- **BREAKING — a hook's name is unique within its scope** (RFC §9.1,
+  RMK-902), the kit's hooks or one room's: registering an explicit name a
+  hook of the scope already holds raises `ValueError`, the kit's hooks its
+  own executor runs included, and so does a name the framework writes in
+  `blocked_by` (`source_read_only`, `source_muted`, `source_unbound`,
+  `event_chain_depth_limit`, `reentry_loop_cap`). A hook given no name takes
+  its function's, made unique and without a leading `_` (`audit`,
+  `audit#2`), so hooks built in a loop keep registering; `kit.add_room_hook`,
+  `HookEngine.register` and `add_room_hook` return the registration held.
+  The framework's own hooks (a session auditor, a subtitle overlay, a
+  pipeline's handoff greeting, a console, `on_delivery_status` handlers) are
+  named per instance, so two on one kit no longer collide. A strategy
+  installed again in its room replaces its router hook instead of running it
+  twice (`HookEngine.replace_room_hook`).
+
+- **BREAKING — a BEFORE_BROADCAST replacement keeps which event it is**
+  (RFC §9.4, RMK-902): its id, room, type, source, index, chain depth,
+  `responds_to`, idempotency key, creation time, status, `blocked_by` and
+  `delivery_results` are put back from the event it replaces, and so are the
+  checks already passed on it, the event an EDIT or a DELETE targets and an
+  INSTRUCTION's visibility and address. Its content, address, visibility,
+  thread, correlation id, metadata and `channel_data` may change; an EDIT a
+  hook rewrites as text stays the edit of its event, saying that text, and a
+  thread parent a hook sets is resolved to its root. A hook could commit an
+  event under another source's binding, or into another room. The rewrite of
+  an off-lock hook (`needs_lock=False`) is merged into the event the locked
+  section prepared rather than replacing it, which undid an instruction's
+  forced scope and a reply's thread root.
+
+- **BREAKING — a MODIFY that carries no payload, or one of the wrong type, is
+  an unusable result** (RFC §9.3, RMK-902): it replaces nothing, blocks a
+  fail-closed hook with `hook_invalid_result`, and its injected events are
+  dropped while its tasks and observations are kept. On a fail-open hook a
+  wrong-typed payload reached the next hook as it was. An `ON_TRANSCRIPTION`
+  hook modifies with the trigger's own type: a plain `str` is no longer read
+  as the new text.
+
 - **BREAKING — an event is committed with its own visibility intersected
   with its source binding's** (RFC §7.3, RMK-902), and the stored field is the
   whole answer, at broadcast and when history is rebuilt. An event's own

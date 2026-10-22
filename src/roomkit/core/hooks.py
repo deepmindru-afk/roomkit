@@ -6,7 +6,7 @@ import asyncio
 import contextvars
 import logging
 from collections.abc import Callable, Coroutine, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar, Protocol, cast
 
 from roomkit.models.context import RoomContext
@@ -17,7 +17,7 @@ from roomkit.models.enums import (
     HookExecution,
     HookTrigger,
 )
-from roomkit.models.event import RoomEvent
+from roomkit.models.event import DeleteContent, EditContent, RoomEvent
 from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.task import Observation, Task
 
@@ -45,7 +45,8 @@ class HookRegistration:
         execution: SYNC (can block/modify) or ASYNC (fire-and-forget)
         fn: The hook function
         priority: Lower numbers run first (default: 0)
-        name: Optional name for logging and removal
+        name: Unique within its scope, the kit's hooks or one room's (RFC
+            §9.1); left empty, the engine names the hook after its function
         timeout: Max execution time in seconds (default: 30.0)
         channel_types: Only run for events from these channel types (None = all)
         channel_ids: Only run for events from these channel IDs (None = all)
@@ -105,13 +106,15 @@ class TurnSide(Protocol):
     """Where a kit's engine sends a hook on a trigger a turn fires: the
     kit's own turn executor (RFC §10.6.6)."""
 
-    def register(self, hook: HookRegistration) -> None: ...
+    def register(self, hook: HookRegistration) -> HookRegistration: ...
 
-    def add_room_hook(self, room_id: str, hook: HookRegistration) -> None: ...
+    def add_room_hook(self, room_id: str, hook: HookRegistration) -> HookRegistration: ...
 
     def remove_global_hook(self, name: str) -> bool: ...
 
     def remove_room_hook(self, room_id: str, name: str) -> bool: ...
+
+    def global_hook_names(self) -> list[str]: ...
 
     def room_hook_names(self, room_id: str) -> list[str]: ...
 
@@ -127,7 +130,7 @@ class TurnSide(Protocol):
 
 
 def hook_decorator(
-    register: Callable[[HookRegistration], None],
+    register: Callable[[HookRegistration], object],
     trigger: HookTrigger,
     execution: HookExecution = HookExecution.SYNC,
     priority: int = 0,
@@ -150,7 +153,9 @@ def hook_decorator(
                 execution=execution,
                 fn=fn,
                 priority=priority,
-                name=name or fn.__name__,  # ty: ignore[unresolved-attribute]
+                # Left empty, the engine names the hook after its function,
+                # unique within its scope (RFC §9.1).
+                name=name,
                 timeout=timeout,
                 channel_types=channel_types,
                 channel_ids=channel_ids,
@@ -213,6 +218,105 @@ def set_turn_room_hooks(room_id: str, names: Iterable[str]) -> None:
     """Scope the room hooks of the current context to a turn's request: its
     hooks run those names whatever the room's set becomes during it."""
     _TURN_ROOM_HOOKS.set((room_id, tuple(names)))
+
+
+RESERVED_HOOK_NAMES = frozenset(
+    {
+        "source_read_only",
+        "source_muted",
+        "source_unbound",
+        "event_chain_depth_limit",
+        "reentry_loop_cap",
+    }
+)
+"""The values the framework writes in ``blocked_by`` (RFC §9.1): a hook
+named after one would read, when it blocks, as the framework's refusal."""
+
+_KEPT_FIELDS = (
+    "id",
+    "room_id",
+    "type",
+    "source",
+    "index",
+    "chain_depth",
+    "responds_to",
+    "idempotency_key",
+    "created_at",
+    "status",
+    "blocked_by",
+    "consumption",
+    "delivery_results",
+)
+"""What a BEFORE_BROADCAST replacement keeps of the event it replaces (RFC
+§9.4): which event it is, never what it says or whom it asks."""
+
+
+def kept_identity(original: RoomEvent, replacement: RoomEvent) -> RoomEvent:
+    """*replacement* with the fields of *original* a hook may not change put
+    back (RFC §9.4): its identity, and the checks already passed on it, the
+    event an EDIT or a DELETE targets and an INSTRUCTION's visibility and
+    address. The hook's other changes stand."""
+    kept: dict[str, Any] = {
+        name: getattr(original, name)
+        for name in _KEPT_FIELDS
+        if name in RoomEvent.model_fields and getattr(replacement, name) != getattr(original, name)
+    }
+    target = original.content
+    content = replacement.content
+    if isinstance(target, EditContent) and not isinstance(content, EditContent):
+        # The hook rewrote what the edit says (a redaction): it stays the edit
+        # of the same event, saying what the hook wrote.
+        kept["content"] = target.model_copy(update={"new_content": content})
+    elif isinstance(target, DeleteContent) and not isinstance(content, DeleteContent):
+        # A delete says nothing a hook could rewrite: it stays the delete.
+        kept["content"] = target
+    elif (
+        isinstance(target, EditContent | DeleteContent)
+        and isinstance(content, EditContent | DeleteContent)
+        and content.target_event_id != target.target_event_id
+    ):
+        kept["content"] = content.model_copy(update={"target_event_id": target.target_event_id})
+    if original.type == EventType.INSTRUCTION:
+        kept["visibility"] = original.visibility
+        kept["addressed_to"] = original.addressed_to
+    return replacement.model_copy(update=kept) if kept else replacement
+
+
+def _usable_payload(current: Any, payload: Any) -> bool:
+    """Whether a MODIFY's *payload* can replace *current* (RFC §9.3): one is
+    carried, of the type the trigger passed in."""
+    return payload is not None and isinstance(payload, type(current))
+
+
+def _named(hook: HookRegistration, scope: Iterable[HookRegistration | str]) -> HookRegistration:
+    """*hook* under a name unique within its *scope*, the kit's hooks or one
+    room's (RFC §9.1). An explicit name a hook of the scope holds, or one the
+    framework writes in ``blocked_by``, is refused; a hook given none takes
+    its function's name, made unique.
+
+    Raises:
+        ValueError: the explicit name is taken or reserved.
+    """
+    taken = {entry if isinstance(entry, str) else entry.name for entry in scope}
+    if hook.name:
+        if hook.name in RESERVED_HOOK_NAMES:
+            raise ValueError(
+                f"Hook name {hook.name!r} is a value the framework writes in "
+                "blocked_by; a block of this hook would read as the framework's"
+            )
+        if hook.name in taken:
+            raise ValueError(
+                f"A hook named {hook.name!r} is already registered in this scope: "
+                "a hook's name is unique within its scope (RFC §9.1)"
+            )
+        return hook
+    # A leading "_" marks the framework's own hooks (an internal
+    # ON_SESSION_STARTED hook is awaited): a default name never takes it.
+    base = getattr(hook.fn, "__name__", "").lstrip("_") or "hook"
+    name, rank = base, 2
+    while name in taken or name in RESERVED_HOOK_NAMES:
+        name, rank = f"{base}#{rank}", rank + 1
+    return replace(hook, name=name)
 
 
 class HookEngine:
@@ -411,18 +515,22 @@ class HookEngine:
             return None
         return self.turn_side
 
-    def register(self, hook: HookRegistration) -> None:
-        """Register a global hook."""
+    def register(self, hook: HookRegistration) -> HookRegistration:
+        """Register a global hook; the registration held, under the name it
+        was given or made unique (RFC §9.1)."""
+        # The kit's hooks are one scope, the ones its own executor holds
+        # included (RFC §9.1).
+        hook = _named(hook, self._global_names())
         if (turn_side := self._to_turn_side(hook)) is not None:
-            turn_side.register(hook)
-            return
+            return turn_side.register(hook)
         self._check_side(hook, room=False)
         self._check_router_placement(hook, None)
         self._check_lock_placement(hook, None)
         self._global_hooks.append(hook)
         self._trigger_index.add(hook.trigger)
+        return hook
 
-    def add_room_hook(self, room_id: str, hook: HookRegistration) -> None:
+    def add_room_hook(self, room_id: str, hook: HookRegistration) -> HookRegistration:
         """Register a hook for a specific room.
 
         A turn executor's room hooks are defined by name instead
@@ -430,9 +538,9 @@ class HookEngine:
         turns' requests (RFC §10.6.6): a hook held for a room on one executor
         would never fire for the room's turns on another.
         """
+        hook = _named(hook, self._room_names(room_id))
         if (turn_side := self._to_turn_side(hook)) is not None:
-            turn_side.add_room_hook(room_id, hook)
-            return
+            return turn_side.add_room_hook(room_id, hook)
         if self._turns:
             raise ValueError(
                 f"Hook {hook.name!r}: a turn executor's room hook is defined by name, "
@@ -444,17 +552,20 @@ class HookEngine:
         self._check_lock_placement(hook, room_id)
         self._room_hooks.setdefault(room_id, []).append(hook)
         self._trigger_index.add(hook.trigger)
+        return hook
 
-    def add_owner_room_hook(self, room_id: str, hook: HookRegistration) -> None:
+    def add_owner_room_hook(self, room_id: str, hook: HookRegistration) -> HookRegistration:
         """Register on the kit's own executor a room hook the kit gave it
         for *room_id* (RFC §10.6.6): it applies to the room's turns here,
         beside the room hooks a request names."""
         if not self._turns:
             raise ValueError("A room hook the kit gives its executor registers on an executor")
+        hook = _named(hook, self._owner_room_hooks.get(room_id, []))
         self._check_side(hook, room=True)
         self._check_lock_placement(hook, room_id)
         self._owner_room_hooks.setdefault(room_id, []).append(hook)
         self._trigger_index.add(hook.trigger)
+        return hook
 
     def _hooks_of_room(self, room_id: str) -> list[HookRegistration]:
         """*room_id*'s hooks: inside a turn of the room, those its request
@@ -483,6 +594,10 @@ class HookEngine:
             raise ValueError("Room hooks are defined by name on a turn executor only")
         if not hook.name:
             raise ValueError("A room hook defined on a turn executor needs a name")
+        if hook.name in RESERVED_HOOK_NAMES:
+            raise ValueError(
+                f"Hook name {hook.name!r} is a value the framework writes in blocked_by"
+            )
         self._check_side(hook, room=True)
         self._check_lock_placement(hook, None)
         defined = self._named_room_hooks.setdefault(hook.name, [])
@@ -521,6 +636,38 @@ class HookEngine:
         if self._removed(self._global_hooks, name):
             return True
         return self.turn_side is not None and self.turn_side.remove_global_hook(name)
+
+    def replace_room_hook(self, room_id: str, hook: HookRegistration) -> HookRegistration:
+        """Register *hook* for *room_id* in place of the room's hook of the
+        same name: a strategy installed again in its room replaces what it
+        set up there, a name being unique within a room's hooks (RFC §9.1).
+        A registration refused leaves the hook it would replace in place."""
+        hooks = self._room_hooks.get(room_id, [])
+        old = next((h for h in hooks if hook.name and h.name == hook.name), None)
+        position = hooks.index(old) if old is not None else -1
+        if old is not None:
+            hooks.remove(old)
+        try:
+            return self.add_room_hook(room_id, hook)
+        except Exception:
+            if old is not None:
+                hooks.insert(position, old)
+            raise
+
+    def _global_names(self) -> list[str]:
+        """The names of the kit's hooks, those its own executor holds too."""
+        names = [hook.name for hook in self._global_hooks]
+        if self.turn_side is not None:
+            names.extend(self.turn_side.global_hook_names())
+        return names
+
+    def _room_names(self, room_id: str) -> list[str]:
+        """The names of *room_id*'s hooks, those the kit's own executor holds
+        for it too."""
+        names = [hook.name for hook in self._room_hooks.get(room_id, [])]
+        if self.turn_side is not None:
+            names.extend(self.turn_side.room_hook_names(room_id))
+        return names
 
     def remove_room_hook(self, room_id: str, name: str) -> bool:
         """Remove a room hook by name, one a kit's engine gave its own
@@ -710,24 +857,27 @@ class HookEngine:
 
         A MODIFY replaces the payload; with a *fold*, the hook's metadata
         rewrite is written into it too, and the fold runs after every hook
-        that rewrote the payload, either way. A MODIFY whose payload is not of the
-        type the trigger passed in replaces nothing (RFC §9.3): it blocks when
-        the hook fails closed, and under a *fold* the chain carries on from
-        the previous outcome, the hook's metadata rewrite still applied.
-        Without a fold on a fail-open hook the payload is taken as it is.
-        Returns whether the pipeline was closed.
+        that rewrote the payload, either way. A MODIFY that carries no
+        payload, or one not of the type the trigger passed in, is an unusable
+        result and replaces nothing (RFC §9.3): it blocks when the hook fails
+        closed, else the chain carries on from the previous outcome, under a
+        *fold* with the hook's metadata rewrite still applied. A
+        BEFORE_BROADCAST replacement keeps the identity of the event it
+        replaces (§9.4). Returns whether the pipeline was closed.
         """
         current = result.event if result.event is not None else original
         payload = hook_result.event
-        if hook_result.action == "modify" and payload is not None:
-            usable = isinstance(payload, type(current))
-            if usable or (fold is None and not self._fails_closed(hook, trigger)):
+        if hook_result.action == "modify":
+            if _usable_payload(current, payload):
+                if trigger == HookTrigger.BEFORE_BROADCAST and isinstance(payload, RoomEvent):
+                    payload = kept_identity(current, payload)
                 result.event = payload
             else:
                 # The consumer would silently ignore a payload it cannot use
                 # and carry on with the original — which for a redaction hook
                 # publishes the very content it meant to replace.
-                expected, got = type(current).__name__, type(payload).__name__
+                expected = type(current).__name__
+                got = "nothing" if payload is None else type(payload).__name__
                 logger.error(
                     "Sync hook %s returned a %s where a %s was expected",
                     hook.name,
@@ -951,7 +1101,11 @@ class HookEngine:
                     attributes={Attr.HOOK_RESULT: hook_result.action},
                 )
 
-            result.injected_events.extend(hook_result.injected_events)
+            # Side effects are always collected (RFC §7.5 rule 3); an
+            # unusable result's injected events are not (§9.3).
+            current = result.event if result.event is not None else event
+            if hook_result.action != "modify" or _usable_payload(current, hook_result.event):
+                result.injected_events.extend(hook_result.injected_events)
             result.tasks.extend(hook_result.tasks)
             result.observations.extend(hook_result.observations)
             if hook_result.metadata:

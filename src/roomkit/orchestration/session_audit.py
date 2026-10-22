@@ -135,7 +135,7 @@ class SessionAuditor(ABC):
         @kit.hook(
             HookTrigger.ON_TRANSCRIPTION,
             execution=HookExecution.ASYNC,
-            name="session_audit_transcription",
+            name=f"session_audit_transcription_{id(self):x}",
         )
         async def _on_transcription(event: object, ctx: object) -> None:
             ev = event  # RealtimeTranscriptionEvent
@@ -158,7 +158,7 @@ class SessionAuditor(ABC):
         @kit.hook(
             HookTrigger.ON_BARGE_IN,
             execution=HookExecution.ASYNC,
-            name="session_audit_barge_in",
+            name=f"session_audit_barge_in_{id(self):x}",
         )
         async def _on_barge_in(event: object, ctx: object) -> None:
             self.record(
@@ -173,7 +173,7 @@ class SessionAuditor(ABC):
         @kit.hook(
             HookTrigger.ON_SESSION_STARTED,
             execution=HookExecution.ASYNC,
-            name="session_audit_session",
+            name=f"session_audit_session_{id(self):x}",
         )
         async def _on_session_started(event: object, ctx: object) -> None:
             channel_id = getattr(event, "channel_id", "")
@@ -194,7 +194,7 @@ class SessionAuditor(ABC):
         @kit.hook(
             HookTrigger.ON_VISION_RESULT,
             execution=HookExecution.ASYNC,
-            name="session_audit_vision",
+            name=f"session_audit_vision_{id(self):x}",
         )
         async def _on_vision(event: object, ctx: object) -> None:
             description = getattr(event, "description", "")

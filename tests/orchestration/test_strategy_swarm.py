@@ -48,7 +48,7 @@ def _make_mock_kit(room: Room) -> MagicMock:
     kit.store.update_room = AsyncMock()
     kit.store.patch_room_metadata = AsyncMock(return_value=room)
     kit.hook_engine = MagicMock()
-    kit.hook_engine.add_room_hook = MagicMock()
+    kit.hook_engine.replace_room_hook = MagicMock()
     kit.lock_manager = MagicMock()
     kit.lock_manager.locked = MagicMock(return_value=_NoopLock())
     kit.channels = {}
@@ -85,7 +85,7 @@ class TestSwarmInstall:
         s = Swarm(agents=agents)
         await s.install(kit, "r1")
 
-        kit.hook_engine.add_room_hook.assert_called_once()
+        kit.hook_engine.replace_room_hook.assert_called_once()
 
     async def test_sets_initial_state(self):
         agents = [_make_agent("a"), _make_agent("b")]

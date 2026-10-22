@@ -118,7 +118,7 @@ class Pipeline(Orchestration):
         handler = _handler(kit, agents, cp, router)
 
         # Install router as room-scoped BEFORE_BROADCAST hook
-        kit.hook_engine.add_room_hook(
+        kit.hook_engine.replace_room_hook(
             room_id,
             HookRegistration(
                 trigger=HookTrigger.BEFORE_BROADCAST,

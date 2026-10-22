@@ -341,16 +341,18 @@ def test_the_kit_s_engine_reads_the_turn_hooks_registered_through_it() -> None:
     assert kit.hook_engine.fail_closed_hook("room", HookTrigger.BEFORE_TOOL_USE) == "gate"
 
 
-def test_one_registration_given_twice_is_removed_once_per_call() -> None:
+def test_one_registration_given_twice_is_refused_the_second_time() -> None:
+    """A hook's name is unique within its scope (RFC §9.1)."""
     kit = RoomKit()
     twice = HookRegistration(
         trigger=HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, fn=_noop, name="dup"
     )
     kit.hook_engine.register(twice)
-    kit.hook_engine.register(twice)
+    with pytest.raises(ValueError, match="'dup'"):
+        kit.hook_engine.register(twice)
 
     assert kit.hook_engine.remove_global_hook("dup")
-    assert [h.name for h in kit.turn_executor.hooks._global_hooks] == ["dup"]
+    assert kit.turn_executor.hooks._global_hooks == []
 
 
 def test_a_strategy_s_agents_are_registered_all_or_none_beside_a_kit_turn_hook() -> None:

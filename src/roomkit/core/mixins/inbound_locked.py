@@ -15,6 +15,7 @@ import logging
 from dataclasses import KW_ONLY, dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.core.hooks import kept_identity
 from roomkit.core.mixins.helpers import (
     _RECENT_EVENTS_LIMIT,
     _REFUSING_STATUSES,
@@ -194,6 +195,16 @@ class InboundLockedMixin(HelpersMixin):
             )
             return None
         return parent.parent_event_id or parent_event_id
+
+    async def _rooted(self, room_id: str, before: RoomEvent, after: RoomEvent) -> RoomEvent:
+        """*after*, the event as its hooks left it, with a thread parent a
+        hook set resolved to its thread root in this room (§9.4 lets a hook
+        change the thread; a reply always points at a root)."""
+        parent = after.parent_event_id
+        if parent is None or parent == before.parent_event_id:
+            return after
+        root = await self._resolve_thread_root(room_id, parent)
+        return after if root == parent else after.model_copy(update={"parent_event_id": root})
 
     def _is_system_source(self, event: RoomEvent) -> bool:
         """Whether an event genuinely originates from a system channel.
@@ -550,7 +561,7 @@ class InboundLockedMixin(HelpersMixin):
         # Use potentially modified event. HookResult.event carries whatever
         # payload its trigger passed, so only a RoomEvent may replace one.
         if isinstance(sync_result.event, RoomEvent):
-            event = sync_result.event
+            event = await self._rooted(room_id, event, sync_result.event)
 
         # RFC §7.5 — a source that cannot write (READ_ONLY/NONE or muted) must
         # not inject a DELIVERED event into the timeline. Persist it BLOCKED for
@@ -618,7 +629,10 @@ class InboundLockedMixin(HelpersMixin):
         if not precheck.allowed:
             return precheck
         if isinstance(precheck.event, RoomEvent):
-            event = precheck.event
+            # The off-lock hooks rewrote the event as it stood before the
+            # lock: their changes stand on the locked event, never what the
+            # locked section decided of it (RFC §9.4, §9.5.1).
+            event = kept_identity(event, precheck.event)
         locked = await self._hook_engine.run_sync_hooks(
             room_id, HookTrigger.BEFORE_BROADCAST, event, context, needs_lock=True
         )

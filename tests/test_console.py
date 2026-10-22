@@ -14,6 +14,7 @@ from roomkit.console._hooks import (
     unregister_console_hooks,
 )
 from roomkit.console._state import ConsoleState, ConversationTurn, LogRingBuffer
+from roomkit.core.hooks import HookRegistration
 
 # ---------------------------------------------------------------------------
 # ConsoleState tests
@@ -89,6 +90,11 @@ class TestLogRingBuffer:
 # ---------------------------------------------------------------------------
 
 
+def _console_hook(kit: RoomKit, tag: str) -> HookRegistration:
+    """The console's hook for *tag*, under its per-console name."""
+    return next(h for h in _all_hooks(kit) if h.name.startswith(f"{HOOK_PREFIX}{tag}@"))
+
+
 def _all_hooks(kit: RoomKit) -> list:
     """The kit's global hooks and its turn executor's (RFC §10.6.6)."""
     return [*kit.hook_engine._global_hooks, *kit.turn_executor.hooks._global_hooks]
@@ -117,7 +123,7 @@ class TestHookRegistration:
         state = ConsoleState()
         register_console_hooks(kit, state)
 
-        hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}input_level")
+        hook = _console_hook(kit, "input_level")
         await hook.fn(MagicMock(level_db=-25.0), None)
 
         assert state.input_level_db == -25.0
@@ -128,7 +134,7 @@ class TestHookRegistration:
         state = ConsoleState()
         register_console_hooks(kit, state)
 
-        hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}vad_level")
+        hook = _console_hook(kit, "vad_level")
         await hook.fn(MagicMock(level_db=-10.0, is_speech=True), None)
 
         assert state.input_level_db == -10.0
@@ -139,7 +145,7 @@ class TestHookRegistration:
         state = ConsoleState()
         register_console_hooks(kit, state)
 
-        hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}session_started")
+        hook = _console_hook(kit, "session_started")
         mock_session = MagicMock(id="sess-abc123")
         await hook.fn(
             MagicMock(
@@ -162,8 +168,8 @@ class TestHookRegistration:
         state = ConsoleState()
         register_console_hooks(kit, state)
 
-        start_hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}speech_start")
-        end_hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}speech_end")
+        start_hook = _console_hook(kit, "speech_start")
+        end_hook = _console_hook(kit, "speech_end")
 
         await start_hook.fn(MagicMock(), None)
         assert state.voice_state == "listening"
@@ -177,10 +183,8 @@ class TestHookRegistration:
         state = ConsoleState()
         register_console_hooks(kit, state)
 
-        partial_hook = next(
-            h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}partial_transcription"
-        )
-        final_hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}transcription")
+        partial_hook = _console_hook(kit, "partial_transcription")
+        final_hook = _console_hook(kit, "transcription")
 
         await partial_hook.fn(MagicMock(text="hello wo"), None)
         assert state.partial_text == "hello wo"
@@ -200,7 +204,7 @@ class TestHookRegistration:
         state = ConsoleState()
         register_console_hooks(kit, state)
 
-        hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}transcription")
+        hook = _console_hook(kit, "transcription")
 
         # User final transcription
         user_event = MagicMock(text="bonjour", role="user")
@@ -224,9 +228,7 @@ class TestHookRegistration:
         state = ConsoleState()
         register_console_hooks(kit, state)
 
-        partial_hook = next(
-            h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}partial_transcription"
-        )
+        partial_hook = _console_hook(kit, "partial_transcription")
 
         # User partial (VoiceChannel style — no role, defaults to user)
         await partial_hook.fn(MagicMock(text="hello", spec=["text"]), None)
@@ -244,8 +246,8 @@ class TestHookRegistration:
         state = ConsoleState()
         register_console_hooks(kit, state)
 
-        before_hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}before_tts")
-        after_hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}after_tts")
+        before_hook = _console_hook(kit, "before_tts")
+        after_hook = _console_hook(kit, "after_tts")
 
         await before_hook.fn("Hello there!", None)
         assert state.voice_state == "speaking"
@@ -264,7 +266,7 @@ class TestHookRegistration:
         state = ConsoleState()
         register_console_hooks(kit, state)
 
-        hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}barge_in")
+        hook = _console_hook(kit, "barge_in")
         await hook.fn(MagicMock(), None)
         assert state.barge_in_count == 1
         assert state.voice_state == "listening"
@@ -274,7 +276,7 @@ class TestHookRegistration:
         state = ConsoleState()
         register_console_hooks(kit, state)
 
-        hook = next(h for h in _all_hooks(kit) if h.name == f"{HOOK_PREFIX}tool_call")
+        hook = _console_hook(kit, "tool_call")
         await hook.fn(MagicMock(), None)
         assert state.tool_call_count == 1
 

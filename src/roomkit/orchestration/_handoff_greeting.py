@@ -59,12 +59,17 @@ class HandoffGreeting:
         alone, each named after it so its uninstall takes it back."""
         for hook in self.hooks(priority):
             if room_id is None:
+                # One pipeline's greeting among others on the kit: a name of
+                # its own (RFC §9.1).
                 self._kit.hook(
-                    hook.trigger, execution=hook.execution, priority=hook.priority, name=hook.name
+                    hook.trigger,
+                    execution=hook.execution,
+                    priority=hook.priority,
+                    name=f"{hook.name}_{id(self):x}",
                 )(hook.fn)
             else:
                 named = dataclasses.replace(hook, name=f"pipeline{hook.name}_{room_id}")
-                self._kit.hook_engine.add_room_hook(room_id, named)
+                self._kit.hook_engine.replace_room_hook(room_id, named)
 
     def hooks(self, priority: int) -> list[HookRegistration]:
         """Its hooks: ``ON_HANDOFF``, which greets, and, when a farewell is

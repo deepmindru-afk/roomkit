@@ -78,7 +78,7 @@ class SubtitleManager:
         @kit.hook(
             HookTrigger.ON_TRANSCRIPTION,
             execution=HookExecution.ASYNC,
-            name="subtitle_overlay",
+            name=f"subtitle_overlay_{id(self):x}",
         )
         async def _on_transcription(event: object, ctx: object) -> None:
             text = getattr(event, "text", "")

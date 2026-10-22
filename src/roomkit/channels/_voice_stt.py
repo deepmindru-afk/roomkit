@@ -124,15 +124,10 @@ def _segments_of(result: TranscriptionResult) -> list[SpeakerSegment]:
 
 
 def _extract_transcription_text(hook_event: Any, original: str) -> str:
-    """Extract text from an ON_TRANSCRIPTION hook result.
-
-    Handles both ``TranscriptionEvent`` (preferred) and plain ``str``
-    (backward compat) returns from hook handlers.
-    """
+    """Extract text from an ON_TRANSCRIPTION hook result: a modify returns
+    a ``TranscriptionEvent``, the trigger's type (RFC §9.3)."""
     if isinstance(hook_event, TranscriptionEvent):
         return hook_event.text
-    if isinstance(hook_event, str):
-        return hook_event
     return original
 
 

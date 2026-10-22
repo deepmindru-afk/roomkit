@@ -236,8 +236,8 @@ class HooksApiMixin(HelpersMixin):
             HookRegistration(
                 trigger=HookTrigger.ON_DELIVERY_STATUS,
                 execution=HookExecution.ASYNC,
+                # Named after the handler by the engine, unique (RFC §9.1).
                 fn=_hook_fn,
-                name=getattr(fn, "__name__", "unknown"),
             )
         )
         return fn
@@ -369,8 +369,8 @@ class HooksApiMixin(HelpersMixin):
         *,
         fail_closed: bool = False,
         needs_lock: bool = True,
-    ) -> None:
-        """Add a hook for a specific room.
+    ) -> HookRegistration:
+        """Add a hook for a specific room; the registration held.
 
         ``fail_closed`` and ``needs_lock`` have the meaning they have on
         :meth:`hook`. A hook on a trigger a turn fires (RFC §10.6.6) is the
@@ -378,8 +378,13 @@ class HooksApiMixin(HelpersMixin):
         its declaration alone it raises ``ValueError``: define it by name on
         the executors, ``executor.room_hook(name, trigger)(fn)``, and enable
         the name for the room with :meth:`enable_room_hook`.
+
+        *name* is unique within the room's hooks (RFC §9.1): one a hook of
+        the room holds, or a value the framework writes in ``blocked_by``,
+        raises ``ValueError``. Left empty, the hook is named after *fn*, made
+        unique; the registration returned holds that name.
         """
-        self._hook_engine.add_room_hook(
+        return self._hook_engine.add_room_hook(
             room_id,
             HookRegistration(
                 trigger=trigger,

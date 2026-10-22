@@ -34,7 +34,6 @@ def _register(engine: HookEngine, trigger: HookTrigger, fn: object) -> None:
             trigger=trigger,
             execution=HookExecution.SYNC,
             fn=fn,  # type: ignore[arg-type]
-            name="test-hook",
         )
     )
 

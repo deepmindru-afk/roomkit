@@ -240,8 +240,6 @@ class RealtimeTranscriptionMixin:
                 hook_result.event, RealtimeTranscriptionEvent
             ):
                 final_text = hook_result.event.text
-            elif isinstance(hook_result.event, str):
-                final_text = hook_result.event
 
             await self._send_client_message(
                 session,
