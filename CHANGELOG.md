@@ -86,6 +86,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An agent with a thinker no longer goes mute on Claude (RMK-912). The note
+  that carries its thought into the turns it speaks offered the model "your
+  own thought"; Claude Sonnet 5.5 and Opus 5.5 read that as a request to
+  reproduce their reasoning and refused the turn (`stop_reason: "refusal"`,
+  `reasoning_extraction`). The thought's text stays in every later turn's
+  notes, so every later turn was refused too: once the agent had a thought,
+  it answered nothing more in the room. The note now carries the agent's
+  impression of the conversation (`Your impression: "..."`), which none of
+  these models refuses, and asked what is on its mind the agent still
+  answers with it, in the first person.
+
 - Work a channel hands to a task of its own leaves nothing unawaited when the
   task is cancelled before its first step, a close or a teardown right after
   the work was scheduled (RMK-909): a conference room's publication and its

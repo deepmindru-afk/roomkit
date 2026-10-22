@@ -7,6 +7,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import re
 from typing import Any
 
 import pytest
@@ -45,6 +46,8 @@ from roomkit.speaking.thought import (
     ITEM_LIMIT,
     TEXT_LIMIT,
     THOUGHT_NOTE,
+    THOUGHT_TEXT_LABEL,
+    WANT_TO_SAY_LABEL,
     WANT_TO_SAY_NOTE,
     thought_note,
 )
@@ -107,12 +110,20 @@ def test_the_note_carries_the_thought_as_information_not_instructions() -> None:
     note = thought_note(PRICE)
     assert note.splitlines() == [
         THOUGHT_NOTE,
-        "What you thought: “They look for the licence price; I know it.”",
+        "Your impression: “They look for the licence price; I know it.”",
         "What you wanted to say when you had the turn:",
         "- “It costs 1,200 $ a year.”",
         WANT_TO_SAY_NOTE,
     ]
     assert thought_note(Thought()) == ""
+
+
+def test_the_note_never_offers_the_model_its_own_thought_or_reasoning() -> None:
+    # Claude's safeguards refuse a turn whose notes hand the model "your own
+    # thought" (reasoning_extraction), and the thought's text is in every later
+    # turn's notes: one such word mutes the agent for the rest of the room.
+    for line in (THOUGHT_NOTE, THOUGHT_TEXT_LABEL, WANT_TO_SAY_LABEL, WANT_TO_SAY_NOTE):
+        assert not re.search(r"\b(thoughts?|thinking|reasoning)\b", line, re.IGNORECASE)
 
 
 def test_the_note_bounds_what_the_conversation_can_put_in_it() -> None:
