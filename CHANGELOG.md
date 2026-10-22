@@ -283,6 +283,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (RMK-876). The bound stays one for all rooms; RMK-871 and RMK-875 removed
   the two known causes of a line left running after its end.
 
+- The RFC (§10.6, §10.6.8), `TurnLinkError`'s docstring and the Redis turn
+  backend guide name `backend_closed`, the reason a turn still in flight
+  fails with when its owner's turn backend closes (RMK-878). The RFC said
+  `executor_lost` there, which the code never reported: the executor is not
+  lost. A test reads the reason on both backends.
+
 - An answer a barge-in cut reads, in the AI context, with how far the person
   heard it (RFC §6.4): `[The person cut you off during this answer, 5.7 s in:
   they heard it up to “…” and not the rest.]`, where it read "[You were

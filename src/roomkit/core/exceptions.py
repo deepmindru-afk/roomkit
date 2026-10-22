@@ -439,7 +439,9 @@ class TurnLinkError(RoomKitError):
         reason: ``no_executor`` (no executor that hosts the channel took the
             turn), ``executor_lost`` (the executor fell silent),
             ``frame_lost`` (the link lost a message), ``frame_invalid`` (a
-            message could not be read) or ``backend_closed``.
+            message could not be read) or ``backend_closed`` (the owner's
+            turn backend closed with the turn in flight; its executor is not
+            lost).
     """
 
     def __init__(self, reason: str, message: str | None = None) -> None:

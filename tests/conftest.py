@@ -6,8 +6,9 @@ import asyncio
 import collections
 import os
 import traceback
-from collections.abc import Callable, Coroutine, Iterator
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -23,6 +24,9 @@ from roomkit.models.event import (
 from roomkit.models.event import EventContent as EventContentType
 from roomkit.models.room import Room
 from roomkit.store.memory import InMemoryStore
+from roomkit.turns import InMemoryTurnBackend
+from roomkit.turns.base import TurnBackend
+from roomkit.turns.redis import RedisTurnBackend
 from tests import redis_turn_mode
 from tests.tool_loop_modes import expect_streaming
 
@@ -53,6 +57,26 @@ def store() -> InMemoryStore:
 @pytest.fixture
 def room() -> Room:
     return Room(id="test-room")
+
+
+@pytest.fixture(params=["memory", "redis"])
+async def turn_backend(request: pytest.FixtureRequest) -> AsyncIterator[TurnBackend]:
+    """A turn backend in memory, then across a real Redis when REDIS_URL is
+    set, the owner reaching its own executor there as one elsewhere; its keys
+    deleted after."""
+    if request.param == "memory":
+        yield InMemoryTurnBackend()
+        return
+    if not os.environ.get("REDIS_URL"):
+        pytest.skip("REDIS_URL not set")
+    redis = pytest.importorskip("redis.asyncio")
+    prefix = f"roomkit:test:{uuid4().hex[:12]}"
+    yield RedisTurnBackend(os.environ["REDIS_URL"], key_prefix=prefix, _loop_back=True)
+    client = redis.from_url(os.environ["REDIS_URL"])
+    keys = [key async for key in client.scan_iter(f"{prefix}:*")]
+    if keys:
+        await client.delete(*keys)
+    await client.aclose()
 
 
 @pytest.fixture(params=[False, True], ids=["non-streaming", "streaming"])

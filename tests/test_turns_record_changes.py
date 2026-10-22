@@ -8,10 +8,8 @@ REDIS_URL is set."""
 from __future__ import annotations
 
 import asyncio
-import os
 from collections.abc import AsyncIterator, Callable
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
@@ -22,9 +20,8 @@ from roomkit.models.streaming import (
     ToolCallEndMarker,
     ToolCallStartMarker,
 )
-from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, _executor_changes
+from roomkit.turns import TurnClient, TurnExecutor, _executor_changes
 from roomkit.turns.base import TurnBackend
-from roomkit.turns.redis import RedisTurnBackend
 from tests.test_turns_backend import ScriptedChannel, _run
 
 # How a context retrieval writes the documents a turn read (≈ 10 KB of JSON).
@@ -34,22 +31,9 @@ _SOURCES = [
 ]
 
 
-@pytest.fixture(params=["memory", "redis"])
-async def backend(request: pytest.FixtureRequest) -> AsyncIterator[TurnBackend]:
-    if request.param == "memory":
-        yield InMemoryTurnBackend()
-        return
-    if not os.environ.get("REDIS_URL"):
-        pytest.skip("REDIS_URL not set")
-    redis = pytest.importorskip("redis.asyncio")
-    prefix = f"roomkit:test:{uuid4().hex[:12]}"
-    # The owner reaches its own executor across Redis, as one elsewhere.
-    yield RedisTurnBackend(os.environ["REDIS_URL"], key_prefix=prefix, _loop_back=True)
-    client = redis.from_url(os.environ["REDIS_URL"])
-    keys = [key async for key in client.scan_iter(f"{prefix}:*")]
-    if keys:
-        await client.delete(*keys)
-    await client.aclose()
+@pytest.fixture
+def backend(turn_backend: TurnBackend) -> TurnBackend:
+    return turn_backend
 
 
 def _client(backend: TurnBackend, channel: ScriptedChannel) -> TurnClient:

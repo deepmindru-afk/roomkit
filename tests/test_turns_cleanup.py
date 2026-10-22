@@ -24,6 +24,7 @@ from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.event import TextContent
 from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, TurnTimeouts
+from roomkit.turns.base import TurnBackend
 from roomkit.turns.owner import registry_turn_client
 from tests.test_framework import SimpleChannel
 from tests.test_turns_backend import ScriptedChannel, _binding, _context, _event, _run
@@ -172,6 +173,37 @@ async def test_a_cascade_whose_turn_its_owner_gave_up_reports_its_cleanup_done()
     await cascade.cancel_and_wait("kit_closed", timeout=2.0)
     let_go.set()
     await executor.close()
+
+
+async def test_a_turn_given_up_as_its_owner_closes_fails_backend_closed(
+    turn_backend: TurnBackend,
+) -> None:
+    """A turn still open when its owner closes is given up: its reader fails
+    with ``backend_closed``, the owner's backend having closed, never with
+    ``executor_lost``, its executor being alive (RFC §10.6, §10.6.8; RMK-878)."""
+    let_go = asyncio.Event()
+
+    async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
+        try:
+            yield "one"
+            await asyncio.Event().wait()
+        finally:
+            await let_go.wait()
+
+    channels = {"agent": ScriptedChannel(script)}
+    executor = TurnExecutor(channels.get, hosts=channels.__contains__)
+    await turn_backend.serve(executor)
+    client = TurnClient(turn_backend)
+    stream = (await _run(client)).response_stream
+    assert await anext(stream) == "one"
+
+    await client.close()
+
+    with pytest.raises(TurnLinkError) as raised:
+        await anext(stream)
+    let_go.set()
+    await executor.close()
+    assert raised.value.reason == "backend_closed"
 
 
 async def test_a_turn_whose_end_is_owed_stays_owed_when_its_owner_closes() -> None:
