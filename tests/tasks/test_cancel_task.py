@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+import roomkit.tasks._room_tasks as room_tasks_module
 from roomkit import HookExecution, HookResult, HookTrigger, RoomKit
 from roomkit.channels.agent import Agent
 from roomkit.core.exceptions import ToolNameCollisionError, UnservedToolCallError
@@ -564,6 +565,30 @@ async def test_the_room_s_task_ended_before_the_bus_shows_it_reads_ended(door: s
 
     assert line["status"] == "running"
     assert (answer["status"], answer["message"]) == ("completed", "The task had already ended.")
+
+
+async def test_past_the_bound_a_line_still_listed_running_is_no_task_here(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RMK-876: the room's task ended, the bus still lists it running, and
+    more tasks than the record keeps ended in another room since: it reads
+    as no task of the room (RFC §23.4)."""
+    monkeypatch.setattr(room_tasks_module, "ENDED_ROOM_TASKS_KEPT", 2)
+    room = _Room(MockAIProvider(responses=["Done."]))
+    room.kit = RoomKit(status_bus=StatusBus(backend=_LaggingBackend()))
+    await room.open()
+    await _delegated(room.kit, "background")
+    await until(lambda: not room.kit._room_tasks.running)
+    (line,) = await room_task_lines(room.kit.status_bus, "r", 50)
+    for n in range(2):
+        room.kit._room_tasks.start(f"elsewhere-{n}", "other", "tool")
+        room.kit._room_tasks.end(f"elsewhere-{n}", "completed")
+
+    answer = await _cancel(CancelTaskTool(room.kit), line["task_id"])
+    await room.kit.close()
+
+    assert line["status"] == "running"
+    assert (answer["status"], answer["message"]) == ("unknown", f"No task {line['task_id']} here.")
 
 
 async def test_a_strategy_s_inline_worker_run_is_the_strategy_s() -> None:

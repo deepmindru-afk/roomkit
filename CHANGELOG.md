@@ -270,6 +270,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for it: that held only because the refusal's report waited for its
   observers.
 
+- RFC §23.4 says what `cancel_task` answers past the record of ended tasks
+  the kit keeps (the latest 1024, all rooms together): a task that ended
+  while the status bus still lists it running reads as no task of the room
+  (RMK-876). The bound stays one for all rooms; RMK-871 and RMK-875 removed
+  the two known causes of a line left running after its end.
+
 - An answer a barge-in cut reads, in the AI context, with how far the person
   heard it (RFC §6.4): `[The person cut you off during this answer, 5.7 s in:
   they heard it up to “…” and not the rest.]`, where it read "[You were
