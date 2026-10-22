@@ -244,18 +244,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prompt for an agent with no `system_prompt` and no identity block
   (`identity_in_prompt=False`) (RMK-872). It sent `system_prompt=""`, which
   wiped the session's prompt, the channel's included, where a session's start
-  and a handoff kept it. One function now builds an agent's realtime prompt
-  for all three, and sets nothing when there is nothing to set.
+  kept it. One function now builds an agent's realtime prompt for all three:
+  a language change with nothing to set keeps the session's prompt, and a
+  handoff to such an agent gives the session the channel's own prompt, as a
+  new session gets, where it kept the previous agent's.
 
 - The `Pipeline` strategy's `voice_channel_id`, `greet_on_handoff`,
   `greeting_prompt` and `farewell_prompt` take effect (RMK-873); they were
-  stored and never read. On a realtime voice channel, each room's session
-  runs its active agent and a handoff reconfigures the room's sessions, one
-  wiring serving every room the strategy is installed in, with
-  `ConversationPipeline.install`'s refusals (live agents only). On another
-  voice channel, the agents' voices are set, and `greet_on_handoff` greets in
-  the room of the handoff only, through room hooks. `greet_on_handoff=True`
-  without `voice_channel_id` is refused at construction.
+  stored and never read. On a voice channel, the agents' voices are its voice
+  map, and `greet_on_handoff` cues the agent a handoff made active to
+  introduce itself, after the farewell, through hooks of that room only. A
+  realtime voice channel is refused at the install: its sessions are wired
+  for every room at once, by `ConversationPipeline.install`, which a strategy
+  installed room by room cannot hold. `greet_on_handoff=True` without
+  `voice_channel_id` is refused at construction.
 
 - An owner-served call (a tool or a host verb) whose turn ends as it arrives
   no longer leaves its work's coroutine unawaited (a `RuntimeWarning` at an

@@ -11,6 +11,7 @@ import pytest
 from roomkit import ChannelDeclaration, RoomKit
 from roomkit.channels._mark_copies import COPIED_MARK
 from roomkit.channels._runtime_record import RUNTIME_RECORD
+from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.memory.base import MemoryProvider, MemoryResult
@@ -1033,9 +1034,6 @@ class TestSetLanguage:
             room, ConversationState(phase="intake", active_agent_id="agent-triage")
         )
         kit = _make_mock_kit(room, [])
-
-        from roomkit.channels.agent import Agent
-        from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 
         mock_rtv = MagicMock()
         mock_rtv.__class__ = RealtimeVoiceChannel

@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import dataclasses
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from roomkit.channels.voice import VoiceChannel
 from roomkit.core.hooks import HookRegistration
@@ -52,6 +53,18 @@ class HandoffGreeting:
         # needs ~300-500ms to generate a farewell response, by which time the
         # flag is already cleared and the farewell plays through.
         self._pending: set[str] = set()
+
+    def register(self, priority: int, room_id: str | None = None) -> None:
+        """Register :meth:`hooks` on the kit: for every room, or for *room_id*
+        alone, each named after it so its uninstall takes it back."""
+        for hook in self.hooks(priority):
+            if room_id is None:
+                self._kit.hook(
+                    hook.trigger, execution=hook.execution, priority=hook.priority, name=hook.name
+                )(hook.fn)
+            else:
+                named = dataclasses.replace(hook, name=f"pipeline{hook.name}_{room_id}")
+                self._kit.hook_engine.add_room_hook(room_id, named)
 
     def hooks(self, priority: int) -> list[HookRegistration]:
         """Its hooks: ``ON_HANDOFF``, which greets, and, when a farewell is
@@ -99,8 +112,8 @@ class HandoffGreeting:
         # fires between ON_HANDOFF and the greeting task starting (<1ms).
         self._pending.discard(room_id)
 
-        # Wait for the outgoing agent's TTS to finish (e.g. "je vous
-        # transfère") before starting the new agent's greeting.  Without
+        # Wait for the outgoing agent's TTS to finish (e.g. "let me transfer
+        # you") before starting the new agent's greeting.  Without
         # this, deliver_stream() cancels the in-flight TTS immediately.
         vc = self._kit.channels.get(self._voice_channel_id)
         if isinstance(vc, VoiceChannel):
@@ -135,7 +148,7 @@ class HandoffGreeting:
         except Exception:
             logger.exception("Handoff greeting failed for room %s", room_id)
 
-    async def _speak_farewell(self, vc: Any, room_id: str, text: str) -> None:
+    async def _speak_farewell(self, vc: VoiceChannel, room_id: str, text: str) -> None:
         """Synthesise *text* via TTS and play it to all sessions in *room_id*."""
         bindings = await self._kit.store.list_bindings(room_id)
         voice_bindings = [b for b in bindings if b.channel_id == self._voice_channel_id]

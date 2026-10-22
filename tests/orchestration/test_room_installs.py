@@ -357,47 +357,61 @@ async def test_a_handoff_in_one_room_leaves_another_room_s_sessions() -> None:
     await kit.close()
 
 
-async def test_the_pipeline_strategy_runs_its_agents_in_a_realtime_channel_s_sessions() -> None:
-    """RMK-873: Pipeline(voice_channel_id=...) on a realtime channel: a
-    session starts with its room's active agent and a handoff reconfigures
-    that room's sessions, one wiring serving every room the strategy is
-    installed in (RFC §19.5)."""
+async def test_the_pipeline_strategy_refuses_a_realtime_voice_channel() -> None:
+    """RMK-873: a realtime channel's sessions are wired for every room at
+    once, by ConversationPipeline.install; the strategy, installed room by
+    room, refuses one, and the room is left unclaimed (RFC §19.7.1)."""
+    voice = RealtimeVoiceChannel(
+        "voice", provider=MockRealtimeProvider(), transport=MockRealtimeTransport()
+    )
+    kit = RoomKit()
+    for channel in (voice, Agent("triage"), Agent("billing")):
+        kit.register_channel(channel)
+
+    with pytest.raises(ValueError, match="ConversationPipeline.install"):
+        await kit.create_room(
+            room_id="r",
+            orchestration=Pipeline(agents=["triage", "billing"], voice_channel_id="voice"),
+        )
+
+    assert kit.room_strategy("r") is None
+    await kit.close()
+
+
+async def test_a_handoff_to_an_agent_with_nothing_to_set_gives_the_channel_s_prompt() -> None:
+    """RMK-872: the agent a handoff made active has neither a prompt nor an
+    identity block: the room's sessions take the channel's own prompt, as a
+    new session would, never the previous agent's (RFC §19.5)."""
     provider = MockRealtimeProvider()
     voice = RealtimeVoiceChannel(
-        "voice",
-        provider=provider,
-        transport=MockRealtimeTransport(),
-        system_prompt="I am the channel",
+        "voice", provider=provider, transport=MockRealtimeTransport(), system_prompt="CHANNEL"
     )
     triage = Agent("triage", system_prompt="I am TRIAGE")
-    billing = Agent("billing", system_prompt="I am BILLING")
+    quiet = Agent("quiet", identity_in_prompt=False)
     kit = RoomKit()
-    for channel in (voice, triage, billing):
+    for channel in (voice, triage, quiet):
         kit.register_channel(channel)
-    strategy = Pipeline(agents=[triage, billing], voice_channel_id="voice")
-    for room_id in ("room-A", "room-B"):
-        await kit.create_room(room_id=room_id, orchestration=strategy)
-        await kit.attach_channel(room_id, "voice")
-    # A room the strategy does not run, on the same channel.
-    await kit.create_room(room_id="room-C")
-    await kit.attach_channel("room-C", "voice")
-    in_a = await voice.start_session("room-A", "caller-a", "ws")
+    ConversationPipeline(
+        stages=[
+            PipelineStage(phase="triage", agent_id="triage", next="quiet"),
+            PipelineStage(phase="quiet", agent_id="quiet", next=None),
+        ]
+    ).install(kit, [triage, quiet], voice_channel_id="voice")
+    room = await kit.create_room(room_id="r")
+    triage_state = ConversationState(phase="triage", active_agent_id="triage")
+    await kit.store.update_room(set_conversation_state(room, triage_state))
+    await kit.attach_channel("r", "voice")
+    session = await voice.start_session("r", "caller", "ws")
+    first = _connected(provider, session)["system_prompt"]
 
-    handed = {"target": "billing", "reason": "r", "summary": "s"}
-    await provider.simulate_tool_call(in_a, "c1", "handoff_conversation", handed)
+    handed = {"target": "quiet", "reason": "r", "summary": "s"}
+    await provider.simulate_tool_call(session, "c1", "handoff_conversation", handed)
     await _until(lambda: len(provider.tool_results) == 1)
-    in_b = await voice.start_session("room-B", "caller-b", "ws")
-
-    assert json.loads(provider.tool_results[0][2])["accepted"] is True
-    in_a_again = await voice.start_session("room-A", "caller-a2", "ws")
-    assert _connected(provider, in_a_again)["system_prompt"].startswith("I am BILLING")
-    assert _connected(provider, in_b)["system_prompt"].startswith("I am TRIAGE")
-    in_c = await voice.start_session("room-C", "caller-c", "ws")
-    assert _connected(provider, in_c)["system_prompt"] == "I am the channel"
-    await kit.uninstall_strategy("room-B")
-    in_b_again = await voice.start_session("room-B", "caller-b2", "ws")
-    assert _connected(provider, in_b_again)["system_prompt"] == "I am the channel"
+    await _until(lambda: _connected(provider, session)["system_prompt"] != first)
+    reconfigured = _connected(provider, session)["system_prompt"]
     await kit.close()
+
+    assert (first, reconfigured) == ("I am TRIAGE", "CHANNEL")
 
 
 async def test_reconfiguring_a_session_changes_that_session_only() -> None:

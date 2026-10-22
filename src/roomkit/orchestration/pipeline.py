@@ -221,19 +221,12 @@ class ConversationPipeline:
                 wire_voice_map(kit, held_agents, voice_channel_id)
 
             if greet_on_handoff:
-                greeting = HandoffGreeting(
+                HandoffGreeting(
                     kit,
                     voice_channel_id,  # ty: ignore[invalid-argument-type]
                     greeting_prompt,
                     farewell_prompt,
-                )
-                for hook in greeting.hooks(hook_priority):
-                    kit.hook(
-                        hook.trigger,
-                        execution=hook.execution,
-                        priority=hook.priority,
-                        name=hook.name,
-                    )(hook.fn)
+                ).register(hook_priority)
 
         return router, handler
 

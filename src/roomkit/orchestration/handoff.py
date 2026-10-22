@@ -616,10 +616,9 @@ class HandoffHandler:
             return
         # Nothing to set (no prompt, no identity) keeps the session's own.
         prompt = realtime_prompt(agent, language)
-        if prompt is None:
-            return
-        for session in channel.get_room_sessions(room_id):
-            await channel.reconfigure_session(session, system_prompt=prompt)
+        if prompt is not None:
+            for session in channel.get_room_sessions(room_id):
+                await channel.reconfigure_session(session, system_prompt=prompt)
         logger.info(
             "Language set to %r for room %s (agent=%s)", language, room_id, state.active_agent_id
         )
