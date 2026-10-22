@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from roomkit.models.context import RoomContext
     from roomkit.models.delivery import InboundMessage
     from roomkit.models.enums import ChannelType
+    from roomkit.models.event import RoomEvent
     from roomkit.models.hook import InjectedEvent
 
 logger = logging.getLogger("roomkit.framework")
@@ -42,9 +43,9 @@ class IdentityHost(Protocol):
         _identity_timeout: Maximum seconds for resolver.resolve() before timeout.
         _hook_engine: Hook engine for identity hooks.
 
-    Methods provided by InboundLockedMixin (or equivalent):
-        _deliver_injected_events: Deliver events injected by identity hooks
-            (e.g., challenge messages).
+    Methods provided by InjectedEventsMixin (or equivalent):
+        _inject_off_lock: Commit and deliver the events identity hooks
+            inject (a challenge), each as its own pass (RFC §9.4).
     """
 
     _identity_resolver: IdentityResolver | None
@@ -52,8 +53,8 @@ class IdentityHost(Protocol):
     _identity_timeout: float
     _hook_engine: HookEngine
 
-    async def _deliver_injected_events(
-        self, injected: list[InjectedEvent], room_id: str, context: RoomContext
+    async def _inject_off_lock(
+        self, injected_events: list[InjectedEvent], room_id: str, *, cause: RoomEvent
     ) -> None: ...
 
 
@@ -68,10 +69,10 @@ class InboundIdentityMixin(HelpersMixin):
     _identity_timeout: float
     _hook_engine: HookEngine
 
-    # Cross-mixin call — implemented by InboundLockedMixin. Cannot use a
-    # method stub because InboundIdentityMixin precedes InboundLockedMixin
+    # Cross-mixin call — implemented by InjectedEventsMixin. Cannot use a
+    # method stub because InboundIdentityMixin precedes InjectedEventsMixin
     # in the MRO, and a stub would shadow the real implementation at runtime.
-    _deliver_injected_events: Any  # see IdentityHost for typed signature
+    _inject_off_lock: Any  # see IdentityHost for typed signature
 
     def identity_enabled_for(self, channel_type: ChannelType) -> bool:
         """Whether identity resolution runs for a channel of this type.
@@ -286,7 +287,7 @@ class InboundIdentityMixin(HelpersMixin):
             return event, hook_result.identity, None
         if hook_result and hook_result.status == IdentificationStatus.CHALLENGE_SENT:
             if hook_result.inject:
-                await self._deliver_injected_events([hook_result.inject], room_id, context)
+                await self._inject_off_lock([hook_result.inject], room_id, cause=event)
             raise _IdentityBlockedError("identity_challenge_sent")
         if hook_result and hook_result.status == IdentificationStatus.REJECTED:
             raise _IdentityBlockedError(hook_result.reason or "identity_rejected")
@@ -333,7 +334,7 @@ class InboundIdentityMixin(HelpersMixin):
             return event, hook_result.identity, None
         if hook_result and hook_result.status == IdentificationStatus.CHALLENGE_SENT:
             if hook_result.inject:
-                await self._deliver_injected_events([hook_result.inject], room_id, context)
+                await self._inject_off_lock([hook_result.inject], room_id, cause=event)
             raise _IdentityBlockedError("identity_challenge_sent")
         if hook_result and hook_result.status == IdentificationStatus.PENDING:
             # The hook asked for a pending participant, so the resolver's

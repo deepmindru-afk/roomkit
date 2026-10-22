@@ -380,6 +380,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `@sms1`, rather than their id; a look-alike name with its rank). See
   `examples/ai_people_taking_part.py`.
 
+- **BREAKING — an event a hook injects is committed as a pass of its own**
+  (RFC §9.4, RMK-902): after the event that caused it, it takes the room
+  lock and runs the `BEFORE_BROADCAST` hooks, every one under the lock, which
+  may block it (stored `BLOCKED` with the hook's name); it counts against the
+  cascade's reentry budget (past it, stored `BLOCKED` with `reentry_loop_cap`,
+  its hooks not run); and what its own hooks inject is committed after it the
+  same way. It keeps its cause's chain depth, its visibility names the
+  targets the room binds (`none` when stored only; a hook of its pass may
+  narrow it, never widen it), it carries no idempotency key, and it takes no
+  source check. It was committed under its cause's lock with no hook, with
+  its source binding's scope and the depth and key it came with. A hook that
+  blocks or injects on every event now reads its own injections too: let
+  them through (by their source or content), or each one injects again until
+  the budget. An identity challenge takes the same pass. See "Injected
+  events" in `docs/c7/hooks.md`.
+
+- **BREAKING — an injected event asks no agent** (RFC §9.4, RMK-333): an
+  intelligence channel among its targets is not called and reads the event
+  in its history at its next turn. It ran a whole turn, tools included,
+  whose answer was then discarded. The event is delivered to its transport
+  targets as any delivery is (transcoded for each, `on_event()` for each and
+  `deliver()` for those that send) and never to its own source; it was
+  delivered untranscoded. `TurnRequest.answers` and the `answers` argument of
+  `EventRouter.react()`, `EventRouter.react_for()` and `TurnClient.run()` are
+  removed.
+
 - **BREAKING — the pipeline writes who a response comes from** (RFC §8.5,
   RMK-902): each response a channel returns is committed as its responder's,
   the responder's channel id and type with direction OUTBOUND, in the

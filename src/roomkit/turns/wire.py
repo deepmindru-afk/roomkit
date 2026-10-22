@@ -75,8 +75,6 @@ class TurnRequest(_HandedOver):
     event: RoomEvent
     binding: ChannelBinding
     context: RoomContext
-    answers: bool = True
-    """False for an injected event's delivery: its output is discarded."""
     strategy_turn: bool = False
     """A generation a strategy's runner asks: the channel answers, past its
     speak policy and its thinker (RFC §10.6.1)."""

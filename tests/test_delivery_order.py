@@ -131,7 +131,7 @@ async def test_a_later_index_does_not_overtake_a_stalled_inline_delivery() -> No
         ExecEntry(
             plan=DeliveryPlan(
                 event=later,
-                source_binding=None,
+                source_binding=await kit._store.get_binding(ROOM, "ai"),
                 context=await kit._build_context(ROOM),
                 targets=[binding],
                 injected=True,

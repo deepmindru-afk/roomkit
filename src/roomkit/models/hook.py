@@ -11,10 +11,20 @@ from roomkit.models.task import Observation, Task
 
 
 class InjectedEvent(BaseModel):
-    """An event injected by a hook as a side effect."""
+    """An event injected by a hook as a side effect (RFC §9.4).
+
+    It is committed after the event whose hooks injected it, as a pass of
+    its own: it runs the ``BEFORE_BROADCAST`` hooks, which may block it, and
+    counts against the reentry budget. It keeps that event's chain depth,
+    carries no idempotency key and takes no source check; its visibility
+    names the targets the room binds. It is delivered to its transport
+    targets only, never to its own source, and asks no agent: an
+    intelligence channel among the targets reads it in its history.
+    """
 
     event: RoomEvent
     target_channel_ids: list[str] | None = None
+    """The channels it is delivered to; ``None`` stores it only."""
 
 
 VERIFICATION_DECISION_KEY = "roomkit:verification"

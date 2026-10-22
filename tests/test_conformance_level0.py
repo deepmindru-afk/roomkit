@@ -234,6 +234,9 @@ class TestHooks:
 
         @kit.hook(HookTrigger.BEFORE_BROADCAST, execution=HookExecution.SYNC, name="inject")
         async def _inject(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if isinstance(event.content, TextContent) and event.content.body == "replacement":
+                # Its own injection runs this hook too (§9.4).
+                return HookResult.allow()
             followup = RoomEvent(
                 room_id="r1",
                 source=EventSource(channel_id="src", channel_type=ChannelType.WEBSOCKET),

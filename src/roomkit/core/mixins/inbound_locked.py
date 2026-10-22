@@ -36,7 +36,7 @@ from roomkit.models.enums import (
     ParticipantRole,
     Visibility,
 )
-from roomkit.models.event import DeleteContent, EditContent, RoomEvent, with_pipeline_id
+from roomkit.models.event import DeleteContent, EditContent, RoomEvent
 from roomkit.models.hook import InjectedEvent
 from roomkit.models.identity import Identity, IdentityResult
 from roomkit.models.task import Observation, Task
@@ -172,7 +172,7 @@ class InboundLockedMixin(HelpersMixin):
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _commit_to_lane: Any  # see LaneExecutionMixin
-    _lane_injected_events: Any  # see LaneExecutionMixin
+    _lane_injected_events: Any  # see InjectedEventsMixin
 
     # Stub for cross-mixin call — implemented by RoomKit._get_router().
     def _get_router(self) -> EventRouter: ...
@@ -375,7 +375,7 @@ class InboundLockedMixin(HelpersMixin):
         # by a late cancellation).
         if outcome.sync_result.injected_events:
             await self._lane_injected_events(
-                outcome.sync_result.injected_events, room_id, outcome.context, cascade
+                outcome.sync_result.injected_events, room_id, cascade, cause=outcome.event
             )
         return InboundResult(
             event=outcome.event, unavailable_targets=list(cascade.unavailable_targets)
@@ -542,9 +542,13 @@ class InboundLockedMixin(HelpersMixin):
         event: RoomEvent,
         context: RoomContext,
         precheck: SyncPipelineResult | None = None,
+        *,
+        source_check: bool = True,
     ) -> _Blocked | _Ready:
         """RFC §10.1 steps 9 to 11 for an event about to commit: its
-        BEFORE_BROADCAST hooks, then its source's right to write.
+        BEFORE_BROADCAST hooks, then its source's right to write, unless
+        *source_check* is off for an event a hook injected (§9.4), which is
+        the hook's, not a channel's.
 
         The one gate of every commit path, an inbound event and a response
         alike, buffered, streamed or regenerated (RFC §7.5 rule 2): a hook
@@ -582,6 +586,8 @@ class InboundLockedMixin(HelpersMixin):
         # effects are ALWAYS collected), and stop before broadcast. The source
         # binding read here is the one the broadcast plans with.
         source_binding = await self._source_binding(room_id, event, context, hooked=hooked)
+        if not source_check:
+            return _Ready(event, source_binding, sync_result, context, None)
         reason = _source_block_reason(source_binding)
         if reason is not None:
             return _Blocked.after_hooks(
@@ -748,14 +754,11 @@ class InboundLockedMixin(HelpersMixin):
         event: RoomEvent,
         reason: str | None,
         blocked_by: str | None,
-        injected_events: list[InjectedEvent],
-        context: RoomContext,
-        cascade: DeliveryCascade,
     ) -> RoomEvent:
-        """RFC §9.5 block handling: commit the event as BLOCKED, emit the
-        framework event, and lane injected side effects. Shared by every
-        block path (main-inbound hook block, reentry hook block, source
-        write-permission block) so they cannot drift.
+        """RFC §9.5 block handling: commit the event as BLOCKED and emit the
+        framework event. Shared by every block path (main-inbound hook block,
+        reentry hook block, source write-permission block) so they cannot
+        drift.
 
         The BLOCKED event is committed atomically like any other event — index,
         status, and room counters in one store transaction (§14.3) — because a
@@ -775,7 +778,6 @@ class InboundLockedMixin(HelpersMixin):
         if event.type != EventType.INSTRUCTION:
             blocked_event = await self._commit_indexed(room_id, blocked_event)
         await self._announce_blocked(room_id, blocked_event, reason=reason, blocked_by=blocked_by)
-        await self._lane_injected_events(injected_events, room_id, context, cascade)
         return blocked_event
 
     async def _announce_blocked(
@@ -800,7 +802,7 @@ class InboundLockedMixin(HelpersMixin):
     ) -> RoomEvent:
         """Store what :meth:`_gate_commit` refused as its BLOCKED record, with
         its hook side effects (RFC §7.5 rule 3 — side effects are always
-        collected).
+        collected), then commit the events its hooks injected (§9.4).
 
         Shared by every commit path, the hook block and the source
         write-permission block alike, so they cannot drift.
@@ -810,12 +812,12 @@ class InboundLockedMixin(HelpersMixin):
             event=blocked.event,
             reason=blocked.reason,
             blocked_by=blocked.blocked_by,
-            injected_events=blocked.injected_events,
-            context=blocked.context,
-            cascade=cascade,
         )
         await self._persist_side_effects(
             room_id, blocked.tasks, blocked.observations, blocked_event, blocked.context
+        )
+        await self._lane_injected_events(
+            blocked.injected_events, room_id, cascade, cause=blocked_event
         )
         return blocked_event
 
@@ -861,64 +863,3 @@ class InboundLockedMixin(HelpersMixin):
             await self._store.update_event(updated)
             return (HookTrigger.ON_EVENT_DELETED, updated)
         return None
-
-    async def _deliver_injected_events(
-        self,
-        injected_events: list[InjectedEvent],
-        room_id: str,
-        context: RoomContext,
-    ) -> None:
-        """Store and deliver injected events to their target channels, inline.
-
-        Only the identity pipeline still uses this (it runs before the room
-        lock and has no cascade); the locked pipeline lanes its injected
-        events via ``_lane_injected_events``. Inline execution trivially
-        satisfies per-room order (RFC §10.2).
-
-        Runs before the locked pipeline, so it owes the RFC §5.1 status gate
-        itself: an identity challenge injected into a CLOSED room would grow
-        a timeline that refuses growth.
-        """
-        if injected_events and await self._room_refuses_writes(room_id):
-            logger.info(
-                "Injected events refused: room %s no longer accepts writes",
-                room_id,
-                extra={"room_id": room_id},
-            )
-            return
-        for injected in injected_events:
-            # Commit the injected event atomically as DELIVERED (index + room
-            # counters, RFC §8.1 / §14.3) — it is a real, delivered timeline
-            # event, not a PENDING draft.
-            event = with_pipeline_id(
-                injected.event.model_copy(update={"status": EventStatus.DELIVERED})
-            )
-            stored = await self._commit_indexed(
-                room_id,
-                with_committed_visibility(
-                    event, context.get_binding(event.source.channel_id), context.bindings
-                ),
-            )
-
-            # Deliver to target channels
-            target_ids = injected.target_channel_ids
-            if target_ids is None:
-                # No target specified — skip delivery (stored only)
-                continue
-
-            for target_id in target_ids:
-                channel = self._channels.get(target_id)
-                binding = await self._store.get_binding(room_id, target_id)
-                if channel is not None and binding is not None:
-                    try:
-                        await self._get_router().react(
-                            channel, stored, binding, context, answers=False
-                        )
-                        if binding.category == ChannelCategory.TRANSPORT and binding.sends:
-                            await channel.deliver(stored, binding, context)
-                    except Exception:
-                        logger.exception(
-                            "Failed to deliver injected event to %s",
-                            target_id,
-                            extra={"room_id": room_id, "channel_id": target_id},
-                        )

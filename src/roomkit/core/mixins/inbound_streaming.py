@@ -83,8 +83,9 @@ class InboundStreamingHost(Protocol):
         self,
         injected_events: list[InjectedEvent],
         room_id: str,
-        context: RoomContext,
         cascade: DeliveryCascade,
+        *,
+        cause: RoomEvent,
     ) -> None: ...
 
 
@@ -118,9 +119,8 @@ class InboundStreamingMixin(HelpersMixin):
 
     # Cross-mixin method — attribute annotation avoids MRO shadowing
     _commit_and_deliver: Any  # LaneExecutionMixin
-    _lane_injected_events: Any  # LaneExecutionMixin
+    _lane_injected_events: Any  # InjectedEventsMixin
     _store_past_reentry_cap: Any  # LaneExecutionMixin
-    _handle_block: Any  # InboundLockedMixin
 
     # Stub for cross-mixin call — implemented by RoomKit._get_router().
     def _get_router(self) -> EventRouter: ...

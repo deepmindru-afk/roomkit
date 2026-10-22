@@ -81,7 +81,9 @@ async def test_a_solicited_turn_runs_on_an_executor_and_its_stream_reaches_the_r
     await kit.close()
 
 
-async def test_an_injected_event_reaches_the_agent_as_a_turn_whose_stream_never_starts() -> None:
+async def test_an_injected_event_that_names_the_agent_runs_no_turn() -> None:
+    """An injected event asks no agent (RFC §9.4): the agent reads it in its
+    history at its next turn."""
     kit, agent = await _room()
 
     @kit.hook(HookTrigger.BEFORE_BROADCAST, execution=HookExecution.SYNC, name="inject")
@@ -90,7 +92,7 @@ async def test_an_injected_event_reaches_the_agent_as_a_turn_whose_stream_never_
             return HookResult.allow()
         notice = RoomEvent(
             room_id="room",
-            source=EventSource(channel_id="sms", channel_type=ChannelType.SMS),
+            source=EventSource(channel_id="system", channel_type=ChannelType.SYSTEM),
             content=TextContent(body="a notice"),
         )
         return HookResult.block(
@@ -101,9 +103,10 @@ async def test_an_injected_event_reaches_the_agent_as_a_turn_whose_stream_never_
         InboundMessage(channel_id="sms", sender_id="+15550000001", content=TextContent(body="hi")),
         room_id="room",
     )
-    assert agent.turn_tasks
-    assert all(name.startswith("roomkit-turn-") for name in agent.turn_tasks)
-    assert agent.streams_started == 0
+    events = await kit.store.list_events("room")
+    notices = [e for e in events if isinstance(e.content, TextContent)]
+    assert [e.visibility for e in notices if e.content.body == "a notice"] == ["agent"]
+    assert (agent.turn_tasks, agent.streams_started) == ([], 0)
     await kit.close()
 
 

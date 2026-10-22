@@ -303,6 +303,9 @@ async def test_stream_hook_effects_without_persistence_or_source_binding(detache
 
     @kit.hook(HookTrigger.BEFORE_BROADCAST)
     async def side_effects(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if event.source.channel_id != "ai1":
+            # The notice's own pass runs this hook too (RFC §9.4).
+            return HookResult.allow()
         return HookResult(
             action="allow",
             tasks=[task],

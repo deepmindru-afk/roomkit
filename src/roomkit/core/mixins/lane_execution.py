@@ -30,7 +30,7 @@ from roomkit.core.task_utils import await_unless_cut, start_named
 from roomkit.core.visibility import with_committed_visibility
 from roomkit.models.delivery import DeliveryError, DeliveryResult
 from roomkit.models.enums import ChannelCategory, EventStatus, EventType, HookTrigger
-from roomkit.models.event import EventSource, RoomEvent, with_pipeline_id
+from roomkit.models.event import EventSource, RoomEvent
 from roomkit.models.response_metadata import (
     ResponseMetadata,
     add_turn_entry,
@@ -51,7 +51,6 @@ if TYPE_CHECKING:
     from roomkit.core.locks import RoomLockManager
     from roomkit.models.channel import ChannelBinding, ChannelOutput
     from roomkit.models.context import RoomContext
-    from roomkit.models.hook import InjectedEvent
     from roomkit.store.base import ConversationStore
     from roomkit.telemetry.base import TelemetryProvider
 
@@ -220,6 +219,7 @@ class LaneExecutionMixin(HelpersMixin):
     _store_blocked: Any  # InboundLockedMixin
     _announce_blocked: Any  # InboundLockedMixin
     _process_streaming_responses: Any  # InboundStreamingMixin
+    _lane_injected_events: Any  # InjectedEventsMixin
 
     # -- The planned commit gate --
 
@@ -403,7 +403,7 @@ class LaneExecutionMixin(HelpersMixin):
                 )
             if hook_result.injected_events:
                 await self._lane_injected_events(
-                    hook_result.injected_events, room_id, context, cascade
+                    hook_result.injected_events, room_id, cascade, cause=committed or event
                 )
 
         # Off the lock: waiting under it would deadlock the lane against its
@@ -474,60 +474,6 @@ class LaneExecutionMixin(HelpersMixin):
             room_id,
             ExecEntry(plan=plan, cascade=cascade, index=index, after_index=after_index),
         )
-
-    async def _lane_injected_events(
-        self,
-        injected_events: list[InjectedEvent],
-        room_id: str,
-        context: Any,
-        cascade: DeliveryCascade,
-    ) -> None:
-        """Commit hook-injected events and lane their delivery (RFC §9.5).
-
-        The commit happens here, under the room lock and policy-exempt (an
-        injected event is a real DELIVERED timeline event); the channel I/O
-        rides the lane like everything else. Targets are resolved now, so
-        the delivery set is consistent with the state the hook saw.
-        """
-        from roomkit.core.lanes import DeliveryPlan
-
-        for injected in injected_events:
-            event = with_pipeline_id(
-                injected.event.model_copy(update={"status": EventStatus.DELIVERED})
-            )
-            # Committed with its visibility narrowed by its source's binding,
-            # when the room binds its source (RFC §7.3).
-            event = with_committed_visibility(
-                event, context.get_binding(event.source.channel_id), context.bindings
-            )
-            target_ids = injected.target_channel_ids
-
-            # Bindings are resolved under the lock so the delivery set is
-            # consistent with the state the injecting hook saw; the factory
-            # itself stays synchronous.
-            targets: list[Any] = []
-            if target_ids is not None:
-                for target_id in target_ids:
-                    binding = await self._store.get_binding(room_id, target_id)
-                    if binding is not None:
-                        targets.append(binding)
-
-            if not targets:
-                # No target specified (stored only) or none resolvable.
-                await self._commit_to_lane(room_id, event, cascade, None, policy_aware=False)
-                continue
-
-            def factory(committed: RoomEvent, _targets: list[Any] = targets) -> DeliveryPlan:
-                return DeliveryPlan(
-                    event=committed,
-                    source_binding=None,
-                    context=context,
-                    targets=_targets,
-                    injected=True,
-                    fire_after_broadcast=False,
-                )
-
-            await self._commit_to_lane(room_id, event, cascade, factory, policy_aware=False)
 
     def _consume_streams_when_cascade_completes(
         self, cascade: DeliveryCascade, room_id: str
@@ -690,8 +636,6 @@ class LaneExecutionMixin(HelpersMixin):
     async def _execute_plan(self, plan: DeliveryPlan, cascade: DeliveryCascade) -> BroadcastResult:
         """Execute one plan's delivery set (called by the lane executor), its
         intelligence targets' turns as *cascade*'s turn work (RFC §10.1)."""
-        if plan.injected:
-            return await self._execute_injected_plan(plan, cascade)
         if plan.rerun and await self._refuse_closed_rerun(plan):
             return BroadcastResult()
         return await self._get_router().execute_plan(plan, cascade=cascade)
@@ -711,42 +655,6 @@ class LaneExecutionMixin(HelpersMixin):
             event=plan.event,
         )
         return True
-
-    async def _execute_injected_plan(
-        self, plan: DeliveryPlan, cascade: DeliveryCascade
-    ) -> BroadcastResult:
-        """Deliver an injected event to its named channels.
-
-        Deliberately bare — direct ``on_event`` and, for transports,
-        ``deliver``; no transcoding, no response collection. An injected
-        event must not be able to trigger an AI reply.
-        """
-        from roomkit.core.event_router import BroadcastResult
-
-        for binding in plan.targets:
-            channel = self._channels.get(binding.channel_id)
-            if channel is None:
-                continue
-            if (
-                binding.category == ChannelCategory.INTELLIGENCE
-                and plan.event.room_id in self._discussions
-            ):
-                # A discussion's agents act only on the turns it gives (RFC
-                # §19.7.5); an injected event answers nothing anyway.
-                continue
-            try:
-                await self._get_router().react_for(
-                    cascade, channel, plan.event, binding, plan.context, answers=False
-                )
-                if binding.category == ChannelCategory.TRANSPORT and binding.sends:
-                    await channel.deliver(plan.event, binding, plan.context)
-            except Exception:
-                logger.exception(
-                    "Failed to deliver injected event to %s",
-                    binding.channel_id,
-                    extra={"room_id": plan.event.room_id, "channel_id": binding.channel_id},
-                )
-        return BroadcastResult()
 
     async def _record_failed_deliveries(
         self, event: RoomEvent, results: dict[str, DeliveryResult]
@@ -1082,6 +990,15 @@ class LaneExecutionMixin(HelpersMixin):
         )
         return True
 
+    async def _open_pass(self, room_id: str, event: RoomEvent) -> RoomContext | None:
+        """The room's context for a commit pass of *event*, read under the
+        lock its pass holds, or ``None`` when the room is gone or its status
+        refuses the event, the refusal announced (RFC §10.1 step 6, §5.1)."""
+        context = await self._reentry_context(room_id, event)
+        if context is None or await self._refuse_reentry(room_id, event, context):
+            return None
+        return context
+
     async def _run_reentry_pass(
         self,
         room_id: str,
@@ -1095,23 +1012,10 @@ class LaneExecutionMixin(HelpersMixin):
             # the status gate, the source's right to write and the delivery
             # plan all read this context, fresh under the lock, since
             # concurrent commits may have landed after the trigger's plan.
-            context = await self._reentry_context(room_id, reentry)
+            context = await self._open_pass(room_id, reentry)
             if context is None:
                 return
-            if await self._refuse_reentry(room_id, reentry, context):
-                return
-
-            # Provisional index for the hook, mirroring the main inbound
-            # path; the authoritative index is (re)assigned at commit.
-            reentry = reentry.model_copy(update={"index": context.room.event_count})
-            reentry_ctx = context.model_copy(
-                update={
-                    "recent_events": [
-                        *context.recent_events[-(_RECENT_EVENTS_LIMIT - 1) :],
-                        reentry,
-                    ]
-                }
-            )
+            reentry, reentry_ctx = provisional(reentry, context)
 
             # BEFORE_BROADCAST sync hooks, then the source's right to write
             # (RFC §10.1 steps 9 and 11): orchestration routing stamps
@@ -1180,8 +1084,18 @@ class LaneExecutionMixin(HelpersMixin):
             cascade.response_events.append(stored)
         if sync_result.injected_events:
             await self._lane_injected_events(
-                sync_result.injected_events, room_id, context, cascade
+                sync_result.injected_events, room_id, cascade, cause=stored or reentry
             )
+
+
+def provisional(event: RoomEvent, context: RoomContext) -> tuple[RoomEvent, RoomContext]:
+    """*event* at the index the room would give it, and *context* with it as
+    the newest event: what a pass's hooks read, as on the main inbound path.
+    The authoritative index is assigned at commit."""
+    event = event.model_copy(update={"index": context.room.event_count})
+    return event, context.model_copy(
+        update={"recent_events": [*context.recent_events[-(_RECENT_EVENTS_LIMIT - 1) :], event]}
+    )
 
 
 def record_buffered_reply(

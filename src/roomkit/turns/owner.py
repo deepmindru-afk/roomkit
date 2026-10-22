@@ -62,7 +62,6 @@ def turn_request(
     binding: ChannelBinding,
     context: RoomContext,
     *,
-    answers: bool = True,
     strategy_turn: bool = False,
     owner_tools: list[OwnerTool] | None = None,
     telemetry: TelemetryProvider | None = None,
@@ -86,7 +85,6 @@ def turn_request(
         event=event,
         binding=binding,
         context=context,
-        answers=answers,
         strategy_turn=strategy_turn,
         notes=notes,
         in_place=in_place,
@@ -184,7 +182,6 @@ class TurnClient(RoomOwner):
         binding: ChannelBinding,
         context: RoomContext,
         *,
-        answers: bool = True,
         strategy_turn: bool = False,
     ) -> ChannelOutput:
         """Run one turn of *binding*'s channel on *event*: its output, its
@@ -197,7 +194,6 @@ class TurnClient(RoomOwner):
             event,
             binding,
             context,
-            answers=answers,
             strategy_turn=strategy_turn,
             owner_tools=declared,
             telemetry=self.telemetry,

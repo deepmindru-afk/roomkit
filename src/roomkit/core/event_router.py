@@ -506,9 +506,7 @@ class EventRouter:
         result = BroadcastResult()
         targets = plan.targets
 
-        # An injected plan (bare on_event/deliver, no transcode, no reentry)
-        # is executed by the framework host, never here; a plan with no
-        # source binding has nothing to transcode from either way.
+        # A plan with no source binding has nothing to transcode from.
         if not targets or source_binding is None:
             reset_span(broadcast_token)
             if parent_token is not None:
@@ -771,14 +769,12 @@ class EventRouter:
         event: RoomEvent,
         binding: ChannelBinding,
         context: RoomContext,
-        *,
-        answers: bool = True,
     ) -> ChannelOutput:
         """*channel*'s reaction to an event *cascade* delivers: an intelligence
         channel's turn runs as the cascade's turn work, and answers nothing
         once the cascade is cancelled, before it starts or while it runs
         (RFC §10.1)."""
-        reaction = self.react(channel, event, binding, context, answers=answers)
+        reaction = self.react(channel, event, binding, context)
         if cascade is None or binding.category != ChannelCategory.INTELLIGENCE:
             return await reaction
         try:
@@ -795,24 +791,18 @@ class EventRouter:
         event: RoomEvent,
         binding: ChannelBinding,
         context: RoomContext,
-        *,
-        answers: bool = True,
     ) -> ChannelOutput:
         """*channel*'s ``on_event``, an intelligence channel's as a turn
-        through the turn backend; a turn that answers nothing (an injected
-        event's) has its stream closed unread (RFC §10.6.1)."""
+        through the turn backend (RFC §10.6.1)."""
         if binding.category != ChannelCategory.INTELLIGENCE:
             return await channel.on_event(event, binding, context)
         room_id = context.room.id if context.room else event.room_id
         runner = self._runner_of(room_id, binding.channel_id) if self._runner_of else None
-        if runner is not None and answers:
+        if runner is not None:
             # The strategy takes the turn here, on the owner; each generation it
             # asks of the agent is a turn of its own.
             return await runner(event, binding, context)
-        output = await self._turns.run(event, binding, context, answers=answers)
-        if not answers and output.response_stream is not None:
-            await _aclose_stream(output.response_stream)
-        return output
+        return await self._turns.run(event, binding, context)
 
     def _unasked_result(
         self,
