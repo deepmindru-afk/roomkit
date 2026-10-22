@@ -78,9 +78,16 @@ judged on ``last_turn`` alone, an answer such as "No, it was just a test" read
 directness 0.4 and request 0.07."""
 
 ANSWERS = YesNoQuestion(
-    "Does one of `assistant_thought.want_to_say` answer a question asked, or a need "
-    "stated, in `last_turn` itself?"
+    "Does one of `assistant_thought.want_to_say` answer a question or a need still open "
+    "at `last_turn`: asked or stated in `last_turn`, or in `recent_turns` and answered by "
+    "no one since, the assistant included?"
 )
+"""A question is often asked a turn or two before the one decided on: the
+others hesitate ("I remember... I remember") before anyone answers. Read on
+`last_turn` itself, a thought holding the answer read 0.14-0.39 on four such
+turns of a live meeting; "still open" reads 0.93-0.96 there, and 0.09-0.34 on a
+thanks after the answer, an answer already given and another topic (Jev,
+three calls each)."""
 CORRECTS = YesNoQuestion(
     "Does one of `assistant_thought.want_to_say` correct, or warn about a problem with, "
     "something said or proposed in `last_turn` itself?"
@@ -396,11 +403,11 @@ class ClassifierSpeakPolicy(SpeakPolicy):
     def _wants_the_floor(self, turn: SpeakTurn, judgments: Mapping[str, float]) -> bool:
         """While the room listens, the agent may ask for the floor, never take
         it: what it has in mind answers or corrects the turn as surely as an
-        open room asks of an unasked offer, and the speaker is done and asks
-        for no quiet."""
+        open room asks of an unasked offer, and the speaker is done, neither
+        postpones it nor asks for quiet."""
         if turn.thought is None or not turn.thought.want_to_say:
             return False
-        if any(judgments.get(n, 0.0) >= 0.5 for n in ("unfinished", "hush")):
+        if any(judgments.get(n, 0.0) >= 0.5 for n in ("unfinished", "deferred", "hush")):
             return False
         knows = max(judgments.get("answers", 0.0), judgments.get("corrects", 0.0))
         return knows >= self._proactivity

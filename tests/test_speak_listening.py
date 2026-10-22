@@ -340,14 +340,14 @@ async def test_while_listening_the_agent_asks_for_the_floor_only_with_what_answe
     """A thought that answers the turn makes a listening room offer, never speak;
     one that does not, or a speaker not done, leaves it silent."""
     answers = {**ASIDE, "answers": 0.9}
-    policy, _ = _policy(answers, {**answers, "unfinished": 0.9}, {**ASIDE, "answers": 0.2})
+    held = [{**answers, n: 0.9} for n in ("unfinished", "deferred", "hush")]
+    policy, _ = _policy(answers, *held, {**ASIDE, "answers": 0.2})
     await policy.decide(_turn(STAY_QUIET))
     thought = Thought("They look for the price.", ("It costs 69 $.",))
 
-    decisions = [await policy.decide(_turn("How much is it?", thought=thought)) for _ in range(3)]
+    decisions = [await policy.decide(_turn("How much is it?", thought=thought)) for _ in range(5)]
 
     assert [(d.mode, d.final) for d in decisions] == [
         ("offer", False),
-        ("silent", True),
-        ("silent", True),
+        *[("silent", True)] * 4,
     ]
