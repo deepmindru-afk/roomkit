@@ -572,3 +572,37 @@ async def test_another_agent_s_failed_turn_leaves_the_task_its_agent_s(
     # fails again: each of its failed turns is reported, in the child room.
     assert errors
     assert set(errors) == {(task.child_room_id, "helper")}
+
+
+class _AnswersBuffered(AILikeChannel):
+    """A worker that answers buffered, its record naming no end."""
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        if event.source.channel_id != "system":
+            return ChannelOutput.empty()
+        return ChannelOutput(
+            responded=True, response_events=[_message(self.channel_id, "From the worker.")]
+        )
+
+
+async def test_a_streaming_helper_s_failure_is_never_a_buffered_worker_s() -> None:
+    """RMK-879 review: with a transport shared, a helper's stream that fails
+    is the helper's turn, never that of a worker that did not stream: the
+    task completes with the worker's answer (RFC §23.3 step 6)."""
+    kit = RoomKit()
+    kit.register_channel(_AnswersBuffered("worker"))
+    kit.register_channel(Agent("helper", provider=_Down(streaming=True)))
+    kit.register_channel(SimpleChannel("email-out"))
+    await kit.create_room(room_id="parent")
+    await kit.attach_channel("parent", "email-out")
+    await kit.attach_channel("parent", "helper", category=ChannelCategory.INTELLIGENCE)
+
+    task = await kit.delegate(
+        "parent", "worker", "Find it.", share_channels=["helper", "email-out"], wait=True
+    )
+    await kit.close()
+
+    assert task.result is not None
+    assert (task.result.status, task.result.output) == (TaskStatus.COMPLETED, "From the worker.")

@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, runtime_checkable
 from uuid import uuid4
 
 from roomkit.channels.base import Channel
-from roomkit.core._failure_log import mark_reported
+from roomkit.core._failure_log import log_failure, mark_reported
 from roomkit.core.event_router import responder_turn_entries, stream_record
 from roomkit.core.exceptions import TaskCutShortError, TaskTurnFailedError, TurnCutShortError
 from roomkit.core.lanes import DeliveryCascade
@@ -42,6 +42,7 @@ from roomkit.models.event import (
 )
 from roomkit.models.response_metadata import TurnEntries, recorded_turn_end
 from roomkit.models.store_filter import EventFilter
+from roomkit.providers.ai.base import ProviderError
 from roomkit.providers.utils import _aclose_stream
 from roomkit.turns.owner import unread_dropped_on_failure
 
@@ -375,7 +376,11 @@ async def _deliver_answer(
     stream_error, _ = await kit._finish_cascade(
         cascade, child_room_id, caller_logs=True, streamed_too=True
     )
-    failure, failed_by = _responder_failure(result, stream_error, agent_id, child_room_id)
+    failures = _responder_failures(result, stream_error, agent_id)
+    # The room's reader logged each stream's failure, a provider's at DEBUG
+    # for the delegation to log; a buffered one is logged here.
+    _log_others(failures, agent_id, child_room_id, provider_only=_streamers(result))
+    failure, failed_by = _task_failure(failures, agent_id)
     if failure is not None:
         # The failure carries the end of the responder that failed, never
         # another's (RFC §23.3 step 6).
@@ -388,52 +393,68 @@ async def _deliver_answer(
     return text
 
 
-def _responder_failure(
-    result: BroadcastResult, stream_error: Exception | None, agent_id: str | None, room_id: str
-) -> tuple[Exception | None, str | None]:
-    """The failure of a delegated broadcast that fails its task, and the
-    responder it is: a buffered response's error, or the stream error, the
-    stream's responder told as :func:`_stream_failed_by` tells it."""
+def _responder_failures(
+    result: BroadcastResult, stream_error: Exception | None, agent_id: str | None
+) -> dict[str | None, Exception]:
+    """A delegated broadcast's failures, by the responder whose turn each
+    ended: each buffered response's error, and the stream error, its
+    responder told as :func:`_stream_failed_by` tells it."""
     failures: dict[str | None, Exception] = {
         cid: out.error for cid, out in result.outputs.items() if out.error is not None
     }
     if stream_error is not None:
         failures.setdefault(_stream_failed_by(result, agent_id), stream_error)
-    return _task_failure(failures, agent_id, room_id)
+    return failures
+
+
+def _streamers(result: BroadcastResult) -> set[str]:
+    """The responders of a delegated broadcast that answered by a stream."""
+    return {sr.source_channel_id for sr in result.streaming_responses}
 
 
 def _stream_failed_by(result: BroadcastResult, agent_id: str | None) -> str | None:
-    """Whose turn a delegated broadcast's stream error ended: its only
-    responder's, else the delegated agent's unless the agent's record says
-    its turn ended otherwise than failing; ``None`` when it cannot be told."""
-    responders = _responder_records(result)
-    if len(responders) == 1:
-        return next(iter(responders))
-    if agent_id is None or agent_id not in responders:
+    """Whose turn a delegated broadcast's stream error ended, among the
+    responders that streamed: the only one's, else the delegated agent's
+    unless it did not stream or its record says its turn ended otherwise
+    than failing; ``None`` when it cannot be told."""
+    streamers = _streamers(result)
+    if len(streamers) == 1:
+        return next(iter(streamers))
+    if agent_id is None or agent_id not in streamers:
         return None
-    return agent_id if recorded_turn_end(responders[agent_id]) in (None, "error") else None
+    record = _responder_records(result).get(agent_id, {})
+    return agent_id if recorded_turn_end(record) in (None, "error") else None
 
 
 def _task_failure(
-    failures: Mapping[str | None, Exception], agent_id: str | None, room_id: str
+    failures: Mapping[str | None, Exception], agent_id: str | None
 ) -> tuple[Exception | None, str | None]:
     """The failure that fails a delegated task, and whose turn it is: its
-    agent's own; another responder's is that responder's turn, reported in
-    the child room and logged, which leaves the task its agent's (RFC §23.3
-    step 6). Without an agent, the first failure."""
+    agent's own, another responder's being that responder's turn (RFC §23.3
+    step 6); without an agent, the first failure."""
     if agent_id is None:
         return next(((failure, cid) for cid, failure in failures.items()), (None, None))
-    for cid, failure in failures.items():
-        if cid != agent_id:
-            _tasks_logger.warning(
-                "In %s, %s's turn failed; the task is %s's: %s",
-                room_id,
-                cid or "a responder",
-                agent_id,
-                failure,
-            )
     failure = failures.get(agent_id)
     return (failure, agent_id) if failure is not None else (None, None)
+
+
+def _log_others(
+    failures: Mapping[str | None, Exception],
+    agent_id: str | None,
+    room_id: str,
+    *,
+    provider_only: Collection[str] = (),
+) -> None:
+    """Log, once, each failure of a responder other than the delegated agent,
+    as any turn's failure is logged: its turn's, which leaves the task its
+    agent's (RFC §15.2, §23.3 step 6). For the responders *provider_only*
+    names, only a provider's error, which their reader logged at DEBUG."""
+    if agent_id is None:
+        return
+    for cid, failure in failures.items():
+        if cid == agent_id or (cid in provider_only and not isinstance(failure, ProviderError)):
+            continue
+        log_failure(_tasks_logger, failure, f"In {room_id}, {cid or 'another agent'}'s turn")
 
 
 def _responder_records(result: BroadcastResult) -> dict[str, Mapping[str, Any]]:
@@ -557,7 +578,8 @@ async def _collect_answer(
             failures.setdefault(sr.source_channel_id, exc)
             continue
         turns.setdefault(sr.source_channel_id, outcome)
-    failure, _ = _task_failure(failures, agent_id, child_room_id)
+    _log_others(failures, agent_id, child_room_id)
+    failure, _ = _task_failure(failures, agent_id)
     if failure is not None:
         # Reported in the child room: a buffered failure by the delivery set,
         # a stream's by its trace writer.

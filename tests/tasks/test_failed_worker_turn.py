@@ -253,6 +253,29 @@ async def test_one_agents_failure_never_carries_anothers_end() -> None:
     await kit.close()
 
 
+@pytest.mark.parametrize("shared", [["b"], ["b", "email-out"]], ids=["trace", "transport"])
+async def test_another_agent_s_provider_failure_is_logged_once_as_its_turn(
+    shared: list[str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """RMK-879 review: b's 503 leaves the task the worker's, and is logged
+    once, as any turn's provider failure is (RFC §15.2), naming b."""
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("email-out"))
+    kit.register_channel(_FailsBeforeAnyEnd("b"))
+    kit.register_channel(Agent("worker", provider=MockAIProvider(responses=["Found it."])))
+    await kit.create_room(room_id="p")
+    await kit.attach_channel("p", "email-out")
+    await kit.attach_channel("p", "b", category=ChannelCategory.INTELLIGENCE)
+
+    with caplog.at_level(logging.DEBUG, logger="roomkit.tasks"):
+        result, _ = await _delegate(kit, "worker", share_channels=shared)
+    await kit.close()
+
+    lines = [r for r in caplog.records if "b's turn" in r.getMessage()]
+    assert (result.status, result.output) == ("completed", "Found it.")
+    assert [(r.levelno, "status=503" in r.getMessage()) for r in lines] == [(logging.ERROR, True)]
+
+
 def test_a_failure_with_no_end_or_a_completed_one_or_a_cut_is_raised_as_it_is() -> None:
     error = ProviderError("upstream 400", provider="mock", status_code=400)
     cut = TaskCutShortError("max_rounds", "Still checking.")
