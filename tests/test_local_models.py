@@ -29,6 +29,7 @@ from roomkit.local_models import (
     download_local_model,
     find_local_model,
     is_downloaded,
+    list_local_models,
     local_model_config,
     local_model_dir,
 )
@@ -137,6 +138,16 @@ class TestKnownModels:
         assert len(KOKORO_V1_VOICES) == 54
         assert KOKORO_V1_VOICES.index("af_heart") == 3
         assert KOKORO_V1_VOICES.index("ff_siwis") == 30
+
+    def test_list_holds_every_model_or_those_of_one_config(self) -> None:
+        assert list_local_models() == list(LOCAL_MODELS)
+        tts = list_local_models(SHERPA_ONNX_TTS)
+        assert tts and all(model.kind == SHERPA_ONNX_TTS for model in tts)
+        assert {m.name for m in tts} == {m.name for m in LOCAL_MODELS if m.kind == SHERPA_ONNX_TTS}
+
+    def test_list_refuses_an_unknown_kind(self) -> None:
+        with pytest.raises(ValueError, match="sherpa-onnx-stt"):
+            list_local_models("sherpa-onnx")
 
     def test_unknown_name_lists_the_known_ones(self) -> None:
         with pytest.raises(ValueError, match="zipformer-en-2023-06-26"):

@@ -8,7 +8,7 @@ from typing import Any
 
 from roomkit.local_models._audio import PIPELINE_MODELS
 from roomkit.local_models._install import install, is_installed
-from roomkit.local_models._model import LocalModel
+from roomkit.local_models._model import KINDS, LocalModel
 from roomkit.local_models._stt import STT_MODELS
 from roomkit.local_models._tts import TTS_MODELS
 
@@ -28,6 +28,20 @@ def default_models_dir() -> Path:
         return Path(explicit)
     base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
     return Path(base) / "roomkit" / "models"
+
+
+def list_local_models(kind: str | None = None) -> list[LocalModel]:
+    """The known local models; ``kind`` keeps those for one provider config.
+
+    ``kind`` is one of :data:`KINDS`: ``"sherpa-onnx-stt"``, ``"sherpa-onnx-tts"``,
+    ``"sherpa-onnx-vad"``, ``"sherpa-onnx-denoiser"`` or ``"smart-turn"``.
+
+    Raises:
+        ValueError: ``kind`` is not one of them.
+    """
+    if kind is not None and kind not in KINDS:
+        raise ValueError(f"Unknown local model kind {kind!r}; expected one of {KINDS}")
+    return [model for model in LOCAL_MODELS if kind is None or model.kind == kind]
 
 
 def find_local_model(name: str, *, kind: str | None = None) -> LocalModel:
@@ -114,4 +128,4 @@ def _models_root(models_dir: str | Path | None) -> Path:
 
 
 def _names(kind: str | None) -> list[str]:
-    return [model.name for model in LOCAL_MODELS if kind is None or model.kind == kind]
+    return [model.name for model in list_local_models(kind)]

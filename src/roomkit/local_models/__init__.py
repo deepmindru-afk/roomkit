@@ -4,7 +4,7 @@ RoomKit knows the files of the local models its providers run (sherpa-onnx
 speech-to-text, text-to-speech, VAD and denoiser, Smart Turn), each pinned to
 its URL and SHA-256. Download them once::
 
-    python -m roomkit.local_models list
+    python -m roomkit.local_models list          # list_local_models() from Python
     python -m roomkit.local_models download zipformer-en-2023-06-26 kokoro-int8-multi-lang-v1_0
 
 then build a provider config by the model's name. Building it never touches
@@ -41,6 +41,7 @@ from roomkit.local_models._registry import (
     download_local_model,
     find_local_model,
     is_downloaded,
+    list_local_models,
     local_model_config,
     local_model_dir,
 )
@@ -66,6 +67,7 @@ __all__ = [
     "download_local_model",
     "find_local_model",
     "is_downloaded",
+    "list_local_models",
     "local_model_config",
     "local_model_dir",
 ]

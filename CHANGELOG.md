@@ -61,6 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unless `stream_language` fixes it. `examples/voice_local_pocket_fr.py` takes
   it with `STT_MODEL`.
 
+- `roomkit.local_models.list_local_models(kind=None)` (RMK-898): the known
+  local models, or those for one provider config
+  (`list_local_models("sherpa-onnx-tts")`); an unknown kind is refused with
+  the valid ones named. `python -m roomkit.local_models list` reads it.
+
 ### Fixed
 
 - In continuous mode, an acknowledgement whose first partial was taken for

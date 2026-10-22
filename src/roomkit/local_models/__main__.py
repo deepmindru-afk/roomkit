@@ -10,7 +10,6 @@ from pathlib import Path
 
 from roomkit.local_models import (
     KINDS,
-    LOCAL_MODELS,
     LocalModel,
     ModelDownloadError,
     ModelNotDownloadedError,
@@ -18,6 +17,7 @@ from roomkit.local_models import (
     download_local_model,
     find_local_model,
     is_downloaded,
+    list_local_models,
     local_model_dir,
 )
 
@@ -65,7 +65,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def _list(kind: str | None, models_dir: str | None) -> int:
     root = default_models_dir() if models_dir is None else Path(models_dir)
-    rows = [model for model in LOCAL_MODELS if kind is None or model.kind == kind]
+    rows = list_local_models(kind)
     width = max(len(model.name) for model in rows)
     for model in rows:
         mark = "*" if is_downloaded(model, root) else " "
