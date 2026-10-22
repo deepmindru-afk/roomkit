@@ -130,7 +130,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its own and the task's line, named by the progress entry, stayed running
   for `task_status`, the turn's notes and the console's `/tasks`. The entry
   now names the task once the task exists, on both doors (inline and
-  background).
+  background), and ends the task's line whatever action the run posts under:
+  a Loop's producer and reviewers (`iteration`, `review`) left it running
+  even when they completed.
 
 - A delegated task its task runner refuses (its `submit` raises), or whose
   run raises outside its turn's outcome (inline or in the background), ends
@@ -292,7 +294,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the kit keeps (the latest 1024, all rooms together): a task that ended
   while the status bus still lists it running reads as no task of the room
   (RMK-876). The bound stays one for all rooms; RMK-871 and RMK-875 removed
-  the two known causes of a line left running after its end.
+  the known causes of a line left running after its end.
 
 - The RFC (§10.6, §10.6.8), `TurnLinkError`'s docstring and the Redis turn
   backend guide name `backend_closed`, the reason a turn still in flight

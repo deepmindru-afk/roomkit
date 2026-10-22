@@ -105,11 +105,17 @@ def room_tasks(entries: Iterable[StatusEntry]) -> list[dict[str, Any]]:
     progress from its latest ``info`` one, which never ends it.
 
     An orchestration worker run posts its ``pending`` entry before its task has
-    an id: the run's terminal entry, which names the task, joins it.
+    an id: the run's terminal entry, which names the task, joins it. A run
+    posting under an action of its own (a Loop's ``iteration`` or ``review``)
+    opens no line, but its terminal entry ends the line its worker's progress
+    opened (RFC §19.7.3).
     """
     tasks: dict[str, dict[str, Any]] = {}
     for entry in entries:
         task_id = str(entry.metadata.get("task_id") or "")
+        if entry.action != TASK_ACTION:
+            _end_run_line(tasks.get(task_id), entry)
+            continue
         by_agent = f"agent:{entry.agent_id}"
         if task_id and task_id not in tasks and by_agent in tasks:
             tasks[task_id] = tasks.pop(by_agent)
@@ -134,6 +140,18 @@ def room_tasks(entries: Iterable[StatusEntry]) -> list[dict[str, Any]]:
             # The whole outcome when the summary was cut (RFC §19.8).
             line["result"] = entry.metadata.get("result", entry.detail)
     return list(tasks.values())
+
+
+def _end_run_line(line: dict[str, Any] | None, entry: StatusEntry) -> None:
+    """End *line*, a task's, with *entry*, the terminal entry its strategy's
+    run posted under its own action: failed when the run says so, else
+    completed (a review asking for a revision ended its task too)."""
+    if line is None:
+        return
+    status = str(TaskStatus.FAILED if entry.status == StatusLevel.FAILED else TaskStatus.COMPLETED)
+    line.update(status=status, ended=entry.ts)
+    if status == str(TaskStatus.COMPLETED):
+        line["result"] = entry.metadata.get("result", entry.detail)
 
 
 class TaskStatusTool:
@@ -206,11 +224,19 @@ def _named_by_handle(tasks: list[dict[str, Any]], room: Room | None) -> list[dic
 
 
 async def room_task_lines(bus: StatusBus, room_id: str, window: int) -> list[dict[str, Any]]:
-    """The tasks *bus* lists for *room_id*, read from its latest *window* entries."""
+    """The tasks *bus* lists for *room_id*, read from its latest *window*
+    entries: a task's own, and a strategy run's terminal entry naming its
+    task under the run's own action."""
     entries = await bus.recent(window)
-    return room_tasks(
-        e for e in entries if e.action == TASK_ACTION and e.metadata.get("room_id") == room_id
-    )
+    return room_tasks(e for e in entries if e.metadata.get("room_id") == room_id and _of_a_task(e))
+
+
+def _of_a_task(entry: StatusEntry) -> bool:
+    """Whether a task's line reads *entry*: one posted under the task action,
+    or the end of a strategy's run that names its task."""
+    if entry.action == TASK_ACTION:
+        return True
+    return bool(entry.metadata.get("task_id")) and entry.status != StatusLevel.PENDING
 
 
 class CancelTaskTool:

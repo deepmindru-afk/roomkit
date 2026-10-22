@@ -15,10 +15,12 @@ from roomkit.tools.context import tool_turn_context
 from tests.tasks.test_cancel_task import _Endless, _Room
 
 
-async def _worker_run(room: _Room, door: str, timeout: float | None) -> asyncio.Future[object]:
-    """A sequential strategy's run of ``worker`` in room ``r``: inline, or
-    following a task the runner runs in the background."""
-    status = WorkerStatus({"room_id": "r", "strategy": "sequential"})
+async def _worker_run(
+    room: _Room, door: str, timeout: float | None, action: str = "task"
+) -> asyncio.Future[object]:
+    """A strategy's run of ``worker`` in room ``r``, its entries under
+    *action*: inline, or following a task the runner runs in the background."""
+    status = WorkerStatus({"room_id": "r", "strategy": "sequential"}, action=action)
     if door == "inline":
         run = run_worker(room.kit, "r", "worker", "Count.", timeout=timeout, status=status)
         return asyncio.ensure_future(run)
@@ -30,9 +32,13 @@ async def _worker_run(room: _Room, door: str, timeout: float | None) -> asyncio.
 
 @pytest.mark.parametrize("door", ["inline", "background"])
 @pytest.mark.parametrize("end", ["timed-out", "cancelled"])
-async def test_a_worker_cut_after_its_progress_leaves_its_line_ended(door: str, end: str) -> None:
+# A Loop's producer posts its run under an action of its own (RMK-875 review).
+@pytest.mark.parametrize("action", ["task", "iteration"])
+async def test_a_worker_cut_after_its_progress_leaves_its_line_ended(
+    door: str, end: str, action: str
+) -> None:
     room = await _Room(_Endless()).open()
-    run = await _worker_run(room, door, timeout=None if end == "cancelled" else 0.5)
+    run = await _worker_run(room, door, timeout=None if end == "cancelled" else 0.5, action=action)
     await asyncio.wait_for(room.worker.started.wait(), 5)
     child = next(r.id for r in await room.kit.store.list_rooms() if r.id.startswith("r::task-"))
     with tool_turn_context(room_id=child):
