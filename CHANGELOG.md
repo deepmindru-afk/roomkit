@@ -295,6 +295,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   place. The test of a turn given up as its owner closes runs across Redis
   too, and checks that the executor cuts it as `owner_lost`.
 
+- A live agent's turn after the kit's own executor closed (a host calling
+  `kit.turn_executor.close()` while the kit runs) fails with `no_executor`
+  (RMK-880). It went to a host executor that declares the channel, whose copy
+  answered without the live agent's state. Both backends read
+  `TurnExecutor.hosts_channel(channel_id)`, new: what an executor declares
+  while it serves, closed or not, for a backend of your own to keep the same
+  rule (RFC §10.6.7).
+
 - An answer a barge-in cut reads, in the AI context, with how far the person
   heard it (RFC §6.4): `[The person cut you off during this answer, 5.7 s in:
   they heard it up to “…” and not the rest.]`, where it read "[You were

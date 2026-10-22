@@ -275,8 +275,9 @@ class InMemoryTurnBackend(TurnBackend):
         takes it, else the first that takes it (RFC §10.6.7); ``None`` when
         none does."""
         own = self._owner.executor if self._owner is not None else None
-        if own is not None and own in self._executors and own.declares(channel_id):
-            return own if own.takes(channel_id, room_hooks) else None
+        if own is not None and own.hosts_channel(channel_id):
+            # Its live channels never run on a copy, even once it closed.
+            return own if own in self._executors and own.takes(channel_id, room_hooks) else None
         holder = self._holders.get(channel_id, room_id)
         if holder is not None and holder.takes(channel_id, room_hooks):
             return holder

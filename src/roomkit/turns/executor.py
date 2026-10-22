@@ -224,7 +224,14 @@ class TurnExecutor:
 
     def declares(self, channel_id: str) -> bool:
         """Whether this executor takes the turns of *channel_id*."""
-        return not self._closed and (self._hosts is None or self._hosts(channel_id))
+        return not self._closed and self.hosts_channel(channel_id)
+
+    def hosts_channel(self, channel_id: str) -> bool:
+        """Whether this executor runs the turns of *channel_id* while it
+        serves: what it declares, closed or not. A backend reads it of the
+        owner's own executor, whose live channels' turns no other executor
+        takes, even once it closed (RFC §10.6.7)."""
+        return self._hosts is None or self._hosts(channel_id)
 
     @property
     def hosted(self) -> frozenset[str] | None:

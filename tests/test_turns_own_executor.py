@@ -118,6 +118,42 @@ async def test_a_live_agent_s_turn_never_moves_to_a_host_for_a_room_hook(
     assert [e.reason for e in refusals if isinstance(e, TurnLinkError)] == ["no_executor"]
 
 
+async def test_a_live_agent_s_turn_fails_once_the_kit_s_executor_closed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """RMK-880: the host closes the kit's own executor while the kit runs:
+    the live agent's turn fails no_executor, and the host's copy, which
+    declares the channel, never answers in its place (RFC §10.6.7)."""
+    providers: list[MockAIProvider] = []
+
+    def build(channel_id: str) -> AIChannel:
+        providers.append(MockAIProvider(responses=["from the host"]))
+        return AIChannel(channel_id, provider=providers[-1])
+
+    kit = RoomKit()
+    host = TurnExecutor(build)
+    await kit._turns.backend.serve(host)
+    kit.register_channel(WebSocketChannel("ws"))
+    kit.register_channel(AIChannel("ai", provider=MockAIProvider(responses=["from the kit"])))
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "ws")
+    await kit.attach_channel("r", "ai", category=ChannelCategory.INTELLIGENCE)
+    await kit.turn_executor.close()
+
+    with caplog.at_level(logging.ERROR, logger="roomkit"):
+        await kit.process_inbound(
+            InboundMessage(channel_id="ws", sender_id="u", content=TextContent(body="hi"))
+        )
+    events = await kit.store.list_events("r")
+    await kit.close()
+    await host.close()
+
+    assert [e.content.body for e in events if e.source.channel_id == "ai"] == []
+    assert all(not provider.calls for provider in providers)
+    refusals = [r.exc_info[1] for r in caplog.records if r.exc_info]
+    assert [e.reason for e in refusals if isinstance(e, TurnLinkError)] == ["no_executor"]
+
+
 class _Tagged(AIChannel):
     """An agent that says whose copy answered a channel call or a committed
     event."""

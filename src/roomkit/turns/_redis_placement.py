@@ -159,11 +159,11 @@ class Placement:
         return _takers(alive, channel_id, room_hooks, self._node, skipped)
 
     def _owning(self, channel_id: str) -> TurnExecutor | None:
-        """The owner's own executor when it declares *channel_id*: it runs the
-        channels the owner holds live, and no other executor takes their turns
-        (RFC §10.6.7)."""
+        """The owner's own executor when it hosts *channel_id*, closed or not:
+        it runs the channels the owner holds live, and no other executor
+        takes their turns, even once it closed (RFC §10.6.7)."""
         own = self.own
-        return own if own is not None and own in self.here and own.declares(channel_id) else None
+        return own if own is not None and own.hosts_channel(channel_id) else None
 
     def _own_taken(
         self,
