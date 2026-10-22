@@ -85,11 +85,25 @@ class People:
             return record
         return next((r for r in self._by_identity.get(pid, ()) if reached(r, channel)), None)
 
+    def names_another(self, event: RoomEvent) -> bool:
+        """Whether *event*'s id is a participant's the room reached through
+        other channels only: it names nobody on the event's channel, and read
+        back on its own it would name them."""
+        pid = event.source.participant_id
+        return pid is not None and pid in self._by_id and self.named(event) is None
+
     def _standing_for(self, record: Participant) -> Participant:
         """The record standing for *record*'s person: its identity's first."""
         if record.identity_id is None:
             return record
         return next(iter(self._by_identity.get(record.identity_id, ())), record)
+
+
+def own_record_id(channel_id: str, sender_id: str) -> str:
+    """The id of the record a pending sender gets of their own when their id
+    is a participant's reached through other channels only (RFC §5.5): one per
+    sender and channel, so their next message finds it again."""
+    return f"pending-{digest(channel_id, [sender_id])}"
 
 
 def reached(record: Participant, channel_id: str) -> bool:

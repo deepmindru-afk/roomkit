@@ -68,12 +68,21 @@ class TestParticipantRuleWins:
 
     async def test_the_senders_room_is_preferred_over_the_binding(self) -> None:
         store = await _store_with_rooms("r1", "r2")
-        # Alice belongs to r2; the channel is bound to both, so the binding
-        # rule alone would be ambiguous and give up.
-        await store.add_participant(Participant(id="alice", room_id="r2", channel_id="ws-alice"))
+        # Alice joined r2 through this channel; the channel is bound to both,
+        # so the binding rule alone would be ambiguous and give up.
+        await store.add_participant(Participant(id="alice", room_id="r2", channel_id="ws"))
         router = DefaultInboundRoomRouter(store)
 
         assert await router.route("ws", ChannelType.WEBSOCKET, participant_id="alice") == "r2"
+
+    async def test_a_room_joined_through_another_channel_is_not_the_senders(self) -> None:
+        """An id names its participant only on a channel they are reached
+        through (RFC §5.5): the same id on this channel is another sender."""
+        store = await _store_with_rooms("r1", "r2")
+        await store.add_participant(Participant(id="alice", room_id="r2", channel_id="ws-alice"))
+        router = DefaultInboundRoomRouter(store)
+
+        assert await router.route("ws", ChannelType.WEBSOCKET, participant_id="alice") is None
 
     async def test_the_binding_of_this_channel_naming_the_sender_finds_their_room(
         self,

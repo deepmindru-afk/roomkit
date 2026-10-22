@@ -114,32 +114,28 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         First the room whose binding of this very channel names the sender: a
         binding speaks for its own channel, so a correspondent of one number
         is not taken to that room when they write to another. Then the room
-        where the sender is a participant; the stores record which channels a
-        participant reached, not their types, so that half matches whatever
-        the channel type. The sender is named by their address, then by the
-        identity the store resolves it to (``link_address``), as in step 3: a
-        member the host added under their identity is found by their number.
+        where the sender is a participant. The sender is named by their
+        address, then by the identity the store resolves it to
+        (``link_address``), as in step 3: a member the host added under their
+        identity is found by their number.
 
-        An identity reaches further than an address, across every channel the
-        person uses, so a room found through it as a participant is the
-        sender's only when the identity joined it through this channel: an
-        SMS from a number linked to someone's identity does not land in a team
-        room they joined on another channel, which would then carry that
-        room's messages over SMS.
+        A room found through a participant record is the sender's only when
+        that participant joined it through this channel: an id names its
+        participant only on a channel they are reached through (RFC §5.5). A
+        number linked to someone's identity, or a sender id equal to a
+        participant's on another channel, does not land in a room they joined
+        elsewhere, which would then carry that room's messages to this sender.
         """
         active = str(RoomStatus.ACTIVE)
         known = await sender_known_as(self._store, channel_type, sender)
-        identities = sorted(known - {sender})
-        for name in (sender, *identities):
+        names = (sender, *sorted(known - {sender}))
+        for name in names:
             room_id = await self._store.find_room_id_by_binding(channel_id, name, status=active)
             if room_id is not None:
                 return room_id
-        room_id = await self._store.find_room_id_by_participant(sender, status=active)
-        if room_id is not None:
-            return room_id
-        for identity in identities:
-            room_id = await self._store.find_room_id_by_participant(identity, status=active)
-            if room_id is not None and await self._joined_through(room_id, channel_id, identity):
+        for name in names:
+            room_id = await self._store.find_room_id_by_participant(name, status=active)
+            if room_id is not None and await self._joined_through(room_id, channel_id, name):
                 return room_id
         return None
 

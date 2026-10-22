@@ -27,7 +27,7 @@ from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
-from roomkit.core._authors import reached, with_author
+from roomkit.core._authors import own_record_id, reached, with_author
 from roomkit.core._participant_channels import channels_reached, warn_cross_channel
 from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.core.hooks import SyncPipelineResult
@@ -458,16 +458,19 @@ class HelpersMixin:
         channel it arrived on, that record is returned without creating a
         duplicate. An id naming a record reached through other channels only
         names nobody here (RFC §5.5): a sender nobody identified does not adopt
-        it, and gets a record of its own.
+        it, and gets a record of its own (:func:`own_record_id`), the one the
+        identity step sends the event under and their next message finds.
         """
         participant_id = event.source.participant_id or f"pending-{uuid4().hex[:8]}"
         channel_id = event.source.channel_id
         existing = await self._store.get_participant(room_id, participant_id)
-        if existing is not None and reached(existing, channel_id):
+        if existing is not None and not reached(existing, channel_id):
+            # Reached elsewhere since the identity step read the roster.
+            participant_id = own_record_id(channel_id, participant_id)
+            existing = await self._store.get_participant(room_id, participant_id)
+        if existing is not None:
             warn_cross_channel(existing, channel_id, rehomed=False)
             return existing
-        if existing is not None:
-            participant_id = f"pending-{uuid4().hex[:8]}"
         candidate_ids = [c.id for c in id_result.candidates] if id_result.candidates else None
         participant = Participant(
             id=participant_id,

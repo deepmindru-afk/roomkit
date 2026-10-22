@@ -351,12 +351,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identity resolution, and their verification label: a message on `web`
   carrying the id of an identity verified through SMS was stamped
   `verified` and released to the agent. All of these now read one lookup
-  (`People.named`). An identity's id names its person on a channel the
-  identity pipeline resolved them on, no longer on any. A pending sender
-  whose id names a record reached through other channels only gets a
-  record of its own instead of adopting it. A host that relied on two
-  transports sharing ids now links the person explicitly, with `add_member`
-  (or `join`) on each channel, or through the identity pipeline.
+  (`People.named`). An identity's id names its person on a channel one of
+  their records was reached through (the identity pipeline records the
+  channel it resolved them on), no longer on any. Three more readings follow
+  the rule:
+  - `current_tool_actor_id()` is `None` when the sender's id is a
+    participant's reached through other channels only: a handler resolving
+    it would otherwise act for that participant;
+  - inbound routing (RFC §10.4 step 1) finds a room through a participant
+    record only when that participant joined it through the message's
+    channel: a sender borrowing the id of a room's owner on another channel
+    no longer lands in that room nor claims its binding, which would have
+    sent the room's replies to them;
+  - a pending sender whose id names a record reached through other channels
+    only gets a record of its own, one per sender and channel, and writes
+    under its id, instead of adopting the other record.
+
+  A host that relied on two transports sharing ids now links the person
+  explicitly, with `add_member` (or `join`, `ensure_participant`) on each
+  channel, or through the identity pipeline.
 - Who takes part, silent people included (RMK-904). An agent that joins a
   meeting where one person speaks while others listen read that person's
   words as an anonymous user's until a second one spoke, and did not know

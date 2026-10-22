@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.core._authors import People
+from roomkit.core._authors import People, own_record_id
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.models.enums import HookTrigger, IdentificationStatus
 from roomkit.models.identity import Identity, IdentityResult
@@ -240,6 +240,9 @@ class InboundIdentityMixin(HelpersMixin):
                 id_result, event, room_id, context
             )
 
+        if pending_id_result is not None:
+            event = _as_own_sender(event, context)
+
         if resolved_identity is not None:
             await self._announce_identity_resolved(event, room_id, resolved_identity, id_result)
 
@@ -356,6 +359,18 @@ class InboundIdentityMixin(HelpersMixin):
                 ),
             )
         return event, None, None
+
+
+def _as_own_sender(event: Any, context: RoomContext) -> Any:
+    """*event* sent under the record a pending sender gets of their own when
+    their id is a participant's reached through other channels only (RFC
+    §5.5), so the pending record is the event's sender, resolved as it."""
+    if not People(context.participants).names_another(event):
+        return event
+    own = own_record_id(event.source.channel_id, event.source.participant_id)
+    return event.model_copy(
+        update={"source": event.source.model_copy(update={"participant_id": own})}
+    )
 
 
 def _sender_already_identified(event: Any, context: RoomContext) -> bool:

@@ -59,6 +59,7 @@ from roomkit.channels._tool_usage import ToolUsageMemory
 from roomkit.channels._turn_budget import turn_budget
 from roomkit.channels._turn_config import ConfigProvider
 from roomkit.channels.base import Channel
+from roomkit.core._authors import People
 from roomkit.memory.base import MemoryProvider
 from roomkit.memory.sliding_window import SlidingWindowMemory
 from roomkit.models.channel import (
@@ -739,7 +740,10 @@ class AIChannel(
         """
         ctx = _ToolLoopContext()
         ctx.current_participant_role = self._resolve_participant_role(event, context)
-        ctx.actor_id = event.source.participant_id
+        # A participant reached through other channels only is not the
+        # sender, and their id read back would name them (RFC §5.5).
+        people = People(context.participants)
+        ctx.actor_id = None if people.names_another(event) else event.source.participant_id
         ctx.chain_depth = event.chain_depth + 1
         ctx.room_id = context.room.id if context.room else event.room_id
         ctx.room = context.room

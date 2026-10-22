@@ -51,16 +51,18 @@ def sees(agent: str, event: RoomEvent, context: RoomContext) -> bool:
     return visibility_allows(event.visibility, binding)
 
 
-def is_person(event: RoomEvent, context: RoomContext) -> bool:
+def is_person(event: RoomEvent, context: RoomContext, people: People | None = None) -> bool:
     """A transport's event from a participant that is neither an agent nor a
-    bot, or with no participant record behind it (rule 2); never the
-    framework's own sender of a delivery (§22)."""
+    bot, or with no participant record behind it on its channel (rule 2, RFC
+    §5.5); never the framework's own sender of a delivery (§22). *people* is
+    the room's roster as :class:`People` reads it, for a caller that already
+    built it."""
     if event.source.participant_id == SYSTEM_SENDER_ID:
         return False
     binding = context.get_binding(event.source.channel_id)
     if binding is None or binding.category != ChannelCategory.TRANSPORT:
         return False
-    participant = _participant(event, context)
+    participant = (people or People(context.participants)).named(event)
     return participant is None or participant.role not in _NOT_PEOPLE
 
 
@@ -88,7 +90,7 @@ def people_index(
     entries: list[tuple[str, Source]] = [
         (_label_of(p), ("participant", p.id)) for p in context.participants if _active_person(p)
     ]
-    spoken_events = [e for e in context.recent_events if is_person(e, context)]
+    spoken_events = [e for e in context.recent_events if is_person(e, context, people)]
     labels = turn_labels(spoken_events, context)
     for event in spoken_events:
         label = labels.get(event.id)
@@ -122,10 +124,6 @@ def one_person(index: PeopleIndex, name: str) -> str | None:
     several sources answer to it: neither may then answer for the other."""
     named = index.get(name.casefold(), [])
     return named[0][0] if len(named) == 1 else None
-
-
-def _participant(event: RoomEvent, context: RoomContext) -> Participant | None:
-    return People(context.participants).named(event)
 
 
 def _active_person(participant: Participant) -> bool:

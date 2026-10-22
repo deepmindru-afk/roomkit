@@ -9,6 +9,7 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._runtime_record import RUNTIME_RECORD
+from roomkit.core._authors import reached
 from roomkit.core._delivery_keys import DeliveryKeys, NamedDelivery
 from roomkit.core.exceptions import ChannelNotRegisteredError, RoomNotFoundError
 from roomkit.core.inbound_router import (
@@ -817,7 +818,8 @@ class InboundMixin(HelpersMixin):
         router then finds them there and admits no one else (RFC §10.4). The
         sender stays when the binding names them, by their address or the
         identity the store resolves it to, or when they are a participant of
-        the room (one of several members the router found by their record).
+        the room reached through this channel (one of several members the
+        router found by their record; RFC §5.5).
         Anyone else was admitted against a binding another sender claimed
         since, and is routed again.
         """
@@ -835,7 +837,8 @@ class InboundMixin(HelpersMixin):
             binding, await sender_known_as(self._store, channel.channel_type, sender)
         ):
             return True
-        return await self._store.get_participant(room_id, sender) is not None
+        participant = await self._store.get_participant(room_id, sender)
+        return participant is not None and reached(participant, message.channel_id)
 
     async def _record_sender(
         self, room_id: str, message: InboundMessage, channel: Channel

@@ -493,6 +493,10 @@ def current_tool_actor_id() -> str | None:
 
     ``None`` outside a tool loop, and ``None`` when the turn has no
     participant behind it (a system injection, a webhook, a scheduled run).
+    ``None`` too when the sender's id is a participant's the room reached
+    through other channels only: an id names its participant only on a
+    channel they are reached through (RFC §5.5), so the turn's author is not
+    them, and the id read back would name them.
     A caller that needs a person then decides for itself — refuse, or fall
     back to a principal it configured on purpose — rather than borrow whoever
     spoke last.

@@ -28,9 +28,10 @@ from roomkit.models.enums import (
     ChannelType,
     DeleteType,
     EventType,
+    IdentificationStatus,
     ParticipantRole,
 )
-from roomkit.models.event import DeleteContent, EventSource, RoomEvent
+from roomkit.models.event import DeleteContent, EditContent, EventSource, RoomEvent
 from roomkit.models.identity import Identity, IdentityResult
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
@@ -154,12 +155,18 @@ class TestEditAndDelete:
         assert stored is not None and bool(stored.metadata.get("deleted")) is not blocked
         await kit.close()
 
-    async def test_the_same_sender_id_on_another_channel_is_not_the_author(self) -> None:
+    @pytest.mark.parametrize("rewrite", ["delete", "edit"])
+    async def test_the_same_sender_id_on_another_channel_is_not_the_author(
+        self, rewrite: str
+    ) -> None:
         kit = await _two_channel_room()
         original = (await _say(kit, "web", "alice", "v1")).event
         assert original is not None
 
-        result = await _delete(kit, "console", "alice", original, DeleteType.SENDER)
+        if rewrite == "delete":
+            result = await _delete(kit, "console", "alice", original, DeleteType.SENDER)
+        else:
+            result = await _edit(kit, "console", "alice", original)
 
         assert (result.blocked, result.reason) == (True, "not_original_author")
         await kit.close()
@@ -173,6 +180,34 @@ class TestEditAndDelete:
 
         assert result.blocked is False
         await kit.close()
+
+    async def test_one_identity_s_two_records_are_one_author(self) -> None:
+        """A member the host added under an identity, and the record the
+        identity pipeline keeps for it, are one person (RFC §6.4): what they
+        wrote through one channel they may delete through the other."""
+        resolver = MockIdentityResolver(mapping={"+15550001": Identity(id="id-a")})
+        kit = await _two_channel_room(identity_resolver=resolver)
+        await kit.add_member(ROOM, "console", "p-a", identity_id="id-a")
+        original = await _post_on(kit, "console", "p-a")
+
+        result = await _delete(kit, "web", "+15550001", original, DeleteType.SENDER)
+
+        assert result.blocked is False
+        await kit.close()
+
+
+async def _edit(kit: RoomKit, channel: str, sender: str, target: RoomEvent) -> InboundResult:
+    return await kit.process_inbound(
+        InboundMessage(
+            channel_id=channel,
+            sender_id=sender,
+            event_type=EventType.EDIT,
+            content=EditContent(
+                target_event_id=target.id, new_content=TextContent(body="v2"), edit_source="sender"
+            ),
+        ),
+        room_id=ROOM,
+    )
 
 
 async def _post_on(kit: RoomKit, channel: str, sender: str) -> RoomEvent:
@@ -233,16 +268,86 @@ class TestIdentification:
         assert resolver.asked == ["web"]
         await kit.close()
 
-    async def test_a_pending_sender_does_not_adopt_a_record_from_another_channel(self) -> None:
+    async def test_a_pending_sender_gets_one_record_of_their_own_and_writes_under_it(
+        self,
+    ) -> None:
         resolver = MockIdentityResolver(ambiguous={"u-1": [Identity(id="a"), Identity(id="b")]})
         kit = await _two_channel_room(identity_resolver=resolver)
 
-        await _say(kit, "web", "u-1", "first")
+        sent = [(await _say(kit, "web", "u-1", body)).event for body in ("one", "two", "three")]
 
         owner = await kit.store.get_participant(ROOM, "u-1")
         assert owner is not None and owner.connected_via == ["console"]
-        pending = [p for p in await kit.store.list_participants(ROOM) if p.id != "u-1"]
-        assert [p.channel_id for p in pending] == ["web"]
+        [own] = [p for p in await kit.store.list_participants(ROOM) if p.id != "u-1"]
+        assert (own.channel_id, own.identification) == ("web", IdentificationStatus.PENDING)
+        assert [e.source.participant_id for e in sent if e is not None] == [own.id] * 3
+        await kit.close()
+
+
+class TestToolActor:
+    @pytest.mark.parametrize(
+        ("channel", "sender", "actor"),
+        [("console", "u-1", "u-1"), ("web", "u-1", None), ("web", "stranger", "stranger")],
+    )
+    def test_the_actor_is_never_a_participant_reached_elsewhere_only(
+        self, channel: str, sender: str, actor: str | None
+    ) -> None:
+        """An id read back by a handler names its participant; a sender who
+        is not them on this channel is no actor, while a sender the room never
+        recorded keeps the id their channel gave (RFC §5.5, §21.4)."""
+        owner = Participant(id="u-1", room_id=ROOM, channel_id="console")
+        context = RoomContext(room=Room(id=ROOM), participants=[owner])
+        ai = AIChannel("ai", provider=MockAIProvider(responses=["ok"]))
+
+        loop = ai._turn_loop_ctx(_event(channel, sender), context)
+
+        assert loop.actor_id == actor
+
+
+async def _rooms_binding_web(**kit: Any) -> RoomKit:
+    """Room R, where u-1 is the owner through ``console``, binds ``web`` as one
+    correspondent's conversation; another room binds ``web`` too."""
+    room = RoomKit(**kit)
+    room.register_channel(_Transport("console"))
+    room.register_channel(_Transport("web"))
+    await room.create_room(room_id="R")
+    await room.attach_channel("R", "console", group=True)
+    await room.attach_channel("R", "web")
+    await room.add_member("R", "console", "u-1", display_name="Owner", role=ParticipantRole.OWNER)
+    await room.create_room(room_id="other")
+    await room.attach_channel("other", "web")
+    return room
+
+
+async def _routed(kit: RoomKit, channel: str, sender: str) -> str:
+    result = await kit.process_inbound(
+        InboundMessage(channel_id=channel, sender_id=sender, content=TextContent(body="hi"))
+    )
+    assert result.event is not None
+    return result.event.room_id
+
+
+class TestRouting:
+    async def test_an_id_equal_to_a_participant_s_elsewhere_gets_a_room_of_its_own(self) -> None:
+        """RFC §10.4 step 1: a room found through a participant record is the
+        sender's only when that participant joined it through this channel,
+        else the room's replies on ``web`` would go to whoever borrowed the id."""
+        kit = await _rooms_binding_web()
+
+        room_id = await _routed(kit, "web", "u-1")
+
+        assert room_id not in {"R", "other"}
+        binding = await kit.store.get_binding("R", "web")
+        assert binding is not None and binding.participant_id is None
+        await kit.close()
+
+    async def test_the_participant_joined_through_the_channel_is_routed_to_their_room(
+        self,
+    ) -> None:
+        kit = await _rooms_binding_web()
+        await kit.add_member("R", "web", "u-1")
+
+        assert await _routed(kit, "web", "u-1") == "R"
         await kit.close()
 
 
