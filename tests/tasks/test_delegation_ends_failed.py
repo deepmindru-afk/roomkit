@@ -91,7 +91,8 @@ def _assert_turn_kept(raises: str, completed: list[DelegatedTaskResult]) -> None
     assert list(turns) == (["worker"] if raises == "its-result" else [])
 
 
-async def test_a_task_failing_before_it_is_announced_fires_no_completion() -> None:
+@pytest.mark.parametrize("wait", [True, False], ids=["inline", "background"])
+async def test_a_task_failing_before_it_is_announced_fires_no_completion(wait: bool) -> None:
     """RMK-910: reading the parent room's context to announce the task fails
     before ``ON_TASK_DELEGATED`` fires: the delegation raises to its caller,
     and nothing reports the end of a task never announced (RFC §23.3)."""
@@ -113,7 +114,7 @@ async def test_a_task_failing_before_it_is_announced_fires_no_completion() -> No
 
     room.kit._build_context = unreadable  # type: ignore[method-assign]
     with pytest.raises(RuntimeError, match="store is down"):
-        await room.kit.delegate("r", "worker", "Count.", wait=True, on_complete=record)
+        await room.kit.delegate("r", "worker", "Count.", wait=wait, on_complete=record)
     room.kit._build_context = build  # type: ignore[method-assign]
     await asyncio.sleep(0.05)
     lines = await room_task_lines(room.kit.status_bus, "r", 50)

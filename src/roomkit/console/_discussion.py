@@ -29,7 +29,7 @@ from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, EventType, HookExecution, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.orchestration.strategies.discussion._names import read_names
-from roomkit.tasks._room_tasks import why_not_cancelled
+from roomkit.tasks._room_tasks import HOST_REACH, why_not_cancelled
 from roomkit.tasks.background import BACKGROUND_TOOL
 from roomkit.tasks.status import room_task_lines
 
@@ -274,7 +274,12 @@ class DiscussionConsole:
         short = short_task(task_id)
         record = self._kit._room_tasks
         reach = record.reach(task_id, self._room_id)
-        if reach is not None and await self._kit.cancel_task(task_id):
+        # As an agent's cancel_task is decided, with the host's reach: one
+        # asked as another's cancel ends joins it.
+        cancelled = await self._kit._cancel_task_for(
+            task_id, None, room_id=self._room_id, reaches=HOST_REACH
+        )
+        if cancelled:
             return f"task {short} cancelled"
         # Read again: the task may have ended while the cancel waited.
         why = why_not_cancelled(record.reach(task_id, self._room_id))

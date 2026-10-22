@@ -25,8 +25,10 @@ class TaskRunner(ABC):
     (:meth:`cancel`, :meth:`close`, even before it ran), it ends with a
     ``cancelled`` result (:func:`~roomkit.tasks.models.cancelled_task_fields`);
     its run raising outside its turn's outcome, it ends failed with what was
-    raised. The framework closes the task's span, fires ``ON_TASK_COMPLETED``
-    and hands the result back from that call.
+    raised and the record of the turn it ran (``turns``,
+    :func:`~roomkit.tasks.models.finished_task_fields`, RFC §23.3 step 6).
+    The framework closes the task's span, fires ``ON_TASK_COMPLETED`` and
+    hands the result back from that call.
 
     The worker is given ``task.description``, what it reads (the brief,
     else the task, with the room's conversation when the delegation hands

@@ -134,8 +134,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (computing its result raised) keeps that turn's record under `turns`, as
   every other end does. And an agent that calls `cancel_task` while the
   host's cancel of the same task is being completed (its `ON_TASK_COMPLETED`
-  hooks still running) joins that cancel: it is answered cancelled and no
-  longer handed the cancellation back.
+  hooks still running) joins that cancel, until that end decides whom it
+  hands the cancellation back to: it is answered cancelled and no longer
+  handed the cancellation back. The console's `/cancel` joins it the same
+  way; a task that ended otherwise is answered as it ended, at once.
 
 - A location delivered as text with neither a label nor an address reads
   `[Location: (45.5, -73.6)]` (RFC §6.6, RMK-902); it read with two spaces.

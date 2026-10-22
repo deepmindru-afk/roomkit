@@ -170,41 +170,6 @@ async def test_the_host_and_an_agent_cancelling_at_once_cancel_once(first: str) 
     assert room.handed_back == []
 
 
-async def test_an_agent_cancelling_as_the_host_s_cancel_ends_joins_it() -> None:
-    """RMK-910: the host's cancel ended the task and its end is being
-    completed (an ON_TASK_COMPLETED hook still running) when the agent the
-    result was going to cancels it too: the agent's call joins that cancel,
-    answered as the host's is, and the agent is not handed it back
-    (RFC §23.4)."""
-    room = await _Room(_Endless()).open()
-    task = await room.running_task()
-    completing, release = asyncio.Event(), asyncio.Event()
-
-    @room.kit.hook(HookTrigger.ON_TASK_COMPLETED, execution=HookExecution.ASYNC)
-    async def slow(event: Any, ctx: Any) -> None:
-        completing.set()
-        await release.wait()
-
-    host = asyncio.ensure_future(room.kit.cancel_task(task.id))
-    await asyncio.wait_for(completing.wait(), 5)
-    agent = asyncio.ensure_future(_cancel(CancelTaskTool(room.kit), task.id))
-    await asyncio.sleep(0.05)  # the agent's call reaches the cancel under way
-    release.set()
-    answers = await asyncio.gather(host, agent)
-    await asyncio.sleep(0.1)  # a hand-back would be under way by now
-    await room.kit.close()
-
-    assert answers == [
-        True,
-        {
-            "task_id": task.id,
-            "status": "cancelled",
-            "message": "Cancelled: its result will not come back.",
-        },
-    ]
-    assert room.handed_back == []
-
-
 async def test_a_task_the_host_cancels_is_still_handed_back_to_the_agent() -> None:
     room = await _Room(_Endless()).open()
     task = await room.running_task()

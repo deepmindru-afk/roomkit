@@ -46,7 +46,7 @@ from roomkit.models.enums import (
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.response_metadata import TurnEntries
 from roomkit.tasks._child_status import record_task_end
-from roomkit.tasks._room_tasks import RoomTaskRecord, TaskCancel, TaskReach
+from roomkit.tasks._room_tasks import AGENT_REACH, RoomTaskRecord, TaskCancel, TaskReach
 from roomkit.tasks.brief import conversation_block, worker_description
 from roomkit.tasks.handback import CALLER_HANDS_BACK, bounded, hand_back, result_text
 from roomkit.tasks.models import (
@@ -170,7 +170,9 @@ def _cut_task_fields(
 ) -> dict[str, Any]:
     """The outcome of a task cut outside its turn's outcome (its delegation
     before it ran, or its run): cancelled, or failed with what cut it and the
-    record of the turn it ran (RFC §23.3 step 6)."""
+    record of the turn it ran (RFC §23.3 step 6). A cancellation comes here
+    only before a turn began, so it carries no record: a run cancelled from
+    outside ends through ``_end_inline_cancelled`` or its runner."""
     if isinstance(cut, asyncio.CancelledError):
         return cancelled_task_fields(context)
     return finished_task_fields(None, cut, context, turns)
@@ -867,27 +869,37 @@ class DelegationMixin(HelpersMixin):
         return await self._cancel_joined(task_id, None)
 
     async def _cancel_task_for(
-        self, task_id: str, channel_id: str | None, *, room_id: str
+        self,
+        task_id: str,
+        channel_id: str | None,
+        *,
+        room_id: str,
+        reaches: frozenset[TaskReach] = AGENT_REACH,
     ) -> bool:
-        """Cancel *task_id* for a ``cancel_task`` call made in *room_id*: only
-        a task of that room; when *channel_id*, the caller, is the one the
-        result was going to, it is not handed the cancellation back, the
-        tool's answer having told it. Calls asking at once cancel it once,
-        each answered as the first is, one asking as a cancel's end is being
-        completed included (RFC §23.4)."""
-        if self._room_tasks.reach(task_id, room_id) == "tool" or self._cancel_ending(
-            task_id, room_id
-        ):
+        """Cancel *task_id* for a call made in *room_id* that may cancel the
+        room's tasks of *reaches* (an agent's ``cancel_task``, the host's
+        console); when *channel_id*, the caller, is the one the result was
+        going to, it is not handed the cancellation back, the call's answer
+        having told it. Calls asking at once cancel it once, each answered as
+        the first is, one asking as a cancel's end is being completed included
+        (RFC §23.4)."""
+        reach = self._room_tasks.reach(task_id, room_id)
+        if reach in reaches or self._cancel_ending(task_id, room_id, reaches):
             return await self._cancel_joined(task_id, channel_id)
         return False
 
-    def _cancel_ending(self, task_id: str, room_id: str) -> bool:
-        """Whether *task_id*, a task of *room_id*, has ended while a cancel of
-        it is still under way: its end is being completed (its hooks run,
-        its hand-back is not decided yet)."""
+    def _cancel_ending(self, task_id: str, room_id: str, reaches: frozenset[TaskReach]) -> bool:
+        """Whether *task_id*, a task of *room_id* of *reaches*, ended cancelled
+        while a cancel of it is still under way, its end not yet decided whom
+        it hands the cancellation back to: a call asking now is one of that
+        cancel's (RFC §23.4)."""
+        cancel = self._task_cancels.get(task_id)
+        record = self._room_tasks
         return (
-            task_id in self._task_cancels
-            and self._room_tasks.ended_with(task_id, room_id) is not None
+            cancel is not None
+            and not cancel.sealed
+            and record.ended_with(task_id, room_id) == str(TaskStatus.CANCELLED)
+            and record.ended_reach(task_id, room_id) in reaches
         )
 
     async def _cancel_joined(self, task_id: str, channel_id: str | None) -> bool:
@@ -914,13 +926,14 @@ class DelegationMixin(HelpersMixin):
         return cancelled
 
     def _cancelled_by_notified(self, result: DelegatedTaskResult, notify_channel: str) -> bool:
-        """Whether *result* is a cancellation its notified channel asked for."""
+        """Whether *result* is a cancellation its notified channel asked for:
+        the cancel's callers read once, the cancel sealed, so a call asking
+        after this is answered as for any ended task (RFC §23.4)."""
         cancel = self._task_cancels.get(result.task_id)
-        return (
-            result.status == TaskStatus.CANCELLED
-            and cancel is not None
-            and notify_channel in cancel.callers
-        )
+        if cancel is None:
+            return False
+        cancel.sealed = True
+        return result.status == TaskStatus.CANCELLED and notify_channel in cancel.callers
 
     async def _on_delegation_complete(self, result: DelegatedTaskResult) -> None:
         """Fire ``ON_TASK_COMPLETED`` in the parent room for a finished delegation.

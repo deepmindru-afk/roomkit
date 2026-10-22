@@ -317,11 +317,11 @@ async def test_the_console_reads_a_task_that_ended_while_its_cancel_waited(
         assert await post_task_progress(kit, "2 of 9")
     short = task.id.removeprefix("task-")[:6]
 
-    async def ends_meanwhile(task_id: str) -> bool:
+    async def ends_meanwhile(task_id: str, channel_id: str | None, **_: object) -> bool:
         kit._room_tasks.end(task_id, "completed")
         return False
 
-    kit.cancel_task = ends_meanwhile  # type: ignore[method-assign]
+    kit._cancel_task_for = ends_meanwhile  # type: ignore[method-assign]
     pipe.send_text(f"/cancel {short}\r")
     await _until(lambda: f"task {short} had ended" in _room(console.view))
 
