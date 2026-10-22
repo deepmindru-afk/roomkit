@@ -6,18 +6,16 @@ workflows with optional loops (e.g., coder <-> reviewer).
 
 from __future__ import annotations
 
-import asyncio
-import contextvars
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 from roomkit.channels.agent import Agent
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
-from roomkit.core.task_utils import hold_task
-from roomkit.models.enums import EventType, HookExecution, HookTrigger
+from roomkit.models.enums import HookExecution, HookTrigger
 from roomkit.orchestration._agents import held
+from roomkit.orchestration._handoff_greeting import HandoffGreeting
 from roomkit.orchestration._realtime_pipeline import (
     RealtimePipeline,
     refuse_agents_with_unserved,
@@ -222,13 +220,19 @@ class ConversationPipeline:
                 self._wire_voice_map(kit, held_agents, voice_channel_id)
 
             if greet_on_handoff:
-                self._register_greet_hooks(
+                greeting = HandoffGreeting(
                     kit,
-                    voice_channel_id=voice_channel_id,  # ty: ignore[invalid-argument-type]
-                    greeting_prompt=greeting_prompt,
-                    farewell_prompt=farewell_prompt,
-                    hook_priority=hook_priority,
+                    voice_channel_id,  # ty: ignore[invalid-argument-type]
+                    greeting_prompt,
+                    farewell_prompt,
                 )
+                for hook in greeting.hooks(hook_priority):
+                    kit.hook(
+                        hook.trigger,
+                        execution=hook.execution,
+                        priority=hook.priority,
+                        name=hook.name,
+                    )(hook.fn)
 
         return router, handler
 
@@ -338,132 +342,3 @@ class ConversationPipeline:
             len(agents),
             rtv_channel_id,
         )
-
-    def _register_greet_hooks(
-        self,
-        kit: RoomKit,
-        *,
-        voice_channel_id: str,
-        greeting_prompt: str | None,
-        farewell_prompt: str | None,
-        hook_priority: int,
-    ) -> None:
-        """Register ON_HANDOFF + BEFORE_TTS hooks for handoff greeting."""
-        from roomkit.models.context import RoomContext
-        from roomkit.models.delivery import SYSTEM_SENDER_ID, InboundMessage
-        from roomkit.models.event import RoomEvent, TextContent
-        from roomkit.models.hook import HookResult
-
-        prompt = greeting_prompt or (
-            "[The caller has just been transferred to you — please introduce yourself briefly]"
-        )
-        farewell = farewell_prompt
-
-        async def _speak_farewell(vc: Any, room_id: str, text: str) -> None:
-            """Synthesise *text* via TTS and play it to all sessions in *room_id*."""
-            from roomkit.models.context import RoomContext
-            from roomkit.models.enums import ChannelType
-            from roomkit.models.event import EventSource, RoomEvent, TextContent
-
-            bindings = await kit.store.list_bindings(room_id)
-            voice_bindings = [b for b in bindings if b.channel_id == voice_channel_id]
-            if not voice_bindings:
-                return
-
-            room = await kit.get_room(room_id)
-            ctx = RoomContext(room=room, bindings=bindings)
-            synth_event = RoomEvent(
-                room_id=room_id,
-                source=EventSource(
-                    channel_id=voice_channel_id,
-                    channel_type=ChannelType.VOICE,
-                ),
-                content=TextContent(body=text),
-            )
-            await vc.deliver(synth_event, voice_bindings[0], ctx)
-            await vc.wait_playback_done(room_id, timeout=15.0)
-
-        # Rooms where a handoff is in flight — TTS blocked until the greeting
-        # task starts.  The flag is set by ON_HANDOFF and cleared at the *start*
-        # of _trigger_greeting (before process_inbound) so the old agent's
-        # farewell is only blocked during the brief window between the handoff
-        # event and the greeting task starting on the next event-loop tick.
-        # The AI model needs ~300-500ms to generate a farewell response, by
-        # which time the flag is already cleared and the farewell plays through.
-        _handoff_pending: set[str] = set()
-
-        @kit.hook(HookTrigger.ON_HANDOFF, execution=HookExecution.ASYNC)
-        async def _on_handoff(event: RoomEvent, _ctx: RoomContext) -> None:
-            meta = event.metadata or {}
-            to_agent = meta.get("to_agent", "")
-            from_agent = meta.get("from_agent", "")
-            logger.info("greet_on_handoff: %s → %s", from_agent, to_agent)
-
-            _handoff_pending.add(event.room_id)
-
-            async def _trigger_greeting() -> None:
-                # Clear the block flag *before* process_inbound so both the
-                # old agent's farewell TTS and the new agent's greeting TTS
-                # can play.  The flag only needs to live long enough to
-                # suppress any TTS that fires between ON_HANDOFF and the
-                # greeting task starting (typically <1ms).
-                _handoff_pending.discard(event.room_id)
-
-                # Wait for the outgoing agent's TTS to finish (e.g.
-                # "je vous transfère") before starting the new agent's
-                # greeting.  Without this, deliver_stream() cancels the
-                # in-flight TTS immediately.
-                from roomkit.channels.voice import VoiceChannel
-
-                vc = kit.channels.get(voice_channel_id)
-                if isinstance(vc, VoiceChannel):
-                    await vc.wait_playback_done(event.room_id, timeout=15.0)
-
-                # Speak farewell before the new agent greets.  This is a
-                # synthetic TTS utterance — no AI generation needed — so
-                # there is always a transition message regardless of what
-                # the outgoing model chose to emit.
-                if farewell and isinstance(vc, VoiceChannel):
-                    await _speak_farewell(vc, event.room_id, farewell)
-
-                try:
-                    await asyncio.wait_for(
-                        # The cue directs the new agent: an instruction, so
-                        # the room never stores it as the caller's words and
-                        # only that agent is asked (RFC §10.1.1).
-                        kit.process_inbound(
-                            InboundMessage(
-                                channel_id=voice_channel_id,
-                                sender_id=SYSTEM_SENDER_ID,
-                                event_type=EventType.INSTRUCTION,
-                                content=TextContent(body=prompt),
-                                addressed_to=[to_agent] if to_agent else None,
-                            ),
-                            room_id=event.room_id,
-                        ),
-                        timeout=30.0,
-                    )
-                except TimeoutError:
-                    logger.warning("Handoff greeting timed out for room %s", event.room_id)
-                except Exception:
-                    logger.exception("Handoff greeting failed for room %s", event.room_id)
-
-            # Held by the kit, so its close cuts the greeting's turn as it
-            # cuts every background turn, in a fresh context: an inherited
-            # room lock would fake reentrancy.
-            hold_task(kit, _trigger_greeting(), context=contextvars.Context())
-
-        if farewell:
-
-            @kit.hook(
-                HookTrigger.BEFORE_TTS,
-                execution=HookExecution.SYNC,
-                priority=hook_priority - 1,
-            )
-            async def _block_farewell(
-                text: str,
-                ctx: RoomContext,
-            ) -> HookResult:
-                if ctx.room.id in _handoff_pending:
-                    return HookResult.block("handoff_transition")
-                return HookResult.allow()
