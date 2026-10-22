@@ -1075,6 +1075,20 @@ class TestGeminiResponseSchema:
 
         assert exc.value.reason == "refusal"
 
+    async def test_a_blocked_prompt_names_its_reason_as_the_refusal(self) -> None:
+        blocked = SimpleNamespace(
+            candidates=None,
+            usage_metadata=None,
+            prompt_feedback=SimpleNamespace(
+                block_reason=SimpleNamespace(name="PROHIBITED_CONTENT")
+            ),
+        )
+        provider = self._provider(_FakeStreamIterator([blocked]))
+
+        result = await provider.generate(_context())
+
+        assert result.metadata["refusal"] == "PROHIBITED_CONTENT"
+
     @staticmethod
     async def _drain(stream: Any) -> tuple[list[Any], ResponseSchemaError | None]:
         events: list[Any] = []

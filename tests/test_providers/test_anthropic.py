@@ -1571,3 +1571,25 @@ class TestAnthropicUsageCounters:
 
         assert done.usage["cache_creation_input_tokens"] == 5
         assert done.usage["cache_read_input_tokens"] == 3
+
+
+class TestAnthropicRefusal:
+    """A refused message's done event names why the safeguards declined (RMK-912)."""
+
+    @staticmethod
+    def _final(stop_reason: str, stop_details: Any) -> SimpleNamespace:
+        usage = SimpleNamespace(input_tokens=4, output_tokens=0)
+        return SimpleNamespace(
+            content=[], usage=usage, stop_reason=stop_reason, stop_details=stop_details, model="m"
+        )
+
+    def test_the_category_is_the_refusal(self) -> None:
+        details = SimpleNamespace(category="reasoning_extraction", explanation="Blocked.")
+
+        done = done_event(self._final("refusal", details), "m")
+
+        assert done.finish_reason == "refusal"
+        assert done.metadata["refusal"] == "reasoning_extraction"
+
+    def test_an_answer_carries_no_refusal(self) -> None:
+        assert "refusal" not in done_event(self._final("end_turn", None), "m").metadata

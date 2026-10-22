@@ -445,7 +445,7 @@ class GeminiAIProvider(AIProvider):
                 usage=usage,
                 finish_reason=finish_reason,
                 metadata={
-                    **answered_by(answered, self._config.model),
+                    **answered_by(answered, self._config.model, block_reason),
                     **({"prompt_block_reason": block_reason} if block_reason else {}),
                 },
             )

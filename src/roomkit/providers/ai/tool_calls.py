@@ -44,6 +44,21 @@ _MALFORMED_CALL_FINISH_REASONS = frozenset(
     {"malformed_function_call", _UNEXPECTED_CALL_FINISH_REASON}
 )
 
+# Endings where the provider withheld the answer, its safeguards or a content
+# filter declining the request: Anthropic's ``refusal``, OpenAI's (and
+# Azure's, and compatible servers') ``content_filter``, Gemini's safety stops.
+_REFUSAL_FINISH_REASONS = frozenset(
+    {
+        "refusal",
+        "content_filter",
+        "safety",
+        "recitation",
+        "prohibited_content",
+        "blocklist",
+        "spii",
+    }
+)
+
 # A response the model ended itself, under each provider's word for it
 # (OpenAI-compatible ``stop``, Anthropic ``end_turn`` and ``stop_sequence``,
 # Gemini ``STOP``): not cut, not filtered, not refused, not a stream that ended
@@ -86,6 +101,12 @@ def is_malformed_call(finish_reason: str | None) -> bool:
 def is_natural_stop(finish_reason: str | None) -> bool:
     """Whether the model ended the response itself, whatever its provider calls it."""
     return finish_reason is not None and finish_reason.lower() in _NATURAL_FINISH_REASONS
+
+
+def is_refusal(finish_reason: str | None) -> bool:
+    """Whether the provider withheld the answer, whatever it calls it
+    (compared case-insensitively, as :func:`is_truncation`)."""
+    return finish_reason is not None and finish_reason.lower() in _REFUSAL_FINISH_REASONS
 
 
 def is_truncation(finish_reason: str | None) -> bool:

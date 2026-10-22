@@ -19,6 +19,7 @@ from roomkit.channels._ai_loop_rules import (
     interrupts_turn,
     require_schema_answer,
     turn_span_status,
+    warn_refused,
 )
 from roomkit.channels._ai_stream_external_tools import _ExternalStreamTools
 from roomkit.channels._ai_stream_round import _StreamRound, _StreamRoundState
@@ -701,6 +702,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             turn.saw_tool_call = True
             return "completed"
         if not state.tool_calls:
+            warn_refused(rules.log_label, state.finish_reason, state.refusal)
             again = self._try_round_again(
                 context,
                 loop_ctx,

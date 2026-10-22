@@ -97,6 +97,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   these models refuses, and asked what is on its mind the agent still
   answers with it, in the first person.
 
+- A turn its provider refused to answer is logged (RMK-912). It ended empty
+  and `completed`, with no line saying why, so an agent whose model's
+  safeguards declined simply stayed silent. The AI channel's tool loop now
+  logs a WARNING with the finish reason and the provider's reason, on every
+  provider's spelling of a refusal (Anthropic's `refusal`, `content_filter`,
+  Gemini's safety stops): `the provider refused to answer
+  (finish_reason=refusal, refusal=reasoning_extraction)`. The provider's reason
+  is the response's `metadata["refusal"]`, which an Anthropic response now
+  fills with its refusal category (`stop_details.category`) and a Gemini one
+  with the reason its prompt was blocked. A reason in the model's own words
+  (OpenAI's refusal text, which may quote the conversation) is logged by
+  its length only.
+
 - Work a channel hands to a task of its own leaves nothing unawaited when the
   task is cancelled before its first step, a close or a teardown right after
   the work was scheduled (RMK-909): a conference room's publication and its

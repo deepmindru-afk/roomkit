@@ -45,6 +45,7 @@ class _StreamRoundState:
     provider_calls: list[StreamToolCall] = field(default_factory=list)
     provider_results: list[AIToolResultPart] = field(default_factory=list)
     finish_reason: str | None = None
+    refusal: str | None = None  # the provider's reason, when it refused
     cancelled: bool = False
 
     @property
@@ -232,6 +233,7 @@ class _StreamRound:
                             yield delta
                 elif isinstance(event, StreamDone):
                     state.finish_reason = event.finish_reason
+                    state.refusal = event.metadata.get("refusal")
                     if event.usage:
                         self.record_usage(event.usage)
 

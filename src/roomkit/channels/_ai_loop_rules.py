@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
@@ -28,6 +29,7 @@ from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.ai.tool_calls import (
     is_malformed_call,
     is_natural_stop,
+    is_refusal,
     is_truncation,
     malformed_call_nudge,
 )
@@ -191,6 +193,35 @@ def final_round_reason(
     if limit is not None:
         return limit
     return "empty_response"
+
+
+# A provider's reason that is an identifier from a fixed set (Anthropic's
+# refusal category, Gemini's block reason), which the log may carry as is.
+_REASON_IDENTIFIER = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+
+def warn_refused(log_label: str, finish_reason: str | None, refusal: str | None) -> None:
+    """Log a round its provider refused to answer, with the provider's reason
+    when it gives one (*refusal*: Anthropic's refusal category, OpenAI's
+    refusal text, Gemini's block reason). The turn ends without the answer,
+    and nothing else says why: the agent only stays silent."""
+    if not (refusal or is_refusal(finish_reason)):
+        return
+    logger.warning(
+        "%s: the provider refused to answer (finish_reason=%r, refusal=%s)",
+        log_label,
+        finish_reason,
+        _loggable_reason(refusal),
+    )
+
+
+def _loggable_reason(refusal: str | None) -> str | None:
+    """*refusal* as the log carries it: an identifier as is; a free text (the
+    model's own words, which may quote the conversation, line breaks included)
+    only by its length."""
+    if refusal is None or _REASON_IDENTIFIER.fullmatch(refusal):
+        return refusal
+    return f"<text, {len(refusal)} characters>"
 
 
 def _empty_round_nudge(

@@ -61,8 +61,14 @@ def done_event(final: Any, asked: str) -> StreamDone:
     thinking = (getattr(details, "thinking_tokens", 0) if details else 0) or 0
     if thinking:
         usage["reasoning_tokens"] = thinking
-    metadata = answered_by(getattr(final, "model", None), asked)
+    metadata = answered_by(getattr(final, "model", None), asked, _refusal_category(final))
     return StreamDone(finish_reason=final.stop_reason, usage=usage, metadata=metadata)
+
+
+def _refusal_category(final: Any) -> str | None:
+    """Why the safeguards declined a refused message (``stop_details``, set
+    only on a refusal): its category, such as ``reasoning_extraction``."""
+    return getattr(getattr(final, "stop_details", None), "category", None)
 
 
 def _block_start(event: Any, blocks: ToolUseBlocks) -> list[StreamEvent]:
