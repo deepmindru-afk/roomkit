@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import warnings
 from typing import Any
 
 import pytest
@@ -23,6 +25,7 @@ from roomkit.turns._registry_tools import OwnerToolStore, RegistryOwnerTools
 from roomkit.turns.wire import (
     CallCancel,
     CallContext,
+    HostCall,
     OwnerTool,
     ToolCall,
     ToolResult,
@@ -173,3 +176,29 @@ async def test_the_owner_refuses_a_call_naming_another_room_or_channel(
     [answer] = answers
     assert answer.outcome == "unserved"
     assert served == []
+
+
+@pytest.mark.parametrize("kind", ["tool", "verb"])
+async def test_a_call_cancelled_before_it_starts_leaves_no_coroutine_unawaited(kind: str) -> None:
+    """The turn ends as a call arrives: its task is cancelled before its first
+    step, and nothing of the call was begun, so no coroutine is collected
+    unawaited (a RuntimeWarning at an unrelated moment)."""
+
+    async def send(message: Any) -> None:
+        pass
+
+    calls = OwnerCalls(_request(), None, None, send, set())
+    context = CallContext(tool_call_id="c1", room_id="r1", channel_id="agent")
+    call: ToolCall | HostCall = (
+        ToolCall(call_id="x", name="probe", arguments={}, context=context)
+        if kind == "tool"
+        else HostCall(call_id="x", verb="emit", arguments={}, context=context)
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        calls.start(call, None)
+        calls.cancel_all()
+        await asyncio.sleep(0)
+        gc.collect()
+
+    assert [str(w.message) for w in caught if "never awaited" in str(w.message)] == []

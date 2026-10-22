@@ -80,10 +80,13 @@ class OwnerCalls:
         on the turn when it arrived (a fresh one when none has waited yet)."""
         context = waiting.copy() if waiting is not None else contextvars.Context()
         context.run(_enter_owner_call, self._request.turn_id)
+        # The work is begun by the task, never before: a task cancelled before
+        # its first step (the turn ending as the call arrives) leaves no
+        # coroutine unawaited.
         if isinstance(call, HostCall):
-            work, failed = self._verb_result(call), partial(_verb_failed, call.call_id)
+            work, failed = partial(self._verb_result, call), partial(_verb_failed, call.call_id)
         else:
-            work, failed = self._tool_result(call), partial(_tool_failed, call.call_id)
+            work, failed = partial(self._tool_result, call), partial(_tool_failed, call.call_id)
         task = asyncio.get_running_loop().create_task(
             self._answer(work, failed), context=context, name=f"roomkit-owner-call-{call.call_id}"
         )
@@ -111,12 +114,12 @@ class OwnerCalls:
 
     async def _answer(
         self,
-        work: Coroutine[Any, Any, Control],
+        work: Callable[[], Coroutine[Any, Any, Control]],
         failed: Callable[[BaseException], Control],
     ) -> None:
         """Send what *work* makes of the call, once."""
         try:
-            result = await work
+            result = await work()
         except asyncio.CancelledError as cancelled:
             task = asyncio.current_task()
             if task is not None and task.cancelling():
