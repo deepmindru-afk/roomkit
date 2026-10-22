@@ -58,9 +58,18 @@ DEFERRED = YesNoQuestion(
     "ourselves')?"
 )
 UNFINISHED = YesNoQuestion(
-    "Does `last_turn` stop before the speaker has said what they want: a sentence cut off, "
-    "or the speaker says they are still thinking or looking for something?"
+    "Look at how `last_turn` ends: does the speaker stop in the middle of a sentence, or "
+    'say they are not done ("wait", "let me think", "I am looking for it")? Dots or a '
+    "restart earlier in the turn do not count when its last sentence is complete, and "
+    "neither does saying one does not know, does not remember or will look it up."
 )
+"""Judged on how the turn ends: a speech recognizer writes a hesitation as dots
+("is it... what do you think?"), and asked whether the turn "stops before the
+speaker has said what they want: a sentence cut off, or the speaker says they are
+still thinking or looking for something", Jev held four finished turns of a live
+meeting in a row (0.50-0.96: "I do not remember", "I would have to look it up,
+maybe you remember"). This wording: 17/19 right on live and written turns, three
+calls each (the former 12/19), every unfinished one still held (0.91-0.98)."""
 HUSH = YesNoQuestion(
     "In `last_turn`, does the speaker ask the assistant not to answer, to stay quiet, or "
     "only to listen?"
