@@ -14,7 +14,6 @@ import os
 import time
 from collections.abc import AsyncIterator
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
@@ -30,6 +29,7 @@ from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, TurnTim
 from roomkit.turns.base import TurnBackend
 from roomkit.turns.owner import registry_turn_client
 from roomkit.turns.redis import RedisTurnBackend
+from tests.redis_keys import delete_keys, key_prefix
 from tests.test_framework import SimpleChannel
 from tests.test_turns_backend import ScriptedChannel, _binding, _context, _event, _run
 
@@ -163,19 +163,16 @@ async def owner_and_host(
         return
     if not os.environ.get("REDIS_URL"):
         pytest.skip("REDIS_URL not set")
-    redis = pytest.importorskip("redis.asyncio")
-    prefix = f"roomkit:test:{uuid4().hex[:12]}"
+    pytest.importorskip("redis.asyncio")
+    prefix = key_prefix()
     owner, host = (
         RedisTurnBackend(os.environ["REDIS_URL"], key_prefix=prefix, timeouts=QUICK)
         for _ in range(2)
     )
     yield owner, host
+    await owner.close()
     await host.close()
-    client = redis.from_url(os.environ["REDIS_URL"])
-    keys = [key async for key in client.scan_iter(f"{prefix}:*")]
-    if keys:
-        await client.delete(*keys)
-    await client.aclose()
+    await delete_keys(prefix)
 
 
 async def test_a_cascade_whose_turn_its_owner_gave_up_reports_its_cleanup_done(

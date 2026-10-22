@@ -225,8 +225,8 @@ class RoomOwner(ABC):
     executor: TurnExecutor | None = None
     """The owner's own executor, the one that runs the channels it holds live
     (the kit's), or ``None``: a backend the owner attends places the turns of
-    the channels it declares on it alone, never on another executor (RFC
-    §10.6.7)."""
+    the channels it hosts (``hosts_channel``) on it alone, never on another
+    executor, and once it closed fails them ``no_executor`` (RFC §10.6.7)."""
 
     @abstractmethod
     async def room_call(self, message: RoomCall) -> HostResult:
@@ -261,10 +261,12 @@ class TurnBackend(ABC):
     @abstractmethod
     async def control(self, message: ChannelControl) -> ChannelResult | None:
         """Carry a channel control message (RFC §10.6.3): ``room_attached``
-        and ``room_detached`` to every executor that declares the channel,
-        answered by none; a ``committed_event`` to the executor that holds the
-        room's state for the channel, else one that would take the room's
-        turns, never moving the holder, answered by none; a ``channel_call``
+        and ``room_detached`` to the executors that may run the channel's
+        turns (the owner's own alone for a channel it hosts, else every
+        executor that declares the channel), answered by none; a
+        ``committed_event`` to the executor that holds the room's state for
+        the channel, else one that would take the room's turns, never moving
+        the holder, answered by none; a ``channel_call``
         to the executor that holds the room's state for the channel, else one
         that declares it, answered by its result, marked handed
         (``message.hand_over()``) as the backend gives it to that executor.
@@ -277,10 +279,12 @@ class TurnBackend(ABC):
     async def attend(self, owner: RoomOwner) -> None:  # noqa: B027
         """Have what executors send outside a turn reach *owner* (RFC
         §10.6.3), and place the turns of the channels its own executor
-        (``owner.executor``) declares on that executor alone (RFC §10.6.7).
+        (``owner.executor``) hosts on that executor alone, closed or not (RFC
+        §10.6.7).
         Default: nothing reaches an owner outside a turn, and an executor's
         verbs made after their turn are refused."""
 
     @abstractmethod
     async def close(self) -> None:
-        """Fail the turns in flight and release the transport."""
+        """Fail the turns in flight (``backend_closed``) and release the
+        transport."""

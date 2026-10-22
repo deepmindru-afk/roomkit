@@ -427,7 +427,7 @@ class ChannelOpsMixin(HelpersMixin):
         """
         try:
             if binding.category is ChannelCategory.INTELLIGENCE:
-                # Every executor declaring the channel is told (RFC §10.6.3).
+                # The executors that may run its turns are told (RFC §10.6.3).
                 attached = RoomAttached(
                     channel_id=channel.channel_id, room_id=room_id, binding=binding
                 )

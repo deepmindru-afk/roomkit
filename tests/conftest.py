@@ -8,7 +8,6 @@ import os
 import traceback
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
@@ -28,6 +27,7 @@ from roomkit.turns import InMemoryTurnBackend
 from roomkit.turns.base import TurnBackend
 from roomkit.turns.redis import RedisTurnBackend
 from tests import redis_turn_mode
+from tests.redis_keys import delete_keys, key_prefix
 from tests.tool_loop_modes import expect_streaming
 
 
@@ -69,14 +69,13 @@ async def turn_backend(request: pytest.FixtureRequest) -> AsyncIterator[TurnBack
         return
     if not os.environ.get("REDIS_URL"):
         pytest.skip("REDIS_URL not set")
-    redis = pytest.importorskip("redis.asyncio")
-    prefix = f"roomkit:test:{uuid4().hex[:12]}"
-    yield RedisTurnBackend(os.environ["REDIS_URL"], key_prefix=prefix, _loop_back=True)
-    client = redis.from_url(os.environ["REDIS_URL"])
-    keys = [key async for key in client.scan_iter(f"{prefix}:*")]
-    if keys:
-        await client.delete(*keys)
-    await client.aclose()
+    pytest.importorskip("redis.asyncio")
+    prefix = key_prefix()
+    backend = RedisTurnBackend(os.environ["REDIS_URL"], key_prefix=prefix, _loop_back=True)
+    yield backend
+    # Closed even when the test failed before closing it (idempotent).
+    await backend.close()
+    await delete_keys(prefix)
 
 
 @pytest.fixture(params=[False, True], ids=["non-streaming", "streaming"])

@@ -165,7 +165,8 @@ class _ExecutorLink(ExecutorLink):
 class InMemoryTurnBackend(TurnBackend):
     """Turns carried in this process, serialized like any other (RFC §10.6).
 
-    The turns of a channel the owner's own executor declares go to it alone.
+    The turns of a channel the owner's own executor hosts go to it alone,
+    and fail ``no_executor`` once it closed.
     Another channel's turns in a room go to the executor that took its last
     turn or channel call while it serves and declares the channel, else to
     the first that declares it (RFC §10.6.7). Every executor is in this
@@ -270,8 +271,8 @@ class InMemoryTurnBackend(TurnBackend):
         self, channel_id: str, room_id: str, room_hooks: Sequence[str]
     ) -> TurnExecutor | None:
         """The executor that takes a room's turn of *channel_id*: the owner's
-        own alone when it declares the channel, since it runs the channels the
-        owner holds live; else the one holding the room's state while it
+        own alone when it hosts the channel, closed or not, since it runs the
+        channels the owner holds live; else the one holding the room's state while it
         takes it, else the first that takes it (RFC §10.6.7); ``None`` when
         none does."""
         own = self._owning(channel_id)

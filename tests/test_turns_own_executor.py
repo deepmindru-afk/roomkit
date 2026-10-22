@@ -156,6 +156,36 @@ async def test_a_live_agent_s_turn_fails_once_the_kit_s_executor_closed(
     assert [e.reason for e in refusals if isinstance(e, TurnLinkError)] == ["no_executor"]
 
 
+async def test_a_live_agent_s_call_and_event_fail_once_the_kit_s_executor_closed() -> None:
+    """RMK-880 review: a channel call and a committed event of a live agent,
+    once the kit's own executor closed, fail no_executor as its turns do;
+    the host's copy is never asked (RFC §10.6.7)."""
+    seen: list[str] = []
+    kit = RoomKit()
+    host = TurnExecutor(lambda channel_id: _Tagged(channel_id, "host", seen))
+    await kit._turns.backend.serve(host)
+    kit.register_channel(WebSocketChannel("ws"))
+    kit.register_channel(_Tagged("ai", "kit", seen))
+    await kit.create_room(room_id="r")
+    await kit.attach_channel("r", "ws")
+    await kit.attach_channel("r", "ai", category=ChannelCategory.INTELLIGENCE)
+    await kit.process_inbound(
+        InboundMessage(channel_id="ws", sender_id="u", content=TextContent(body="hi"))
+    )
+    events = await kit.store.list_events("r")
+    await kit.turn_executor.close()
+
+    with pytest.raises(TurnLinkError) as call:
+        await kit.channel_call("ai", "r", "whoami")
+    with pytest.raises(TurnLinkError) as event:
+        await kit._turns.control(CommittedEvent(channel_id="ai", room_id="r", event=events[0]))
+    await kit.close()
+    await host.close()
+
+    assert (call.value.reason, event.value.reason) == ("no_executor", "no_executor")
+    assert [s for s in seen if s.endswith(":host")] == []
+
+
 async def test_a_host_executor_builds_no_copy_of_a_live_agent_it_never_runs() -> None:
     """RMK-881: a host executor declaring every channel is not told a live
     agent was attached to a room, nor detached: it never runs its turns, so it

@@ -1,7 +1,7 @@
 """Where a room's turns of a channel go on the Redis turn backend (RFC §10.6.7).
 
 The room owner chooses: its own executor alone for a channel that executor
-declares (the agents it holds live); else the executor that holds the room's
+hosts (the agents it holds live), closed or not; else the executor that holds the room's
 state for the channel, while it lives and takes the turn, else one that takes
 it, one of the owner's own process first (carried in the process), else one
 alive elsewhere, the rooms no executor holds yet spread over them. The holder is a
@@ -103,7 +103,7 @@ class Placement:
         *,
         spread: bool,
     ) -> TurnExecutor | Elsewhere:
-        """The owner's own executor alone for a channel it declares, else the
+        """The owner's own executor alone for a channel it hosts, else the
         holder while it lives and takes the turn, else one that takes it, one
         of this process first, else one elsewhere: a room no executor holds
         yet goes to the next of them, the spread moving on only when *spread*

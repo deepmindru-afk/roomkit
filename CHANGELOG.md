@@ -95,6 +95,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`list_local_models("sherpa-onnx-tts")`); an unknown kind is refused with
   the valid ones named. `python -m roomkit.local_models list` reads it.
 
+- `TurnExecutor.hosts_channel(channel_id)` (RMK-880): whether a channel is
+  among those an executor was given (`hosts=`), closed or not, for a turn
+  backend of your own to keep the owner's live channels on the owner's
+  executor once it closed (RFC §10.6.7).
+
 ### Fixed
 
 - A room's first stored message is delivered when an event the persistence
@@ -220,6 +225,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   closes in 0.2 s rather than 1.1 s: the socket no longer waits for
   Mistral's late answer to its close frame.
 
+- A live agent's turn after the kit's own executor closed (a host calling
+  `kit.turn_executor.close()` while the kit runs) fails with `no_executor`
+  (RMK-880). It went to a host executor that declares the channel, whose copy
+  answered without the live agent's state. Both backends read
+  `TurnExecutor.hosts_channel(channel_id)`, new: what an executor declares
+  while it serves, closed or not, for a backend of your own to keep the same
+  rule (RFC §10.6.7).
+
+- A room's `room_attached` and `room_detached` of a channel the kit holds
+  live reach only the kit's own executor (RMK-881). They reached every
+  executor declaring the channel, so a host executor created without
+  `hosts=` built a copy of a live agent (its provider, its MCP clients) at
+  each attach, for turns it never runs. A channel the kit holds by its
+  declaration alone still reaches every executor that declares it.
+
+- `HandoffHandler.set_language()` no longer empties a realtime session's
+  prompt for an agent with no `system_prompt` and no identity block
+  (`identity_in_prompt=False`) (RMK-872). It sent `system_prompt=""`, which
+  wiped the session's prompt, the channel's included, where a session's start
+  and a handoff kept it. One function now builds an agent's realtime prompt
+  for all three, and sets nothing when there is nothing to set.
+
+- The `Pipeline` strategy's `voice_channel_id`, `greet_on_handoff`,
+  `greeting_prompt` and `farewell_prompt` take effect (RMK-873); they were
+  stored and never read. On a realtime voice channel, each room's session
+  runs its active agent and a handoff reconfigures the room's sessions, one
+  wiring serving every room the strategy is installed in, with
+  `ConversationPipeline.install`'s refusals (live agents only). On another
+  voice channel, the agents' voices are set, and `greet_on_handoff` greets in
+  the room of the handoff only, through room hooks. `greet_on_handoff=True`
+  without `voice_channel_id` is refused at construction.
+
+- An owner-served call (a tool or a host verb) whose turn ends as it arrives
+  no longer leaves its work's coroutine unawaited (a `RuntimeWarning` at an
+  unrelated moment, a failure under `-W error`): the call's work is begun by
+  its own task, never before it (RMK-901).
+
 ### Changed
 
 - **BREAKING — `Room.latest_index` is `None` while the room has no event**
@@ -307,38 +349,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own refusal of a turn did (RMK-883): the three messages are built in one
   place. The test of a turn given up as its owner closes runs across Redis
   too, and checks that the executor cuts it as `owner_lost`.
-
-- A live agent's turn after the kit's own executor closed (a host calling
-  `kit.turn_executor.close()` while the kit runs) fails with `no_executor`
-  (RMK-880). It went to a host executor that declares the channel, whose copy
-  answered without the live agent's state. Both backends read
-  `TurnExecutor.hosts_channel(channel_id)`, new: what an executor declares
-  while it serves, closed or not, for a backend of your own to keep the same
-  rule (RFC §10.6.7).
-
-- A room's `room_attached` and `room_detached` of a channel the kit holds
-  live reach only the kit's own executor (RMK-881). They reached every
-  executor declaring the channel, so a host executor created without
-  `hosts=` built a copy of a live agent (its provider, its MCP clients) at
-  each attach, for turns it never runs. A channel the kit holds by its
-  declaration alone still reaches every executor that declares it.
-
-- `HandoffHandler.set_language()` no longer empties a realtime session's
-  prompt for an agent with no `system_prompt` and no identity block
-  (`identity_in_prompt=False`) (RMK-872). It sent `system_prompt=""`, which
-  wiped the session's prompt, the channel's included, where a session's start
-  and a handoff kept it. One function now builds an agent's realtime prompt
-  for all three, and sets nothing when there is nothing to set.
-
-- The `Pipeline` strategy's `voice_channel_id`, `greet_on_handoff`,
-  `greeting_prompt` and `farewell_prompt` take effect (RMK-873); they were
-  stored and never read. On a realtime voice channel, each room's session
-  runs its active agent and a handoff reconfigures the room's sessions, one
-  wiring serving every room the strategy is installed in, with
-  `ConversationPipeline.install`'s refusals (live agents only). On another
-  voice channel, the agents' voices are set, and `greet_on_handoff` greets in
-  the room of the handoff only, through room hooks. `greet_on_handoff=True`
-  without `voice_channel_id` is refused at construction.
 
 - An answer a barge-in cut reads, in the AI context, with how far the person
   heard it (RFC §6.4): `[The person cut you off during this answer, 5.7 s in:

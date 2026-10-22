@@ -187,7 +187,8 @@ async def test_a_call_cancelled_before_it_starts_leaves_no_coroutine_unawaited(k
     async def send(message: Any) -> None:
         pass
 
-    calls = OwnerCalls(_request(), None, None, send, set())
+    held: set[asyncio.Task[None]] = set()
+    calls = OwnerCalls(_request(), None, None, send, held)
     context = CallContext(tool_call_id="c1", room_id="r1", channel_id="agent")
     call: ToolCall | HostCall = (
         ToolCall(call_id="x", name="probe", arguments={}, context=context)
@@ -197,7 +198,11 @@ async def test_a_call_cancelled_before_it_starts_leaves_no_coroutine_unawaited(k
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         calls.start(call, None)
+        tasks = list(held)
         calls.cancel_all()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        # The task freed, what it never awaited is collected here, inside.
+        del tasks
         await asyncio.sleep(0)
         gc.collect()
 

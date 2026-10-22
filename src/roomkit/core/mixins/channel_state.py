@@ -105,7 +105,7 @@ class ChannelStateMixin:
 
     async def _on_room_detached(self, room_id: str, binding: ChannelBinding) -> None:
         """Let the channel of *binding* let go of the room: an intelligence
-        channel on every executor declaring it, the room forgetting what it
+        channel on the executors that may run its turns, the room forgetting what it
         kept for the channel even when the executors could not be told (RFC
         §10.6.3, §6.4)."""
         channel_id = binding.channel_id

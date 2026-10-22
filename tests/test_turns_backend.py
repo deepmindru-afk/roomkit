@@ -40,7 +40,7 @@ from roomkit.providers.ai.base import AIImagePart, AITextPart, AITool
 from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, TurnTimeouts
 from roomkit.turns._codec import decode_item, encode_item
 from roomkit.turns._error_codec import ROOMKIT_ERRORS, error_record
-from roomkit.turns.base import MessageOrder, OwnerTools
+from roomkit.turns.base import MessageOrder, OwnerTools, TurnBackend
 from roomkit.turns.wire import CommittedEvent, OwnerTool
 from tests.turn_errors import same_error
 
@@ -403,17 +403,20 @@ async def test_a_turn_no_executor_takes_fails_no_executor() -> None:
     assert raised.value.reason == "no_executor"
 
 
-async def test_an_event_no_executor_takes_names_the_room_hooks_it_needs() -> None:
+async def test_an_event_no_executor_takes_names_the_room_hooks_it_needs(
+    turn_backend: TurnBackend,
+) -> None:
     """RMK-883: a committed event whose room hooks no executor defines is
-    refused as a turn is, naming them."""
-    backend = InMemoryTurnBackend()
-    await backend.serve(TurnExecutor({"agent": None}.get, hosts={"agent"}))
+    refused as a turn is, naming them, on either backend."""
+    executor = TurnExecutor({"agent": None}.get, hosts={"agent"})
+    await turn_backend.serve(executor)
     event = CommittedEvent(
         channel_id="agent", room_id="room", event=_event(), room_hooks=["audit"]
     )
 
     with pytest.raises(TurnLinkError) as raised:
-        await backend.control(event)
+        await turn_backend.control(event)
+    await executor.close()
 
     assert raised.value.reason == "no_executor"
     assert str(raised.value) == "No executor serves channel 'agent' with room hooks ['audit']"

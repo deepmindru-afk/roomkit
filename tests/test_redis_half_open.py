@@ -23,6 +23,7 @@ from roomkit.orchestration.status_bus import StatusEntry, StatusLevel
 from roomkit.orchestration.status_redis import RedisStatusBackend
 from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
 from roomkit.realtime.redis import RedisRealtimeBackend
+from tests.redis_keys import delete_keys
 from tests.redis_silencing import Silencing
 
 pytestmark = pytest.mark.skipif(not os.environ.get("REDIS_URL"), reason="REDIS_URL not set")
@@ -143,16 +144,7 @@ async def test_a_reader_hears_again_once_its_connection_is_silenced(
     finally:
         await listening.close()
         await publishing.close()
-        await _delete_keys(prefix)
-
-
-async def _delete_keys(prefix: str) -> None:
-    redis = pytest.importorskip("redis.asyncio")
-    client = redis.from_url(os.environ["REDIS_URL"])
-    keys = [key async for key in client.scan_iter(f"{prefix}:*")]
-    if keys:
-        await client.delete(*keys)
-    await client.aclose()
+        await delete_keys(prefix)
 
 
 async def _status_call(url: str, prefix: str) -> tuple[Any, Callable[[], Awaitable[object]]]:
@@ -194,4 +186,4 @@ async def test_a_call_on_a_silenced_connection_gives_up_within_its_bound(
         assert asyncio.get_running_loop().time() - started < 2.0
     finally:
         await backend.close()
-        await _delete_keys(prefix)
+        await delete_keys(prefix)
