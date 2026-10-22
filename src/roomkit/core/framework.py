@@ -1068,7 +1068,9 @@ class RoomKit(
             chain_depth: Depth in response chain (for loop prevention)
             participant_id: Optional participant/sender ID for the event source
             metadata: Optional event metadata
-            visibility: Event visibility ("all" or "internal")
+            visibility: Event visibility, a keyword (``all``, ``none``,
+                ``internal``, ``transport``, ``intelligence``) or channel ids
+                (RFC §7.3); committed intersected with the source binding's
             provider: Optional provider/backend name for event attribution
             response_visibility: Controls where the AI's response is delivered.
                 Uses the same vocabulary as visibility. None means no restriction.
@@ -1083,9 +1085,9 @@ class RoomKit(
             parent_event_id: In-app thread parent. The locked pipeline normalises
                 it to the thread root (flat two-level model); see
                 :meth:`_resolve_thread_root`.
-            idempotency_key: Stable de-duplication key. When set, the locked
-                pipeline's idempotency check (backed by the unique
-                ``events(room_id, idempotency_key)`` index) skips a re-send that
+            idempotency_key: Stable de-duplication key, unique per room and
+                per source channel (RFC §13.4). When set, the locked pipeline's
+                idempotency check skips a re-send from the same channel that
                 carries the same key — so a caller that may replay a publish (an
                 outbox dispatcher redelivering after a crash) gets at-most-once
                 persistence for a given key. None keeps the prior behaviour (no

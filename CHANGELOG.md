@@ -524,7 +524,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   OUTBOUND (RFC §5.2, RMK-902): an event never travels both ways, so a
   `bidirectional` source is refused, a stored one included. A
   `ChannelDirection.INBOUND` or `OUTBOUND` value is still read as the event's.
-  A hook's `directions` filter takes `EventDirection` values.
+  A hook's `directions` filter takes `EventDirection` values, and
+  `EventDirection` is exported from `roomkit`.
 
 - **BREAKING — the pipeline gives every event it commits its id** (RFC §8.1,
   RMK-902): an inbound event, a buffered response and an event a hook injects
