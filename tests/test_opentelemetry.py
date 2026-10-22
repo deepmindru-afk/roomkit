@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import roomkit.telemetry.opentelemetry as otel_module
 from roomkit.channels.ai import AIChannel
 from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding
@@ -100,6 +101,49 @@ class TestOpenTelemetryProvider:
         provider.reset()
         assert len(provider._active_spans) == 0
         assert len(provider._ended_spans) == 0
+
+    def test_a_late_child_nests_under_its_ended_parent(self) -> None:
+        """A span started after its parent ended still has it as parent: the
+        provider keeps the ended parent's context (RMK-877)."""
+        provider, exporter = _exporting_provider()
+        parent = provider.start_span(SpanKind.CUSTOM, "voice.session")
+        provider.end_span(parent)
+
+        child = provider.start_span(SpanKind.CUSTOM, "after.tts", parent_id=parent)
+        provider.end_span(child)
+
+        spans = {span.name: span for span in exporter.get_finished_spans()}
+        late = spans["roomkit.after.tts"]
+        assert late.parent is not None
+        assert format(late.parent.span_id, "016x") == parent
+        assert late.context.trace_id == spans["roomkit.voice.session"].context.trace_id
+
+    def test_ended_spans_kept_are_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Past the bound the oldest ended span is forgotten: memory stays
+        bounded for a provider that lives for days (RMK-877)."""
+        monkeypatch.setattr(otel_module, "_ENDED_SPANS_KEPT", 3)
+        provider, _ = _exporting_provider()
+        ended = []
+        for n in range(4):
+            span_id = provider.start_span(SpanKind.CUSTOM, f"span.{n}")
+            provider.end_span(span_id)
+            ended.append(span_id)
+
+        assert list(provider._ended_spans) == ended[1:]
+        assert provider.get_span_context(ended[0]) is None
+        assert provider.get_span_context(ended[3]) is not None
+
+    def test_an_ended_span_is_kept_as_its_context_alone(self) -> None:
+        """What is kept of an ended span records nothing and carries none of
+        its attributes, only its context (RMK-877)."""
+        provider, _ = _exporting_provider()
+        span_id = provider.start_span(SpanKind.CUSTOM, "big", attributes={"blob": "x" * 10_000})
+        provider.end_span(span_id)
+
+        kept = provider._ended_spans[span_id]
+        assert not kept.is_recording()
+        assert format(kept.get_span_context().span_id, "016x") == span_id
+        assert not hasattr(kept, "attributes")
 
     def test_set_attribute(self) -> None:
         tp = _make_tracer_provider()

@@ -83,6 +83,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any error, on every version (`health_check_interval` does not detect it).
   A client passed as `client=` keeps its own options.
 
+- `OpenTelemetryProvider` no longer keeps every span it ended for its whole
+  life (RMK-877). It keeps the latest 10,000 as parents for late children
+  (an `AFTER_TTS` hook after its voice session ended), and of each only its
+  context, never the span and its attributes: about 2 MB at most, where a
+  process serving turns for days grew without bound.
+
 - A voice channel's record of a cut answer carries `played_percentage` once
   the answer's synthesis ended before the cut (RFC §12.3.13): the
   utterance's total duration was never set, so the share was never written.

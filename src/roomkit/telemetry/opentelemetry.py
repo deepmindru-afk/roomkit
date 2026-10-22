@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections import OrderedDict
 from collections.abc import Mapping
 from typing import Any
 
@@ -14,6 +15,10 @@ from roomkit.telemetry.base import SpanKind, TelemetryProvider
 # when the SDK is not installed.
 
 logger = logging.getLogger("roomkit.telemetry.otel")
+
+_ENDED_SPANS_KEPT = 10_000
+"""How many ended spans a provider keeps as parents for late children, the
+latest to end: a context each, about 2 MB at most."""
 
 
 class OpenTelemetryProvider(TelemetryProvider):
@@ -55,7 +60,7 @@ class OpenTelemetryProvider(TelemetryProvider):
     ) -> None:
         try:
             from opentelemetry import trace
-            from opentelemetry.trace import StatusCode
+            from opentelemetry.trace import NonRecordingSpan, StatusCode
         except ImportError as exc:
             raise ImportError(
                 "OpenTelemetryProvider requires opentelemetry-api and opentelemetry-sdk. "
@@ -63,6 +68,7 @@ class OpenTelemetryProvider(TelemetryProvider):
             ) from exc
 
         self._StatusCode = StatusCode
+        self._NonRecordingSpan = NonRecordingSpan
 
         self._tracer_provider = tracer_provider
         if tracer_provider is not None:
@@ -83,9 +89,10 @@ class OpenTelemetryProvider(TelemetryProvider):
                 pass
 
         self._active_spans: dict[str, Any] = {}
-        # Ended spans kept briefly so late children can still reference them
-        # as parents (e.g. AFTER_TTS hook fires after VOICE_SESSION ends).
-        self._ended_spans: dict[str, Any] = {}
+        # The latest ended spans, as their contexts, so late children can
+        # still name them as parents (e.g. AFTER_TTS hook fires after
+        # VOICE_SESSION ends).
+        self._ended_spans: OrderedDict[str, Any] = OrderedDict()
         self._metadata: dict[str, str] = metadata or {}
         self._shutdown_flush_timeout = shutdown_flush_timeout
         # Held while a flush thread runs: a flush asked meanwhile is skipped,
@@ -196,8 +203,7 @@ class OpenTelemetryProvider(TelemetryProvider):
         otel_span = self._active_spans.pop(span_id, None)
         if otel_span is None:
             return
-        # Keep for late parent lookups (e.g. AFTER_TTS hook after session end)
-        self._ended_spans[span_id] = otel_span
+        self._keep_ended(span_id, otel_span)
 
         if attributes:
             for k, v in attributes.items():
@@ -211,6 +217,15 @@ class OpenTelemetryProvider(TelemetryProvider):
             otel_span.set_status(self._StatusCode.OK)
 
         otel_span.end()
+
+    def _keep_ended(self, span_id: str, otel_span: Any) -> None:
+        """Keep ended *span_id*'s context for its late children (an
+        ``AFTER_TTS`` hook after its voice session ended), forgetting the
+        oldest kept past :data:`_ENDED_SPANS_KEPT`: the context alone, never
+        the span and its attributes."""
+        self._ended_spans[span_id] = self._NonRecordingSpan(otel_span.get_span_context())
+        if len(self._ended_spans) > _ENDED_SPANS_KEPT:
+            self._ended_spans.popitem(last=False)
 
     def set_attribute(self, span_id: str, key: str, value: Any) -> None:
         otel_span = self._active_spans.get(span_id)
@@ -264,8 +279,8 @@ class OpenTelemetryProvider(TelemetryProvider):
         for span_id in list(self._active_spans):
             self.end_span(span_id)
         self._active_spans.clear()
-        # Keep _ended_spans — late async tasks (e.g. AFTER_TTS hook fired
-        # during shutdown) may still need parent lookup.  The dict will be
+        # Keep _ended_spans: late async tasks (e.g. AFTER_TTS hook fired
+        # during shutdown) may still need parent lookup. It is bounded, and
         # garbage-collected with the provider instance.
         if self._tracer_provider is None:
             return
