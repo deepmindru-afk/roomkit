@@ -341,6 +341,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Security:** an id names its participant only on a channel the room
+  reached them through (RMK-915, RFC §5.5). The label a transcript gave a
+  sender already followed this rule; what the sender was granted did not.
+  So a sender whose id equalled a participant reached through another
+  channel only got that participant's role and its tool policy override,
+  their administrative authority for an ADMIN delete, their authorship for
+  editing or deleting their messages, the identification that skips
+  identity resolution, and their verification label: a message on `web`
+  carrying the id of an identity verified through SMS was stamped
+  `verified` and released to the agent. All of these now read one lookup
+  (`People.named`). An identity's id names its person on a channel the
+  identity pipeline resolved them on, no longer on any. A pending sender
+  whose id names a record reached through other channels only gets a
+  record of its own instead of adopting it. A host that relied on two
+  transports sharing ids now links the person explicitly, with `add_member`
+  (or `join`) on each channel, or through the identity pipeline.
 - Who takes part, silent people included (RMK-904). An agent that joins a
   meeting where one person speaks while others listen read that person's
   words as an anonymous user's until a second one spoke, and did not know

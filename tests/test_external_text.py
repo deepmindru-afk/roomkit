@@ -653,12 +653,15 @@ def test_one_participant_through_two_channels_is_one_source() -> None:
     """The identity pipeline makes one person reached through several channels
     one participant: one source, one label."""
     person = Participant(id="p1", room_id="r", channel_id="sms1", identity_id="i1")
+    # The record the pipeline keeps for the identity, reached through email1.
+    resolved = Participant(id="i1", room_id="r", channel_id="email1", identity_id="i1")
     first = make_event(body="hello", channel_id="sms1", participant_id="p1")
     second = make_event(body="same me", channel_id="email1", participant_id="i1")
     for event in (first, second):
         event.metadata["sender_name"] = "Alice"
 
-    labels = turn_labels([first, second], RoomContext(room=Room(id="r"), participants=[person]))
+    context = RoomContext(room=Room(id="r"), participants=[person, resolved])
+    labels = turn_labels([first, second], context)
 
     assert labels == {first.id: "Alice", second.id: "Alice"}
 

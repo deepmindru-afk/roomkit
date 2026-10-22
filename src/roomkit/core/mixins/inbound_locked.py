@@ -15,6 +15,7 @@ import logging
 from dataclasses import KW_ONLY, dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.core._authors import People, source_of
 from roomkit.core.hooks import kept_identity
 from roomkit.core.mixins.helpers import (
     _RECENT_EVENTS_LIMIT,
@@ -215,21 +216,23 @@ class InboundLockedMixin(HelpersMixin):
         """
         return event.source.channel_type == ChannelType.SYSTEM
 
-    async def _has_admin_authority(self, room_id: str, participant_id: str) -> bool:
-        """Whether a participant holds administrative authority in the room.
+    @staticmethod
+    def _has_admin_authority(people: People, event: RoomEvent) -> bool:
+        """Whether *event*'s sender holds administrative authority in the room.
 
         RFC §10.3 requires administrative authority to be *verified* rather
         than asserted by the inbound payload; the room roster is the only
-        thing here the sender does not control. Moderation that legitimately
-        outranks the roster belongs on the host-side API
-        (``update_event`` / ``delete_event``), which documents that the host
-        owns authorization on that path.
+        thing here the sender does not control, and an id names its
+        participant only on a channel they are reached through (RFC §5.5).
+        Moderation that legitimately outranks the roster belongs on the
+        host-side API (``update_event`` / ``delete_event``), which documents
+        that the host owns authorization on that path.
         """
-        participant = await self._store.get_participant(room_id, participant_id)
+        participant = people.named(event)
         return participant is not None and participant.role == ParticipantRole.OWNER
 
     async def _authorize_edit_delete(
-        self, room_id: str, event: RoomEvent, sender_id: str, target_author_id: str
+        self, room_id: str, event: RoomEvent, target: RoomEvent
     ) -> str | None:
         """Authorize an inbound EDIT/DELETE, returning a block reason or ``None``.
 
@@ -241,10 +244,14 @@ class InboundLockedMixin(HelpersMixin):
         an attacker would send.
         """
         content = event.content
+        sender_id = event.source.participant_id
+        # Read now: a sender the identity pipeline has just recorded is not
+        # on the context's roster yet.
+        people = People(await self._store.list_participants(room_id))
         privileged: bool | None = None
         if isinstance(content, DeleteContent):
             if content.delete_type == DeleteType.ADMIN:
-                privileged = await self._has_admin_authority(room_id, sender_id)
+                privileged = self._has_admin_authority(people, event)
             elif content.delete_type == DeleteType.SYSTEM:
                 privileged = self._is_system_source(event)
         elif isinstance(content, EditContent) and content.edit_source == _EDIT_SOURCE_SYSTEM:
@@ -261,12 +268,13 @@ class InboundLockedMixin(HelpersMixin):
             )
             return "not_authorized"
 
-        # Unprivileged path — the sender must be the original author.
-        if sender_id != target_author_id:
+        # Unprivileged path — the sender must be the original author: the
+        # same participant, or the same sender on the same channel.
+        if source_of(event, people) != source_of(target, people):
             logger.warning(
                 "Edit/Delete rejected: sender %s is not author %s",
                 sender_id,
-                target_author_id,
+                target.source.participant_id,
                 extra={"room_id": room_id},
             )
             return "not_original_author"
@@ -517,9 +525,7 @@ class InboundLockedMixin(HelpersMixin):
                 return InboundResult(blocked=True, reason="identity_required_for_edit")
 
             # Authorization check (RFC §10.3)
-            block_reason = await self._authorize_edit_delete(
-                room_id, event, sender_id, target_author_id
-            )
+            block_reason = await self._authorize_edit_delete(room_id, event, target_event)
             if block_reason is not None:
                 return InboundResult(blocked=True, reason=block_reason)
 

@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
+from roomkit.core._authors import People
 from roomkit.core.exceptions import VerificationRefusedError
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.core.visibility import committed_visibility, visibility_allows
@@ -954,18 +955,15 @@ def _sender_identity(
 
 
 def _participant_identity(event: RoomEvent, context: RoomContext) -> str | None:
-    """The identity of *event*'s sender as the room's IDENTIFIED participant, if one.
+    """The identity of *event*'s sender as the room's IDENTIFIED participant
+    its id names on its channel (RFC §5.5), if one.
 
     A sender just resolved is not one yet: the pipeline stamps the identity's
     id as the event's ``participant_id`` and records the participant later.
     """
-    for participant in context.participants:
-        if (
-            participant.id == event.source.participant_id
-            and participant.identification == IdentificationStatus.IDENTIFIED
-            and participant.identity_id
-        ):
-            return participant.identity_id
+    participant = People(context.participants).named(event)
+    if participant is not None and participant.identification == IdentificationStatus.IDENTIFIED:
+        return participant.identity_id
     return None
 
 

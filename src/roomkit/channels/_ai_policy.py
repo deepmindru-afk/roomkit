@@ -13,6 +13,7 @@ from roomkit.channels._tool_reopen import (
     reopening_exchanges,
     room_declaration,
 )
+from roomkit.core._authors import People
 from roomkit.models.tool_call import DeclaredTool, ToolDeclarationOrigin
 from roomkit.providers.ai.base import AIContext, AIMessage, AITool, AIToolResultPart
 from roomkit.tools.policy import (
@@ -84,14 +85,9 @@ class AIToolPolicyMixin(_AIChannelContract):
     _tool_usage: ToolUsageMemory  # the room's tool memory, its kept declaration included
 
     def _resolve_participant_role(self, event: RoomEvent, context: RoomContext) -> str | None:
-        """Look up the participant role for the event source."""
-        pid = event.source.participant_id
-        if not pid:
-            return None
-        for p in context.participants:
-            if p.id == pid:
-                return p.role
-        return None
+        """The role of the participant *event*'s sender is on its channel."""
+        record = People(context.participants).named(event)
+        return record.role if record is not None else None
 
     @property
     def _exempt_tool_names(self) -> set[str]:

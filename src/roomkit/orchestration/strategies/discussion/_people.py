@@ -125,8 +125,7 @@ def one_person(index: PeopleIndex, name: str) -> str | None:
 
 
 def _participant(event: RoomEvent, context: RoomContext) -> Participant | None:
-    pid = event.source.participant_id
-    return next((p for p in context.participants if p.id == pid), None) if pid else None
+    return People(context.participants).named(event)
 
 
 def _active_person(participant: Participant) -> bool:

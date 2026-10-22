@@ -6,6 +6,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.core._authors import People
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.models.enums import HookTrigger, IdentificationStatus
 from roomkit.models.identity import Identity, IdentityResult
@@ -358,16 +359,13 @@ def _sender_already_identified(event: Any, context: RoomContext) -> bool:
     the channel ever saw the message: the check costs nothing, where a store
     query per message would cost more on the text channels that never hit it.
 
+    The sender's id names the participant only on a channel they were reached
+    through (RFC §5.5): the same id on another channel is resolved like any.
     Only IDENTIFIED counts. A PENDING participant is one the room *has* but has
     not identified — a resolver may still be the thing that names it, and a
     hook may still want to challenge or refuse — so those go on resolving as
     before.
     """
-    participant_id = event.source.participant_id
-    if not participant_id:
-        return False
-    return any(
-        participant.id == participant_id
-        and participant.identification is IdentificationStatus.IDENTIFIED
-        for participant in context.participants
-    )
+    participant = People(context.participants).named(event)
+    identified = IdentificationStatus.IDENTIFIED
+    return participant is not None and participant.identification is identified

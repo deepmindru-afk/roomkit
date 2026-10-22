@@ -43,10 +43,12 @@ _PAIR = re.compile(r"([0-9a-f]{16}):([1-9][0-9]{0,8})")
 
 class People:
     """The room's participants as a turn's ``source.participant_id`` names
-    them: a ``Participant.id`` names its participant on a channel they are
-    reached through (``channel_id``, ``connected_via``), since an id one
-    transport gives says nothing of another's; an ``Identity.id`` the
-    identity pipeline resolved names its participant on any (RFC §5.5, §11).
+    them: a ``Participant.id``, or an ``Identity.id``, names its participant
+    only on a channel they are reached through (``connected_via``, which the
+    identity pipeline extends with the channel it resolved them on), since an
+    id one transport gives says nothing of another's (RFC §5.5). The one
+    answer to who a sender is: their label, role, authority, identification
+    and verification all read it.
 
     An identity is one person however many records name it (a member the host
     added under it, and the record the identity pipeline keeps for it): the
@@ -56,29 +58,44 @@ class People:
     def __init__(self, participants: Iterable[Participant]) -> None:
         records = sorted(participants, key=lambda p: (p.joined_at, p.id))
         self._by_id = {p.id: p for p in records}
-        self._by_identity: dict[str, Participant] = {}
+        self._by_identity: dict[str, list[Participant]] = {}
         for record in records:
             if record.identity_id:
-                self._by_identity.setdefault(record.identity_id, record)
+                self._by_identity.setdefault(record.identity_id, []).append(record)
         # One record per person, in the order they joined.
         self.persons = [p for p in records if self._standing_for(p) is p]
 
     def of(self, event: RoomEvent) -> Participant | None:
         """The participant behind *event*, or ``None``."""
+        record = self.named(event)
+        return self._standing_for(record) if record is not None else None
+
+    def named(self, event: RoomEvent) -> Participant | None:
+        """The record *event*'s ``participant_id`` names on its channel, or
+        ``None``: the record of that id when its participant is reached
+        through the channel, else one of the identity's records reached
+        through it (the channel the identity pipeline resolved them on).
+        An id that names nobody on the channel names nobody at all."""
         pid = event.source.participant_id
         if not pid:
             return None
-        person = self._by_id.get(pid)
-        # connected_via holds the primary channel too.
-        if person is not None and event.source.channel_id in person.connected_via:
-            return self._standing_for(person)
-        return self._by_identity.get(pid)
+        channel = event.source.channel_id
+        record = self._by_id.get(pid)
+        if record is not None and reached(record, channel):
+            return record
+        return next((r for r in self._by_identity.get(pid, ()) if reached(r, channel)), None)
 
     def _standing_for(self, record: Participant) -> Participant:
         """The record standing for *record*'s person: its identity's first."""
         if record.identity_id is None:
             return record
-        return self._by_identity.get(record.identity_id, record)
+        return next(iter(self._by_identity.get(record.identity_id, ())), record)
+
+
+def reached(record: Participant, channel_id: str) -> bool:
+    """Whether the room reached *record*'s participant through *channel_id*
+    (RFC §5.5): ``connected_via`` holds the primary channel too."""
+    return channel_id in record.connected_via
 
 
 def author_name(event: RoomEvent, people: People) -> str | None:

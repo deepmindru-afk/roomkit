@@ -356,6 +356,20 @@ record, not per-channel presence. When two channel memberships have independent
 connect/disconnect lifecycles, give them distinct participant ids and correlate
 them through `identity_id`.
 
+An inbound sender id names its participant only on a channel in their
+`connected_via` (RFC §5.5): the same id arriving through another channel is
+another sender, with none of the participant's name, role, administrative
+authority, authorship, identification or verification. Link one person's
+channels with `add_member` (or `join`) on each, or let the identity pipeline
+resolve them, which records the channel it resolved them on:
+
+```python
+await kit.add_member("room-id", "console", "u-1", role=ParticipantRole.OWNER)
+# A message on "web" from sender id "u-1": labelled "@web", no role, no ADMIN delete.
+await kit.add_member("room-id", "web", "u-1")  # records "web"; the role stays OWNER
+# Now the same message on "web" is the owner's.
+```
+
 ## Cancelling a turn
 
 Cancelling a message's delivery stops its agents' turns and only those: a turn

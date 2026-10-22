@@ -235,9 +235,12 @@ class TestAParticipantIdOnAnotherChannel:
         assert alice is not None and alice.connected_via == ["sms1", "rt"]
         await kit.close()
 
-    def test_an_identity_names_them_on_any_channel(self) -> None:
+    def test_an_identity_names_them_on_a_channel_it_was_resolved_on(self) -> None:
+        """The identity pipeline records the channel it resolved them on (RFC
+        §5.5); the identity's id on any other channel names nobody."""
         person = Participant(id="p1", room_id="r", channel_id="sms1", identity_id="i1")
-        people = People([person])
+        resolved = Participant(id="i1", room_id="r", channel_id="email1", identity_id="i1")
+        people = People([person, resolved])
 
         def event(channel: str, pid: str) -> RoomEvent:
             source = EventSource(
@@ -248,6 +251,7 @@ class TestAParticipantIdOnAnotherChannel:
         assert people.of(event("sms1", "p1")) is person
         assert people.of(event("email1", "i1")) is person
         assert people.of(event("email1", "p1")) is None
+        assert people.of(event("web1", "i1")) is None
 
 
 class TestAnIdentityIsOnePerson:
