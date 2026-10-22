@@ -289,6 +289,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `executor_lost` there, which the code never reported: the executor is not
   lost. A test reads the reason on both backends.
 
+- The in-memory turn backend's `no_executor` refusal of a committed event
+  names the room hooks no executor defines, as the Redis backend's and its
+  own refusal of a turn did (RMK-883): the three messages are built in one
+  place. The test of a turn given up as its owner closes runs across Redis
+  too, and checks that the executor cuts it as `owner_lost`.
+
 - An answer a barge-in cut reads, in the AI context, with how far the person
   heard it (RFC §6.4): `[The person cut you off during this answer, 5.7 s in:
   they heard it up to “…” and not the rest.]`, where it read "[You were

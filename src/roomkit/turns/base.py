@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import contextvars
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -64,6 +65,14 @@ def response_depth(request: TurnRequest) -> int:
     on its own behalf through the owner is at least that deep, so a chain of
     turns stops at the chain-depth limit (RFC §10.6.5)."""
     return request.event.chain_depth + 1
+
+
+def no_executor(channel_id: str, room_hooks: Sequence[str] = ()) -> TurnLinkError:
+    """The refusal of a turn, channel call or committed event of *channel_id*
+    that no executor takes, naming the room hooks *room_hooks* it needs
+    (RFC §10.6.7)."""
+    missing = f" with room hooks {list(room_hooks)}" if room_hooks else ""
+    return TurnLinkError("no_executor", f"No executor serves channel {channel_id!r}{missing}")
 
 
 async def heartbeat_tick(interval: float) -> None:

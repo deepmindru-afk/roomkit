@@ -10,9 +10,11 @@ import asyncio
 import contextlib
 import gc
 import logging
+import os
 import time
 from collections.abc import AsyncIterator
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -20,12 +22,14 @@ from roomkit import RoomKit
 from roomkit.core.event_router import StreamingResponse
 from roomkit.core.exceptions import TurnLinkError
 from roomkit.core.lanes import DeliveryCascade, ExecEntry, RoomDeliveryLane
+from roomkit.core.task_utils import cancel_reason
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType
 from roomkit.models.event import TextContent
 from roomkit.turns import InMemoryTurnBackend, TurnClient, TurnExecutor, TurnTimeouts
 from roomkit.turns.base import TurnBackend
 from roomkit.turns.owner import registry_turn_client
+from roomkit.turns.redis import RedisTurnBackend
 from tests.test_framework import SimpleChannel
 from tests.test_turns_backend import ScriptedChannel, _binding, _context, _event, _run
 
@@ -146,23 +150,59 @@ async def test_a_cancelled_cascade_nobody_waits_for_leaves_no_unretrieved_error(
     assert [r.getMessage() for r in caplog.records if r.name == "asyncio"] == []
 
 
-async def test_a_cascade_whose_turn_its_owner_gave_up_reports_its_cleanup_done() -> None:
+@pytest.fixture(params=["memory", "redis"])
+async def owner_and_host(
+    request: pytest.FixtureRequest,
+) -> AsyncIterator[tuple[TurnBackend, TurnBackend]]:
+    """The owner's turn backend and the one its turns' executor is served on:
+    one in memory; across Redis, two, as two processes, so the owner closing
+    is the executor's owner going away and never its own backend closing."""
+    if request.param == "memory":
+        backend = InMemoryTurnBackend()
+        yield backend, backend
+        return
+    if not os.environ.get("REDIS_URL"):
+        pytest.skip("REDIS_URL not set")
+    redis = pytest.importorskip("redis.asyncio")
+    prefix = f"roomkit:test:{uuid4().hex[:12]}"
+    owner, host = (
+        RedisTurnBackend(os.environ["REDIS_URL"], key_prefix=prefix, timeouts=QUICK)
+        for _ in range(2)
+    )
+    yield owner, host
+    await host.close()
+    client = redis.from_url(os.environ["REDIS_URL"])
+    keys = [key async for key in client.scan_iter(f"{prefix}:*")]
+    if keys:
+        await client.delete(*keys)
+    await client.aclose()
+
+
+async def test_a_cascade_whose_turn_its_owner_gave_up_reports_its_cleanup_done(
+    owner_and_host: tuple[TurnBackend, TurnBackend],
+) -> None:
     """The owner closing gives up the turns it holds, waiting for nothing of
-    them (a close from inside a turn spares that turn): no end is owed."""
+    them (a close from inside a turn spares that turn): no end is owed, and
+    the executor cuts the turn as one whose owner was lost (RFC §10.6.8)."""
     let_go = asyncio.Event()
+    cut: list[str | None] = []
 
     async def script(channel: ScriptedChannel) -> AsyncIterator[Any]:
         try:
             yield "one"
             await asyncio.Event().wait()
+        except asyncio.CancelledError as cancelled:
+            cut.append(cancel_reason(cancelled))
+            raise
         finally:
             await let_go.wait()
 
     channels = {"agent": ScriptedChannel(script)}
-    backend = InMemoryTurnBackend()
-    executor = TurnExecutor(channels.get, hosts=channels.__contains__, timeouts=QUICK)
-    await backend.serve(executor)
-    client = TurnClient(backend, timeouts=QUICK)
+    owner, host = owner_and_host
+    # Declared as a collection: a host of another process advertises it.
+    executor = TurnExecutor(channels.get, hosts=set(channels), timeouts=QUICK)
+    await host.serve(executor)  # a host elsewhere beats at once
+    client = TurnClient(owner, timeouts=QUICK)
     stream = (await _run(client)).response_stream
     assert await anext(stream) == "one"
     cascade = DeliveryCascade("room", reentry_budget=10)
@@ -171,8 +211,13 @@ async def test_a_cascade_whose_turn_its_owner_gave_up_reports_its_cleanup_done()
 
     await client.close()
     await cascade.cancel_and_wait("kit_closed", timeout=2.0)
+    async with asyncio.timeout(5.0):
+        while not cut:
+            await asyncio.sleep(0.02)
     let_go.set()
     await executor.close()
+
+    assert cut == ["owner_lost"]
 
 
 async def test_a_turn_given_up_as_its_owner_closes_fails_backend_closed(

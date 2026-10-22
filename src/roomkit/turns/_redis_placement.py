@@ -16,8 +16,8 @@ from collections.abc import Collection, Sequence
 from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib.parse import quote
 
-from roomkit.core.exceptions import TurnLinkError
 from roomkit.turns._redis_presence import Declaration, member_of
+from roomkit.turns.base import no_executor
 
 if TYPE_CHECKING:
     from roomkit.turns._redis_beat import LiveExecutors
@@ -129,7 +129,7 @@ class Placement:
         if here:
             return next(iter(here.values()))
         if not elsewhere:
-            raise _no_executor(channel_id, room_hooks)
+            raise no_executor(channel_id, room_hooks)
         # A room no executor holds yet: its turns spread over the takers.
         members = sorted(elsewhere)
         following = (self._next + 1) % len(members)
@@ -176,7 +176,7 @@ class Placement:
         Redis in the tests' loop back); ``no_executor`` when it refused the
         turn or does not define the room's hooks."""
         if self._here_member(own) in excluded or not own.takes(channel_id, room_hooks):
-            raise _no_executor(channel_id, room_hooks)
+            raise no_executor(channel_id, room_hooks)
         return Elsewhere(own.executor_id, self._node) if self._loop_back else own
 
     def _here_member(self, executor: TurnExecutor) -> str:
@@ -200,11 +200,6 @@ def _takers(
         and member not in skipped
         and declared.takes(channel_id, room_hooks)
     }
-
-
-def _no_executor(channel_id: str, room_hooks: Sequence[str]) -> TurnLinkError:
-    missing = f" with room hooks {list(room_hooks)}" if room_hooks else ""
-    return TurnLinkError("no_executor", f"No executor serves channel {channel_id!r}{missing}")
 
 
 def _text(value: Any) -> str:

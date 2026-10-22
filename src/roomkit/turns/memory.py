@@ -21,7 +21,14 @@ from roomkit.core.exceptions import TurnLinkError
 from roomkit.turns._codec import control_json, request_json
 from roomkit.turns._error_codec import error_record
 from roomkit.turns._rooms import RoomRecords
-from roomkit.turns.base import ExecutorLink, MessageOrder, RoomOwner, TurnBackend, TurnLink
+from roomkit.turns.base import (
+    ExecutorLink,
+    MessageOrder,
+    RoomOwner,
+    TurnBackend,
+    TurnLink,
+    no_executor,
+)
 from roomkit.turns.wire import (
     ChannelCall,
     ChannelControlEnvelope,
@@ -244,7 +251,7 @@ class InMemoryTurnBackend(TurnBackend):
         §10.6.3)."""
         taker = self._taker(channel_id, room_id, room_hooks)
         if taker is None:
-            raise TurnLinkError("no_executor", f"No executor serves channel {channel_id!r}")
+            raise no_executor(channel_id, room_hooks)
         return taker
 
     def _place(
@@ -255,10 +262,7 @@ class InMemoryTurnBackend(TurnBackend):
         holding the room's state from now."""
         holder = self._taker(channel_id, room_id, room_hooks)
         if holder is None:
-            missing = f" with room hooks {list(room_hooks)}" if room_hooks else ""
-            raise TurnLinkError(
-                "no_executor", f"No executor serves channel {channel_id!r}{missing}"
-            )
+            raise no_executor(channel_id, room_hooks)
         self._holders.put(channel_id, room_id, holder)
         return holder
 
