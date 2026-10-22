@@ -256,10 +256,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   levels deep and refused.
 
 - The Redis turn backend guide's prerequisites say redis-py 8.0.0 does not
-  serve a backend on a unix socket (RMK-869): its sync client fails on a
-  `unix://` URL, so the beat thread never beats and the process is taken for
-  lost. 8.0.1 and later work, as do 5.0.2 to 7.4; the `redis` extra is
-  unchanged.
+  serve a backend on a unix socket (RMK-869): its sync client, which the
+  beat thread uses, fails the first call of each new `unix://` connection and
+  keeps that connection without selecting the URL's database. One beat is
+  lost per connection, the immediate retry after a cut among them, and with
+  a database other than 0 every beat lands in database 0, so the other
+  processes take the process for lost. 8.0.1 and later work, as do 5.0.2 to
+  7.4; the `redis` extra is unchanged.
 
 - An ASYNC hook on a trigger that runs a SYNC chain (BEFORE_TTS,
   ON_TRANSCRIPTION, ON_TOOL_CALL…) no longer holds up the operation it
