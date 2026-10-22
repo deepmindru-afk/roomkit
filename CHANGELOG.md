@@ -149,6 +149,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back and said it twice, and the second answer read `ended`, which is no
   task status.
 
+- A delegated task is its delegated agent's (RMK-879): the failed turn of
+  another agent in its child room (a helper or a responder shared into it)
+  no longer fails the task with that agent's error. The task ends as its own
+  agent's turn did, completed with its answer or failed with its own end; the
+  other agent's failure stays its turn in the child room, `ON_ERROR` firing
+  there, and is logged. Both paths, with a transport shared and without.
+
 - A voice channel's record of a cut answer carries `played_percentage` once
   the answer's synthesis ended before the cut (RFC §12.3.13): the
   utterance's total duration was never set, so the share was never written.

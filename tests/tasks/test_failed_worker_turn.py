@@ -246,8 +246,10 @@ async def test_one_agents_failure_never_carries_anothers_end() -> None:
 
     result, _ = await _delegate(kit, "worker", share_channels=["b", "email-out"])
 
-    assert (result.error, result.output) == ("B's upstream 503", None)
-    assert "loop_end_reason" not in result.metadata
+    # The task is its delegated agent's (RMK-879): b's failure is b's own
+    # turn, and the task ends as the worker's turn did, with its own end.
+    assert result.error == "The worker's turn ended max_rounds before its answer"
+    assert result.metadata["loop_end_reason"] == "max_rounds"
     await kit.close()
 
 

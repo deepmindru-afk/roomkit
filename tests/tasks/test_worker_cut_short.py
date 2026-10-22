@@ -523,3 +523,52 @@ async def test_a_delegation_keeps_its_agent_s_answer_when_another_returns_first(
     assert task.result is not None
     assert (task.result.status, task.result.output) == (TaskStatus.COMPLETED, "From the worker.")
     await kit.close()
+
+
+class _Down(MockAIProvider):
+    """A helper whose model fails."""
+
+    async def generate(self, context: Any) -> AIResponse:
+        raise RuntimeError("the helper's model is down")
+
+
+@_SHARED
+@pytest.mark.parametrize("inline", [True, False], ids=["inline", "background"])
+async def test_another_agent_s_failed_turn_leaves_the_task_its_agent_s(
+    shared: list[str], inline: bool
+) -> None:
+    """RMK-879: a helper shared into the child room whose turn fails: the task
+    is its delegated agent's and completes with its answer; the helper's
+    failure stays its own turn in the child room, ON_ERROR firing there (RFC
+    §23.3 step 6)."""
+    kit = RoomKit()
+    kit.register_channel(Agent("worker", provider=MockAIProvider(responses=["From the worker."])))
+    kit.register_channel(Agent("helper", provider=_Down()))
+    kit.register_channel(SimpleChannel("email-out"))
+    await kit.create_room(room_id="parent")
+    await kit.attach_channel("parent", "email-out")
+    await kit.attach_channel("parent", "helper", category=ChannelCategory.INTELLIGENCE)
+    errors: list[tuple[str, str]] = []
+
+    @kit.hook(HookTrigger.ON_ERROR, execution=HookExecution.ASYNC)
+    async def failed(event: RoomEvent, ctx: Any) -> None:
+        errors.append((event.room_id, event.source.channel_id))
+
+    task = await kit.delegate("parent", "worker", "Find it.", share_channels=shared, wait=inline)
+    result = task.result if inline else await task.wait(timeout=5)
+    for _ in range(50):  # ON_ERROR runs as an async hook
+        if errors:
+            break
+        await asyncio.sleep(0.02)
+    await kit.close()
+
+    assert result is not None
+    assert (result.status, result.output, result.error) == (
+        TaskStatus.COMPLETED,
+        "From the worker.",
+        None,
+    )
+    # With a transport, the helper also answers the worker's answer, and
+    # fails again: each of its failed turns is reported, in the child room.
+    assert errors
+    assert set(errors) == {(task.child_room_id, "helper")}
