@@ -63,9 +63,11 @@ class DefaultContentTranscoder(ContentTranscoder):
         if isinstance(content, LocationContent):
             if ChannelMediaType.LOCATION in target_types:
                 return content
-            label = content.label or content.address or ""
+            label = content.label or content.address
+            point = f"({content.latitude}, {content.longitude})"
+            # A location with no name reads its coordinates alone (RFC §6.6).
             return TextContent(
-                body=f"[Location: {label} ({content.latitude}, {content.longitude})]"
+                body=f"[Location: {label} {point}]" if label else f"[Location: {point}]"
             )
 
         if isinstance(content, CompositeContent):

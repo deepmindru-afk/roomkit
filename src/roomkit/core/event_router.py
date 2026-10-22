@@ -31,8 +31,10 @@ from roomkit.models.enums import (
 )
 from roomkit.models.event import (
     AudioContent,
+    CompositeContent,
     DeleteContent,
     EditContent,
+    EventContent,
     EventSource,
     LocationContent,
     MediaContent,
@@ -118,6 +120,37 @@ def unanswered(trigger: RoomEvent, channel_id: str, channel_type: Any) -> RoomEv
         parent_event_id=trigger.parent_event_id,
         responds_to=trigger.id,
     )
+
+
+CUT_MARKER = "..."
+"""What ends a cut text (RFC §6.6): three ASCII dots, since U+2026 is outside
+the GSM 7-bit alphabet and would turn an SMS into UCS-2."""
+
+
+def _cut_text(text: TextContent, max_length: int) -> TextContent:
+    """*text* cut to *max_length* Unicode code points, never inside one: it
+    ends with :data:`CUT_MARKER` within the limit, except below four code
+    points, where the cut has no marker."""
+    if len(text.body) <= max_length:
+        return text
+    if max_length > len(CUT_MARKER):
+        body = text.body[: max_length - len(CUT_MARKER)] + CUT_MARKER
+    else:
+        body = text.body[:max_length]
+    return text.model_copy(update={"body": body})
+
+
+def _cut_content(content: EventContent, max_length: int) -> EventContent:
+    """*content* with its text cut to *max_length*: a text, or each text part
+    of a composite (RFC §6.6). The same object when nothing is cut."""
+    if isinstance(content, TextContent):
+        return _cut_text(content, max_length)
+    if isinstance(content, CompositeContent):
+        parts = [_cut_content(part, max_length) for part in content.parts]
+        if all(new is old for new, old in zip(parts, content.parts, strict=True)):
+            return content
+        return content.model_copy(update={"parts": parts})
+    return content
 
 
 def _answering(responses: list[RoomEvent], trigger: RoomEvent) -> list[RoomEvent]:
@@ -940,12 +973,7 @@ class EventRouter:
 
     @staticmethod
     def _enforce_max_length(event: RoomEvent, max_length: int) -> RoomEvent:
-        """Truncate text content if it exceeds the channel's max_length."""
-        max_length = max(3, max_length)
-        content = event.content
-        if isinstance(content, TextContent) and len(content.body) > max_length:
-            truncated = content.body[: max_length - 3] + "..."
-            return event.model_copy(
-                update={"content": TextContent(body=truncated, language=content.language)}
-            )
-        return event
+        """Cut the event's text to the channel's ``max_length`` (RFC §6.6):
+        a text, or each text part of a composite the target keeps whole."""
+        cut = _cut_content(event.content, max_length)
+        return event if cut is event.content else event.model_copy(update={"content": cut})

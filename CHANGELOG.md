@@ -86,6 +86,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A location delivered as text with neither a label nor an address reads
+  `[Location: (45.5, -73.6)]` (RFC §6.6, RMK-902); it read with two spaces.
+
+- A channel's `max_length` cuts each text part of a composite it keeps whole
+  (RFC §6.6, RMK-902); only a whole text was cut, so a long caption beside a
+  photo reached WhatsApp, Telegram, Messenger or RCS uncut. A limit below four
+  code points cuts without the `...` marker: a limit of 1 or 2 delivered
+  `...`, over the limit.
+
 - A room's first stored message is delivered when an event the persistence
   policy does not store came before it (RMK-902). An empty room's
   `latest_index` read 0, the first event's index, so the unstored event waited
