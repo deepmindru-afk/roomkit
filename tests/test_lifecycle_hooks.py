@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from roomkit.core.framework import RoomKit
+from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import (
+    Access,
     HookExecution,
     HookTrigger,
 )
@@ -129,6 +133,57 @@ class TestChannelLifecycleHooks:
         result = await kit.detach_channel("r1", "nonexistent")
         assert result is False
         assert len(fired) == 0
+
+
+_NO_CHANGE = [
+    ("mute", (), {"muted": True}),
+    ("unmute", (), {}),
+    ("mute_output", (), {"output_muted": True}),
+    ("unmute_output", (), {}),
+    ("set_visibility", ("all",), {}),
+    ("set_access", (Access.READ_ONLY,), {"access": Access.READ_ONLY}),
+    ("update_binding_metadata", ({"team": "blue"},), {"metadata": {"team": "blue"}}),
+]
+
+
+@pytest.mark.parametrize(("operation", "args", "stored"), _NO_CHANGE)
+async def test_a_binding_change_that_changes_nothing_writes_and_fires_nothing(
+    operation: str, args: tuple[Any, ...], stored: dict[str, Any], monkeypatch: Any
+) -> None:
+    """RFC §7.2: a retried call duplicates no hook and no record, and the
+    binding is not written again."""
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms1"))
+    await kit.create_room(room_id="r1")
+    binding = await kit.attach_channel("r1", "sms1")
+    await kit.store.update_binding(binding.model_copy(update=stored))
+    before = await kit.store.get_binding("r1", "sms1")
+    count = (await kit.get_room("r1")).event_count
+    fired: list[HookTrigger] = []
+    for trigger in (HookTrigger.ON_CHANNEL_MUTED, HookTrigger.ON_CHANNEL_UNMUTED):
+
+        @kit.hook(trigger, execution=HookExecution.ASYNC)
+        async def on_change(event: RoomEvent, ctx: RoomContext, trigger: Any = trigger) -> None:
+            fired.append(trigger)
+
+    writes: list[ChannelBinding] = []
+    monkeypatch.setattr(kit.store, "update_binding", _recording(writes))
+
+    result = await getattr(kit, operation)("r1", "sms1", *args)
+
+    assert result == before
+    assert writes == []
+    assert fired == []
+    assert (await kit.get_room("r1")).event_count == count
+    await kit.close()
+
+
+def _recording(writes: list[ChannelBinding]) -> Any:
+    async def update_binding(binding: ChannelBinding) -> ChannelBinding:
+        writes.append(binding)
+        return binding
+
+    return update_binding
 
 
 def _async_hook(trigger: HookTrigger, fn: object) -> object:

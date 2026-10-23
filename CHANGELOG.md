@@ -635,6 +635,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   room out of ARCHIVED. Breaking for code that closed an archived room, or
   that counted on a second close firing its hook again.
 
+- **BREAKING — a binding change that changes nothing writes and fires
+  nothing** (RFC §7.2, RMK-930). `mute()` on a muted channel wrote the
+  binding, added a `CHANNEL_MUTED` record and fired `ON_CHANNEL_MUTED`
+  again, `unmute()` likewise, and `set_visibility()`, `set_access()`,
+  `update_binding_metadata()`, `mute_output()` and `unmute_output()` wrote
+  the binding (and a `CHANNEL_UPDATED` record) with the values it held. Each
+  now returns the binding as stored, with no write, no record and no hook,
+  so a retried call duplicates nothing. Breaking for a hook that counted
+  every `mute()` call rather than every change.
+
 - **BREAKING — a hook's injected events commit after their cause has
   released the room lock** (RFC §9.4, §10.1 steps 10 to 14, §13.5,
   RMK-930). Their passes ran inside the cause's locked section, taking the

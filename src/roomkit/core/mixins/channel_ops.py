@@ -615,10 +615,13 @@ class ChannelOpsMixin(HelpersMixin):
     async def mute(
         self, room_id: str, channel_id: str, *, organization_id: str | None = None
     ) -> ChannelBinding:
-        """Mute a channel in a room."""
+        """Mute a channel in a room. Muting a muted channel writes nothing and
+        fires nothing (RFC §7.2)."""
         async with self._lock_manager.locked(room_id):
             binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
             updated = binding.model_copy(update={"muted": True})
+            if updated == binding:
+                return binding
             result = await self._store.update_binding(updated)
             self._notify_binding_updated(room_id, channel_id, result)
             await self._emit_system_event(
@@ -641,10 +644,13 @@ class ChannelOpsMixin(HelpersMixin):
     async def unmute(
         self, room_id: str, channel_id: str, *, organization_id: str | None = None
     ) -> ChannelBinding:
-        """Unmute a channel in a room."""
+        """Unmute a channel in a room. Unmuting a channel that is not muted
+        writes nothing and fires nothing (RFC §7.2)."""
         async with self._lock_manager.locked(room_id):
             binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
             updated = binding.model_copy(update={"muted": False})
+            if updated == binding:
+                return binding
             result = await self._store.update_binding(updated)
             self._notify_binding_updated(room_id, channel_id, result)
             await self._emit_system_event(
@@ -672,6 +678,8 @@ class ChannelOpsMixin(HelpersMixin):
         async with self._lock_manager.locked(room_id):
             binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
             updated = binding.model_copy(update={"output_muted": True})
+            if updated == binding:
+                return binding
             result = await self._store.update_binding(updated)
             self._notify_binding_updated(room_id, channel_id, result)
             return result
@@ -684,6 +692,8 @@ class ChannelOpsMixin(HelpersMixin):
         async with self._lock_manager.locked(room_id):
             binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
             updated = binding.model_copy(update={"output_muted": False})
+            if updated == binding:
+                return binding
             result = await self._store.update_binding(updated)
             self._notify_binding_updated(room_id, channel_id, result)
             return result
@@ -698,12 +708,15 @@ class ChannelOpsMixin(HelpersMixin):
     ) -> ChannelBinding:
         """Set visibility for a channel in a room. An invalid *visibility*,
         and ``internal``, which marks a record the framework wrote, raise
-        ``ValueError`` (RFC §7.3)."""
+        ``ValueError`` (RFC §7.3). The visibility the binding holds already
+        writes nothing (RFC §7.2)."""
         visibility = parse_given_visibility(visibility)
         async with self._lock_manager.locked(room_id):
             binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
             old_visibility = binding.visibility
             updated = binding.model_copy(update={"visibility": visibility})
+            if updated == binding:
+                return binding
             result = await self._store.update_binding(updated)
             await self._emit_system_event(
                 room_id,
@@ -726,11 +739,14 @@ class ChannelOpsMixin(HelpersMixin):
         *,
         organization_id: str | None = None,
     ) -> ChannelBinding:
-        """Set access level for a channel in a room."""
+        """Set access level for a channel in a room. The access the binding
+        holds already writes nothing (RFC §7.2)."""
         async with self._lock_manager.locked(room_id):
             binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
             old_access = binding.access
             updated = binding.model_copy(update={"access": access})
+            if updated == binding:
+                return binding
             result = await self._store.update_binding(updated)
             self._notify_binding_updated(room_id, channel_id, result)
             await self._emit_system_event(
@@ -754,13 +770,16 @@ class ChannelOpsMixin(HelpersMixin):
         *,
         organization_id: str | None = None,
     ) -> ChannelBinding:
-        """Update metadata on a channel binding."""
+        """Update metadata on a channel binding, merged into what it holds.
+        An update that changes nothing writes nothing (RFC §7.2)."""
         async with self._lock_manager.locked(room_id):
             binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
             updated = binding.model_copy(update={"metadata": {**binding.metadata, **metadata}})
             channel = self._channels.get(channel_id)
             if channel is not None:
                 updated = _named_correspondent(updated, channel)
+            if updated == binding:
+                return binding
             result = await self._store.update_binding(updated)
             await self._emit_system_event(
                 room_id,
