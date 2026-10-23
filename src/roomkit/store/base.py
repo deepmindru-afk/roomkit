@@ -450,6 +450,24 @@ class ConversationStore(ABC):
         """Update an existing event (e.g., mark as edited or deleted)."""
         ...
 
+    async def record_delivery_results(
+        self, room_id: str, event_id: str, results: dict[str, Any]
+    ) -> None:
+        """Write *results*, the outcome of an event's delivery set, on the
+        event as stored, and nothing else of it (RFC §10.3, §14.3).
+
+        Written once the delivery set is done, off the room lock: rewriting
+        the event as it stood at its commit would undo an edit or a delete
+        committed since. An event *room_id* does not hold is left alone.
+
+        The default reads the stored event and writes it back with the
+        results, which is safe only under the room lock, where the framework
+        calls it. A store that can update the field alone SHOULD override it.
+        """
+        stored = await self.get_event(event_id)
+        if stored is not None and stored.room_id == room_id:
+            await self.update_event(stored.model_copy(update={"delivery_results": results}))
+
     @abstractmethod
     async def delete_event(
         self, room_id: str, event_id: str, *, cascade_replies: bool = True

@@ -1010,6 +1010,20 @@ class PostgresStore(ConversationStore):
                 await _update_event_row(conn, event)
         return event
 
+    async def record_delivery_results(
+        self, room_id: str, event_id: str, results: dict[str, Any]
+    ) -> None:
+        # The column alone: the rest of the row, a change committed since
+        # included, stays as stored.
+        with self._query_span("record_delivery_results", "events"):
+            async with self._acquire() as conn:
+                await conn.execute(
+                    "UPDATE events SET delivery_results = $3 WHERE id = $1 AND room_id = $2",
+                    event_id,
+                    room_id,
+                    results,
+                )
+
     async def delete_event(
         self, room_id: str, event_id: str, *, cascade_replies: bool = True
     ) -> list[RoomEvent]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from datetime import UTC, datetime
 from typing import Any
 
@@ -388,6 +389,15 @@ class InMemoryStore(ConversationStore):
         event = event.model_copy(deep=True)
         self._events[event.id] = event
         return event
+
+    async def record_delivery_results(
+        self, room_id: str, event_id: str, results: dict[str, Any]
+    ) -> None:
+        stored = self._events.get(event_id)
+        if stored is not None and stored.room_id == room_id:
+            self._events[event_id] = stored.model_copy(
+                update={"delivery_results": copy.deepcopy(results)}
+            )
 
     async def delete_event(
         self, room_id: str, event_id: str, *, cascade_replies: bool = True

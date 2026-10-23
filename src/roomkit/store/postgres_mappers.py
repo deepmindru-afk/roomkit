@@ -85,7 +85,13 @@ def _row_to_event(row: Any) -> RoomEvent:
         metadata=metadata_raw,
         channel_data=ChannelData.model_validate(channel_data_raw),
         created_at=row["created_at"],
+        delivery_results=_json(row.get("delivery_results")) or {},
     )
+
+
+def _json(value: Any) -> Any:
+    """A JSONB column's value, decoded when the driver hands it as text."""
+    return json.loads(value) if isinstance(value, str) else value
 
 
 def _row_to_binding(row: Any) -> ChannelBinding:

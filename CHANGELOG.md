@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The record of a failed delivery no longer undoes an edit or a delete
+  (RFC §10.3, §14.3, RMK-930). Once a delivery set with a failure in it had
+  run, the framework rewrote the whole event as it stood at its commit to
+  add `delivery_results`: an edit or a delete committed meanwhile was
+  reverted (a deleted message un-deleted, a second delete then accepted).
+  The new `ConversationStore.record_delivery_results(room_id, event_id,
+  results)` writes the results alone, under the room lock; the in-memory,
+  SQLite and Postgres stores write the field in place, and the default a
+  custom store inherits reads the stored event and writes it back. Postgres
+  stored no delivery results at all: its `events` table gains a
+  `delivery_results JSONB NOT NULL DEFAULT '{}'` column, added by
+  `init()` (`ADD COLUMN IF NOT EXISTS`), existing rows reading as none.
+
 - A regeneration and a held message's release re-run the agents on a
   message still said (RFC §10.3, §11.7.6, RMK-930). `regenerate_target()`
   picked the newest transport message whether a DELETE had withdrawn it,

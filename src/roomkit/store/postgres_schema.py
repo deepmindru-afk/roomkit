@@ -199,7 +199,9 @@ CREATE TABLE IF NOT EXISTS events (
     blocked_by          TEXT,
     metadata            JSONB NOT NULL DEFAULT '{}',
     channel_data        JSONB NOT NULL DEFAULT '{}',
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- The outcome of the event's delivery set, written once it has run.
+    delivery_results    JSONB NOT NULL DEFAULT '{}'
 );
 -- Addressing arrived after events existed. Additive and unguarded: an
 -- existing row is unaddressed (NULL), which is exactly the behaviour it was
@@ -208,6 +210,10 @@ ALTER TABLE events ADD COLUMN IF NOT EXISTS addressed_to TEXT[];
 -- An answer names the event it answers (RFC §8.5). Additive like addressed_to:
 -- no event stored before it named one, so existing rows are NULL and correct.
 ALTER TABLE events ADD COLUMN IF NOT EXISTS responds_to TEXT;
+-- A delivery set's outcome (RFC §10.3, §14.3), which an UPDATE of the whole row
+-- used to carry and drop. Additive: an existing row recorded none, and '{}' is
+-- what it reads as.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS delivery_results JSONB NOT NULL DEFAULT '{}';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_room_index ON events(room_id, index);
 CREATE INDEX IF NOT EXISTS idx_events_room_created ON events(room_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_room_type ON events(room_id, type);

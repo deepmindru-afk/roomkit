@@ -7,6 +7,7 @@ must not thereby let them choose their own authority.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 
@@ -958,4 +959,66 @@ class TestNoReplayOfAWithdrawnMessage:
         rerun = await kit._rerun_agents_on("r1", edit.event.id)  # noqa: SLF001
 
         assert rerun is None and len(provider.calls) == calls
+        await kit.close()
+
+
+class _Flaky(_Transport):
+    """A transport whose delivery of the message saying *failing* fails once
+    *release* is set."""
+
+    def __init__(self, channel_id: str, failing: str) -> None:
+        super().__init__(channel_id)
+        self.failing = failing
+        self.started, self.release = asyncio.Event(), asyncio.Event()
+
+    async def deliver(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        if not _said(event, self.failing):
+            return ChannelOutput.empty()
+        self.started.set()
+        await self.release.wait()
+        raise RuntimeError("provider down")
+
+
+async def _changed(kit: RoomKit, event_id: str, key: str) -> None:
+    async with asyncio.timeout(2):
+        while not (await kit._store.get_event(event_id)).metadata.get(key):  # type: ignore[union-attr]
+            await asyncio.sleep(0.005)
+
+
+class TestADeliveryRecordUndoesNoChange:
+    """RFC §10.3, §14.3: the record of a failed delivery, written once the
+    delivery set is done, writes the delivery results alone, never the
+    event as it stood at its commit over a change committed since."""
+
+    @pytest.mark.parametrize("change", ["edit", "delete"])
+    async def test_a_change_committed_during_a_failing_delivery_stands(self, change: str) -> None:
+        kit = await _setup()
+        flaky = _Flaky("flaky", failing="v1")
+        kit.register_channel(flaky)
+        await kit.attach_channel("r1", "flaky")
+        posted = asyncio.create_task(_post(kit, "v1", sender_id="alice"))
+        await asyncio.wait_for(flaky.started.wait(), 2)
+        [original] = [e for e in await kit._store.list_events("r1") if _said(e, "v1")]
+
+        if change == "edit":
+            changing = _edit(kit, original, sender_id="alice", edit_source="sender")
+        else:
+            changing = _delete(kit, original, sender_id="alice", delete_type=DeleteType.SENDER)
+        changed = asyncio.create_task(changing)
+        await _changed(kit, original.id, "edited" if change == "edit" else "deleted")
+        flaky.release.set()
+        await asyncio.wait_for(asyncio.gather(posted, changed), 2)
+
+        stored = await kit._store.get_event(original.id)
+        assert stored is not None
+        if change == "edit":
+            assert (stored.content, stored.metadata) == (
+                TextContent(body="rewritten"),
+                {"edited": True},
+            )
+        else:
+            assert (stored.content, stored.metadata) == (TextContent(body="v1"), {"deleted": True})
+        assert stored.delivery_results["flaky"]["status"] == "failed"
         await kit.close()

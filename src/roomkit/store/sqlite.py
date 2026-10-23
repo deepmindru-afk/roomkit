@@ -23,6 +23,7 @@ sharing the file.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import sqlite3
 from collections.abc import Generator
@@ -1101,6 +1102,24 @@ class SQLiteStore(ConversationStore):
         with _write_transaction(conn):
             self._write_event_row(conn, event, replace=True)
         return event
+
+    async def record_delivery_results(
+        self, room_id: str, event_id: str, results: dict[str, Any]
+    ) -> None:
+        await self._run(self._x_record_delivery_results, room_id, event_id, results)
+
+    def _x_record_delivery_results(
+        self, room_id: str, event_id: str, results: dict[str, Any]
+    ) -> None:
+        """The results alone, written into the stored row's JSON in place: the
+        rest of it, a change committed since included, stays as stored."""
+        conn = self._db()
+        with _write_transaction(conn):
+            conn.execute(
+                "UPDATE events SET data = json_set(data, '$.delivery_results', json(?))"
+                " WHERE id = ? AND room_id = ?",
+                (json.dumps(results), event_id, room_id),
+            )
 
     async def delete_event(
         self, room_id: str, event_id: str, *, cascade_replies: bool = True

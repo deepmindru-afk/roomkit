@@ -616,3 +616,30 @@ async def test_a_hard_delete_takes_every_removed_event_s_changes(
         assert await store.delete_event(uuid4().hex, other.id) == []
     finally:
         await contract_store.delete_room(room.id)
+
+
+async def test_a_delivery_record_writes_the_results_alone(
+    contract_store: ConversationStore,
+) -> None:
+    """RFC §10.3, §14.3: the record of a delivery set writes its results on
+    the event as stored, never the event as it stood at its commit: an edit
+    or a delete committed since stands."""
+    room = await contract_store.create_room(Room(id=uuid4().hex))
+    try:
+        target = await contract_store.commit_event(room.id, make_event(room_id=room.id))
+        edit, edited = _edit_of(target, "corrected")
+        await contract_store.commit_event(room.id, edit, target=edited)
+        results = {"sms": {"status": "failed", "error": "provider down"}}
+
+        await contract_store.record_delivery_results(room.id, target.id, results)
+        await contract_store.record_delivery_results(uuid4().hex, target.id, {"x": {}})
+
+        stored = await contract_store.get_event(target.id)
+        assert stored is not None
+        assert (stored.content, stored.metadata) == (
+            TextContent(body="corrected"),
+            {"edited": True},
+        )
+        assert stored.delivery_results == results
+    finally:
+        await contract_store.delete_room(room.id)

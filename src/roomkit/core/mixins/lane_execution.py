@@ -682,21 +682,17 @@ class LaneExecutionMixin(HelpersMixin):
         ``delivery_failed`` framework event has long since gone.
 
         The whole map is written, successes included, so the answer is complete
-        rather than a list of casualties with no denominator.
+        rather than a list of casualties with no denominator. It is written on
+        the event as stored, the results alone, under the room lock: the event
+        as it stood at its commit would undo an edit or a delete committed
+        during its delivery (RFC §10.3, §14.3).
         """
         if not any(r.status == "failed" for r in results.values()):
             return
+        recorded = {channel_id: r.model_dump(mode="json") for channel_id, r in results.items()}
         try:
-            await self._store.update_event(
-                event.model_copy(
-                    update={
-                        "delivery_results": {
-                            channel_id: r.model_dump(mode="json")
-                            for channel_id, r in results.items()
-                        }
-                    }
-                )
-            )
+            async with self._lock_manager.locked(event.room_id):
+                await self._store.record_delivery_results(event.room_id, event.id, recorded)
         except Exception:
             logger.warning(
                 "Could not record delivery results for event %s",
