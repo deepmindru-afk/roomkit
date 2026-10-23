@@ -303,29 +303,6 @@ class TestEventOperations:
         assert stored.source.channel_type is CT.SYSTEM
         assert stored.source.participant_id == "task_result"
 
-    async def test_delete_event_cascades_to_replies(self, store) -> None:
-        await store.create_room(Room(id="r1"))
-        root = _make_event(room_id="r1", body="root")
-        reply = _make_event(room_id="r1", body="reply", parent_event_id=root.id)
-        other = _make_event(room_id="r1", body="unrelated")
-        for event in (root, reply, other):
-            await store.add_event(event)
-
-        deleted = await store.delete_event("r1", root.id)
-
-        assert deleted == [root.id, reply.id]
-        assert await store.get_event(root.id) is None
-        assert await store.get_event(reply.id) is None
-        assert await store.get_event(other.id) is not None
-
-    async def test_delete_event_missing_returns_empty(self, store) -> None:
-        await store.create_room(Room(id="r1"))
-        event = _make_event(room_id="r1")
-        await store.add_event(event)
-        assert await store.delete_event("r1", "missing") == []
-        assert await store.delete_event("r2", event.id) == []
-        assert await store.get_event(event.id) is not None
-
     async def test_commit_after_deleting_latest_keeps_index_monotonic(self, store) -> None:
         await store.create_room(Room(id="r1"))
         first = await store.commit_event("r1", _make_event(room_id="r1", body="first"))

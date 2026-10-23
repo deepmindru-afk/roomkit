@@ -438,13 +438,20 @@ class ConversationStore(ABC):
     @abstractmethod
     async def delete_event(
         self, room_id: str, event_id: str, *, cascade_replies: bool = True
-    ) -> list[str]:
+    ) -> list[RoomEvent]:
         """Hard-delete a persisted event, optionally cascading to its thread replies.
 
         ``parent_event_id`` has no DB-level FK, so a bare root delete would
         orphan its replies — ``cascade_replies`` (default) removes them in the
-        same operation. Returns the deleted event IDs (root first, then
-        replies); empty when *event_id* does not exist in *room_id*.
+        same operation. Whatever it says, the edits and deletes of every
+        event removed go with it (RFC §10.3): an edit holds its target's
+        corrected content, and a change of an event that no longer exists
+        changes nothing. One transaction, a removed event's idempotency key
+        released with it (§13.4).
+
+        Returns the removed events as they were stored: the root, its
+        replies, then the changes, each group in index order; empty when
+        *event_id* does not exist in *room_id*.
         """
         ...
 

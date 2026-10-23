@@ -1099,25 +1099,39 @@ class SQLiteStore(ConversationStore):
 
     async def delete_event(
         self, room_id: str, event_id: str, *, cascade_replies: bool = True
-    ) -> list[str]:
+    ) -> list[RoomEvent]:
         return await self._run(self._x_delete_event, room_id, event_id, cascade_replies)
 
-    def _x_delete_event(self, room_id: str, event_id: str, cascade_replies: bool) -> list[str]:
+    def _x_delete_event(
+        self, room_id: str, event_id: str, cascade_replies: bool
+    ) -> list[RoomEvent]:
         conn = self._db()
         with _write_transaction(conn):
             root = conn.execute(
-                "SELECT 1 FROM events WHERE id = ? AND room_id = ?", (event_id, room_id)
+                "SELECT data FROM events WHERE id = ? AND room_id = ?", (event_id, room_id)
             ).fetchone()
             if root is None:
                 return []
-            deleted = [event_id]
+            removed = [_load_event(root[0])]
             if cascade_replies:
                 rows = conn.execute(
-                    "SELECT id FROM events WHERE room_id = ? AND parent_event_id = ?"
-                    " AND id != ? ORDER BY rowid",
+                    "SELECT data FROM events WHERE room_id = ? AND parent_event_id = ?"
+                    " AND id != ? ORDER BY idx",
                     (room_id, event_id, event_id),
                 )
-                deleted.extend(row[0] for row in rows)
+                removed.extend(_load_event(row[0]) for row in rows)
+            # The edits and deletes of every event removed (RFC §10.3).
+            gone = [event.id for event in removed]
+            marks = ",".join("?" for _ in gone)
+            rows = conn.execute(
+                "SELECT data FROM events WHERE room_id = ?"
+                " AND json_extract(data, '$.content.type') IN ('edit', 'delete')"
+                f" AND json_extract(data, '$.content.target_event_id') IN ({marks})"  # nosec B608  # fragments are internal, values parameterised
+                f" AND id NOT IN ({marks}) ORDER BY idx",
+                [room_id, *gone, *gone],
+            )
+            removed.extend(_load_event(row[0]) for row in rows)
+            deleted = [event.id for event in removed]
             marks = ",".join("?" for _ in deleted)
             keys = conn.execute(
                 f"SELECT source_channel_id, idempotency_key FROM events WHERE id IN ({marks})"  # nosec B608  # fragments are internal, values parameterised
@@ -1131,7 +1145,7 @@ class SQLiteStore(ConversationStore):
                 )
             conn.execute(f"DELETE FROM events WHERE id IN ({marks})", deleted)  # nosec B608  # fragments are internal, values parameterised
             conn.execute(f"DELETE FROM events_fts WHERE event_id IN ({marks})", deleted)  # nosec B608  # fragments are internal, values parameterised
-        return deleted
+        return removed
 
     async def list_events(
         self,

@@ -1002,7 +1002,7 @@ class PostgresStore(ConversationStore):
 
     async def delete_event(
         self, room_id: str, event_id: str, *, cascade_replies: bool = True
-    ) -> list[str]:
+    ) -> list[RoomEvent]:
         with self._query_span("delete_event", "events"):
             async with self._acquire() as conn, conn.transaction():
                 root = await conn.fetchval(
@@ -1010,23 +1010,26 @@ class PostgresStore(ConversationStore):
                 )
                 if root is None:
                     return []
-                if cascade_replies:
-                    rows = await conn.fetch(
-                        "DELETE FROM events"
-                        " WHERE room_id = $1 AND (id = $2 OR parent_event_id = $2)"
-                        " RETURNING id",
-                        room_id,
-                        event_id,
-                    )
-                else:
-                    rows = await conn.fetch(
-                        "DELETE FROM events WHERE room_id = $1 AND id = $2 RETURNING id",
-                        room_id,
-                        event_id,
-                    )
-        # Root first, then replies — RETURNING order is not guaranteed.
-        ids = [row["id"] for row in rows]
-        return sorted(ids, key=lambda eid: eid != event_id)
+                rows = await conn.fetch(
+                    "DELETE FROM events WHERE room_id = $1"
+                    " AND (id = $2 OR ($3 AND parent_event_id = $2)) RETURNING *",
+                    room_id,
+                    event_id,
+                    cascade_replies,
+                )
+                # The edits and deletes of every event removed (RFC §10.3).
+                changes = await conn.fetch(
+                    "DELETE FROM events WHERE room_id = $1"
+                    " AND content->>'type' IN ('edit', 'delete')"
+                    " AND content->>'target_event_id' = ANY($2::text[]) RETURNING *",
+                    room_id,
+                    [row["id"] for row in rows],
+                )
+        # The root, its replies, then the changes, each in index order:
+        # RETURNING order is not guaranteed.
+        thread = sorted(rows, key=lambda row: (row["id"] != event_id, row["index"]))
+        ordered = [*thread, *sorted(changes, key=lambda row: row["index"])]
+        return [_row_to_event(row) for row in ordered]
 
     async def list_events(
         self,

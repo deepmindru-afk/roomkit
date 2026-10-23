@@ -131,22 +131,32 @@ class TestUpdateEventApi:
 
 
 class TestDeleteEventApi:
-    async def test_deletes_root_and_replies_and_fires_hook(self) -> None:
+    async def test_deletes_root_replies_and_changes_and_fires_per_event(self) -> None:
+        """RFC §10.3: a hard delete takes the thread and the edits of every
+        event it removes, and ON_EVENT_DELETED fires once per removed event,
+        with the event as it was stored."""
         kit, _src = await _setup()
         root = await _send(kit, "root")
-        reply = make_event(room_id="r1", body="reply", parent_event_id=root.id)
+        reply = make_event(room_id="r1", body="reply", parent_event_id=root.id, index=1)
         await kit.store.add_event(reply)
+        edit = await kit.process_inbound(
+            InboundMessage(
+                channel_id="src",
+                sender_id="u1",
+                event_type=EventType.EDIT,
+                content=EditContent(target_event_id=root.id, new_content=TextContent(body="v2")),
+            )
+        )
+        assert edit.event is not None
+        as_stored = [await kit.store.get_event(e) for e in (root.id, reply.id, edit.event.id)]
         deleted_calls = _track(kit, HookTrigger.ON_EVENT_DELETED)
 
         deleted = await kit.delete_event("r1", root.id)
 
-        assert deleted == [root.id, reply.id]
-        assert await kit.store.get_event(root.id) is None
-        assert await kit.store.get_event(reply.id) is None
-        assert len(deleted_calls) == 1
-        # The hook receives the pre-delete snapshot of the root event.
-        assert deleted_calls[0].id == root.id
-        assert deleted_calls[0].content.body == "root"
+        assert deleted == [root.id, reply.id, edit.event.id]
+        assert [await kit.store.get_event(e) for e in deleted] == [None] * 3
+        assert deleted_calls == as_stored
+        assert deleted_calls[0].content == TextContent(body="v2")
 
     async def test_no_cascade_keeps_replies(self) -> None:
         kit, _src = await _setup()

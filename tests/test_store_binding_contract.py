@@ -14,7 +14,7 @@ from roomkit.core.exceptions import EventNotFoundError
 from roomkit.core.inbound_router import DefaultInboundRoomRouter
 from roomkit.models.channel import ChannelBinding, RateLimit, RetryPolicy
 from roomkit.models.enums import ChannelType, EventStatus, EventType, RoomStatus
-from roomkit.models.event import EditContent, RoomEvent, TextContent
+from roomkit.models.event import DeleteContent, EditContent, RoomEvent, TextContent
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
@@ -573,3 +573,46 @@ async def test_a_change_commits_with_its_target_or_not_at_all(
     finally:
         await contract_store.delete_room(room.id)
         await contract_store.delete_room(other.id)
+
+
+def _delete_of(target: RoomEvent) -> RoomEvent:
+    """A DELIVERED delete of *target*."""
+    return make_event(room_id=target.room_id, status=EventStatus.DELIVERED).model_copy(
+        update={"type": EventType.DELETE, "content": DeleteContent(target_event_id=target.id)}
+    )
+
+
+@pytest.mark.parametrize("cascade", [True, False])
+async def test_a_hard_delete_takes_every_removed_event_s_changes(
+    contract_store: ConversationStore, cascade: bool
+) -> None:
+    """RFC §10.3, §14.1: a hard delete removes its event, its thread replies
+    unless told not to, and the edits and deletes of every event it removes
+    (an edit holds its target's corrected text), and returns them as stored:
+    the root, its replies, then the changes, in index order."""
+    room = await contract_store.create_room(Room(id=uuid4().hex))
+    try:
+        store = contract_store
+        root = await store.commit_event(room.id, make_event(room_id=room.id, body="root"))
+        reply = await store.commit_event(
+            room.id, make_event(room_id=room.id, body="reply", parent_event_id=root.id)
+        )
+        other = await store.commit_event(room.id, make_event(room_id=room.id, body="other"))
+        edit, edited = _edit_of(root, "corrected")
+        edit = await store.commit_event(room.id, edit, target=edited)
+        unsaid = await store.commit_event(room.id, _delete_of(reply))
+        kept_edit, kept_edited = _edit_of(other, "other, corrected")
+        kept_edit = await store.commit_event(room.id, kept_edit, target=kept_edited)
+        as_stored = await store.get_event(root.id)
+
+        removed = await store.delete_event(room.id, root.id, cascade_replies=cascade)
+
+        expected = [root, reply, edit, unsaid] if cascade else [root, edit]
+        assert [e.id for e in removed] == [e.id for e in expected]
+        assert removed[0] == as_stored
+        left = {e.id for e in await store.list_events(room.id)}
+        assert left == {other.id, kept_edit.id} | (set() if cascade else {reply.id, unsaid.id})
+        assert await store.delete_event(room.id, root.id) == []
+        assert await store.delete_event(uuid4().hex, other.id) == []
+    finally:
+        await contract_store.delete_room(room.id)

@@ -133,20 +133,25 @@ class EventOpsMixin(HelpersMixin):
     ) -> list[str]:
         """Hard-delete a persisted event, cascading to thread replies by default.
 
-        Fires ON_EVENT_DELETED with the pre-delete snapshot of the root event.
-        Returns the deleted event IDs (root first, then replies), or an empty
-        list when *event_id* does not exist in *room_id* (no hook fires).
+        Whatever *cascade_replies* says, the edits and deletes of every event
+        removed go with it (RFC §10.3): an edit holds its target's corrected
+        content. Fires ON_EVENT_DELETED once per removed event, each with the
+        event as it was stored, once the room lock is released. Returns the
+        removed event IDs (the root, its replies, then the changes), or an
+        empty list when *event_id* does not exist in *room_id* (no hook
+        fires).
         """
         async with self._lock_manager.locked(room_id):
             target = await self._store.get_event(event_id)
             if target is None or target.room_id != room_id:
                 return []
-            deleted = await self._store.delete_event(
+            removed = await self._store.delete_event(
                 room_id, event_id, cascade_replies=cascade_replies
             )
-        if deleted:
+        if removed:
             context = await self._build_context(room_id)
-            await self._hook_engine.run_async_hooks(
-                room_id, HookTrigger.ON_EVENT_DELETED, target, context
-            )
-        return deleted
+            for event in removed:
+                await self._hook_engine.run_async_hooks(
+                    room_id, HookTrigger.ON_EVENT_DELETED, event, context
+                )
+        return [event.id for event in removed]

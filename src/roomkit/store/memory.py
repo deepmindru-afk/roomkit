@@ -8,7 +8,7 @@ from typing import Any
 
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import VerificationStatus
-from roomkit.models.event import RoomEvent, ThreadSummary
+from roomkit.models.event import DeleteContent, EditContent, RoomEvent, ThreadSummary
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
@@ -388,31 +388,32 @@ class InMemoryStore(ConversationStore):
 
     async def delete_event(
         self, room_id: str, event_id: str, *, cascade_replies: bool = True
-    ) -> list[str]:
+    ) -> list[RoomEvent]:
         root = self._events.get(event_id)
         if root is None or root.room_id != room_id:
             return []
-        deleted = [event_id]
+        in_room = sorted(
+            (e for eid in self._room_events.get(room_id, []) if (e := self._events.get(eid))),
+            key=lambda e: e.index,
+        )
+        removed = [root]
         if cascade_replies:
-            room_event_ids = self._room_events.get(room_id, [])
-            deleted.extend(
-                eid
-                for eid in room_event_ids
-                if eid != event_id
-                and (e := self._events.get(eid)) is not None
-                and e.parent_event_id == event_id
+            removed.extend(
+                e for e in in_room if e.id != event_id and e.parent_event_id == event_id
             )
-        for eid in deleted:
-            event = self._events.pop(eid, None)
-            if event is not None and event.idempotency_key:
+        gone = {e.id for e in removed}
+        removed.extend(e for e in in_room if e.id not in gone and _changes_one_of(e, gone))
+        gone = {e.id for e in removed}
+        for event in removed:
+            del self._events[event.id]
+            if event.idempotency_key:
                 self._idempotency.get(room_id, {}).pop(
                     (event.source.channel_id, event.idempotency_key), None
                 )
-        room_ids = self._room_events.get(room_id)
-        if room_ids is not None:
-            gone = set(deleted)
-            self._room_events[room_id] = [eid for eid in room_ids if eid not in gone]
-        return deleted
+        self._room_events[room_id] = [
+            eid for eid in self._room_events.get(room_id, []) if eid not in gone
+        ]
+        return removed
 
     async def list_events(
         self,
@@ -833,6 +834,14 @@ class InMemoryStore(ConversationStore):
             for oid in obs_ids
             if oid in self._observations
         ]
+
+
+def _changes_one_of(event: RoomEvent, event_ids: set[str]) -> bool:
+    """Whether *event* is an edit or a delete of one of *event_ids*."""
+    content = event.content
+    return isinstance(content, EditContent | DeleteContent) and (
+        content.target_event_id in event_ids
+    )
 
 
 def _matches(room: Room, status: str | None, organization_id: str | None) -> bool:

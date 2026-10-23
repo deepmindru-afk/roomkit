@@ -527,6 +527,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — a hard delete takes the edits and deletes of every event it
+  removes, and fires `ON_EVENT_DELETED` per removed event** (RFC §10.3,
+  §14.1, RMK-930). `kit.delete_event()` kept the EDIT rows of the events it
+  removed, and they hold the corrected text a host deleting the message
+  means to remove; whatever `cascade_replies` says, those changes now go
+  with it, in the same transaction, their idempotency keys released. The
+  trigger fired once, with the root; it now fires once per removed event,
+  each with the event as it was stored, so a projection over the timeline
+  sees every row that went. `kit.delete_event()` still returns the removed
+  ids, now the root, its replies, then the changes.
+  `ConversationStore.delete_event()` returns the removed events as stored
+  (`list[RoomEvent]`, in that order) instead of their ids: a custom store
+  must return them, and a caller of the store's method reads `.id`. No
+  schema changes: the stores find a change by its content's target.
+
 - **BREAKING — an edit or a delete commits with its target, in one
   transaction** (RFC §10.3, §14.3, RMK-930). The pipeline wrote the edited
   content (or `metadata.deleted`) on the target with `update_event()`, then
