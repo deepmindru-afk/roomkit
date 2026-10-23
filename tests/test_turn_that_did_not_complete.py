@@ -246,16 +246,24 @@ async def test_a_turn_that_fails_while_a_call_is_open_closes_it(
 
 
 class _Hang(MockAIProvider):
+    """Never answers; ``asked`` is set once a turn reached it."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.asked = asyncio.Event()
+
     async def generate(self, context: AIContext) -> AIResponse:
+        self.asked.set()
         await asyncio.sleep(3600)
         raise AssertionError("never answers")
 
 
 async def test_a_turn_cancelled_from_outside_closes_its_span(streaming: bool) -> None:
     turn = _Turn()
-    await turn.build(_Hang(streaming=streaming))
+    provider = _Hang(streaming=streaming)
+    await turn.build(provider)
     task = asyncio.create_task(turn.say())
-    await asyncio.sleep(0.1)
+    await asyncio.wait_for(provider.asked.wait(), 1.0)
 
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
