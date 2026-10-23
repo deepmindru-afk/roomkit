@@ -68,7 +68,11 @@ class ChannelCapabilities(BaseModel):
     supports_quick_replies: bool = False
     supports_media: bool = False
     supported_media_types: list[str] = Field(default_factory=list)
+    """The MIME types of the files the channel takes (RFC §5.8); empty takes
+    every type. A file of another type is delivered as its text form (§6.6)."""
     max_media_size_bytes: int | None = Field(default=None, gt=0)
+    """The largest file the channel takes; a file of known size over it is
+    delivered as its text form (RFC §5.8, §6.6). ``None``: any size."""
     supports_audio: bool = False
     max_audio_duration_seconds: int | None = Field(default=None, gt=0)
     supported_audio_formats: list[str] = Field(default_factory=list)

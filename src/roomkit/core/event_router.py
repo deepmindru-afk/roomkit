@@ -20,7 +20,7 @@ from roomkit.core.exceptions import NoRecipientError
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan
 from roomkit.core.rate_limiter import TokenBucketRateLimiter
 from roomkit.core.retry import retry_with_backoff
-from roomkit.core.transcoder import DefaultContentTranscoder
+from roomkit.core.transcoder import DefaultContentTranscoder, takes_file
 from roomkit.core.visibility import committed_visibility, visibility_allows
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
@@ -1034,10 +1034,15 @@ class EventRouter:
         """
         target_types = set(target_binding.capabilities.media_types)
 
-        # Check if the specific content type is already supported
+        # Check if the specific content type is already supported; a file
+        # also needs a type and a size the target takes (RFC §5.8).
         content_media = self._content_media_type(event.content)
         if content_media is not None and content_media in target_types:
-            return event
+            content = event.content
+            if not isinstance(content, MediaContent) or takes_file(
+                target_binding.capabilities, content
+            ):
+                return event
 
         # Edit/Delete: check capability flags directly
         if isinstance(event.content, EditContent) and target_binding.capabilities.supports_edit:

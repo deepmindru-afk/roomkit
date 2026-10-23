@@ -36,6 +36,8 @@ SMS_CAPABILITIES = ChannelCapabilities(
     max_length=1600,
     supports_read_receipts=True,
     supports_media=True,
+    # RFC Appendix A.1: another file is sent as its text form (§6.6).
+    supported_media_types=["image/jpeg", "image/png", "image/gif"],
 )
 
 EMAIL_CAPABILITIES = ChannelCapabilities(
@@ -85,7 +87,6 @@ WHATSAPP_PERSONAL_CAPABILITIES = ChannelCapabilities(
     supports_edit=True,
     supports_delete=True,
     supports_media=True,
-    supported_media_types=["image/jpeg", "image/png", "image/webp"],
     supports_audio=True,
     supported_audio_formats=["audio/ogg", "audio/mp4"],
     supports_video=True,
@@ -114,6 +115,8 @@ TELEGRAM_CAPABILITIES = ChannelCapabilities(
         ChannelMediaType.TEXT,
         ChannelMediaType.RICH,
         ChannelMediaType.MEDIA,
+        ChannelMediaType.AUDIO,
+        ChannelMediaType.VIDEO,
         ChannelMediaType.LOCATION,
     ],
     max_length=4096,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from roomkit._media import audio_label, location_label, media_label, video_label
 from roomkit.core.router import ContentTranscoder
-from roomkit.models.channel import ChannelBinding
+from roomkit.models.channel import ChannelBinding, ChannelCapabilities
 from roomkit.models.enums import ChannelMediaType
 from roomkit.models.event import (
     AudioContent,
@@ -19,6 +19,26 @@ from roomkit.models.event import (
     TextContent,
     VideoContent,
 )
+
+
+def takes_file(capabilities: ChannelCapabilities, media: MediaContent) -> bool:
+    """Whether a channel of *capabilities* takes the file *media* (RFC §5.8):
+    its type is listed by a non-empty ``supported_media_types``, compared
+    without parameters and whatever the case, and its known size is within
+    ``max_media_size_bytes``. An empty list takes every type; no limit, or a
+    file of unknown size, any size. A file it does not take is delivered as
+    its text form (§6.6): a provider's refusal would lose the whole message.
+    """
+    listed = {_bare_type(mime) for mime in capabilities.supported_media_types}
+    if listed and _bare_type(media.mime_type) not in listed:
+        return False
+    limit = capabilities.max_media_size_bytes
+    return limit is None or media.size_bytes is None or media.size_bytes <= limit
+
+
+def _bare_type(mime_type: str) -> str:
+    """*mime_type* without its parameters, lower-case (``image/jpeg``)."""
+    return mime_type.split(";", 1)[0].strip().lower()
 
 
 class DefaultContentTranscoder(ContentTranscoder):
@@ -46,7 +66,9 @@ class DefaultContentTranscoder(ContentTranscoder):
             return TextContent(body=content.plain_text or content.body)
 
         if isinstance(content, MediaContent):
-            if ChannelMediaType.MEDIA in target_types:
+            if ChannelMediaType.MEDIA in target_types and takes_file(
+                target_binding.capabilities, content
+            ):
                 return content
             return TextContent(body=media_label(content))
 

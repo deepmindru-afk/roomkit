@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A file a channel does not take is delivered as its text form (RFC §5.8,
+  §6.6, Appendix A, RMK-930). The transcoder read a target's `media_types`
+  only: a file whose MIME type its non-empty `supported_media_types` does not
+  list, or whose known `size_bytes` is over its `max_media_size_bytes`, was
+  sent as is, and the provider's refusal lost the whole message. Such a
+  file now becomes `[Media: {caption or filename or url}]`, alone or as a
+  part of a composite, at the broadcast and in the transcoder alike; an
+  empty list takes every type, and a file of unknown size any size. The
+  declarations follow Appendix A: SMS lists `image/jpeg`, `image/png` and
+  `image/gif` (a PDF to an SMS number is now its text form); WhatsApp
+  Personal lists no type (it took images only, and now takes a document
+  again under the new rule); Telegram declares AUDIO and VIDEO, so its
+  provider's `sendAudio` and `sendVideo` are reached rather than a
+  `[Voice message: ...]` text.
+
 - A chat message that does not carry its chat has no address (RFC §5.7,
   RMK-930). On a channel whose replies go to a chat only (Telegram, Teams,
   Discord, Buzz), such a message was routed and recorded by its author: it
