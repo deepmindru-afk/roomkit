@@ -1,10 +1,22 @@
-"""Edits and deletes (RFC §10.3): what a change is, what the commit of a
-change writes on its target, and the trigger it fires once the room lock is
-released."""
+"""Edits and deletes (RFC §10.3): what a change is, what it may target, who
+may make it, what its commit writes on its target, and the trigger it fires
+once the room lock is released."""
 
 from __future__ import annotations
 
-from roomkit.models.enums import EventStatus, EventType, HookTrigger
+from dataclasses import dataclass
+
+from roomkit.core._authors import People
+from roomkit.models.enums import (
+    ChannelType,
+    DeleteType,
+    EventDirection,
+    EventStatus,
+    EventType,
+    HookTrigger,
+    ParticipantRole,
+    ParticipantStatus,
+)
 from roomkit.models.event import (
     CompositeContent,
     DeleteContent,
@@ -17,8 +29,30 @@ type Change = EditContent | DeleteContent
 
 TARGET_NOT_FOUND = "target_event_not_found"
 """Step 8a's refusal of a change that names no target it may change."""
+IDENTITY_REQUIRED = "identity_required_for_edit"
+"""Step 8a's refusal of a change that needs an author it lacks."""
+NOT_AUTHORIZED = "not_authorized"
+"""Step 8a's refusal of a change claiming an authority its sender lacks."""
+NOT_ORIGINAL_AUTHOR = "not_original_author"
+"""Step 8a's refusal of a sender's change of another's event."""
 
 _CHANGE_TYPES = frozenset({EventType.EDIT, EventType.DELETE})
+_ADMINISTRATORS = frozenset({ParticipantRole.OWNER, ParticipantRole.AGENT})
+_GONE = frozenset({ParticipantStatus.LEFT, ParticipantStatus.BANNED})
+# RFC §10.3 fixes ``edit_source`` at "sender" | "system" | null. The field
+# stays a free-form ``str``; any other value is checked as the sender's, never
+# as the system's, since that is exactly what an attacker would send.
+_SYSTEM_SOURCE = "system"
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeCheck:
+    """Step 8a's answer on an event (RFC §10.1): the *refusal* of a change,
+    or the *target* of one it accepts; neither for an event that is no
+    change."""
+
+    target: RoomEvent | None = None
+    refusal: str | None = None
 
 
 def holds_change(content: EventContent) -> bool:
@@ -70,6 +104,69 @@ def target_refusal(target: RoomEvent | None, room_id: str) -> str | None:
         or concerns_change(target)
     ):
         return TARGET_NOT_FOUND
+    return None
+
+
+def author(event: RoomEvent, people: People) -> tuple[str, ...] | None:
+    """Who authored *event* (RFC §10.3 rule 3): for an event that travelled
+    outbound, its channel, whatever participant it names, since a channel
+    never speaks as a participant; otherwise the participant its sender id
+    names on its channel, else that sender id on its channel; else nobody.
+    The participant's status does not matter: one who left, or was banned,
+    still authored their messages."""
+    source = event.source
+    if source.direction == EventDirection.OUTBOUND:
+        return ("channel", source.channel_id)
+    person = people.of(event)
+    if person is not None:
+        return ("participant", person.id)
+    if source.participant_id:
+        return ("sender", source.channel_id, source.participant_id)
+    return None
+
+
+def claims_system(change: Change) -> bool:
+    """Whether *change* claims the system's authority (RFC §10.3 rule 6): a
+    SYSTEM delete, or an edit whose ``edit_source`` is ``system``."""
+    if isinstance(change, DeleteContent):
+        return change.delete_type == DeleteType.SYSTEM
+    return change.edit_source == _SYSTEM_SOURCE
+
+
+def authority_refusal(
+    change: Change, event: RoomEvent, target: RoomEvent, people: People, *, by_hook: bool
+) -> str | None:
+    """Why *event*'s sender may not make *change* of *target* (RFC §10.3
+    rules 4 to 6), ``None`` when they may. A change a hook injected
+    (*by_hook*) is the hook's, and a SYSTEM change only. A SYSTEM change
+    comes from a SYSTEM channel; an ADMIN delete from an active OWNER or
+    AGENT; any other is the sender's, made of their own event."""
+    if by_hook or claims_system(change):
+        system = by_hook or event.source.channel_type == ChannelType.SYSTEM
+        return None if system and claims_system(change) else NOT_AUTHORIZED
+    if isinstance(change, DeleteContent) and change.delete_type == DeleteType.ADMIN:
+        return _admin_refusal(event, people)
+    mine, theirs = author(event, people), author(target, people)
+    if mine is None or theirs is None:
+        return IDENTITY_REQUIRED
+    return None if mine == theirs else NOT_ORIGINAL_AUTHOR
+
+
+def _admin_refusal(event: RoomEvent, people: People) -> str | None:
+    """Why *event*'s sender holds no administrative authority (RFC §10.3
+    rule 5), ``None`` when they do: an OWNER or an AGENT, neither LEFT nor
+    BANNED, as the participant they are on their channel. A channel's own
+    output holds no participant's authority, an id that names an owner on
+    another channel none, and a sender who names no one is not identified.
+    Moderation that outranks the roster belongs on the host's own calls
+    (``update_event`` / ``delete_event``), whose authorization the host owns."""
+    if event.source.direction == EventDirection.OUTBOUND:
+        return NOT_AUTHORIZED
+    if not event.source.participant_id:
+        return IDENTITY_REQUIRED
+    record = people.named(event)
+    if record is None or record.role not in _ADMINISTRATORS or record.status in _GONE:
+        return NOT_AUTHORIZED
     return None
 
 

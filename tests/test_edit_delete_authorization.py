@@ -17,10 +17,12 @@ from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import (
     ChannelType,
     DeleteType,
+    EventDirection,
     EventStatus,
     EventType,
     HookTrigger,
     ParticipantRole,
+    ParticipantStatus,
 )
 from roomkit.models.event import (
     CompositeContent,
@@ -51,7 +53,9 @@ class _Transport(Channel):
             source=EventSource(
                 channel_id=self.channel_id,
                 channel_type=self.channel_type,
-                participant_id=message.sender_id,
+                # A provider's echo of the channel's own output travels outbound.
+                direction=message.metadata.get("direction", EventDirection.INBOUND),
+                participant_id=message.sender_id or None,
             ),
             content=message.content,
             idempotency_key=message.idempotency_key,
@@ -133,6 +137,7 @@ async def _delete(
     sender_id: str,
     delete_type: DeleteType,
     channel_id: str = "src",
+    direction: EventDirection = EventDirection.INBOUND,
 ):
     return await kit.process_inbound(
         InboundMessage(
@@ -140,6 +145,7 @@ async def _delete(
             sender_id=sender_id,
             event_type=EventType.DELETE,
             content=DeleteContent(target_event_id=target.id, delete_type=delete_type),
+            metadata={"direction": direction},
         )
     )
 
@@ -425,4 +431,90 @@ class TestWhatAChangeMayTarget:
         assert first.event is not None and first.blocked is False
         assert second.duplicate is True and second.event is not None
         assert second.event.id == first.event.id
+        await kit.close()
+
+
+class TestWhoMayChange:
+    """RFC §10.3 rules 3 to 6: who authored an event, and who holds the
+    authority a change claims."""
+
+    @pytest.mark.parametrize(
+        ("role", "status", "allowed"),
+        [
+            (ParticipantRole.OWNER, ParticipantStatus.ACTIVE, True),
+            (ParticipantRole.AGENT, ParticipantStatus.ACTIVE, True),
+            (ParticipantRole.MEMBER, ParticipantStatus.ACTIVE, False),
+            (ParticipantRole.OWNER, ParticipantStatus.LEFT, False),
+            (ParticipantRole.OWNER, ParticipantStatus.BANNED, False),
+            (ParticipantRole.AGENT, ParticipantStatus.BANNED, False),
+        ],
+    )
+    async def test_an_admin_delete_is_an_active_owner_s_or_agent_s(
+        self, role: ParticipantRole, status: ParticipantStatus, allowed: bool
+    ) -> None:
+        kit = await _setup()
+        original = await _post(kit, "v1", sender_id="alice")
+        moderator = await kit.add_member("r1", "src", "mod-1", role=role)
+        await kit._store.update_participant(moderator.model_copy(update={"status": status}))
+
+        result = await _delete(kit, original, sender_id="mod-1", delete_type=DeleteType.ADMIN)
+
+        assert (result.blocked, result.reason) == (
+            (False, None) if allowed else (True, "not_authorized")
+        )
+        await kit.close()
+
+    async def test_an_admin_delete_from_no_one_needs_an_identity(self) -> None:
+        kit = await _setup()
+        original = await _post(kit, "v1", sender_id="alice")
+
+        result = await _delete(kit, original, sender_id="", delete_type=DeleteType.ADMIN)
+
+        assert (result.blocked, result.reason) == (True, "identity_required_for_edit")
+        await kit.close()
+
+    @pytest.mark.parametrize(
+        ("delete_type", "sender_id", "reason"),
+        [(DeleteType.ADMIN, "owner-1", "not_authorized"), (DeleteType.SENDER, "alice", None)],
+        ids=["an owner's authority", "a participant's authorship"],
+    )
+    async def test_a_channel_s_own_output_speaks_as_no_participant(
+        self, delete_type: DeleteType, sender_id: str, reason: str | None
+    ) -> None:
+        """An event that travelled outbound is its channel's, whatever
+        participant it names (RFC §10.3 rule 3): it neither holds that
+        participant's authority nor is the author of their messages."""
+        kit = await _setup()
+        await kit.add_member("r1", "src", "owner-1", role=ParticipantRole.OWNER)
+        original = await _post(kit, "v1", sender_id="alice")
+
+        result = await _delete(
+            kit,
+            original,
+            sender_id=sender_id,
+            delete_type=delete_type,
+            direction=EventDirection.OUTBOUND,
+        )
+
+        assert (result.blocked, result.reason) == (True, reason or "not_original_author")
+        stored = await kit._store.get_event(original.id)
+        assert stored is not None and not stored.metadata
+        await kit.close()
+
+    async def test_a_system_change_needs_no_author(self) -> None:
+        """A SYSTEM change claims the system's authority (rule 6): neither it
+        nor its target needs an author, as a sender's change does (rule 4)."""
+        kit = await _setup()
+        notice = (
+            await kit.process_inbound(
+                InboundMessage(channel_id="sys", sender_id="", content=TextContent(body="notice"))
+            )
+        ).event
+        assert notice is not None and notice.source.participant_id is None
+
+        result = await _delete(
+            kit, notice, sender_id="", delete_type=DeleteType.SYSTEM, channel_id="sys"
+        )
+
+        assert (result.blocked, result.reason) == (False, None)
         await kit.close()

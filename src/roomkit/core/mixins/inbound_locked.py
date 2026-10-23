@@ -15,10 +15,12 @@ import logging
 from dataclasses import KW_ONLY, dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.core._authors import People, source_of
+from roomkit.core._authors import People
 from roomkit.core._changes import (
     TARGET_NOT_FOUND,
+    ChangeCheck,
     applied,
+    authority_refusal,
     change_of,
     concerns_change,
     target_refusal,
@@ -35,12 +37,9 @@ from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundResult
 from roomkit.models.enums import (
     ChannelCategory,
-    ChannelType,
-    DeleteType,
     EventStatus,
     EventType,
     HookTrigger,
-    ParticipantRole,
     Visibility,
 )
 from roomkit.models.event import DeleteContent, EditContent, RoomEvent
@@ -57,11 +56,6 @@ if TYPE_CHECKING:
     from roomkit.store.base import ConversationStore
 
 logger = logging.getLogger("roomkit.framework")
-
-# RFC §10.3 fixes the ``edit_source`` vocabulary at "sender" | "system". The
-# field stays a free-form ``str`` for compatibility, so anything outside the
-# vocabulary is treated as unprivileged rather than trusted.
-_EDIT_SOURCE_SYSTEM = "system"
 
 
 @dataclass(slots=True, eq=False)
@@ -214,78 +208,36 @@ class InboundLockedMixin(HelpersMixin):
         root = await self._resolve_thread_root(room_id, parent)
         return after if root == parent else after.model_copy(update={"parent_event_id": root})
 
-    def _is_system_source(self, event: RoomEvent) -> bool:
-        """Whether an event genuinely originates from a system channel.
+    async def _check_change(
+        self, room_id: str, event: RoomEvent, *, by_hook: bool = False
+    ) -> ChangeCheck:
+        """RFC §10.1 step 8a (§10.3 validation), under the room lock: what
+        *event* is as a change, the target it names and who may make it.
 
-        ``EventSource.channel_type`` is set by the framework from the
-        registered channel, not by the payload, so a remote party cannot
-        claim it.
+        A refusal is logged at warning level: the inbound path returns it
+        as a blocked result, the other passes drop the event, nothing stored.
+        *by_hook* is a change a hook injected (§9.4), the hook's and a
+        SYSTEM change only.
         """
-        return event.source.channel_type == ChannelType.SYSTEM
-
-    @staticmethod
-    def _has_admin_authority(people: People, event: RoomEvent) -> bool:
-        """Whether *event*'s sender holds administrative authority in the room.
-
-        RFC §10.3 requires administrative authority to be *verified* rather
-        than asserted by the inbound payload; the room roster is the only
-        thing here the sender does not control, and an id names its
-        participant only on a channel they are reached through (RFC §5.5).
-        Moderation that legitimately outranks the roster belongs on the
-        host-side API (``update_event`` / ``delete_event``), which documents
-        that the host owns authorization on that path.
-        """
-        participant = people.named(event)
-        return participant is not None and participant.role == ParticipantRole.OWNER
-
-    async def _authorize_edit_delete(
-        self, room_id: str, event: RoomEvent, target: RoomEvent
-    ) -> str | None:
-        """Authorize an inbound EDIT/DELETE, returning a block reason or ``None``.
-
-        RFC §10.3: authorship covers ``sender`` edits and SENDER deletes,
-        ADMIN deletes require verified administrative authority, and SYSTEM
-        must come from a system channel. Any other ``edit_source`` is
-        unprivileged and falls back to the author check — an unrecognized
-        value must not buy a caller past authorization, which is exactly what
-        an attacker would send.
-        """
-        content = event.content
-        sender_id = event.source.participant_id
-        # Read now: a sender the identity pipeline has just recorded is not
-        # on the context's roster yet.
-        people = People(await self._store.list_participants(room_id))
-        privileged: bool | None = None
-        if isinstance(content, DeleteContent):
-            if content.delete_type == DeleteType.ADMIN:
-                privileged = self._has_admin_authority(people, event)
-            elif content.delete_type == DeleteType.SYSTEM:
-                privileged = self._is_system_source(event)
-        elif isinstance(content, EditContent) and content.edit_source == _EDIT_SOURCE_SYSTEM:
-            privileged = self._is_system_source(event)
-
-        if privileged is True:
-            return None
-        if privileged is False:
-            logger.warning(
-                "Edit/Delete rejected: sender %s lacks the claimed authority in room %s",
-                sender_id,
-                room_id,
-                extra={"room_id": room_id},
-            )
-            return "not_authorized"
-
-        # Unprivileged path — the sender must be the original author: the
-        # same participant, or the same sender on the same channel.
-        if source_of(event, people) != source_of(target, people):
-            logger.warning(
-                "Edit/Delete rejected: sender %s is not author %s",
-                sender_id,
-                target.source.participant_id,
-                extra={"room_id": room_id},
-            )
-            return "not_original_author"
-        return None
+        if not concerns_change(event):
+            return ChangeCheck()
+        change = change_of(event)
+        target = None if change is None else await self._store.get_event(change.target_event_id)
+        reason = TARGET_NOT_FOUND if change is None else target_refusal(target, room_id)
+        if reason is None and change is not None and target is not None:
+            # Read now: a sender the identity pipeline has just recorded is
+            # not on the context's roster yet.
+            people = People(await self._store.list_participants(room_id))
+            reason = authority_refusal(change, event, target, people, by_hook=by_hook)
+            if reason is None:
+                return ChangeCheck(target=target)
+        logger.warning(
+            "Edit/Delete refused in room %s: %s",
+            room_id,
+            reason,
+            extra={"room_id": room_id, "event_id": event.id, "reason": reason},
+        )
+        return ChangeCheck(refusal=reason)
 
     async def _commit_event(self, room_id: str, event: RoomEvent) -> RoomEvent:
         """Commit an event to the timeline (RFC §10.1 step 12 / §14.3).
@@ -504,44 +456,14 @@ class InboundLockedMixin(HelpersMixin):
             if root_id != event.parent_event_id:
                 event = event.model_copy(update={"parent_event_id": root_id})
 
-        # Edit/Delete validation (RFC §10.3). The target mutation is deferred
-        # until after BEFORE_BROADCAST hooks allow the event (applied below via
-        # ``_apply_edit_delete_state``), so a moderation hook that blocks an
-        # edit/delete cannot leave the target already mutated.
-        edit_delete_target: RoomEvent | None = None
-        if concerns_change(event):
-            change = change_of(event)
-            if change is None:
-                logger.warning(
-                    "Edit/Delete refused in room %s: a change held where it is not made",
-                    room_id,
-                    extra={"room_id": room_id, "event_id": event.id},
-                )
-                return InboundResult(blocked=True, reason=TARGET_NOT_FOUND)
-            target_id = change.target_event_id
-            target_event = await self._store.get_event(target_id)
-
-            if target_event is None or target_refusal(target_event, room_id) is not None:
-                logger.warning(
-                    "Edit/Delete target %s is no target in room %s",
-                    target_id,
-                    room_id,
-                    extra={"room_id": room_id, "target_event_id": target_id},
-                )
-                return InboundResult(blocked=True, reason=TARGET_NOT_FOUND)
-
-            # Identity required: anonymous users must not edit/delete others' messages
-            sender_id = event.source.participant_id
-            target_author_id = target_event.source.participant_id
-            if sender_id is None or target_author_id is None:
-                return InboundResult(blocked=True, reason="identity_required_for_edit")
-
-            # Authorization check (RFC §10.3)
-            block_reason = await self._authorize_edit_delete(room_id, event, target_event)
-            if block_reason is not None:
-                return InboundResult(blocked=True, reason=block_reason)
-
-            edit_delete_target = target_event
+        # Edit/Delete validation (RFC §10.1 step 8a). The target mutation is
+        # deferred to the commit, once BEFORE_BROADCAST hooks allow the event,
+        # so a moderation hook that blocks an edit/delete cannot leave the
+        # target already mutated.
+        check = await self._check_change(room_id, event)
+        if check.refusal is not None:
+            return InboundResult(blocked=True, reason=check.refusal)
+        edit_delete_target = check.target
 
         decision = await self._gate_commit(room_id, event, context, precheck)
         if isinstance(decision, _Ready):

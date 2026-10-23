@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Who may edit or delete follows RFC §10.3 rules 3 to 6 (RMK-930). An ADMIN
+  delete is an OWNER's or an AGENT's, neither LEFT nor BANNED, as the
+  participant the sender is on their channel: an OWNER who had left or been
+  banned kept the authority, and an AGENT (since RMK-911 a human advisor)
+  had none. An event that travelled outbound (a channel's own output, an
+  agent's response) is its channel's, whatever participant it names: it
+  neither holds that participant's authority nor authored their messages.
+  A SYSTEM change from a SYSTEM channel needs no author of its own nor of
+  its target, which `identity_required_for_edit` refused; a sender's change
+  and an ADMIN delete from a sender who names no one still need one. A
+  SYSTEM change from any other channel stays `not_authorized`, and an
+  `edit_source` outside `sender`/`system` is still checked as the sender's.
+  Breaking for a host that relied on an AGENT being refused ADMIN deletes,
+  or on a departed owner keeping them.
+
 - An edit or a delete targets an event of its room that is not BLOCKED, not
   deleted and not itself an edit or a delete (RFC §10.3 rule 2, RMK-930);
   only existence and the room were checked. A refused message could be
