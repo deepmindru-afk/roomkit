@@ -56,8 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   list, or whose known `size_bytes` is over its `max_media_size_bytes`, was
   sent as is, and the provider's refusal lost the whole message. Such a
   file now becomes `[Media: {caption or filename or url}]`, alone or as a
-  part of a composite, at the broadcast and in the transcoder alike; an
-  empty list takes every type, and a file of unknown size any size. The
+  part of a composite, at the broadcast and in the transcoder alike, and in
+  an edit's new content: an edit to a channel that edits natively is still
+  delivered as an edit, its new content's files as the channel takes them;
+  an empty list takes every type, and a file of unknown size any size. The
   declarations follow Appendix A: SMS lists `image/jpeg`, `image/png` and
   `image/gif` (a PDF to an SMS number is now its text form); WhatsApp
   Personal lists no type (it took images only, and now takes a document

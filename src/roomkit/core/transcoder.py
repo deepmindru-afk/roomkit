@@ -36,6 +36,18 @@ def takes_file(capabilities: ChannelCapabilities, media: MediaContent) -> bool:
     return limit is None or media.size_bytes is None or media.size_bytes <= limit
 
 
+def takes_files_of(capabilities: ChannelCapabilities, content: EventContent) -> bool:
+    """Whether a channel of *capabilities* takes every file *content* holds
+    (RFC §5.8): a file itself, a composite's parts, an edit's new content."""
+    if isinstance(content, MediaContent):
+        return takes_file(capabilities, content)
+    if isinstance(content, CompositeContent):
+        return all(takes_files_of(capabilities, part) for part in content.parts)
+    if isinstance(content, EditContent):
+        return takes_files_of(capabilities, content.new_content)
+    return True
+
+
 def _bare_type(mime_type: str) -> str:
     """*mime_type* without its parameters, lower-case (``image/jpeg``)."""
     return mime_type.split(";", 1)[0].strip().lower()
@@ -104,7 +116,15 @@ class DefaultContentTranscoder(ContentTranscoder):
 
         if isinstance(content, EditContent):
             if target_binding.capabilities.supports_edit:
-                return content
+                if takes_files_of(target_binding.capabilities, content.new_content):
+                    return content
+                # Delivered natively all the same (RFC §6.6), its new content
+                # carrying a file the target does not take as its text form
+                # (§5.8): never sent as is for the provider to refuse.
+                new = await self.transcode(content.new_content, source_binding, target_binding)
+                if new is None:
+                    return None
+                return content.model_copy(update={"new_content": new})
             # Fallback: transcode the new_content and prefix with "Correction:"
             new = await self.transcode(content.new_content, source_binding, target_binding)
             if new is None:

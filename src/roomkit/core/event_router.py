@@ -20,7 +20,7 @@ from roomkit.core.exceptions import NoRecipientError
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan
 from roomkit.core.rate_limiter import TokenBucketRateLimiter
 from roomkit.core.retry import retry_with_backoff
-from roomkit.core.transcoder import DefaultContentTranscoder, takes_file
+from roomkit.core.transcoder import DefaultContentTranscoder, takes_file, takes_files_of
 from roomkit.core.visibility import committed_visibility, visibility_allows
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
@@ -1044,8 +1044,13 @@ class EventRouter:
             ):
                 return event
 
-        # Edit/Delete: check capability flags directly
-        if isinstance(event.content, EditContent) and target_binding.capabilities.supports_edit:
+        # Edit/Delete: check capability flags directly; a native edit's new
+        # content also needs files the target takes (RFC §5.8).
+        if (
+            isinstance(event.content, EditContent)
+            and target_binding.capabilities.supports_edit
+            and takes_files_of(target_binding.capabilities, event.content.new_content)
+        ):
             return event
         if (
             isinstance(event.content, DeleteContent)

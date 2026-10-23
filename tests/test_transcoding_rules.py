@@ -8,20 +8,25 @@ from roomkit import RoomKit
 from roomkit._media import media_label
 from roomkit.channels import SMSChannel, TelegramChannel, WhatsAppPersonalChannel
 from roomkit.channels.base import Channel
-from roomkit.core.event_router import _cut_content
+from roomkit.core.event_router import EventRouter, _cut_content
 from roomkit.core.transcoder import DefaultContentTranscoder
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities
+from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelMediaType, ChannelType
 from roomkit.models.event import (
     AudioContent,
     CompositeContent,
+    EditContent,
     EventContent,
+    EventSource,
     LocationContent,
     MediaContent,
+    RoomEvent,
     TextContent,
     VideoContent,
 )
+from roomkit.models.room import Room
 from roomkit.providers.sms.mock import MockSMSProvider
 from roomkit.providers.telegram.mock import MockTelegramProvider
 from roomkit.providers.whatsapp.mock import MockWhatsAppProvider
@@ -183,3 +188,61 @@ class TestTheDeclarationsChannelsShip:
         channel = TelegramChannel("out", provider=MockTelegramProvider())
 
         assert await _delivered(channel, content) == content
+
+
+class _EditingPhone(_PhotoPhone):
+    """A JPEG-only transport that edits natively."""
+
+    def capabilities(self) -> ChannelCapabilities:
+        return super().capabilities().model_copy(update={"supports_edit": True})
+
+
+@pytest.mark.parametrize(
+    ("new_content", "delivered"),
+    [
+        (
+            MediaContent(url="https://example.com/r.pdf", mime_type="application/pdf"),
+            TextContent(body="[Media: https://example.com/r.pdf]"),
+        ),
+        (
+            CompositeContent(
+                parts=[
+                    TextContent(body="Fixed"),
+                    MediaContent(url="https://example.com/r.pdf", mime_type="application/pdf"),
+                ]
+            ),
+            TextContent(body="Fixed\n[Media: https://example.com/r.pdf]"),
+        ),
+        (MediaContent(url=_JPEG, mime_type="image/jpeg"), None),
+    ],
+    ids=["unlisted-file", "composite-with-an-unlisted-file", "taken-file"],
+)
+async def test_a_native_edit_carries_its_file_as_the_target_takes_it(
+    new_content: EventContent, delivered: EventContent | None
+) -> None:
+    """RFC §5.8, §6.6: an edit delivered natively to a channel that edits
+    carries its new content's files as the channel takes them: a file it
+    does not take is its text form, never sent as is."""
+    source, target = SimpleChannel("in"), _EditingPhone("out")
+    bindings = [
+        ChannelBinding(
+            channel_id=channel.channel_id,
+            room_id="r1",
+            channel_type=ChannelType.SMS,
+            capabilities=channel.capabilities(),
+        )
+        for channel in (source, target)
+    ]
+    edit = EditContent(target_event_id="e1", new_content=new_content)
+    event = RoomEvent(
+        room_id="r1",
+        source=EventSource(channel_id="in", channel_type=ChannelType.SMS),
+        content=edit,
+    )
+    router = EventRouter(channels={"in": source, "out": target})
+
+    await router.broadcast(event, bindings[0], RoomContext(room=Room(id="r1"), bindings=bindings))
+
+    [sent] = target.delivered
+    expected = edit if delivered is None else edit.model_copy(update={"new_content": delivered})
+    assert sent.content == expected
