@@ -170,16 +170,18 @@ def _answering(
     return [
         _as_response(resp, trigger, responder)
         for resp in responses
-        if not _directs_an_agent(resp, trigger, responder)
+        if not _dropped_as_instruction(resp, trigger, responder)
     ]
 
 
-def _directs_an_agent(resp: RoomEvent, trigger: RoomEvent, responder: ChannelBinding) -> bool:
-    """Whether *resp* is typed INSTRUCTION, which a response may not be (RFC
-    §8.5): only the application issues instructions (§10.1.1), and one
-    agent's answer would otherwise direct another in the application's name.
-    Logged once found; an agent that wants another to act addresses its
-    answer (§19.3.1)."""
+def _dropped_as_instruction(
+    resp: RoomEvent, trigger: RoomEvent, responder: ChannelBinding
+) -> bool:
+    """Whether *resp* is dropped for being typed INSTRUCTION, which a response
+    may not be (RFC §8.5), with a warning: only the application issues
+    instructions (§10.1.1), and one agent's answer would otherwise direct
+    another in the application's name. An agent that wants another to act
+    addresses its answer (§19.3.1)."""
     if resp.type != EventType.INSTRUCTION:
         return False
     logger.warning(
