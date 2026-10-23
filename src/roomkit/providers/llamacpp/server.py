@@ -130,7 +130,7 @@ class LlamaServer:
                     pass  # not listening yet (downloading or loading the model)
                 await asyncio.sleep(_HEALTH_POLL_S)
         raise self._failure(
-            f"llama-server not ready after {self._config.startup_timeout:.0f}s "
+            f"llama-server not ready after {self._config.startup_timeout:g}s "
             "(raise startup_timeout if the model is still downloading)"
         )
 

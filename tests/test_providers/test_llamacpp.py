@@ -404,7 +404,7 @@ class TestLlamaCppAIProvider:
         ai = LlamaCppAIProvider(
             LlamaCppConfig(model="m:Q4", binary=str(fake_server), startup_timeout=0.1)
         )
-        with pytest.raises(ProviderError, match="not ready after .*raise startup_timeout"):
+        with pytest.raises(ProviderError, match=r"not ready after 0\.1s .*raise startup_timeout"):
             await ai.start()
 
         assert not ai._server.running

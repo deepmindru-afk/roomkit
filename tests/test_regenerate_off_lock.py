@@ -187,10 +187,19 @@ async def test_a_regeneration_repeats_nothing_of_its_triggers_first_pass() -> No
     assert after_broadcast == ["Write.", "draft", "draft"]
 
 
-async def test_a_room_closed_while_the_regeneration_waits_refuses_it_before_the_agent_runs() -> (
-    None
-):
+async def test_a_room_closed_while_the_regeneration_waits_refuses_it_before_the_agent_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     kit, _, slow = await _kit_with("loop", pause=0.0)
+    queued = asyncio.Event()
+    enqueue_regeneration = kit._enqueue_regeneration
+
+    def enqueued(*args: Any, **kwargs: Any) -> Any:
+        plan = enqueue_regeneration(*args, **kwargs)
+        queued.set()
+        return plan
+
+    monkeypatch.setattr(kit, "_enqueue_regeneration", enqueued)
     refused: list[FrameworkEvent] = []
 
     @kit.on("room_refused_event")
@@ -203,7 +212,7 @@ async def test_a_room_closed_while_the_regeneration_waits_refuses_it_before_the_
     second = await kit.process_inbound(_message("second"), defer_delivery=True)
     await until(lambda: slow.started == 2)  # the second message's turn generates
     regeneration = asyncio.create_task(kit.regenerate_response("r"))
-    await asyncio.sleep(0.05)  # the regeneration takes its place behind it
+    await asyncio.wait_for(queued.wait(), 1.0)  # the regeneration takes its place behind it
     await kit.close_room("r")
     started_at_close = slow.started
     slow.gate.set()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from typing import Any
 
 import httpx
@@ -94,6 +95,7 @@ class TestTelnyxSMSProvider:
         req = transport.requests[0]
         assert req.url == "https://api.telnyx.com/v2/messages"
         assert req.headers["Authorization"] == "Bearer KEY_test123"
+        assert "messaging_profile_id" not in json.loads(req.read())  # none unless configured
 
     @pytest.mark.asyncio
     async def test_send_sms_with_messaging_profile(self) -> None:

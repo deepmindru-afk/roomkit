@@ -14,6 +14,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 from roomkit.channels import BuzzChannel
 from roomkit.core.framework import RoomKit
@@ -80,6 +81,11 @@ def _make_event(content: Any) -> RoomEvent:
 
 
 class TestBuzzConfig:
+    def test_the_relay_and_the_key_are_required(self) -> None:
+        with pytest.raises(ValidationError) as refused:
+            BuzzConfig()  # type: ignore[call-arg]
+        assert {e["loc"][0] for e in refused.value.errors()} == {"relay_url", "private_key"}
+
     def test_owner_pubkey_is_normalized_and_validated(self) -> None:
         cfg = BuzzConfig(
             relay_url="wss://relay", private_key="nsec1x", owner_pubkey=" " + "A" * 64 + " "

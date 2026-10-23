@@ -232,13 +232,14 @@ class TestCreateVLLMProvider:
 
             assert provider._config.extra_body == {"top_p": 0.95}
 
-    def test_no_sampling_anywhere_sends_nothing(self) -> None:
+    def test_nothing_configured_sends_nothing(self) -> None:
         with patch.dict("sys.modules", {"openai": _mock_openai_module()}):
             from roomkit.providers.vllm import create_vllm_provider
 
             provider = create_vllm_provider(VLLMConfig(model="m"))
 
             assert provider._config.extra_body is None
+            assert provider._config.default_headers is None
 
     def test_turn_reasoning_overrides_config(self) -> None:
         # The per-turn value is the more specific one and must reach the wire.

@@ -968,6 +968,7 @@ class TestLifecycle:
         assert session.state == VoiceSessionState.ENDED
         assert session._last_usage["live_seconds"] == 12.5
 
+    @pytest.mark.wallclock
     async def test_acknowledged_close_does_not_wait_for_the_socket(
         self, session: VoiceSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -980,7 +981,9 @@ class TestLifecycle:
         task = asyncio.create_task(provider.disconnect(session))
         await _settle()
         ws.push({"type": "session.closed", "reason": "client"})
-        await asyncio.wait_for(task, timeout=1.0)  # well within the socket's bound
+        started = asyncio.get_running_loop().time()
+        await asyncio.wait_for(task, timeout=1.0)
+        assert asyncio.get_running_loop().time() - started < 0.1  # no wait, bounded or not
 
         assert session.state == VoiceSessionState.ENDED
         assert provider._states == {}

@@ -217,8 +217,31 @@ async def test_client_timeout_splits_connect_from_read(build: Builder, read: flo
 
 
 # ---------------------------------------------------------------------------
-# The default: the SDKs' own 5 s, on the constructors that take it as a keyword
+# The default: the SDKs' own 5 s, on every config and constructor
 # ---------------------------------------------------------------------------
+
+# The configs outside providers/; tests/test_providers/test_http_timeouts.py
+# holds those of providers/ but Gemini's.
+CONFIGS: list[tuple[type[Any], dict[str, Any]]] = [
+    (GrokTTSConfig, {"api_key": "k"}),
+    (OpenAIVisionConfig, {}),
+    (GeminiTTSConfig, {"api_key": "k"}),
+    (GeminiSTTConfig, {"api_key": "k"}),
+    (GeminiVisionConfig, {"api_key": "k"}),
+    (GeminiConfig, {"api_key": "k"}),
+    (GeminiImageConfig, {"api_key": "k"}),
+    (GeminiVertexConfig, {"project": "p", "location": "l"}),
+]
+
+
+@pytest.mark.parametrize(("config_cls", "kwargs"), CONFIGS, ids=[c.__name__ for c, _ in CONFIGS])
+def test_connect_timeout_defaults_to_five_seconds(
+    config_cls: type[Any], kwargs: dict[str, Any]
+) -> None:
+    config = config_cls(**kwargs)
+
+    assert config.connect_timeout == 5.0
+    assert config.timeout > config.connect_timeout
 
 
 def test_constructor_keywords_default_to_five_seconds() -> None:
