@@ -4,7 +4,7 @@ released."""
 
 from __future__ import annotations
 
-from roomkit.models.enums import EventType, HookTrigger
+from roomkit.models.enums import EventStatus, EventType, HookTrigger
 from roomkit.models.event import (
     CompositeContent,
     DeleteContent,
@@ -48,6 +48,28 @@ def change_of(event: RoomEvent) -> Change | None:
         return None if holds_change(content.new_content) else content
     if event.type == EventType.DELETE and isinstance(content, DeleteContent):
         return content
+    return None
+
+
+def is_deleted(event: RoomEvent) -> bool:
+    """Whether an accepted DELETE marked *event* deleted (``metadata.deleted``)."""
+    return event.metadata.get("deleted") is True
+
+
+def target_refusal(target: RoomEvent | None, room_id: str) -> str | None:
+    """Why *target* is no target a change of *room_id* may change (RFC §10.3
+    rule 2), ``None`` when it is one: it is an event of the room, not
+    BLOCKED, not deleted and not itself a change. An edited event may be
+    edited again; a delete of a deleted one is refused, a client retrying a
+    delete giving it an idempotency key (§13.4)."""
+    if (
+        target is None
+        or target.room_id != room_id
+        or target.status == EventStatus.BLOCKED
+        or is_deleted(target)
+        or concerns_change(target)
+    ):
+        return TARGET_NOT_FOUND
     return None
 
 

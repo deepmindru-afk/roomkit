@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An edit or a delete targets an event of its room that is not BLOCKED, not
+  deleted and not itself an edit or a delete (RFC §10.3 rule 2, RMK-930);
+  only existence and the room were checked. A refused message could be
+  edited, a deleted one edited or deleted again, and a change changed. Each
+  is now refused `target_event_not_found`. An edited message may still be
+  edited again, and a retried delete that carries its idempotency key is
+  still answered as the first (§13.4).
+
 - An event is an edit only when its type is EDIT and its content an
   `EditContent`, a delete only when DELETE and `DeleteContent` (RFC §10.3
   rule 1, RMK-930). Step 8a ran only when the two agreed, while a channel

@@ -16,7 +16,13 @@ from dataclasses import KW_ONLY, dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._authors import People, source_of
-from roomkit.core._changes import TARGET_NOT_FOUND, applied, change_of, concerns_change
+from roomkit.core._changes import (
+    TARGET_NOT_FOUND,
+    applied,
+    change_of,
+    concerns_change,
+    target_refusal,
+)
 from roomkit.core.hooks import kept_identity
 from roomkit.core.mixins.helpers import (
     _RECENT_EVENTS_LIMIT,
@@ -515,14 +521,14 @@ class InboundLockedMixin(HelpersMixin):
             target_id = change.target_event_id
             target_event = await self._store.get_event(target_id)
 
-            if target_event is None or target_event.room_id != room_id:
+            if target_event is None or target_refusal(target_event, room_id) is not None:
                 logger.warning(
-                    "Edit/Delete target %s not found in room %s",
+                    "Edit/Delete target %s is no target in room %s",
                     target_id,
                     room_id,
                     extra={"room_id": room_id, "target_event_id": target_id},
                 )
-                return InboundResult(blocked=True, reason="target_event_not_found")
+                return InboundResult(blocked=True, reason=TARGET_NOT_FOUND)
 
             # Identity required: anonymous users must not edit/delete others' messages
             sender_id = event.source.participant_id

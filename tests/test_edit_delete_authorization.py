@@ -14,7 +14,14 @@ from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelType, DeleteType, EventType, ParticipantRole
+from roomkit.models.enums import (
+    ChannelType,
+    DeleteType,
+    EventStatus,
+    EventType,
+    HookTrigger,
+    ParticipantRole,
+)
 from roomkit.models.event import (
     CompositeContent,
     DeleteContent,
@@ -24,6 +31,7 @@ from roomkit.models.event import (
     RoomEvent,
     TextContent,
 )
+from roomkit.models.hook import HookResult
 
 
 class _Transport(Channel):
@@ -46,6 +54,7 @@ class _Transport(Channel):
                 participant_id=message.sender_id,
             ),
             content=message.content,
+            idempotency_key=message.idempotency_key,
         )
 
     async def deliver(
@@ -311,4 +320,109 @@ class TestWhatAChangeIs:
         stored = await kit._store.get_event(original.id)
         assert stored is not None and stored.content == TextContent(body="v1")
         assert not stored.metadata
+        await kit.close()
+
+
+class TestWhatAChangeMayTarget:
+    """RFC §10.3 rule 2: the target, read under the room lock, is an event of
+    the room that is not BLOCKED, not deleted and not itself a change."""
+
+    async def test_a_refused_message_is_no_target(self) -> None:
+        kit = await _setup()
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST)
+        async def no_spam(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if isinstance(event.content, TextContent) and event.content.body == "spam":
+                return HookResult.block(reason="spam")
+            return HookResult.allow()
+
+        refused = (
+            await kit.process_inbound(
+                InboundMessage(
+                    channel_id="src", sender_id="alice", content=TextContent(body="spam")
+                )
+            )
+        ).event
+        assert refused is not None and refused.status == EventStatus.BLOCKED
+
+        edit = await _edit(kit, refused, sender_id="alice", edit_source="sender")
+        delete = await _delete(kit, refused, sender_id="alice", delete_type=DeleteType.SENDER)
+
+        assert (edit.reason, delete.reason) == ("target_event_not_found",) * 2
+        stored = await kit._store.get_event(refused.id)
+        assert stored is not None and not stored.metadata
+        await kit.close()
+
+    @pytest.mark.parametrize("change", ["edit", "delete"])
+    async def test_a_deleted_message_is_no_target(self, change: str) -> None:
+        kit = await _setup()
+        original = await _post(kit, "v1", sender_id="alice")
+        first = await _delete(kit, original, sender_id="alice", delete_type=DeleteType.SENDER)
+        assert first.blocked is False
+
+        if change == "edit":
+            result = await _edit(kit, original, sender_id="alice", edit_source="sender")
+        else:
+            result = await _delete(kit, original, sender_id="alice", delete_type=DeleteType.SENDER)
+
+        assert (result.blocked, result.reason) == (True, "target_event_not_found")
+        assert result.event is None
+        await kit.close()
+
+    @pytest.mark.parametrize("change", ["edit", "delete"])
+    async def test_a_change_is_no_target(self, change: str) -> None:
+        kit = await _setup()
+        original = await _post(kit, "v1", sender_id="alice")
+        first = await _edit(kit, original, sender_id="alice", edit_source="sender")
+        assert first.event is not None
+
+        if change == "edit":
+            result = await _edit(kit, first.event, sender_id="alice", edit_source="sender")
+        else:
+            result = await _delete(
+                kit, first.event, sender_id="alice", delete_type=DeleteType.SENDER
+            )
+
+        assert (result.blocked, result.reason) == (True, "target_event_not_found")
+        await kit.close()
+
+    async def test_an_edited_message_may_be_edited_again(self) -> None:
+        kit = await _setup()
+        original = await _post(kit, "v1", sender_id="alice")
+        await _edit(kit, original, sender_id="alice", edit_source="sender")
+
+        again = await kit.process_inbound(
+            InboundMessage(
+                channel_id="src",
+                sender_id="alice",
+                event_type=EventType.EDIT,
+                content=EditContent(
+                    target_event_id=original.id, new_content=TextContent(body="third")
+                ),
+            )
+        )
+
+        assert again.blocked is False
+        stored = await kit._store.get_event(original.id)
+        assert stored is not None and stored.content == TextContent(body="third")
+        await kit.close()
+
+    async def test_a_retried_delete_is_answered_as_the_first(self) -> None:
+        """A client that retries a delete gives it a key (RFC §13.4)."""
+        kit = await _setup()
+        original = await _post(kit, "v1", sender_id="alice")
+        retry = InboundMessage(
+            channel_id="src",
+            sender_id="alice",
+            event_type=EventType.DELETE,
+            content=DeleteContent(target_event_id=original.id),
+            idempotency_key="delete-1",
+        )
+
+        first = await kit.process_inbound(retry)
+        second = await kit.process_inbound(retry)
+
+        assert first.event is not None and first.blocked is False
+        assert second.duplicate is True and second.event is not None
+        assert second.event.id == first.event.id
         await kit.close()
