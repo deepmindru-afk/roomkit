@@ -310,7 +310,9 @@ class Channel(ABC):
         message was posted in: a private chat is its user's, a group chat
         the group's, which all its members share. The framework routes a
         message, records a binding's correspondent and admits a sender by
-        it; the message's author stays the sender.
+        it; the message's author stays the sender. Empty for a message with
+        no address: on a channel whose replies go to a chat only, one that
+        does not carry its chat (RFC §5.7).
         """
         return message.sender_id
 

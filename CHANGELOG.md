@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A chat message that does not carry its chat has no address (RFC §5.7,
+  RMK-930). On a channel whose replies go to a chat only (Telegram, Teams,
+  Discord, Buzz), such a message was routed and recorded by its author: it
+  landed in the author's private chat, which is another conversation, and
+  a room opened for it named the author as correspondent and recipient,
+  replying in private. It now records no one: it is routed as a message
+  with no address, and the room opened for it names neither correspondent
+  nor recipient, so its deliveries are refused `no_recipient` until the
+  host names one. Its author stays the event's sender. A WhatsApp Personal
+  message without `group_jid` is still its sender's.
+
 - Step 2's attach follows RFC §10.1 step 2 (RMK-930). A message naming a
   room that does not bind its channel attached the channel to a CLOSED or
   ARCHIVED room, and to one whose close was due, before step 6 refused the

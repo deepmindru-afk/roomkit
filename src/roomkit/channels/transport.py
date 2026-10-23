@@ -79,7 +79,10 @@ class TransportChannel(Channel):
                 binding's recipient names its chat as a phone channel's names
                 its correspondent. With *replies_to_sender* too (WhatsApp
                 Personal), a message carrying the key is its chat's (a
-                group), any other its sender's (a private chat).
+                group), any other its sender's (a private chat); without it,
+                a message that does not carry the key has no address (RFC
+                §5.7): it records no one, and a room opened for it names
+                neither correspondent nor recipient.
             requires_recipient: Whether a delivery needs a recipient in the
                 binding's metadata. A channel whose provider delivers to a
                 destination of its own (a webhook's configured URL) passes
@@ -139,7 +142,16 @@ class TransportChannel(Channel):
         return {self._recipient_key: address}
 
     def conversation_address(self, message: InboundMessage) -> str:
-        return self._chat_of(message) or message.sender_id
+        chat = self._chat_of(message)
+        if chat:
+            return chat
+        if self._reply_metadata_key is not None and not self._replies_to_sender:
+            # Replies go to a chat only: a message that does not carry its
+            # chat has no address (RFC §5.7). It records no one, and is
+            # never routed by its author, whose private chat is another
+            # conversation.
+            return ""
+        return message.sender_id
 
     def reply_metadata(self, message: InboundMessage) -> dict[str, str]:
         # The same precedence as conversation_address: the chat the message

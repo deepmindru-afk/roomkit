@@ -163,3 +163,27 @@ async def test_whatsapp_personal_answers_a_private_chat_by_number_and_a_group_in
 
     assert alice_group == bob_group != alice_private
     await kit.close()
+
+
+async def test_a_chat_message_without_its_chat_has_no_address() -> None:
+    """RFC §5.7: on a channel whose replies go to a chat only, a message that
+    does not carry its chat records no one; the room opened for it names
+    neither correspondent nor recipient, and does not take the author's
+    private chat; its author stays the sender."""
+    bot = _Bot()
+    alice_private = await bot.write(ALICE, "hi")
+    sent = len(bot.telegram.sent)
+
+    result = await bot.kit.process_inbound(
+        InboundMessage(channel_id="tg", sender_id=str(ALICE), content=TextContent(body="lost"))
+    )
+
+    assert result.event is not None
+    assert result.event.source.participant_id == str(ALICE)
+    room = result.event.room_id
+    assert room != alice_private
+    binding = await bot.kit.store.get_binding(room, "tg")
+    assert binding is not None
+    assert (binding.participant_id, binding.metadata) == (None, {})
+    assert len(bot.telegram.sent) == sent
+    await bot.kit.close()
