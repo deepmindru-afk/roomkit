@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A regeneration and a held message's release re-run the agents on a
+  message still said (RFC §10.3, §11.7.6, RMK-930). `regenerate_target()`
+  picked the newest transport message whether a DELETE had withdrawn it,
+  and the release re-ran the agents on the last held message even when it
+  had been deleted since: the agent was handed the deleted text as the
+  event it answers. Both now skip a deleted message, and an edit or a
+  delete row (a store whose conversation read serves them), which only step
+  8a may apply; the internal re-run of a named event refuses either.
+
 - A discussion does not answer a message deleted while it waits (RFC
   §10.3, RMK-930): a turn queued for it, or the dispatch policy's decision
   on it, took the message from the store as it was and handed its text to

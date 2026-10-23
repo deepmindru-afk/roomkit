@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from roomkit.core._authors import People
+from roomkit.core._changes import withdrawn
 from roomkit.core.exceptions import VerificationRefusedError
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.core.visibility import committed_visibility, visibility_allows
@@ -544,8 +545,11 @@ class VerificationMixin(HelpersMixin):
         recent = await self._store.list_events(
             request.room_id, limit=max(200, policy.release_max_messages * 5), newest_first=True
         )
+        # A held message deleted since is no longer said (RFC §10.3).
         held = [
-            event for event in recent if _held_for(event, request) and event.created_at >= oldest
+            event
+            for event in recent
+            if _held_for(event, request) and event.created_at >= oldest and not withdrawn(event)
         ]
         # A newest-first page is still rendered in ascending order (RFC §14.1):
         # the latest ones are taken by index, then given back oldest first.

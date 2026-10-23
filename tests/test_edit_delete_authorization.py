@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 import pytest
 
+from roomkit.channels.ai import AIChannel
 from roomkit.channels.base import Channel
 from roomkit.core.exceptions import ChangeRefusedError
 from roomkit.core.framework import RoomKit
@@ -40,6 +41,8 @@ from roomkit.models.event import (
     TextContent,
 )
 from roomkit.models.hook import HookResult, InjectedEvent
+from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.store.memory import InMemoryStore
 
 
 class _Transport(Channel):
@@ -888,4 +891,71 @@ class TestWhatAChannelIsHandedOfADeletedEvent:
 
         [held] = [e for e in parser.parsed_with[-1].recent_events if e.id == original.id]
         assert held.content == TextContent(body="")
+        await kit.close()
+
+
+class _WholeConversation(InMemoryStore):
+    """A store whose conversation read serves every received row, changes
+    included, as a custom store may."""
+
+    async def get_conversation(
+        self, room_id: str, *, limit: int = 50, after_index: int | None = None
+    ) -> list[RoomEvent]:
+        return await self.list_events(room_id, limit=limit, newest_first=True)
+
+
+async def _agent_room(store: InMemoryStore | None = None) -> tuple[RoomKit, MockAIProvider]:
+    kit = RoomKit(store=store) if store is not None else RoomKit()
+    provider = MockAIProvider(responses=["noted"] * 10)
+    kit.register_channel(_Transport("src"))
+    kit.register_channel(AIChannel("ai", provider=provider))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "src")
+    await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+    return kit, provider
+
+
+def _last_prompt(provider: MockAIProvider) -> str:
+    return " ".join(str(m.content) for m in provider.calls[-1].messages)
+
+
+class TestNoReplayOfAWithdrawnMessage:
+    """RFC §10.3: a regeneration re-runs the agents on a message still said,
+    never on a deleted one nor on an edit or a delete row, which only step
+    8a applies."""
+
+    async def test_a_regeneration_skips_a_deleted_message(self) -> None:
+        kit, provider = await _agent_room()
+        first = await _post(kit, "first", sender_id="alice")
+        secret = await _post(kit, "the code is 4417", sender_id="alice")
+        await _delete(kit, secret, sender_id="alice", delete_type=DeleteType.SENDER)
+
+        target = await kit.regenerate_target("r1")
+        await kit.regenerate_response("r1")
+
+        assert target is not None and target.id == first.id
+        assert "4417" not in _last_prompt(provider)
+        await kit.close()
+
+    async def test_a_regeneration_skips_an_edit_row(self) -> None:
+        kit, _provider = await _agent_room(_WholeConversation())
+        original = await _post(kit, "v1", sender_id="alice")
+        await _edit(kit, original, sender_id="alice", edit_source="sender")
+
+        target = await kit.regenerate_target("r1")
+
+        assert target is not None and target.id == original.id
+        await kit.close()
+
+    async def test_no_agent_is_re_run_on_a_change_row(self) -> None:
+        """The door a held message's release takes (RFC §11.7.6)."""
+        kit, provider = await _agent_room()
+        original = await _post(kit, "v1", sender_id="alice")
+        edit = await _edit(kit, original, sender_id="alice", edit_source="sender")
+        assert edit.event is not None
+        calls = len(provider.calls)
+
+        rerun = await kit._rerun_agents_on("r1", edit.event.id)  # noqa: SLF001
+
+        assert rerun is None and len(provider.calls) == calls
         await kit.close()

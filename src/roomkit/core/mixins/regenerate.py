@@ -7,6 +7,7 @@ import logging
 from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.core._changes import withdrawn
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT
 from roomkit.core.exceptions import RoomClosedError
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan, anchor_index
@@ -131,11 +132,16 @@ class RegenerateMixin(HelpersMixin):
         # answered it, so a regenerate does not answer it either. A per-event
         # check on a reversed scan; the list-building form of the same
         # predicate is ``received_events``.
+        # Nor a message a DELETE withdrew, nor an edit or a delete row, which
+        # only step 8a applies (RFC §10.3): replayed, either would hand the
+        # agent what is no longer said.
         trigger = next(
             (
                 e
                 for e in reversed(context.recent_events)
-                if e.source.channel_id in transports and e.status != EventStatus.BLOCKED
+                if e.source.channel_id in transports
+                and e.status != EventStatus.BLOCKED
+                and not withdrawn(e)
             ),
             None,
         )
@@ -252,7 +258,8 @@ class RegenerateMixin(HelpersMixin):
         a caller that knows which message the agents must answer (a held
         message just released, RFC §11.7.6) names it here, and messages that
         came after it (a confirmation the host sent) do not take its place.
-        ``None`` when it cannot run: no such event in the room, or its source
+        ``None`` when it cannot run: no such event in the room, a message a
+        DELETE withdrew or an edit or a delete row (RFC §10.3), or its source
         binding is gone or cannot write. Otherwise the same path, refusals and
         result as a regenerate. *named* is the delivery whose key names the
         run, until it is over (RFC §10.1).
@@ -279,6 +286,7 @@ class RegenerateMixin(HelpersMixin):
                 if (
                     trigger is None
                     or trigger.room_id != room_id
+                    or withdrawn(trigger)
                     or source is None
                     or source.category != ChannelCategory.TRANSPORT
                     or not source.can_write
