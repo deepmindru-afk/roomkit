@@ -524,6 +524,7 @@ class RoomKit(
         # names its holder by it (RFC §19.7.5 rule 16).
         self._instance_id = uuid4().hex
         self._hook_engine._holds_discussion = self._holds_discussion
+        self._hook_engine._enabled_room_hooks = self._turns.room_hook_names
         # Room-level media recording
         from roomkit.recorder._room_recorder_manager import RoomRecorderManager
 

@@ -400,6 +400,9 @@ class HookEngine:
         # Set by RoomKit after init: whether a room (any room, for None) holds
         # a discussion (RFC §19.7.5 rule 1), which a router's hook cannot join.
         self._holds_discussion: Callable[[str | None], bool] | None = None
+        # Set by RoomKit after init: the names a room enables on the turn
+        # executors (RFC §10.6.6), which join the room's scope (§9.1).
+        self._enabled_room_hooks: Callable[[str], list[str]] | None = None
         self._suppressed_triggers: set[str] = {
             "on_input_audio_level",
             "on_output_audio_level",
@@ -704,10 +707,12 @@ class HookEngine:
 
     def _room_names(self, room_id: str) -> list[str]:
         """The names of *room_id*'s hooks, those the kit's own executor holds
-        for it too."""
+        for it and those it enables on the executors too (RFC §10.6.6)."""
         names = [hook.name for hook in self._room_hooks.get(room_id, [])]
         if self.turn_side is not None:
             names.extend(self.turn_side.room_hook_names(room_id))
+        if self._enabled_room_hooks is not None:
+            names.extend(self._enabled_room_hooks(room_id))
         return names
 
     def remove_room_hook(self, room_id: str, name: str) -> bool:

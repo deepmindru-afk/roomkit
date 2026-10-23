@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writes through `update_event()` (not atomic). A target the room no longer
   holds raises `EventNotFoundError`, nothing written.
 
+- A room never holds two hooks of one name (RFC §9.1, §10.6.6, RMK-930).
+  `kit.enable_room_hook(room_id, name)` took a name a room hook the kit
+  registered for the room already held, so a block named one of two hooks
+  as `blocked_by`. The name a room enables joins the room's hooks: enabling
+  a name a room hook of the room holds, and registering a room hook
+  (`add_room_hook`, a strategy's) under a name the room enables, now raise
+  `ValueError`; a hook left unnamed is never given an enabled name.
+  Enabling a name the room enables already, and enabling it in another
+  room, change nothing. On an executor a name still carries one hook per
+  trigger, and `room_hook()` defined again on a trigger replaces the first.
+
 - A SYNC hook's injected events on a trigger other than `BEFORE_BROADCAST`
   are dropped with a warning (RFC §9.4, RMK-930). `BEFORE_DELIVER`,
   `ON_VERIFICATION_REQUIRED` and every other SYNC trigger commit none, and

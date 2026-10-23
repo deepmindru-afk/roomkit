@@ -197,7 +197,8 @@ class TurnExecutor:
         fires (RFC §10.6.6): it runs for a room whose owner enabled the name
         (``kit.enable_room_hook(room_id, name)``), the turn's request naming
         it. Every executor that may run the room's turns defines it; one that
-        does not is never given them. A name may carry a hook per trigger.
+        does not is never given them. A name may carry a hook per trigger:
+        defining it again on a trigger it carries replaces the first.
 
         ``executor.room_hook("audit", HookTrigger.ON_TOOL_CALL)(fn)``
         """

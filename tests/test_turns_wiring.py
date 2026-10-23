@@ -354,6 +354,51 @@ def test_a_room_hook_on_an_executor_trigger_is_refused_by_callable() -> None:
         executor.hooks.add_room_hook("r1", registration)
 
 
+def _hold_audit(kit: RoomKit, room_id: str, how: str, trigger: HookTrigger) -> None:
+    """Give *room_id* a hook named ``audit``: the kit's room hook on
+    *trigger*, or the executors' room hook of that name enabled."""
+    if how == "kit":
+        kit.add_room_hook(room_id, trigger, HookExecution.ASYNC, _noop_hook, name="audit")
+    else:
+        kit.enable_room_hook(room_id, "audit")
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [HookTrigger.AFTER_BROADCAST, HookTrigger.ON_AI_RESPONSE],
+    ids=["owner trigger", "kit executor trigger"],
+)
+@pytest.mark.parametrize(("first", "then"), [("kit", "enabled"), ("enabled", "kit")])
+def test_a_room_never_holds_two_hooks_of_one_name(
+    trigger: HookTrigger, first: str, then: str
+) -> None:
+    """RFC §9.1, §10.6.6: a name the room enables joins the room's scope, so
+    enabling it where a room hook holds it, or registering a room hook under
+    an enabled name, is refused."""
+    kit = RoomKit()
+    kit.turn_executor.room_hook("audit", HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)(_noop_hook)
+    _hold_audit(kit, "r1", first, trigger)
+
+    with pytest.raises(ValueError, match="audit"):
+        _hold_audit(kit, "r1", then, trigger)
+
+    assert kit._turns.room_hook_names("r1") == (["audit"] if first == "enabled" else [])
+
+
+def test_a_name_another_room_holds_is_enabled() -> None:
+    kit = RoomKit()
+    kit.turn_executor.room_hook("audit", HookTrigger.ON_TOOL_CALL, HookExecution.ASYNC)(_noop_hook)
+    _hold_audit(kit, "r1", "kit", HookTrigger.AFTER_BROADCAST)
+
+    _hold_audit(kit, "r2", "enabled", HookTrigger.AFTER_BROADCAST)
+
+    assert kit._turns.room_hook_names("r2") == ["audit"]
+
+
+async def _noop_hook(event: Any, context: Any) -> None:
+    return None
+
+
 # -- Review: what the owner does with a turn's publications ------------------------
 
 

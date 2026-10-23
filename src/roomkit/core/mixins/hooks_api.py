@@ -380,8 +380,9 @@ class HooksApiMixin(HelpersMixin):
         the name for the room with :meth:`enable_room_hook`.
 
         *name* is unique within the room's hooks (RFC §9.1): one a hook of
-        the room holds, or a value the framework writes in ``blocked_by``,
-        raises ``ValueError``. Left empty, the hook is named after *fn*, made
+        the room holds, a name the room enables on the executors
+        (:meth:`enable_room_hook`) included, or a value the framework writes
+        in ``blocked_by``, raises ``ValueError``. Left empty, the hook is named after *fn*, made
         unique; the registration returned holds that name.
         """
         return self._hook_engine.add_room_hook(
@@ -407,7 +408,18 @@ class HooksApiMixin(HelpersMixin):
         """Run the room hook *name* the executors define on a trigger a turn
         fires (``executor.room_hook(name, trigger)(fn)``) for *room_id*'s
         turns (RFC §10.6.6): the turns' requests name it, and only an
-        executor that defines it takes them (RFC §10.6.7)."""
+        executor that defines it takes them (RFC §10.6.7).
+
+        The name joins the room's hooks, where a name is unique (RFC §9.1):
+        a room hook the kit registered for *room_id* under *name* raises
+        ``ValueError``, and so does registering one under a name the room
+        enables. Enabling a name the room enables already changes nothing.
+        """
+        if name in self._hook_engine.room_hook_names(room_id):
+            raise ValueError(
+                f"Room {room_id} already holds a hook named {name!r}: a name the room "
+                "enables joins its hooks, where a name is unique (RFC §9.1, §10.6.6)"
+            )
         if not self.turn_executor.hooks.defines_room_hooks([name]):
             logger.warning(
                 "Room hook %r enabled for room %s is not defined on the kit's own "
