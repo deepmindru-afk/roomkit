@@ -256,7 +256,8 @@ each refactoring; it has to earn that.
   a fixed sleep; poll with a deadline only when nothing can be awaited.
   Delays and timeouts under test are configured in milliseconds, not left at
   their production defaults. A test that must measure real time is marked
-  `wallclock`; load and contention go under `stress`.
+  `wallclock`; load and contention go under `stress`; a type checker run in a
+  subprocess goes under `typing`, which `make typecheck` runs.
 - **Passes alone and in any order.** No `sys.modules[...] = fake` at import
   time and no manual patch/restore: use `monkeypatch` or a fixture, which
   undo themselves. No fixed port: bind port 0. Close what the test opened —

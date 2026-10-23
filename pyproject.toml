@@ -305,11 +305,13 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
 # Stress tests are opt-in: `make stress` (or `pytest -m stress`, whose -m
-# overrides this one). The default run — and CI's coverage run — skips them.
+# overrides this one). The default run — and CI's coverage run — skips them,
+# and the type-checker run `make typecheck` and CI's type check job make.
 # No plugin option here: the smoke and fastrtc CI jobs run a bare pytest.
-addopts = "-m 'not stress'"
+addopts = "-m 'not stress and not typing'"
 markers = [
     "stress: load/contention tests, excluded from the default run (run with `make stress`)",
+    "typing: runs a type checker on the library in a subprocess; excluded from the default run, run by `make typecheck`",
     "wallclock: asserts real elapsed-time budgets; deselect on loaded CI runners",
     "xfail_streaming(reason): known tool-loop divergence, the streaming variant is xfail (strict); the reason names the card",
     "xfail_non_streaming(reason): known tool-loop divergence, the non-streaming variant is xfail (strict); the reason names the card",

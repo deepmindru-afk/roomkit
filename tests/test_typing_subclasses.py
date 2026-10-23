@@ -19,6 +19,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 import roomkit
 
 
@@ -47,6 +49,7 @@ def _public_classes_with_several_bases() -> dict[str, str]:
     return found
 
 
+@pytest.mark.typing  # mypy in its own process, about 10 s: run by make typecheck
 def test_a_two_base_subclass_of_each_public_class_passes_mypy(tmp_path: Path) -> None:
     classes = _public_classes_with_several_bases()
     # The walk must reach the channels, the framework and the providers, or
