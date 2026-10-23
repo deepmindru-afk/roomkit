@@ -10,7 +10,7 @@ in-memory and the SQLite store.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import pytest
@@ -26,7 +26,7 @@ from roomkit.models.delivery import (
     InboundMessage,
     InboundResult,
 )
-from roomkit.models.enums import IdentificationStatus
+from roomkit.models.enums import IdentificationStatus, RoomStatus
 from roomkit.models.event import TextContent
 from roomkit.models.identity import Identity
 from roomkit.providers.ai.mock import MockAIProvider
@@ -124,6 +124,24 @@ def _count_routes(kit: RoomKit) -> list[str]:
 
     router.route = counted  # type: ignore[method-assign]
     return calls
+
+
+def _before_the_lock(kit: RoomKit, sender: str, act: Callable[[], Awaitable[Any]]) -> None:
+    """Run *act* once, after the router answered *sender*'s first route and
+    before the room lock is taken to record them (RFC §10.1 step 2)."""
+    router = kit._inbound_router  # noqa: SLF001
+    route = router.route
+    pending = [act]
+
+    async def then_act(
+        channel_id: str, channel_type: Any, participant_id: str | None = None, **kw: Any
+    ) -> str | None:
+        answer = await route(channel_id, channel_type, participant_id=participant_id, **kw)
+        if participant_id == sender and pending:
+            await pending.pop()()
+        return answer
+
+    router.route = then_act  # type: ignore[method-assign]
 
 
 def _text(message: Any) -> str:
@@ -225,6 +243,8 @@ class TestARoomTheHostOpened:
 
         assert len(set(rooms)) == 2
         assert room in rooms
+        winner = ALICE if rooms[0] == room else BOB
+        assert await shop.named_on(room) == winner
 
     async def test_a_room_that_already_heard_two_people_admits_no_newcomer(
         self, store: ConversationStore
@@ -573,3 +593,136 @@ class TestTheFrameworksOwnSender:
         room = await shop.room_of(SYSTEM_SENDER_ID, "feed item")
 
         assert await shop.named_on(room) is None
+
+
+class _AnswersWith:
+    """A router that always answers one room, counting who it was asked about."""
+
+    def __init__(self, room_id: str) -> None:
+        self.room_id = room_id
+        self.asked: list[str | None] = []
+
+    async def route(
+        self, channel_id: str, channel_type: Any, participant_id: str | None = None, **kw: Any
+    ) -> str | None:
+        self.asked.append(participant_id)
+        return self.room_id
+
+
+async def _set_status(store: ConversationStore, room_id: str, status: RoomStatus) -> None:
+    room = await store.get_room(room_id)
+    assert room is not None
+    await store.update_room(room.model_copy(update={"status": status}))
+
+
+class TestTheLockChecksTheRoomAgain:
+    """Under the room lock, the room the router chose is checked again, not
+    only its binding (RFC §10.1 step 2, §10.4): what happened since the
+    router read it can make it someone else's conversation, or a closed one.
+    Then nothing is written and the message is routed once more."""
+
+    async def test_someone_heard_on_the_channel_since_the_route_keeps_the_sender_out(
+        self, store: ConversationStore
+    ) -> None:
+        shop = _Shop(store)
+        room = await shop.open_free_room()
+        _before_the_lock(shop.kit, BOB, lambda: shop.text(CAROL, "carol: hi", room_id=room))
+
+        bob_room = await shop.room_of(BOB, "bob: hello")
+
+        assert bob_room != room
+        assert await shop.named_on(room) is None
+        assert "carol: hi" not in " ".join(shop.last_prompt())
+
+    async def test_a_member_added_on_the_channel_since_the_route_keeps_the_sender_out(
+        self, store: ConversationStore
+    ) -> None:
+        shop = _Shop(store)
+        room = await shop.open_free_room()
+        _before_the_lock(shop.kit, BOB, lambda: shop.kit.add_member(room, "sms", CAROL))
+
+        assert await shop.room_of(BOB) != room
+        assert await shop.named_on(room) is None
+        assert await shop.room_of(CAROL) == room
+
+    async def test_a_member_on_a_binding_naming_another_correspondent_is_routed_elsewhere(
+        self, store: ConversationStore
+    ) -> None:
+        """Step 1 finds bob's room by his member record, but its binding of
+        the number is alice's: the room's answers go to her number, so bob's
+        message is not let in (RFC §10.1 step 2)."""
+        shop = _Shop(store)
+        room = await shop.open_room_for(ALICE)
+        await shop.kit.add_member(room, "sms", BOB)
+
+        assert await shop.room_of(BOB, "bob: hello") != room
+        assert await shop.named_on(room) == ALICE
+        assert not shop.sent_to(ALICE)
+
+    async def test_a_room_closed_since_the_route_gives_the_message_a_new_room(
+        self, store: ConversationStore
+    ) -> None:
+        """A routed message is never refused ``room_closed`` at step 2."""
+        shop = _Shop(store)
+        room = await shop.open_free_room()
+        _before_the_lock(shop.kit, BOB, lambda: shop.kit.close_room(room))
+
+        result = await shop.text(BOB, "hello")
+
+        assert not result.blocked, result.reason
+        assert result.event is not None and result.event.room_id != room
+        assert await shop.named_on(room) is None
+
+    async def test_a_second_answer_that_is_not_the_messages_gives_it_a_new_room(
+        self, store: ConversationStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The router is asked twice at most, and the identity read once."""
+        shop = _Shop(store)
+        alice_room = await shop.room_of(ALICE)
+        router = _AnswersWith(alice_room)
+        shop.kit._inbound_router = router  # noqa: SLF001
+        resolved: list[str] = []
+        resolve = store.resolve_identity
+
+        async def counted(channel_type: str, address: str, *args: Any) -> Identity | None:
+            resolved.append(address)
+            return await resolve(channel_type, address, *args)
+
+        monkeypatch.setattr(store, "resolve_identity", counted)
+
+        bob_room = await shop.room_of(BOB, "bob: hello")
+
+        assert bob_room != alice_room
+        assert router.asked == [BOB, BOB]
+        assert resolved == [BOB]
+        assert await shop.named_on(alice_room) == ALICE
+        stored = await store.list_events(alice_room)
+        assert all(e.source.participant_id != BOB for e in stored)
+
+    @pytest.mark.parametrize(
+        ("binding", "kept"),
+        [("names-the-sender", True), ("group", True), ("names-no-one", False)],
+    )
+    async def test_a_paused_room_is_kept_only_as_the_senders_conversation(
+        self, store: ConversationStore, binding: str, kept: bool
+    ) -> None:
+        """A custom router may answer a PAUSED room: it is the message's when
+        step 1 would find it the sender's, or its binding is ``group``; step
+        3 admits no one into it, so a binding naming no one sends the sender
+        elsewhere, nothing written."""
+        shop = _Shop(store)
+        await shop.kit.create_room(room_id="paused")
+        await shop.kit.attach_channel(
+            "paused",
+            "sms",
+            participant_id=BOB if binding == "names-the-sender" else None,
+            group=binding == "group",
+        )
+        await _set_status(store, "paused", RoomStatus.PAUSED)
+        shop.kit._inbound_router = _AnswersWith("paused")  # noqa: SLF001
+
+        landed = await shop.room_of(BOB)
+
+        assert (landed == "paused") is kept
+        if not kept:
+            assert await shop.named_on("paused") is None

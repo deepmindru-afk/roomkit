@@ -9,14 +9,13 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._runtime_record import RUNTIME_RECORD
-from roomkit.core._authors import reached
 from roomkit.core._delivery_keys import DeliveryKeys, NamedDelivery
 from roomkit.core.exceptions import ChannelNotRegisteredError, RoomNotFoundError
 from roomkit.core.inbound_router import (
-    binding_admits,
     binding_names_no_one,
     known_as,
     recordable_sender,
+    still_the_messages,
 )
 from roomkit.core.locks import collecting_release_failures, failed_release
 from roomkit.core.mixins.channel_ops import is_channel_detached
@@ -53,6 +52,11 @@ if TYPE_CHECKING:
     from roomkit.telemetry.base import TelemetryProvider
 
 logger = logging.getLogger("roomkit.framework")
+
+# How often a message is routed before it gets a room of its own: once, and
+# once more when the room the router chose is no longer the message's under
+# its lock (RFC §10.1 step 2).
+_ROUTES = 2
 
 
 @runtime_checkable
@@ -800,28 +804,26 @@ class InboundMixin(HelpersMixin):
     ) -> tuple[str, bool]:
         """The room the router gives *message*, its binding naming the sender.
 
-        The router admits off the lock, so a concurrent message's sender may
-        hold the binding by the time this one claims it (RFC §10.1 step 2):
-        the message is then routed once more, against a store where the
-        router sees that sender and refuses this one. The second answer is
-        kept whatever its claim gives, so a router is asked twice at most;
-        with a custom router that sends several strangers to one room that
-        is not a group, every sender after the first is asked twice.
+        The router reads the store off the lock, so by the time the room is
+        locked to record the sender it may no longer be the message's (RFC
+        §10.1 step 2): closed, paused, its binding recorded for a concurrent
+        sender, or someone else heard or reached on the channel since. The
+        message is then routed once more, its identity not read again, and a
+        second answer that is not the message's, like no answer, gives it a
+        new room: a router is asked twice at most, and a routed message is
+        never refused ``room_closed`` here.
         """
         sender = _conversation(message, channel)
         identity = await self._routing_identity(channel, sender, organization_id)
         own = known_as(sender, identity)
-        room_id, created = await self._find_or_open_room(
-            message, channel, None, organization_id, identity
-        )
-        if created or await self._claim_binding(room_id, message, channel, own):
-            return room_id, created
-        room_id, created = await self._find_or_open_room(
-            message, channel, None, organization_id, identity
-        )
-        if not created:
-            await self._claim_binding(room_id, message, channel, own)
-        return room_id, created
+        for _ in range(_ROUTES):
+            room_id, created = await self._find_or_open_room(
+                message, channel, None, organization_id, identity
+            )
+            if created or await self._claim_room(room_id, message, channel, own):
+                return room_id, created
+            logger.debug("Room %s is no longer the routed message's; routing it again", room_id)
+        return await self._open_room_for(message, None, organization_id), True
 
     async def _routing_identity(
         self, channel: Channel, sender: str, organization_id: str | None
@@ -839,49 +841,19 @@ class InboundMixin(HelpersMixin):
             str(channel.channel_type), sender, organization_id
         )
 
-    async def _claim_binding(
+    async def _claim_room(
         self, room_id: str, message: InboundMessage, channel: Channel, own: frozenset[str]
     ) -> bool:
-        """Whether the routed sender may stay in *room_id*, recording them on a free binding.
+        """Whether *room_id* is still the routed message's, recording the sender on it.
 
-        A binding that is not a group carries one correspondent's conversation,
-        and the first sender routed through it is that correspondent: the
-        router then finds them there and admits no one else (RFC §10.4). The
-        sender stays when the binding names them, by their address or the
-        identity the store resolves it to (*own*), or when they are a
-        participant of the room reached through this channel (one of several
-        members the router found by their record; RFC §5.5).
-        Anyone else was admitted against a binding another sender claimed
-        since, and is routed again.
-        """
-        sender = _conversation(message, channel)
-        if not recordable_sender(sender):
-            return True
-        binding = await self._store.get_binding(room_id, message.channel_id)
-        if binding is not None and (
-            binding_names_no_one(binding) or _lacks_recipient(binding, message, channel)
-        ):
-            binding = await self._record_sender(room_id, message, channel)
-        if binding is None or binding_admits(binding, own):
-            return True
-        participant = await self._store.get_participant(room_id, sender)
-        return participant is not None and reached(participant, message.channel_id)
-
-    async def _record_sender(
-        self, room_id: str, message: InboundMessage, channel: Channel
-    ) -> ChannelBinding | None:
-        """Write the sender on a binding naming no one, under the room lock; return the binding.
-
-        The binding that names the sender by their address also gets them as
-        its recipient where it has none (``channel.reply_metadata``): the
-        room then replies to the person it is the conversation of, including
-        a binding recorded before it carried a recipient. A recipient already
-        there, the host's above all, is never replaced.
-
-        Re-read under the lock, where every binding mutation runs, so a
-        concurrent claim or policy change is never undone, and pushed to the
-        channel as every binding update is. The wait for the lock is bounded
-        by ``process_timeout``: past it the message is refused (§13.6), never
+        Checked under the room lock, where every binding mutation and every
+        status change runs, against the room as the lock finds it
+        (``still_the_messages``, RFC §10.1 step 2); *own* holds the ids the
+        sender is known by. A room no longer the message's is left as it was.
+        Otherwise a binding that is not a group and names no one records the
+        sender as its correspondent: the router then finds them there and
+        admits no one else (§10.4). The wait for the lock is bounded by
+        ``process_timeout``: past it the message is refused (§13.6), never
         let in unrecorded, which would leave the room open to a concurrent
         stranger.
         """
@@ -892,28 +864,53 @@ class InboundMixin(HelpersMixin):
                     await stack.enter_async_context(self._lock_manager.locked(room_id))
             except TimeoutError:
                 raise _ClaimTimeoutError(room_id) from None
+            room = await self._store.get_room(room_id)
+            if room is None:
+                return False
             binding = await self._store.get_binding(room_id, channel_id)
-            if binding is None:
-                return None
-            update: dict[str, Any] = {}
-            if binding_names_no_one(binding):
-                # A binding stored with a recipient and no correspondent
-                # (before RFC §5.7 named one) is its recipient's: the sender
-                # is recorded only on a binding that delivers to no one.
-                update["participant_id"] = channel.recipient_address(binding) or sender
-            if _lacks_recipient(binding.model_copy(update=update), message, channel):
-                missing = {
-                    key: value
-                    for key, value in channel.reply_metadata(message).items()
-                    if not binding.metadata.get(key)
-                }
-                update["metadata"] = {**binding.metadata, **missing}
-            if not update:
-                return binding
-            binding = binding.model_copy(update=update)
-            await self._store.update_binding(binding)
-            self._notify_binding_updated(room_id, channel_id, binding)
-            return binding
+            recipient = channel.recipient_address(binding) if binding is not None else None
+            if not await still_the_messages(
+                self._store, room, channel_id, binding, sender, own, recipient
+            ):
+                return False
+            if binding is not None and recordable_sender(sender):
+                await self._record_sender(room_id, binding, message, channel)
+            return True
+
+    async def _record_sender(
+        self, room_id: str, binding: ChannelBinding, message: InboundMessage, channel: Channel
+    ) -> None:
+        """Write the sender on *binding*, read under the room lock, where it names no one.
+
+        The binding that names the sender by their address also gets them as
+        its recipient where it has none (``channel.reply_metadata``): the
+        room then replies to the person it is the conversation of, including
+        a binding recorded before it carried a recipient. A recipient already
+        there, the host's above all, is never replaced. Pushed to the channel
+        as every binding update is; a group binding is never written.
+        """
+        if binding.group:
+            return
+        update: dict[str, Any] = {}
+        if binding_names_no_one(binding):
+            # A binding stored with a recipient and no correspondent (before
+            # RFC §5.7 named one) is its recipient's: the sender is recorded
+            # only on a binding that delivers to no one, or to them.
+            update["participant_id"] = channel.recipient_address(binding) or _conversation(
+                message, channel
+            )
+        if _lacks_recipient(binding.model_copy(update=update), message, channel):
+            missing = {
+                key: value
+                for key, value in channel.reply_metadata(message).items()
+                if not binding.metadata.get(key)
+            }
+            update["metadata"] = {**binding.metadata, **missing}
+        if not update:
+            return
+        binding = binding.model_copy(update=update)
+        await self._store.update_binding(binding)
+        self._notify_binding_updated(room_id, message.channel_id, binding)
 
     async def _maybe_auto_attach(self, room_id: str, channel_id: str) -> None:
         """Attach *channel_id* if it was never bound — not if it was revoked.

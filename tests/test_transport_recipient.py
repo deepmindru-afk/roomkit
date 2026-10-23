@@ -196,13 +196,15 @@ async def test_a_provider_spelling_reaches_the_e164_room(
 
 async def test_a_stored_recipient_names_its_correspondent_when_claimed() -> None:
     """A binding stored with a recipient and no correspondent, and a router that
-    sends bob there: bob is never recorded on it, so alice keeps her room."""
+    sends bob and alice there: the recipient is the room's correspondent, so
+    bob is routed elsewhere with nothing written (RFC §10.1 step 2), and
+    alice is recorded on it."""
     sms = MockSMSProvider()
     kit = _kit_with_agent(SMSChannel("sms", provider=sms))
     default_route = kit._inbound_router.route  # noqa: SLF001
 
     async def route(channel_id: str, channel_type: Any, participant_id: Any = None, **kw: Any):
-        if participant_id == BOB:
+        if participant_id in (ALICE, BOB):
             return "alice-room"
         return await default_route(channel_id, channel_type, participant_id=participant_id, **kw)
 
@@ -211,9 +213,12 @@ async def test_a_stored_recipient_names_its_correspondent_when_claimed() -> None
     binding = await kit.attach_channel("alice-room", "sms", metadata={"phone_number": ALICE})
     await kit.store.update_binding(binding.model_copy(update={"participant_id": None}))
 
-    await kit.process_inbound(_text("sms", BOB))
+    bob = await kit.process_inbound(_text("sms", BOB))
+    untouched = await kit.store.get_binding("alice-room", "sms")
     alice = await kit.process_inbound(_text("sms", ALICE))
 
+    assert bob.event is not None and bob.event.room_id != "alice-room"
+    assert untouched is not None and untouched.participant_id is None
     stored = await kit.store.get_binding("alice-room", "sms")
     assert stored is not None and stored.participant_id == ALICE
     assert alice.event is not None and alice.event.room_id == "alice-room"

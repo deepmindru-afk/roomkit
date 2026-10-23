@@ -134,6 +134,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the agent wanted to say it again: an application raising a hand on an
   offer raised it right after the agent's own answer.
 
+- **Security:** a routed message's room is checked again under the room lock,
+  not only its binding (RFC §10.1 step 2, §10.4, RMK-930). Someone heard on
+  the channel, or added on it as a member, between the router's read and the
+  lock no longer lets the sender be recorded on a binding that named no one:
+  the agent's answers to that person would have gone to the sender. The
+  check is the default router's own step 3, whichever router chose the room.
+  A room closed or archived by then, a paused one that is not the sender's
+  conversation (its binding names them, a participant they are was reached
+  through the channel, or the binding is `group`), and a binding naming
+  another correspondent, by its participant or else its recipient, leave
+  the room as it was: the message is routed once more, its identity not read
+  again, and a second answer that is not the message's, like none, gives it
+  a new room. Before, a room closed meanwhile refused the message
+  `room_closed`, the second answer was kept whatever it was, and a stranger
+  routed to a binding holding only a recipient wrote that recipient on it.
+  A member of the room reached through the channel no longer lands in it
+  when its binding names someone else: the room answers that person's
+  address. A message routed to an existing room now takes its lock once
+  before step 3, whether or not anything is recorded.
+
 - An agent with a thinker no longer goes mute on Claude (RMK-912). The note
   that carries its thought into the turns it speaks offered the model "your
   own thought"; Claude Sonnet 5.5 and Opus 5.5 read that as a request to

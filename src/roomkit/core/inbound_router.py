@@ -11,6 +11,7 @@ from roomkit.models.channel import ChannelBinding
 from roomkit.models.delivery import SYSTEM_SENDER_ID
 from roomkit.models.enums import ChannelType, RoomStatus
 from roomkit.models.identity import Identity
+from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
 from roomkit.store.base import ConversationStore
 
@@ -21,6 +22,10 @@ logger = logging.getLogger("roomkit.framework")
 # first page; only a room holding nothing but the sender's own words is read
 # to the end.
 _HISTORY_PAGE = 200
+
+# The statuses that refuse new events (RFC §5.1): a room in one is no longer
+# a routed message's.
+_REFUSING = frozenset({RoomStatus.CLOSED, RoomStatus.ARCHIVED})
 
 
 class InboundRoomRouter(ABC):
@@ -186,26 +191,98 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         binding = await self._store.get_binding(room_id, channel_id)
         if binding is None:
             return False
-        if binding.group:
-            return True
-        if sender == SYSTEM_SENDER_ID:
-            # The framework names the room it writes to, and nothing it writes
-            # counts as a correspondent's: a sender borrowing the name, on a
-            # channel whose senders choose their id, gets a room of its own.
-            return False
-        if not binding_admits(binding, own):
-            return False
         recipient = self._recipient_of(binding) if self._recipient_of is not None else None
-        if recipient is not None and recipient not in own:
-            # The room delivers to someone else: it is their conversation.
+        return await step_three_admits(self._store, binding, sender, own, recipient)
+
+
+async def step_three_admits(
+    store: ConversationStore,
+    binding: ChannelBinding,
+    sender: str | None,
+    own: frozenset[str],
+    recipient: str | None,
+) -> bool:
+    """Whether the room of *binding*, its binding of the channel, admits
+    *sender* by RFC §10.4 step 3's conditions.
+
+    *own* holds the ids the sender is known by (:func:`known_as`), and
+    *recipient* the address the binding delivers to, in its channel's form.
+    The default router asks it of the one room bound to the channel, and the
+    framework again under the room lock before it records the sender there
+    (§10.1 step 2): one predicate, so the two never drift apart.
+    """
+    if binding.group:
+        return True
+    if sender == SYSTEM_SENDER_ID:
+        # The framework names the room it writes to, and nothing it writes
+        # counts as a correspondent's: a sender borrowing the name, on a
+        # channel whose senders choose their id, gets a room of its own.
+        return False
+    if not binding_admits(binding, own):
+        return False
+    if recipient is not None and recipient not in own:
+        # The room delivers to someone else: it is their conversation.
+        return False
+    for participant in await store.list_participants(binding.room_id):
+        if binding.channel_id in participant.connected_via and not own & {
+            participant.id,
+            participant.identity_id,
+        }:
             return False
-        for participant in await self._store.list_participants(room_id):
-            if channel_id in participant.connected_via and not own & {
-                participant.id,
-                participant.identity_id,
-            }:
-                return False
-        return not await _heard_from_other(self._store, room_id, channel_id, own)
+    return not await _heard_from_other(store, binding.room_id, binding.channel_id, own)
+
+
+async def still_the_messages(
+    store: ConversationStore,
+    room: Room,
+    channel_id: str,
+    binding: ChannelBinding | None,
+    sender: str | None,
+    own: frozenset[str],
+    recipient: str | None,
+) -> bool:
+    """Whether a routed message's *room*, read under the room lock, is still
+    the message's (RFC §10.1 step 2, §10.4), whichever strategy chose it.
+
+    *binding* is the room's binding of *channel_id*, *own* the ids the sender
+    is known by and *recipient* the address the binding delivers to. Not the
+    message's: a room whose status refuses events; a PAUSED room that is not
+    the sender's conversation by step 1 (the binding names them, or a
+    participant they are was reached through the channel) and whose binding
+    is not ``group``; a binding, not ``group``, naming a correspondent other
+    than the sender (its participant, else its recipient); a binding naming
+    no one that the room no longer opens to the sender by step 3's
+    conditions, unless the sender is a participant reached through the
+    channel. The framework's own sender and a message with no address are
+    no one's correspondent, and are recorded on no binding.
+    """
+    if room.status in _REFUSING:
+        return False
+    group = binding is not None and binding.group
+    correspondent = None if binding is None or group else binding.participant_id or recipient
+    if room.status != RoomStatus.PAUSED and (
+        binding is None or group or (correspondent is not None and correspondent in own)
+    ):
+        return True
+    members = [
+        participant
+        for participant in await store.list_participants(room.id)
+        if channel_id in participant.connected_via
+        and own & {participant.id, participant.identity_id}
+    ]
+    # A participant who is the sender names them by its id and its identity
+    # too: a binding naming that participant names the sender.
+    names = own | {name for member in members for name in (member.id, member.identity_id) if name}
+    named = correspondent is not None and correspondent in names
+    if room.status == RoomStatus.PAUSED and not (group or members or named):
+        return False
+    if binding is None or group:
+        return True
+    if correspondent is not None:
+        return named
+    if not recordable_sender(sender) or members:
+        return True
+    return await step_three_admits(store, binding, sender, own, recipient)
 
 
 def known_as(sender: str | None, identity: Identity | None) -> frozenset[str]:
