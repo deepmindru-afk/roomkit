@@ -149,7 +149,8 @@ class _Recorder:
 
 
 def _provider(**overrides: Any) -> OpenAILiveProvider:
-    kwargs: dict[str, Any] = {"api_key": "sk-test", "turn_gap_ms": 50, "close_timeout_s": 0.2}
+    # The fake peer never answers session.close: a disconnect waits this long for it.
+    kwargs: dict[str, Any] = {"api_key": "sk-test", "turn_gap_ms": 50, "close_timeout_s": 0.01}
     kwargs.update(overrides)
     return OpenAILiveProvider(**kwargs)
 

@@ -119,7 +119,10 @@ async def _gpt_live_calls(
         ws.push(_response_event({"type": "response.created"}, delegation_id=delegation))
         event = {"type": "response.output_item.done", "item": item}
         ws.push(_response_event(event, delegation_id=delegation))
-    await asyncio.sleep(0.1)
+    async with asyncio.timeout(5):  # the provider reads the pushed events in order
+        while not ws._queue.empty():
+            await asyncio.sleep(0.005)
+    await asyncio.sleep(0.01)  # and handles the last one it read
     # Read before the disconnect clears the book: each open call with the
     # delegation it answers.
     booked = provider._open_tool_calls.get(session.id, {})
