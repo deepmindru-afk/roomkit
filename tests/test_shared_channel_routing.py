@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -29,6 +30,7 @@ from roomkit.models.delivery import (
 from roomkit.models.enums import IdentificationStatus, RoomStatus
 from roomkit.models.event import TextContent
 from roomkit.models.identity import Identity
+from roomkit.models.room import RoomTimers
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.sms.mock import MockSMSProvider
 from roomkit.store.base import ConversationStore
@@ -862,6 +864,34 @@ class TestTheLockChecksTheRoomAgain:
         assert not result.blocked, result.reason
         assert result.event is not None and result.event.room_id != room
         assert await shop.named_on(room) is None
+
+    async def test_a_room_due_to_close_is_closed_before_the_check(
+        self, store: ConversationStore
+    ) -> None:
+        """Under the lock the room's due timers apply first (RFC §10.1 step
+        2, §5.1): the sender's paused room, its close timer due, is closed
+        then, and the message gets a new room rather than a room_closed."""
+        shop = _Shop(store)
+        room = await shop.open_room_for(BOB)
+        stored = await store.get_room(room)
+        assert stored is not None
+        await store.update_room(
+            stored.model_copy(
+                update={
+                    "status": RoomStatus.PAUSED,
+                    "paused_at": datetime.now(UTC) - timedelta(minutes=5),
+                    "timers": RoomTimers(closed_after_seconds=1),
+                }
+            )
+        )
+        shop.kit._inbound_router = _AnswersWith(room)  # noqa: SLF001
+
+        result = await shop.text(BOB, "hello")
+
+        assert not result.blocked, result.reason
+        assert result.event is not None and result.event.room_id != room
+        closed = await store.get_room(room)
+        assert closed is not None and closed.status == RoomStatus.CLOSED
 
     async def test_a_second_answer_that_is_not_the_messages_gives_it_a_new_room(
         self, store: ConversationStore, monkeypatch: pytest.MonkeyPatch

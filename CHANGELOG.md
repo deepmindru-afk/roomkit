@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Step 2's attach follows RFC §10.1 step 2 (RMK-930). A message naming a
+  room that does not bind its channel attached the channel to a CLOSED or
+  ARCHIVED room, and to one whose close was due, before step 6 refused the
+  message: the room kept a binding no one asked for. The attach now runs
+  under the room lock once the room's due timers are applied, and none is
+  made to a room whose status refuses events; the message is refused
+  `room_closed` with nothing written. A room created for a message had the
+  channel attached after its `ON_ROOM_CREATED` hooks whatever they did,
+  replacing a binding a hook made: the hook's binding is now kept. The
+  routed room's claim applies the room's due timers before it checks the
+  room, so a paused room due to close gives the message a new room rather
+  than a `room_closed` refusal. One rule serves the three attaches: a
+  binding made by then is never replaced, and a detached channel is never
+  attached again.
+
 - A delete the persistence policy keeps out of the timeline still marks
   its target's edits deleted (RFC §10.3, RMK-930). With no row of its own to
   commit, the change wrote its target alone through `update_event()`: the

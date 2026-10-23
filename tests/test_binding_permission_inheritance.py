@@ -8,14 +8,18 @@ and by re-attaching a channel that was deliberately detached.
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from roomkit.channels.base import Channel
 from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import Access, ChannelType, Visibility
+from roomkit.models.enums import Access, ChannelType, HookTrigger, RoomStatus, Visibility
 from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.room import RoomTimers
 from roomkit.store.memory import InMemoryStore
 
 
@@ -282,3 +286,54 @@ class TestDetachSurvivesTheProcess:
             room_id="r1",
         )
         assert await kit._store.get_binding("r1", "ws") is not None
+
+
+class TestTheAttachOfStepTwo:
+    """RFC §10.1 step 2: a room in hand that does not bind the message's
+    channel has it attached under the room lock, its due timers applied
+    first, at the declaration's defaults; none is made to a room whose
+    status refuses events. A room created for the message has the channel
+    attached unless a binding of it exists by then, a hook's included."""
+
+    @pytest.mark.parametrize("refusing", ["closed", "archived", "due-to-close"])
+    async def test_a_room_that_refuses_events_gets_no_attach(self, refusing: str) -> None:
+        kit = RoomKit()
+        kit.register_channel(_Transport("ws"))
+        room = await kit.create_room(room_id="r1")
+        if refusing == "due-to-close":
+            gone = datetime.now(UTC) - timedelta(minutes=5)
+            room = room.model_copy(
+                update={
+                    "status": RoomStatus.PAUSED,
+                    "paused_at": gone,
+                    "timers": RoomTimers(closed_after_seconds=1),
+                }
+            )
+        else:
+            room = room.model_copy(update={"status": RoomStatus(refusing)})
+        await kit._store.update_room(room)
+
+        result = await kit.process_inbound(
+            InboundMessage(channel_id="ws", sender_id="u1", content=TextContent(body="hi")),
+            room_id="r1",
+        )
+
+        assert (result.blocked, result.reason) == (True, "room_closed")
+        assert await kit._store.get_binding("r1", "ws") is None
+
+    async def test_a_binding_a_creation_hook_made_is_kept(self) -> None:
+        kit = RoomKit()
+        kit.register_channel(_Transport("ws"))
+
+        @kit.hook(HookTrigger.ON_ROOM_CREATED)
+        async def bind_read_only(event: object, ctx: RoomContext) -> None:
+            await kit.attach_channel(ctx.room.id, "ws", access=Access.READ_ONLY)
+
+        result = await kit.process_inbound(
+            InboundMessage(channel_id="ws", sender_id="u1", content=TextContent(body="hi"))
+        )
+
+        assert result.event is not None
+        binding = await kit._store.get_binding(result.event.room_id, "ws")
+        assert binding is not None and binding.access == Access.READ_ONLY
+        assert (result.blocked, result.reason) == (True, "source_read_only")

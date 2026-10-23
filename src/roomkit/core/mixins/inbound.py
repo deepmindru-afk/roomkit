@@ -26,7 +26,7 @@ from roomkit.core.inbound_router import (
 )
 from roomkit.core.locks import _has_room_lock, collecting_release_failures, failed_release
 from roomkit.core.mixins.channel_ops import is_channel_detached
-from roomkit.core.mixins.helpers import HelpersMixin
+from roomkit.core.mixins.helpers import _REFUSING_STATUSES, HelpersMixin
 from roomkit.core.mixins.inbound_identity import _IdentityBlockedError
 from roomkit.core.mixins.verification import HELD_KEY
 from roomkit.models.delivery import (
@@ -871,14 +871,20 @@ class InboundMixin(HelpersMixin):
         channel = self._channels.get(message.channel_id)
         sender = _conversation(message, channel) if channel else message.sender_id
         recorded = sender if recordable_sender(sender) else None
-        await self.attach_channel(
-            room.id,
-            message.channel_id,
-            participant_id=recorded,
-            # Where the room replies: the sender's address, or the chat the
-            # message came from.
-            metadata=channel.reply_metadata(message) if recorded and channel else {},
-        )
+        # Once its ON_ROOM_CREATED hooks have run, under the room lock: a
+        # binding of the channel one of them made is the room's (RFC §10.1
+        # step 2, §7.5 rule 7).
+        async with self._lock_manager.locked(room.id):
+            created = await self._store.get_room(room.id)
+            if created is not None:
+                await self._attach_unbound(
+                    created,
+                    message.channel_id,
+                    participant_id=recorded,
+                    # Where the room replies: the sender's address, or the
+                    # chat the message came from.
+                    metadata=channel.reply_metadata(message) if recorded and channel else {},
+                )
         return room.id
 
     async def _route_and_claim(
@@ -950,6 +956,9 @@ class InboundMixin(HelpersMixin):
             room = await self._store.get_room(room_id)
             if room is None:
                 return False
+            # RFC §5.1, §10.1 step 2: the room's due timers apply first, so a
+            # room due to close is no longer the message's.
+            room = await self._room_timers.apply_due(room)
             binding = await self._store.get_binding(room_id, channel_id)
             recipient = channel.recipient_address(binding) if binding is not None else None
             if not await still_the_messages(
@@ -957,22 +966,40 @@ class InboundMixin(HelpersMixin):
             ):
                 return False
             if binding is None:
-                binding = await self._attach_routed(room, channel_id)
+                binding = await self._attach_unbound(room, channel_id)
             if binding is not None and recordable_sender(sender):
                 await self._record_sender(room_id, binding, message, channel)
             return True
 
-    async def _attach_routed(self, room: Room, channel_id: str) -> ChannelBinding | None:
-        """Attach *channel_id* to a routed *room* that does not bind it, under
-        the room lock the caller holds; ``None`` when the integrator detached
-        it (RFC §7.5 rule 7), the message then going on unbound.
+    async def _attach_unbound(
+        self,
+        room: Room,
+        channel_id: str,
+        *,
+        participant_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> ChannelBinding | None:
+        """Step 2's attach of *channel_id* to *room*, read under the room lock
+        the caller holds (RFC §10.1 step 2, §7.5 rule 7): the room's binding
+        of the channel; one made by then is kept as it is, never replaced.
+        ``None`` when the integrator detached the channel from the room: it
+        is not attached again, and the message goes on unbound.
 
-        The binding is read again after the attach: its ``ON_CHANNEL_ATTACHED``
-        hooks run under the same lock and may have changed it.
+        Otherwise the channel is attached at its declaration's defaults
+        (read-write, unmuted, visible to all, its capabilities), naming
+        *participant_id* and carrying *metadata*, and the binding is read
+        again: its ``ON_CHANNEL_ATTACHED`` hooks run under the same lock and
+        may have changed it. The caller decides whether the room's status
+        lets anything be attached.
         """
+        binding = await self._store.get_binding(room.id, channel_id)
+        if binding is not None:
+            return binding
         if is_channel_detached(room, channel_id):
             return None
-        await self.attach_channel(room.id, channel_id)
+        await self.attach_channel(
+            room.id, channel_id, participant_id=participant_id, metadata=metadata or {}
+        )
         return await self._store.get_binding(room.id, channel_id)
 
     async def _record_sender(
@@ -1011,25 +1038,29 @@ class InboundMixin(HelpersMixin):
         self._notify_binding_updated(room_id, message.channel_id, binding)
 
     async def _maybe_auto_attach(self, room_id: str, channel_id: str) -> None:
-        """Attach *channel_id* if it was never bound — not if it was revoked.
+        """Attach *channel_id* to the named room if it was never bound — not
+        if it was revoked, and not to a room that refuses events.
 
         Auto-attach is a convenience for a channel that was never bound;
         re-granting access that was explicitly revoked is not its job
         (RFC §7.5-7). The decision runs under the room lock against fresh
-        reads: detach_channel() writes its tombstone and removes the binding
-        under the same lock, so this sees either the binding or the
-        revocation — a detach landing concurrently with an in-flight message
-        can never be undone by it. The tombstone lives in room metadata, so
-        the check holds across restarts and across workers sharing the
-        store. attach_channel() re-acquires the lock reentrantly.
+        reads, the room's due timers applied first (§5.1, §10.1 step 2): a
+        room CLOSED or ARCHIVED by then gets no binding, and step 6 refuses
+        the message ``room_closed``. detach_channel() writes its tombstone
+        and removes the binding under the same lock, so this sees either the
+        binding or the revocation — a detach landing concurrently with an
+        in-flight message can never be undone by it. The tombstone lives in
+        room metadata, so the check holds across restarts and across workers
+        sharing the store. attach_channel() re-acquires the lock reentrantly.
         """
         async with self._lock_manager.locked(room_id):
             room = await self._store.get_room(room_id)
             if room is None:
                 return
-            binding = await self._store.get_binding(room_id, channel_id)
-            if binding is None and not is_channel_detached(room, channel_id):
-                await self.attach_channel(room_id, channel_id)
+            room = await self._room_timers.apply_due(room)
+            if room.status in _REFUSING_STATUSES:
+                return
+            await self._attach_unbound(room, channel_id)
 
     async def _fire_text_session_started(
         self,
