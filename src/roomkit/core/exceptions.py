@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from roomkit.models.delivery import ProviderResult
+from roomkit.models.enums import RoomStatus
 
 
 class RoomKitError(Exception):
@@ -122,6 +123,22 @@ class RoomClosedError(RoomKitError):
     type can say so, return ``InboundResult(blocked=True, reason="room_closed")``
     instead.
     """
+
+
+class TransitionRefusedError(RoomKitError):
+    """A room's status is neither one a lifecycle transition leaves from nor
+    the one it leads to (RFC §5.1): a close of an ARCHIVED room, since no
+    call takes a room out of ARCHIVED. Nothing was written.
+
+    ``status`` is the room's status, ``transition`` the call refused
+    (``close``).
+    """
+
+    def __init__(self, room_id: str, status: RoomStatus, transition: str) -> None:
+        super().__init__(f"room {room_id} is {status}, which {transition} does not leave from")
+        self.room_id = room_id
+        self.status = status
+        self.transition = transition
 
 
 class ProcessTimeoutError(RoomKitError):

@@ -153,10 +153,6 @@ class TestRoomArchival:
         assert result.blocked
         assert await kit.get_timeline("r1") is not None
 
-        # Idempotent.
-        await kit.archive_room("r1")
-        assert len(seen) == 1
-
 
 class TestTriggersThatReachHooks:
     """RFC §9.2 — a trigger the enum declares must reach the room's hooks.

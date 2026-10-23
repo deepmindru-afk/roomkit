@@ -623,6 +623,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — a room transition already done does nothing, and
+  `close_room()` refuses an ARCHIVED room** (RFC §5.1, RMK-930).
+  `close_room()` read no status: closing a CLOSED room wrote it again with
+  a new `closed_at` and fired `ON_ROOM_CLOSED` and `room_closed` again, and
+  closing an ARCHIVED room made it CLOSED. Closing a CLOSED room now
+  returns it as stored, writing and firing nothing, as archiving an
+  ARCHIVED room did (which no longer stops its recordings again either);
+  closing an ARCHIVED room raises the new `TransitionRefusedError`
+  (`room_id`, `status`, `transition`), nothing written: no call takes a
+  room out of ARCHIVED. Breaking for code that closed an archived room, or
+  that counted on a second close firing its hook again.
+
 - **BREAKING — a hook's injected events commit after their cause has
   released the room lock** (RFC §9.4, §10.1 steps 10 to 14, §13.5,
   RMK-930). Their passes ran inside the cause's locked section, taking the

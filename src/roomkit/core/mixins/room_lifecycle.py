@@ -12,6 +12,7 @@ from roomkit.core.exceptions import (
     IdentityNotFoundError,
     ParticipantNotFoundError,
     RoomNotFoundError,
+    TransitionRefusedError,
 )
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.models.enums import (
@@ -212,13 +213,24 @@ class RoomLifecycleMixin(HelpersMixin):
         return room
 
     async def close_room(self, room_id: str, *, organization_id: str | None = None) -> Room:
-        """Close a room.
+        """Close a room (RFC §5.1).
+
+        A room already CLOSED is returned as it is: nothing is written, no
+        hook fires and no framework event is emitted.
 
         *organization_id* scopes the operation to one tenant (RFC §17.2); a
         room belonging to another organization is reported as not found.
+
+        Raises:
+            TransitionRefusedError: the room is ARCHIVED, which no call
+                leaves; nothing is written.
         """
         async with self._lock_manager.locked(room_id):
             room = await self.get_room(room_id, organization_id=organization_id)
+            if room.status is RoomStatus.CLOSED:
+                return room
+            if room.status is RoomStatus.ARCHIVED:
+                raise TransitionRefusedError(room_id, room.status, "close")
             # Stop room-level media recorders before closing, once the scoped
             # read has found the room: a refused call stops nothing (§12.11).
             await self._stop_room_recordings(room_id)
@@ -248,13 +260,14 @@ class RoomLifecycleMixin(HelpersMixin):
         at every status, archived included.
 
         This is the only path to the status, and therefore the only source of
-        the ``room_archived`` framework event (§8.2).
+        the ``room_archived`` framework event (§8.2). A room already ARCHIVED
+        is returned as it is: nothing is written or emitted.
         """
         async with self._lock_manager.locked(room_id):
             room = await self.get_room(room_id, organization_id=organization_id)
-            await self._stop_room_recordings(room_id)
-            if room.status == RoomStatus.ARCHIVED:
+            if room.status is RoomStatus.ARCHIVED:
                 return room
+            await self._stop_room_recordings(room_id)
             room = room.model_copy(
                 update={
                     "status": RoomStatus.ARCHIVED,

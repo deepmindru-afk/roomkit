@@ -124,6 +124,7 @@ from roomkit.core.exceptions import (
     ToolNameCollisionError,
     ToolRefusedError,
     ToolTimeoutError,
+    TransitionRefusedError,
     TurnCutShortError,
     TurnLinkError,
     UnservedToolCallError,
@@ -407,6 +408,7 @@ __all__ = [
     # Errors
     "RoomKitError",
     "RoomClosedError",
+    "TransitionRefusedError",
     "ProcessTimeoutError",
     "RoomNotFoundError",
     "EventNotFoundError",
