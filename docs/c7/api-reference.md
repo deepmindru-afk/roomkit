@@ -122,7 +122,7 @@ RoomKit exports **348 symbols** from `roomkit`. Providers and voice types import
 | `Room` | Room data model |
 | `RoomContext` | Context passed to hooks (room, bindings, participants, events) |
 | `RoomEvent` | Core event stored in the timeline |
-| `RoomTimers` | Timer configuration for room inactivity |
+| `RoomTimers` | Timer configuration for room inactivity: `inactive_after_seconds` (from `last_activity_at`, or `created_at` before any), `closed_after_seconds` (from `Room.paused_at`) |
 | `SessionStartedEvent` | Event fired when a voice session starts |
 | `TextContent` | Plain text content |
 | `get_current_voice_session` | Get the current voice session from context |
@@ -250,6 +250,7 @@ RoomKit exports **348 symbols** from `roomkit`. Providers and voice types import
 | `RoomNotFoundError` | Room does not exist |
 | `RoomAlreadyExistsError` | A room created under an id the store holds (RFC §14.3) |
 | `RoomClosedError` | Room's status refuses new events (RFC §5.1) |
+| `TransitionRefusedError` | A lifecycle transition from a status it does not leave, such as `close_room()` on an ARCHIVED room; nothing written (RFC §5.1) |
 | `ChangeRefusedError` | `send_event()` of an edit or a delete step 8a refused; `reason` says why (RFC §10.3) |
 | `EventNotFoundError` | A store's `commit_event()` of a change whose target the room no longer holds (RFC §14.3) |
 | `RoomNotAttachedError` | Channel acted on a room it is no longer attached to |
@@ -312,10 +313,11 @@ kit = RoomKit(
 |--------|-------------|
 | `create_room(room_id?, metadata?, orchestration?)` | Create a room |
 | `get_room(room_id)` | Get room by ID |
-| `close_room(room_id)` | Close a room |
+| `close_room(room_id)` | Close a room; a CLOSED room is returned as stored, an ARCHIVED one raises `TransitionRefusedError` |
+| `archive_room(room_id)` | Archive a room, the terminal status; an ARCHIVED room is returned as stored |
 | `update_room_metadata(room_id, metadata)` | Update room metadata; a `roomkit:channel_state:` key raises `ValueError` (written by `channel_call` alone), and a turn's `TurnHost.update_room_metadata` refuses every `roomkit:` key |
-| `check_room_timers(room_id)` | Check timer transitions for one room |
-| `check_all_timers()` | Check all room timers |
+| `check_room_timers(room_id)` | Apply one room's due timer transitions, each at the instant it fell due (RFC §5.1) |
+| `check_all_timers()` | Check every ACTIVE and PAUSED room; returns those that transitioned |
 
 ### Channel Operations
 

@@ -98,24 +98,53 @@ When an AI response triggers another AI response, chain depth increments. Proces
 
 ## Room Lifecycle Timers
 
-Auto-transition rooms based on inactivity:
+Auto-transition rooms based on inactivity (RFC §5.1):
 
 ```python
 from roomkit import RoomKit, RoomTimers
 
 kit = RoomKit()
 
-room = await kit.create_room(room_id="session-1")
-# Configure timers on the room:
-# inactive_after_seconds -> ACTIVE to PAUSED
-# closed_after_seconds -> to CLOSED
+room = await kit.create_room(
+    room_id="session-1",
+    timers=RoomTimers(
+        inactive_after_seconds=300,  # ACTIVE -> PAUSED after 5 min without activity
+        closed_after_seconds=3600,  # PAUSED -> CLOSED 1 h after paused_at
+    ),
+)
 
-# Check timers for one room
+# A room nobody writes to transitions when its timers are checked
 room = await kit.check_room_timers("session-1")
 
 # Batch check all rooms (call periodically)
 transitioned = await kit.check_all_timers()
 ```
+
+- **Activity** is the events the pipeline stores DELIVERED: each moves
+  `timers.last_activity_at` in its commit. A record stored BLOCKED, a
+  lifecycle record (an attach, a mute, a timer's transition), a
+  `commit_event()` record and an instruction are no activity: a mute does not
+  restart the inactivity timer. Inactivity counts from `last_activity_at`, or
+  from `created_at` while the room has had none.
+- **Pause and close.** An ACTIVE room pauses once `inactive_after_seconds`
+  passed without activity, `paused_at` recording when; a PAUSED room closes
+  once `closed_after_seconds` passed from `paused_at`. An ACTIVE room closes by
+  timer only once it paused: to close N seconds after the last activity, set
+  `inactive_after_seconds=N, closed_after_seconds=0`.
+- **Resume.** A delivered event resumes a PAUSED room in its commit (ACTIVE,
+  `paused_at` null), with no hook and no framework event.
+- **When.** Every operation that reads the room's status under its lock (a
+  message, `send_event()`, an agent's answer, an attach, a detach or a binding
+  change, `commit_event()`, `update_event()`, `delete_event()`, `close_room()`,
+  `archive_room()`) applies the transitions due at its instant first, so a
+  message after a due close is refused as if the timer had run on time. A
+  transition takes the instant it fell due, however late it is applied: a
+  check long after both pauses the room at the first instant and closes it at
+  the second, in one write. Each emits `room_paused` / `room_closed` (`reason =
+  timer`) once stored, before the operation's own refusal (`room_closed` comes
+  before the message's `room_refused_event`); its `ON_ROOM_PAUSED` /
+  `ON_ROOM_CLOSED` hook fires once the room lock is released, its event's
+  `SystemContent.data` the `threshold` and the instant (`at`).
 
 ## Delivery Status Tracking
 

@@ -138,15 +138,15 @@ kit = RoomKit(store=PostgresStore("postgresql://..."))
 ## Room Lifecycle
 
 ```
-ACTIVE -> PAUSED -> CLOSED -> ARCHIVED
-           ^          |
-           +----------+  (can close from paused)
+ACTIVE --inactivity--> PAUSED --close timer--> CLOSED --archive_room()--> ARCHIVED
+   ^                     |
+   +--delivered event----+        close_room(): ACTIVE or PAUSED -> CLOSED
 ```
 
 - **ACTIVE** — Accepting messages, all channels active.
-- **PAUSED** — Messages queued, channels paused. Auto-transition via `inactive_after_seconds`.
-- **CLOSED** — No new messages. Auto-transition via `closed_after_seconds`.
-- **ARCHIVED** — Terminal state, read-only.
+- **PAUSED** — Still accepting messages; a delivered one resumes it. Reached after `inactive_after_seconds` without activity; `paused_at` records when.
+- **CLOSED** — No new messages. Reached via `close_room()`, or `closed_after_seconds` after `paused_at`.
+- **ARCHIVED** — Terminal state, read-only; no call leaves it.
 
 ## Event Model
 

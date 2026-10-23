@@ -45,6 +45,14 @@ await kit.close_room("session-1")
 transitioned = await kit.check_all_timers()
 ```
 
+A transition the room has already made does nothing: `close_room()` on a
+CLOSED room, and `archive_room()` on an ARCHIVED one, return the room as
+stored, writing and firing nothing. No call takes a room out of ARCHIVED:
+`close_room()` on an archived room raises `TransitionRefusedError` (`room_id`,
+`status`, `transition`), nothing written. Timers (`RoomTimers`, `paused_at`)
+are described under Resilience: every operation on a room applies its due
+timer transitions first, and a delivered message resumes a PAUSED room.
+
 ## Channel Types
 
 The `ChannelType` enum defines 23 values: `SMS`, `MMS`, `RCS`, `EMAIL`, `WHATSAPP`, `WHATSAPP_PERSONAL`, `WEBSOCKET`, `AI`, `VOICE`, `REALTIME_VOICE`, `REALTIME_AUDIO_VIDEO`, `PUSH`, `MESSENGER`, `TELEGRAM`, `TEAMS`, `DISCORD`, `BUZZ`, `WEBHOOK`, `VIDEO`, `AUDIO_VIDEO`, `CONFERENCE`, `CLI`, `SYSTEM`. RoomKit ships with these factories and channel classes:
@@ -145,6 +153,18 @@ await kit.unmute("room", "ai-agent")
 await kit.mute_output("room", "ai-agent")
 await kit.unmute_output("room", "ai-agent")
 ```
+
+A binding change that changes nothing writes and fires nothing (RFC §7.2):
+muting a muted channel, or a setter given the values the binding holds,
+returns the binding as stored with no record and no `ON_CHANNEL_MUTED` /
+`ON_CHANNEL_UNMUTED`. A gate change (`mute`, `unmute`, `mute_output`,
+`unmute_output`, `set_access`) still calls `Channel.update_binding()` with the
+binding as stored, so a channel whose cached state drifted is set right.
+
+An intelligence channel unregistered while still bound is reported, when the
+event solicits it, as `delivery_failed` with the error
+`channel_not_registered` (not retryable, no `ON_ERROR`); a transport not
+registered in this process is skipped silently.
 
 ## Per-Room Channel Configuration
 

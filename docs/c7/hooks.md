@@ -331,16 +331,16 @@ are not fired by any built-in code.
 |---------|-----------|-----------|-------------|
 | `ON_CHANNEL_ATTACHED` | ASYNC | `(event, ctx) -> None` | Channel was attached to a room |
 | `ON_CHANNEL_DETACHED` | ASYNC | `(event, ctx) -> None` | Channel was detached from a room |
-| `ON_CHANNEL_MUTED` | ASYNC | `(event, ctx) -> None` | Channel was muted in a room |
-| `ON_CHANNEL_UNMUTED` | ASYNC | `(event, ctx) -> None` | Channel was unmuted in a room |
+| `ON_CHANNEL_MUTED` | ASYNC | `(event, ctx) -> None` | Channel was muted in a room: its binding's `muted` changed to true, and only then (muting a muted channel fires nothing) |
+| `ON_CHANNEL_UNMUTED` | ASYNC | `(event, ctx) -> None` | Channel was unmuted in a room: its binding's `muted` changed to false, and only then |
 
 ### Room Lifecycle
 
 | Trigger | Execution | Signature | Description |
 |---------|-----------|-----------|-------------|
 | `ON_ROOM_CREATED` | ASYNC | `(event, ctx) -> None` | Room was created |
-| `ON_ROOM_PAUSED` | ASYNC | `(event, ctx) -> None` | Room was paused |
-| `ON_ROOM_CLOSED` | ASYNC | `(event, ctx) -> None` | Room was closed |
+| `ON_ROOM_PAUSED` | ASYNC | `(event, ctx) -> None` | Room was paused by its inactivity timer; fires once the room lock is released, `ctx.room` as the transition left it |
+| `ON_ROOM_CLOSED` | ASYNC | `(event, ctx) -> None` | Room was closed, by `close_room()` or by its close timer (that one once the room lock is released); a close of a CLOSED room fires nothing |
 
 ### Identity
 
@@ -559,4 +559,4 @@ async def on_voice(event):
     print(f"Voice session: {event.data['session_id']}")
 ```
 
-Available framework event types: `room_created`, `room_closed`, `room_paused`, `room_channel_attached`, `room_channel_detached`, `channel_connected`, `channel_disconnected`, `voice_session_started`, `voice_session_ended`, `source_attached`, `source_detached`, `source_error`, `source_exhausted`.
+Available framework event types: `room_created`, `room_closed`, `room_paused` (both with `reason = timer` when a timer made the transition), `room_archived`, `room_refused_event`, `room_channel_attached`, `room_channel_detached`, `channel_connected`, `channel_disconnected`, `voice_session_started`, `voice_session_ended`, `source_attached`, `source_detached`, `source_error`, `source_exhausted`.
