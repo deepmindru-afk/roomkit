@@ -9,7 +9,12 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
-from roomkit.core.exceptions import AddressLinkedError, EventNotFoundError, IdentityNotFoundError
+from roomkit.core.exceptions import (
+    AddressLinkedError,
+    EventNotFoundError,
+    IdentityNotFoundError,
+    RoomAlreadyExistsError,
+)
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import EventType
 from roomkit.models.event import RoomEvent, ThreadSummary
@@ -48,6 +53,11 @@ def without_address(
     kept = [held for held in channel_addresses.get(channel_type, []) if held != address]
     rest = {key: value for key, value in channel_addresses.items() if key != channel_type}
     return {**rest, channel_type: kept} if kept else rest
+
+
+def room_taken(room_id: str) -> RoomAlreadyExistsError:
+    """The refusal of a room created under an id the store holds (RFC §14.3)."""
+    return RoomAlreadyExistsError(f"Room {room_id} already exists")
 
 
 def target_gone(target: RoomEvent) -> EventNotFoundError:
@@ -143,7 +153,12 @@ class ConversationStore(ABC):
 
     @abstractmethod
     async def create_room(self, room: Room) -> Room:
-        """Persist a new room."""
+        """Persist a new room.
+
+        A room is created once (RFC §14.3): an id the store holds raises
+        :class:`~roomkit.core.exceptions.RoomAlreadyExistsError`, nothing
+        written, and the room it holds is never replaced.
+        """
         ...
 
     @abstractmethod

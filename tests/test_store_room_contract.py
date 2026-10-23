@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import pytest
 
-from roomkit.core.exceptions import RoomNotFoundError
+from roomkit.core.exceptions import RoomAlreadyExistsError, RoomNotFoundError
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import ChannelType, RoomStatus
 from roomkit.models.participant import Participant
@@ -42,6 +42,31 @@ async def contract_store(request: pytest.FixtureRequest) -> AsyncIterator[Conver
         yield store
     finally:
         await store.close()
+
+
+async def test_a_room_is_created_once(contract_store: ConversationStore) -> None:
+    """RFC §14.3: a store refuses a room under an id it holds and never
+    replaces the room it holds, which would re-home its conversation, another
+    organization's included."""
+    room = await contract_store.create_room(
+        Room(id=uuid4().hex, organization_id="acme", metadata={"topic": "billing"})
+    )
+    try:
+        await contract_store.commit_event(room.id, make_event(room_id=room.id))
+
+        with pytest.raises(RoomAlreadyExistsError):
+            await contract_store.create_room(Room(id=room.id, organization_id="globex"))
+
+        kept = await contract_store.get_room(room.id)
+        assert kept is not None
+        assert (kept.organization_id, kept.metadata, kept.event_count) == (
+            "acme",
+            {"topic": "billing"},
+            1,
+        )
+        assert len(await contract_store.list_events(room.id)) == 1
+    finally:
+        await contract_store.delete_room(room.id)
 
 
 async def test_update_room_refuses_a_room_the_store_lacks(

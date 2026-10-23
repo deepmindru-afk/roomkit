@@ -77,6 +77,15 @@ class RoomNotFoundError(RoomKitError):
     """Room does not exist."""
 
 
+class RoomAlreadyExistsError(RoomKitError):
+    """A room was created under an id the store already holds (RFC §14.3).
+
+    A room is created once: the store refuses the creation and never
+    replaces the room it holds, which would re-home its conversation, another
+    organization's included. Nothing is written.
+    """
+
+
 class EventNotFoundError(RoomKitError):
     """An event a write names is not in its room (RFC §14.3).
 

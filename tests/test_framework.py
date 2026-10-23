@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 from roomkit.channels.base import Channel
+from roomkit.core.exceptions import RoomAlreadyExistsError
 from roomkit.core.framework import (
     ChannelAlreadyRegisteredError,
     ChannelNotRegisteredError,
@@ -109,6 +110,15 @@ class TestRoomLifecycle:
         room = await kit.create_room(room_id="r1")
         assert room.id == "r1"
         assert room.status == RoomStatus.ACTIVE
+
+    async def test_a_room_id_is_created_once(self, kit: RoomKit) -> None:
+        """RFC §14.3: the room an id names is never replaced."""
+        await kit.create_room(room_id="r1", organization_id="acme")
+
+        with pytest.raises(RoomAlreadyExistsError):
+            await kit.create_room(room_id="r1", organization_id="globex")
+
+        assert (await kit.get_room("r1")).organization_id == "acme"
 
     async def test_create_room_auto_id(self, kit: RoomKit) -> None:
         room = await kit.create_room()

@@ -37,6 +37,7 @@ import time
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core.exceptions import RoomAlreadyExistsError
 from roomkit.core.task_utils import cancel_and_wait
 from roomkit.voice.backends._resample import build_streaming_resampler
 from roomkit.voice.backends.base import (
@@ -533,7 +534,10 @@ class BuzzHuddleWatcher:
         routed to a room of their own (RFC §10.4).
         """
         announcements_room = f"{self._events_channel_id}-room"
-        await self._kit.create_room(room_id=announcements_room)
+        # A restart over a persistent store finds the room it opened: a room
+        # is created once and never replaced (RFC §14.3).
+        with contextlib.suppress(RoomAlreadyExistsError):
+            await self._kit.create_room(room_id=announcements_room)
         await self._kit.attach_channel(announcements_room, self._events_channel_id, group=True)
 
     async def bridge(self, huddle_id: str) -> None:

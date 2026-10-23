@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from pathlib import Path
 
 import pytest
 
@@ -25,9 +24,7 @@ from roomkit.recorder.base import (
     RoomRecorderBinding,
 )
 from roomkit.recorder.mock import MockMediaRecorder
-from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
-from roomkit.store.sqlite import SQLiteStore
 from roomkit.video.backends.mock import MockVideoBackend
 from roomkit.video.video_frame import VideoFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
@@ -253,25 +250,6 @@ class TestRoomCreationWithRecorders:
         assert newcomer.handles[0].state == "stopped"
         assert existing.handles[0].state == "recording"
         assert kit._room_recorder_mgr.has_recorders("r1")  # noqa: SLF001
-        await kit.close()
-
-    @pytest.mark.parametrize("store_kind", ["memory", "sqlite"])
-    async def test_a_room_created_again_keeps_its_recordings(
-        self, store_kind: str, tmp_path: Path
-    ) -> None:
-        """Stores that rewrite a room under an existing id must not orphan its recording."""
-        store: ConversationStore = (
-            InMemoryStore() if store_kind == "memory" else SQLiteStore(tmp_path / "rooms.db")
-        )
-        kit = RoomKit(store=store)
-        first, second = MockMediaRecorder(), MockMediaRecorder()
-        await kit.create_room(room_id="r1", recorders=[_binding(first)])
-        await kit.create_room(room_id="r1", recorders=[_binding(second)])
-
-        await kit.close_room("r1")
-
-        assert first.handles[0].state == "stopped"
-        assert second.handles[0].state == "stopped"
         await kit.close()
 
     async def test_a_recorder_failing_to_stop_still_lets_the_room_close(self) -> None:

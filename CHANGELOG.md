@@ -527,6 +527,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — a room is created once** (RFC §14.3, §10.1 step 2,
+  RMK-930). The in-memory and SQLite stores replaced the room held under an
+  id that `create_room()` was given again (`INSERT OR REPLACE`): a second
+  creation re-homed the conversation, its organization, metadata and
+  status, another organization's included, while the Postgres store raised
+  asyncpg's own error. Every store now refuses it with the new
+  `RoomAlreadyExistsError`, nothing written, and the room it holds is
+  kept; `kit.create_room()` raises it, the recorders it started stopped. A
+  message whose named room another call created meanwhile reads that room
+  again as one that exists, for the caller's organization, instead of
+  replacing it. The Buzz huddle watcher reopens its announcements room
+  after a restart. Breaking for code that called `create_room()` on an id
+  it may already hold: read the room first, or catch the error. A custom
+  store must refuse alike.
+
 - **BREAKING — a hard delete takes the edits and deletes of every event it
   removes, and fires `ON_EVENT_DELETED` per removed event** (RFC §10.3,
   §14.1, RMK-930). `kit.delete_event()` kept the EDIT rows of the events it

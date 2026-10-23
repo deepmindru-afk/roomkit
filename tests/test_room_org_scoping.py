@@ -355,6 +355,46 @@ class TestScopedInbound:
         result = await kit.process_inbound(_message(), organization_id="acme")
         assert (await kit.get_room(result.event.room_id)).organization_id == "acme"
 
+    @pytest.mark.parametrize("organization_id", [None, "acme", "globex"])
+    async def test_a_named_room_created_meanwhile_is_read_again(
+        self, monkeypatch: pytest.MonkeyPatch, organization_id: str | None
+    ) -> None:
+        """RFC §10.1 step 2, §14.3: a creation the store refuses because
+        another call created the room meanwhile reads the room again, as one
+        that exists, checked for the caller's organization; the room it
+        holds is never replaced."""
+        kit = RoomKit()
+        kit.register_channel(SimpleChannel("sms1"))
+        await kit.create_room(room_id="shared", organization_id="acme", metadata={"k": "v"})
+        # The existence read is stale: room_exists unscoped, get_room scoped.
+        reads = {"stale": organization_id is not None}
+        real_get_room = kit.store.get_room
+
+        async def not_yet(room_id: str) -> bool:
+            return False
+
+        async def stale_once(room_id: str) -> Any:
+            if reads.pop("stale", False):
+                return None
+            return await real_get_room(room_id)
+
+        monkeypatch.setattr(kit.store, "room_exists", not_yet)
+        monkeypatch.setattr(kit.store, "get_room", stale_once)
+
+        if organization_id == "globex":
+            with pytest.raises(RoomNotFoundError):
+                await kit.process_inbound(
+                    _message(), room_id="shared", organization_id=organization_id
+                )
+        else:
+            result = await kit.process_inbound(
+                _message(), room_id="shared", organization_id=organization_id
+            )
+            assert result.event is not None and result.event.room_id == "shared"
+        room = await real_get_room("shared")
+        assert room is not None and (room.organization_id, room.metadata) == ("acme", {"k": "v"})
+        await kit.close()
+
     async def test_a_deferred_send_to_another_organization_is_refused_synchronously(self) -> None:
         kit = await _two_tenants()
         with pytest.raises(RoomNotFoundError):

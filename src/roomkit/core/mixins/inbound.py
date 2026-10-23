@@ -12,7 +12,11 @@ from roomkit.channels._runtime_record import RUNTIME_RECORD
 from roomkit.core._changes import for_channels
 from roomkit.core._delivery_keys import DeliveryKeys, NamedDelivery
 from roomkit.core._instructions import FINGERPRINT, names_an_agent
-from roomkit.core.exceptions import ChannelNotRegisteredError, RoomNotFoundError
+from roomkit.core.exceptions import (
+    ChannelNotRegisteredError,
+    RoomAlreadyExistsError,
+    RoomNotFoundError,
+)
 from roomkit.core.inbound_router import (
     binding_names_no_one,
     known_as,
@@ -770,12 +774,51 @@ class InboundMixin(HelpersMixin):
         """
         # Ensure room exists; auto-create if needed (e.g. voice session
         # with a room_id from SIP headers that hasn't been created yet).
-        # Existence checks only — neither the room nor the binding is
-        # used beyond the yes/no, so materialising either would decode
-        # its JSONB columns and validate a whole model per message for
-        # nothing. Asked together on one connection; what they decide
-        # (create, attach, lock) happens outside it, because a pooled
-        # connection must never be held across a lock or a write path.
+        room_present, binding_present = await self._room_and_binding_present(
+            message, room_id, organization_id, attach=attach
+        )
+        if not room_present:
+            try:
+                await self._open_room_for(message, room_id, organization_id)
+                return True
+            except RoomAlreadyExistsError:
+                # Another call created the room meanwhile, and the store
+                # refused to replace it (RFC §10.1 step 2, §14.3): it is read
+                # again as one that exists, for the caller's organization.
+                room = await self._store.get_room(room_id)
+                if room is None or (
+                    organization_id is not None and room.organization_id != organization_id
+                ):
+                    raise RoomNotFoundError(f"Room {room_id} not found") from None
+                binding_present = not attach or await self._store.binding_exists(
+                    room_id, message.channel_id
+                )
+        if not binding_present:
+            # Room exists but the channel is not attached — unless the
+            # integrator detached it (RFC §7.5-7). The unlocked read
+            # keeps the common case (already bound) free; the actual
+            # decision runs under the room lock in _maybe_auto_attach.
+            await self._maybe_auto_attach(room_id, message.channel_id)
+        return False
+
+    async def _room_and_binding_present(
+        self,
+        message: InboundMessage,
+        room_id: str,
+        organization_id: str | None,
+        *,
+        attach: bool,
+    ) -> tuple[bool, bool]:
+        """Whether the named room exists for the caller, and whether it binds
+        the message's channel (``True`` when nothing is to be attached).
+
+        Existence checks only — neither the room nor the binding is used
+        beyond the yes/no, so materialising either would decode its JSONB
+        columns and validate a whole model per message for nothing. Asked
+        together on one connection; what they decide (create, attach, lock)
+        happens outside it, because a pooled connection must never be held
+        across a lock or a write path.
+        """
         async with self._store.connection():
             if organization_id is None:
                 room_present = await self._store.room_exists(room_id)
@@ -794,16 +837,7 @@ class InboundMixin(HelpersMixin):
                 or room_present
                 and await self._store.binding_exists(room_id, message.channel_id)
             )
-        if not room_present:
-            await self._open_room_for(message, room_id, organization_id)
-            return True
-        if not binding_present:
-            # Room exists but the channel is not attached — unless the
-            # integrator detached it (RFC §7.5-7). The unlocked read
-            # keeps the common case (already bound) free; the actual
-            # decision runs under the room lock in _maybe_auto_attach.
-            await self._maybe_auto_attach(room_id, message.channel_id)
-        return False
+        return room_present, binding_present
 
     async def _open_room_for(
         self, message: InboundMessage, room_id: str | None, organization_id: str | None

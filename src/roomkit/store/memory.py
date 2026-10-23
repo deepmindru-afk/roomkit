@@ -20,6 +20,7 @@ from roomkit.store.base import (
     ConversationStore,
     address_linked,
     link_target,
+    room_taken,
     target_gone,
     without_address,
 )
@@ -144,6 +145,8 @@ class InMemoryStore(ConversationStore):
     # Room operations
 
     async def create_room(self, room: Room) -> Room:
+        if room.id in self._rooms:
+            raise room_taken(room.id)
         self._rooms[room.id] = room
         self._room_events.setdefault(room.id, [])
         self._next_event_index.setdefault(room.id, 0)

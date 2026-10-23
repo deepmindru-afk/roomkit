@@ -26,7 +26,13 @@ from roomkit.models.store_filter import EventFilter, includes_blocked
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
-from roomkit.store.base import ConversationStore, address_linked, target_gone, without_address
+from roomkit.store.base import (
+    ConversationStore,
+    address_linked,
+    room_taken,
+    target_gone,
+    without_address,
+)
 from roomkit.store.postgres_mappers import (
     _row_to_binding,
     _row_to_event,
@@ -664,12 +670,14 @@ class PostgresStore(ConversationStore):
     async def create_room(self, room: Room) -> Room:
         with self._query_span("create_room", "rooms"):
             async with self._acquire() as conn:
-                await conn.execute(
+                # Never replaced: the room an id names is created once (§14.3).
+                created = await conn.execute(
                     "INSERT INTO rooms "
                     "(id, organization_id, status, event_count, latest_index,"
                     " metadata, timers, agent_response_policy,"
                     " created_at, updated_at, closed_at)"
-                    " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                    " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+                    " ON CONFLICT (id) DO NOTHING",
                     room.id,
                     room.organization_id,
                     room.status.value,
@@ -682,6 +690,8 @@ class PostgresStore(ConversationStore):
                     room.updated_at,
                     room.closed_at,
                 )
+        if created == "INSERT 0 0":
+            raise room_taken(room.id)
         return room
 
     async def get_room(self, room_id: str) -> Room | None:

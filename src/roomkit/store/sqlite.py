@@ -48,6 +48,7 @@ from roomkit.store.base import (
     ConversationStore,
     address_linked,
     link_target,
+    room_taken,
     target_gone,
     without_address,
 )
@@ -738,22 +739,26 @@ class SQLiteStore(ConversationStore):
 
     def _x_create_room(self, room: Room) -> Room:
         conn = self._db()
-        conn.execute(
-            "INSERT OR REPLACE INTO rooms(id, created_ts, organization_id, status,"
-            " delivered_index, data) VALUES(?, ?, ?, ?, ?, ?)",
-            (
-                room.id,
-                _ts(room.created_at),
-                room.organization_id,
-                str(room.status),
-                room.delivered_index,
-                room.model_dump_json(),
-            ),
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO event_sequences(room_id, next_index) VALUES(?, 0)",
-            (room.id,),
-        )
+        with _write_transaction(conn):
+            # Never REPLACE: the room an id names is created once (§14.3).
+            created = conn.execute(
+                "INSERT OR IGNORE INTO rooms(id, created_ts, organization_id, status,"
+                " delivered_index, data) VALUES(?, ?, ?, ?, ?, ?)",
+                (
+                    room.id,
+                    _ts(room.created_at),
+                    room.organization_id,
+                    str(room.status),
+                    room.delivered_index,
+                    room.model_dump_json(),
+                ),
+            )
+            if created.rowcount == 0:
+                raise room_taken(room.id)
+            conn.execute(
+                "INSERT OR IGNORE INTO event_sequences(room_id, next_index) VALUES(?, 0)",
+                (room.id,),
+            )
         return room
 
     async def get_room(self, room_id: str) -> Room | None:
