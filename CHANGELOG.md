@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A delivery status is dispatched within the organization the caller acts
+  for (RFC §17.2, RMK-930). `process_webhook(meta, channel_id,
+  organization_id=...)` scoped only an inbound message: a status that named no
+  room was routed among every organization's rooms, so on a channel shared by
+  two tenants one tenant's status reached the other's newer room, its context
+  and its `ON_DELIVERY_STATUS` hooks. `process_delivery_status(status, *,
+  organization_id=None)` takes the organization (unset: unscoped, as the
+  other kit calls); its routing reads that organization's rooms only, a room
+  the status names that is another organization's is not dispatched in, and
+  `process_webhook()` passes its organization to it.
+
 - A phone number is written in E.164 as RFC §5.7 gives the rules (RMK-930).
   The trunk prefix written `(0)` after a country code was kept:
   `+33 (0)6 12 34 56 78` gave `+330612345678`, another person than

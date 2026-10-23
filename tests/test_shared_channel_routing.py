@@ -32,6 +32,7 @@ from roomkit.models.event import TextContent
 from roomkit.models.identity import Identity
 from roomkit.models.room import RoomTimers
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.sms.meta import WebhookMeta
 from roomkit.providers.sms.mock import MockSMSProvider
 from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
@@ -540,6 +541,41 @@ class TestADeliveryStatus:
         )
 
         assert seen == []
+
+    async def test_a_status_reaches_its_tenants_room_only(self, store: ConversationStore) -> None:
+        """RFC §17.2: a webhook acting for an organization dispatches its
+        status in that organization's room, never another tenant's newer
+        room on the shared channel."""
+        shop = _Shop(store)
+        for org in ("acme", "globex"):
+            await shop.kit.create_room(room_id=f"{org}-alice", organization_id=org)
+            await shop.kit.attach_channel(
+                f"{org}-alice", "sms", metadata={"phone_number": ALICE}, organization_id=org
+            )
+        seen: list[str] = []
+
+        @shop.kit.hook(HookTrigger.ON_DELIVERY_STATUS)
+        async def record(status: Any, ctx: Any) -> None:
+            seen.append(ctx.room.id)
+
+        meta = WebhookMeta(
+            provider="telnyx",
+            sender="+15559999999",
+            recipient=ALICE,
+            body="",
+            external_id="m-1",
+            timestamp=None,
+            raw={},
+            direction="outbound",
+            event_type="message.delivered",
+        )
+        await shop.kit.process_webhook(meta, channel_id="sms", organization_id="acme")
+        named = DeliveryStatus(
+            provider="mock", message_id="m-2", status="sent", room_id="globex-alice"
+        )
+        await shop.kit.process_delivery_status(named, organization_id="acme")
+
+        assert seen == ["acme-alice"]
 
 
 class TestTheClaimFailsClosed:

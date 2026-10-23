@@ -284,8 +284,9 @@ class HooksApiMixin(HelpersMixin):
                 return {"ok": True}
 
         ``organization_id`` scopes the room an inbound message lands in, as
-        on :meth:`process_inbound` (RFC §17.2): a host that resolved its tenant
-        from the webhook names it here.
+        on :meth:`process_inbound`, and the room a delivery status is
+        dispatched in (RFC §17.2): a host that resolved its tenant from the
+        webhook names it here.
         """
         if meta.is_inbound:
             inbound = meta.to_inbound(channel_id)
@@ -293,10 +294,12 @@ class HooksApiMixin(HelpersMixin):
         elif meta.is_status:
             status = meta.to_status()
             status.channel_id = channel_id
-            await self.process_delivery_status(status)
+            await self.process_delivery_status(status, organization_id=organization_id)
         # else: unknown webhook type, silently acknowledge
 
-    async def process_delivery_status(self, status: DeliveryStatus) -> None:
+    async def process_delivery_status(
+        self, status: DeliveryStatus, *, organization_id: str | None = None
+    ) -> None:
         """Process a delivery status through the hook engine.
 
         Resolves the room from ``status.room_id`` or ``status.channel_id``
@@ -305,10 +308,14 @@ class HooksApiMixin(HelpersMixin):
 
         Args:
             status: The DeliveryStatus from meta.to_status().
+            organization_id: The organization the caller acts for (RFC
+                §17.2): a status that names no room is routed among that
+                organization's rooms only, every room when unset, as an
+                inbound message is.
         """
         room_id = status.room_id
         if not room_id and status.channel_id:
-            room_id = await self._room_of_status(status, status.channel_id)
+            room_id = await self._room_of_status(status, status.channel_id, organization_id)
 
         if not room_id:
             logger.warning(
@@ -324,6 +331,15 @@ class HooksApiMixin(HelpersMixin):
             if room is None:
                 return
             context = RoomContext(room=room, bindings=[])
+        if organization_id is not None and context.room.organization_id != organization_id:
+            # A room the status names that is another organization's is not
+            # found to the caller (RFC §17.2).
+            logger.warning(
+                "Cannot dispatch ON_DELIVERY_STATUS for message %s: room %s is not found",
+                status.message_id,
+                room_id,
+            )
+            return
 
         await self._hook_engine.run_async_hooks(
             room_id,
@@ -333,7 +349,9 @@ class HooksApiMixin(HelpersMixin):
             skip_event_filter=True,
         )
 
-    async def _room_of_status(self, status: DeliveryStatus, channel_id: str) -> str | None:
+    async def _room_of_status(
+        self, status: DeliveryStatus, channel_id: str, organization_id: str | None
+    ) -> str | None:
         """The room a delivery status belongs to, or ``None`` (RFC §10.4).
 
         The newest ACTIVE or PAUSED room whose binding of the channel names
@@ -343,9 +361,10 @@ class HooksApiMixin(HelpersMixin):
         correspondents, the oldest room is another customer's, and the
         status (its recipient's number among it) would be dispatched with
         that room's context. A status is no activity, and resumes no room
-        (§5.1).
+        (§5.1). Among the rooms of *organization_id* only, when one is named
+        (§17.2).
         """
-        active = RoomFilter(statuses=[RoomStatus.ACTIVE])
+        active = RoomFilter(statuses=[RoomStatus.ACTIVE], organization_id=organization_id)
         channel = self._channels.get(channel_id)
         # In the channel's form, as step 1 reads a sender (RFC §10.4).
         recipient = (
@@ -358,7 +377,10 @@ class HooksApiMixin(HelpersMixin):
                 channel_id,
                 recipient,
                 None,
-                RoomFilter(statuses=[RoomStatus.ACTIVE, RoomStatus.PAUSED]),
+                RoomFilter(
+                    statuses=[RoomStatus.ACTIVE, RoomStatus.PAUSED],
+                    organization_id=organization_id,
+                ),
                 recipient_key=channel.recipient_key if channel is not None else None,
             )
             if room_id is not None:
