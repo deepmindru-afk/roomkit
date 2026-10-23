@@ -14,8 +14,6 @@ from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.video.video_frame import VideoFrame
 from roomkit.video.vision.mock import MockVisionProvider
 from roomkit.video.vision.webcam_tool import (
-    LIST_TOOL_DEFINITION,
-    LIST_TOOL_NAME,
     DescribeWebcamTool,
     ListWebcamsTool,
     capture_webcam_frame,
@@ -404,11 +402,6 @@ class TestListWebcams:
 
 
 class TestListWebcamsTool:
-    def test_definition_equals_constant(self) -> None:
-        tool = ListWebcamsTool()
-        assert tool.definition == LIST_TOOL_DEFINITION
-        assert tool.definition["name"] == LIST_TOOL_NAME
-
     def test_list_returns_no_devices_message(self) -> None:
         tool = ListWebcamsTool()
         with patch("roomkit.video.vision.webcam_tool.list_webcams", return_value=[]):

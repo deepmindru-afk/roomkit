@@ -8,6 +8,7 @@ suites.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 
 import pytest
@@ -65,40 +66,44 @@ class TestGrants:
         assert grants.publish_screen_share_audio is False
 
     @pytest.mark.parametrize(
-        ("grants", "granted"),
+        ("make", "options", "granted"),
         [
             # The counterpart of the permissive defaults above: those exist because
             # the framework cannot know what a human will do. It knows exactly what
             # it configured the bot to do. Hiding is a disclosure choice, not a
             # privilege (§17.7 leaves it to the integrator), so least privilege
             # does not decide it: a bot is not hidden.
-            pytest.param(ConferenceGrants.for_bot(), {"subscribe": True}, id="listening-bot"),
+            pytest.param(ConferenceGrants.for_bot, {}, {"subscribe": True}, id="listening-bot"),
             pytest.param(
-                ConferenceGrants.for_bot(speaks=True),
+                ConferenceGrants.for_bot,
+                {"speaks": True},
                 {"subscribe": True, "publish_audio": True},
                 id="speaking-bot",
             ),
-            # Subscribing was the one privilege granted unconditionally, on the
-            # reasoning that receiving others' tracks is the bot's reason to be
-            # there. It is not: a channel with nothing to consume them subscribes
-            # to no track, and the grant is then permission to receive every
+            # Receiving the others' tracks is not the bot's reason to be there by
+            # itself: a channel with nothing to consume them subscribes to no
+            # track, and the grant would be permission to receive every
             # participant's media for nobody to read.
             pytest.param(
-                ConferenceGrants.for_bot(speaks=True, listens=False),
+                ConferenceGrants.for_bot,
+                {"speaks": True, "listens": False},
                 {"publish_audio": True},
                 id="speak-only-bot",
             ),
             # The Observer participation pattern (§12.10.6): a silent bot that is
             # also invisible.
             pytest.param(
-                ConferenceGrants.observer(), {"subscribe": True, "hidden": True}, id="observer"
+                ConferenceGrants.observer, {}, {"subscribe": True, "hidden": True}, id="observer"
             ),
         ],
     )
     def test_a_bot_asks_for_nothing_it_was_not_configured_to_do(
-        self, grants: ConferenceGrants, granted: dict[str, bool]
+        self,
+        make: Callable[..., ConferenceGrants],
+        options: dict[str, bool],
+        granted: dict[str, bool],
     ) -> None:
-        assert grants == replace(_NOTHING, **granted)
+        assert make(**options) == replace(_NOTHING, **granted)
 
 
 class TestTrack:

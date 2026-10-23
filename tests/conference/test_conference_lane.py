@@ -328,6 +328,7 @@ class TestStageOrder:
 
 
 class TestLaneIsolation:
+    @pytest.mark.wallclock
     async def test_a_slow_recognizer_on_one_track_does_not_delay_another(self) -> None:
         """The backend awaits its subscribers in sequence. Transcribing inside
         that callback made one provider's latency everyone's latency.

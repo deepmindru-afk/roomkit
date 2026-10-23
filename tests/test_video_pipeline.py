@@ -436,8 +436,3 @@ class TestPyAVVideoResizer:
         from roomkit.video.pipeline.resizer.pyav import PyAVVideoResizer
 
         assert PyAVVideoResizer().name == "PyAVVideoResizer"
-
-
-# ---------------------------------------------------------------------------
-# VideoPipelineConfig — new fields
-# ---------------------------------------------------------------------------

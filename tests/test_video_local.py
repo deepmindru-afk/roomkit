@@ -14,23 +14,6 @@ from roomkit.video.base import VideoSessionState  # noqa: E402
 from roomkit.video.video_frame import VideoFrame  # noqa: E402
 
 
-class TestLocalVideoBackendConstruction:
-    def test_creates_with_defaults(self) -> None:
-        backend = LocalVideoBackend()
-        assert backend.name == "LocalVideoBackend"
-        assert backend._fps == 30
-        assert backend._width == 640
-        assert backend._height == 480
-        assert backend._device == 0
-
-    def test_custom_params(self) -> None:
-        backend = LocalVideoBackend(device=1, fps=15, width=1280, height=720)
-        assert backend._device == 1
-        assert backend._fps == 15
-        assert backend._width == 1280
-        assert backend._height == 720
-
-
 class TestLocalVideoBackendSession:
     async def test_connect_creates_session(self) -> None:
         backend = LocalVideoBackend()

@@ -3025,12 +3025,12 @@ class TestProviderCloseDiscipline:
         await backend.simulate_participant_joined(ROOM, "p-alice")
 
         try:
+            # Ten budgets: a close that waited the provider out would meet the
+            # safety valve at three seconds, far past this.
             with pytest.raises(ConferenceCloseError) as failure:
-                await asyncio.wait_for(channel.close(), timeout=10.0)
+                await asyncio.wait_for(channel.close(), timeout=1.0)
 
-            # Returned while the VAD is still inside its close: the close did
-            # not wait it out, on the loop or off it.
-            assert not vad.release.is_set(), "the close waited for the blocking provider"
+            assert vad.closed_on is not None, "the provider's close was never called"
             assert "pipeline" in str(failure.value)
             assert vad.closed_on is not threading.current_thread(), (
                 "the pipeline's synchronous close ran on the event loop thread"
@@ -3092,10 +3092,10 @@ class TestRecorderCloseBudget:
         await _until(lambda: bool(recorder.handles))
 
         try:
-            # The finalization never returns: a close that waited for it would
-            # end on this timeout rather than in its own failure.
+            # The finalization never returns: a close that waited for it, or for
+            # the production budget, would end on this timeout instead.
             with pytest.raises(ConferenceCloseError) as failure:
-                await asyncio.wait_for(channel.close(), timeout=10.0)
+                await asyncio.wait_for(channel.close(), timeout=1.0)
 
             assert "record" in str(failure.value).lower()
         finally:

@@ -104,6 +104,13 @@ class TestOpenCVVideoRecorderInit:
             recorder = OpenCVVideoRecorder()
             assert recorder.name == "OpenCVVideoRecorder"
 
+    def test_builds_on_the_installed_opencv(self) -> None:
+        """The one test of the real import; every other one patches it."""
+        pytest.importorskip("cv2", reason="opencv not installed")
+        from roomkit.video.recorder.opencv import OpenCVVideoRecorder
+
+        assert OpenCVVideoRecorder().name == "OpenCVVideoRecorder"
+
     def test_import_error_raised(self) -> None:
         """_import_cv2 should raise clear ImportError when cv2 is missing."""
         from roomkit.video.recorder.opencv import _import_cv2

@@ -46,12 +46,3 @@ class TestLazyImports:
         """Verify __getattr__ works via the builtin getattr()."""
         cls = sources_mod.WebSocketSource
         assert cls.__name__ == "WebSocketSource"
-
-    def test_all_non_neonize_exports(self) -> None:
-        """All non-neonize names in __all__ should be importable."""
-        skip = {"WhatsAppPersonalSourceProvider"}
-        for name in sources_mod.__all__:
-            if name in skip:
-                continue
-            obj = getattr(sources_mod, name)
-            assert obj is not None

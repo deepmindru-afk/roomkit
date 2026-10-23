@@ -433,15 +433,3 @@ class TestRoomKitConsole:
         assert any(r.getMessage() == "captured message" for r in rkc._log_buffer.records_buffer)
 
         await rkc.stop()
-
-
-# ---------------------------------------------------------------------------
-# Import guard test
-# ---------------------------------------------------------------------------
-
-
-class TestImportGuard:
-    def test_module_exports(self):
-        from roomkit.console import RoomKitConsole
-
-        assert RoomKitConsole is not None

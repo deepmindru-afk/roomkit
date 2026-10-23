@@ -84,7 +84,7 @@ class TestDraining:
         await asyncio.sleep(0)
 
         started = time.monotonic()
-        await activity.drain(ROOM, timeout=0.05)
+        await asyncio.wait_for(activity.drain(ROOM, timeout=0.05), timeout=1.0)
         elapsed = time.monotonic() - started
 
         assert elapsed < 0.5, f"twenty wedged activities took {elapsed:.3f}s on a 0.05s budget"

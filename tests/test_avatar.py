@@ -6,6 +6,11 @@ from roomkit.video.avatar import MockAvatarProvider
 
 
 class TestMockAvatarProvider:
+    async def test_fps(self) -> None:
+        """What the AV channel paces its idle frames on."""
+        avatar = MockAvatarProvider(fps=25)
+        assert avatar.fps == 25
+
     async def test_not_started_initially(self) -> None:
         avatar = MockAvatarProvider()
         assert avatar.is_started is False

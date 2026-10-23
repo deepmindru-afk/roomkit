@@ -332,10 +332,3 @@ class TestPublicExports:
         assert IdentificationStatus is not None
         assert ParticipantRole is not None
         assert ParticipantStatus is not None
-
-    def test_all_matches_dir(self) -> None:
-        """Every name in __all__ should be importable."""
-        import roomkit
-
-        for name in roomkit.__all__:
-            assert hasattr(roomkit, name), f"__all__ lists {name} but it's not importable"

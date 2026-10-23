@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import re
 from pathlib import Path
+from types import ModuleType
 
 import roomkit
 
@@ -24,11 +25,6 @@ class TestPublicAPI:
             roomkit.__version__,
         ), f"unexpected __version__ {roomkit.__version__!r}"
 
-    def test_all_names_importable(self) -> None:
-        for name in roomkit.__all__:
-            obj = getattr(roomkit, name)
-            assert obj is not None, f"{name} is None"
-
     def test_core_classes_available(self) -> None:
         assert roomkit.RoomKit is not None
         assert roomkit.Channel is not None
@@ -36,26 +32,23 @@ class TestPublicAPI:
         assert roomkit.Room is not None
         assert roomkit.RoomEvent is not None
 
-    def test_every_name_a_subpackage_exports_resolves(self) -> None:
-        """A name in a subpackage's ``__all__`` that does not resolve fails only
-        whoever imports it, so each subpackage's list is read here, once.
+    def test_every_name_a_package_exports_resolves(self) -> None:
+        """A name in ``__all__`` that does not resolve fails only whoever imports
+        it, so the list of roomkit and of each of its subpackages is read here,
+        once.
 
-        A subpackage that needs an optional dependency the environment lacks is
-        left out; a roomkit module that is missing is a failure.
+        A package, or a lazily imported name, that needs an optional dependency
+        the environment lacks is left out; a missing roomkit module is a failure.
         """
         unresolved: dict[str, list[str]] = {}
         for init in sorted(_PACKAGE_ROOT.rglob("__init__.py")):
-            parts = init.parent.relative_to(_PACKAGE_ROOT).parts
-            if not parts:
-                continue
-            package = ".".join(("roomkit", *parts))
+            package = ".".join(("roomkit", *init.parent.relative_to(_PACKAGE_ROOT).parts))
             try:
                 module = importlib.import_module(package)
             except ModuleNotFoundError as missing:
-                if (missing.name or "").startswith("roomkit"):
-                    raise
+                _raise_unless_optional(missing)
                 continue
-            names = [n for n in getattr(module, "__all__", ()) if not hasattr(module, n)]
+            names = [n for n in getattr(module, "__all__", ()) if not _resolves(module, n)]
             if names:
                 unresolved[package] = names
 
@@ -91,3 +84,19 @@ class TestPublicAPI:
         assert issubclass(roomkit.RoomNotFoundError, Exception)
         assert issubclass(roomkit.ChannelNotFoundError, Exception)
         assert issubclass(roomkit.ChannelNotRegisteredError, Exception)
+
+
+def _resolves(module: ModuleType, name: str) -> bool:
+    """Whether ``name`` resolves on ``module``; an absent optional dependency counts."""
+    try:
+        getattr(module, name)
+    except ModuleNotFoundError as missing:
+        _raise_unless_optional(missing)
+    except AttributeError:
+        return False
+    return True
+
+
+def _raise_unless_optional(missing: ModuleNotFoundError) -> None:
+    if (missing.name or "").startswith("roomkit"):
+        raise missing
