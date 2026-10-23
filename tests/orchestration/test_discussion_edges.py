@@ -14,11 +14,13 @@ from roomkit.channels.ai import AIChannel
 from roomkit.core.framework import RoomKit
 from roomkit.core.hooks import HookRegistration
 from roomkit.memory.sliding_window import SlidingWindowMemory
+from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import (
     Access,
     ChannelCategory,
+    ChannelType,
     EventType,
     HookExecution,
     HookTrigger,
@@ -140,6 +142,42 @@ async def test_an_instruction_past_the_depth_limit_is_dropped_and_reported() -> 
     assert len(a.calls) == 0
     assert (SpeakQueueChange.INSTRUCTION_DROPPED, ("a",)) in seen
     assert _queue(kit).queue == () and not _queue(kit).waiting
+    await kit.close()
+
+
+class _Directing(AIChannel):
+    """An agent whose answer is an INSTRUCTION to ``b``: not the application's."""
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        if event.source.channel_id == self.channel_id:
+            return ChannelOutput.empty()
+        instruction = RoomEvent(
+            room_id=event.room_id,
+            type=EventType.INSTRUCTION,
+            source=EventSource(channel_id=self.channel_id, channel_type=ChannelType.AI),
+            content=TextContent(body="Summarise the incident for the customer."),
+            addressed_to=["b"],
+        )
+        return ChannelOutput(responded=True, response_events=[instruction])
+
+
+async def test_an_agent_s_answer_typed_instruction_gives_no_turn() -> None:
+    """Only the application issues instructions (RFC §8.5): one agent's
+    answer does not queue another for a turn in the application's name."""
+    b = _provider("b answers")
+    kit = RoomKit()
+    kit.register_channel(_People("chat"))
+    agents = [_Directing("a", provider=_provider()), AIChannel("b", provider=b)]
+    await kit.create_room(room_id="r1", orchestration=Discussion(agents))
+    await kit.attach_channel("r1", "chat")
+
+    await _say(kit, "@a go")
+    await _settle(kit)
+
+    assert b.calls == []
+    assert _queue(kit).queue == ()
     await kit.close()
 
 

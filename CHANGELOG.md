@@ -521,6 +521,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on. An instruction's address is its caller's (`InboundMessage.addressed_to`),
   never one its channel's parser set.
 
+- **BREAKING — a response typed INSTRUCTION does not re-enter** (RFC §8.5,
+  §10.1.1, RMK-930): only the application issues instructions. A channel's
+  response of type `INSTRUCTION` is dropped with a warning, and the
+  channel's other responses re-enter as usual. It was delivered unstored to
+  the room's transports, read by the agents it addressed as the
+  application's instruction, and queued by a discussion as a turn for them,
+  so one agent could direct another in the application's name. An agent
+  that wants another to act addresses its answer (`addressed_to`).
+
 - **BREAKING — `ParticipantRole.AGENT` is a human agent** (RFC §5, §6.4,
   §19.7.5 rule 2, RMK-911), an advisor or a support representative, as the
   role table says: a participant with that role takes part like a member.

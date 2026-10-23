@@ -165,8 +165,30 @@ def _answering(
     responder's, travelling outbound, in the trigger's room at the next
     depth, answering *trigger* unless it named the event it answers, under an
     id the pipeline gives (§8.1), with no idempotency key (§13.4), and
-    recording the instruction *trigger* is, if it is one (§10.1.1 step 6)."""
-    return [_as_response(resp, trigger, responder) for resp in responses]
+    recording the instruction *trigger* is, if it is one (§10.1.1 step 6).
+    One typed INSTRUCTION is dropped: it does not re-enter."""
+    return [
+        _as_response(resp, trigger, responder)
+        for resp in responses
+        if not _directs_an_agent(resp, trigger, responder)
+    ]
+
+
+def _directs_an_agent(resp: RoomEvent, trigger: RoomEvent, responder: ChannelBinding) -> bool:
+    """Whether *resp* is typed INSTRUCTION, which a response may not be (RFC
+    §8.5): only the application issues instructions (§10.1.1), and one
+    agent's answer would otherwise direct another in the application's name.
+    Logged once found; an agent that wants another to act addresses its
+    answer (§19.3.1)."""
+    if resp.type != EventType.INSTRUCTION:
+        return False
+    logger.warning(
+        "Channel %s returned a response typed INSTRUCTION: dropped, since only the "
+        "application issues instructions; its other responses re-enter",
+        responder.channel_id,
+        extra={"room_id": trigger.room_id, "channel_id": responder.channel_id},
+    )
+    return True
 
 
 def _as_response(resp: RoomEvent, trigger: RoomEvent, responder: ChannelBinding) -> RoomEvent:
