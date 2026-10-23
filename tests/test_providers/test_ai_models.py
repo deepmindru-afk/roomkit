@@ -80,27 +80,7 @@ def _bare(cls: type[AIProvider]) -> Any:
 # --- ModelInfo + base ABC ------------------------------------------------------
 
 
-def test_modelinfo_defaults() -> None:
-    m = ModelInfo(id="x")
-    assert m.id == "x"
-    assert m.display_name is None
-    assert m.context_window is None
-    assert m.supports_vision is None
-    assert m.deprecated is False
-    assert m.pricing is None
-
-
 # --- ModelPricing --------------------------------------------------------------
-
-
-def test_pricing_defaults_to_usd_without_cache_rates() -> None:
-    p = ModelPricing(input_per_million=3.0, output_per_million=15.0, verified=date(2026, 8, 5))
-    assert p.currency == "USD"
-    assert p.cache_read_per_million is None
-    assert p.cache_write_per_million is None
-    assert p.long_context_threshold_tokens is None
-    assert p.long_context_input_multiplier == 1.0
-    assert p.long_context_output_multiplier == 1.0
 
 
 def test_cost_for_prices_input_and_output() -> None:

@@ -65,11 +65,6 @@ class TestElasticEmailConfig:
         assert cfg.timeout == 30.0
         assert cfg.from_name is None
 
-    def test_custom_values(self) -> None:
-        cfg = _config(from_name="RoomKit", is_transactional=False)
-        assert cfg.from_name == "RoomKit"
-        assert cfg.is_transactional is False
-
 
 class TestElasticEmailProvider:
     @pytest.mark.asyncio

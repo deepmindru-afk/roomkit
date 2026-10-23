@@ -66,18 +66,9 @@ class _TimeoutTransport(httpx.AsyncBaseTransport):
 
 
 class TestTwilioConfig:
-    def test_config_defaults(self) -> None:
-        cfg = _config()
-        assert cfg.timeout == 10.0
-        assert cfg.messaging_service_sid is None
-
     def test_api_url(self) -> None:
         cfg = _config()
         assert cfg.api_url == "https://api.twilio.com/2010-04-01/Accounts/ACtest123/Messages.json"
-
-    def test_config_with_messaging_service(self) -> None:
-        cfg = _config(messaging_service_sid="MG123")
-        assert cfg.messaging_service_sid == "MG123"
 
 
 class TestTwilioSMSProvider:

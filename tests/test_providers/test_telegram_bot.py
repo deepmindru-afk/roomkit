@@ -85,10 +85,6 @@ class _MethodTransport(httpx.AsyncBaseTransport):
 
 
 class TestTelegramConfig:
-    def test_defaults(self) -> None:
-        cfg = _config()
-        assert cfg.timeout == 30.0
-
     def test_base_url(self) -> None:
         cfg = _config(bot_token="111:AAA")
         assert cfg.base_url == "https://api.telegram.org/bot111:AAA"

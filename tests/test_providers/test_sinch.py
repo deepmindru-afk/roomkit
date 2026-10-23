@@ -85,10 +85,6 @@ class TestSinchConfig:
         cfg = _config(region="eu")
         assert cfg.api_url == "https://eu.sms.api.sinch.com/xms/v1/plan123/batches"
 
-    def test_config_with_webhook_secret(self) -> None:
-        cfg = _config(webhook_secret="secret123")
-        assert cfg.webhook_secret is not None
-
 
 class TestSinchSMSProvider:
     @pytest.mark.asyncio

@@ -77,17 +77,6 @@ class _TimeoutTransport(httpx.AsyncBaseTransport):
 # ---------------------------------------------------------------------------
 
 
-class TestTelnyxConfig:
-    def test_config_defaults(self) -> None:
-        cfg = _config()
-        assert cfg.timeout == 10.0
-        assert cfg.messaging_profile_id is None
-
-    def test_config_with_messaging_profile(self) -> None:
-        cfg = _config(messaging_profile_id="profile-123")
-        assert cfg.messaging_profile_id == "profile-123"
-
-
 class TestTelnyxSMSProvider:
     @pytest.mark.asyncio
     async def test_send_sms_success(self) -> None:

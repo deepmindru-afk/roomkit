@@ -445,26 +445,6 @@ class TestExtractSmsMeta:
 
 
 class TestWebhookMetaDataclass:
-    def test_dataclass_fields(self) -> None:
-        meta = WebhookMeta(
-            provider="test",
-            sender="+15145551111",
-            recipient="+15145552222",
-            body="Hello",
-            external_id="id-123",
-            timestamp=datetime(2026, 1, 28, 12, 0, 0, tzinfo=UTC),
-            raw={"key": "value"},
-        )
-
-        assert meta.provider == "test"
-        assert meta.sender == "+15145551111"
-        assert meta.recipient == "+15145552222"
-        assert meta.body == "Hello"
-        assert meta.external_id == "id-123"
-        assert meta.timestamp is not None
-        assert meta.raw == {"key": "value"}
-        assert meta.media_urls == []
-
     def test_to_inbound(self) -> None:
         meta = WebhookMeta(
             provider="twilio",

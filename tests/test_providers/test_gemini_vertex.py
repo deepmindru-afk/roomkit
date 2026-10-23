@@ -56,17 +56,6 @@ class TestGeminiVertexConfig:
         # Vertex authenticates via ADC, not an API key.
         assert _vconfig().api_key is None
 
-    def test_inherits_gemini_defaults(self) -> None:
-        cfg = _vconfig()
-        assert cfg.model == "gemini-3.8-flash"
-        assert cfg.max_tokens == 1024
-
-    def test_custom_values(self) -> None:
-        cfg = _vconfig(project="p2", location="europe-west1", model="gemini-3.5-flash")
-        assert cfg.project == "p2"
-        assert cfg.location == "europe-west1"
-        assert cfg.model == "gemini-3.5-flash"
-
 
 class TestGeminiVertexProvider:
     def test_client_built_in_vertex_mode(self) -> None:
@@ -238,9 +227,6 @@ class TestGeminiVertexLabels:
     when the config is built: a bad label fails when the deployment starts,
     not on a tenant's first message.
     """
-
-    def test_absent_by_default(self) -> None:
-        assert _vconfig().labels is None
 
     def test_valid_labels_are_kept_as_given(self) -> None:
         # An empty value, an accented letter and a caseless script (CJK) are

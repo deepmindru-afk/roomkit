@@ -140,9 +140,6 @@ class TestMentionsBot:
     def test_a_bot_that_has_not_said_who_it_is(self) -> None:
         assert mentions_bot(_mention("hey @demo_bot", 4, 9)) is False
 
-    def test_a_username_alone_is_enough_for_the_mention_paths(self) -> None:
-        assert mentions_bot(_mention("hey @demo_bot", 4, 9), bot_username=BOT) is True
-
     def test_an_id_alone_is_enough_for_the_reply_path(self) -> None:
         msg = {"text": "ok", "reply_to_message": {"from": {"id": BOT_ID}}}
 

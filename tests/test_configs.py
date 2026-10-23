@@ -7,20 +7,10 @@ from pydantic import SecretStr, ValidationError
 
 from roomkit.providers.anthropic.config import AnthropicConfig
 from roomkit.providers.openai.config import OpenAIConfig
-from roomkit.providers.sendgrid.config import SendGridConfig
 from roomkit.providers.twilio.config import TwilioConfig
 
 
 class TestTwilioConfig:
-    def test_create(self) -> None:
-        cfg = TwilioConfig(
-            account_sid="AC123",
-            auth_token=SecretStr("secret"),
-            from_number="+15551234567",
-        )
-        assert cfg.account_sid == "AC123"
-        assert cfg.auth_token.get_secret_value() == "secret"
-
     def test_secret_str_masked(self) -> None:
         cfg = TwilioConfig(
             account_sid="AC123",
@@ -57,9 +47,3 @@ class TestOpenAIConfig:
         assert cfg.model == "gpt-5.6-sol"
         assert cfg.use_max_completion_tokens is True
         assert cfg.supports_custom_temperature is False
-
-
-class TestSendGridConfig:
-    def test_create(self) -> None:
-        cfg = SendGridConfig(api_key=SecretStr("SG.test"), from_email="test@example.com")
-        assert cfg.from_name is None

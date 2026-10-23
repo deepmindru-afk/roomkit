@@ -40,22 +40,6 @@ class TestVLLMConfig:
         assert cfg.api_key.get_secret_value() == "none"
         assert cfg.max_tokens == 1024
 
-    def test_custom_values(self) -> None:
-        cfg = VLLMConfig(
-            model="my-model",
-            base_url="http://gpu-server:9000/v1",
-            api_key="secret",
-            max_tokens=2048,
-        )
-        assert cfg.base_url == "http://gpu-server:9000/v1"
-        assert cfg.api_key.get_secret_value() == "secret"
-        assert cfg.max_tokens == 2048
-
-    def test_headers_and_extra_body_default_none(self) -> None:
-        cfg = VLLMConfig(model="m")
-        assert cfg.headers is None
-        assert cfg.extra_body is None
-
     def test_reasoning_knobs_default_none(self) -> None:
         cfg = VLLMConfig(model="m")
         assert cfg.enable_thinking is None

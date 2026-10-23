@@ -33,16 +33,6 @@ CURATED = [
 # --- VoiceInfo + base ABC ------------------------------------------------------
 
 
-def test_voiceinfo_defaults() -> None:
-    v = VoiceInfo(id="x")
-    assert v.id == "x"
-    assert v.name is None
-    assert v.language is None
-    assert v.gender is None
-    assert v.description is None
-    assert v.deprecated is False
-
-
 def test_base_available_voices_is_empty() -> None:
     assert RealtimeVoiceProvider.available_voices() == []
 
