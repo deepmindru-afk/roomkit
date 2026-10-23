@@ -25,32 +25,6 @@ def _connect_request(path: str = "/audio", stream_id: int = 0) -> WebTransportCo
 # ---------------------------------------------------------------------------
 
 
-class TestDatagramProtocol:
-    def test_header_encodes_sample_rate(self) -> None:
-        """Sample rate 16000 encodes as 160 in the 2-byte header."""
-        header = _HEADER_STRUCT.pack(16000 // 100)
-        assert len(header) == _HEADER_SIZE
-        assert _HEADER_STRUCT.unpack(header)[0] == 160
-
-    def test_header_encodes_48000(self) -> None:
-        """Sample rate 48000 encodes as 480."""
-        header = _HEADER_STRUCT.pack(48000 // 100)
-        assert _HEADER_STRUCT.unpack(header)[0] == 480
-
-    def test_header_encodes_8000(self) -> None:
-        """Sample rate 8000 encodes as 80."""
-        header = _HEADER_STRUCT.pack(8000 // 100)
-        assert _HEADER_STRUCT.unpack(header)[0] == 80
-
-    def test_header_roundtrip(self) -> None:
-        """Encode then decode produces original value."""
-        for rate in (8000, 16000, 24000, 44100, 48000):
-            encoded = rate // 100
-            packed = _HEADER_STRUCT.pack(encoded)
-            decoded = _HEADER_STRUCT.unpack(packed)[0] * 100
-            assert decoded == rate
-
-
 # ---------------------------------------------------------------------------
 # Backend construction and properties
 # ---------------------------------------------------------------------------

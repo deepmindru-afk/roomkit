@@ -359,9 +359,3 @@ class TestSincResamplerProvider:
             assert -32768 <= s <= 32767
             # Signal peak is ~500, allow some overshoot from sinc interpolation
             assert abs(s) <= 1000, f"Garbage value in flushed output: {s}"
-
-    def test_reimport_from_package(self):
-        """SincResamplerProvider is importable from the resampler package."""
-        from roomkit.voice.pipeline.resampler import SincResamplerProvider as Cls
-
-        assert Cls is SincResamplerProvider

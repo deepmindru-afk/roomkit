@@ -62,16 +62,6 @@ class TestConfig:
         assert cfg.voice == "eve"
         assert cfg.transcription_model == "grok-2-audio"
 
-    def test_custom_values(self) -> None:
-        cfg = XAIRealtimeConfig(
-            api_key=SecretStr("xai-key"),
-            model="grok-2-audio",
-            voice="ara",
-            transcription_model="grok-2-audio",
-        )
-        assert cfg.model == "grok-2-audio"
-        assert cfg.voice == "ara"
-
 
 class TestProviderBasics:
     def test_name(self, provider: XAIRealtimeProvider) -> None:

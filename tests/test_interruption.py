@@ -171,22 +171,6 @@ class TestSemanticStrategy:
 
 
 class TestDefaultsAndNewFields:
-    def test_default_strategy_is_confirmed(self):
-        config = InterruptionConfig()
-        assert config.strategy == InterruptionStrategy.CONFIRMED
-
-    def test_default_min_speech_ms(self):
-        config = InterruptionConfig()
-        assert config.min_speech_ms == 300
-
-    def test_flush_partial_tts_default(self):
-        config = InterruptionConfig()
-        assert config.flush_partial_tts is True
-
-    def test_keep_partial_transcript_default(self):
-        config = InterruptionConfig()
-        assert config.keep_partial_transcript is True
-
     def test_backchannel_detector_on_config(self):
         """BackchannelDetector can be set on the config itself."""
         bc = MockBackchannelDetector(

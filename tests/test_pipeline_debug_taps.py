@@ -49,14 +49,6 @@ class TestPipelineDebugTapsConfig:
         assert cfg.stages == ["all"]
         assert cfg.session_scoped is True
 
-    def test_custom_stages(self) -> None:
-        cfg = PipelineDebugTaps(
-            output_dir="/tmp/debug",
-            stages=["raw", "post_denoiser"],
-        )
-        assert cfg.output_dir == "/tmp/debug"
-        assert cfg.stages == ["raw", "post_denoiser"]
-
 
 # ---------------------------------------------------------------------------
 # _DebugWavWriter

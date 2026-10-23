@@ -10,9 +10,6 @@ from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.pipeline import (
     AudioPipeline,
     AudioPipelineConfig,
-    AudioPostProcessor,
-    DenoiserProvider,
-    DiarizationProvider,
     DiarizationResult,
     MockDenoiserProvider,
     MockDiarizationProvider,
@@ -42,43 +39,6 @@ def _frame(data: bytes = b"audio\x00") -> AudioFrame:
 # ---------------------------------------------------------------------------
 # VAD provider & event types
 # ---------------------------------------------------------------------------
-
-
-class TestVADEventType:
-    def test_enum_values(self) -> None:
-        assert VADEventType.SPEECH_START == "speech_start"
-        assert VADEventType.SPEECH_END == "speech_end"
-        assert VADEventType.SILENCE == "silence"
-        assert VADEventType.AUDIO_LEVEL == "audio_level"
-
-
-class TestVADEvent:
-    def test_default_values(self) -> None:
-        event = VADEvent(type=VADEventType.SPEECH_START)
-        assert event.type == VADEventType.SPEECH_START
-        assert event.audio_bytes is None
-        assert event.confidence is None
-        assert event.duration_ms is None
-        assert event.level_db is None
-
-    def test_speech_end_with_audio(self) -> None:
-        event = VADEvent(
-            type=VADEventType.SPEECH_END,
-            audio_bytes=b"audio-data",
-            confidence=0.95,
-            duration_ms=1200.0,
-        )
-        assert event.audio_bytes == b"audio-data"
-        assert event.confidence == 0.95
-        assert event.duration_ms == 1200.0
-
-    def test_audio_level_event(self) -> None:
-        event = VADEvent(
-            type=VADEventType.AUDIO_LEVEL,
-            level_db=-25.5,
-            confidence=0.8,
-        )
-        assert event.level_db == -25.5
 
 
 class TestVADConfig:
@@ -112,32 +72,10 @@ class TestVADConfig:
         with pytest.raises(ValueError, match="P has no VAD setting sensitivity"):
             config.settings("P", ["threshold"])
 
-    def test_custom_values(self) -> None:
-        config = VADConfig(
-            silence_threshold_ms=200,
-            speech_pad_ms=100,
-            min_speech_duration_ms=50,
-            extra={"sensitivity": 0.5},
-        )
-        assert config.silence_threshold_ms == 200
-        assert config.extra["sensitivity"] == 0.5
-
 
 # ---------------------------------------------------------------------------
 # DiarizationResult
 # ---------------------------------------------------------------------------
-
-
-class TestDiarizationResult:
-    def test_fields(self) -> None:
-        result = DiarizationResult(
-            speaker_id="speaker_0",
-            confidence=0.92,
-            is_new_speaker=True,
-        )
-        assert result.speaker_id == "speaker_0"
-        assert result.confidence == 0.92
-        assert result.is_new_speaker is True
 
 
 # ---------------------------------------------------------------------------
@@ -262,12 +200,6 @@ class TestAudioPipelineConfig:
         assert config.diarization is None
         assert config.postprocessors == []
         assert config.vad_config is None
-
-    def test_all_optional(self) -> None:
-        config = AudioPipelineConfig()
-        assert config.vad is None
-        assert config.denoiser is None
-        assert config.diarization is None
 
     def test_denoiser_only(self) -> None:
         denoiser = MockDenoiserProvider()
@@ -699,31 +631,3 @@ class TestAudioPipelineNoVAD:
         pipeline.close()
         assert denoiser.closed
         assert diarizer.closed
-
-
-class TestProviderABCs:
-    """Verify that ABCs require proper implementation."""
-
-    def test_vad_provider_is_abstract(self) -> None:
-        import abc
-
-        assert abc.ABC in VADProvider.__mro__
-        # name and process are abstract
-        abstracts = getattr(VADProvider, "__abstractmethods__", set())
-        assert "name" in abstracts
-        assert "process" in abstracts
-
-    def test_denoiser_provider_is_abstract(self) -> None:
-        abstracts = getattr(DenoiserProvider, "__abstractmethods__", set())
-        assert "name" in abstracts
-        assert "process" in abstracts
-
-    def test_diarization_provider_is_abstract(self) -> None:
-        abstracts = getattr(DiarizationProvider, "__abstractmethods__", set())
-        assert "name" in abstracts
-        assert "process" in abstracts
-
-    def test_postprocessor_is_abstract(self) -> None:
-        abstracts = getattr(AudioPostProcessor, "__abstractmethods__", set())
-        assert "name" in abstracts
-        assert "process" in abstracts

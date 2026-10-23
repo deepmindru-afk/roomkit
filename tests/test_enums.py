@@ -145,6 +145,19 @@ class TestHookTrigger:
         assert HookTrigger.ON_VIDEO_TRACK_REMOVED == "on_video_track_removed"
         assert HookTrigger.ON_SCREEN_SHARE_STARTED == "on_screen_share_started"
         assert HookTrigger.ON_SCREEN_SHARE_STOPPED == "on_screen_share_stopped"
+        assert HookTrigger.ON_PROTOCOL_TRACE == "on_protocol_trace"
+        assert HookTrigger.ON_REALTIME_DELEGATION == "on_realtime_delegation"
+        assert HookTrigger.ON_SPEECH_START == "on_speech_start"
+        assert HookTrigger.ON_SPEECH_END == "on_speech_end"
+        assert HookTrigger.ON_TRANSCRIPTION == "on_transcription"
+        assert HookTrigger.ON_PARTIAL_TRANSCRIPTION == "on_partial_transcription"
+        assert HookTrigger.BEFORE_TTS == "before_tts"
+        assert HookTrigger.AFTER_TTS == "after_tts"
+        assert HookTrigger.ON_TTS_CANCELLED == "on_tts_cancelled"
+        assert HookTrigger.ON_BARGE_IN == "on_barge_in"
+        assert HookTrigger.ON_VAD_SILENCE == "on_vad_silence"
+        assert HookTrigger.ON_VAD_AUDIO_LEVEL == "on_vad_audio_level"
+        assert HookTrigger.ON_SPEAKER_CHANGE == "on_speaker_change"
 
     def test_count(self) -> None:
         # 82, then the three identity verification triggers (RFC §11.7).

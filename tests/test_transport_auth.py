@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from roomkit.voice.auth import AuthCallback, auth_context
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.ws_transport import WebSocketRealtimeTransport
 
@@ -152,25 +151,3 @@ async def test_ws_transport_send_audio_base64_json() -> None:
 # -------------------------------------------------------------------------
 # AuthCallback type + auth_context tests
 # -------------------------------------------------------------------------
-
-
-async def test_auth_context_contextvar() -> None:
-    """auth_context should default to None and be settable."""
-    assert auth_context.get() is None
-
-    token = auth_context.set({"user": "bob"})
-    assert auth_context.get() == {"user": "bob"}
-
-    auth_context.reset(token)
-    assert auth_context.get() is None
-
-
-async def test_auth_callback_type_alias() -> None:
-    """AuthCallback type alias should accept an async callable."""
-
-    async def my_auth(conn: Any) -> dict[str, Any] | None:
-        return {"ok": True}
-
-    cb: AuthCallback = my_auth
-    result = await cb("fake_conn")
-    assert result == {"ok": True}

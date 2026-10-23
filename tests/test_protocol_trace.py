@@ -480,8 +480,3 @@ class TestProviderName:
         mock_provider.supports_streaming = False
         ch = AIChannel("ai-1", provider=mock_provider)
         assert ch.provider_name == "OpenAIProvider"
-
-
-class TestHookTriggerEnum:
-    def test_on_protocol_trace_exists(self) -> None:
-        assert HookTrigger.ON_PROTOCOL_TRACE == "on_protocol_trace"

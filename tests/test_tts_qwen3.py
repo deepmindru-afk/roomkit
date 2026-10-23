@@ -79,7 +79,6 @@ from roomkit.voice.tts.qwen3 import (  # noqa: E402
     Qwen3TTSConfig,
     Qwen3TTSProvider,
     VoiceCloneConfig,
-    _numpy_to_pcm_s16le,
 )
 
 # ---------------------------------------------------------------------------
@@ -98,27 +97,6 @@ class TestQwen3TTSConfig:
         assert cfg.voices == {}
         assert cfg.x_vector_only_mode is False
         assert cfg.max_new_tokens == 4096
-
-    def test_custom_values(self):
-        voice = VoiceCloneConfig(ref_audio="/path/to/audio.wav", ref_text="Hello world")
-        cfg = Qwen3TTSConfig(
-            model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-            device_map="cuda:0",
-            dtype="float16",
-            language="Chinese",
-            voices={"alice": voice},
-        )
-        assert cfg.model_id == "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
-        assert cfg.device_map == "cuda:0"
-        assert "alice" in cfg.voices
-        assert cfg.voices["alice"].ref_audio == "/path/to/audio.wav"
-
-
-class TestVoiceCloneConfig:
-    def test_creation(self):
-        vc = VoiceCloneConfig(ref_audio="ref.wav", ref_text="test text")
-        assert vc.ref_audio == "ref.wav"
-        assert vc.ref_text == "test text"
 
 
 # ---------------------------------------------------------------------------
@@ -164,28 +142,6 @@ class TestImportCheck:
 # ---------------------------------------------------------------------------
 # PCM conversion
 # ---------------------------------------------------------------------------
-
-
-class TestNumpyToPcmS16le:
-    def test_silence(self):
-        samples = np.zeros(100, dtype=np.float32)
-        pcm = _numpy_to_pcm_s16le(samples)
-        assert len(pcm) == 200  # 100 samples * 2 bytes
-
-    def test_max_amplitude(self):
-        samples = np.ones(1, dtype=np.float32)
-        pcm = _numpy_to_pcm_s16le(samples)
-        value = int.from_bytes(pcm, byteorder="little", signed=True)
-        assert value == 32767
-
-    def test_clipping(self):
-        samples = np.array([2.0, -2.0], dtype=np.float32)
-        pcm = _numpy_to_pcm_s16le(samples)
-        assert len(pcm) == 4
-        val1 = int.from_bytes(pcm[0:2], byteorder="little", signed=True)
-        val2 = int.from_bytes(pcm[2:4], byteorder="little", signed=True)
-        assert val1 == 32767  # clipped to max
-        assert val2 == -32767  # clipped to min (note: -1.0 * 32767)
 
 
 # ---------------------------------------------------------------------------

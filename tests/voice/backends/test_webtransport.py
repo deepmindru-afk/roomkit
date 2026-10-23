@@ -189,17 +189,6 @@ class TestDatagramHeaderEncoding:
         assert len(encoded) == 2
         assert _HEADER_STRUCT.unpack(encoded)[0] == 160
 
-    def test_48khz_header(self):
-        """48000 Hz → 480 as uint16 LE."""
-        encoded = _HEADER_STRUCT.pack(48000 // 100)
-        assert _HEADER_STRUCT.unpack(encoded)[0] == 480
-
-    def test_roundtrip(self):
-        for rate in (8000, 16000, 24000, 44100, 48000):
-            encoded = _HEADER_STRUCT.pack(rate // 100)
-            decoded = _HEADER_STRUCT.unpack(encoded)[0] * 100
-            assert decoded == rate
-
 
 class TestWebTransportBackendConnect:
     async def test_connect_creates_session(self):

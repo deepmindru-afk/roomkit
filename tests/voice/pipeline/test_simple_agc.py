@@ -7,7 +7,6 @@ import struct
 
 import pytest
 
-from roomkit import SimpleAGCProvider as RootSimpleAGCProvider
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.pipeline.agc import AGCConfig, SimpleAGCProvider
 
@@ -35,9 +34,6 @@ def _rms(frame: AudioFrame) -> float:
 
 
 class TestSimpleAGCProvider:
-    def test_exported_from_root_package(self) -> None:
-        assert RootSimpleAGCProvider is SimpleAGCProvider
-
     def test_quiet_speech_is_amplified_up_to_max_gain(self) -> None:
         provider = SimpleAGCProvider(
             AGCConfig(

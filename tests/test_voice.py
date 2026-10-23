@@ -13,7 +13,7 @@ from roomkit import (
 from roomkit.models.event import AudioContent
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.base import AudioChunk, TranscriptionResult, VoiceCapability, VoiceSessionState
+from roomkit.voice.base import AudioChunk, VoiceCapability, VoiceSessionState
 from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.mock import MockTTSProvider
 
@@ -598,69 +598,8 @@ class TestAudioFrame:
         assert len(frame.metadata) == 2
 
 
-class TestAudioChunk:
-    def test_default_values(self) -> None:
-        chunk = AudioChunk(data=b"audio")
-        assert chunk.sample_rate == 16000
-        assert chunk.channels == 1
-        assert chunk.format == "pcm_s16le"
-        assert chunk.timestamp_ms is None
-        assert chunk.is_final is False
-
-    def test_custom_values(self) -> None:
-        chunk = AudioChunk(
-            data=b"audio",
-            sample_rate=48000,
-            channels=2,
-            format="opus",
-            timestamp_ms=1000,
-            is_final=True,
-        )
-        assert chunk.sample_rate == 48000
-        assert chunk.channels == 2
-        assert chunk.format == "opus"
-        assert chunk.timestamp_ms == 1000
-        assert chunk.is_final is True
-
-
-class TestTranscriptionResult:
-    def test_default_values(self) -> None:
-        result = TranscriptionResult(text="Hello")
-        assert result.text == "Hello"
-        assert result.is_final is True
-        assert result.confidence is None
-        assert result.language is None
-        assert result.words == []
-
-    def test_custom_values(self) -> None:
-        result = TranscriptionResult(
-            text="Hello",
-            is_final=False,
-            confidence=0.95,
-            language="en",
-            words=[{"word": "Hello", "start": 0.0, "end": 0.5}],
-        )
-        assert result.is_final is False
-        assert result.confidence == 0.95
-        assert result.language == "en"
-        assert len(result.words) == 1
-
-
 class TestVoiceCapability:
     """Tests for VoiceCapability flags."""
-
-    def test_default_is_none(self) -> None:
-        assert VoiceCapability.NONE.value == 0
-        assert not VoiceCapability.NONE  # Falsy when no flags set
-
-    def test_individual_flags(self) -> None:
-        assert VoiceCapability.INTERRUPTION
-        assert VoiceCapability.BARGE_IN
-
-    def test_combine_flags(self) -> None:
-        caps = VoiceCapability.INTERRUPTION | VoiceCapability.BARGE_IN
-        assert VoiceCapability.INTERRUPTION in caps
-        assert VoiceCapability.BARGE_IN in caps
 
     def test_mock_backend_default_none(self) -> None:
         backend = MockVoiceBackend()

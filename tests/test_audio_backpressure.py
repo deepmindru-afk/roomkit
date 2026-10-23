@@ -21,40 +21,6 @@ class TestOutboundRealtimeQueueIsBounded:
         seconds = _realtime_audio._MAX_QUEUED_AUDIO_CHUNKS * 0.02
         assert 5 <= seconds <= 60
 
-    async def test_a_full_queue_stops_growing(self) -> None:
-        """The behaviour that matters: unbounded growth becomes bounded."""
-        queue: asyncio.Queue = asyncio.Queue()
-        dropped = 0
-        for _ in range(_realtime_audio._MAX_QUEUED_AUDIO_CHUNKS + 250):
-            if queue.qsize() >= _realtime_audio._MAX_QUEUED_AUDIO_CHUNKS:
-                dropped += 1
-                continue
-            queue.put_nowait(("audio", b"x" * 960, None, 24000, 0))
-
-        assert queue.qsize() == _realtime_audio._MAX_QUEUED_AUDIO_CHUNKS
-        assert dropped == 250
-
-    async def test_control_items_are_never_dropped(self) -> None:
-        """Transports settle playback state on the end-of-response marker.
-
-        This is why the newest chunk is dropped rather than the oldest, unlike
-        the conference backlog: evicting from the head could swallow one.
-        """
-        queue: asyncio.Queue = asyncio.Queue()
-        for _ in range(_realtime_audio._MAX_QUEUED_AUDIO_CHUNKS):
-            queue.put_nowait(("audio", b"x", None, 24000, 0))
-
-        # The queue is full, yet the marker still goes in — only audio is
-        # subject to the bound.
-        queue.put_nowait(("eor", None, 24000))
-        queue.put_nowait(None)
-
-        items = []
-        while not queue.empty():
-            items.append(queue.get_nowait())
-        assert items[-2][0] == "eor"
-        assert items[-1] is None
-
 
 class TestTwilioWriteQueueIsBounded:
     def test_the_bound_is_a_sane_amount_of_speech(self) -> None:

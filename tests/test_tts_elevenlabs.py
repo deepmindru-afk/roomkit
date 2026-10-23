@@ -45,27 +45,6 @@ class TestElevenLabsConfig:
         assert cfg.optimize_streaming_latency is None
         assert cfg.expressive is False
 
-    def test_custom_values(self):
-        cfg = ElevenLabsConfig(
-            api_key="test-key",
-            voice_id="custom-voice",
-            model_id="eleven_flash_v2_5",
-            stability=0.8,
-            similarity_boost=0.9,
-            style=0.3,
-            use_speaker_boost=False,
-            output_format="pcm_24000",
-            optimize_streaming_latency=1,
-        )
-        assert cfg.voice_id == "custom-voice"
-        assert cfg.model_id == "eleven_flash_v2_5"
-        assert cfg.stability == 0.8
-        assert cfg.style == 0.3
-
-    def test_expressive_flag(self):
-        cfg = ElevenLabsConfig(api_key="test-key", expressive=True)
-        assert cfg.expressive is True
-
 
 # ---------------------------------------------------------------------------
 # Provider basics

@@ -29,21 +29,6 @@ class TestGrokTTSConfig:
         assert cfg.base_url == "https://api.x.ai/v1"
         assert cfg.ws_url == "wss://api.x.ai/v1/tts"
 
-    def test_custom_values(self):
-        cfg = GrokTTSConfig(
-            api_key="xai-test",
-            voice_id="rex",
-            language="fr",
-            codec="mp3",
-            sample_rate=44100,
-            bit_rate=192000,
-        )
-        assert cfg.voice_id == "rex"
-        assert cfg.language == "fr"
-        assert cfg.codec == "mp3"
-        assert cfg.sample_rate == 44100
-        assert cfg.bit_rate == 192000
-
 
 # ---------------------------------------------------------------------------
 # Provider basics

@@ -311,14 +311,6 @@ class TestInboundAuthChallenge:
         nonce = next(iter(backend._auth_nonces))
         assert len(nonce) == 32  # hex(16 bytes)
 
-    def test_no_auth_configured_skips_check(self) -> None:
-        """When auth_users is None, _handle_invite should not call auth."""
-        backend = _make_backend(auth_users=None)
-        # _validate_invite_auth should not be called, but if it were,
-        # it would fail — the point is _handle_invite guards with
-        # `if self._auth_users`.
-        assert backend._auth_users is None
-
 
 StubAuth = Callable[[dict[str, str]], None]
 

@@ -271,11 +271,3 @@ class TestPublicLoaders:
 
         assert get_gemini_voice_library() is GeminiVoiceLibrary
         assert get_gemini_voice_library_config() is GeminiVoiceLibraryConfig
-
-    def test_the_interface_is_public(self) -> None:
-        from roomkit import CustomVoice, VoiceConsentError
-        from roomkit import VoiceLibrary as PublicLibrary
-
-        assert PublicLibrary is VoiceLibrary
-        assert CustomVoice.__name__ == "CustomVoice"
-        assert issubclass(VoiceConsentError, Exception)

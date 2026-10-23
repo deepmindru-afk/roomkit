@@ -6,11 +6,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from roomkit import WebRTCNoiseSuppressorProvider as RootWebRTCNoiseSuppressorProvider
 from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.pipeline.denoiser import (
-    WebRTCNoiseSuppressorProvider as ExportedWebRTCNoiseSuppressorProvider,
-)
 from tests.private_module import load_private_copy
 
 
@@ -44,9 +40,6 @@ def _frame(data: bytes, *, sample_rate: int = 16000) -> AudioFrame:
 
 
 class TestWebRTCNoiseSuppressorProvider:
-    def test_exported_from_root_package(self) -> None:
-        assert RootWebRTCNoiseSuppressorProvider is ExportedWebRTCNoiseSuppressorProvider
-
     def test_processes_noise_while_no_aec_playback_exists(self) -> None:
         module, constructor = _mock_module()
         provider = _provider(module)

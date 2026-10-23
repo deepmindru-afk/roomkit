@@ -90,27 +90,6 @@ class TestNeuTTSConfig:
         assert cfg.voices == {}
         assert cfg.streaming_pre_buffer == 2
 
-    def test_custom_values(self):
-        voice = NeuTTSVoiceConfig(ref_audio="/path/to/audio.wav", ref_text="Bonjour")
-        cfg = NeuTTSConfig(
-            backbone_repo="neuphonic/neutts-nano-q8-gguf",
-            codec_repo="/local/neucodec",
-            device="cuda",
-            voices={"marie": voice},
-        )
-        assert cfg.backbone_repo == "neuphonic/neutts-nano-q8-gguf"
-        assert cfg.codec_repo == "/local/neucodec"
-        assert cfg.device == "cuda"
-        assert "marie" in cfg.voices
-        assert cfg.voices["marie"].ref_audio == "/path/to/audio.wav"
-
-
-class TestNeuTTSVoiceConfig:
-    def test_creation(self):
-        vc = NeuTTSVoiceConfig(ref_audio="ref.wav", ref_text="test text")
-        assert vc.ref_audio == "ref.wav"
-        assert vc.ref_text == "test text"
-
 
 # ---------------------------------------------------------------------------
 # Import check

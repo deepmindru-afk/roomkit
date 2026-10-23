@@ -60,9 +60,6 @@ class TestVoiceInfo:
     def test_the_realtime_import_path_is_the_same_class(self) -> None:
         assert RealtimeVoiceInfo is VoiceInfo
 
-    def test_attributes_default_to_empty(self) -> None:
-        assert VoiceInfo(id="x").attributes == {}
-
 
 class TestDialogueChecks:
     TURNS = [

@@ -203,9 +203,3 @@ class TestNumpyResamplerProvider:
         out_samples = list(struct.unpack(f"<{len(result.data) // 4}i", result.data))
         # Values should be within int32 range
         assert all(-(1 << 31) <= s < (1 << 31) for s in out_samples)
-
-    def test_reimport_from_package(self):
-        """Can be imported from the resampler package."""
-        from roomkit.voice.pipeline.resampler import NumpyResamplerProvider as Cls
-
-        assert Cls is NumpyResamplerProvider

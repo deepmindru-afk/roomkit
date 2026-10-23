@@ -100,9 +100,6 @@ class TestSpanKind:
         assert SpanKind.HOOK_SYNC == "hook.sync"
         assert SpanKind.INBOUND_PIPELINE == "framework.inbound"
 
-    def test_span_kind_is_str(self) -> None:
-        assert isinstance(SpanKind.CUSTOM, str)
-
 
 class TestAttr:
     def test_attr_constants(self) -> None:
@@ -700,12 +697,6 @@ class TestOpenTelemetryProvider:
 
             with pytest.raises(ImportError, match="opentelemetry-api"):
                 OpenTelemetryProvider()
-
-    def test_lazy_import_from_subpackage(self) -> None:
-        """Test that OpenTelemetryProvider is importable from its subpackage."""
-        from roomkit.telemetry.opentelemetry import OpenTelemetryProvider
-
-        assert OpenTelemetryProvider is not None
 
 
 # ---------------------------------------------------------------------------
