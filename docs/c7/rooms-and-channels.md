@@ -379,7 +379,10 @@ A soft-deleted event stays in every history a channel is handed, its content
 withheld: an empty text in place of what was said and no `source.raw_payload`,
 its id, index, thread, metadata and `channel_data` kept, so the delete that
 follows names an event the reader holds. An edit of a deleted event has its new
-content withheld alike. `visible_events()`, the context a channel parses a
+content withheld alike: the delete's commit marks each edit of its target
+`metadata.deleted` too, so it is withheld even where the history no longer holds
+the message. A DELETE row alone (one the host's `commit_event()` stored) hides
+nothing. `visible_events()`, the context a channel parses a
 message with and the one a broadcast delivers with all hold it so; the stored
 record and the contexts hooks receive keep the content.
 

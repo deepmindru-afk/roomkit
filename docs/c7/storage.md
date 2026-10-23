@@ -167,7 +167,9 @@ What every store keeps alike (RFC §10.3, §14.1, §14.3):
   room's counters in one transaction. For a DELIVERED edit or delete the
   framework passes `target`, the target as the change writes it, which the same
   transaction writes; a target the room no longer holds fails the whole commit
-  with `EventNotFoundError`.
+  with `EventNotFoundError`. A delete's commit also marks every edit of its
+  target `metadata.deleted`, in the same transaction: an edit holds a version
+  of the deleted text.
 - `delete_event(room_id, event_id, cascade_replies=True)` is a hard delete: the
   event, its thread replies unless told not to, and the edits and deletes of
   every event it removes, in one transaction, their idempotency keys released.
