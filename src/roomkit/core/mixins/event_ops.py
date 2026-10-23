@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.core._publication_keys import refuse_reserved
 from roomkit.core.exceptions import RoomClosedError
 from roomkit.core.mixins.helpers import HelpersMixin, _refuses_writes
 from roomkit.models.enums import HookTrigger
@@ -72,7 +73,9 @@ class EventOpsMixin(HelpersMixin):
         re-enters, scoped to *organization_id* (RFC §17.2).
 
         Raises:
-            ValueError: *event* names another room; nothing is read or written.
+            ValueError: *event* names another room, or carries an
+                ``idempotency_key`` in the framework's publication namespace
+                (``roomkit:publication:``); nothing is read or written.
             RoomNotFoundError: the room is missing, or another organization's.
             RoomClosedError: the room's status refuses new events (RFC §5.1);
                 nothing is written.
@@ -81,6 +84,9 @@ class EventOpsMixin(HelpersMixin):
             # The stores file the row under the event's room: the room checked
             # must be the room written (RFC §10.5).
             raise ValueError(f"commit_event into {room_id} got an event of room {event.room_id}")
+        # A publication's key is the delivery path's alone (RFC §22.1): a
+        # record carrying one would stand in for the publication.
+        refuse_reserved(event.idempotency_key)
         async with self._lock_manager.locked(room_id):
             room = await self.get_room(room_id, organization_id=organization_id)
             room = await self._room_timers.apply_due(room)

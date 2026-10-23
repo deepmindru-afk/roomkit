@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from roomkit.channels.base import Channel
 from roomkit.core._failure_log import log_failure, mark_reported
+from roomkit.core._publication_keys import without_reserved_key
 from roomkit.core.event_router import responder_turn_entries, stream_record
 from roomkit.core.exceptions import TaskCutShortError, TaskTurnFailedError, TurnCutShortError
 from roomkit.core.lanes import DeliveryCascade
@@ -70,7 +71,7 @@ class _TraceSink:
         self._room_id = room_id
 
     async def commit(self, event: RoomEvent, *, exclude: set[str] | None) -> RoomEvent | None:
-        return await self._kit._commit_indexed(self._room_id, event)
+        return await self._kit._commit_indexed(self._room_id, without_reserved_key(event))
 
 
 class _ToolRowsOnly:
@@ -238,7 +239,8 @@ async def _persist_response_events(
     final_text: str | None = None
     for resp in response_events:
         await kit._commit_indexed(
-            child_room_id, resp.model_copy(update={"status": EventStatus.DELIVERED})
+            child_room_id,
+            without_reserved_key(resp.model_copy(update={"status": EventStatus.DELIVERED})),
         )
         # An interruption marker is not the worker's answer (RFC §6.4)
         if (text := answer_text(resp)) is not None:

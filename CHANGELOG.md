@@ -1487,8 +1487,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   publication under `roomkit:publication:<key>`, and the lookup within the
   room reads that key only. Only the delivery path writes the namespace: the
   pipeline drops a key in it from any other message, whoever wrote it (the
-  sender, the channel's parser), and `send_event()` raises `ValueError` for
-  one. The key is part of the committed event, so the lookup, the transport's
+  sender, the channel's parser), `send_event()` and `commit_event()` raise
+  `ValueError` for one, nothing written, and a delegated turn's trace rows
+  are committed without one. The key is part of the committed event, so the lookup, the transport's
   resolution and the commit stay one locked section, and the stores'
   per-channel uniqueness (`room_id, source.channel_id, idempotency_key`)
   never sets a publication against a message keyed alike. `AFTER_DELIVER`

@@ -15,8 +15,8 @@ from roomkit.delivery.memory import InMemoryDeliveryBackend
 from roomkit.delivery.worker import execute_delivery
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory
-from roomkit.models.event import RoomEvent, TextContent
+from roomkit.models.enums import ChannelCategory, ChannelType
+from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import SQLiteStore
 from tests.test_addressing import _RecordingAgent, _room
@@ -224,6 +224,24 @@ class TestAKeyNamesOnePublicationInItsRoom:
             assert (outcome.status, outcome.reason) == ("blocked", "process_timeout")
             assert await self._keyed(kit) == []
             assert agents["a"].solicited == []
+
+    async def test_commit_event_refuses_the_publication_namespace(self) -> None:
+        """A record committed outside the pipeline cannot take a publication's
+        key: it would stand in for the publication."""
+        kit, _agents = await self._kit()
+        record = RoomEvent(
+            room_id="r1",
+            source=EventSource(channel_id="sms", channel_type=ChannelType.SMS),
+            content=TextContent(body="a copied message"),
+            idempotency_key="roomkit:publication:k",
+        )
+        async with kit:
+            with pytest.raises(ValueError, match="roomkit:publication:"):
+                await kit.commit_event("r1", record)
+            published = await kit.deliver("r1", "done", idempotency_key="k")
+
+            assert published.status == "sent" and not published.duplicate
+            assert [e.id for e in await self._keyed(kit)] == [published.event_id]
 
     async def test_send_event_refuses_the_publication_namespace(self) -> None:
         kit, _agents = await self._kit()

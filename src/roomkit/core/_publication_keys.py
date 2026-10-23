@@ -19,6 +19,10 @@ from __future__ import annotations
 from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from roomkit.models.event import RoomEvent
 
 PUBLICATION_KEY_PREFIX = "roomkit:publication:"
 """The namespace of the keys the framework stores its publications under."""
@@ -53,6 +57,26 @@ def publishing(stored: str | None) -> Generator[None]:
         yield
     finally:
         _PUBLISHING.reset(token)
+
+
+def refuse_reserved(key: str | None) -> None:
+    """Raise ``ValueError`` for *key* in the publication namespace: a door
+    that stores a caller's event as given (``send_event()``,
+    ``commit_event()``) never writes one."""
+    if is_reserved(key):
+        raise ValueError(
+            f"The idempotency_key namespace {PUBLICATION_KEY_PREFIX} is the framework's: "
+            "it keys deliver()'s publications (RFC §22.1)"
+        )
+
+
+def without_reserved_key(event: RoomEvent) -> RoomEvent:
+    """*event* without a key in the publication namespace: a row the
+    framework writes as a channel made it (a delegated turn's trace) never
+    carries one."""
+    if not is_reserved(event.idempotency_key):
+        return event
+    return event.model_copy(update={"idempotency_key": None})
 
 
 def admitted_key(key: str | None) -> str | None:
