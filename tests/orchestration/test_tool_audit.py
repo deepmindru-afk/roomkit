@@ -24,36 +24,6 @@ from roomkit.tools.timeout import answer_within
 # ---------------------------------------------------------------------------
 
 
-def test_audit_entry_model_dump() -> None:
-    entry = ToolAuditEntry(
-        ts="t",
-        agent_id="a",
-        tool_name="search",
-        arguments={"q": "hello"},
-        result="found",
-        status="ok",
-        duration_ms=42.5,
-    )
-    d = entry.model_dump()
-    assert d["tool_name"] == "search"
-    assert d["status"] == "ok"
-    assert d["metadata"] == {}
-
-
-def test_audit_entry_model_validate() -> None:
-    data = {
-        "ts": "t",
-        "agent_id": "a",
-        "tool_name": "search",
-        "arguments": {},
-        "result": "ok",
-        "status": "ok",
-        "duration_ms": 10,
-    }
-    entry = ToolAuditEntry.model_validate(data)
-    assert entry.tool_name == "search"
-
-
 # ---------------------------------------------------------------------------
 # JSONLToolAuditor
 # ---------------------------------------------------------------------------

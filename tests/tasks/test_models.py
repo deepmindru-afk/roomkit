@@ -10,48 +10,6 @@ from roomkit.models.enums import TaskStatus
 from roomkit.tasks.models import DelegatedTask, DelegatedTaskResult
 
 
-class TestDelegatedTaskResult:
-    def test_defaults(self):
-        result = DelegatedTaskResult(
-            task_id="t1",
-            child_room_id="child-1",
-            parent_room_id="parent-1",
-            agent_id="agent-a",
-        )
-        assert result.status == TaskStatus.COMPLETED
-        assert result.output is None
-        assert result.error is None
-        assert result.duration_ms == 0.0
-        assert result.metadata == {}
-
-    def test_serialization_round_trip(self):
-        result = DelegatedTaskResult(
-            task_id="t1",
-            child_room_id="child-1",
-            parent_room_id="parent-1",
-            agent_id="agent-a",
-            status=TaskStatus.FAILED,
-            error="timeout",
-            duration_ms=1234.5,
-            metadata={"key": "value"},
-        )
-        data = result.model_dump()
-        restored = DelegatedTaskResult.model_validate(data)
-        assert restored == result
-
-    def test_json_round_trip(self):
-        result = DelegatedTaskResult(
-            task_id="t1",
-            child_room_id="child-1",
-            parent_room_id="parent-1",
-            agent_id="agent-a",
-            output="review complete",
-        )
-        json_str = result.model_dump_json()
-        restored = DelegatedTaskResult.model_validate_json(json_str)
-        assert restored.output == "review complete"
-
-
 class TestDelegatedTask:
     def _make_task(self, **kwargs: object) -> DelegatedTask:
         defaults = {

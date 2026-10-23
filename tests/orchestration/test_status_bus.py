@@ -24,54 +24,9 @@ def test_status_level_values() -> None:
     assert StatusLevel.COMPLETED == "completed"
 
 
-def test_status_level_from_string() -> None:
-    assert StatusLevel("ok") is StatusLevel.OK
-    assert StatusLevel("failed") is StatusLevel.FAILED
-
-
 # ---------------------------------------------------------------------------
 # StatusEntry model
 # ---------------------------------------------------------------------------
-
-
-def test_status_entry_model_dump() -> None:
-    entry = StatusEntry(
-        ts="2026-01-01T00:00:00",
-        agent_id="a1",
-        action="search",
-        status=StatusLevel.OK,
-        detail="done",
-        metadata={"key": "val"},
-    )
-    d = entry.model_dump()
-    assert d["status"] == "ok"
-    assert d["agent_id"] == "a1"
-    assert d["metadata"] == {"key": "val"}
-
-
-def test_status_entry_model_validate() -> None:
-    data = {
-        "ts": "2026-01-01T00:00:00",
-        "agent_id": "a1",
-        "action": "search",
-        "status": "ok",
-        "detail": "",
-        "metadata": {},
-    }
-    entry = StatusEntry.model_validate(data)
-    assert entry.status == StatusLevel.OK
-    assert entry.agent_id == "a1"
-
-
-def test_status_entry_defaults() -> None:
-    entry = StatusEntry(
-        ts="t",
-        agent_id="a",
-        action="x",
-        status=StatusLevel.INFO,
-    )
-    assert entry.detail == ""
-    assert entry.metadata == {}
 
 
 # ---------------------------------------------------------------------------

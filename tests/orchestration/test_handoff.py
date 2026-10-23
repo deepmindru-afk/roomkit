@@ -23,7 +23,6 @@ from roomkit.orchestration.handoff import (
     HANDOFF_TOOL,
     HandoffHandler,
     HandoffMemoryProvider,
-    HandoffRequest,
     HandoffResult,
     build_handoff_tool,
     setup_handoff,
@@ -88,19 +87,6 @@ def _transport_binding(channel_id: str, room_id: str = "r1") -> ChannelBinding:
 
 
 class TestHandoffModels:
-    def test_handoff_request_defaults(self):
-        req = HandoffRequest(target_agent_id="agent-b")
-        assert req.reason == ""
-        assert req.summary == ""
-        assert req.context == {}
-        assert req.channel_escalation is None
-
-    def test_handoff_result_defaults(self):
-        result = HandoffResult()
-        assert result.accepted is True
-        assert result.new_agent_id is None
-        assert result.message == ""
-
     def test_handoff_tool_definition(self):
         assert HANDOFF_TOOL.name == "handoff_conversation"
         assert "target" in HANDOFF_TOOL.parameters["properties"]

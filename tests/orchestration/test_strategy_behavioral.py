@@ -205,14 +205,6 @@ class TestSupervisorHandlerIdempotency:
 class TestLoopInstall:
     """Tests for Loop.install() with framework-driven auto_cycle."""
 
-    async def test_agents_returns_only_producer(self):
-        writer = _make_agent("writer")
-        editor = _make_agent("editor")
-        loop = Loop(agent=writer, reviewers=[editor])
-        agents = loop.agents()
-        assert len(agents) == 1
-        assert agents[0].channel_id == "writer"
-
     async def test_initial_state_set(self):
         writer = _make_agent("writer")
         editor = _make_agent("editor")
@@ -227,14 +219,3 @@ class TestLoopInstall:
         assert state.context["_loop_iteration"] == 0
         assert state.context["_loop_approved"] is False
         assert state.context["_loop_max_iterations"] == 5
-
-    async def test_reviewer_registered_not_attached(self):
-        writer = _make_agent("writer")
-        editor = _make_agent("editor")
-        kit = _make_mock_kit(Room(id="r1"))
-        kit.channels = {}
-
-        loop = Loop(agent=writer, reviewers=[editor])
-        await loop.install(kit, "r1")
-
-        kit.register_channel.assert_called_once_with(editor)

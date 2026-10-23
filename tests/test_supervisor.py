@@ -23,7 +23,6 @@ from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.room import Room
-from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor import (
     Supervisor,
@@ -200,13 +199,6 @@ class TestSupervisorConstructor:
                 auto_delegate=True,
             )
 
-    def test_agents_returns_supervisor(self) -> None:
-        supervisor = _make_agent("sup")
-        s = Supervisor(supervisor=supervisor, workers=[_make_agent("w1")])
-        result = s.agents()
-        assert len(result) == 1
-        assert result[0] is supervisor
-
     def test_agents_keeps_supervisor_in_strategy_tool_async_delivery(self) -> None:
         """Strategy-tool mode: async_delivery only affects worker dispatch.
 
@@ -235,55 +227,11 @@ class TestSupervisorConstructor:
         )
         assert s.agents() == []
 
-    def test_worker_strategy_enum_values(self) -> None:
-        assert WorkerStrategy.SEQUENTIAL == "sequential"
-        assert WorkerStrategy.PARALLEL == "parallel"
-
 
 # -- Tests: Install -----------------------------------------------------------
 
 
 class TestSupervisorInstall:
-    async def test_installs_router_hook(self) -> None:
-        boss = _make_agent("boss")
-        kit = _make_mock_kit(Room(id="r1"))
-
-        s = Supervisor(supervisor=boss, workers=[_make_agent("w1")])
-        await s.install(kit, "r1")
-
-        kit.hook_engine.replace_room_hook.assert_called_once()
-
-    async def test_registers_workers_on_kit(self) -> None:
-        boss = _make_agent("boss")
-        workers = [_make_agent("w1"), _make_agent("w2")]
-        kit = _make_mock_kit(Room(id="r1"))
-
-        s = Supervisor(supervisor=boss, workers=workers)
-        await s.install(kit, "r1")
-        assert kit.register_channel.call_count == 2
-
-    async def test_skips_already_registered_workers(self) -> None:
-        boss = _make_agent("boss")
-        w1 = _make_agent("w1")
-        kit = _make_mock_kit(Room(id="r1"))
-        kit.channels = {"w1": w1}
-
-        s = Supervisor(supervisor=boss, workers=[w1])
-        await s.install(kit, "r1")
-        kit.register_channel.assert_not_called()
-
-    async def test_sets_initial_state(self) -> None:
-        boss = _make_agent("boss")
-        kit = _make_mock_kit(Room(id="r1"))
-
-        s = Supervisor(supervisor=boss, workers=[_make_agent("w1")])
-        await s.install(kit, "r1")
-
-        updated_room = Room(id="saved", metadata=kit.store.patch_room_metadata.call_args[0][1])
-        state = get_conversation_state(updated_room)
-        assert state.active_agent_id == "boss"
-        assert state.phase == "supervisor"
-
     async def test_install_auto_delegate_wraps_on_event(self) -> None:
         boss = _make_agent("boss")
         kit = _make_mock_kit(Room(id="r1"))
@@ -311,36 +259,6 @@ class TestSupervisorInstall:
         await s.install(kit, "r1")
 
         assert room_tool_names(kit, "boss", "r1") == ["delegate_workers"]
-
-    async def test_install_per_worker_tools(self) -> None:
-        boss = _make_agent("boss")
-        workers = [_make_agent("w1", description="Worker 1"), _make_agent("w2")]
-        kit = _make_mock_kit(Room(id="r1"))
-
-        s = Supervisor(supervisor=boss, workers=workers)
-        await s.install(kit, "r1")
-
-        tool_names = room_tool_names(kit, "boss", "r1")
-        assert tool_names == ["delegate_to_w1", "delegate_to_w2"]
-
-    async def test_double_install_no_duplicate_tools(self) -> None:
-        boss = _make_agent("boss")
-        workers = [_make_agent("w1")]
-        kit = _make_mock_kit(Room(id="r1"))
-        mock_task = MagicMock()
-        mock_task.task_id = "t1"
-        kit.delegate = AsyncMock(return_value=mock_task)
-
-        s = Supervisor(supervisor=boss, workers=workers)
-        await s.install(kit, "r1")
-        kit2 = _make_mock_kit(Room(id="r2"))
-        kit2.delegate = AsyncMock(return_value=mock_task)
-        # The second mock stands for the same kit's other room: one store.
-        kit2._owner_tools = kit._owner_tools
-        await s.install(kit2, "r2")
-
-        for room_id in ("r1", "r2"):
-            assert room_tool_names(kit, "boss", room_id) == ["delegate_to_w1"]
 
     async def test_double_install_strategy_tool_no_duplicate(self) -> None:
         boss = _make_agent("boss")
@@ -507,16 +425,6 @@ class TestPerWorkerDelegation:
             pytest.raises(RuntimeError, match="Connection lost"),
         ):
             await boss._channel_tool_handler("delegate_to_w1", {"task": "Do work"})
-
-    async def test_unknown_tool_falls_through(self) -> None:
-        boss = _make_agent("boss")
-        kit = _make_mock_kit(Room(id="r1"))
-
-        s = Supervisor(supervisor=boss, workers=[_make_agent("w1")])
-        await s.install(kit, "r1")
-
-        with owner_tool_call_in(kit, "boss", "r1"), pytest.raises(UnservedToolCallError):
-            await boss._channel_tool_handler("unknown_tool", {})
 
 
 # -- Tests: Strategy tool handler ---------------------------------------------

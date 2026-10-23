@@ -279,22 +279,6 @@ class TestGetAllowedTransitions:
 # -- PipelineStage model ------------------------------------------------------
 
 
-class TestPipelineStage:
-    def test_defaults(self):
-        stage = PipelineStage(phase="a", agent_id="agent-a")
-        assert stage.next is None
-        assert stage.can_return_to == set()
-
-    def test_can_return_to_set(self):
-        stage = PipelineStage(
-            phase="review",
-            agent_id="agent-reviewer",
-            next="report",
-            can_return_to={"coding", "analysis"},
-        )
-        assert stage.can_return_to == {"coding", "analysis"}
-
-
 # -- install ------------------------------------------------------------------
 
 

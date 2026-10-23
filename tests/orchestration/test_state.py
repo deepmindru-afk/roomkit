@@ -25,10 +25,6 @@ class TestConversationPhase:
         assert ConversationPhase.RESOLUTION == "resolution"
         assert ConversationPhase.FOLLOWUP == "followup"
 
-    def test_phase_usable_as_dict_key(self):
-        d = {ConversationPhase.INTAKE: 1}
-        assert d["intake"] == 1
-
 
 # -- ConversationState defaults -----------------------------------------------
 

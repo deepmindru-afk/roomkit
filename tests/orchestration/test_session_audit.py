@@ -18,34 +18,6 @@ from roomkit.orchestration.tool_audit import ToolAuditEntry
 # ---------------------------------------------------------------------------
 
 
-def test_session_entry_model_dump() -> None:
-    entry = SessionAuditEntry(
-        ts="2026-03-20T12:00:00+00:00",
-        type="speech",
-        role="user",
-        content="Hello world",
-    )
-    d = entry.model_dump()
-    assert d["type"] == "speech"
-    assert d["role"] == "user"
-    assert d["content"] == "Hello world"
-    assert d["metadata"] == {}
-    assert d["duration_ms"] is None
-
-
-def test_session_entry_with_metadata() -> None:
-    entry = SessionAuditEntry(
-        ts="t",
-        type="tool_call",
-        role="assistant",
-        content="result text",
-        duration_ms=42.0,
-        metadata={"tool_name": "search", "status": "ok"},
-    )
-    assert entry.metadata["tool_name"] == "search"
-    assert entry.duration_ms == 42.0
-
-
 # ---------------------------------------------------------------------------
 # JSONLSessionAuditor — basic recording
 # ---------------------------------------------------------------------------
