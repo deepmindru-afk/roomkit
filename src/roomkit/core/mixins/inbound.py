@@ -479,9 +479,10 @@ class InboundMixin(HelpersMixin):
         inert.
 
         Raises:
-            TimeoutError: The budget ran out. Nothing durable has been written
-                at this point — the room may have been created by the routing
-                step above, which is deliberately outside the window.
+            TimeoutError: The budget ran out. Nothing of the event has been
+                written at this point — a room routing created stays, as the
+                room's state, which its creation completes whatever the
+                deadline (RFC §13.6).
         """
         async with asyncio.timeout_at(deadline):
             return await self._prepare_event_inner(

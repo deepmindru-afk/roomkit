@@ -277,6 +277,7 @@ class TestOneDeadlineFromTheCallsStart:
         assert await kit.store.list_rooms() == []
         await kit.close()
 
+    @pytest.mark.wallclock
     async def test_routing_spends_the_budget_the_rest_of_the_call_has(self) -> None:
         """A 40 ms router and a 30 ms hook do not fit in a 50 ms budget."""
         kit = await _kit(SimpleChannel("sms1"), budget=0.05)
