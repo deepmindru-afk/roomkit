@@ -39,7 +39,10 @@ RoomKit exports **348 symbols** from `roomkit`. Providers and voice types import
 | `SMSChannel` | SMS transport channel factory |
 | `TeamsChannel` | Microsoft Teams transport channel factory |
 | `TelegramChannel` | Telegram Bot transport channel factory |
-| `TransportChannel` | Generic transport channel wrapper |
+| `TransportChannel` | Generic transport channel wrapper; takes its type's addressing unless given `addressing=` |
+| `ChannelAddressing` | A channel's addressing declaration: `addressing`, `recipient_key`, `chat_key`, `replies_to_sender` (RFC §5.7) |
+| `Addressing` | How a channel's addresses are written: PHONE_NUMBER (E.164), EMAIL_ADDRESS, CHAT, AS_WRITTEN |
+| `addressing_of(channel_type)` | A type's default addressing (RFC Appendix A) |
 | `VideoChannel` | Video channel with vision pipeline |
 | `VoiceChannel` | Real-time audio with STT/TTS/pipeline |
 | `WebSocketChannel` | WebSocket bidirectional channel |
@@ -201,6 +204,7 @@ RoomKit exports **348 symbols** from `roomkit`. Providers and voice types import
 | `RoomLockManager` | ABC for per-room locking |
 | `InMemoryLockManager` | In-process per-room asyncio locks with LRU eviction |
 | `EventFilter` | Filter criteria for querying room events |
+| `RoomFilter` | The statuses and the organization a routing lookup reads |
 | `PersistencePolicy` | Controls which event types are persisted to the store |
 
 ### Orchestration

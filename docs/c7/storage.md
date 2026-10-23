@@ -196,6 +196,22 @@ What every store keeps alike (RFC §10.3, §14.1, §14.3):
   every event it removes, in one transaction, their idempotency keys released.
   It returns the removed events as stored: the root, its replies, then the
   changes, each in index order.
+- The routing lookups (RFC §10.4, §14.1) answer the newest room, the most
+  recently created, the greatest id on a tie, among the rooms a
+  `RoomFilter(statuses, organization_id)` reads:
+  `find_room_id_by_binding(channel_id, participant_id, identity_id,
+  room_filter, *, recipient_key=None)` finds a binding naming the address or
+  the identity, or naming no one and not `group` with the address as its
+  recipient under `recipient_key`; `find_room_id_by_participant(channel_id,
+  participant_id, identity_id, room_filter)` a participant reached through the
+  channel whose id or identity is one of the names;
+  `find_room_ids_by_channel(channel_id, room_filter, limit, *, group=None)`
+  the rooms bound to the channel, oldest first, `group` keeping a group
+  binding's rooms or the others. The base class falls back to scans.
+- `check_idempotency(room_id, key, *, channel_id)` and
+  `get_event_by_idempotency_key(room_id, key, *, channel_id)` look a key up
+  within its source channel, or with `channel_id=None` within the whole room
+  (the lowest index first), as a proactive delivery's key is.
 - `record_delivery_results(room_id, event_id, results)` writes a delivery set's
   outcome on the event as stored, that field alone, so an edit or a delete
   committed while the delivery ran stands. Its default reads the event and

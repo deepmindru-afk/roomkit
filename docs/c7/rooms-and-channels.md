@@ -243,6 +243,71 @@ EditContent(target_event_id="evt-abc", new_content=TextContent(body="Corrected t
 DeleteContent(target_event_id="evt-abc", delete_type="sender", reason="User retracted")
 ```
 
+## Inbound Routing and Addresses
+
+A channel's type decides how its addresses are written and where its
+recipient and its chat are (RFC §5.7, Appendix A).
+`roomkit.channels.addressing.addressing_of(channel_type)` gives the defaults a
+`TransportChannel` takes unless it declares its own
+(`TransportChannel(..., addressing=ChannelAddressing(...), country_code=...)`):
+
+| Type | Address | Recipient key | Chat key |
+|---|---|---|---|
+| SMS, MMS, RCS, WHATSAPP | E.164 | `phone_number` | — |
+| WHATSAPP_PERSONAL | E.164 | `phone_number` | `group_jid` (a group message's group) |
+| VOICE | E.164 | — | — |
+| EMAIL | lower-case, no display name | `email_address` | — |
+| MESSENGER | as written | `facebook_user_id` | — |
+| TELEGRAM | its chat | `telegram_chat_id` | `chat_id` |
+| TEAMS | its chat | `teams_conversation_id` | `conversation_id` |
+| any other | as written | — | — |
+
+Discord (`discord_channel_id` / `channel_id`) and Buzz (`buzz_channel_id`)
+declare chat keys of their own; a webhook forwards a binding's `recipient_id`
+to its provider, which names no one. On a channel whose replies go to a chat
+only, a message that does not carry its chat has no address: it records no
+one, and a room opened for it names neither correspondent nor recipient
+(deliveries refused `no_recipient` until the host names one).
+
+A message without a `room_id` is routed by the default strategy (RFC §10.4),
+scoped to the caller's organization:
+
+1. The newest ACTIVE or PAUSED room whose binding of the channel names the
+   sender: its correspondent (`participant_id`) is the sender's address or
+   the identity the store resolves it to, or, naming none and not `group`,
+   its recipient is the address. Otherwise the newest ACTIVE or PAUSED room
+   holding a participant who is the sender reached through the channel
+   (`connected_via`). The newest room either name finds wins, whatever its
+   status: a paused conversation keeps its correspondent, and their next
+   delivered message resumes it.
+2. Otherwise the one room step 3 reads, when it admits the sender: the
+   ACTIVE rooms bound to the channel and the PAUSED ones whose binding is
+   `group`, "exactly one" counting both.
+3. Otherwise a new room.
+
+The store answers step 1 with `find_room_id_by_binding(channel_id,
+participant_id, identity_id, room_filter, *, recipient_key=None)` and
+`find_room_id_by_participant(channel_id, participant_id, identity_id,
+room_filter)`, step 3 with `find_room_ids_by_channel(channel_id, room_filter,
+limit, *, group=None)`; `RoomFilter(statuses, organization_id)` names the
+rooms read. A delivery status that names no room goes to the ACTIVE or PAUSED
+room whose binding names its recipient (in the channel's form), else the one
+ACTIVE room, and resumes nothing.
+
+Step 2's attach of a room in hand that does not bind the channel runs under
+the room lock once the room's due timers apply, at the channel's defaults,
+never to a CLOSED or ARCHIVED room, never over a binding made by then (a
+creation hook's included) and never of a detached channel.
+
+A keyed `kit.deliver()` names one publication in its room, whatever transport
+carries it (RFC §22.1): the key is looked up within the room before a
+transport is resolved, and the lookup, the resolution and the commit run in
+one section under the room lock; a replay returns the original outcome. The
+publication is stored under `roomkit:publication:<key>`, a namespace only the
+delivery path writes: a message's key in it is dropped, `send_event()`
+refuses one, and a sender's message keyed like a coming publication never
+stands in for it.
+
 ## Content Transcoding
 
 When broadcasting events, the EventRouter automatically **transcodes** content to match each target channel's capabilities. A channel that only supports TEXT will receive a text fallback of a RichContent message.
@@ -251,7 +316,7 @@ When broadcasting events, the EventRouter automatically **transcodes** content t
 
 1. Event broadcast starts → EventRouter iterates over all target channel bindings
 2. For each target, call `ContentTranscoder.transcode(content, source_binding, target_binding)`
-3. Transcoder checks `target_binding.capabilities.media_types` to decide if content passes through or needs conversion
+3. Transcoder checks `target_binding.capabilities.media_types` to decide if content passes through or needs conversion; a file (`MediaContent`) also needs a MIME type a non-empty `supported_media_types` lists (compared without parameters, whatever the case) and, when its `size_bytes` is known, a size within `max_media_size_bytes`, else it is delivered as its text form (RFC §5.8, §6.6): never dropped, never sent as is for the provider to refuse. An empty list takes every type; an unknown size, any size
 4. If transcode returns `None` → delivery is skipped for that channel
 
 ### Channel Capabilities
@@ -287,11 +352,11 @@ ws_caps = ChannelCapabilities(
 |-------------|----------------------|----------|
 | `TextContent` | Always passes through | — |
 | `RichContent` | RICH in media_types → pass | `TextContent(plain_text or body)` |
-| `MediaContent` | MEDIA in media_types → pass | `TextContent("[Media: {caption or filename or url}]")`, the URL only when a link, else the media type |
+| `MediaContent` | MEDIA in media_types, its type listed (or none listed) and its known size within the limit → pass | `TextContent("[Media: {caption or filename or url}]")`, the URL only when a link, else the media type |
 | `AudioContent` | AUDIO in media_types → pass | `TextContent(transcript)` or `"[Voice message: {url}]"`, the URL only when a link, else the media type |
 | `VideoContent` | VIDEO in media_types → pass | `TextContent("[Video: {url}]")`, the URL only when a link, else the media type |
 | `LocationContent` | LOCATION in media_types → pass | `TextContent("[Location: {label} ({lat}, {lon})]")` |
-| `CompositeContent` | Recursive transcode of all parts | If all parts become text → flatten to single TextContent |
+| `CompositeContent` | Recursive transcode of all parts, none dropped | If all parts become text → flatten to single TextContent, joined by newlines |
 | `TemplateContent` | TEMPLATE in media_types → pass | `TextContent(body or "[Template: {id}]")` |
 | `EditContent` | `supports_edit` → pass | Transcode `new_content` + prefix "Correction:" |
 | `DeleteContent` | `supports_delete` → pass | `TextContent("[Message deleted]")` |
