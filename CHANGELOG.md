@@ -64,34 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a code a number that starts with it is international only when
   longer than 10 digits.
 
-- A file a channel does not take is delivered as its text form (RFC §5.8,
-  §6.6, Appendix A, RMK-930). The transcoder read a target's `media_types`
-  only: a file whose MIME type its non-empty `supported_media_types` does not
-  list, or whose known `size_bytes` is over its `max_media_size_bytes`, was
-  sent as is, and the provider's refusal lost the whole message. Such a
-  file now becomes `[Media: {caption or filename or url}]`, alone or as a
-  part of a composite, at the broadcast and in the transcoder alike, and in
-  an edit's new content: an edit to a channel that edits natively is still
-  delivered as an edit, its new content's files as the channel takes them;
-  an empty list takes every type, and a file of unknown size any size. The
-  declarations follow Appendix A: SMS lists `image/jpeg`, `image/png` and
-  `image/gif` (a PDF to an SMS number is now its text form); WhatsApp
-  Personal lists no type (it took images only, and now takes a document
-  again under the new rule); Telegram declares AUDIO and VIDEO, so its
-  provider's `sendAudio` and `sendVideo` are reached rather than a
-  `[Voice message: ...]` text.
-
-- A chat message that does not carry its chat has no address (RFC §5.7,
-  RMK-930). On a channel whose replies go to a chat only (Telegram, Teams,
-  Discord, Buzz), such a message was routed and recorded by its author: it
-  landed in the author's private chat, which is another conversation, and
-  a room opened for it named the author as correspondent and recipient,
-  replying in private. It now records no one: it is routed as a message
-  with no address, and the room opened for it names neither correspondent
-  nor recipient, so its deliveries are refused `no_recipient` until the
-  host names one. Its author stays the event's sender. A WhatsApp Personal
-  message without `group_jid` is still its sender's.
-
 - Step 2's attach follows RFC §10.1 step 2 (RMK-930). A message naming a
   room that does not bind its channel attached the channel to a CLOSED or
   ARCHIVED room, and to one whose close was due, before step 6 refused the
@@ -1375,6 +1347,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `examples/voice_voxtral.py` runs Mistral's faster turn preset with a 240 ms
   streaming delay by default (`TURNS=default STREAMING_DELAY_MS=480` gives
   the service's defaults), and drops emoji before Voxtral Speech.
+
+- **BREAKING — a file a channel does not take is delivered as its text
+  form** (RFC §5.8, §6.6, Appendix A, RMK-930). The transcoder read a
+  target's `media_types` only: a file whose MIME type its non-empty `supported_media_types` does not
+  list, or whose known `size_bytes` is over its `max_media_size_bytes`, was
+  sent as is, and the provider's refusal lost the whole message. Such a
+  file now becomes `[Media: {caption or filename or url}]`, alone or as a
+  part of a composite, at the broadcast and in the transcoder alike, and in
+  an edit's new content: an edit to a channel that edits natively is still
+  delivered as an edit, its new content's files as the channel takes them;
+  an empty list takes every type, and a file of unknown size any size. The
+  declarations follow Appendix A: SMS lists `image/jpeg`, `image/png` and
+  `image/gif` (a PDF to an SMS number is now its text form); WhatsApp
+  Personal lists no type (it took images only, and now takes a document
+  again under the new rule); Telegram declares AUDIO and VIDEO, so its
+  provider's `sendAudio` and `sendVideo` are reached rather than a
+  `[Voice message: ...]` text.
+  Migrate: a host whose SMS provider carries documents builds its channel
+  with those types listed, `TransportChannel(id, ChannelType.SMS,
+  capabilities=SMS_CAPABILITIES.model_copy(update={"supported_media_types":
+  [...]}))`, or an empty list for every type; a Telegram integration that
+  read the `[Voice message: ...]` or `[Video: ...]` text receives the file.
+
+- **BREAKING — a chat message that does not carry its chat has no
+  address** (RFC §5.7, RMK-930). On a channel whose replies go to a chat
+  only (Telegram, Teams, Discord, Buzz), such a message was routed and recorded by its author: it
+  landed in the author's private chat, which is another conversation, and
+  a room opened for it named the author as correspondent and recipient,
+  replying in private. It now records no one: it is routed as a message
+  with no address, and the room opened for it names neither correspondent
+  nor recipient, so its deliveries are refused `no_recipient` until the
+  host names one. Its author stays the event's sender. A WhatsApp Personal
+  message without `group_jid` is still its sender's.
+  Migrate: a parser or host building such messages puts the chat under the
+  channel's chat key (`chat_id` on Telegram, `conversation_id` on Teams), or
+  names the room's recipient itself on the binding (`attach_channel(...,
+  metadata={"telegram_chat_id": ...})`).
 
 - **BREAKING — the store's routing lookups take the channel, the sender's
   identity and a `RoomFilter`** (RFC §10.4 step 1, §14.1, RMK-930). The
