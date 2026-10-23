@@ -26,7 +26,13 @@ from roomkit.core.mixins.helpers import (
     HelpersMixin,
     _refuses_writes,
 )
-from roomkit.core.mixins.inbound_locked import _Blocked, _Ready, mutation_plan, target_update
+from roomkit.core.mixins.inbound_locked import (
+    _Blocked,
+    _Ready,
+    _Refused,
+    mutation_plan,
+    target_update,
+)
 from roomkit.core.task_utils import await_unless_cut, start_named
 from roomkit.core.visibility import narrowed_to_target, with_committed_visibility
 from roomkit.models.delivery import DeliveryError, DeliveryResult
@@ -1038,11 +1044,12 @@ class LaneExecutionMixin(HelpersMixin):
             # (RFC §10.1 steps 9 and 11): orchestration routing stamps
             # _routed_to here, and a muted or read-only agent's answer is
             # stored BLOCKED with what its hooks decided kept (§7.5 rule 3).
-            decision = await self._gate_commit(room_id, reentry, reentry_ctx)
+            decision = await self._gate_commit(room_id, reentry, reentry_ctx, change=check)
+            if isinstance(decision, _Refused):
+                return
             if isinstance(decision, _Blocked):
                 await self._store_blocked(room_id, decision, cascade)
                 return
-            decision.edit_delete_target = check.target
             await self._commit_reentry(room_id, decision, response_visibility, cascade)
 
     def _reentry_plan_factory(

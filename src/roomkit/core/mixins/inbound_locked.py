@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._authors import People
 from roomkit.core._changes import (
+    NO_CHANGE,
     TARGET_NOT_FOUND,
     ChangeCheck,
     applied,
@@ -117,6 +118,15 @@ class _Ready:
     sync_result: Any
     context: RoomContext
     edit_delete_target: RoomEvent | None
+
+
+@dataclass(frozen=True, slots=True)
+class _Refused:
+    """Decision returned by ``_gate_commit``: the edit or the delete its
+    hooks let through was refused once its target was read again (RFC §10.1
+    step 9a). Nothing of it is stored, its hooks' results included."""
+
+    reason: str
 
 
 @dataclass(slots=True, eq=False)
@@ -465,11 +475,10 @@ class InboundLockedMixin(HelpersMixin):
         check = await self._check_change(room_id, event)
         if check.refusal is not None:
             return InboundResult(blocked=True, reason=check.refusal)
-        edit_delete_target = check.target
 
-        decision = await self._gate_commit(room_id, event, context, precheck)
-        if isinstance(decision, _Ready):
-            decision.edit_delete_target = edit_delete_target
+        decision = await self._gate_commit(room_id, event, context, precheck, change=check)
+        if isinstance(decision, _Refused):
+            return InboundResult(blocked=True, reason=decision.reason)
         return decision
 
     async def _gate_commit(
@@ -480,11 +489,17 @@ class InboundLockedMixin(HelpersMixin):
         precheck: SyncPipelineResult | None = None,
         *,
         source_check: bool = True,
-    ) -> _Blocked | _Ready:
+        change: ChangeCheck = NO_CHANGE,
+    ) -> _Blocked | _Ready | _Refused:
         """RFC §10.1 steps 9 to 11 for an event about to commit: its
         BEFORE_BROADCAST hooks, then its source's right to write, unless
         *source_check* is off for an event a hook injected (§9.4), which is
         the hook's, not a channel's.
+
+        *change* is what step 8a accepted of an edit or a delete: once a
+        hook ran under the lock, its target is read and validated again
+        (step 9a), so an entry committed during the hooks (a delete of the
+        target) refuses it rather than be undone by it (:class:`_Refused`).
 
         The one gate of every commit path, an inbound event and a response
         alike, buffered, streamed or regenerated (RFC §7.5 rule 2): a hook
@@ -515,6 +530,13 @@ class InboundLockedMixin(HelpersMixin):
         # payload its trigger passed, so only a RoomEvent may replace one.
         if isinstance(sync_result.event, RoomEvent):
             event = await self._rooted(room_id, event, sync_result.event)
+        target = change.target
+        if hooked and target is not None:
+            # An injected change (no source check) is the hook's (§9.4).
+            change = await self._check_change(room_id, event, by_hook=not source_check)
+            if change.refusal is not None:
+                return _Refused(change.refusal)
+            target = change.target
 
         # RFC §7.5 — a source that cannot write (READ_ONLY/NONE or muted) must
         # not inject a DELIVERED event into the timeline. Persist it BLOCKED for
@@ -523,7 +545,7 @@ class InboundLockedMixin(HelpersMixin):
         # binding read here is the one the broadcast plans with.
         source_binding = await self._source_binding(room_id, event, context, hooked=hooked)
         if not source_check:
-            return _Ready(event, source_binding, sync_result, context, None)
+            return _Ready(event, source_binding, sync_result, context, target)
         reason = _source_block_reason(source_binding)
         if reason is not None:
             return _Blocked.after_hooks(
@@ -531,7 +553,7 @@ class InboundLockedMixin(HelpersMixin):
             )
 
         event = with_committed_visibility(event, source_binding, context.bindings)
-        return _Ready(event, source_binding, sync_result, context, None)
+        return _Ready(event, source_binding, sync_result, context, target)
 
     async def _source_binding(
         self, room_id: str, event: RoomEvent, context: RoomContext, *, hooked: bool

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An edit or a delete has its target read and validated again once a hook
+  ran under the room lock (RFC §10.1 step 9a, RMK-930). A delete committed
+  during an edit's hooks (a hook's `send_event()`, which commits ahead of
+  the edit) was undone by the edit, which wrote the target's old metadata
+  back with its new content; the edit is now refused
+  `target_event_not_found`, and nothing of it, its hooks' injected events
+  included, is stored.
+
 - An accepted edit or delete reaches no one who could not see its target
   (RFC §10.3 state updates 4 and 5, RMK-930): its visibility, narrowed by its
   source binding's, is narrowed again to its target's, and an injected

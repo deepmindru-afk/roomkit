@@ -13,7 +13,7 @@ from roomkit.channels._tool_event_result import tool_event_payload
 from roomkit.core._instructions import response_metadata
 from roomkit.core.event_router import stream_record
 from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT
-from roomkit.core.mixins.inbound_locked import _Blocked
+from roomkit.core.mixins.inbound_locked import _Blocked, _Refused
 from roomkit.core.task_utils import cancel_reason
 from roomkit.models.enums import EventDirection, EventStatus, EventType, Visibility
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
@@ -614,6 +614,9 @@ class LaneSink:
         # row, which is then neither committed nor recorded as blocked.
         if await self._room_refuses_writes():
             logger.debug("Room %s closed during the hooks; %s not committed", room_id, event.type)
+            return None
+        if isinstance(decision, _Refused):
+            # Only a change is refused here, and a streamed row is text.
             return None
         if isinstance(decision, _Blocked):
             await self._kit._store_blocked(room_id, decision, self._cascade)

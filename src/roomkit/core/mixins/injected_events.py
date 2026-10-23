@@ -25,7 +25,13 @@ from roomkit.core._changes import with_target
 from roomkit.core._instructions import without_fingerprint
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan
 from roomkit.core.mixins.helpers import HelpersMixin
-from roomkit.core.mixins.inbound_locked import _Blocked, _Ready, mutation_plan, target_update
+from roomkit.core.mixins.inbound_locked import (
+    _Blocked,
+    _Ready,
+    _Refused,
+    mutation_plan,
+    target_update,
+)
 from roomkit.core.mixins.lane_execution import provisional
 from roomkit.core.visibility import intersect_visibility, narrowed_to_target, visibility_allows
 from roomkit.models.channel import ChannelBinding
@@ -161,11 +167,14 @@ class InjectedEventsMixin(HelpersMixin):
             check = await self._check_change(room_id, event, by_hook=True)
             if check.refusal is not None:
                 return
-            decision = await self._gate_commit(room_id, event, context, source_check=False)
+            decision = await self._gate_commit(
+                room_id, event, context, source_check=False, change=check
+            )
+            if isinstance(decision, _Refused):
+                return
             if isinstance(decision, _Blocked):
                 await self._store_blocked(room_id, decision, cascade)
                 return
-            decision.edit_delete_target = check.target
             await self._commit_injected(room_id, decision, injected, event.visibility, cascade)
 
     async def _commit_injected(

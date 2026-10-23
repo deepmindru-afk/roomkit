@@ -808,3 +808,32 @@ class TestWhomAChangeReaches:
             {"edited": True},
         )
         await kit.close()
+
+
+class TestTheTargetReadAgain:
+    """RFC §10.1 step 9a: once a hook ran under the lock, an edit or a
+    delete has its target read and validated again."""
+
+    async def test_a_delete_committed_during_an_edit_s_hooks_refuses_the_edit(self) -> None:
+        kit = await _setup()
+        original = await _post(kit, "v1", sender_id="alice")
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST)
+        async def moderator(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if event.type == EventType.EDIT:
+                # Committed ahead of the edit, within its locked section.
+                await kit.send_event(
+                    "r1",
+                    "sys",
+                    DeleteContent(target_event_id=original.id, delete_type=DeleteType.SYSTEM),
+                    event_type=EventType.DELETE,
+                )
+            return HookResult.allow()
+
+        result = await _edit(kit, original, sender_id="alice", edit_source="sender")
+
+        assert (result.blocked, result.reason) == (True, "target_event_not_found")
+        stored = await kit._store.get_event(original.id)
+        assert stored is not None
+        assert (stored.content, stored.metadata) == (TextContent(body="v1"), {"deleted": True})
+        await kit.close()

@@ -64,6 +64,10 @@ class ChangeCheck:
     refusal: str | None = None
 
 
+NO_CHANGE = ChangeCheck()
+"""Step 8a's answer on an event that is no change."""
+
+
 def holds_change(content: EventContent) -> bool:
     """Whether *content* is or holds a change at any depth: an edit, a
     delete, or a composite with one among its parts."""
