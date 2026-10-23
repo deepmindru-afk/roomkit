@@ -297,8 +297,8 @@ are not fired by any built-in code.
 
 | Trigger | Execution | Signature | Description |
 |---------|-----------|-----------|-------------|
-| `ON_EVENT_UPDATED` | ASYNC | `(event, ctx) -> None` | A persisted event's stored state changed — inbound `EditContent` or `kit.update_event()`. Payload is the updated event (`metadata.edited=True` on the edit path). |
-| `ON_EVENT_DELETED` | ASYNC | `(event, ctx) -> None` | A persisted event was deleted — inbound `DeleteContent` (soft, `metadata.deleted=True`) or `kit.delete_event()` (hard; payload is the pre-delete snapshot). |
+| `ON_EVENT_UPDATED` | ASYNC | `(event, ctx) -> None` | A persisted event's stored state changed — an accepted EDIT, whichever pass committed it (an inbound message, an agent's response, a hook's injected event), or `kit.update_event()`. Payload is the updated event (`metadata.edited=True` on the edit path). |
+| `ON_EVENT_DELETED` | ASYNC | `(event, ctx) -> None` | A persisted event was deleted — an accepted DELETE (soft, `metadata.deleted=True`, payload the marked target) or `kit.delete_event()` (hard: fires once per removed event, the root, its replies and the removed events' edits and deletes, each as it was stored). |
 
 ### Channel Lifecycle
 

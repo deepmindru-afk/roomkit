@@ -17,6 +17,10 @@ room = await kit.create_room(
 )
 ```
 
+A room is created once (RFC §14.3): `create_room()` with an id the store
+already holds raises `RoomAlreadyExistsError` and leaves the room as it was.
+Read the room first (`get_room()`) when the id may exist.
+
 ## Room Lifecycle
 
 ```python
@@ -321,6 +325,66 @@ class MyTranscoder(ContentTranscoder):
 kit = RoomKit()
 kit._transcoder = MyTranscoder()
 ```
+
+## Edits and Deletes
+
+An event is an edit when its type is `EDIT` and its content an `EditContent`,
+a delete when `DELETE` and `DeleteContent` (RFC §10.3). The pipeline checks it
+under the room lock on every pass that commits an event: an inbound message, an
+agent's response, a hook's injected event, a `send_event()`. A refusal stores
+nothing: the inbound path returns `InboundResult(blocked=True, reason=...)`,
+`send_event()` raises `ChangeRefusedError` (its `reason`), a refused response or
+injected change is logged at warning level.
+
+| Rule | Refused with |
+|------|--------------|
+| A type and a content that disagree, or a change held elsewhere (a composite's part, an edit's new content) | `target_event_not_found` |
+| The target is not an event of the room, is `BLOCKED`, deleted, or itself an edit or a delete (an edited event may be edited again) | `target_event_not_found` |
+| A sender's change (`edit_source` `"sender"` or none, `DeleteType.SENDER`) of an event they did not author | `not_original_author`; `identity_required_for_edit` when either has no author |
+| `DeleteType.ADMIN` from anyone but an OWNER or AGENT, neither LEFT nor BANNED, on the channel they write on | `not_authorized`; `identity_required_for_edit` with no sender id |
+| A SYSTEM change (`DeleteType.SYSTEM`, `edit_source="system"`) from anything but a SYSTEM channel or a hook | `not_authorized` |
+| An edit or a delete a hook injects that is not a SYSTEM change | `not_authorized` |
+
+An event that travelled outbound (a channel's own output, an agent's response)
+is its channel's, whatever participant it names: an agent edits its own
+responses and no one else's. Any `edit_source` other than `"system"` is checked
+as the sender's. A hook's `modify` keeps the target, the `edit_source` or
+`delete_type` and the kind of content; once a hook ran under the lock, the
+target is read and checked again, so a delete committed during an edit's hooks
+refuses the edit.
+
+An accepted change commits with its target in one store transaction: an edit
+writes `new_content` and `metadata.edited=True` on the target, a delete
+`metadata.deleted=True`. The change reaches no one who could not see its target
+(its visibility is narrowed to the target's), it is delivered with the target as
+the commit left it, and `ON_EVENT_UPDATED` / `ON_EVENT_DELETED` fire once the
+lock is released.
+
+```python
+await kit.process_inbound(
+    InboundMessage(
+        channel_id="ws-user",
+        sender_id="alice",
+        event_type=EventType.EDIT,
+        content=EditContent(target_event_id=message.id, new_content=TextContent(body="50000$")),
+    )
+)
+```
+
+A soft-deleted event stays in every history a channel is handed, its content
+withheld: an empty text in place of what was said and no `source.raw_payload`,
+its id, index, thread, metadata and `channel_data` kept, so the delete that
+follows names an event the reader holds. An edit of a deleted event has its new
+content withheld alike. `visible_events()`, the context a channel parses a
+message with and the one a broadcast delivers with all hold it so; the stored
+record and the contexts hooks receive keep the content.
+
+`kit.delete_event(room_id, event_id, cascade_replies=True)` is the host's hard
+delete: it removes the event, its thread replies unless told not to, and the
+edits and deletes of every event it removes (an edit holds the corrected text),
+returns their ids, and fires `ON_EVENT_DELETED` once per removed event.
+`kit.update_event()` rewrites an event's content, source or metadata. Neither
+runs the checks above: the host owns their authorization.
 
 ## Detaching Channels
 

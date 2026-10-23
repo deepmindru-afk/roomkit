@@ -142,15 +142,34 @@ if __name__ == "__main__":
 Implement `ConversationStore` for other backends (Redis, DynamoDB, etc.):
 
 ```python
+from roomkit import RoomAlreadyExistsError
 from roomkit.store.base import ConversationStore
 from roomkit.models.room import Room
 
 class RedisStore(ConversationStore):
     async def create_room(self, room: Room) -> Room:
-        await self.redis.set(f"room:{room.id}", room.model_dump_json())
+        # A room is created once (RFC §14.3): never replace the one an id names.
+        if not await self.redis.set(f"room:{room.id}", room.model_dump_json(), nx=True):
+            raise RoomAlreadyExistsError(f"Room {room.id} already exists")
         return room
 
     # Implement all abstract methods...
 
 kit = RoomKit(store=RedisStore())
 ```
+
+What every store keeps alike (RFC §10.3, §14.1, §14.3):
+
+- `create_room()` refuses an id it holds with `RoomAlreadyExistsError`, nothing
+  written: replacing the room would re-home its conversation, another
+  organization's included.
+- `commit_event(room_id, event, *, target=None)` stores the event and bumps the
+  room's counters in one transaction. For a DELIVERED edit or delete the
+  framework passes `target`, the target as the change writes it, which the same
+  transaction writes; a target the room no longer holds fails the whole commit
+  with `EventNotFoundError`.
+- `delete_event(room_id, event_id, cascade_replies=True)` is a hard delete: the
+  event, its thread replies unless told not to, and the edits and deletes of
+  every event it removes, in one transaction, their idempotency keys released.
+  It returns the removed events as stored: the root, its replies, then the
+  changes, each in index order.
