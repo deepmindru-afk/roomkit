@@ -35,6 +35,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any
 
+from roomkit.core._changes import is_deleted
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import EventStatus, VerificationStatus
 from roomkit.models.event import RoomEvent, ThreadSummary
@@ -696,7 +697,8 @@ class SQLiteStore(ConversationStore):
                 (event.room_id, event.source.channel_id, event.idempotency_key),
             )
         conn.execute("DELETE FROM events_fts WHERE event_id = ?", (event.id,))
-        text = _fts_text(event)
+        # A soft-deleted event's text is withheld (RFC §10.3): no search finds it.
+        text = "" if is_deleted(event) else _fts_text(event)
         if text:
             conn.execute(
                 "INSERT INTO events_fts(text, event_id, room_id) VALUES(?, ?, ?)",
@@ -1446,7 +1448,9 @@ class SQLiteStore(ConversationStore):
         of terms, so user input can be passed through verbatim. Rows the room
         refused (stored ``BLOCKED``) are not returned, as a default
         :meth:`list_events` read does not serve them (RFC §14.1); the audit
-        read is :meth:`list_events` with ``include_blocked=True``.
+        read is :meth:`list_events` with ``include_blocked=True``. A message an
+        accepted delete marked is not indexed either (RFC §10.3): its record
+        keeps its text, which no search finds.
         """
         return await self._run(self._x_search_events, query, room_id, limit)
 

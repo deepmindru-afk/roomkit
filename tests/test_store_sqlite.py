@@ -17,7 +17,8 @@ import pytest
 from roomkit import RoomKit
 from roomkit.core.mixins.verification import HELD_KEY
 from roomkit.models.channel import ChannelBinding
-from roomkit.models.enums import ChannelType, EventStatus
+from roomkit.models.enums import ChannelType, EventStatus, EventType
+from roomkit.models.event import DeleteContent
 from roomkit.models.room import Room
 from roomkit.store.sqlite import _SCHEMA_VERSION, SQLiteSchemaError, SQLiteStore
 from tests.conftest import make_event
@@ -420,6 +421,22 @@ class TestFullTextSearch:
 
         await store.delete_event("r1", event.id)
         assert await store.search_events("ephemeral") == []
+
+    async def test_a_soft_deleted_event_leaves_the_index(self, store: SQLiteStore) -> None:
+        """A deleted message's text is withheld (RFC §10.3): the search
+        finds it no more, while the stored record keeps it."""
+        await store.create_room(Room(id="r1"))
+        event = await store.commit_event("r1", make_event(room_id="r1", body="ephemeral thing"))
+        delete = make_event(room_id="r1", status=EventStatus.DELIVERED).model_copy(
+            update={"type": EventType.DELETE, "content": DeleteContent(target_event_id=event.id)}
+        )
+        deleted = event.model_copy(update={"metadata": {"deleted": True}})
+
+        await store.commit_event("r1", delete, target=deleted)
+
+        assert await store.search_events("ephemeral") == []
+        stored = await store.get_event(event.id)
+        assert stored is not None and stored.content == event.content
 
     async def test_updated_events_reindex(self, store: SQLiteStore) -> None:
         await store.create_room(Room(id="r1"))

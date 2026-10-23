@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `SQLiteStore.search_events()` no longer finds a soft-deleted message's
+  text (RFC §10.3, RMK-930): the commit that marked it `metadata.deleted`
+  indexed its original content again. A deleted message is now left out of
+  the full-text index; its record keeps the text.
+
 - The record of a failed delivery no longer undoes an edit or a delete
   (RFC §10.3, §14.3, RMK-930). Once a delivery set with a failure in it had
   run, the framework rewrote the whole event as it stood at its commit to
