@@ -1468,34 +1468,36 @@ class SQLiteStore(ConversationStore):
             for root, count, last_ts in rows
         }
 
-    async def check_idempotency(self, room_id: str, key: str, *, channel_id: str) -> bool:
+    async def check_idempotency(self, room_id: str, key: str, *, channel_id: str | None) -> bool:
         return await self._run(self._x_check_idempotency, room_id, channel_id, key)
 
-    def _x_check_idempotency(self, room_id: str, channel_id: str, key: str) -> bool:
+    def _x_check_idempotency(self, room_id: str, channel_id: str | None, key: str) -> bool:
+        # No channel: any channel of the room, a proactive key's scope (RFC §22.1).
         row = (
             self._db()
             .execute(
-                "SELECT 1 FROM idempotency WHERE room_id = ? AND channel_id = ? AND key = ?",
-                (room_id, channel_id, key),
+                "SELECT 1 FROM idempotency WHERE room_id = ? AND key = ?"
+                " AND (? IS NULL OR channel_id = ?) LIMIT 1",
+                (room_id, key, channel_id, channel_id),
             )
             .fetchone()
         )
         return row is not None
 
     async def get_event_by_idempotency_key(
-        self, room_id: str, key: str, *, channel_id: str
+        self, room_id: str, key: str, *, channel_id: str | None
     ) -> RoomEvent | None:
         return await self._run(self._x_get_event_by_idempotency_key, room_id, channel_id, key)
 
     def _x_get_event_by_idempotency_key(
-        self, room_id: str, channel_id: str, key: str
+        self, room_id: str, channel_id: str | None, key: str
     ) -> RoomEvent | None:
         row = (
             self._db()
             .execute(
-                "SELECT data FROM events WHERE room_id = ? AND source_channel_id = ?"
-                " AND idempotency_key = ?",
-                (room_id, channel_id, key),
+                "SELECT data FROM events WHERE room_id = ? AND idempotency_key = ?"
+                " AND (? IS NULL OR source_channel_id = ?) ORDER BY idx LIMIT 1",
+                (room_id, key, channel_id, channel_id),
             )
             .fetchone()
         )

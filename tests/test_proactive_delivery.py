@@ -14,9 +14,11 @@ from roomkit.delivery.base import DeliveryItem
 from roomkit.delivery.memory import InMemoryDeliveryBackend
 from roomkit.delivery.worker import execute_delivery
 from roomkit.models.context import RoomContext
+from roomkit.models.enums import ChannelCategory
 from roomkit.models.event import RoomEvent
+from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import SQLiteStore
-from tests.test_addressing import _room
+from tests.test_addressing import _RecordingAgent, _room
 from tests.test_framework import SimpleChannel
 
 
@@ -101,6 +103,83 @@ async def test_keys_survive_sqlite_restart_and_are_scoped_to_room(tmp_path: Path
         await kit.attach_channel("r2", "text")
         other = await kit.deliver("r2", "done", idempotency_key="key")
         assert not other.duplicate and other.event_id != first.event_id
+
+
+class _YieldingStore(InMemoryStore):
+    """An in-memory store whose key lookup yields once it has read, as a
+    networked one does, so that two deliveries keyed alike interleave on
+    answers that may be stale by the time they come back."""
+
+    async def get_event_by_idempotency_key(
+        self, room_id: str, key: str, *, channel_id: str | None
+    ) -> RoomEvent | None:
+        found = await super().get_event_by_idempotency_key(room_id, key, channel_id=channel_id)
+        await asyncio.sleep(0)
+        return found
+
+
+class TestAKeyNamesOnePublicationInItsRoom:
+    """RFC §22.1, §13.4, §14.3: a keyed text delivery's key names one
+    publication in its room, whatever transport carries it: looked up within
+    the room before a transport is resolved, the lookup, the resolution and
+    the commit in one section under the room lock."""
+
+    async def _kit(self) -> tuple[RoomKit, dict[str, _RecordingAgent]]:
+        kit = RoomKit(store=_YieldingStore())
+        agents = {"a": _RecordingAgent("a")}
+        kit.register_channel(agents["a"])
+        for transport in ("sms", "web"):
+            kit.register_channel(SimpleChannel(transport))
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "a", category=ChannelCategory.INTELLIGENCE)
+        await kit.attach_channel("r1", "sms")
+        return kit, agents
+
+    async def _keyed(self, kit: RoomKit) -> list[RoomEvent]:
+        timeline = await kit.store.list_events("r1", limit=50)
+        return [e for e in timeline if e.idempotency_key == "k"]
+
+    async def test_a_retry_that_resolves_another_transport_is_the_same_publication(
+        self,
+    ) -> None:
+        kit, agents = await self._kit()
+        async with kit:
+            first = await kit.deliver("r1", "done", idempotency_key="k")
+            await kit.detach_channel("r1", "sms")
+            await kit.attach_channel("r1", "web")
+
+            replay = await kit.deliver("r1", "done", idempotency_key="k")
+
+            assert (first.status, replay.status) == ("sent", "sent")
+            assert replay.duplicate and replay.event_id == first.event_id
+            assert len(await self._keyed(kit)) == 1
+            assert agents["a"].solicited == ["done"]
+
+    async def test_a_retry_finds_its_publication_with_no_transport_left(self) -> None:
+        kit, _agents = await self._kit()
+        async with kit:
+            first = await kit.deliver("r1", "done", idempotency_key="k")
+            await kit.detach_channel("r1", "sms")
+
+            replay = await kit.deliver("r1", "done", idempotency_key="k")
+
+            assert replay.status == "sent", replay.reason
+            assert replay.duplicate and replay.event_id == first.event_id
+
+    async def test_concurrent_replays_on_two_transports_publish_once(self) -> None:
+        kit, agents = await self._kit()
+        await kit.attach_channel("r1", "web")
+        async with kit:
+            results = await asyncio.gather(
+                kit.deliver("r1", "done", channel_id="sms", idempotency_key="k"),
+                kit.deliver("r1", "done", channel_id="web", idempotency_key="k"),
+            )
+
+            assert {r.status for r in results} == {"sent"}
+            assert len({r.event_id for r in results}) == 1
+            assert [r.duplicate for r in results].count(True) == 1
+            assert len(await self._keyed(kit)) == 1
+            assert agents["a"].solicited == ["done"]
 
 
 @pytest.mark.parametrize("trigger", [HookTrigger.BEFORE_DELIVER, HookTrigger.BEFORE_BROADCAST])

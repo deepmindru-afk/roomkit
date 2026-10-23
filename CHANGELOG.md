@@ -1403,6 +1403,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chat_key="c")`; a bare `TransportChannel` of type SMS writes its
   recipient under `phone_number`, not `recipient_id`.
 
+- **BREAKING — a proactive delivery's key names one publication in its
+  room, whatever transport carries it** (RFC §22.1, §13.4, §14.3,
+  RMK-930). A keyed `deliver()` was deduplicated by its transport's
+  channel only: a retry that resolved another transport (one attached, or
+  a voice host plugged in, since the first attempt) published the content
+  again, and two concurrent replays on two transports both published; a
+  retry with its transport detached was refused `no_transport` instead of
+  given its original outcome. The key is now looked up within the room,
+  whatever channel committed it, before any transport is resolved, and the
+  lookup, the transport's resolution and the publication's commit run in
+  one section under the room lock, so a concurrent replay waits for the
+  first and finds its key; a match returns the original outcome
+  (`duplicate=True`, the original event, or the blocked record's reason)
+  and publishes nothing. A replayed publication's `inbound` carries no
+  delivery handle (`inbound.delivery is None`): it has no delivery of its
+  own to follow. `ConversationStore.check_idempotency()` and
+  `get_event_by_idempotency_key()` take `channel_id=None` for any channel
+  of the room (the lowest index first when several committed the key); an
+  inbound message's key stays scoped to its source channel. An application
+  keeps its keys apart from its providers' message ids (a prefix of its
+  own): the lookup within the room does not tell them apart. Migrate: a
+  custom store accepts `channel_id=None` in both methods; a caller that
+  awaited `outcome.inbound.delivery.wait()` on a duplicate checks
+  `outcome.duplicate` first.
+
 ### Removed
 
 - **BREAKING — `roomkit.core.visibility.effective_visibility`** (RMK-902). An

@@ -966,3 +966,33 @@ async def test_a_room_is_written_if_it_still_holds_what_the_write_was_computed_f
     stored = await contract_store.get_room(room.id)
     assert stored is not None
     assert (stored.status, stored.event_count) == (RoomStatus.CLOSED, 1)
+
+
+async def test_a_key_is_found_within_its_channel_or_within_the_room(
+    contract_store: ConversationStore,
+) -> None:
+    """RFC §13.4, §14.1: a key is looked up within its room and its source
+    channel; with no channel, within the room whatever channel committed
+    it, the lowest index first, for a proactive delivery's key (§22.1)."""
+    room = await contract_store.create_room(Room(id=uuid4().hex))
+    try:
+        first = await contract_store.commit_event(
+            room.id, make_event(room_id=room.id, channel_id="sms", idempotency_key="k")
+        )
+        await contract_store.commit_event(
+            room.id, make_event(room_id=room.id, channel_id="web", idempotency_key="k")
+        )
+        web = await contract_store.get_event_by_idempotency_key(room.id, "k", channel_id="web")
+        anywhere = await contract_store.get_event_by_idempotency_key(room.id, "k", channel_id=None)
+
+        assert web is not None and web.source.channel_id == "web"
+        assert anywhere is not None and anywhere.id == first.id
+        assert await contract_store.check_idempotency(room.id, "k", channel_id=None)
+        assert not await contract_store.check_idempotency(room.id, "k", channel_id="email")
+        assert not await contract_store.check_idempotency(room.id, "other", channel_id=None)
+        assert (
+            await contract_store.get_event_by_idempotency_key(room.id, "other", channel_id=None)
+            is None
+        )
+    finally:
+        await contract_store.delete_room(room.id)

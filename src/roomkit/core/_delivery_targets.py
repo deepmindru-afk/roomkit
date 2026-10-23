@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 from roomkit.channels.base import hosts_realtime_model
@@ -51,14 +53,68 @@ def _rides_the_model(ctx: DeliveryContext, channel: object) -> bool:
     return ctx._voice_sessions is not None or hosts_realtime_model(channel)
 
 
+def _keyed_publication(ctx: DeliveryContext) -> bool:
+    """Whether *ctx* is a keyed delivery whose key names a publication in
+    its room (RFC §22.1): a key, and no explicit realtime session, whose
+    injection has an identity of its own. An instruction takes no key: it
+    is refused before anything is written."""
+    return ctx.idempotency_key is not None and ctx.session_id is None and not ctx.instruction
+
+
+async def replay_publication(ctx: DeliveryContext) -> DeliveryOutcome | None:
+    """The original outcome of a keyed publication the room already holds,
+    or ``None`` (RFC §22.1, §13.4): looked up within the room, whatever
+    channel committed it, before any transport is resolved, so a retry that
+    would resolve another transport, or none, is still that publication. A
+    store that only answers "seen" gives a blocked duplicate."""
+    if not _keyed_publication(ctx):
+        return None
+    assert ctx.idempotency_key is not None
+    store = ctx.kit.store
+    original = await store.get_event_by_idempotency_key(
+        ctx.room_id, ctx.idempotency_key, channel_id=None
+    )
+    if original is not None:
+        blocked = original.status == EventStatus.BLOCKED
+        replay = InboundResult(
+            event=original,
+            duplicate=True,
+            blocked=blocked,
+            reason=original.blocked_by if blocked else None,
+        )
+        return _text_outcome(replay)
+    if await store.check_idempotency(ctx.room_id, ctx.idempotency_key, channel_id=None):
+        return _text_outcome(InboundResult(blocked=True, reason="duplicate", duplicate=True))
+    return None
+
+
+@asynccontextmanager
+async def _publication_section(ctx: DeliveryContext) -> AsyncGenerator[None]:
+    """The room lock around a keyed publication's lookup, its transport's
+    resolution and its commit (RFC §22.1, §14.3): a concurrent replay waits
+    for the first and finds its key. Nothing held for any other delivery."""
+    if not _keyed_publication(ctx):
+        yield
+        return
+    async with ctx.kit._lock_manager.locked(ctx.room_id):  # noqa: SLF001
+        yield
+
+
 async def prepare_delivery(
     ctx: DeliveryContext,
     channel_id: str | None = None,
 ) -> tuple[str | None, DeliveryOutcome | None]:
-    """Resolve and validate the channel; pin realtime sessions before waiting."""
+    """Resolve and validate the channel; pin realtime sessions before waiting.
+
+    A keyed publication the room holds already returns its original outcome
+    first, before any transport is resolved (RFC §22.1)."""
     previous = await replay_explicit_session(ctx)
     if previous is not None:
         return None, previous
+    if channel_id is None:
+        published = await replay_publication(ctx)
+        if published is not None:
+            return None, published
     channel_id = channel_id or await ctx.resolve_channel_id()
     if channel_id is None:
         return None, unavailable("no_transport")
@@ -101,28 +157,32 @@ async def prepare_delivery(
 
 
 async def deliver_to_channel(ctx: DeliveryContext, channel_id: str) -> DeliveryOutcome:
-    """Use the existing inbound pipeline or the selected realtime provider."""
-    resolved_id, refusal = await prepare_delivery(ctx, channel_id)
-    if refusal is not None:
-        return refusal
-    assert resolved_id is not None
-    channel_id = resolved_id
-    channel = ctx.kit.get_channel(channel_id)
-    if channel is None:
-        return unavailable("channel_unavailable", [channel_id])
-    if _rides_the_model(ctx, channel):
+    """Use the existing inbound pipeline or the selected realtime provider.
+
+    A keyed publication looks its key up within the room, resolves its
+    transport and commits in one section under the room lock (RFC §22.1);
+    its turn is awaited once the lock is released."""
+    async with _publication_section(ctx):
+        published = await replay_publication(ctx)
+        if published is not None:
+            return published
+        resolved_id, refusal = await prepare_delivery(ctx, channel_id)
+        if refusal is not None:
+            return refusal
+        assert resolved_id is not None
+        channel_id = resolved_id
+        channel = ctx.kit.get_channel(channel_id)
+        if channel is None:
+            return unavailable("channel_unavailable", [channel_id])
+        result: InboundResult | None = None
+        if not _rides_the_model(ctx, channel):
+            result = await ctx.kit.process_inbound(
+                _publication(ctx, channel_id), room_id=ctx.room_id, defer_delivery=True
+            )
+    if result is None:
+        # An injection, not a publication: its identity is the voice
+        # reservation's, and the provider is not called under the room lock.
         return await deliver_to_realtime_voice(channel, ctx)
-    message = InboundMessage(
-        channel_id=channel_id,
-        sender_id=SYSTEM_SENDER_ID,
-        event_type=EventType.INSTRUCTION if ctx.instruction else EventType.MESSAGE,
-        content=TextContent(body=ctx.content),
-        metadata=ctx.metadata or {},
-        addressed_to=ctx.addressed_to,
-        idempotency_key=ctx.idempotency_key,
-        chain_depth=ctx.chain_depth,
-    )
-    result = await ctx.kit.process_inbound(message, room_id=ctx.room_id, defer_delivery=True)
     if not isinstance(result, InboundResult):
         return DeliveryOutcome(status="unknown", reason="inbound_outcome_unknown")
     if result.delivery is not None and ctx._wait_for_turn:
@@ -132,6 +192,21 @@ async def deliver_to_channel(ctx: DeliveryContext, channel_id: str) -> DeliveryO
             await result.delivery.cancel()
             raise
     return _text_outcome(result)
+
+
+def _publication(ctx: DeliveryContext, channel_id: str) -> InboundMessage:
+    """The message that publishes *ctx* into its room through *channel_id*,
+    from the framework's own sender."""
+    return InboundMessage(
+        channel_id=channel_id,
+        sender_id=SYSTEM_SENDER_ID,
+        event_type=EventType.INSTRUCTION if ctx.instruction else EventType.MESSAGE,
+        content=TextContent(body=ctx.content),
+        metadata=ctx.metadata or {},
+        addressed_to=ctx.addressed_to,
+        idempotency_key=ctx.idempotency_key,
+        chain_depth=ctx.chain_depth,
+    )
 
 
 def _text_outcome(result: InboundResult) -> DeliveryOutcome:

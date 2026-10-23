@@ -620,14 +620,27 @@ class InMemoryStore(ConversationStore):
                 summary.last_reply_at = event.created_at
         return summaries
 
-    async def check_idempotency(self, room_id: str, key: str, *, channel_id: str) -> bool:
-        return (channel_id, key) in self._idempotency.get(room_id, {})
+    async def check_idempotency(self, room_id: str, key: str, *, channel_id: str | None) -> bool:
+        return self._idempotent_event_id(room_id, key, channel_id) is not None
 
     async def get_event_by_idempotency_key(
-        self, room_id: str, key: str, *, channel_id: str
+        self, room_id: str, key: str, *, channel_id: str | None
     ) -> RoomEvent | None:
-        event_id = self._idempotency.get(room_id, {}).get((channel_id, key))
+        event_id = self._idempotent_event_id(room_id, key, channel_id)
         return self._events.get(event_id) if event_id is not None else None
+
+    def _idempotent_event_id(self, room_id: str, key: str, channel_id: str | None) -> str | None:
+        """The event *channel_id* committed *key* with in the room; with no
+        channel, the one of lowest index any channel committed it with."""
+        keys = self._idempotency.get(room_id, {})
+        if channel_id is not None:
+            return keys.get((channel_id, key))
+        found = [
+            self._events[event_id]
+            for (_channel, held), event_id in keys.items()
+            if held == key and event_id in self._events
+        ]
+        return min(found, key=lambda event: event.index).id if found else None
 
     async def get_event_count(self, room_id: str, event_filter: EventFilter | None = None) -> int:
         event_ids = self._room_events.get(room_id, [])

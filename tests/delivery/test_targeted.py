@@ -173,7 +173,12 @@ async def test_queued_keeps_incompatible_targets_and_keyed_publications_separate
             results = await asyncio.wait_for(asyncio.gather(first, *others), 2)
         for result in results:
             assert result.status == "sent"
-            await result.inbound.delivery.wait()
+            if result.duplicate:
+                # A replayed publication has no delivery of its own to follow
+                # (RFC §22.1): its original's turn is the first call's.
+                assert result.inbound.delivery is None
+            else:
+                await result.inbound.delivery.wait()
         assert agents["b"].solicited == ["second"]
         if keyed:
             assert agents["a"].solicited == ["first"]

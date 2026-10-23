@@ -738,17 +738,22 @@ class ConversationStore(ABC):
         ...
 
     @abstractmethod
-    async def check_idempotency(self, room_id: str, key: str, *, channel_id: str) -> bool:
+    async def check_idempotency(self, room_id: str, key: str, *, channel_id: str | None) -> bool:
         """Whether *channel_id* already committed *key* in the room: a key is
-        unique per room and per source channel (RFC §13.4). ``True`` if
-        duplicate."""
+        unique per room and per source channel (RFC §13.4). ``None`` asks
+        whether any channel of the room committed it: a proactive delivery's
+        key names one publication in its room, whatever transport carries it
+        (§22.1). ``True`` if duplicate."""
         ...
 
     async def get_event_by_idempotency_key(
-        self, room_id: str, key: str, *, channel_id: str
+        self, room_id: str, key: str, *, channel_id: str | None
     ) -> RoomEvent | None:
         """The event *channel_id* committed with a previously-seen idempotency
-        key in the room (RFC §13.4).
+        key in the room (RFC §13.4, §14.1), ``BLOCKED`` included. With
+        *channel_id* ``None``, the event any channel of the room committed
+        with it, for a proactive delivery's key (§22.1): the one of lowest
+        index when several did.
 
         A redelivered message must observe what its first delivery did, not a
         refusal — a webhook that retries because it never saw the first
