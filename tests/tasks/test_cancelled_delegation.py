@@ -22,6 +22,7 @@ from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import TaskStatus
 from roomkit.models.event import TextContent
 from roomkit.orchestration._worker_run import task_output
+from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.orchestration.strategies.supervisor.execution import _run_sequential
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
@@ -29,6 +30,7 @@ from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.models import DelegatedTaskResult, cancelled_task_fields
 from roomkit.telemetry.base import Attr, SpanKind
 from roomkit.telemetry.mock import MockTelemetryProvider
+from tests.bounds import CUT, expire, opened_with_cut
 from tests.test_framework import SimpleChannel
 
 LOOKUP = AITool(name="lookup", description="look up", parameters={"type": "object"})
@@ -42,6 +44,53 @@ CALL = AIResponse(
 async def _slow(name: str, arguments: dict[str, Any]) -> str:
     await asyncio.sleep(5)
     return "found"
+
+
+def _working(started: asyncio.Event) -> Any:
+    """The slow lookup, *started* set once the worker's turn runs it: its task
+    ran a line, and a cut now lands on its work."""
+
+    async def lookup(name: str, arguments: dict[str, Any]) -> str:
+        started.set()
+        return await _slow(name, arguments)
+
+    return lookup
+
+
+async def _times_out_once(
+    event: asyncio.Event, deadline: asyncio.Timeout, then: asyncio.Event | None = None
+) -> None:
+    """Expire *deadline* once *event* is set, on a slow machine as on a fast
+    one; then set *then* once the cut is on its way to the caller, for what
+    the cut call still waits for."""
+    await event.wait()
+    deadline.reschedule(asyncio.get_running_loop().time())
+    if then is None:
+        return
+    while not deadline.expired():
+        await asyncio.sleep(0)
+    then.set()
+
+
+class _Ending:
+    """A completion callback holding its task's end open until released: *seen*
+    records that it entered, then that it finished."""
+
+    def __init__(self) -> None:
+        self.seen: list[Any] = []
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def on_complete(self, result: DelegatedTaskResult) -> None:
+        self.seen.append(result.status)
+        self.entered.set()
+        await self.release.wait()
+        self.seen.append("done")
+
+
+@pytest.fixture
+def bounds(monkeypatch: pytest.MonkeyPatch) -> list[asyncio.Timeout]:
+    return opened_with_cut(monkeypatch)
 
 
 async def _found(name: str, arguments: dict[str, Any]) -> str:
@@ -90,25 +139,15 @@ async def test_an_inline_delegation_its_caller_times_out_ends_cancelled() -> Non
     slow machine as on a fast one: a fixed timeout could land before the task
     was announced, when nothing reports its end (RFC §23.3)."""
     in_turn = asyncio.Event()
-
-    async def slow(name: str, arguments: dict[str, Any]) -> str:
-        in_turn.set()
-        return await _slow(name, arguments)
-
-    kit, telemetry, completed = await _kit(handler=slow)
+    kit, telemetry, completed = await _kit(handler=_working(in_turn))
     ended: list[DelegatedTaskResult] = []
-    loop = asyncio.get_running_loop()
 
     async def on_complete(result: DelegatedTaskResult) -> None:
         ended.append(result)
 
-    async def times_out_in_turn(deadline: asyncio.Timeout) -> None:
-        await in_turn.wait()
-        deadline.reschedule(loop.time())
-
     with pytest.raises(TimeoutError):
         async with asyncio.timeout(None) as deadline:
-            watcher = asyncio.ensure_future(times_out_in_turn(deadline))
+            watcher = asyncio.ensure_future(_times_out_once(in_turn, deadline))
             await kit.delegate("p", "worker", "go", wait=True, on_complete=on_complete)
     await watcher
     await _settle(completed)
@@ -120,14 +159,15 @@ async def test_an_inline_delegation_its_caller_times_out_ends_cancelled() -> Non
 
 
 async def test_a_background_delegation_the_runner_cancels_ends_cancelled() -> None:
-    kit, telemetry, completed = await _kit()
+    started = asyncio.Event()
+    kit, telemetry, completed = await _kit(handler=_working(started))
     ended: list[DelegatedTaskResult] = []
 
     async def on_complete(result: DelegatedTaskResult) -> None:
         ended.append(result)
 
     task = await kit.delegate("p", "worker", "go", on_complete=on_complete)
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(started.wait(), 5)
 
     assert await kit.task_runner.cancel(task.id) is True
     await _settle(completed)
@@ -152,9 +192,10 @@ async def test_a_task_cancelled_before_it_ran_a_line_still_ends() -> None:
 
 
 async def test_closing_the_runner_ends_its_tasks_cancelled() -> None:
-    kit, _, completed = await _kit()
+    started = asyncio.Event()
+    kit, _, completed = await _kit(handler=_working(started))
     task = await kit.delegate("p", "worker", "go")
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(started.wait(), 5)
 
     await kit.task_runner.close()
 
@@ -164,14 +205,15 @@ async def test_closing_the_runner_ends_its_tasks_cancelled() -> None:
 
 
 async def test_the_notified_agent_is_told_its_task_was_cancelled() -> None:
-    kit, _, completed = await _kit()
+    started = asyncio.Event()
+    kit, _, completed = await _kit(handler=_working(started))
     notified = AIChannel("assistant", provider=MockAIProvider(responses=["ok"]))
     kit.register_channel(notified)
     kit.register_channel(SimpleChannel("phone"))
     await kit.attach_channel("p", "phone")
     await kit.attach_channel("p", "assistant", category=ChannelCategory.INTELLIGENCE)
     task = await kit.delegate("p", "worker", "go", notify="assistant")
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(started.wait(), 5)
 
     await kit.task_runner.cancel(task.id)
     for _ in range(100):
@@ -244,25 +286,50 @@ async def test_a_supervisors_worker_is_free_once_its_task_was_cancelled() -> Non
     )
     await kit.attach_channel("r", "sms")
 
-    async def ask(text: str) -> None:
+    async def ask(text: str, delegations: int) -> None:
         await kit.process_inbound(
             InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body=text))
         )
-        await asyncio.sleep(0.2)
+        # The delegation reaches an async hook: wait for it, not a fixed delay.
+        async with asyncio.timeout(5):
+            while len(delegated) < delegations:
+                await asyncio.sleep(0.01)
 
-    await ask("Find it.")
+    await ask("Find it.", 1)
     await kit.task_runner.cancel(delegated[0])
-    await ask("Try again.")
+    await ask("Try again.", 2)
 
     # The second call delegated anew, the worker no longer "already running".
     assert len(delegated) == 2
+
+    async def told_not_completed() -> bool:
+        entries = await kit.status_bus.recent(50)
+        return any(
+            (e.agent_id, e.action, e.status, e.detail)
+            == ("orchestration", "worker", StatusLevel.FAILED, "not completed")
+            for e in entries
+        )
+
+    # And the cancelled run's line ends as not completed.
+    async with asyncio.timeout(5):
+        while not await told_not_completed():
+            await asyncio.sleep(0.01)
     await kit.close()
 
 
-async def test_a_supervisors_task_timeout_ends_the_task_cancelled() -> None:
-    kit, telemetry, completed = await _kit()
+async def test_a_supervisors_task_timeout_ends_the_task_cancelled(
+    bounds: list[asyncio.Timeout],
+) -> None:
+    started = asyncio.Event()
+    kit, telemetry, completed = await _kit(handler=_working(started))
 
-    await _run_sequential(kit, "p", [kit.channels["worker"]], "go", task_timeout=0.2)  # type: ignore[list-item]
+    async def times_out_once_working() -> None:
+        await started.wait()
+        expire(bounds)
+
+    watcher = asyncio.ensure_future(times_out_once_working())
+    await _run_sequential(kit, "p", [kit.channels["worker"]], "go", task_timeout=CUT)  # type: ignore[list-item]
+    await watcher
     await _settle(completed)
 
     assert completed == [(TaskStatus.CANCELLED, "cancelled")]
@@ -271,16 +338,16 @@ async def test_a_supervisors_task_timeout_ends_the_task_cancelled() -> None:
 
 
 async def test_a_cancel_cut_while_the_task_ends_still_ends_it() -> None:
-    kit, _, completed = await _kit()
+    started, ending = asyncio.Event(), _Ending()
+    kit, _, completed = await _kit(handler=_working(started))
 
-    async def slow_on_complete(result: DelegatedTaskResult) -> None:
-        await asyncio.sleep(0.2)
-
-    task = await kit.delegate("p", "worker", "go", on_complete=slow_on_complete)
-    await asyncio.sleep(0.1)
+    task = await kit.delegate("p", "worker", "go", on_complete=ending.on_complete)
+    await asyncio.wait_for(started.wait(), 5)
     cancelling = asyncio.create_task(kit.task_runner.cancel(task.id))
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(ending.entered.wait(), 5)
     cancelling.cancel()
+    await asyncio.gather(cancelling, return_exceptions=True)
+    ending.release.set()
 
     assert (await task.wait(timeout=1)).status == TaskStatus.CANCELLED
     assert completed == [(TaskStatus.CANCELLED, "cancelled")]
@@ -290,33 +357,23 @@ async def test_a_cancel_cut_while_the_task_ends_still_ends_it() -> None:
 DONE = [AIResponse(content="Done.")]
 
 
-def _slow_completion(seen: list[Any]) -> Any:
-    async def on_complete(result: DelegatedTaskResult) -> None:
-        seen.append(result.status)
-        await asyncio.sleep(0.3)
-        seen.append("done")
-
-    return on_complete
-
-
 @pytest.mark.parametrize("door", ["cancel", "close"])
 async def test_a_task_that_ran_ends_as_it_stands_whatever_cancels_it(door: str) -> None:
     """Its work done, a task is ending (its callback, the hand-back): a
     cancel then ends it once, as it stands, never a second time cancelled."""
     kit, telemetry, completed = await _kit(DONE)
-    seen: list[Any] = []
-    task = await kit.delegate("p", "worker", "go", on_complete=_slow_completion(seen))
-    for _ in range(100):
-        if seen:
-            break
-        await asyncio.sleep(0.01)
+    ending = _Ending()
+    task = await kit.delegate("p", "worker", "go", on_complete=ending.on_complete)
+    await asyncio.wait_for(ending.entered.wait(), 5)
 
+    # Released as the cancel or the close is asked: it resumes once they wait.
+    ending.release.set()
     if door == "cancel":
         assert await kit.task_runner.cancel(task.id) is False
     else:
         await kit.task_runner.close()
 
-    assert seen == [TaskStatus.COMPLETED, "done"]
+    assert ending.seen == [TaskStatus.COMPLETED, "done"]
     assert completed == [(TaskStatus.COMPLETED, None)]
     assert task.status == TaskStatus.COMPLETED
     room = await kit.get_room(task.child_room_id)
@@ -326,20 +383,27 @@ async def test_a_task_that_ran_ends_as_it_stands_whatever_cancels_it(door: str) 
 
 
 async def test_a_cancel_cut_while_the_worker_unwinds_still_ends_the_task() -> None:
+    started, unwinding, unwound = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
     async def slow_cleanup(name: str, arguments: dict[str, Any]) -> str:
+        started.set()
         try:
             await asyncio.sleep(5)
         except asyncio.CancelledError:
-            await asyncio.shield(asyncio.sleep(0.3))
+            unwinding.set()
+            await asyncio.shield(unwound.wait())
             raise
         return "found"
 
     kit, telemetry, completed = await _kit(handler=slow_cleanup)
     task = await kit.delegate("p", "worker", "go")
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(started.wait(), 5)
 
     with pytest.raises(TimeoutError):
-        await asyncio.wait_for(kit.task_runner.cancel(task.id), 0.1)
+        async with asyncio.timeout(None) as deadline:
+            watcher = asyncio.ensure_future(_times_out_once(unwinding, deadline, unwound))
+            await kit.task_runner.cancel(task.id)
+    await watcher
 
     assert (await task.wait(timeout=1)).status == TaskStatus.CANCELLED
     assert completed == [(TaskStatus.CANCELLED, "cancelled")]
@@ -349,15 +413,20 @@ async def test_a_cancel_cut_while_the_worker_unwinds_still_ends_the_task() -> No
 
 async def test_an_inline_caller_timing_out_while_the_task_ends_leaves_its_end_whole() -> None:
     kit, telemetry, completed = await _kit(DONE)
-    seen: list[Any] = []
+    ending = _Ending()
 
     with pytest.raises(TimeoutError):
-        await asyncio.wait_for(
-            kit.delegate("p", "worker", "go", wait=True, on_complete=_slow_completion(seen)), 0.1
-        )
-    await asyncio.sleep(0.4)
+        async with asyncio.timeout(None) as deadline:
+            ended = _times_out_once(ending.entered, deadline, ending.release)
+            watcher = asyncio.ensure_future(ended)
+            await kit.delegate("p", "worker", "go", wait=True, on_complete=ending.on_complete)
+    await watcher
+    # The end goes on past the caller: its callback, then its hook.
+    async with asyncio.timeout(5):
+        while not (completed and ending.seen[-1:] == ["done"]):
+            await asyncio.sleep(0.01)
 
-    assert seen == [TaskStatus.COMPLETED, "done"]
+    assert ending.seen == [TaskStatus.COMPLETED, "done"]
     assert completed == [(TaskStatus.COMPLETED, None)]
     assert _delegation_spans(telemetry) == [("delegation.inline", "ok")]
     await kit.close()
@@ -366,13 +435,18 @@ async def test_an_inline_caller_timing_out_while_the_task_ends_leaves_its_end_wh
 @pytest.mark.parametrize("wait", [True, False])
 async def test_a_delegation_cut_before_its_task_ran_ends_it(wait: bool) -> None:
     kit, telemetry, completed = await _kit()
+    announcing = asyncio.Event()
 
     @kit.hook(HookTrigger.ON_TASK_DELEGATED, execution=HookExecution.ASYNC, name="slow")
     async def slow_announce(event: Any, ctx: Any) -> None:
+        announcing.set()
         await asyncio.sleep(1)
 
     with pytest.raises(TimeoutError):
-        await asyncio.wait_for(kit.delegate("p", "worker", "go", wait=wait), 0.1)
+        async with asyncio.timeout(None) as deadline:
+            watcher = asyncio.ensure_future(_times_out_once(announcing, deadline))
+            await kit.delegate("p", "worker", "go", wait=wait)
+    await watcher
     await _settle(completed)
 
     assert completed == [(TaskStatus.CANCELLED, "cancelled")]
@@ -384,9 +458,10 @@ async def test_a_delegation_cut_before_its_task_ran_ends_it(wait: bool) -> None:
 async def test_the_runner_ends_a_task_whose_handle_was_cancelled() -> None:
     """A handle's own ``cancel`` only unblocks its waiters: the runner still
     ends the task when it cancels it."""
-    kit, telemetry, completed = await _kit()
+    started = asyncio.Event()
+    kit, telemetry, completed = await _kit(handler=_working(started))
     task = await kit.delegate("p", "worker", "go")
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(started.wait(), 5)
 
     task.cancel()
     assert await kit.task_runner.cancel(task.id) is True
@@ -397,14 +472,15 @@ async def test_the_runner_ends_a_task_whose_handle_was_cancelled() -> None:
 
 
 async def test_closing_the_kit_hands_nothing_back() -> None:
-    kit, _, completed = await _kit()
+    started = asyncio.Event()
+    kit, _, completed = await _kit(handler=_working(started))
     notified = AIChannel("assistant", provider=MockAIProvider(responses=["ok"]))
     kit.register_channel(notified)
     kit.register_channel(SimpleChannel("phone"))
     await kit.attach_channel("p", "phone")
     await kit.attach_channel("p", "assistant", category=ChannelCategory.INTELLIGENCE)
     await kit.delegate("p", "worker", "go", notify="assistant")
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(started.wait(), 5)
 
     await kit.close()
 
@@ -414,14 +490,15 @@ async def test_closing_the_kit_hands_nothing_back() -> None:
 
 
 async def test_a_task_delegated_while_the_runner_closes_ends_at_once() -> None:
-    kit, _, completed = await _kit()
+    started = asyncio.Event()
+    kit, _, completed = await _kit(handler=_working(started))
     again: list[Any] = []
 
     async def delegate_again(result: DelegatedTaskResult) -> None:
         again.append(await kit.delegate("p", "worker", "again"))
 
     await kit.delegate("p", "worker", "go", on_complete=delegate_again)
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(started.wait(), 5)
 
     await kit.task_runner.close()
 
@@ -442,14 +519,16 @@ async def test_an_inline_task_records_its_end_on_its_child_room() -> None:
 
 
 async def test_a_cancelled_task_span_carries_how_long_it_ran() -> None:
-    kit, telemetry, completed = await _kit()
+    started = asyncio.Event()
+    kit, telemetry, completed = await _kit(handler=_working(started))
     task = await kit.delegate("p", "worker", "go")
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(started.wait(), 5)
+    await asyncio.sleep(0.05)  # the time it ran, which its span reads
 
     await kit.task_runner.cancel(task.id)
 
     [span] = [s for s in telemetry.completed_spans if s.kind == SpanKind.DELEGATION]
-    assert span.attributes[Attr.DURATION_MS] >= 150
+    assert span.attributes[Attr.DURATION_MS] >= 40
     await kit.close()
 
 
@@ -471,7 +550,10 @@ async def test_a_cancel_that_took_a_task_ends_it_once_though_its_worker_finished
     """A worker that swallows the cancellation still returns its answer: the
     cancel took the task's end, and the task ends once, cancelled."""
 
+    started = asyncio.Event()
+
     async def swallowing(kit: Any, child_room_id: str, task: str, **kw: Any) -> str:
+        started.set()
         try:
             await asyncio.sleep(5)
         except asyncio.CancelledError:
@@ -481,10 +563,12 @@ async def test_a_cancel_that_took_a_task_ends_it_once_though_its_worker_finished
     monkeypatch.setattr(delegation, "run_agent_in_child_room", swallowing)
     kit, telemetry, completed = await _kit()
     task = await kit.delegate("p", "worker", "go")
-    await asyncio.sleep(0.1)
+    await asyncio.wait_for(started.wait(), 5)
 
+    # The cancel waits for the task's work and its end: a second end would be
+    # written by then, its hook as soon as the first's.
     assert await kit.task_runner.cancel(task.id) is True
-    await asyncio.sleep(0.1)
+    await _settle(completed)
 
     assert completed == [(TaskStatus.CANCELLED, "cancelled")]
     assert task.status == TaskStatus.CANCELLED
@@ -494,17 +578,15 @@ async def test_a_cancel_that_took_a_task_ends_it_once_though_its_worker_finished
 
 async def test_a_task_that_ran_ends_whole_though_its_runner_task_is_cancelled() -> None:
     kit, _, completed = await _kit(DONE)
-    seen: list[Any] = []
-    task = await kit.delegate("p", "worker", "go", on_complete=_slow_completion(seen))
-    for _ in range(100):
-        if seen:
-            break
-        await asyncio.sleep(0.01)
+    ending = _Ending()
+    task = await kit.delegate("p", "worker", "go", on_complete=ending.on_complete)
+    await asyncio.wait_for(ending.entered.wait(), 5)
 
     kit.task_runner._tasks[task.id].cancel()  # type: ignore[attr-defined]
+    ending.release.set()
 
     assert (await task.wait(timeout=1)).status == TaskStatus.COMPLETED
-    assert seen == [TaskStatus.COMPLETED, "done"]
+    assert ending.seen == [TaskStatus.COMPLETED, "done"]
     assert completed == [(TaskStatus.COMPLETED, None)]
     await kit.close()
 
@@ -540,7 +622,10 @@ async def test_an_inline_task_whose_turn_ended_before_its_caller_was_cut_ends_co
 
     task = asyncio.create_task(delegate())
     await asyncio.wait({task})
-    await asyncio.sleep(0.05)
+    # The end reaches an async hook: wait for it, not a fixed delay.
+    async with asyncio.timeout(5):
+        while not ends:
+            await asyncio.sleep(0.01)
     await kit.close()
 
     assert task.cancelled()

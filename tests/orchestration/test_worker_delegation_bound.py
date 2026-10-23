@@ -26,15 +26,12 @@ from roomkit.orchestration.status_bus import StatusLevel
 from roomkit.orchestration.strategies.supervisor import Supervisor
 from roomkit.providers.ai.base import AIContext, AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.bounds import CUT, expire, opened_with_cut
 from tests.test_framework import SimpleChannel
 
 _LOOKUP = AITool(name="lookup", description="Look it up.", parameters={"type": "object"})
-_BOUND = 0.3
-# A delegating call is cut once its worker works: longer than the supervisor
-# takes to frame the worker's task first (a turn of its own, across Redis on
-# a slow runner too), shorter than the worker's work.
-_CALL_BOUND = 1.0
 _WORK = 2.5
+_TERMINAL = {StatusLevel.FAILED, StatusLevel.COMPLETED}
 
 DOORS = {
     "parallel": ("delegate_workers", {"strategy": "parallel"}),
@@ -59,9 +56,28 @@ class _CallsOnce(MockAIProvider):
         return AIResponse(content="", finish_reason="tool_calls", tool_calls=[call])
 
 
-async def _slow_lookup(name: str, arguments: dict[str, Any]) -> str:
-    await asyncio.sleep(_WORK)
-    return "found"
+class _Cut:
+    """Expires every bound opened with ``CUT`` seconds once the worker's tool
+    is called: the cut lands while the worker works, past the supervisor's
+    own framing pass, bounded alike before the worker started."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._bounds = opened_with_cut(monkeypatch)
+
+    async def lookup(self, name: str, arguments: dict[str, Any]) -> str:
+        expire(self._bounds)
+        await asyncio.sleep(_WORK)
+        return "found"
+
+
+@pytest.fixture
+def cut(monkeypatch: pytest.MonkeyPatch) -> _Cut:
+    return _Cut(monkeypatch)
+
+
+async def _worker_entries(kit: RoomKit) -> list[tuple[StatusLevel, str]]:
+    entries = await kit.status_bus.recent(20, agent_id="worker")
+    return [(entry.status, entry.detail) for entry in entries]
 
 
 @dataclass
@@ -75,7 +91,7 @@ class _Turn:
     elapsed: float = 0.0
 
 
-async def _run(door: str, *, bound: float = _BOUND, call_bound: float | None = None) -> _Turn:
+async def _run(door: str, cut: _Cut, *, bound: float, call_bound: float | None = None) -> _Turn:
     """One supervisor turn through *door*, its workers bounded by *bound*, its
     delegating call by *call_bound* when given."""
     tool, settings = DOORS[door]
@@ -87,7 +103,7 @@ async def _run(door: str, *, bound: float = _BOUND, call_bound: float | None = N
         "worker",
         provider=_CallsOnce("lookup"),
         tools=[_LOOKUP],
-        tool_handler=_slow_lookup,
+        tool_handler=cut.lookup,
         tool_search=False,
     )
     kit.register_channel(supervisor)
@@ -111,31 +127,32 @@ async def _run(door: str, *, bound: float = _BOUND, call_bound: float | None = N
         InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Find it."))
     )
     turn.elapsed = time.monotonic() - started
-    # The worker's end reaches an async hook: wait for it, not a fixed delay.
+    # The worker's end reaches an async hook, its terminal entry the status bus
+    # in the background: wait for both, not a fixed delay.
     async with asyncio.timeout(5):
-        while not turn.ends:
+        while not (turn.ends and turn.entries and turn.entries[-1][0] in _TERMINAL):
             await asyncio.sleep(0.01)
-    await asyncio.sleep(0.05)
-    entries = await kit.status_bus.recent(20, agent_id="worker")
-    turn.entries = [(entry.status, entry.detail) for entry in entries]
+            turn.entries = await _worker_entries(kit)
     await kit.close()
     return turn
 
 
 @EVERY_DOOR
-async def test_a_worker_past_its_bound_is_cut_and_the_call_answers_once(door: str) -> None:
-    turn = await _run(door)
+async def test_a_worker_past_its_bound_is_cut_and_the_call_answers_once(
+    door: str, cut: _Cut
+) -> None:
+    turn = await _run(door, cut, bound=CUT)
 
     assert turn.ends == ["cancelled"]
     assert turn.elapsed < _WORK
     assert len(turn.reports) == 1
     assert "Tool call cancelled" not in turn.reports[0]
-    assert turn.entries[-1] == (StatusLevel.FAILED, "The task timed out after 0.3s.")
+    assert turn.entries[-1] == (StatusLevel.FAILED, f"The task timed out after {CUT:g}s.")
 
 
 @EVERY_DOOR
-async def test_a_delegation_its_call_cut_posts_the_worker_failed(door: str) -> None:
-    turn = await _run(door, bound=30.0, call_bound=_CALL_BOUND)
+async def test_a_delegation_its_call_cut_posts_the_worker_failed(door: str, cut: _Cut) -> None:
+    turn = await _run(door, cut, bound=30.0, call_bound=CUT)
 
     assert turn.ends == ["cancelled"]
     assert turn.entries[-1] == (StatusLevel.FAILED, "cancelled")

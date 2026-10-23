@@ -12,7 +12,13 @@ from roomkit.orchestration._worker_run import WorkerStatus, follow_worker, run_w
 from roomkit.tasks.handback import CALLER_HANDS_BACK
 from roomkit.tasks.status import post_task_progress, room_task_lines
 from roomkit.tools.context import tool_turn_context
+from tests.bounds import CUT, expire, opened_with_cut
 from tests.tasks.test_cancel_task import _Endless, _Room
+
+
+@pytest.fixture
+def bounds(monkeypatch: pytest.MonkeyPatch) -> list[asyncio.Timeout]:
+    return opened_with_cut(monkeypatch)
 
 
 async def _worker_run(
@@ -35,10 +41,10 @@ async def _worker_run(
 # A Loop's producer posts its run under an action of its own (RMK-875 review).
 @pytest.mark.parametrize("action", ["task", "iteration"])
 async def test_a_worker_cut_after_its_progress_leaves_its_line_ended(
-    door: str, end: str, action: str
+    door: str, end: str, action: str, bounds: list[asyncio.Timeout]
 ) -> None:
     room = await _Room(_Endless()).open()
-    run = await _worker_run(room, door, timeout=None if end == "cancelled" else 0.5, action=action)
+    run = await _worker_run(room, door, timeout=None if end == "cancelled" else CUT, action=action)
     await asyncio.wait_for(room.worker.started.wait(), 5)
     child = next(r.id for r in await room.kit.store.list_rooms() if r.id.startswith("r::task-"))
     with tool_turn_context(room_id=child):
@@ -46,6 +52,8 @@ async def test_a_worker_cut_after_its_progress_leaves_its_line_ended(
 
     if end == "cancelled":
         run.cancel()
+    else:
+        expire(bounds)  # the run's timeout, once the worker posted its progress
     await asyncio.gather(run, return_exceptions=True)
     lines = await room_task_lines(room.kit.status_bus, "r", 50)
     await room.kit.close()

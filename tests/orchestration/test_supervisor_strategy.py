@@ -351,8 +351,10 @@ class TestBackgroundDedup:
             )
         assert r1["status"] == "delegated"
 
-        # Wait for background task to complete (CI can be slow)
-        await asyncio.sleep(2.0)
+        # The worker is freed before its outcome is handed back to the supervisor.
+        async with asyncio.timeout(5.0):
+            while not supervisor.provider.calls:
+                await asyncio.sleep(0.01)
 
         # Now should be able to delegate again
         with owner_tool_call_in(kit, "boss", "room"):

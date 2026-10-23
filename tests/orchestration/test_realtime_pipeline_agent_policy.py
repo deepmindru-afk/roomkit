@@ -104,15 +104,21 @@ async def _call(
     return provider.tool_results[-1][2]
 
 
+def _configurations(provider: MockRealtimeProvider) -> list[Any]:
+    """Each configuration the session was given: at its connect, a reconnect
+    included, or a reconfigure."""
+    return [c for c in provider.calls if c.method in ("connect", "reconfigure")]
+
+
 def _declared(provider: MockRealtimeProvider) -> set[str]:
-    calls = [c for c in provider.calls if c.method in ("connect", "reconfigure")]
+    calls = _configurations(provider)
     return {t["name"] for t in calls[-1].args.get("tools") or [] if t.get("name")}
 
 
 async def _hand_off(
     channel: RealtimeVoiceChannel, provider: MockRealtimeProvider, session: Any, target: str
 ) -> None:
-    reconfigured = len([c for c in provider.calls if c.method == "reconfigure"])
+    configured = len(_configurations(provider))
     handoff = await _call(
         channel,
         provider,
@@ -121,10 +127,9 @@ async def _hand_off(
         {"target": target, "reason": "r", "summary": "s"},
     )
     assert json.loads(handoff)["accepted"] is True
-    for _ in range(100):
-        if len([c for c in provider.calls if c.method == "reconfigure"]) > reconfigured:
-            return
-        await asyncio.sleep(0.01)
+    async with asyncio.timeout(1.0):
+        while len(_configurations(provider)) <= configured:
+            await asyncio.sleep(0.01)
 
 
 async def test_the_active_agents_policy_holds_on_its_session() -> None:

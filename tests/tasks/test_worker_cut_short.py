@@ -35,7 +35,6 @@ from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.models import DelegatedTaskResult, task_work
 from tests.test_channels.test_acp import _channel
 from tests.test_framework import AILikeChannel, SimpleChannel
-from tests.test_turn_end_doors import _Late
 
 LOOKUP = AITool(name="lookup", description="look up", parameters={"type": "object"})
 LOOPING = AIResponse(
@@ -506,13 +505,12 @@ async def test_a_delegation_keeps_its_agent_s_answer_when_another_returns_first(
     worker: the task keeps the worker's answer, whatever the order its
     responders returned in (RFC §23.3 step 6)."""
     kit = RoomKit()
-    worker = MockAIProvider(responses=["From the worker."], streaming=streaming)
-    kit.register_channel(_Late("worker", provider=worker))
-    kit.register_channel(
-        Agent(
-            "helper", provider=MockAIProvider(responses=["From the helper."], streaming=streaming)
-        )
+    helper = _Answers(
+        "helper", provider=MockAIProvider(responses=["From the helper."], streaming=streaming)
     )
+    worker = MockAIProvider(responses=["From the worker."], streaming=streaming)
+    kit.register_channel(_After("worker", helper, provider=worker))
+    kit.register_channel(helper)
     kit.register_channel(SimpleChannel("email-out"))
     await kit.create_room(room_id="parent")
     await kit.attach_channel("parent", "email-out")
@@ -523,6 +521,36 @@ async def test_a_delegation_keeps_its_agent_s_answer_when_another_returns_first(
     assert task.result is not None
     assert (task.result.status, task.result.output) == (TaskStatus.COMPLETED, "From the worker.")
     await kit.close()
+
+
+class _Answers(Agent):
+    """An agent that tells when its turn in a task's child room returned."""
+
+    def __init__(self, channel_id: str, **kwargs: Any) -> None:
+        super().__init__(channel_id, **kwargs)
+        self.returned = asyncio.Event()
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        output = await super().on_event(event, binding, context)
+        if event.room_id != "parent":
+            self.returned.set()
+        return output
+
+
+class _After(Agent):
+    """An agent whose turn returns once *first*'s has."""
+
+    def __init__(self, channel_id: str, first: _Answers, **kwargs: Any) -> None:
+        super().__init__(channel_id, **kwargs)
+        self._first = first
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        await asyncio.wait_for(self._first.returned.wait(), 5)
+        return await super().on_event(event, binding, context)
 
 
 class _Down(MockAIProvider):
