@@ -1073,9 +1073,16 @@ class SQLiteStore(ConversationStore):
         participant_id: str,
         identity_id: str | None = None,
         room_filter: RoomFilter | None = None,
+        *,
+        recipient_key: str | None = None,
     ) -> str | None:
         return await self._run(
-            self._x_find_room_id_by_binding, channel_id, participant_id, identity_id, room_filter
+            self._x_find_room_id_by_binding,
+            channel_id,
+            participant_id,
+            identity_id,
+            room_filter,
+            recipient_key,
         )
 
     def _x_find_room_id_by_binding(
@@ -1084,10 +1091,24 @@ class SQLiteStore(ConversationStore):
         participant_id: str,
         identity_id: str | None,
         room_filter: RoomFilter | None,
+        recipient_key: str | None,
     ) -> str | None:
         names = sorted(sender_names(participant_id, identity_id))
-        where = ["b.channel_id = ?", f"b.participant_id IN ({_placeholders(names)})"]
+        named = f"b.participant_id IN ({_placeholders(names)})"
         params: list[Any] = [channel_id, *names]
+        if recipient_key is not None:
+            # A binding naming no correspondent, not a group, names its
+            # recipient (RFC §5.7): its value under the key, a string or a
+            # number, read whatever characters the key holds.
+            named = (
+                f"({named} OR (b.participant_id IS NULL"  # nosec B608  # fragments are internal, values parameterised
+                " AND NOT COALESCE(json_extract(b.data, '$.group'), 0)"
+                " AND EXISTS (SELECT 1 FROM json_each(b.data, '$.metadata')"
+                " WHERE key = ? AND type IN ('text', 'integer', 'real')"
+                " AND CAST(value AS TEXT) = ?)))"
+            )
+            params += [recipient_key, participant_id]
+        where = ["b.channel_id = ?", named]
         _filter_rooms(where, params, room_filter)
         row = (
             self._db()

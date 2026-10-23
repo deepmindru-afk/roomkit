@@ -464,6 +464,42 @@ class TestADeliveryStatus:
 
         assert seen == [bob_room, alice_room]
 
+    async def test_its_recipient_is_found_as_step_one_finds_a_sender(
+        self, store: ConversationStore
+    ) -> None:
+        """RFC §10.4: the binding naming the recipient, read as step 1 reads a
+        sender: in the channel's form, and through a binding's recipient
+        when it names no correspondent."""
+        shop = _Shop(store)
+        await shop.open_room_for(CAROL)
+        await shop.kit.create_room(room_id="stored")
+        await store.add_binding(
+            ChannelBinding(
+                room_id="stored",
+                channel_id="sms",
+                channel_type="sms",
+                metadata={"phone_number": ALICE},
+            )
+        )
+        seen: list[str] = []
+
+        @shop.kit.hook(HookTrigger.ON_DELIVERY_STATUS)
+        async def record(status: Any, ctx: Any) -> None:
+            seen.append(ctx.room.id)
+
+        for recipient in ("+1 (555) 000-0001", "+1 555 000 0003"):
+            await shop.kit.process_delivery_status(
+                DeliveryStatus(
+                    provider="mock",
+                    message_id=f"m-{recipient}",
+                    status="delivered",
+                    channel_id="sms",
+                    recipient=recipient,
+                )
+            )
+
+        assert seen == ["stored", f"room-{CAROL}"]
+
     async def test_one_naming_no_known_recipient_is_not_given_a_room(
         self, store: ConversationStore
     ) -> None:
@@ -623,6 +659,29 @@ class TestEitherNameFindsTheNewestRoom:
         await shop.open_free_room()
 
         assert await shop.room_of(ALICE) == "joined-here"
+
+    async def test_a_binding_stored_with_a_recipient_alone_names_its_recipient(
+        self, store: ConversationStore
+    ) -> None:
+        """RFC §5.7, §10.4 step 1: a binding stored with a recipient and no
+        correspondent (written to the store by the host, or before bindings
+        named one) is its recipient's conversation, found through it on a
+        number serving other rooms, and its recipient recorded on it."""
+        shop = _Shop(store)
+        await shop.open_room_for(CAROL)
+        await shop.kit.create_room(room_id="stored")
+        await store.add_binding(
+            ChannelBinding(
+                room_id="stored",
+                channel_id="sms",
+                channel_type="sms",
+                metadata={"phone_number": ALICE},
+            )
+        )
+
+        assert await shop.room_of(ALICE) == "stored"
+        assert await shop.named_on("stored") == ALICE
+        assert await shop.room_of(BOB) != "stored"
 
 
 class TestTheFrameworksOwnSender:

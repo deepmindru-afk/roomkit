@@ -70,6 +70,22 @@ def reached_as(participant: Participant, channel_id: str, names: frozenset[str])
     )
 
 
+def names_by_recipient(binding: ChannelBinding, address: str, recipient_key: str | None) -> bool:
+    """Whether *binding* names *address* through its recipient (RFC §5.7,
+    §10.4 step 1): a binding stored with a recipient and no correspondent,
+    and not ``group``, is its recipient's conversation.
+
+    The recipient is the value under *recipient_key*, the channel's, a
+    string or a number (a chat id), compared as stored: the framework writes
+    a recipient in its channel's form (§5.7)."""
+    if recipient_key is None or binding.participant_id is not None or binding.group:
+        return False
+    value = binding.metadata.get(recipient_key)
+    if isinstance(value, bool) or not isinstance(value, str | int | float):
+        return False
+    return str(value) == address
+
+
 def _recency(room: Room) -> tuple[float, str]:
     """A room's place in creation order: created_at, then id. Timestamps,
     since a naive created_at beside an aware one would make the datetimes
@@ -483,6 +499,8 @@ class ConversationStore(ABC):
         participant_id: str,
         identity_id: str | None = None,
         room_filter: RoomFilter | None = None,
+        *,
+        recipient_key: str | None = None,
     ) -> str | None:
         """The newest room whose binding of *channel_id* names the sender
         (RFC §10.4 step 1, §14.1): its correspondent is *participant_id*, the
@@ -490,7 +508,11 @@ class ConversationStore(ABC):
         the address to (``None`` when none).
 
         A binding names its correspondent (RFC §5.7): the sender a room was
-        created for, or the first one routed to it. It speaks for its own
+        created for, or the first one routed to it. One stored with a
+        recipient and no correspondent, and not ``group``, names its
+        recipient: its value under *recipient_key*, the channel's key, which
+        a caller passes on a channel whose recipient is a conversation's
+        address (:func:`names_by_recipient`). A binding speaks for its own
         channel only, so a correspondent of one number is not taken to that
         room when they write to another (§10.4 step 1). The newest room either
         name finds wins: the most recently created, the greatest id breaking
@@ -507,7 +529,10 @@ class ConversationStore(ABC):
         )
         for room_id in reversed(room_ids):
             binding = await self.get_binding(room_id, channel_id)
-            if binding is not None and binding.participant_id in names:
+            if binding is not None and (
+                binding.participant_id in names
+                or names_by_recipient(binding, participant_id, recipient_key)
+            ):
                 return room_id
         return None
 

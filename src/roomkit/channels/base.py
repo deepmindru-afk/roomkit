@@ -267,6 +267,19 @@ class Channel(ABC):
         """
         return address
 
+    @property
+    def recipient_key(self) -> str | None:
+        """The binding metadata key this channel's recipient is written under
+        (RFC §5.7, Appendix A), when the recipient is a conversation's
+        address: ``phone_number``, ``email_address``, ``telegram_chat_id``...
+
+        Routing reads a binding's recipient under it (§10.4 step 1). None on
+        a channel that delivers to a destination of its own (a WebSocket's
+        connections, a webhook's URL, a voice session), whose recipient names
+        no one: the default.
+        """
+        return None
+
     def recipient_address(self, binding: ChannelBinding) -> str | None:
         """The correspondent's address *binding* delivers to, normalized; None if none.
 

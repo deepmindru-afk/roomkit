@@ -1306,6 +1306,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `find_room_id_by_participant(pid, ...)` takes the channel first; a
   custom store that overrides any of the three takes the new signature.
 
+- **BREAKING — routing step 1 finds a binding through its recipient, and
+  `DefaultInboundRoomRouter` takes `channel_of`** (RFC §5.7, §10.4,
+  RMK-930). A binding stored with a recipient and no correspondent (written
+  to the store by the host, or before bindings named one) is its
+  recipient's conversation, but step 1 searched `participant_id` only: on a
+  number serving other rooms, the recipient's message opened a room of its
+  own. `find_room_id_by_binding()` takes `recipient_key=`, the channel's key
+  (the new `Channel.recipient_key`: `phone_number`, `email_address`,
+  `telegram_chat_id`..., `None` where the recipient names no one), and also
+  finds a binding naming no correspondent, not `group`, whose value under
+  that key, a string or a number, is the address. A delivery status that
+  names no room reads its recipient the same way, in the channel's form
+  (`+1 (555) 000-0001` finds `+15550000001`). The default router reads a
+  binding's recipient through the kit's channels:
+  `DefaultInboundRoomRouter(store, *, channel_of=None)` replaces
+  `recipient_of=`. Migrate: a router built by hand passes
+  `channel_of=kit.get_channel` (or none, reading no recipient); a custom
+  store's `find_room_id_by_binding()` takes the keyword.
+
 ### Removed
 
 - **BREAKING — `roomkit.core.visibility.effective_visibility`** (RMK-902). An

@@ -881,11 +881,6 @@ class InboundMixin(HelpersMixin):
         )
         return room.id
 
-    def _binding_recipient(self, binding: ChannelBinding) -> str | None:
-        """The address *binding* delivers to, in its channel's form (RFC §10.4)."""
-        channel = self._channels.get(binding.channel_id)
-        return channel.recipient_address(binding) if channel is not None else None
-
     async def _route_and_claim(
         self, message: InboundMessage, channel: Channel, organization_id: str | None
     ) -> tuple[str, bool]:

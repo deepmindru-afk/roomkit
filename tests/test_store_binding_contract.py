@@ -406,6 +406,55 @@ async def test_a_binding_names_its_sender_for_its_own_channel_only(
             await store.delete_room(room.id)
 
 
+@pytest.mark.parametrize("fallback", [False, True])
+async def test_a_binding_naming_no_one_names_its_recipient(
+    contract_store: ConversationStore, fallback: bool
+) -> None:
+    """RFC §5.7, §10.4 step 1: a binding stored with a recipient and no
+    correspondent names its recipient, a string or a number under the key
+    the caller passes; a group binding, and one naming a correspondent,
+    do not name their recipient."""
+    store = _StoreWithoutTheLookup() if fallback else contract_store
+    if fallback and not isinstance(contract_store, InMemoryStore):
+        pytest.skip("the fallback runs over the in-memory store")
+    channel, tag = f"chat-{uuid4().hex}", uuid4().hex
+    t0 = datetime(2026, 10, 8, 12, tzinfo=UTC)
+    stored = [
+        (f"a-{tag}", {"chat": "alice"}, None, False),
+        (f"b-{tag}", {"chat": 4242}, None, False),
+        (f"c-{tag}", {"chat": "bob"}, None, True),
+        (f"d-{tag}", {"chat": "carol"}, "dave", False),
+        (f"e-{tag}", {"other": "erin"}, None, False),
+    ]
+    for offset, (room_id, metadata, named, group) in enumerate(stored):
+        await store.create_room(Room(id=room_id, created_at=t0 + timedelta(seconds=offset)))
+        await store.add_binding(
+            ChannelBinding(
+                room_id=room_id,
+                channel_id=channel,
+                channel_type=ChannelType.TELEGRAM,
+                participant_id=named,
+                group=group,
+                metadata=metadata,
+            )
+        )
+
+    async def found(sender: str, key: str | None = "chat") -> str | None:
+        return await store.find_room_id_by_binding(channel, sender, None, recipient_key=key)
+
+    try:
+        assert await found("alice") == f"a-{tag}"
+        assert await found("alice", None) is None
+        assert await found("4242") == f"b-{tag}"
+        assert await found("bob") is None
+        assert await found("carol") is None
+        assert await found("dave") == f"d-{tag}"
+        assert await found("erin") is None
+    finally:
+        for room_id, *_ in stored:
+            await store.delete_room(room_id)
+
+
 async def test_step_three_gives_the_same_answer_in_every_store(
     contract_store: ConversationStore,
 ) -> None:

@@ -31,6 +31,7 @@ from roomkit.store.base import (
     is_marked_deleted,
     link_target,
     marked_deleted,
+    names_by_recipient,
     reached_as,
     room_holds,
     room_taken,
@@ -105,10 +106,13 @@ class InMemoryStore(ConversationStore):
         names: set[str] = set()
         for participant in self._participants.get(room_id, {}).values():
             names.update(name for name in (participant.id, participant.identity_id) if name)
-        names.update(
-            b.participant_id for b in self._bindings.get(room_id, {}).values() if b.participant_id
-        )
+        for binding in self._bindings.get(room_id, {}).values():
+            names.update(_binding_names(binding))
         return names
+
+    def _index_binding(self, binding: ChannelBinding) -> None:
+        for name in _binding_names(binding):
+            self._index_participant(name, binding.room_id)
 
     def _unindex_room(self, room_id: str) -> None:
         """Remove a deleted room from every participant's candidate set."""
@@ -337,16 +341,23 @@ class InMemoryStore(ConversationStore):
         participant_id: str,
         identity_id: str | None = None,
         room_filter: RoomFilter | None = None,
+        *,
+        recipient_key: str | None = None,
     ) -> str | None:
         # The participant index holds every room a binding names the
-        # participant in, so this reads a handful of rooms, not all of them.
+        # participant in, its recipient included, so this reads a handful of
+        # rooms, not all of them.
         room_filter = room_filter or RoomFilter()
         names = sender_names(participant_id, identity_id)
         best: tuple[float, str] | None = None
         for room_id in self._candidates(names):
             room = self._rooms.get(room_id)
             binding = self._bindings.get(room_id, {}).get(channel_id)
-            if room is None or binding is None or binding.participant_id not in names:
+            if room is None or binding is None:
+                continue
+            if binding.participant_id not in names and not names_by_recipient(
+                binding, participant_id, recipient_key
+            ):
                 continue
             if room_filter.admits(room) and (best is None or _recency(room) > best):
                 best = _recency(room)
@@ -692,7 +703,7 @@ class InMemoryStore(ConversationStore):
 
     async def add_binding(self, binding: ChannelBinding) -> ChannelBinding:
         self._bindings.setdefault(binding.room_id, {})[binding.channel_id] = binding
-        self._index_participant(binding.participant_id, binding.room_id)
+        self._index_binding(binding)
         return binding
 
     async def get_binding(self, room_id: str, channel_id: str) -> ChannelBinding | None:
@@ -706,7 +717,7 @@ class InMemoryStore(ConversationStore):
 
     async def update_binding(self, binding: ChannelBinding) -> ChannelBinding:
         self._bindings.setdefault(binding.room_id, {})[binding.channel_id] = binding
-        self._index_participant(binding.participant_id, binding.room_id)
+        self._index_binding(binding)
         return binding
 
     async def remove_binding(self, room_id: str, channel_id: str) -> bool:
@@ -714,7 +725,8 @@ class InMemoryStore(ConversationStore):
         if channel_id not in room_bindings:
             return False
         removed = room_bindings.pop(channel_id)
-        self._unindex_participant(removed.participant_id, room_id)
+        for name in _binding_names(removed):
+            self._unindex_participant(name, room_id)
         return True
 
     async def list_bindings(self, room_id: str) -> list[ChannelBinding]:
@@ -923,6 +935,22 @@ def _changes_one_of(event: RoomEvent, event_ids: set[str]) -> bool:
     return isinstance(content, EditContent | DeleteContent) and (
         content.target_event_id in event_ids
     )
+
+
+def _binding_names(binding: ChannelBinding) -> set[str]:
+    """The names the participant index holds *binding* under: its
+    correspondent, or, naming none and not ``group``, every value its
+    metadata holds, among which its recipient is (the store does not know
+    the channel's recipient key; a read re-checks the binding)."""
+    if binding.participant_id:
+        return {binding.participant_id}
+    if binding.group:
+        return set()
+    return {
+        str(value)
+        for value in binding.metadata.values()
+        if isinstance(value, str | int | float) and not isinstance(value, bool) and value != ""
+    }
 
 
 def _recency(room: Room) -> tuple[float, str]:

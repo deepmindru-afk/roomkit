@@ -415,7 +415,7 @@ class RoomKit(
         self._event_handlers: list[tuple[str, FrameworkEventHandler]] = []
         self._identity_hooks: dict[HookTrigger, list[IdentityHookRegistration]] = {}
         self._inbound_router = inbound_router or DefaultInboundRoomRouter(
-            self._store, recipient_of=self._binding_recipient
+            self._store, channel_of=self._channels.get
         )
         self._event_router: EventRouter | None = None
         # Inbound rate limiting

@@ -29,6 +29,7 @@ from roomkit.models.enums import (
 from roomkit.models.store_filter import RoomFilter
 
 if TYPE_CHECKING:
+    from roomkit.channels.base import Channel
     from roomkit.core.hooks import HookEngine, IdentityHookRegistration
     from roomkit.core.mixins.helpers import FrameworkEventHandler, IdentityHookFn
     from roomkit.models.delivery import InboundMessage, InboundResult
@@ -45,6 +46,7 @@ class HooksApiHost(Protocol):
 
     Attributes provided by the host's ``__init__``:
         _store: Conversation store for room lookups and delivery status.
+        _channels: Registry of channel-id to :class:`Channel` instances.
         _hook_engine: Hook engine for registration and dispatch.
         _event_handlers: Framework event handler registry.
         _identity_hooks: Identity hook registry.
@@ -54,6 +56,7 @@ class HooksApiHost(Protocol):
     """
 
     _store: ConversationStore
+    _channels: dict[str, Channel]
     _hook_engine: HookEngine
     _event_handlers: list[tuple[str, FrameworkEventHandler]]
     _identity_hooks: dict[HookTrigger, list[IdentityHookRegistration]]
@@ -341,21 +344,32 @@ class HooksApiMixin(HelpersMixin):
         would be dispatched with that room's context.
         """
         active = RoomFilter(statuses=[RoomStatus.ACTIVE])
-        if status.recipient:
+        channel = self._channels.get(channel_id)
+        # In the channel's form, as step 1 reads a sender (RFC §10.4).
+        recipient = (
+            channel.normalize_address(status.recipient)
+            if channel is not None and status.recipient
+            else status.recipient
+        )
+        if recipient:
             room_id = await self._store.find_room_id_by_binding(
-                channel_id, status.recipient, None, active
+                channel_id,
+                recipient,
+                None,
+                active,
+                recipient_key=channel.recipient_key if channel is not None else None,
             )
             if room_id is not None:
                 return room_id
         candidates = await self._store.find_room_ids_by_channel(channel_id, active, limit=2)
         if len(candidates) != 1:
             return None
-        if not status.recipient:
+        if not recipient:
             return candidates[0]
         # The one room is the recipient's only if its binding could name them:
         # a binding naming another correspondent is that person's room.
         binding = await self._store.get_binding(candidates[0], channel_id)
-        if binding is None or not binding_admits(binding, frozenset({status.recipient})):
+        if binding is None or not binding_admits(binding, frozenset({recipient})):
             return None
         return candidates[0]
 

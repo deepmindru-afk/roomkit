@@ -980,15 +980,26 @@ class PostgresStore(ConversationStore):
         participant_id: str,
         identity_id: str | None = None,
         room_filter: RoomFilter | None = None,
+        *,
+        recipient_key: str | None = None,
     ) -> str | None:
-        # Newest room first, id as tie-breaker, like the other stores.
+        # Newest room first, id as tie-breaker, like the other stores. A
+        # binding naming no correspondent, not a group, names its recipient
+        # (RFC §5.7): its value under the key, a string or a number.
         names = sorted(sender_names(participant_id, identity_id))
+        named = "b.participant_id = ANY($2::text[])"
+        params: list[Any] = [channel_id, names]
+        if recipient_key is not None:
+            params += [recipient_key, participant_id]
+            named = (
+                f"({named} OR (b.participant_id IS NULL AND NOT b.is_group"
+                " AND jsonb_typeof(b.metadata -> $3) IN ('string', 'number')"
+                " AND b.metadata ->> $3 = $4))"
+            )
         query = (
             "SELECT b.room_id FROM bindings b "
-            "JOIN rooms r ON r.id = b.room_id "
-            "WHERE b.channel_id = $1 AND b.participant_id = ANY($2::text[])"
+            f"JOIN rooms r ON r.id = b.room_id WHERE b.channel_id = $1 AND {named}"  # nosec B608  # fragments are internal, values parameterised
         )
-        params: list[Any] = [channel_id, names]
         query += _room_filter(params, room_filter)
         query += ' ORDER BY r.created_at DESC, b.room_id COLLATE "C" DESC LIMIT 1'
         async with self._acquire() as conn:

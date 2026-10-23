@@ -122,6 +122,10 @@ class TransportChannel(Channel):
         """Whether the recipient is a conversation's address: the sender's, or a chat."""
         return self._replies_to_sender or self._reply_metadata_key is not None
 
+    @property
+    def recipient_key(self) -> str | None:
+        return self._recipient_key if self._recipient_is_conversation else None
+
     def recipient_address(self, binding: ChannelBinding) -> str | None:
         if not self._recipient_is_conversation:
             return None

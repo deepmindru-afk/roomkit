@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.delivery import SYSTEM_SENDER_ID
@@ -14,6 +14,9 @@ from roomkit.models.identity import Identity
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter, RoomFilter
 from roomkit.store.base import ConversationStore
+
+if TYPE_CHECKING:
+    from roomkit.channels.base import Channel
 
 logger = logging.getLogger("roomkit.framework")
 
@@ -79,12 +82,14 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         self,
         store: ConversationStore,
         *,
-        recipient_of: Callable[[ChannelBinding], str | None] | None = None,
+        channel_of: Callable[[str], Channel | None] | None = None,
     ) -> None:
         self._store = store
-        # The address a binding delivers to, normalized (the kit passes its
-        # channels' Channel.recipient_address); it names the correspondent.
-        self._recipient_of = recipient_of
+        # The kit's registered channel by id: its recipient key and the
+        # address a binding delivers to (Channel.recipient_address), in its
+        # form, name the correspondent (RFC §5.7). Without it no binding's
+        # recipient names anyone.
+        self._channel_of = channel_of
 
     async def route(
         self,
@@ -152,7 +157,8 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         (RFC §10.4 step 1); *identity_id* is the identity the framework
         resolved the address to.
 
-        First the room whose binding of this very channel names the sender: a
+        First the room whose binding of this very channel names the sender,
+        as its correspondent or, naming none, as its recipient (RFC §5.7): a
         binding speaks for its own channel, so a correspondent of one number
         is not taken to that room when they write to another. Otherwise the
         room where the sender is a participant reached through this channel:
@@ -166,8 +172,13 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         not hide a newer one found by the identity.
         """
         step_one = RoomFilter(statuses=[RoomStatus.ACTIVE], organization_id=organization_id)
+        channel = self._channel_of(channel_id) if self._channel_of is not None else None
         room_id = await self._store.find_room_id_by_binding(
-            channel_id, sender, identity_id, step_one
+            channel_id,
+            sender,
+            identity_id,
+            step_one,
+            recipient_key=channel.recipient_key if channel is not None else None,
         )
         if room_id is not None:
             return room_id
@@ -188,7 +199,8 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         binding = await self._store.get_binding(room_id, channel_id)
         if binding is None:
             return False
-        recipient = self._recipient_of(binding) if self._recipient_of is not None else None
+        channel = self._channel_of(channel_id) if self._channel_of is not None else None
+        recipient = channel.recipient_address(binding) if channel is not None else None
         return await step_three_admits(self._store, binding, sender, own, recipient)
 
 
