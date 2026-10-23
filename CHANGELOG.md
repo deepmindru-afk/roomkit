@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An event is an edit only when its type is EDIT and its content an
+  `EditContent`, a delete only when DELETE and `DeleteContent` (RFC §10.3
+  rule 1, RMK-930). Step 8a ran only when the two agreed, while a channel
+  applies a change natively by its content alone: a MESSAGE carrying an
+  `EditContent`, or a composite with an edit among its parts, reached
+  edit-capable channels with no target, author or authority checked. A type
+  and a content that disagree, and a change held anywhere else (a
+  composite's part, an edit's new content), are now refused
+  `target_event_not_found`, nothing stored.
+
 - A config provider can return `AIChannelTurnConfig.tool_handler` with its
   tools so a turn executes the same surface it resolved. The handler stays
   isolated across concurrent rooms and all rounds of the turn; `None` keeps

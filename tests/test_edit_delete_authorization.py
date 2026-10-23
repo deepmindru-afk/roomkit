@@ -7,15 +7,19 @@ must not thereby let them choose their own authority.
 
 from __future__ import annotations
 
+import pytest
+
 from roomkit.channels.base import Channel
 from roomkit.core.framework import RoomKit
-from roomkit.models.channel import ChannelBinding, ChannelOutput
+from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelType, DeleteType, EventType, ParticipantRole
 from roomkit.models.event import (
+    CompositeContent,
     DeleteContent,
     EditContent,
+    EventContent,
     EventSource,
     RoomEvent,
     TextContent,
@@ -52,6 +56,24 @@ class _Transport(Channel):
 
 class _SystemTransport(_Transport):
     channel_type = ChannelType.SYSTEM
+
+
+class _Editable(_Transport):
+    """A transport that applies edits and deletes natively, and records what
+    it is handed."""
+
+    def __init__(self, channel_id: str) -> None:
+        super().__init__(channel_id)
+        self.delivered: list[RoomEvent] = []
+
+    def capabilities(self) -> ChannelCapabilities:
+        return ChannelCapabilities(supports_edit=True, supports_delete=True)
+
+    async def deliver(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        self.delivered.append(event)
+        return ChannelOutput.empty()
 
 
 async def _setup() -> RoomKit:
@@ -238,3 +260,55 @@ class TestDeleteAuthorization:
         )
 
         assert result.blocked is False
+
+
+def _hidden_changes(target_id: str) -> dict[str, tuple[EventType, EventContent]]:
+    """Events holding a change they do not make (RFC §10.3 rule 1), by name."""
+    edit = EditContent(target_event_id=target_id, new_content=TextContent(body="rewritten"))
+    delete = DeleteContent(target_event_id=target_id)
+    return {
+        "a message carrying an edit": (EventType.MESSAGE, edit),
+        "a message carrying a delete": (EventType.MESSAGE, delete),
+        "an edit carrying text": (EventType.EDIT, TextContent(body="rewritten")),
+        "a delete carrying an edit": (EventType.DELETE, edit),
+        "an edit carrying a delete": (EventType.EDIT, delete),
+        "a composite part": (
+            EventType.MESSAGE,
+            CompositeContent(parts=[TextContent(body="hi"), edit]),
+        ),
+        "an edit's new content": (EventType.EDIT, edit.model_copy(update={"new_content": delete})),
+        "a composite in an edit's new content": (
+            EventType.EDIT,
+            edit.model_copy(update={"new_content": CompositeContent(parts=[delete])}),
+        ),
+    }
+
+
+class TestWhatAChangeIs:
+    """RFC §10.3 rule 1: an event is an edit when its type is EDIT and its
+    content an EditContent, a delete when DELETE and DeleteContent; any other
+    event holding a change, at any depth, is refused before a channel can
+    apply it natively."""
+
+    @pytest.mark.parametrize("case", list(_hidden_changes("")))
+    async def test_a_change_held_where_it_is_not_made_is_refused(self, case: str) -> None:
+        kit = await _setup()
+        peer = _Editable("peer")
+        kit.register_channel(peer)
+        await kit.attach_channel("r1", "peer")
+        original = await _post(kit, "v1", sender_id="alice")
+        event_type, content = _hidden_changes(original.id)[case]
+
+        result = await kit.process_inbound(
+            InboundMessage(
+                channel_id="src", sender_id="alice", event_type=event_type, content=content
+            )
+        )
+
+        assert (result.blocked, result.reason) == (True, "target_event_not_found")
+        assert result.event is None
+        assert [e.id for e in peer.delivered] == [original.id]
+        stored = await kit._store.get_event(original.id)
+        assert stored is not None and stored.content == TextContent(body="v1")
+        assert not stored.metadata
+        await kit.close()

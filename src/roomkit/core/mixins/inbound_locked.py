@@ -16,7 +16,7 @@ from dataclasses import KW_ONLY, dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._authors import People, source_of
-from roomkit.core._changes import applied
+from roomkit.core._changes import TARGET_NOT_FOUND, applied, change_of, concerns_change
 from roomkit.core.hooks import kept_identity
 from roomkit.core.mixins.helpers import (
     _RECENT_EVENTS_LIMIT,
@@ -503,10 +503,16 @@ class InboundLockedMixin(HelpersMixin):
         # ``_apply_edit_delete_state``), so a moderation hook that blocks an
         # edit/delete cannot leave the target already mutated.
         edit_delete_target: RoomEvent | None = None
-        if event.type in (EventType.EDIT, EventType.DELETE) and isinstance(
-            event.content, (EditContent, DeleteContent)
-        ):
-            target_id = event.content.target_event_id
+        if concerns_change(event):
+            change = change_of(event)
+            if change is None:
+                logger.warning(
+                    "Edit/Delete refused in room %s: a change held where it is not made",
+                    room_id,
+                    extra={"room_id": room_id, "event_id": event.id},
+                )
+                return InboundResult(blocked=True, reason=TARGET_NOT_FOUND)
+            target_id = change.target_event_id
             target_event = await self._store.get_event(target_id)
 
             if target_event is None or target_event.room_id != room_id:
