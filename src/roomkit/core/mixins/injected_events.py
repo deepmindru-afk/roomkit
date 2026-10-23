@@ -240,7 +240,7 @@ class InjectedEventsMixin(HelpersMixin):
         event, context = provisional(event, room_context)
         if not cascade.consume_reentry_budget():
             # Past the budget it is not a pass: its hooks never run (§8.3).
-            await self._store_past_reentry_cap(room_id, event)
+            await self._store_past_reentry_cap(room_id, event, channels=False)
             return
         # An edit or a delete it carries is the hook's, a SYSTEM change
         # only (RFC §10.3 rule 6); a refused one is logged, nothing stored.

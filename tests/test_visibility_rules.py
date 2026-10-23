@@ -190,6 +190,118 @@ def _body(event: RoomEvent) -> str | None:
     return event.content.body if isinstance(event.content, TextContent) else None
 
 
+class _Chatty(AILikeChannel):
+    """An agent answering every other channel's event with *count* answers."""
+
+    def __init__(self, channel_id: str, count: int) -> None:
+        super().__init__(channel_id)
+        self._count = count
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        source = EventSource(channel_id=self.channel_id, channel_type=ChannelType.AI)
+        answers = [
+            RoomEvent(room_id=event.room_id, source=source, content=TextContent(body=f"A{i}"))
+            for i in range(self._count)
+        ]
+        return ChannelOutput(responded=True, response_events=answers)
+
+
+async def _blocked_scopes(kit: RoomKit, channel_id: str) -> list[str]:
+    events = await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
+    return [
+        e.visibility
+        for e in events
+        if e.source.channel_id == channel_id and e.blocked_by is not None
+    ]
+
+
+class TestARefusedRecordSeesNoMoreThanItsEvent:
+    """RFC §7.3, §8.3: a record stored BLOCKED takes the visibility its event
+    would have been delivered with, its own intersected with its source
+    binding's, so a reader shown it later sees no more of it than of the
+    event."""
+
+    @pytest.mark.parametrize("refusal", ["a hook", "its source"])
+    @pytest.mark.parametrize("entry", ["process_inbound", "send_event"])
+    async def test_a_refused_message(self, refusal: str, entry: str) -> None:
+        sms, ws = _Told("sms"), _Told("ws")
+        binding = {"visibility": "ws"}
+        if refusal == "its source":
+            binding["access"] = Access.READ_ONLY
+        kit = await _room(sms, ws, sms=binding)
+        if refusal == "a hook":
+            kit.hook(HookTrigger.BEFORE_BROADCAST, name="gate")(
+                lambda event, ctx: _blocking(event)
+            )
+        try:
+            if entry == "process_inbound":
+                await kit.process_inbound(_message("hello"))
+            else:
+                await kit.send_event("r1", "sms", TextContent(body="hello"))
+            assert await _blocked_scopes(kit, "sms") == ["ws"]
+        finally:
+            await kit.close()
+
+    async def test_the_record_of_an_agent_not_asked_at_the_depth_limit(self) -> None:
+        kit = RoomKit(max_chain_depth=1)
+        await kit.create_room(room_id="r1")
+        for channel in (_Told("sms"), _Told("ws"), AILikeChannel("ai")):
+            kit.register_channel(channel)
+        await kit.attach_channel("r1", "sms")
+        await kit.attach_channel("r1", "ws")
+        await kit.attach_channel(
+            "r1", "ai", category=ChannelCategory.INTELLIGENCE, visibility="ws"
+        )
+        try:
+            await kit.process_inbound(_message("hello"))
+            assert await _blocked_scopes(kit, "ai") == ["ws"]
+        finally:
+            await kit.close()
+
+    async def test_an_answer_stored_past_the_reentry_budget(self) -> None:
+        """A budget of 20 (``max_chain_depth=2``): the 21st answer is capped."""
+        kit = RoomKit(max_chain_depth=2)
+        await kit.create_room(room_id="r1")
+        for channel in (_Told("sms"), _Told("ws"), _Chatty("ai", count=21)):
+            kit.register_channel(channel)
+        await kit.attach_channel("r1", "sms")
+        await kit.attach_channel("r1", "ws")
+        await kit.attach_channel(
+            "r1", "ai", category=ChannelCategory.INTELLIGENCE, visibility="ws"
+        )
+        try:
+            await kit.process_inbound(_message("hello"))
+            assert await _blocked_scopes(kit, "ai") == ["ws"]
+        finally:
+            await kit.close()
+
+    async def test_an_event_a_hook_injects_keeps_its_own(self) -> None:
+        """No channel's: blocked by a hook of its pass, it keeps its targets."""
+        sms, ws = _Told("sms"), _Told("ws")
+        kit = await _room(sms, ws, sms={"visibility": "sms"})
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="notify")
+        async def notify(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if _body(event) != "hello":
+                return HookResult.block("held") if _body(event) == "notice" else HookResult.allow()
+            notice = RoomEvent(
+                room_id="r1", source=event.source, content=TextContent(body="notice")
+            )
+            return HookResult.allow([InjectedEvent(event=notice, target_channel_ids=["ws"])])
+
+        try:
+            await kit.process_inbound(_message("hello"))
+            assert await _blocked_scopes(kit, "sms") == ["ws"]
+        finally:
+            await kit.close()
+
+
+async def _blocking(event: RoomEvent) -> HookResult:
+    return HookResult.block("held")
+
+
 class TestTheEntriesRefuseAnInvalidVisibility:
     async def test_set_visibility_refuses_an_empty_item(self) -> None:
         kit = await _room(_Told("sms"))

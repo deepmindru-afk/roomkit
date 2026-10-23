@@ -46,7 +46,7 @@ from roomkit.core.visibility import (
     without_framework_mark,
 )
 from roomkit.models.delivery import DeliveryError, DeliveryResult
-from roomkit.models.enums import ChannelCategory, EventStatus, EventType, HookTrigger
+from roomkit.models.enums import ChannelCategory, EventStatus, EventType, HookTrigger, Visibility
 from roomkit.models.event import EventSource, RoomEvent
 from roomkit.models.response_metadata import (
     ResponseMetadata,
@@ -949,7 +949,7 @@ class LaneExecutionMixin(HelpersMixin):
         async with self._lock_manager.locked(room_id):
             if await self._refuses_record(room_id, blocked):
                 return
-            await self._commit_indexed(room_id, blocked)
+            blocked = await self._commit_indexed(room_id, await self._scoped_record(blocked))
         if blocked.blocked_by == CHAIN_DEPTH_LIMIT:
             await self._emit_framework_event(
                 "chain_depth_exceeded",
@@ -1010,11 +1010,15 @@ class LaneExecutionMixin(HelpersMixin):
                 continue
             await self._run_reentry_pass(room_id, reentry, response_visibility, cascade)
 
-    async def _store_past_reentry_cap(self, room_id: str, response: RoomEvent) -> None:
+    async def _store_past_reentry_cap(
+        self, room_id: str, response: RoomEvent, *, channels: bool = True
+    ) -> None:
         """Store a response past the cascade's reentry budget as its BLOCKED record.
 
         Shared by a buffered answer and by a chained stream closed unread,
-        so the cap leaves the same trace whichever way the answer came.
+        so the cap leaves the same trace whichever way the answer came, and
+        by a hook's injected event (*channels* off), which is no channel's
+        and keeps its own visibility (RFC §7.3, §9.4).
         """
         logger.warning(
             "Reentry chain hit its cap, storing response as BLOCKED",
@@ -1023,13 +1027,26 @@ class LaneExecutionMixin(HelpersMixin):
         async with self._lock_manager.locked(room_id):
             # Same status gate as every other growth point (RFC §5.1): a
             # closed room does not take the audit record either, and says so.
-            if not await self._refuses_record(room_id, response):
-                await self._commit_indexed(
-                    room_id,
-                    response.model_copy(
-                        update={"status": EventStatus.BLOCKED, "blocked_by": "reentry_loop_cap"}
-                    ),
-                )
+            if await self._refuses_record(room_id, response):
+                return
+            record = response.model_copy(
+                update={"status": EventStatus.BLOCKED, "blocked_by": "reentry_loop_cap"}
+            )
+            if channels:
+                record = await self._scoped_record(record)
+            await self._commit_indexed(room_id, record)
+
+    async def _scoped_record(self, record: RoomEvent) -> RoomEvent:
+        """*record*, stored BLOCKED in place of a channel's event, with the
+        visibility its event would have been delivered with (RFC §7.3,
+        §8.3): its own intersected with its source binding's, read under
+        the room lock the caller holds; its own while its source is unbound.
+        A reader shown it later sees no more of it than of the event."""
+        binding = await self._store.get_binding(record.room_id, record.source.channel_id)
+        if binding is None or binding.visibility == Visibility.ALL:
+            return record
+        bindings = await self._store.list_bindings(record.room_id)
+        return with_committed_visibility(record, binding, bindings)
 
     async def _reentry_context(self, room_id: str, reentry: RoomEvent) -> RoomContext | None:
         """The room's context for a reentry pass, or ``None`` when the room is

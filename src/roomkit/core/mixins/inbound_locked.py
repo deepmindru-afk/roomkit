@@ -552,6 +552,11 @@ class InboundLockedMixin(HelpersMixin):
         await self._announce_hook_errors(room_id, event, sync_result)
 
         if not sync_result.allowed:
+            if source_check:
+                # A channel's record sees no more than its event would have
+                # (RFC §7.3); a hook's injected event keeps its own (§9.4).
+                binding = await self._source_binding(room_id, event, context, hooked=hooked)
+                event = with_committed_visibility(event, binding, context.bindings)
             return _Blocked.after_hooks(
                 event,
                 context,
@@ -580,13 +585,14 @@ class InboundLockedMixin(HelpersMixin):
         source_binding = await self._source_binding(room_id, event, context, hooked=hooked)
         if not source_check:
             return _Ready(event, source_binding, sync_result, context, target)
+        # Delivered or stored BLOCKED in its place, the event takes the
+        # visibility step 12 gives it (RFC §7.3).
+        event = with_committed_visibility(event, source_binding, context.bindings)
         reason = _source_block_reason(source_binding)
         if reason is not None:
             return _Blocked.after_hooks(
                 event, context, sync_result, reason=reason, blocked_by=reason
             )
-
-        event = with_committed_visibility(event, source_binding, context.bindings)
         return _Ready(event, source_binding, sync_result, context, target)
 
     async def _source_binding(
