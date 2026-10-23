@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 from roomkit.channels.base import Channel
 from roomkit.channels.websocket import SendFn, StreamSendFn, WebSocketChannel
+from roomkit.core._instructions import names_an_agent, without_fingerprint
 from roomkit.core._kit_turn_hooks import KitTurnHooks
 from roomkit.core._kit_wiring import KitEvents, KitWiringEnv
 from roomkit.core._turn_host import KitHost
@@ -1105,11 +1106,15 @@ class RoomKit(
             response_visibility = parse_visibility(response_visibility)
 
         # An instruction the pipeline would refuse (RFC §10.1.1) is refused
-        # here, loudly: this API's contract is the committed event, and an
-        # instruction that was never going to be delivered has none to return.
+        # here, loudly, before anything is read: this API's contract is the
+        # committed event, and an instruction that was never going to be
+        # delivered has none to return.
         if event_type == EventType.INSTRUCTION:
-            if not addressed_to:
-                raise ValueError("An INSTRUCTION must name the agents it directs (addressed_to)")
+            if not names_an_agent(addressed_to, self._channels):
+                raise ValueError(
+                    "An INSTRUCTION must name an agent it directs (addressed_to): "
+                    "an intelligence channel the kit registers"
+                )
             if idempotency_key is not None:
                 raise ValueError("An INSTRUCTION is never stored and takes no idempotency_key")
             # The parameter's word alone: a metadata key of the same name is
@@ -1137,7 +1142,8 @@ class RoomKit(
             chain_depth=chain_depth,
             parent_event_id=parent_event_id,
             status=EventStatus.DELIVERED,
-            metadata=metadata or {},
+            # The key the pipeline reserves (RFC §5.2) is not the caller's.
+            metadata=without_fingerprint(metadata or {}),
             visibility=visibility,
             response_visibility=response_visibility,
             addressed_to=addressed_to,

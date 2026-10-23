@@ -143,13 +143,18 @@ async def test_an_instruction_past_the_depth_limit_is_dropped_and_reported() -> 
     await kit.close()
 
 
-async def test_an_instruction_to_no_agent_reports_it_unavailable() -> None:
+async def test_an_instruction_to_an_agent_the_room_lacks_reports_it_unavailable() -> None:
+    """An agent the kit registers and the room does not bind is asked nowhere,
+    and the instruction goes on (RFC §10.1.1 step 1)."""
+    elsewhere = _provider()
     kit = RoomKit()
     await _room(kit, {"a": _provider()})
+    kit.register_channel(AIChannel("elsewhere", provider=elsewhere))
 
-    result = await _say(kit, "x", addressed_to=["ghost"], event_type=EventType.INSTRUCTION)
+    result = await _say(kit, "x", addressed_to=["elsewhere"], event_type=EventType.INSTRUCTION)
 
-    assert result.unavailable_targets == ["ghost"]
+    assert (result.blocked, result.unavailable_targets) == (False, ["elsewhere"])
+    assert elsewhere.calls == []
     await kit.close()
 
 

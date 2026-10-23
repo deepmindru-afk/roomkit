@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from roomkit.channels._tool_event_result import tool_event_payload
+from roomkit.core._instructions import response_metadata
 from roomkit.core.event_router import stream_record
 from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT
 from roomkit.core.mixins.inbound_locked import _Blocked
@@ -488,9 +489,10 @@ class SegmentWriter:
             response_visibility=self._response_visibility,
             correlation_id=self._correlation_id,
             parent_event_id=self._parent_event_id,
-            # Every row of the turn names the event it answers (RFC §8.5).
+            # Every row of the turn names the event it answers (RFC §8.5),
+            # and the instruction it answers, if it answers one (§10.1.1).
             responds_to=self._sr.trigger_event.id,
-            metadata=metadata or {},
+            metadata=response_metadata(metadata or {}, self._sr.trigger_event),
         )
 
     async def _settle(self) -> None:

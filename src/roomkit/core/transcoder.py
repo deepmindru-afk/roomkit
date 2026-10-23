@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from roomkit._media import audio_label, media_label, video_label
+from roomkit._media import audio_label, location_label, media_label, video_label
 from roomkit.core.router import ContentTranscoder
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import ChannelMediaType
@@ -63,12 +63,7 @@ class DefaultContentTranscoder(ContentTranscoder):
         if isinstance(content, LocationContent):
             if ChannelMediaType.LOCATION in target_types:
                 return content
-            label = content.label or content.address
-            point = f"({content.latitude}, {content.longitude})"
-            # A location with no name reads its coordinates alone (RFC §6.6).
-            return TextContent(
-                body=f"[Location: {label} {point}]" if label else f"[Location: {point}]"
-            )
+            return TextContent(body=location_label(content))
 
         if isinstance(content, CompositeContent):
             parts: list[EventContent] = []

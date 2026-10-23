@@ -139,6 +139,9 @@ async def test_the_model_reads_it_as_the_applications_direction_for_one_turn():
     [
         ({"addressed_to": None}, "instruction_unaddressed"),
         ({"addressed_to": []}, "instruction_unaddressed"),
+        # A name the kit does not register, or a transport's: no agent at all.
+        ({"addressed_to": ["ghost"]}, "instruction_unaddressed"),
+        ({"addressed_to": ["speaker"]}, "instruction_unaddressed"),
         ({"idempotency_key": "k1"}, "instruction_not_idempotent"),
     ],
 )
@@ -150,6 +153,38 @@ async def test_a_refused_instruction_leaves_nothing_behind(overrides, reason):
     assert result.blocked and result.reason == reason
     assert await _messages(kit) == []
     assert provider.calls == [] and speaker.delivered == []
+    await kit.close()
+
+
+@pytest.mark.parametrize("addressed_to", [["ghost"], ["speaker"], []])
+async def test_an_instruction_to_no_registered_agent_is_refused_before_anything_is_read(
+    addressed_to: list[str],
+):
+    """RFC §10.1.1 step 1: checked against the registry before routing, which
+    would otherwise create the room it names."""
+    kit, _speaker, _provider = await _kit()
+
+    result = await kit.process_inbound(_instruction(addressed_to=addressed_to), room_id="new")
+
+    assert (result.blocked, result.reason) == (True, "instruction_unaddressed")
+    assert await kit.store.get_room("new") is None
+    await kit.close()
+
+
+async def test_an_instruction_naming_an_agent_asks_it_and_nobody_else():
+    """The address's other names ask nobody: an unknown name, a transport, an
+    agent the room does not bind (RFC §10.1.1 step 1, §19.3 rule 2)."""
+    kit, speaker, provider = await _kit()
+    elsewhere = MockAIProvider(["not here"])
+    kit.register_channel(AIChannel("elsewhere", provider=elsewhere))
+
+    result = await kit.process_inbound(
+        _instruction(addressed_to=["ghost", "speaker", "elsewhere", "agent"]), room_id=ROOM
+    )
+
+    assert not result.blocked
+    assert len(provider.calls) == 1 and elsewhere.calls == []
+    assert speaker.delivered == ["Bonjour, je suis Paul."]
     await kit.close()
 
 
@@ -197,7 +232,12 @@ async def test_send_event_directs_an_agent_the_same_way():
 
 
 @pytest.mark.parametrize(
-    "overrides", [{"addressed_to": None}, {"addressed_to": ["agent"], "idempotency_key": "k"}]
+    "overrides",
+    [
+        {"addressed_to": None},
+        {"addressed_to": ["ghost", "speaker"]},
+        {"addressed_to": ["agent"], "idempotency_key": "k"},
+    ],
 )
 async def test_send_event_raises_for_an_instruction_it_would_refuse(overrides):
     """Its contract is the committed event: a refusal has nothing to return."""

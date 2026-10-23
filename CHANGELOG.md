@@ -485,6 +485,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   custom store must too; no schema changes, the address key was already one
   per organization.
 
+- **BREAKING — the pipeline records which instruction produced a response,
+  and reserves its key** (RFC §5.2, §9.4, §10.1.1 step 6, RMK-930):
+  `metadata["instruction"]` (`{sha256, length}`) is written by the pipeline
+  on every event a channel returns for an instruction, buffered or streamed,
+  its tool rows and a response stored past the reentry budget included, in
+  place of whatever the channel wrote there; a channel could record the
+  instruction's text under it. `AIChannel` and `ACPChannel` no longer write
+  it, so their `ChannelOutput.response_metadata`, and with it
+  `InboundResult.response_metadata`, no longer carry it. The fingerprint is
+  of the text the instruction's content reads as (RFC §6.6): a rich text by
+  its plain text, a media by its label, a composite by its parts. It was of
+  a `TextContent` body only (any other content hashed the empty string) and,
+  on ACP, of the text once its copies of runtime marks were replaced.
+  `AIChannel` reads that same text as the turn's input, where a non-text
+  instruction gave the turn none. The key is reserved: it is removed from
+  every other event, whoever wrote it (a channel's parser,
+  `InboundMessage.metadata`, `send_event(metadata=...)`, a hook's injected
+  event, a channel's reply to a message), and from the instruction itself.
+  A `BEFORE_BROADCAST` modify keeps a response's fingerprint, or its
+  absence, and an instruction's `standalone` word, as it kept the
+  instruction's visibility and address. An application that kept its own
+  data under `metadata["instruction"]` moves it under another key.
+
+- **BREAKING — an instruction names an agent the kit registers** (RFC
+  §10.1.1 step 1, RMK-930): its `addressed_to` must name at least one
+  registered intelligence channel, checked before anything is read. One
+  naming only ids the kit does not register, or transports, is refused with
+  `reason="instruction_unaddressed"` before routing, so no room is created
+  for it, where it was delivered to no agent and reported in
+  `unavailable_targets`; `send_event()` raises `ValueError`. An instruction
+  carrying an idempotency key is refused before routing too. The address's
+  other names ask nobody: an agent the kit registers and the room does not
+  bind is still reported in `unavailable_targets`, and the instruction goes
+  on. An instruction's address is its caller's (`InboundMessage.addressed_to`),
+  never one its channel's parser set.
+
 - **BREAKING — `ParticipantRole.AGENT` is a human agent** (RFC §5, §6.4,
   §19.7.5 rule 2, RMK-911), an advisor or a support representative, as the
   role table says: a participant with that role takes part like a member.

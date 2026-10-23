@@ -412,13 +412,10 @@ class InboundLockedMixin(HelpersMixin):
         # lock (step 12). The pre-lock context comes along: its history is the
         # expensive half of a context, and it is carried whenever the room's
         # counter proves nothing committed since it was read.
-        # RFC §10.1.1 — an instruction is refused before anything is written
-        # when it could only land as something else: unaddressed, it would
-        # make every agent in the room speak; with an idempotency key, it
-        # asks for a check that runs on the stored event it will never be.
+        # RFC §10.1.1 — an instruction's address and its caller's key were
+        # checked before anything was read; a key its channel's parser set
+        # asks the same check of a stored event it will never be.
         if event.type == EventType.INSTRUCTION:
-            if not event.addressed_to:
-                return InboundResult(blocked=True, reason="instruction_unaddressed")
             if event.idempotency_key:
                 return InboundResult(blocked=True, reason="instruction_not_idempotent")
             # RFC §19.7.5 rule 15 — a discussion that is over gives no turn.

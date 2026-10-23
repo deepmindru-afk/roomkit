@@ -9,6 +9,7 @@ from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar, Protocol, cast
 
+from roomkit.core._instructions import kept_metadata
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import (
     ChannelType,
@@ -254,8 +255,9 @@ _KEPT_FIELDS = (
 def kept_identity(original: RoomEvent, replacement: RoomEvent) -> RoomEvent:
     """*replacement* with the fields of *original* a hook may not change put
     back (RFC §9.4): its identity, and the checks already passed on it, the
-    event an EDIT or a DELETE targets and an INSTRUCTION's visibility and
-    address. The hook's other changes stand."""
+    event an EDIT or a DELETE targets, an INSTRUCTION's visibility, address
+    and ``standalone`` word, and the instruction fingerprint the pipeline
+    wrote on a response, or its absence. The hook's other changes stand."""
     kept: dict[str, Any] = {
         name: getattr(original, name)
         for name in _KEPT_FIELDS
@@ -279,6 +281,9 @@ def kept_identity(original: RoomEvent, replacement: RoomEvent) -> RoomEvent:
     if original.type == EventType.INSTRUCTION:
         kept["visibility"] = original.visibility
         kept["addressed_to"] = original.addressed_to
+    metadata = kept_metadata(original, replacement.metadata)
+    if metadata != replacement.metadata:
+        kept["metadata"] = metadata
     return replacement.model_copy(update=kept) if kept else replacement
 
 

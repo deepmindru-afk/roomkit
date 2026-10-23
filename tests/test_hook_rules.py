@@ -24,6 +24,9 @@ from roomkit.models.store_filter import EventFilter
 from roomkit.models.task import Task
 from tests.test_framework import AILikeChannel, SimpleChannel
 
+_FINGERPRINT = {"sha256": "0" * 64, "length": 12}
+"""What the pipeline writes on a response to an instruction (RFC §10.1.1 step 6)."""
+
 
 def _context() -> RoomContext:
     return RoomContext(room=Room(id="r1"), bindings=[])
@@ -157,12 +160,44 @@ class TestABeforeBroadcastReplacement:
         assert replaced.content.target_event_id == "mine"
         assert replaced.content.new_content == TextContent(body="y")
 
-    async def test_keeps_an_instruction_s_scope_and_address(self) -> None:
+    @pytest.mark.parametrize(
+        ("standalone", "written"),
+        [({"standalone": True}, {}), ({}, {"standalone": True})],
+        ids=["removed", "added"],
+    )
+    async def test_keeps_an_instruction_s_scope_address_and_standalone_word(
+        self, standalone: dict[str, Any], written: dict[str, Any]
+    ) -> None:
         original = _event(
-            type=EventType.INSTRUCTION, visibility="intelligence", addressed_to=["ai"]
+            type=EventType.INSTRUCTION,
+            visibility="intelligence",
+            addressed_to=["ai"],
+            metadata={"note": "kept", **standalone},
         )
-        replaced = await self._replaced(original, visibility="all", addressed_to=[])
+        replaced = await self._replaced(
+            original, visibility="all", addressed_to=[], metadata={"note": "changed", **written}
+        )
         assert (replaced.visibility, replaced.addressed_to) == ("intelligence", ["ai"])
+        assert replaced.metadata == {"note": "changed", **standalone}
+
+    @pytest.mark.parametrize(
+        ("fingerprint", "written"),
+        [
+            (_FINGERPRINT, {}),
+            (_FINGERPRINT, {"instruction": "the instruction's text"}),
+            (None, {"instruction": _FINGERPRINT}),
+        ],
+        ids=["removed", "replaced-by-its-text", "added"],
+    )
+    async def test_keeps_the_instruction_fingerprint_or_its_absence(
+        self, fingerprint: dict[str, Any] | None, written: dict[str, Any]
+    ) -> None:
+        """RFC §9.4: the fingerprint the pipeline wrote on a response to an
+        instruction, or its absence, whatever the hook wrote under its key."""
+        kept = {} if fingerprint is None else {"instruction": fingerprint}
+        original = _event(responds_to="trigger", metadata=kept)
+        replaced = await self._replaced(original, metadata={"note": "added", **written})
+        assert replaced.metadata == {"note": "added", **kept}
 
     async def test_may_change_the_address_of_a_message(self) -> None:
         replaced = await self._replaced(_event(), addressed_to=["billing"])

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._runtime_record import RUNTIME_RECORD
 from roomkit.core._delivery_keys import DeliveryKeys, NamedDelivery
+from roomkit.core._instructions import FINGERPRINT, names_an_agent
 from roomkit.core.exceptions import ChannelNotRegisteredError, RoomNotFoundError
 from roomkit.core.inbound_router import (
     binding_names_no_one,
@@ -349,6 +350,9 @@ class InboundMixin(HelpersMixin):
         organization_id: str | None,
     ) -> InboundResult:
         """RFC §10.1 steps 2-18 for *message*, whose delivery *named* names."""
+        refused = self._refused_instruction(message)
+        if refused is not None:
+            return refused
 
         # Route to room (or auto-create). Deliberately outside the pre-commit
         # window below: routing is RFC §10.1 steps 1-2, the phase
@@ -395,6 +399,21 @@ class InboundMixin(HelpersMixin):
             named,
             defer_delivery=defer_delivery,
         )
+
+    def _refused_instruction(self, message: InboundMessage) -> InboundResult | None:
+        """The refusal of an instruction that could only land as something
+        else, before anything is read or written (RFC §10.1.1 steps 1 and 2):
+        naming no agent the kit registers, it would ask nobody or make every
+        agent in the room speak; with an idempotency key, it asks for a check
+        that runs on the stored event it will never be. None for any other
+        message."""
+        if message.event_type != EventType.INSTRUCTION:
+            return None
+        if not names_an_agent(message.addressed_to, self._channels):
+            return InboundResult(blocked=True, reason="instruction_unaddressed")
+        if message.idempotency_key:
+            return InboundResult(blocked=True, reason="instruction_not_idempotent")
+        return None
 
     async def _prepare_event(
         self,
@@ -1076,10 +1095,11 @@ def _apply_message_fields(event: RoomEvent, message: InboundMessage) -> RoomEven
     return _without_runtime_keys(event)
 
 
-_RUNTIME_KEYS = (RUNTIME_RECORD, HELD_KEY)
+_RUNTIME_KEYS = (RUNTIME_RECORD, HELD_KEY, FINGERPRINT)
 """Metadata keys only the runtime writes: which text is the runtime's (RFC
-§6.4), and which message it holds for verification (§11.7.3), whose release
-would otherwise hand a sender's message to the agents as another's."""
+§6.4), which message it holds for verification (§11.7.3), whose release
+would otherwise hand a sender's message to the agents as another's, and
+which instruction produced a response (§5.2, §10.1.1 step 6)."""
 
 
 def _without_runtime_keys(event: RoomEvent) -> RoomEvent:
@@ -1096,14 +1116,15 @@ def _as_instruction(event: RoomEvent, message: InboundMessage) -> RoomEvent:
     """The event as the instruction the caller sent (RFC §10.1.1).
 
     An instruction is the caller's decision, not the wire's: a channel parses
-    content and need not know the type, so the pipeline applies it, as it
-    does the address. The caller's metadata rides it (step 4); standalone is
-    the typed field's word alone (step 7): a caller's metadata key of the same
-    name is dropped, never honoured. The instruction is never stored, so
-    nothing is lost.
+    content and need not know the type, so the pipeline applies it, and its
+    address, the one checked before anything was read (step 1). The caller's
+    metadata rides it (step 4); standalone is the typed field's word alone
+    (step 7): a caller's metadata key of the same name is dropped, never
+    honoured. The instruction is never stored, so nothing is lost.
     """
-    if event.type != EventType.INSTRUCTION:
-        event = event.model_copy(update={"type": EventType.INSTRUCTION})
+    event = event.model_copy(
+        update={"type": EventType.INSTRUCTION, "addressed_to": list(message.addressed_to or ())}
+    )
     # The caller's metadata rides the instruction, whatever the transport's
     # parser kept of it; a key the parser set keeps its value (RFC §10.1.1
     # step 4): a delegation's hand-back names its task (§23.3 step 8).

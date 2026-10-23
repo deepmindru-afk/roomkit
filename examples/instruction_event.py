@@ -5,7 +5,7 @@ in the room said: a handoff asking the new agent to introduce itself, a
 scheduled nudge. Sent as an ordinary inbound message, that direction is stored
 as a participant's words and read by the model as a user turn. Sent as an
 ``INSTRUCTION``, it reaches only the agent it addresses, is never stored, and
-the agent's reply records its fingerprint (never its text).
+the pipeline records its fingerprint (never its text) on the agent's reply.
 
 A ``standalone`` instruction goes further: the turn it opens reads nothing of
 the room, for a pass that must start from a blank page (a summary re-run that

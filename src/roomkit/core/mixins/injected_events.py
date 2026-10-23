@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core._instructions import without_fingerprint
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.core.mixins.inbound_locked import _Blocked, _Ready
@@ -38,14 +39,16 @@ logger = logging.getLogger("roomkit.framework")
 
 def _as_injected(event: RoomEvent, cause: RoomEvent) -> RoomEvent:
     """*event* as its pass commits it (RFC §9.4): in its cause's room, at
-    its cause's chain depth, with no idempotency key (§13.4), under an id
-    the pipeline gives (§8.1)."""
+    its cause's chain depth, with no idempotency key (§13.4) and no
+    instruction fingerprint, the pipeline's on a response alone (§5.2),
+    under an id the pipeline gives (§8.1)."""
     return with_pipeline_id(
         event.model_copy(
             update={
                 "room_id": cause.room_id,
                 "chain_depth": cause.chain_depth,
                 "idempotency_key": None,
+                "metadata": without_fingerprint(event.metadata),
             }
         )
     )

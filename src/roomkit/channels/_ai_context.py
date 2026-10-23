@@ -6,7 +6,7 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from roomkit._media import content_text, media_label
+from roomkit._media import content_text, media_label, text_form
 from roomkit.channels._ai_cuts import CUT_NOTE, cut_answers, cut_mark, cut_records
 from roomkit.channels._ai_policy import policy_check
 from roomkit.channels._author_images import (
@@ -22,7 +22,7 @@ from roomkit.channels._discussion_turn import (
     discussion_notes,
     discussion_turn,
 )
-from roomkit.channels._instruction import instruction_fingerprint, is_standalone, mark_instruction
+from roomkit.channels._instruction import is_standalone, mark_instruction
 from roomkit.channels._mark_copies import (
     compile_mark_patterns,
     content_without_mark_copies,
@@ -586,20 +586,17 @@ class AIContextMixin(_AIChannelContract):
         current_content = self._transcript_content(event, loop_ctx.author_images or _NO_IMAGES)
         current_label = labels.get(event.id)
         if event.type == EventType.INSTRUCTION:
-            # The application's direction for this one turn (RFC §10.1.1). It
-            # is the turn's input — a system-role message after the history is
-            # refused or silently re-roled by several model APIs — marked so the
-            # model never reads it as a participant's words, and recorded on the
-            # turn so every reply it produces says why the agent spoke — as a
-            # fingerprint, never the text: the metadata rides on every reply
-            # and segment, and a copy would store (and deliver to every
-            # transport) what the room never stores.
-            instruction = event.content.body if isinstance(event.content, TextContent) else ""
+            # The application's direction for this one turn (RFC §10.1.1),
+            # the text its content reads as (§6.6). It is the turn's input — a
+            # system-role message after the history is refused or silently
+            # re-roled by several model APIs — marked so the model never reads
+            # it as a participant's words. The pipeline records on each reply
+            # which instruction produced it (step 6).
+            instruction = text_form(event.content)
             current_content = (
                 mark_instruction(without_mark_copies(instruction)) if instruction else None
             )
             current_label = None
-            loop_ctx.response_metadata["instruction"] = instruction_fingerprint(instruction)
         return current_content, current_label
 
     def _cut_answers(

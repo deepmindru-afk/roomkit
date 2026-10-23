@@ -10,6 +10,7 @@ from typing import Any
 
 from roomkit.channels.base import Channel
 from roomkit.core._failure_log import log_failure
+from roomkit.core._instructions import response_metadata
 from roomkit.core._turn_runners import TurnRunner
 from roomkit.core.circuit_breaker import CircuitBreaker
 from roomkit.core.exceptions import NoRecipientError
@@ -163,7 +164,8 @@ def _answering(
     """*responses* as the pipeline commits them (RFC §8.5): each one its
     responder's, travelling outbound, in the trigger's room at the next
     depth, answering *trigger* unless it named the event it answers, under an
-    id the pipeline gives (§8.1) and with no idempotency key (§13.4)."""
+    id the pipeline gives (§8.1), with no idempotency key (§13.4), and
+    recording the instruction *trigger* is, if it is one (§10.1.1 step 6)."""
     return [_as_response(resp, trigger, responder) for resp in responses]
 
 
@@ -198,6 +200,7 @@ def _as_response(resp: RoomEvent, trigger: RoomEvent, responder: ChannelBinding)
                 "chain_depth": trigger.chain_depth + 1,
                 "responds_to": resp.responds_to or trigger.id,
                 "idempotency_key": None,
+                "metadata": response_metadata(resp.metadata, trigger),
             }
         )
     )
@@ -606,7 +609,10 @@ class EventRouter:
                         stream=output.response_stream,
                         source_channel_id=binding.channel_id,
                         source_channel_type=binding.channel_type,
-                        trigger_event=transcoded_event,
+                        # As its hooks left it, not as transcoded for this
+                        # target: its rows record that instruction (RFC
+                        # §10.1.1 step 6).
+                        trigger_event=event,
                         response_metadata=output.response_metadata,
                     )
                     tr.observations.extend(output.observations)

@@ -27,9 +27,14 @@ from roomkit._media_url import (
 from roomkit.models.event import (
     AudioContent,
     CompositeContent,
+    DeleteContent,
+    EditContent,
     EventContent,
+    LocationContent,
     MediaContent,
     RichContent,
+    SystemContent,
+    TemplateContent,
     TextContent,
     VideoContent,
 )
@@ -45,8 +50,10 @@ __all__ = [
     "is_link",
     "is_reference",
     "is_vision_image",
+    "location_label",
     "lowercase_scheme",
     "media_label",
+    "text_form",
     "video_label",
     "vision_image_type",
 ]
@@ -80,6 +87,35 @@ def audio_label(content: AudioContent) -> str:
 def video_label(content: VideoContent) -> str:
     """How *content* reads as text (RFC §6.6): its URL when a link, else its type."""
     return f"[Video: {link_or_type(content.url, content.mime_type)}]"
+
+
+def location_label(content: LocationContent) -> str:
+    """How *content* reads as text (RFC §6.6): its label or address with its
+    coordinates, its coordinates alone with neither."""
+    name = content.label or content.address
+    point = f"({content.latitude}, {content.longitude})"
+    return f"[Location: {name} {point}]" if name else f"[Location: {point}]"
+
+
+def text_form(content: EventContent) -> str:
+    """The text *content* reads as (RFC §6.6), whatever its kind: what
+    :func:`content_text` reads, a location, a template, a system notice, an
+    edit and a delete by their fallback; empty for a tool call, which has
+    none. What an instruction's fingerprint is of (§10.1.1 step 6)."""
+    text = content_text(content)
+    if text is not None:
+        return text
+    if isinstance(content, LocationContent):
+        return location_label(content)
+    if isinstance(content, TemplateContent):
+        return content.body or f"[Template: {content.template_id}]"
+    if isinstance(content, SystemContent):
+        return content.body
+    if isinstance(content, EditContent):
+        return f"Correction: {text_form(content.new_content)}"
+    if isinstance(content, DeleteContent):
+        return "[Message deleted]"
+    return ""
 
 
 def content_text(content: EventContent) -> str | None:

@@ -8,7 +8,6 @@ what the prompt says and by which session receives it.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from typing import Any
 
 import pytest
@@ -59,17 +58,15 @@ async def test_an_instruction_moves_the_cursor_past_what_it_caught_up_on(tmp_pat
 
 
 async def test_the_agent_reads_it_as_the_applications_direction(tmp_path: Any) -> None:
-    """Step 6: marked, and the reply records a fingerprint, never the text."""
+    """Step 6: marked; the reply's record holds no copy of the text, and which
+    instruction produced it is the pipeline's to record."""
     channel, connection, _ = _channel(tmp_path, emit_updates=False)
 
     output = await channel.on_event(_instruction(), _binding(), _context())
     [chunk async for chunk in output.response_stream]
 
     assert _sent(connection) == f"{INSTRUCTION_MARKER}\n{SUMMARY}"
-    assert output.response_metadata["instruction"] == {
-        "sha256": hashlib.sha256(SUMMARY.encode()).hexdigest(),
-        "length": len(SUMMARY),
-    }
+    assert SUMMARY not in str(dict(output.response_metadata))
     await channel.close()
 
 

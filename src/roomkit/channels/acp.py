@@ -56,7 +56,7 @@ from roomkit.channels._acp_sessions import (
 )
 from roomkit.channels._acp_turn import ACPTurnMixin
 from roomkit.channels._discussion_turn import discussion_notes
-from roomkit.channels._instruction import instruction_fingerprint, is_standalone, mark_instruction
+from roomkit.channels._instruction import is_standalone, mark_instruction
 from roomkit.channels._mark_copies import compile_mark_patterns
 from roomkit.channels._turn_notes import turn_notes
 from roomkit.channels.acp_transport import ACPTransport, _agent_transport
@@ -553,8 +553,6 @@ class ACPChannel(ACPConnectionMixin, ACPSessionsMixin, ACPTurnMixin, ACPEventsMi
         # persisted. A dict literal here would be a snapshot taken now, before
         # the turn has an outcome to report.
         metadata = ResponseMetadata({"acp": {"protocol_version": _STABLE_PROTOCOL_VERSION}})
-        if instruction is not None:
-            metadata["instruction"] = instruction_fingerprint(instruction)
         if standalone:
             # The room's session did not produce this reply: its next catch-up
             # carries it (RFC §10.1.1 step 7), and this mark is how it knows.
