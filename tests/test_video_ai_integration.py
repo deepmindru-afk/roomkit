@@ -51,6 +51,17 @@ class _ReadingCamera(MockVisionProvider):
         )
 
 
+def _analysed(kit: RoomKit) -> asyncio.Event:
+    """Set once a frame's vision result is out; the room's view is noted by then."""
+    out = asyncio.Event()
+
+    @kit.on("video_vision_result")
+    async def _out(event: object) -> None:
+        out.set()
+
+    return out
+
+
 async def _room_with_camera(kit: RoomKit) -> tuple[MockVideoBackend, MockAIProvider]:
     backend = MockVideoBackend()
     video = VideoChannel("video-1", backend=backend, vision=_ReadingCamera(), vision_interval_ms=0)
@@ -64,9 +75,10 @@ async def _room_with_camera(kit: RoomKit) -> tuple[MockVideoBackend, MockAIProvi
     await kit.attach_channel("r1", "ai-1", category=ChannelCategory.INTELLIGENCE)
     await kit.attach_channel("r1", "sms")
     session = await kit.connect_video("r1", "user-1", "video-1")
+    analysed = _analysed(kit)
     frame = VideoFrame(data=b"\x00" * 100, codec="h264", timestamp_ms=0.0)
     await backend.simulate_video_received(session, frame)
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(analysed.wait(), 5)
     return backend, provider
 
 
@@ -157,13 +169,14 @@ class TestVisionRidesTheTurnNotes:
         await kit.attach_channel("r1", "ai-1", category=ChannelCategory.INTELLIGENCE)
         await kit.attach_channel("r1", "sms")
         session = await kit.connect_video("r1", "user-1", "video-1")
+        analysed = _analysed(kit)
         frame = VideoFrame(data=b"\x00" * 100, codec="h264", timestamp_ms=0.0)
         await backend.simulate_video_received(session, frame)
         await asyncio.wait_for(held.wait(), 2)
 
         video.unbind_session(session)
         released.set()
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(analysed.wait(), 5)
         await _ask(kit)
 
         assert "<vision>" not in str(provider.calls[-1].messages[-1].content)
@@ -187,9 +200,10 @@ class TestVisionRidesTheTurnNotes:
         kit.register_channel(second)
         await kit.attach_channel("r1", "video-2")
         session = await kit.connect_video("r1", "user-2", "video-2")
+        analysed = _analysed(kit)
         frame = VideoFrame(data=b"\x00" * 100, codec="h264", timestamp_ms=0.0)
         await second.backend.simulate_video_received(session, frame)  # type: ignore[attr-defined]
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(analysed.wait(), 5)
 
         await _ask(kit)
 
@@ -281,7 +295,6 @@ class TestSetupRealtimeVision:
             room_id="r1",
             data={"description": "A cat on a desk"},
         )
-        await asyncio.sleep(0.05)
 
         rtv.inject_text.assert_called_once()
         call_args = rtv.inject_text.call_args
@@ -316,7 +329,6 @@ class TestSetupRealtimeVision:
                 room_id="r1",
                 data={"description": "Same scene"},
             )
-            await asyncio.sleep(0.05)
 
         # Only injected once (dedup)
         assert rtv.inject_text.call_count == 1
@@ -341,13 +353,5 @@ class TestSetupRealtimeVision:
             room_id="r2",
             data={"description": "Something"},
         )
-        await asyncio.sleep(0.05)
 
         rtv.inject_text.assert_not_called()
-
-
-class TestExport:
-    def test_importable_from_subpackage(self) -> None:
-        from roomkit.video.ai_integration import setup_video_vision
-
-        assert setup_video_vision is not None

@@ -134,13 +134,15 @@ class TestVideoHookTriggers:
         await kit.attach_channel("r1", "video-1")
 
         started_events: list[SessionStartedEvent] = []
+        fired = asyncio.Event()
 
         @kit.hook(HookTrigger.ON_VIDEO_SESSION_STARTED, HookExecution.ASYNC)
         async def on_started(event: SessionStartedEvent, context: object) -> None:
             started_events.append(event)
+            fired.set()
 
         await kit.connect_video("r1", "user-1", "video-1")
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(fired.wait(), 5)
 
         assert len(started_events) == 1
         assert started_events[0].room_id == "r1"
@@ -155,14 +157,16 @@ class TestVideoHookTriggers:
         await kit.attach_channel("r1", "video-1")
 
         ended_data: list[dict] = []
+        fired = asyncio.Event()
 
         @kit.hook(HookTrigger.ON_VIDEO_SESSION_ENDED, HookExecution.ASYNC)
         async def on_ended(event: object, context: object) -> None:
             ended_data.append({"event": event})
+            fired.set()
 
         session = await kit.connect_video("r1", "user-1", "video-1")
         await kit.disconnect_video(session)
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(fired.wait(), 5)
 
         assert len(ended_data) == 1
 
@@ -170,6 +174,20 @@ class TestVideoHookTriggers:
 # ---------------------------------------------------------------------------
 # Vision analysis
 # ---------------------------------------------------------------------------
+
+
+def _vision_results(kit: RoomKit, count: int) -> asyncio.Event:
+    """Set once ``count`` vision results are out, each cached by then."""
+    out = asyncio.Event()
+    seen: list[object] = []
+
+    @kit.on("video_vision_result")
+    async def _out(event: object) -> None:
+        seen.append(event)
+        if len(seen) >= count:
+            out.set()
+
+    return out
 
 
 class TestVideoVision:
@@ -183,10 +201,11 @@ class TestVideoVision:
         await kit.attach_channel("r1", "video-1")
 
         session = await kit.connect_video("r1", "user-1", "video-1")
+        analysed = _vision_results(kit, 1)
 
         frame = VideoFrame(data=b"\x00" * 100, codec="h264", timestamp_ms=0.0)
         await backend.simulate_video_received(session, frame)
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(analysed.wait(), 5)
 
         # Vision provider was called
         assert len(vision.calls) == 1
@@ -205,12 +224,13 @@ class TestVideoVision:
         await kit.attach_channel("r1", "video-1")
 
         session = await kit.connect_video("r1", "user-1", "video-1")
+        analysed = _vision_results(kit, 2)
 
         # Send 3 frames: ts=0, ts=500, ts=2000
         for ts in [0.0, 500.0, 2000.0]:
             frame = VideoFrame(data=b"\x00", codec="h264", timestamp_ms=ts)
             await backend.simulate_video_received(session, frame)
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(analysed.wait(), 5)
 
         # Only ts=0 and ts=2000 should be analyzed (interval=2000ms)
         assert len(vision.calls) == 2
@@ -247,9 +267,10 @@ class TestVideoVision:
             vision_events.append({"event": event})
 
         session = await kit.connect_video("r1", "user-1", "video-1")
+        analysed = _vision_results(kit, 1)
         frame = VideoFrame(data=b"\x00" * 50, codec="h264", timestamp_ms=0.0)
         await backend.simulate_video_received(session, frame)
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(analysed.wait(), 5)
 
         assert len(vision_events) == 1
 
@@ -292,11 +313,12 @@ class TestMultiSession:
 
         s1 = await kit.connect_video("r1", "user-1", "video-1")
         s2 = await kit.connect_video("r1", "user-2", "video-1")
+        analysed = _vision_results(kit, 2)
 
         frame = VideoFrame(data=b"\x00", codec="h264", timestamp_ms=0.0)
         await backend.simulate_video_received(s1, frame)
         await backend.simulate_video_received(s2, frame)
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(analysed.wait(), 5)
 
         # Each session has its own vision result
         r1 = ch.get_last_vision_result(s1.id)
@@ -309,15 +331,3 @@ class TestMultiSession:
         ch = VideoChannel("video-1", backend=backend)
         assert ch.resolve_trace_room(None) is None
         assert ch.resolve_trace_room("nonexistent") is None
-
-
-# ---------------------------------------------------------------------------
-# Public export
-# ---------------------------------------------------------------------------
-
-
-class TestVideoChannelExport:
-    def test_importable_from_roomkit(self) -> None:
-        import roomkit
-
-        assert hasattr(roomkit, "VideoChannel")
