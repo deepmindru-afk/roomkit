@@ -1,4 +1,4 @@
-"""Event filtering and persistence policy models."""
+"""Event and room filtering, and persistence policy models."""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ from collections.abc import Iterable
 from pydantic import BaseModel, Field, model_validator
 
 from roomkit.models._time import UtcDatetime
-from roomkit.models.enums import ChannelType, EventStatus, EventType
+from roomkit.models.enums import ChannelType, EventStatus, EventType, RoomStatus
 from roomkit.models.event import RoomEvent
+from roomkit.models.room import Room
 
 
 class EventFilter(BaseModel):
@@ -83,6 +84,31 @@ class EventFilter(BaseModel):
             msg = "top_level_only and parent_event_id are mutually exclusive"
             raise ValueError(msg)
         return self
+
+
+class RoomFilter(BaseModel):
+    """Which rooms a routing lookup reads (RFC §14.1): the statuses and the
+    organization.
+
+    Used with :meth:`ConversationStore.find_room_id_by_binding`,
+    :meth:`ConversationStore.find_room_id_by_participant` and
+    :meth:`ConversationStore.find_room_ids_by_channel`. An empty filter reads
+    every room.
+    """
+
+    statuses: list[RoomStatus] | None = None
+    """Only the rooms in one of these statuses. ``None`` reads every status;
+    the default router's step 1 reads ACTIVE and PAUSED rooms (RFC §10.4)."""
+
+    organization_id: str | None = None
+    """Only the rooms of this organization (RFC §17.2). ``None`` reads every
+    room, as a call that names no organization does."""
+
+    def admits(self, room: Room) -> bool:
+        """Whether *room* is one the filter reads."""
+        if self.statuses is not None and room.status not in self.statuses:
+            return False
+        return self.organization_id is None or room.organization_id == self.organization_id
 
 
 def includes_blocked(event_filter: EventFilter | None) -> bool:

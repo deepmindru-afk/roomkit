@@ -65,7 +65,7 @@ from roomkit.models.plan_event import PlanUpdatedEvent
 from roomkit.models.response_metadata import ResponseMetadata
 from roomkit.models.room import Room, RoomTimers
 from roomkit.models.session_event import SessionStartedEvent
-from roomkit.models.store_filter import EventFilter, PersistencePolicy
+from roomkit.models.store_filter import EventFilter, PersistencePolicy, RoomFilter
 from roomkit.models.task import Observation, Task
 from roomkit.models.thinking_event import ThinkingEvent
 from roomkit.models.tool_call import (
@@ -133,6 +133,7 @@ __all__ = [
     "Room",
     "RoomContext",
     "RoomEvent",
+    "RoomFilter",
     "RoomStatus",
     "RoomTimers",
     "SessionStartedEvent",

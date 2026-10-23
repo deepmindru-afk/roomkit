@@ -21,7 +21,7 @@ from roomkit.models.event import DeleteContent, EditContent, RoomEvent, ThreadSu
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
-from roomkit.models.store_filter import EventFilter
+from roomkit.models.store_filter import EventFilter, RoomFilter
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
@@ -53,6 +53,28 @@ def without_address(
     kept = [held for held in channel_addresses.get(channel_type, []) if held != address]
     rest = {key: value for key, value in channel_addresses.items() if key != channel_type}
     return {**rest, channel_type: kept} if kept else rest
+
+
+def sender_names(participant_id: str, identity_id: str | None) -> frozenset[str]:
+    """The names a routing lookup knows the sender by (RFC §10.4 step 1): the
+    address, and the identity the caller resolved it to."""
+    return frozenset({participant_id} if identity_id is None else {participant_id, identity_id})
+
+
+def reached_as(participant: Participant, channel_id: str, names: frozenset[str]) -> bool:
+    """Whether *participant* is the sender known by *names*, reached through
+    *channel_id* (RFC §5.5, §10.4 step 1): its id or its identity is one of
+    the names, and its ``connected_via`` names the channel."""
+    return channel_id in participant.connected_via and bool(
+        names & {participant.id, participant.identity_id}
+    )
+
+
+def _recency(room: Room) -> tuple[float, str]:
+    """A room's place in creation order: created_at, then id. Timestamps,
+    since a naive created_at beside an aware one would make the datetimes
+    themselves refuse to compare."""
+    return (room.created_at.timestamp(), room.id)
 
 
 def deletes_edits(event: RoomEvent, target: RoomEvent | None) -> bool:
@@ -419,108 +441,133 @@ class ConversationStore(ABC):
     async def find_room_ids_by_channel(
         self,
         channel_id: str,
-        status: str | None = None,
+        room_filter: RoomFilter | None = None,
         limit: int = 2,
-        *,
-        organization_id: str | None = None,
     ) -> list[str]:
-        """Room IDs bound to *channel_id*, deterministically ordered.
+        """Room IDs bound to *channel_id* among the rooms *room_filter* reads,
+        oldest first: by creation time, the room id breaking a tie.
 
         Routing must be able to tell "exactly one room" from "several", because
         picking one of several delivers a message into a conversation it does
         not belong to (RFC §10.4). ``find_room_id_by_channel`` cannot express
         that — it returns one id either way — so this returns up to *limit*,
         and the default of 2 is enough to answer "is this ambiguous?".
-        *organization_id* keeps the rooms of that organization only (RFC
-        §17.2); ``None`` reads every room.
+        *room_filter* names the statuses and the organization (RFC §17.2);
+        ``None`` reads every room.
 
         Implementations MUST order the result deterministically: the same
         stored state has to give the same answer whatever the backend.
 
-        This is not abstract, so a store written before it existed keeps
-        working — it falls back to the single lookup and therefore cannot
-        report ambiguity, and to a scan of the organization's rooms when one
-        is named. Override it.
+        This is not abstract, so a store that does not override it keeps
+        working: with a filter naming one status at most and no organization
+        it falls back to the single lookup and therefore cannot report
+        ambiguity, otherwise to a scan of the rooms the filter reads.
+        Override it.
         """
-        if organization_id is None:
+        room_filter = room_filter or RoomFilter()
+        statuses = room_filter.statuses
+        if room_filter.organization_id is None and (statuses is None or len(statuses) == 1):
+            status = None if statuses is None else statuses[0].value
             room_id = await self.find_room_id_by_channel(channel_id, status=status)
             return [room_id] if room_id is not None else []
-        # Ordered as timestamps: a naive created_at beside an aware one would
-        # make the datetimes themselves refuse to compare.
-        matched: list[tuple[float, str]] = []
-        offset = 0
-        while True:
-            rooms = await self.find_rooms(
-                organization_id=organization_id, status=status, limit=_ROOM_PAGE, offset=offset
-            )
-            for room in rooms:
-                if await self.get_binding(room.id, channel_id) is not None:
-                    matched.append((room.created_at.timestamp(), room.id))
-            if len(rooms) < _ROOM_PAGE:
-                return [room_id for _created_at, room_id in sorted(matched)[:limit]]
-            offset += len(rooms)
+        matched = [
+            _recency(room)
+            for room in await self._rooms_read_by(room_filter)
+            if await self.get_binding(room.id, channel_id) is not None
+        ]
+        return [room_id for _created_at, room_id in sorted(matched)[:limit]]
 
     async def find_room_id_by_binding(
         self,
         channel_id: str,
         participant_id: str,
-        status: str | None = None,
-        *,
-        organization_id: str | None = None,
+        identity_id: str | None = None,
+        room_filter: RoomFilter | None = None,
     ) -> str | None:
-        """The latest room whose binding of *channel_id* names *participant_id*.
+        """The newest room whose binding of *channel_id* names the sender
+        (RFC §10.4 step 1, §14.1): its correspondent is *participant_id*, the
+        sender's address, or *identity_id*, the identity the caller resolved
+        the address to (``None`` when none).
 
         A binding names its correspondent (RFC §5.7): the sender a room was
         created for, or the first one routed to it. It speaks for its own
         channel only, so a correspondent of one number is not taken to that
-        room when they write to another (§10.4 step 1). Latest by creation
-        time, the room id breaking a tie, in every store; among the rooms of
-        *organization_id* only when one is named (§17.2).
+        room when they write to another (§10.4 step 1). The newest room either
+        name finds wins: the most recently created, the greatest id breaking
+        a tie, in every store. *room_filter* names the statuses and the
+        organization (§17.2); ``None`` reads every room.
 
         Not abstract, so a store that does not override it keeps working:
         the fallback reads the binding of every room bound to the channel.
         Override it with an indexed query.
         """
+        names = sender_names(participant_id, identity_id)
         room_ids = await self.find_room_ids_by_channel(
-            channel_id, status=status, limit=sys.maxsize, organization_id=organization_id
+            channel_id, room_filter or RoomFilter(), limit=sys.maxsize
         )
         for room_id in reversed(room_ids):
             binding = await self.get_binding(room_id, channel_id)
-            if binding is not None and binding.participant_id == participant_id:
+            if binding is not None and binding.participant_id in names:
                 return room_id
         return None
 
     async def find_room_id_by_participant(
         self,
+        channel_id: str,
         participant_id: str,
-        status: str | None = None,
-        *,
-        organization_id: str | None = None,
+        identity_id: str | None = None,
+        room_filter: RoomFilter | None = None,
     ) -> str | None:
-        """The latest room where *participant_id* is a participant (RFC §10.4 step 1).
+        """The newest room holding a participant who is the sender and was
+        reached through *channel_id* (RFC §10.4 step 1, §14.1).
 
-        Participant records only, never a binding: a binding speaks for its
-        own channel and is read by :meth:`find_room_id_by_binding`. Latest by
-        creation time, the room id breaking a tie, in every store; among the
-        rooms of *organization_id* only when one is named (§17.2).
+        The participant is named by *participant_id*, the sender's address,
+        or by *identity_id*, the identity the caller resolved it to (``None``
+        when none): its id or its identity is one of them. Reached through the
+        channel is its ``connected_via`` naming it, whatever the participant's
+        status (§5.5): an id names its participant only on a channel they are
+        reached through. Participant records only, never a binding: a binding
+        speaks for its own channel and is read by
+        :meth:`find_room_id_by_binding`. The newest room either name finds
+        wins, ordered as there; *room_filter* names the statuses and the
+        organization (§17.2), ``None`` reading every room.
 
         Not abstract, so a store that does not override it keeps working:
         the fallback pages through the rooms. Override it with an indexed
         query.
         """
-        best: tuple[datetime, str] | None = None
-        offset = 0
-        while True:
-            rooms = await self.find_rooms(
-                organization_id=organization_id, status=status, limit=_ROOM_PAGE, offset=offset
-            )
-            for room in rooms:
-                newer = best is None or (room.created_at, room.id) > best
-                if newer and await self.get_participant(room.id, participant_id) is not None:
-                    best = (room.created_at, room.id)
-            if len(rooms) < _ROOM_PAGE:
-                return best[1] if best is not None else None
-            offset += len(rooms)
+        names = sender_names(participant_id, identity_id)
+        best: tuple[float, str] | None = None
+        for room in await self._rooms_read_by(room_filter or RoomFilter()):
+            if best is not None and _recency(room) <= best:
+                continue
+            if any(
+                reached_as(participant, channel_id, names)
+                for participant in await self.list_participants(room.id)
+            ):
+                best = _recency(room)
+        return best[1] if best is not None else None
+
+    async def _rooms_read_by(self, room_filter: RoomFilter) -> list[Room]:
+        """Every room *room_filter* reads, paged through :meth:`find_rooms`."""
+        statuses: list[str | None] = (
+            [None] if room_filter.statuses is None else [s.value for s in room_filter.statuses]
+        )
+        found: list[Room] = []
+        for status in statuses:
+            offset = 0
+            while True:
+                rooms = await self.find_rooms(
+                    organization_id=room_filter.organization_id,
+                    status=status,
+                    limit=_ROOM_PAGE,
+                    offset=offset,
+                )
+                found.extend(rooms)
+                if len(rooms) < _ROOM_PAGE:
+                    break
+                offset += len(rooms)
+        return found
 
     # Event operations
 

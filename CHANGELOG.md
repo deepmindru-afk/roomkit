@@ -1278,6 +1278,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streaming delay by default (`TURNS=default STREAMING_DELAY_MS=480` gives
   the service's defaults), and drops emoji before Voxtral Speech.
 
+- **BREAKING — the store's routing lookups take the channel, the sender's
+  identity and a `RoomFilter`** (RFC §10.4 step 1, §14.1, RMK-930). The
+  default router asked for the sender's address first and then their
+  identity, so an older room found by the address hid a newer one found by
+  the identity; and `find_room_id_by_participant()` took no channel, so a
+  newer room where the sender joined through another channel hid the older
+  room they joined through this one, and the message opened a room of its
+  own. The lookups now read:
+  - `find_room_id_by_binding(channel_id, participant_id, identity_id=None,
+    room_filter=None)`: the newest room whose binding of the channel names
+    the address or the identity;
+  - `find_room_id_by_participant(channel_id, participant_id,
+    identity_id=None, room_filter=None)`: the newest room holding a
+    participant reached through the channel (its `connected_via`, whatever
+    its status) whose id or identity is the address or the identity;
+  - `find_room_ids_by_channel(channel_id, room_filter=None, limit=2)`.
+  The new `RoomFilter(statuses=None, organization_id=None)` names the
+  statuses and the organization a lookup reads, `None` reading every one;
+  it replaces the `status` and `organization_id` keywords. The newest room
+  is the most recently created, the greatest id breaking a tie, in every
+  store and in the base fallbacks. Postgres gains an index on
+  `participants(identity_id)`, created by `init()`.
+  Migrate: `find_room_id_by_binding(ch, pid, status="active",
+  organization_id=org)` becomes `find_room_id_by_binding(ch, pid, None,
+  RoomFilter(statuses=[RoomStatus.ACTIVE], organization_id=org))`;
+  `find_room_id_by_participant(pid, ...)` takes the channel first; a
+  custom store that overrides any of the three takes the new signature.
+
 ### Removed
 
 - **BREAKING — `roomkit.core.visibility.effective_visibility`** (RMK-902). An

@@ -19,7 +19,7 @@ from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
-from roomkit.models.store_filter import EventFilter
+from roomkit.models.store_filter import EventFilter, RoomFilter
 from roomkit.models.task import Observation, Task
 from tests.private_module import load_private_copy
 
@@ -691,7 +691,9 @@ class TestPostgresStore:
     async def test_find_room_ids_by_channel_reports_ambiguity(self) -> None:
         store, mock_conn = _make_store_with_pool()
         mock_conn.fetch.return_value = [{"room_id": "room-1"}, {"room_id": "room-2"}]
-        result = await store.find_room_ids_by_channel("ch-1", status="active")
+        result = await store.find_room_ids_by_channel(
+            "ch-1", RoomFilter(statuses=[RoomStatus.ACTIVE])
+        )
         assert result == ["room-1", "room-2"]
 
     async def test_find_room_ids_by_channel_orders_deterministically(self) -> None:
@@ -699,7 +701,7 @@ class TestPostgresStore:
         store, mock_conn = _make_store_with_pool()
         mock_conn.fetch.return_value = []
 
-        await store.find_room_ids_by_channel("ch-1", status="active")
+        await store.find_room_ids_by_channel("ch-1", RoomFilter(statuses=[RoomStatus.ACTIVE]))
         assert "ORDER BY r.created_at, b.room_id" in mock_conn.fetch.call_args[0][0]
 
         await store.find_room_ids_by_channel("ch-1")

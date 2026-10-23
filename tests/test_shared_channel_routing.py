@@ -588,6 +588,43 @@ class TestABindingNamingAnIdentity:
         assert calls == [ALICE]
 
 
+class TestEitherNameFindsTheNewestRoom:
+    """RFC §10.4 step 1: within each lookup the sender is named by their
+    address or their identity, and the newest room either name finds wins."""
+
+    async def test_an_older_room_found_by_the_address_does_not_hide_a_newer_one(
+        self, store: ConversationStore
+    ) -> None:
+        shop = _Shop(store)
+        await store.create_identity(Identity(id="id-alice"))
+        await store.link_address("id-alice", "sms", ALICE)
+        await shop.kit.create_room(room_id="by-address")
+        await shop.kit.attach_channel("by-address", "sms", participant_id=ALICE)
+        await shop.kit.create_room(room_id="by-identity")
+        await shop.kit.attach_channel("by-identity", "sms", participant_id="id-alice")
+
+        assert await shop.room_of(ALICE) == "by-identity"
+
+    async def test_an_older_room_joined_through_the_channel_is_found_past_a_newer_one(
+        self, store: ConversationStore
+    ) -> None:
+        """The participant lookup reads the channel: a newer room where the
+        sender joined through another channel does not hide the room they
+        joined through this one, and the number serving another room leaves
+        step 3 no answer."""
+        shop = _Shop(store)
+        shop.kit.register_channel(WebSocketChannel("web"))
+        await shop.kit.create_room(room_id="joined-here")
+        await shop.kit.attach_channel("joined-here", "sms")
+        await shop.kit.add_member("joined-here", "sms", ALICE)
+        await shop.kit.create_room(room_id="joined-elsewhere")
+        await shop.kit.attach_channel("joined-elsewhere", "web")
+        await shop.kit.add_member("joined-elsewhere", "web", ALICE)
+        await shop.open_free_room()
+
+        assert await shop.room_of(ALICE) == "joined-here"
+
+
 class TestTheFrameworksOwnSender:
     async def test_a_room_it_opens_names_no_correspondent(self, store: ConversationStore) -> None:
         shop = _Shop(store)

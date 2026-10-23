@@ -12,7 +12,7 @@ from roomkit.models.delivery import SYSTEM_SENDER_ID
 from roomkit.models.enums import ChannelType, RoomStatus
 from roomkit.models.identity import Identity
 from roomkit.models.room import Room
-from roomkit.models.store_filter import EventFilter
+from roomkit.models.store_filter import EventFilter, RoomFilter
 from roomkit.store.base import ConversationStore
 
 logger = logging.getLogger("roomkit.framework")
@@ -104,7 +104,10 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         # identifies the conversation, where a binding of the channel to some
         # room only identifies the pipe.
         if participant_id:
-            room_id = await self._senders_room(channel_id, participant_id, own, organization_id)
+            identity_id = identity.id if identity is not None else None
+            room_id = await self._senders_room(
+                channel_id, participant_id, identity_id, organization_id
+            )
             if room_id is not None:
                 return room_id
 
@@ -116,7 +119,9 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         # that room is open to this sender: on a shared number, the one room
         # bound to it is the first correspondent's conversation.
         candidates = await self._store.find_room_ids_by_channel(
-            channel_id, status=str(RoomStatus.ACTIVE), limit=2, organization_id=organization_id
+            channel_id,
+            RoomFilter(statuses=[RoomStatus.ACTIVE], organization_id=organization_id),
+            limit=2,
         )
         if len(candidates) == 1:
             if await self._admits(candidates[0], channel_id, participant_id or None, own):
@@ -137,46 +142,38 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         return None
 
     async def _senders_room(
-        self, channel_id: str, sender: str, own: frozenset[str], organization_id: str | None
+        self,
+        channel_id: str,
+        sender: str,
+        identity_id: str | None,
+        organization_id: str | None,
     ) -> str | None:
-        """The latest active room of *organization_id* that is *sender*'s own
-        (RFC §10.4 step 1); *own* holds the address and its identity's id.
+        """The newest active room of *organization_id* that is *sender*'s own
+        (RFC §10.4 step 1); *identity_id* is the identity the framework
+        resolved the address to.
 
         First the room whose binding of this very channel names the sender: a
         binding speaks for its own channel, so a correspondent of one number
-        is not taken to that room when they write to another. Then the room
-        where the sender is a participant. The sender is named by their
-        address, then by the identity the store resolves it to
-        (``link_address``), as in step 3: a member the host added under their
-        identity is found by their number.
-
-        A room found through a participant record is the sender's only when
-        that participant joined it through this channel: an id names its
-        participant only on a channel they are reached through (RFC §5.5). A
-        number linked to someone's identity, or a sender id equal to a
-        participant's on another channel, does not land in a room they joined
-        elsewhere, which would then carry that room's messages to this sender.
+        is not taken to that room when they write to another. Otherwise the
+        room where the sender is a participant reached through this channel:
+        an id names its participant only on a channel they are reached
+        through (RFC §5.5), so a number linked to someone's identity, or a
+        sender id equal to a participant's on another channel, does not land
+        in a room they joined elsewhere, which would then carry that room's
+        messages to this sender. Within each lookup the sender is named by
+        their address or their identity (``link_address``), and the newest
+        room either name finds wins: an older room found by the address does
+        not hide a newer one found by the identity.
         """
-        active = str(RoomStatus.ACTIVE)
-        names = (sender, *sorted(own - {sender}))
-        for name in names:
-            room_id = await self._store.find_room_id_by_binding(
-                channel_id, name, status=active, organization_id=organization_id
-            )
-            if room_id is not None:
-                return room_id
-        for name in names:
-            room_id = await self._store.find_room_id_by_participant(
-                name, status=active, organization_id=organization_id
-            )
-            if room_id is not None and await self._joined_through(room_id, channel_id, name):
-                return room_id
-        return None
-
-    async def _joined_through(self, room_id: str, channel_id: str, participant_id: str) -> bool:
-        """Whether *participant_id* reached *room_id* through *channel_id*."""
-        participant = await self._store.get_participant(room_id, participant_id)
-        return participant is not None and channel_id in participant.connected_via
+        step_one = RoomFilter(statuses=[RoomStatus.ACTIVE], organization_id=organization_id)
+        room_id = await self._store.find_room_id_by_binding(
+            channel_id, sender, identity_id, step_one
+        )
+        if room_id is not None:
+            return room_id
+        return await self._store.find_room_id_by_participant(
+            channel_id, sender, identity_id, step_one
+        )
 
     async def _admits(
         self, room_id: str, channel_id: str, sender: str | None, own: frozenset[str]

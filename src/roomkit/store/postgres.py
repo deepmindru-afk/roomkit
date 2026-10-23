@@ -22,7 +22,7 @@ from roomkit.models.event import RoomEvent, ThreadSummary
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
-from roomkit.models.store_filter import EventFilter, includes_blocked
+from roomkit.models.store_filter import EventFilter, RoomFilter, includes_blocked
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
@@ -34,6 +34,7 @@ from roomkit.store.base import (
     is_marked_deleted,
     room_holds,
     room_taken,
+    sender_names,
     target_gone,
     without_address,
 )
@@ -223,16 +224,19 @@ async def _observe_event_index(conn: Any, room_id: str, event_index: int) -> Non
     )
 
 
-def _room_filter(params: list[Any], status: str | None, organization_id: str | None) -> str:
-    """The conditions narrowing a routing lookup joined on ``rooms r`` to a
-    status and an organization when either is named (RFC §10.4, §17.2); their
-    values are appended to *params*, numbered after those already there."""
+def _room_filter(params: list[Any], room_filter: RoomFilter | None) -> str:
+    """The conditions narrowing a routing lookup joined on ``rooms r`` to the
+    statuses and the organization *room_filter* names (RFC §10.4, §14.1,
+    §17.2); their values are appended to *params*, numbered after those
+    already there."""
     clause = ""
-    if status is not None:
-        params.append(status.value if hasattr(status, "value") else status)
-        clause += f" AND r.status = ${len(params)}"
-    if organization_id is not None:
-        params.append(organization_id)
+    if room_filter is None:
+        return clause
+    if room_filter.statuses is not None:
+        params.append([status.value for status in room_filter.statuses])
+        clause += f" AND r.status = ANY(${len(params)}::text[])"
+    if room_filter.organization_id is not None:
+        params.append(room_filter.organization_id)
         clause += f" AND r.organization_id = ${len(params)}"
     return clause
 
@@ -966,25 +970,26 @@ class PostgresStore(ConversationStore):
         channel_id: str,
         status: str | None = None,
     ) -> str | None:
-        matches = await self.find_room_ids_by_channel(channel_id, status=status, limit=1)
+        statuses = None if status is None else [RoomStatus(status)]
+        matches = await self.find_room_ids_by_channel(channel_id, RoomFilter(statuses=statuses), 1)
         return matches[0] if matches else None
 
     async def find_room_id_by_binding(
         self,
         channel_id: str,
         participant_id: str,
-        status: str | None = None,
-        *,
-        organization_id: str | None = None,
+        identity_id: str | None = None,
+        room_filter: RoomFilter | None = None,
     ) -> str | None:
         # Newest room first, id as tie-breaker, like the other stores.
+        names = sorted(sender_names(participant_id, identity_id))
         query = (
             "SELECT b.room_id FROM bindings b "
             "JOIN rooms r ON r.id = b.room_id "
-            "WHERE b.channel_id = $1 AND b.participant_id = $2"
+            "WHERE b.channel_id = $1 AND b.participant_id = ANY($2::text[])"
         )
-        params: list[Any] = [channel_id, participant_id]
-        query += _room_filter(params, status, organization_id)
+        params: list[Any] = [channel_id, names]
+        query += _room_filter(params, room_filter)
         query += ' ORDER BY r.created_at DESC, b.room_id COLLATE "C" DESC LIMIT 1'
         async with self._acquire() as conn:
             row = await conn.fetchrow(query, *params)
@@ -992,17 +997,22 @@ class PostgresStore(ConversationStore):
 
     async def find_room_id_by_participant(
         self,
+        channel_id: str,
         participant_id: str,
-        status: str | None = None,
-        *,
-        organization_id: str | None = None,
+        identity_id: str | None = None,
+        room_filter: RoomFilter | None = None,
     ) -> str | None:
-        # Newest room first, id as tie-breaker, like the other stores.
+        # Newest room first, id as tie-breaker, like the other stores. The
+        # participant is reached through the channel whatever its status
+        # (RFC §5.5), and named by its id or its identity.
+        names = sorted(sender_names(participant_id, identity_id))
         query = (
-            "SELECT p.room_id FROM participants p JOIN rooms r ON r.id = p.room_id WHERE p.id = $1"
+            "SELECT p.room_id FROM participants p JOIN rooms r ON r.id = p.room_id"
+            " WHERE (p.id = ANY($1::text[]) OR p.identity_id = ANY($1::text[]))"
+            " AND $2 = ANY(p.connected_via)"
         )
-        params: list[Any] = [participant_id]
-        query += _room_filter(params, status, organization_id)
+        params: list[Any] = [names, channel_id]
+        query += _room_filter(params, room_filter)
         query += ' ORDER BY r.created_at DESC, p.room_id COLLATE "C" DESC LIMIT 1'
         async with self._acquire() as conn:
             row = await conn.fetchrow(query, *params)
@@ -1011,10 +1021,8 @@ class PostgresStore(ConversationStore):
     async def find_room_ids_by_channel(
         self,
         channel_id: str,
-        status: str | None = None,
+        room_filter: RoomFilter | None = None,
         limit: int = 2,
-        *,
-        organization_id: str | None = None,
     ) -> list[str]:
         # ORDER BY is not decoration here: without it the planner picks the row
         # and the same stored state can route two different ways, in the same
@@ -1025,7 +1033,7 @@ class PostgresStore(ConversationStore):
             "SELECT b.room_id FROM bindings b JOIN rooms r ON r.id = b.room_id"
             " WHERE b.channel_id = $1"
         )
-        query += _room_filter(params, status, organization_id)
+        query += _room_filter(params, room_filter)
         params.append(limit)
         query += f' ORDER BY r.created_at, b.room_id COLLATE "C" LIMIT ${len(params)}'
         async with self._acquire() as conn:

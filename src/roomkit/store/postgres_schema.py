@@ -357,6 +357,8 @@ CREATE INDEX IF NOT EXISTS idx_participants_channel
     ON participants(room_id, channel_id);
 -- Routing reads the rooms a sender is a participant of (RFC §10.4 step 1).
 CREATE INDEX IF NOT EXISTS idx_participants_id ON participants(id);
+-- Routing names a participant by its identity too (RFC §10.4 step 1).
+CREATE INDEX IF NOT EXISTS idx_participants_identity ON participants(identity_id);
 
 -- identities
 CREATE TABLE IF NOT EXISTS identities (

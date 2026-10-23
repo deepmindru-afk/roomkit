@@ -205,7 +205,7 @@ async def test_ids_compare_by_code_point_in_every_store(
     try:
         page = await contract_store.find_rooms(organization_id=org, limit=10)
         latest = await contract_store.find_latest_room(f"p-{org}")
-        by_participant = await contract_store.find_room_id_by_participant(f"p-{org}")
+        by_participant = await contract_store.find_room_id_by_participant("sms", f"p-{org}")
 
         assert [room.id for room in page] == [f"{org}-B", f"{org}-Z", f"{org}-a"]
         assert latest is not None and latest.id == f"{org}-a"
@@ -240,7 +240,7 @@ async def test_rooms_created_with_and_without_a_time_zone_are_found() -> None:
 
     latest = await store.find_latest_room("p")
     assert latest is not None and latest.id == "naive"
-    assert await store.find_room_id_by_participant("p") == "naive"
+    assert await store.find_room_id_by_participant("sms", "p") == "naive"
     assert await store.find_room_id_by_binding("sms", "p") == "naive"
     assert await store.find_room_ids_by_channel("sms") == ["aware", "naive"]
 

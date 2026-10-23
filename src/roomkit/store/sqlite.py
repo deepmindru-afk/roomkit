@@ -42,7 +42,7 @@ from roomkit.models.event import RoomEvent, ThreadSummary
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
-from roomkit.models.store_filter import EventFilter, includes_blocked
+from roomkit.models.store_filter import EventFilter, RoomFilter, includes_blocked
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
@@ -55,6 +55,7 @@ from roomkit.store.base import (
     link_target,
     room_holds,
     room_taken,
+    sender_names,
     target_gone,
     without_address,
 )
@@ -220,17 +221,22 @@ def _write_transaction(conn: sqlite3.Connection) -> Generator[None, None, None]:
         raise
 
 
-def _filter_rooms(
-    where: list[str], params: list[Any], status: str | None, organization_id: str | None
-) -> None:
-    """Narrow a routing lookup joined on ``rooms r`` to a status and an
-    organization when either is named (RFC §10.4, §17.2)."""
-    if status is not None:
-        where.append("r.status = ?")
-        params.append(status)
-    if organization_id is not None:
+def _filter_rooms(where: list[str], params: list[Any], room_filter: RoomFilter | None) -> None:
+    """Narrow a routing lookup joined on ``rooms r`` to the statuses and the
+    organization *room_filter* names (RFC §10.4, §14.1, §17.2)."""
+    if room_filter is None:
+        return
+    if room_filter.statuses is not None:
+        where.append(f"r.status IN ({', '.join('?' * len(room_filter.statuses))})")
+        params.extend(status.value for status in room_filter.statuses)
+    if room_filter.organization_id is not None:
         where.append("r.organization_id = ?")
-        params.append(organization_id)
+        params.append(room_filter.organization_id)
+
+
+def _placeholders(values: list[str]) -> str:
+    """``?, ?`` for *values*, the parameters of an ``IN`` list."""
+    return ", ".join("?" * len(values))
 
 
 class SQLiteSchemaError(RuntimeError):
@@ -1057,31 +1063,32 @@ class SQLiteStore(ConversationStore):
     async def find_room_id_by_channel(
         self, channel_id: str, status: str | None = None
     ) -> str | None:
-        matches = await self.find_room_ids_by_channel(channel_id, status=status, limit=1)
+        statuses = None if status is None else [RoomStatus(status)]
+        matches = await self.find_room_ids_by_channel(channel_id, RoomFilter(statuses=statuses), 1)
         return matches[0] if matches else None
 
     async def find_room_id_by_binding(
         self,
         channel_id: str,
         participant_id: str,
-        status: str | None = None,
-        *,
-        organization_id: str | None = None,
+        identity_id: str | None = None,
+        room_filter: RoomFilter | None = None,
     ) -> str | None:
         return await self._run(
-            self._x_find_room_id_by_binding, channel_id, participant_id, status, organization_id
+            self._x_find_room_id_by_binding, channel_id, participant_id, identity_id, room_filter
         )
 
     def _x_find_room_id_by_binding(
         self,
         channel_id: str,
         participant_id: str,
-        status: str | None,
-        organization_id: str | None,
+        identity_id: str | None,
+        room_filter: RoomFilter | None,
     ) -> str | None:
-        where = ["b.channel_id = ?", "b.participant_id = ?"]
-        params: list[Any] = [channel_id, participant_id]
-        _filter_rooms(where, params, status, organization_id)
+        names = sorted(sender_names(participant_id, identity_id))
+        where = ["b.channel_id = ?", f"b.participant_id IN ({_placeholders(names)})"]
+        params: list[Any] = [channel_id, *names]
+        _filter_rooms(where, params, room_filter)
         row = (
             self._db()
             .execute(
@@ -1096,21 +1103,36 @@ class SQLiteStore(ConversationStore):
 
     async def find_room_id_by_participant(
         self,
+        channel_id: str,
         participant_id: str,
-        status: str | None = None,
-        *,
-        organization_id: str | None = None,
+        identity_id: str | None = None,
+        room_filter: RoomFilter | None = None,
     ) -> str | None:
         return await self._run(
-            self._x_find_room_id_by_participant, participant_id, status, organization_id
+            self._x_find_room_id_by_participant,
+            channel_id,
+            participant_id,
+            identity_id,
+            room_filter,
         )
 
     def _x_find_room_id_by_participant(
-        self, participant_id: str, status: str | None, organization_id: str | None
+        self,
+        channel_id: str,
+        participant_id: str,
+        identity_id: str | None,
+        room_filter: RoomFilter | None,
     ) -> str | None:
-        where = ["p.id = ?"]
-        params: list[Any] = [participant_id]
-        _filter_rooms(where, params, status, organization_id)
+        # Named by its id (indexed) or its identity, and reached through the
+        # channel whatever its status (RFC §5.5, §10.4 step 1).
+        names = sorted(sender_names(participant_id, identity_id))
+        where = [
+            f"(p.id IN ({_placeholders(names)})"
+            f" OR json_extract(p.data, '$.identity_id') IN ({_placeholders(names)}))",
+            "EXISTS (SELECT 1 FROM json_each(p.data, '$.connected_via') WHERE value = ?)",
+        ]
+        params: list[Any] = [*names, *names, channel_id]
+        _filter_rooms(where, params, room_filter)
         row = (
             self._db()
             .execute(
@@ -1126,21 +1148,17 @@ class SQLiteStore(ConversationStore):
     async def find_room_ids_by_channel(
         self,
         channel_id: str,
-        status: str | None = None,
+        room_filter: RoomFilter | None = None,
         limit: int = 2,
-        *,
-        organization_id: str | None = None,
     ) -> list[str]:
-        return await self._run(
-            self._x_find_room_ids_by_channel, channel_id, status, limit, organization_id
-        )
+        return await self._run(self._x_find_room_ids_by_channel, channel_id, room_filter, limit)
 
     def _x_find_room_ids_by_channel(
-        self, channel_id: str, status: str | None, limit: int, organization_id: str | None
+        self, channel_id: str, room_filter: RoomFilter | None, limit: int
     ) -> list[str]:
         where = ["b.channel_id = ?"]
         params: list[Any] = [channel_id]
-        _filter_rooms(where, params, status, organization_id)
+        _filter_rooms(where, params, room_filter)
         params.append(limit)
         rows = self._db().execute(
             f"""SELECT r.id FROM bindings b JOIN rooms r ON r.id = b.room_id

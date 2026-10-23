@@ -15,6 +15,7 @@ from roomkit.models.enums import ChannelType, EventStatus, RoomStatus
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
+from roomkit.models.store_filter import RoomFilter
 from roomkit.store.memory import InMemoryStore
 from tests.conftest import make_event
 
@@ -124,7 +125,8 @@ class TestDeterminism:
         """The store's order must not be an accident of insertion."""
         store = await _store_with_rooms("z-room", "a-room")
 
-        ids = await store.find_room_ids_by_channel("ws", status=str(RoomStatus.ACTIVE), limit=10)
+        active = RoomFilter(statuses=[RoomStatus.ACTIVE])
+        ids = await store.find_room_ids_by_channel("ws", active, limit=10)
 
         rooms = [await store.get_room(i) for i in ids]
         created = [r.created_at for r in rooms if r is not None]

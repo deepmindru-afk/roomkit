@@ -13,7 +13,12 @@ from roomkit.models.event import DeleteContent, EditContent, RoomEvent, ThreadSu
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
-from roomkit.models.store_filter import EventFilter, includes_blocked, received_events
+from roomkit.models.store_filter import (
+    EventFilter,
+    RoomFilter,
+    includes_blocked,
+    received_events,
+)
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
@@ -26,8 +31,10 @@ from roomkit.store.base import (
     is_marked_deleted,
     link_target,
     marked_deleted,
+    reached_as,
     room_holds,
     room_taken,
+    sender_names,
     target_gone,
     without_address,
 )
@@ -66,8 +73,9 @@ class InMemoryStore(ConversationStore):
         # Per-room locks for atomic index assignment
         self._room_locks: dict[str, asyncio.Lock] = {}
         self._voice_deliveries: dict[tuple[str, str], VoiceDeliveryRecord] = {}
-        # find_latest_room candidate index: participant id -> rooms where that
-        # participant appears (as a Participant row or on a binding). Turns
+        # Candidate index of find_latest_room and the routing lookups: a name
+        # -> rooms where it appears (a Participant row's id or identity, a
+        # binding's correspondent). Turns
         # the per-inbound-message room scan into a lookup over the handful of
         # rooms the sender actually touches. Over-inclusion is harmless — the
         # read re-checks the full predicate per candidate — so writes only
@@ -83,24 +91,28 @@ class InMemoryStore(ConversationStore):
         """Drop pid→room when nothing in the room references pid anymore."""
         if not pid:
             return
-        if pid in self._participants.get(room_id, {}):
+        if pid in self._room_names(room_id):
             return
-        for b in self._bindings.get(room_id, {}).values():
-            if b.participant_id == pid:
-                return
         rooms = self._participant_room_index.get(pid)
         if rooms is not None:
             rooms.discard(room_id)
             if not rooms:
                 del self._participant_room_index[pid]
 
-    def _unindex_room(self, room_id: str) -> None:
-        """Remove a deleted room from every participant's candidate set."""
-        pids = set(self._participants.get(room_id, {}).keys())
-        pids.update(
+    def _room_names(self, room_id: str) -> set[str]:
+        """Every name the room's participants and bindings are indexed under:
+        a participant's id and identity, a binding's correspondent."""
+        names: set[str] = set()
+        for participant in self._participants.get(room_id, {}).values():
+            names.update(name for name in (participant.id, participant.identity_id) if name)
+        names.update(
             b.participant_id for b in self._bindings.get(room_id, {}).values() if b.participant_id
         )
-        for pid in pids:
+        return names
+
+    def _unindex_room(self, room_id: str) -> None:
+        """Remove a deleted room from every participant's candidate set."""
+        for pid in self._room_names(room_id):
             rooms = self._participant_room_index.get(pid)
             if rooms is not None:
                 rooms.discard(room_id)
@@ -315,67 +327,75 @@ class InMemoryStore(ConversationStore):
     async def find_room_id_by_channel(
         self, channel_id: str, status: str | None = None
     ) -> str | None:
-        matches = await self.find_room_ids_by_channel(channel_id, status=status, limit=1)
+        statuses = None if status is None else [RoomStatus(status)]
+        matches = await self.find_room_ids_by_channel(channel_id, RoomFilter(statuses=statuses), 1)
         return matches[0] if matches else None
 
     async def find_room_id_by_binding(
         self,
         channel_id: str,
         participant_id: str,
-        status: str | None = None,
-        *,
-        organization_id: str | None = None,
+        identity_id: str | None = None,
+        room_filter: RoomFilter | None = None,
     ) -> str | None:
         # The participant index holds every room a binding names the
         # participant in, so this reads a handful of rooms, not all of them.
+        room_filter = room_filter or RoomFilter()
+        names = sender_names(participant_id, identity_id)
         best: tuple[float, str] | None = None
-        for room_id in self._participant_room_index.get(participant_id, ()):
+        for room_id in self._candidates(names):
             room = self._rooms.get(room_id)
             binding = self._bindings.get(room_id, {}).get(channel_id)
-            if room is None or binding is None or binding.participant_id != participant_id:
+            if room is None or binding is None or binding.participant_id not in names:
                 continue
-            if not _matches(room, status, organization_id):
-                continue
-            if best is None or _recency(room) > best:
+            if room_filter.admits(room) and (best is None or _recency(room) > best):
                 best = _recency(room)
         return best[1] if best is not None else None
 
     async def find_room_id_by_participant(
         self,
+        channel_id: str,
         participant_id: str,
-        status: str | None = None,
-        *,
-        organization_id: str | None = None,
+        identity_id: str | None = None,
+        room_filter: RoomFilter | None = None,
     ) -> str | None:
+        room_filter = room_filter or RoomFilter()
+        names = sender_names(participant_id, identity_id)
         best: tuple[float, str] | None = None
-        for room_id in self._participant_room_index.get(participant_id, ()):
+        for room_id in self._candidates(names):
             room = self._rooms.get(room_id)
-            if room is None or participant_id not in self._participants.get(room_id, {}):
+            if room is None or not room_filter.admits(room):
                 continue
-            if not _matches(room, status, organization_id):
+            if best is not None and _recency(room) <= best:
                 continue
-            if best is None or _recency(room) > best:
+            if any(
+                reached_as(participant, channel_id, names)
+                for participant in self._participants.get(room_id, {}).values()
+            ):
                 best = _recency(room)
         return best[1] if best is not None else None
+
+    def _candidates(self, names: frozenset[str]) -> set[str]:
+        """The rooms the participant index holds for any of *names*."""
+        return set().union(*(self._participant_room_index.get(name, ()) for name in names))
 
     async def find_room_ids_by_channel(
         self,
         channel_id: str,
-        status: str | None = None,
+        room_filter: RoomFilter | None = None,
         limit: int = 2,
-        *,
-        organization_id: str | None = None,
     ) -> list[str]:
         # Ordered by the room's creation time, oldest first, with the id as
         # tie-breaker: dict insertion order would be an accident of how the
         # process happened to load, and the answer has to be the same one the
         # SQL store gives (RFC §10.4).
+        room_filter = room_filter or RoomFilter()
         matched: list[tuple[float, str]] = []
         for room_id, bindings in self._bindings.items():
             if channel_id not in bindings:
                 continue
             room = self._rooms.get(room_id)
-            if room is None or not _matches(room, status, organization_id):
+            if room is None or not room_filter.admits(room):
                 continue
             matched.append(_recency(room))
         matched.sort()
@@ -705,6 +725,7 @@ class InMemoryStore(ConversationStore):
     async def add_participant(self, participant: Participant) -> Participant:
         self._participants.setdefault(participant.room_id, {})[participant.id] = participant
         self._index_participant(participant.id, participant.room_id)
+        self._index_participant(participant.identity_id, participant.room_id)
         return participant
 
     async def get_participant(self, room_id: str, participant_id: str) -> Participant | None:
@@ -714,6 +735,7 @@ class InMemoryStore(ConversationStore):
     async def update_participant(self, participant: Participant) -> Participant:
         self._participants.setdefault(participant.room_id, {})[participant.id] = participant
         self._index_participant(participant.id, participant.room_id)
+        self._index_participant(participant.identity_id, participant.room_id)
         return participant
 
     async def list_participants(self, room_id: str) -> list[Participant]:
@@ -901,14 +923,6 @@ def _changes_one_of(event: RoomEvent, event_ids: set[str]) -> bool:
     return isinstance(content, EditContent | DeleteContent) and (
         content.target_event_id in event_ids
     )
-
-
-def _matches(room: Room, status: str | None, organization_id: str | None) -> bool:
-    """Whether a routing lookup keeps *room*: of *status* and of
-    *organization_id* when either is named (RFC §10.4, §17.2)."""
-    if status is not None and room.status.value != status:
-        return False
-    return organization_id is None or room.organization_id == organization_id
 
 
 def _recency(room: Room) -> tuple[float, str]:

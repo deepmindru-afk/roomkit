@@ -26,6 +26,7 @@ from roomkit.models.enums import (
     HookTrigger,
     RoomStatus,
 )
+from roomkit.models.store_filter import RoomFilter
 
 if TYPE_CHECKING:
     from roomkit.core.hooks import HookEngine, IdentityHookRegistration
@@ -339,14 +340,14 @@ class HooksApiMixin(HelpersMixin):
         another customer's, and the status (its recipient's number among it)
         would be dispatched with that room's context.
         """
-        active = str(RoomStatus.ACTIVE)
+        active = RoomFilter(statuses=[RoomStatus.ACTIVE])
         if status.recipient:
             room_id = await self._store.find_room_id_by_binding(
-                channel_id, status.recipient, status=active
+                channel_id, status.recipient, None, active
             )
             if room_id is not None:
                 return room_id
-        candidates = await self._store.find_room_ids_by_channel(channel_id, status=active, limit=2)
+        candidates = await self._store.find_room_ids_by_channel(channel_id, active, limit=2)
         if len(candidates) != 1:
             return None
         if not status.recipient:
