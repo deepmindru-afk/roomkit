@@ -5,8 +5,8 @@ once the room lock is released."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from roomkit.core._authors import People
 from roomkit.models.enums import (
     ChannelType,
     DeleteType,
@@ -24,6 +24,9 @@ from roomkit.models.event import (
     EventContent,
     RoomEvent,
 )
+
+if TYPE_CHECKING:
+    from roomkit.core._authors import People
 
 type Change = EditContent | DeleteContent
 

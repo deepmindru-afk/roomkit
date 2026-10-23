@@ -10,8 +10,9 @@ from roomkit import RoomKit
 from roomkit.core.hooks import RESERVED_HOOK_NAMES, HookEngine, HookRegistration
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelType, EventType, HookExecution, HookTrigger
+from roomkit.models.enums import ChannelType, DeleteType, EventType, HookExecution, HookTrigger
 from roomkit.models.event import (
+    CompositeContent,
     DeleteContent,
     EditContent,
     EventSource,
@@ -235,6 +236,10 @@ class TestHookNames:
             HookEngine().register(_hook(self._noop, name))
 
 
+_EDIT = EditContent(target_event_id="theirs", new_content=TextContent(body="y"))
+_DELETE = DeleteContent(target_event_id="theirs")
+
+
 class TestTheTargetOfAnEditOrADelete:
     async def _replaced(self, original: RoomEvent, content: object) -> RoomEvent:
         engine = HookEngine()
@@ -266,6 +271,75 @@ class TestTheTargetOfAnEditOrADelete:
         replaced = await self._replaced(original, DeleteContent(target_event_id="theirs"))
         assert isinstance(replaced.content, DeleteContent)
         assert replaced.content.target_event_id == "mine"
+
+    async def test_a_change_keeps_the_authority_it_was_checked_with(self) -> None:
+        """RFC §9.4, §10.3: a modify keeps the ``edit_source`` and the
+        ``delete_type`` step 8a checked; an edit's new content and a
+        delete's reason stand."""
+        edit = _event(type=EventType.EDIT).model_copy(
+            update={
+                "content": EditContent(
+                    target_event_id="mine",
+                    new_content=TextContent(body="x"),
+                    edit_source="sender",
+                )
+            }
+        )
+        delete = _event(type=EventType.DELETE).model_copy(
+            update={"content": DeleteContent(target_event_id="mine")}
+        )
+
+        edited = await self._replaced(
+            edit,
+            EditContent(
+                target_event_id="mine", new_content=TextContent(body="y"), edit_source="system"
+            ),
+        )
+        deleted = await self._replaced(
+            delete,
+            DeleteContent(target_event_id="mine", delete_type=DeleteType.SYSTEM, reason="spam"),
+        )
+
+        assert edited.content == EditContent(
+            target_event_id="mine", new_content=TextContent(body="y"), edit_source="sender"
+        )
+        assert deleted.content == DeleteContent(
+            target_event_id="mine", delete_type=DeleteType.SENDER, reason="spam"
+        )
+
+    @pytest.mark.parametrize(
+        ("original_type", "replacement"),
+        [
+            (EventType.MESSAGE, _EDIT),
+            (EventType.MESSAGE, _DELETE),
+            (EventType.MESSAGE, CompositeContent(parts=[TextContent(body="y"), _DELETE])),
+            (EventType.EDIT, _DELETE),
+            (EventType.EDIT, _EDIT.model_copy(update={"new_content": _DELETE})),
+            (EventType.EDIT, CompositeContent(parts=[TextContent(body="y"), _DELETE])),
+        ],
+        ids=[
+            "a message made an edit",
+            "a message made a delete",
+            "a message given a composite holding a delete",
+            "an edit made a delete",
+            "an edit whose new content is a delete",
+            "an edit given a composite holding a delete",
+        ],
+    )
+    async def test_a_change_never_hides_in_a_replacement(
+        self, original_type: EventType, replacement: Any
+    ) -> None:
+        """A replacement that would make a message a change, or hide one in
+        an edit's new content, leaves the original's content (RFC §9.4,
+        §10.3): the change it holds was never checked."""
+        content: Any = TextContent(body="hello")
+        if original_type == EventType.EDIT:
+            content = _EDIT.model_copy(update={"target_event_id": "mine"})
+        original = _event(type=original_type).model_copy(update={"content": content})
+
+        replaced = await self._replaced(original, replacement)
+
+        assert replaced.content == original.content
 
 
 async def _transport_room(*agents: AILikeChannel) -> tuple[RoomKit, SimpleChannel, SimpleChannel]:

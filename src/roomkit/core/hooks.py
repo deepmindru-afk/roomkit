@@ -9,6 +9,7 @@ from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar, Protocol, cast
 
+from roomkit.core._changes import holds_change
 from roomkit.core._instructions import kept_metadata
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import (
@@ -18,7 +19,7 @@ from roomkit.models.enums import (
     HookExecution,
     HookTrigger,
 )
-from roomkit.models.event import DeleteContent, EditContent, RoomEvent
+from roomkit.models.event import DeleteContent, EditContent, EventContent, RoomEvent
 from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.task import Observation, Task
 
@@ -255,29 +256,19 @@ _KEPT_FIELDS = (
 def kept_identity(original: RoomEvent, replacement: RoomEvent) -> RoomEvent:
     """*replacement* with the fields of *original* a hook may not change put
     back (RFC §9.4): its identity, and the checks already passed on it, the
-    event an EDIT or a DELETE targets, an INSTRUCTION's visibility, address
-    and ``standalone`` word, and the instruction fingerprint the pipeline
-    wrote on a response, or its absence. The hook's other changes stand."""
+    event an EDIT or a DELETE targets, its ``edit_source`` or ``delete_type``
+    and its kind of content (:func:`_kept_content`), an INSTRUCTION's
+    visibility, address and ``standalone`` word, and the instruction
+    fingerprint the pipeline wrote on a response, or its absence. The hook's
+    other changes stand."""
     kept: dict[str, Any] = {
         name: getattr(original, name)
         for name in _KEPT_FIELDS
         if name in RoomEvent.model_fields and getattr(replacement, name) != getattr(original, name)
     }
-    target = original.content
-    content = replacement.content
-    if isinstance(target, EditContent) and not isinstance(content, EditContent):
-        # The hook rewrote what the edit says (a redaction): it stays the edit
-        # of the same event, saying what the hook wrote.
-        kept["content"] = target.model_copy(update={"new_content": content})
-    elif isinstance(target, DeleteContent) and not isinstance(content, DeleteContent):
-        # A delete says nothing a hook could rewrite: it stays the delete.
-        kept["content"] = target
-    elif (
-        isinstance(target, EditContent | DeleteContent)
-        and isinstance(content, EditContent | DeleteContent)
-        and content.target_event_id != target.target_event_id
-    ):
-        kept["content"] = content.model_copy(update={"target_event_id": target.target_event_id})
+    content = _kept_content(original.content, replacement.content)
+    if content != replacement.content:
+        kept["content"] = content
     if original.type == EventType.INSTRUCTION:
         kept["visibility"] = original.visibility
         kept["addressed_to"] = original.addressed_to
@@ -285,6 +276,32 @@ def kept_identity(original: RoomEvent, replacement: RoomEvent) -> RoomEvent:
     if metadata != replacement.metadata:
         kept["metadata"] = metadata
     return replacement.model_copy(update=kept) if kept else replacement
+
+
+def _kept_content(original: EventContent, content: EventContent) -> EventContent:
+    """What a replacement *content* keeps of the *original* it replaces
+    (RFC §9.4, §10.3): the checks step 8a passed on a change, and no change
+    the step never checked.
+
+    An edit keeps its target and its ``edit_source``, and says the hook's
+    new content; a delete keeps its target and its ``delete_type``, with
+    the hook's reason. A replacement that would hide a change (an edit's
+    new content holding one, a composite with one among its parts, a
+    message made a change) leaves the original's content."""
+    if isinstance(original, EditContent):
+        if isinstance(content, EditContent):
+            content = content.new_content
+        if holds_change(content):
+            return original
+        # A hook that rewrote what the edit says (a redaction), as an edit or
+        # as the text it says: the edit of the same event, saying that.
+        return original.model_copy(update={"new_content": content})
+    if isinstance(original, DeleteContent):
+        if isinstance(content, DeleteContent):
+            return original.model_copy(update={"reason": content.reason})
+        # A delete says nothing a hook could rewrite: it stays the delete.
+        return original
+    return original if holds_change(content) else content
 
 
 def _usable_payload(current: Any, payload: Any) -> bool:

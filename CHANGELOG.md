@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A hook's modify keeps what step 8a checked of an edit or a delete (RFC
+  §9.4, §10.3, RMK-930): its target, and now its `edit_source` or
+  `delete_type` and its kind of content. A hook could turn a sender's edit
+  into a system one, a SENDER delete into an ADMIN one, or hide a change
+  the step never checked: a message rewritten as an `EditContent`, an
+  edit's new content made a delete, a composite with a change among its
+  parts. Such a replacement leaves the original's content; an edit's new
+  content and a delete's reason as the hook rewrote them still stand, and
+  an edit rewritten as text still says that text.
+
 - Edit and delete validation (RFC §10.1 step 8a) runs on every pass that
   commits an event, not only on an inbound message (RFC §10.3, §9.4,
   RMK-930). An agent's response and a hook's injected event skipped it: an
