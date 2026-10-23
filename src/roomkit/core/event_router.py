@@ -13,6 +13,7 @@ from roomkit.channels.base import Channel
 from roomkit.core._changes import for_channels
 from roomkit.core._failure_log import log_failure
 from roomkit.core._instructions import response_metadata
+from roomkit.core._reentrance import within_turn
 from roomkit.core._turn_runners import TurnRunner
 from roomkit.core._voice_delivery import delivering_injected
 from roomkit.core.circuit_breaker import CircuitBreaker
@@ -876,11 +877,14 @@ class EventRouter:
             return await channel.on_event(event, binding, context)
         room_id = context.room.id if context.room else event.room_id
         runner = self._runner_of(room_id, binding.channel_id) if self._runner_of else None
-        if runner is not None:
-            # The strategy takes the turn here, on the owner; each generation it
-            # asks of the agent is a turn of its own.
-            return await runner(event, binding, context)
-        return await self._turns.run(event, binding, context)
+        # What the turn sends into a room is at least as deep as its response
+        # (RFC §8.3, §10.6): an agent injecting at each turn meets the limit.
+        with within_turn(event.chain_depth + 1):
+            if runner is not None:
+                # The strategy takes the turn here, on the owner; each
+                # generation it asks of the agent is a turn of its own.
+                return await runner(event, binding, context)
+            return await self._turns.run(event, binding, context)
 
     def _unasked_result(
         self,

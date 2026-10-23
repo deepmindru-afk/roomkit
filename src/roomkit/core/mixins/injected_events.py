@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit.core._changes import with_target
 from roomkit.core._instructions import without_fingerprint
 from roomkit.core._queued_injections import QueuedInjections
+from roomkit.core._reentrance import Entry, Placement, section
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan
 from roomkit.core.locks import unlocked_context
 from roomkit.core.mixins.helpers import HelpersMixin
@@ -163,10 +164,7 @@ class InjectedEventsMixin(HelpersMixin):
         task asks for the lock as any later entry and waits for the event's
         section, and any section ahead of it, to release it: that wait has
         no bound, as an adopted entry's has none. The kit's close cancels it
-        and waits for its end, with its other background work. A caller that
-        holds the room lock from before its own section (code under the lock
-        injecting directly) runs them itself instead (:meth:`_run_queued`):
-        the task would wait for that caller's own lock.
+        and waits for its end, with its other background work.
         """
         if not queued.entries:
             return None
@@ -180,21 +178,39 @@ class InjectedEventsMixin(HelpersMixin):
         self._pending_hook_tasks.add(task)
         return task
 
-    async def _finish_queued(
-        self,
-        handed: asyncio.Task[None] | None,
-        queued: QueuedInjections,
-        room_id: str,
-        cascade: DeliveryCascade,
-    ) -> None:
+    @staticmethod
+    def _queue_of(entry: Entry) -> QueuedInjections:
+        """Where an entry's locked section queues what its hooks inject (RFC
+        §9.4): nested in a pass's section (a locked hook, code it runs, that
+        injects directly), that section's queue, whose passes run once the
+        section has released the lock; else a queue of its own."""
+        return entry.queued if entry.queued is not None else QueuedInjections()
+
+    def _hand_off_decided(
+        self, entry: Entry, queued: QueuedInjections, room_id: str, cascade: DeliveryCascade
+    ) -> asyncio.Task[None] | None:
+        """Hand off the passes a decided entry's section queued
+        (:meth:`_hand_off_queued`), called under its lock; the task to wait
+        for once the lock is released, if any.
+
+        None for an entry whose passes joined the queue of the pass section
+        it is nested in, which runs them; and for one nested under a lock
+        held outside any pass (a host's own section): its passes wait for
+        that lock's release, which its caller holds, so the caller cannot
+        wait for them.
+        """
+        if entry.queued is not None:
+            return None
+        handed = self._hand_off_queued(queued, room_id, cascade)
+        return None if entry.placement is Placement.NESTED else handed
+
+    @staticmethod
+    async def _finish_queued(handed: asyncio.Task[None] | None) -> None:
         """Wait, once the caller's section released the lock, for the
-        passes it handed off (:meth:`_hand_off_queued`), shielded from the
-        caller's cancellation, so they commit before the call returns; or
-        run those it kept, under a lock held from before its section."""
+        passes it handed off (:meth:`_hand_off_decided`), shielded from the
+        caller's cancellation, so they commit before the call returns."""
         if handed is not None:
             await asyncio.shield(handed)
-            return
-        await self._run_queued(queued, room_id, cascade)
 
     async def _run_queued(
         self, queued: QueuedInjections, room_id: str, cascade: DeliveryCascade
@@ -218,7 +234,8 @@ class InjectedEventsMixin(HelpersMixin):
         the lock."""
         queued = QueuedInjections()
         async with self._lock_manager.locked(room_id):
-            await self._injected_section(room_id, injected, cascade, queued, cause=cause)
+            with section(room_id, cascade.budget, queued):
+                await self._injected_section(room_id, injected, cascade, queued, cause=cause)
         await self._run_queued(queued, room_id, cascade)
 
     async def _injected_section(

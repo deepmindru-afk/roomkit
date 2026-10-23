@@ -19,29 +19,19 @@ The ticket lives in process memory: arrival order holds within one process.
 from __future__ import annotations
 
 import asyncio
-import contextvars
 from collections import deque
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
-from roomkit.core.locks import _has_room_lock
+from roomkit.core._reentrance import admission_order
 from roomkit.models.enums import HookTrigger
 
 if TYPE_CHECKING:
+    from roomkit.core._reentrance import ReentryBudget
     from roomkit.core.hooks import HookEngine, SyncPipelineResult
-    from roomkit.core.locks import RoomLockManager
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
-
-# Rooms whose off-lock check the current task is running. An event injected
-# from inside such a check (a hook calling ``send_event``) must not queue
-# behind the ticket its own caller holds — that is a deadlock — so it skips
-# admission and commits ahead of the event being checked. Tasks the check
-# spawns inherit the exemption.
-_checking_rooms: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
-    "_checking_rooms", default=frozenset()
-)
 
 
 class _Ticket:
@@ -73,13 +63,11 @@ class RoomAdmission:
     def __init__(
         self,
         hook_engine: HookEngine,
-        lock_manager: RoomLockManager,
         build_context: Callable[[str], Awaitable[RoomContext]],
         report_errors: Callable[[str, RoomEvent, SyncPipelineResult], Awaitable[None]]
         | None = None,
     ) -> None:
         self._hook_engine = hook_engine
-        self._lock_manager = lock_manager
         self._build_context = build_context
         self._report_errors = report_errors
         self._queues: dict[str, deque[_Ticket]] = {}
@@ -114,16 +102,27 @@ class RoomAdmission:
 
     @asynccontextmanager
     async def admitted(
-        self, room_id: str, event: RoomEvent, context: RoomContext | None
+        self,
+        room_id: str,
+        event: RoomEvent,
+        context: RoomContext | None,
+        *,
+        budget: ReentryBudget,
+        adopted: bool,
     ) -> AsyncGenerator[SyncPipelineResult | None, None]:
         """Run *event*'s off-lock check, then hold its turn until exit.
 
         Yields ``None`` — nothing taken, every hook left to the locked pass —
-        when no off-lock hook matches the event, or when the caller could
-        only wait on itself: it runs inside an off-lock check of the same
-        room, or already holds the room lock (a locked hook, or code under
-        the lock, injecting an event). Either way the ticket ahead of this
-        event is the caller's own, released only once the caller returns.
+        when no off-lock hook matches the event, or when the event is
+        *adopted* by the room's work (RFC §9.5.1 Reentrance): made under the
+        room lock (a locked hook, or code under the lock) or in the room's
+        admission order (an off-lock hook's body, a message's parse), it
+        would otherwise wait for the ticket its own caller holds, released
+        only once the caller returns.
+
+        The check's hooks stand in the room's admission order for *event*:
+        what their bodies send into the room is adopted beside it, on its
+        cascade's *budget*.
 
         Otherwise yields the off-lock outcome once every earlier ticket of the
         room has been released. The caller takes the room lock and commits inside the
@@ -133,11 +132,7 @@ class RoomAdmission:
         wait, whatever the gates under the lock decide next (RFC §9.5.1); its
         timeout was reported as it expired.
         """
-        if (
-            room_id in _checking_rooms.get()
-            or _has_room_lock(room_id, self._lock_manager)
-            or not self._hook_engine.has_off_lock_hooks(room_id, event)
-        ):
+        if adopted or not self._hook_engine.has_off_lock_hooks(room_id, event):
             yield None
             return
 
@@ -145,13 +140,10 @@ class RoomAdmission:
         try:
             if context is None:
                 context = await self._build_context(room_id)
-            token = _checking_rooms.set(_checking_rooms.get() | {room_id})
-            try:
+            with admission_order(room_id, budget):
                 outcome = await self._hook_engine.run_sync_hooks(
                     room_id, HookTrigger.BEFORE_BROADCAST, event, context, needs_lock=False
                 )
-            finally:
-                _checking_rooms.reset(token)
             await self._report(room_id, event, outcome)
             await ticket.wait_turn()
             yield outcome

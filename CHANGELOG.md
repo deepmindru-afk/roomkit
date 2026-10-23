@@ -1596,6 +1596,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `send_event()` reads its room within its deadline too. Migrate: a router
   or an identity store slower than `process_timeout` raises the setting.
 
+- **BREAKING — a call into a room from the room's own work is part of that
+  work, and every loop it can make stops** (RFC §9.5.1 Reentrance, §8.3,
+  §9.4, §10.5, RMK-930). Each `send_event()` and `process_inbound()`
+  opened a cascade with a reentry budget of its own, whatever called it, so
+  a locked hook or an off-lock hook that injected on every event, a channel
+  whose parse sent a message into its room for every message, a transport
+  whose `deliver()` sent one on every delivery, and an agent that injected
+  through another channel at each turn (always at depth 0) filled the room
+  without end. Now:
+  - a call into the room made under its lock (a locked hook, code under the
+    lock) is nested in the section holding it and draws on the reentry
+    budget of the cascade whose section that is; one made from an off-lock
+    hook's body or from a channel's `handle_inbound()` is adopted beside the
+    event being processed, takes no admission ticket, runs every hook under
+    the lock and draws on that event's budget;
+  - a call made from a delivery set's deliveries or turns (a transport's
+    `deliver()`, an agent's `on_event()`, a tool handler, a `TurnHost`
+    verb, a streamed reply's reading) is a new arrival, with its ticket and
+    its `process_timeout`, answered at its decision when its own delivery
+    could only wait behind its caller's, and draws on the budget of the
+    cascade that delivers, as does the cascade it starts;
+  - each such call is charged one pass as it starts: past the budget,
+    `send_event()` stores the event BLOCKED `reentry_loop_cap`, no hook
+    run, with the visibility its pass would have had, and returns that
+    record (a room that refuses events raises `RoomClosedError`), and
+    `process_inbound()` returns `InboundResult(blocked=True,
+    reason="reentry_loop_cap")` with no event, before its parse;
+  - a call made within a turn is at least as deep as the turn's response:
+    `send_event()` and `process_inbound()` raise the event's `chain_depth`
+    to it, so an agent that injects at each turn stops at
+    `max_chain_depth` as its answers do;
+  - a message routed (no `room_id`) back into the room whose lock the
+    caller holds, or in whose admission order it stands (an off-lock hook's
+    body, a parse), raises the new `ReentrantCallError` before anything is
+    written: its room known only once routed, it cannot be adopted. A
+    message routed back from a turn or a delivery is a new arrival;
+  - what the hooks of an event injected directly under the lock inject
+    joins the queue of the section holding the lock, committed once that
+    section has released it, after the event being processed (RFC §9.4);
+    it committed inside that section, ahead of it. Under a lock held
+    outside any pass (a host serialising its changes), those passes commit
+    once that lock is released, after the call returns.
+  Migrate: a hook or a channel that sends into its room on purpose, more
+  than `10 × max_chain_depth` times for one event, raises
+  `max_chain_depth`; a hook that routes a message into its own room names
+  the room (`process_inbound(..., room_id=...)`); code that read an
+  agent's injected event at depth 0 reads it at the turn's response depth.
+
 ### Removed
 
 - **BREAKING — `roomkit.core.visibility.effective_visibility`** (RMK-902). An

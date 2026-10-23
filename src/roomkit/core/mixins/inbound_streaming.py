@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from roomkit.core._failure_log import log_failure
+from roomkit.core._reentrance import delivering
 from roomkit.core.event_router import stream_turn_entry, unanswered
 from roomkit.core.exceptions import error_type_name
 from roomkit.core.lanes import DeliveryCascade
@@ -525,7 +526,23 @@ class InboundStreamingMixin(HelpersMixin):
         record is the caller's, as for a buffered answer to an answer. The
         context is rebuilt for each stream: a chained one answers events
         committed after the caller's read began.
+
+        The reading is the room's delivery work for *cascade*: what the turns
+        it advances send into the room, through their tools or a row's hooks,
+        draws on its budget (RFC §9.5.1).
         """
+        with delivering(room_id, cascade.budget):
+            return await self._read_cascade_streams(
+                cascade, room_id, response_events=response_events
+            )
+
+    async def _read_cascade_streams(
+        self,
+        cascade: DeliveryCascade,
+        room_id: str,
+        *,
+        response_events: list[RoomEvent] | None,
+    ) -> tuple[Exception | None, ResponseMetadata]:
         router = self._get_router()
         first_error: Exception | None = None
         record = ResponseMetadata()

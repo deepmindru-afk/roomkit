@@ -637,7 +637,7 @@ class LaneSink:
             queued = QueuedInjections()
             await self._kit._store_blocked(room_id, decision, queued)
             handed = self._kit._hand_off_queued(queued, room_id, self._cascade)
-            await self._kit._finish_queued(handed, queued, room_id, self._cascade)
+            await self._kit._finish_queued(handed)
             logger.info(
                 "Streamed %s blocked (room %s): %s",
                 event.type.value,

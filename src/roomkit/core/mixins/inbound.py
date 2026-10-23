@@ -14,7 +14,13 @@ from roomkit.core._changes import for_channels
 from roomkit.core._delivery_keys import DeliveryKeys, NamedDelivery
 from roomkit.core._instructions import FINGERPRINT, names_an_agent
 from roomkit.core._publication_keys import admitted_key
-from roomkit.core._queued_injections import QueuedInjections
+from roomkit.core._reentrance import (
+    REENTRY_LOOP_CAP,
+    Entry,
+    RoomWork,
+    admission_order,
+    chain_floor,
+)
 from roomkit.core.exceptions import (
     ChannelNotRegisteredError,
     RoomAlreadyExistsError,
@@ -26,7 +32,7 @@ from roomkit.core.inbound_router import (
     recordable_sender,
     still_the_messages,
 )
-from roomkit.core.locks import _has_room_lock, collecting_release_failures, failed_release
+from roomkit.core.locks import collecting_release_failures, failed_release
 from roomkit.core.mixins.channel_ops import is_channel_detached
 from roomkit.core.mixins.helpers import _REFUSING_STATUSES, HelpersMixin
 from roomkit.core.mixins.inbound_identity import _IdentityBlockedError
@@ -140,8 +146,10 @@ class InboundMixin(HelpersMixin):
     _name_held: Any  # see VerificationMixin
     _record_held_cancellation: Any  # see VerificationMixin
     _process_locked: Any  # see InboundHost
-    _hand_off_queued: Any  # see InjectedEventsMixin
+    _queue_of: Any  # see InjectedEventsMixin
+    _hand_off_decided: Any  # see InjectedEventsMixin
     _finish_queued: Any  # see InjectedEventsMixin
+    _room_work: RoomWork
     _consume_streams_when_cascade_completes: Any  # see LaneExecutionMixin
     _finish_cascade: Any  # see LaneExecutionMixin
     create_room: Any  # see InboundHost
@@ -201,6 +209,23 @@ class InboundMixin(HelpersMixin):
         message's ``delivery_key`` (:meth:`cancel_delivery`); cancelling a
         handle's ``wait()`` cancels only that wait. Committed timeline events
         are retained in every case.
+
+        Called from the room's own work, the message is part of it (RFC
+        §9.5.1): sent into its room under the room lock, from an off-lock
+        hook's body or from a channel's parse, it is adopted by the event
+        being processed and takes no ticket; from a turn or a delivery it is
+        a new arrival. It draws on the reentry budget of that event, or of the
+        cascade that delivers, as it starts: past it, it is refused
+        ``reentry_loop_cap`` with no event. A message sent within a turn is at
+        least as deep as the turn's response (RFC §8.3).
+
+        Raises:
+            ChannelNotRegisteredError: the message's channel is not registered.
+            ReentrantCallError: the message is routed (no *room_id*) into the
+                room whose lock the caller holds or in whose admission order it
+                stands (an off-lock hook's body, a parse); nothing is written.
+            ValueError: its content, or the event its channel parses, holds
+                more than five composite levels (RFC §5.3); nothing is stored.
         """
         from roomkit.telemetry.base import SpanKind
         from roomkit.telemetry.context import get_current_span, reset_span, set_current_span
@@ -392,9 +417,12 @@ class InboundMixin(HelpersMixin):
             # call named or routing gave it.
             return await self._refuse_on_timeout(exc.room_id, channel_id=message.channel_id)
 
+        entry = self._room_work.entry(room_id)
+        if entry.charged and not entry.budget.take():
+            return _past_the_cap(room_id, message)
         try:
             prepared = await self._prepare_event(
-                message, channel, room_id, room_just_created, deadline, telemetry, named
+                message, channel, room_id, room_just_created, deadline, telemetry, named, entry
             )
         except TimeoutError:
             return await self._refuse_on_timeout(room_id, channel_id=message.channel_id)
@@ -411,6 +439,7 @@ class InboundMixin(HelpersMixin):
             room_id,
             deadline,
             named,
+            entry,
             defer_delivery=defer_delivery,
         )
 
@@ -438,8 +467,10 @@ class InboundMixin(HelpersMixin):
         deadline: float,
         telemetry: Any,
         named: NamedDelivery,
+        entry: Entry,
     ) -> tuple[Any, RoomContext, Identity | None, IdentityResult | None] | InboundResult:
-        """RFC §10.1 steps 3-5, under the caller's pre-commit budget.
+        """RFC §10.1 steps 3-5, under the caller's pre-commit budget; *entry*
+        is what the message is to the room's work (RFC §9.5.1).
 
         Everything here was previously unbounded: a store read that never
         returns during the context build, or a channel's own
@@ -454,7 +485,7 @@ class InboundMixin(HelpersMixin):
         """
         async with asyncio.timeout_at(deadline):
             return await self._prepare_event_inner(
-                message, channel, room_id, room_just_created, telemetry, named
+                message, channel, room_id, room_just_created, telemetry, named, entry
             )
 
     async def _prepare_event_inner(
@@ -465,6 +496,7 @@ class InboundMixin(HelpersMixin):
         room_just_created: bool,
         telemetry: Any,
         named: NamedDelivery,
+        entry: Entry,
     ) -> tuple[Any, RoomContext, Identity | None, IdentityResult | None] | InboundResult:
         context = await self._build_context(room_id)
         # The room is read: its organization is the delivery's (RFC §10.1).
@@ -491,11 +523,14 @@ class InboundMixin(HelpersMixin):
             if context.get_binding(message.channel_id) is not None
             else context.model_copy(update={"recent_events": []})
         )
-        event = await channel.handle_inbound(message, parse_context)
+        # The parse stands in its message's admission order (RFC §9.5.1): a
+        # call it makes into the room is adopted beside, on its budget.
+        with admission_order(room_id, entry.budget):
+            event = await channel.handle_inbound(message, parse_context)
         # The event its channel built is refused as the message is (RFC §5.3).
         refuse_too_deep(event.content)
 
-        event = _apply_message_fields(event, message)
+        event = _at_least_as_deep(_apply_message_fields(event, message))
         event = with_pipeline_id(event)
 
         # Identity resolution pipeline (RFC §11)
@@ -526,6 +561,7 @@ class InboundMixin(HelpersMixin):
         room_id: str,
         deadline: float,
         named: NamedDelivery,
+        entry: Entry,
         *,
         defer_delivery: bool = False,
     ) -> InboundResult:
@@ -544,7 +580,7 @@ class InboundMixin(HelpersMixin):
         """
         from roomkit.core.lanes import DeliveryCascade
 
-        cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
+        cascade = DeliveryCascade(room_id, reentry_budget=entry.budget)
         named.attach(cascade)
         try:
             result = await self._complete_inbound_delivery(
@@ -558,6 +594,7 @@ class InboundMixin(HelpersMixin):
                 deadline,
                 cascade,
                 named,
+                entry,
                 defer_delivery=defer_delivery,
             )
         except BaseException:
@@ -581,13 +618,13 @@ class InboundMixin(HelpersMixin):
         deadline: float,
         cascade: DeliveryCascade,
         named: NamedDelivery,
+        entry: Entry,
         *,
         defer_delivery: bool,
     ) -> InboundResult:
-        queued = QueuedInjections()
-        # Code under the room lock that processes a message runs what its
-        # hooks inject itself, nested in the section that holds the lock.
-        nested = _has_room_lock(room_id, self._lock_manager)
+        # A message nested in a pass's section (code under the lock) queues
+        # what its hooks inject on that section's queue (RFC §9.4).
+        queued = self._queue_of(entry)
         handed = None
         async with AsyncExitStack() as stack:
             try:
@@ -595,9 +632,12 @@ class InboundMixin(HelpersMixin):
                     # Off-lock check (RFC §9.5.1): runs before the lock under
                     # the same pre-commit budget, and holds the room's
                     # admission ticket until the stack unwinds — after the
-                    # lock is released, so after the commit.
+                    # lock is released, so after the commit. A message the
+                    # room's work adopted takes none.
                     precheck = await stack.enter_async_context(
-                        self._admission.admitted(room_id, event, context)
+                        self._admission.admitted(
+                            room_id, event, context, budget=entry.budget, adopted=entry.adopted
+                        )
                     )
                     await stack.enter_async_context(self._lock_manager.locked(room_id))
             except TimeoutError:
@@ -615,8 +655,7 @@ class InboundMixin(HelpersMixin):
             )
             # Decided: what its hooks injected no longer depends on this
             # caller (RFC §9.4), and commits once the lock is released.
-            if not nested:
-                handed = self._hand_off_queued(queued, room_id, cascade)
+            handed = self._hand_off_decided(entry, queued, room_id, cascade)
             self._name_held(named, result)
         if result.error is None:
             # The lock's release comes before anything the delivery set
@@ -624,8 +663,9 @@ class InboundMixin(HelpersMixin):
             result.error = failed_release()
         # Each in a section of its own, once the event's section released the
         # lock (RFC §9.4, §10.1 steps 10 to 14): another event may commit
-        # between them. Committed before this call returns.
-        await self._finish_queued(handed, queued, room_id, cascade)
+        # between them. Committed before this call returns, unless the call
+        # is nested under a lock its caller holds.
+        await self._finish_queued(handed)
 
         if defer_delivery:
             # Every result that reached this locked region gets a handle — a
@@ -947,6 +987,10 @@ class InboundMixin(HelpersMixin):
             room_id, created = await self._find_or_open_room(
                 message, channel, None, organization_id, identity, deadline=deadline
             )
+            if not created:
+                # Its room known only now, a message its room's own work
+                # routes back into it cannot be adopted (RFC §9.5.1).
+                self._room_work.refuse_routed(room_id)
             if created or await self._claim_room(room_id, message, channel, own, deadline):
                 return room_id, created
             logger.debug("Room %s is no longer the routed message's; routing it again", room_id)
@@ -1196,6 +1240,27 @@ async def _by[T](deadline: float, work: Awaitable[T], *, room_id: str | None) ->
         if not timeout.expired():
             raise
         raise _RoutingTimeoutError(room_id) from None
+
+
+def _past_the_cap(room_id: str, message: InboundMessage) -> InboundResult:
+    """The refusal of a message the room's own work sent past the reentry
+    budget it draws on (RFC §8.3, §9.5.1): charged as its arrival starts,
+    before its parse, it is refused with no event."""
+    logger.warning(
+        "A message sent into room %s from its own work is past the reentry budget: refused",
+        room_id,
+        extra={"room_id": room_id, "channel_id": message.channel_id},
+    )
+    return InboundResult(blocked=True, reason=REENTRY_LOOP_CAP)
+
+
+def _at_least_as_deep(event: RoomEvent) -> RoomEvent:
+    """*event* at least as deep as the turn the call runs within (RFC §8.3):
+    a message a turn sends continues its chain."""
+    floor = chain_floor()
+    if event.chain_depth >= floor:
+        return event
+    return event.model_copy(update={"chain_depth": floor})
 
 
 def _apply_message_fields(event: RoomEvent, message: InboundMessage) -> RoomEvent:

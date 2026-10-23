@@ -31,6 +31,7 @@ from roomkit.core._changes import (
     with_target,
 )
 from roomkit.core._queued_injections import QueuedInjections
+from roomkit.core._reentrance import section
 from roomkit.core._room_timers import due_transitions
 from roomkit.core.hooks import kept_identity
 from roomkit.core.lanes import DeliveryPlan
@@ -345,6 +346,37 @@ class InboundLockedMixin(HelpersMixin):
         # the whole of it.
         if deadline is None:
             deadline = asyncio.get_running_loop().time() + self._process_timeout
+        # The section of this pass: what its hooks send into the room is
+        # nested here, on the cascade's budget, its injected events queued
+        # on *queued* (RFC §9.5.1 Reentrance, §9.4).
+        with section(room_id, cascade.budget, queued):
+            return await self._decide_and_commit(
+                event,
+                room_id,
+                context,
+                cascade,
+                queued=queued,
+                resolved_identity=resolved_identity,
+                pending_id_result=pending_id_result,
+                deadline=deadline,
+                precheck=precheck,
+            )
+
+    async def _decide_and_commit(
+        self,
+        event: RoomEvent,
+        room_id: str,
+        context: RoomContext | None,
+        cascade: DeliveryCascade,
+        *,
+        queued: QueuedInjections,
+        resolved_identity: Identity | None,
+        pending_id_result: IdentityResult | None,
+        deadline: float,
+        precheck: SyncPipelineResult | None,
+    ) -> InboundResult:
+        """:meth:`_process_locked`'s decision within its deadline, then its
+        writes past the commit point."""
         precommit = functools.partial(
             self._run_precommit,
             event,

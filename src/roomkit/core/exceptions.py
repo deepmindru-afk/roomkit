@@ -153,6 +153,21 @@ class ProcessTimeoutError(RoomKitError):
     """
 
 
+class ReentrantCallError(RoomKitError):
+    """A call into a room could only wait for its own caller, or commit ahead
+    of the event its caller works for outside every order (RFC §9.5.1
+    Reentrance, §10.1 step 2): nothing was written.
+
+    Raised for a message routed (``process_inbound`` naming no room) into the
+    room whose lock the calling code holds (a locked hook, code under the
+    lock), or in whose admission order it stands (an off-lock hook's body, a
+    channel's parse): the room is known only once the message is routed, so
+    the call cannot be adopted by the event its caller works for. A call that
+    names the room is adopted instead, and a message a turn or a delivery
+    routes back into its room is a new arrival.
+    """
+
+
 class ChannelNotFoundError(RoomKitError):
     """Channel binding not found in room."""
 

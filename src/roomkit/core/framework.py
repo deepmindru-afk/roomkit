@@ -28,7 +28,7 @@ from roomkit.core._instructions import names_an_agent, without_fingerprint
 from roomkit.core._kit_turn_hooks import KitTurnHooks
 from roomkit.core._kit_wiring import KitEvents, KitWiringEnv
 from roomkit.core._publication_keys import refuse_reserved
-from roomkit.core._queued_injections import QueuedInjections
+from roomkit.core._reentrance import REENTRY_LOOP_CAP, Entry, RoomWork, chain_floor
 from roomkit.core._timer_transitions import TimerTransitions
 from roomkit.core._turn_host import KitHost
 from roomkit.core._turn_runners import TurnRunners
@@ -62,7 +62,6 @@ from roomkit.core.locks import (
     InMemoryLockManager,
     ReleaseTolerantLockManager,
     RoomLockManager,
-    _has_room_lock,
 )
 from roomkit.core.mixins import (
     BackgroundMixin,
@@ -94,6 +93,7 @@ from roomkit.core.mixins import (
     VerificationMixin,
     VoiceOpsMixin,
 )
+from roomkit.core.mixins.helpers import _refuses_writes
 from roomkit.core.task_utils import cancel_and_wait, held_runs
 from roomkit.core.transcoder import DefaultContentTranscoder
 from roomkit.identity.base import IdentityResolver
@@ -150,6 +150,26 @@ def _raise_unless_committed(result: InboundResult, room_id: str) -> None:
         )
     if result.event is None and result.reason in CHANGE_REFUSALS:
         raise ChangeRefusedError(result.reason)
+
+
+def _direct_source(
+    binding: ChannelBinding, participant_id: str | None, provider: str | None
+) -> EventSource:
+    """The source of a direct injection from *binding*'s channel (RFC §10.5):
+    its channel's category gives its direction, a transport's event standing
+    for a message coming in, an intelligence channel's being its own words
+    going out, as its responses are."""
+    return EventSource(
+        channel_id=binding.channel_id,
+        channel_type=binding.channel_type,
+        direction=(
+            EventDirection.OUTBOUND
+            if binding.category == ChannelCategory.INTELLIGENCE
+            else EventDirection.INBOUND
+        ),
+        participant_id=participant_id,
+        provider=provider,
+    )
 
 
 # Re-export exception classes so existing ``from roomkit.core.framework import ...``
@@ -386,8 +406,10 @@ class RoomKit(
         self._lock_manager = ReleaseTolerantLockManager(self._given_lock_manager)
         # Admission tickets for off-lock BEFORE_BROADCAST checks (RFC §9.5.1).
         self._admission = RoomAdmission(
-            self._hook_engine, self._lock_manager, self._build_context, self._announce_hook_errors
+            self._hook_engine, self._build_context, self._announce_hook_errors
         )
+        # What a call into a room is to the room's own work (RFC §9.5.1).
+        self._room_work = RoomWork(self._lock_manager, self._max_chain_depth * 10)
         # A persistent store paired with an in-process lock is unsafe if the
         # store is shared across processes: per-process locks do not coordinate
         # the full inbound pipeline, its idempotency decisions or the room's
@@ -1125,6 +1147,28 @@ class RoomKit(
             standalone: For an ``INSTRUCTION`` only: the turn it opens reads
                 nothing of the room — no history, no memory provider call
                 (RFC §10.1.1 step 7). Raises on any other event type.
+
+        Called from the room's own work, the event is part of it (RFC §9.5.1):
+        under the room lock (a locked hook, code under the lock) it commits
+        ahead of the event being processed, takes no ticket and runs every
+        hook under the lock, what its hooks inject committing once the section
+        holding the lock released it; from an off-lock hook's body or a
+        channel's parse it is adopted beside that event, takes no ticket and
+        takes the lock for its own commit. Either way it draws on that event's
+        reentry budget, and from a turn or a delivery on the budget of the
+        cascade that delivers: past it, it is stored BLOCKED
+        ``reentry_loop_cap`` with no hook run, and that record is returned. A
+        call made within a turn is at least as deep as the turn's response
+        (RFC §8.3).
+
+        Raises:
+            RoomNotFoundError: the room is missing, or another organization's.
+            ChannelNotFoundError: the room does not bind *channel_id*.
+            RoomClosedError: the room's status refuses new events (RFC §5.1).
+            ChangeRefusedError: an edit or a delete step 8a refused.
+            ProcessTimeoutError: ``process_timeout`` passed before the commit.
+            ValueError: an argument the pipeline would refuse, *content*
+                holding more than five composite levels included (RFC §5.3).
         """
         return await self._send_event(
             room_id,
@@ -1175,9 +1219,6 @@ class RoomKit(
         integrator's: integrator code calls :meth:`send_event`, which refuses
         ``internal`` before anything is read (RFC §7.3).
         """
-        from roomkit.telemetry.base import SpanKind
-        from roomkit.telemetry.context import get_current_span, reset_span, set_current_span
-
         # One deadline from the call's start to its decision (RFC §13.6,
         # §10.5): the room's read, the off-lock check, the wait for its turn
         # and for the room lock, and the locked gates.
@@ -1213,27 +1254,14 @@ class RoomKit(
 
         await self._ensure_status_bus_subscribed()
         binding = await self._injection_binding(room_id, channel_id, organization_id, deadline)
-
-        event_kwargs: dict[str, Any] = dict(
+        fields: dict[str, Any] = dict(
             room_id=room_id,
             type=event_type,
-            source=EventSource(
-                channel_id=channel_id,
-                channel_type=binding.channel_type,
-                # Its channel's category gives its direction (RFC §10.5): a
-                # transport's event stands for a message coming in, an
-                # intelligence channel's is its own words going out, as its
-                # responses are.
-                direction=(
-                    EventDirection.OUTBOUND
-                    if binding.category == ChannelCategory.INTELLIGENCE
-                    else EventDirection.INBOUND
-                ),
-                participant_id=participant_id,
-                provider=provider,
-            ),
+            source=_direct_source(binding, participant_id, provider),
             content=content,
-            chain_depth=chain_depth,
+            # A call made within a turn is at least as deep as the turn's
+            # response (RFC §8.3, §10.6).
+            chain_depth=max(chain_depth, chain_floor()),
             parent_event_id=parent_event_id,
             status=EventStatus.DELIVERED,
             # The key the pipeline reserves (RFC §5.2) is not the caller's.
@@ -1244,9 +1272,27 @@ class RoomKit(
             idempotency_key=idempotency_key,
         )
         if created_at is not None:
-            event_kwargs["created_at"] = created_at
-        event = RoomEvent(**event_kwargs)
+            fields["created_at"] = created_at
+        event = RoomEvent(**fields)
+        entry = self._room_work.entry(room_id)
+        if entry.charged and not entry.budget.take():
+            # Past the budget of the work that made it, it is not a pass: its
+            # hooks never run (RFC §8.3, §9.5.1).
+            return await self._store_entry_past_cap(room_id, event)
+        return await self._inject(event, entry, deadline)
 
+    async def _inject(self, event: RoomEvent, entry: Entry, deadline: float) -> RoomEvent:
+        """Direct injection's pipeline for *event* (RFC §10.5), *entry* what
+        it is to its room's work (§9.5.1): the same pipeline as an inbound
+        message, its off-lock check, its locked section and commit, then its
+        delivery set, reentry passes and AFTER_BROADCAST hooks.
+
+        Raises what refused it before its commit point, nothing written.
+        """
+        from roomkit.telemetry.base import SpanKind
+        from roomkit.telemetry.context import get_current_span, reset_span, set_current_span
+
+        room_id, channel_id = event.room_id, event.source.channel_id
         telemetry = self._telemetry
         span_id = telemetry.start_span(
             SpanKind.INBOUND_PIPELINE,
@@ -1254,58 +1300,17 @@ class RoomKit(
             parent_id=get_current_span(),
             room_id=room_id,
             channel_id=channel_id,
-            attributes={"event_type": str(event_type)},
+            attributes={"event_type": str(event.type)},
         )
         token = set_current_span(span_id, telemetry_ctx=telemetry.get_span_context(span_id))
-        cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
+        cascade = DeliveryCascade(room_id, reentry_budget=entry.budget)
         try:
-            # Direct injection traverses the SAME pipeline as an inbound
-            # message (RFC §10.5): index assignment, BEFORE_BROADCAST hooks,
-            # edit/delete handling, source write-permission gate, persistence
-            # and broadcast planning under the room lock, then its delivery
-            # lane, reentry passes, and AFTER_BROADCAST hooks. This keeps a
-            # single validation/hooks/indexing/persistence model across entry
-            # points.
-            # The off-lock check (RFC §9.5.1) runs before the lock, when a
-            # needs_lock=False hook applies; its ticket is held until the
-            # locked pass has committed. The check and the wait for the turn
-            # spend the same pre-commit budget as the locked gates (§13.6).
-            queued = QueuedInjections()
-            # Code under the room lock that injects directly runs what its
-            # event's hooks inject itself, nested in the section it holds.
-            nested = _has_room_lock(room_id, self._lock_manager)
-            handed = None
-            async with contextlib.AsyncExitStack() as stack:
-                try:
-                    async with asyncio.timeout_at(deadline):
-                        precheck = await stack.enter_async_context(
-                            self._admission.admitted(room_id, event, None)
-                        )
-                        await stack.enter_async_context(self._lock_manager.locked(room_id))
-                except TimeoutError:
-                    result = await self._refuse_on_timeout(room_id, channel_id=channel_id)
-                else:
-                    # No pre-lock context is carried: the off-lock check, when
-                    # one ran, built its own, and the locked pass rebuilds one
-                    # under the lock.
-                    result = await self._process_locked(
-                        event,
-                        room_id,
-                        None,
-                        cascade,
-                        queued=queued,
-                        precheck=precheck,
-                        deadline=deadline,
-                    )
-                    # Decided: what its hooks injected no longer depends on
-                    # this caller (RFC §9.4).
-                    if not nested:
-                        handed = self._hand_off_queued(queued, room_id, cascade)
+            result, handed = await self._injection_section(event, entry, cascade, deadline)
             # What its hooks injected commits once its section released the
             # lock, each in a section of its own (RFC §9.4), before this call
-            # returns. Under a caller that holds the room lock, the section it
-            # nests in still does.
-            await self._finish_queued(handed, queued, room_id, cascade)
+            # returns; nested in a pass's section, that section runs them
+            # once it releases the lock its caller holds.
+            await self._finish_queued(handed)
             _raise_unless_committed(result, room_id)
             if isinstance(result.event, RoomEvent):
                 event = result.event
@@ -1327,8 +1332,78 @@ class RoomKit(
             raise
         finally:
             reset_span(token)
-
         return event
+
+    async def _injection_section(
+        self, event: RoomEvent, entry: Entry, cascade: DeliveryCascade, deadline: float
+    ) -> tuple[InboundResult, asyncio.Task[None] | None]:
+        """A direct injection's off-lock check and locked section (RFC §10.5,
+        §9.5.1): its result, and the passes of what its hooks injected to
+        wait for once the lock is released.
+
+        The off-lock check runs before the lock, when a ``needs_lock=False``
+        hook applies and the room's work did not adopt the event; its ticket
+        is held until the locked pass has committed. The check and the waits
+        spend the same pre-commit budget as the locked gates (§13.6).
+        """
+        room_id = event.room_id
+        queued = self._queue_of(entry)
+        async with contextlib.AsyncExitStack() as stack:
+            try:
+                async with asyncio.timeout_at(deadline):
+                    precheck = await stack.enter_async_context(
+                        self._admission.admitted(
+                            room_id, event, None, budget=entry.budget, adopted=entry.adopted
+                        )
+                    )
+                    await stack.enter_async_context(self._lock_manager.locked(room_id))
+            except TimeoutError:
+                result = await self._refuse_on_timeout(room_id, channel_id=event.source.channel_id)
+                return result, None
+            # No pre-lock context is carried: the off-lock check, when one
+            # ran, built its own, and the locked pass rebuilds one under the
+            # lock.
+            result = await self._process_locked(
+                event, room_id, None, cascade, queued=queued, precheck=precheck, deadline=deadline
+            )
+            # Decided: what its hooks injected no longer depends on this
+            # caller (RFC §9.4).
+            return result, self._hand_off_decided(entry, queued, room_id, cascade)
+
+    async def _store_entry_past_cap(self, room_id: str, event: RoomEvent) -> RoomEvent:
+        """Store a direct injection the room's work made past the reentry
+        budget it draws on as its BLOCKED record, ``reentry_loop_cap``, with
+        the visibility its pass would have committed it with, no hook run
+        (RFC §8.3, §7.3): the committed event the call returns. It waits for
+        the room lock alone; an instruction, never stored, is returned
+        uncommitted.
+
+        Raises:
+            RoomClosedError: the room's status refuses events (RFC §5.1);
+                nothing is stored.
+        """
+        logger.warning(
+            "An event sent into room %s from its own work is past the reentry budget: "
+            "stored BLOCKED",
+            room_id,
+            extra={"room_id": room_id, "channel_id": event.source.channel_id},
+        )
+        record = event.model_copy(
+            update={"status": EventStatus.BLOCKED, "blocked_by": REENTRY_LOOP_CAP}
+        )
+        if event.type == EventType.INSTRUCTION:
+            return record
+        async with self._lock_manager.locked(room_id):
+            room = await self._room_timers.room_due(room_id)
+            if _refuses_writes(room):
+                await self._refuse_closed_room(
+                    room_id,
+                    status=room.status if room is not None else None,
+                    operation="inbound",
+                    event=record,
+                )
+                raise RoomClosedError(f"Room {room_id} does not accept new events")
+            return await self._commit_indexed(room_id, await self._scoped_record(record))
 
     async def _injection_binding(
         self, room_id: str, channel_id: str, organization_id: str | None, deadline: float

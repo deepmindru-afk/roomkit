@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from roomkit.core._changes import with_target
 from roomkit.core._failure_log import needs_reporting
 from roomkit.core._queued_injections import QueuedInjections
+from roomkit.core._reentrance import section
 from roomkit.core.event_router import (
     CHAIN_DEPTH_LIMIT,
     CHANNEL_NOT_REGISTERED,
@@ -1100,7 +1101,8 @@ class LaneExecutionMixin(HelpersMixin):
         lock (RFC §9.4)."""
         queued = QueuedInjections()
         async with self._lock_manager.locked(room_id):
-            await self._reentry_section(room_id, reentry, response_visibility, cascade, queued)
+            with section(room_id, cascade.budget, queued):
+                await self._reentry_section(room_id, reentry, response_visibility, cascade, queued)
         await self._run_queued(queued, room_id, cascade)
 
     async def _reentry_section(

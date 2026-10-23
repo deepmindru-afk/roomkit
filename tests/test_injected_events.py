@@ -244,6 +244,33 @@ class TestItsPass:
         finally:
             await kit.close()
 
+    async def test_one_a_direct_injection_s_hooks_inject_waits_for_the_section_holding_the_lock(
+        self,
+    ) -> None:
+        """RFC §9.4: an event code under the lock injects directly commits
+        ahead of its cause, within the cause's section; what its own hooks
+        inject joins that section's queue, committed once it released the
+        lock, after the cause."""
+        kit, _, _ = await _room()
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="direct")
+        async def direct(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if _body(event) == "hello":
+                await kit.send_event("r1", "sms", TextContent(body="aside"))
+            if _body(event) == "aside":
+                notice = InjectedEvent(event=_notice(), target_channel_ids=["ws"])
+                return HookResult.allow(injected=[notice])
+            return HookResult.allow()
+
+        try:
+            await _hello(kit)
+            ours = [
+                _body(e) for e in await _stored(kit) if _body(e) in ("hello", "aside", "notice")
+            ]
+            assert ours == ["aside", "hello", "notice"]
+        finally:
+            await kit.close()
+
     async def test_is_committed_when_its_cause_is_blocked(self) -> None:
         kit, ws, _ = await _room()
         _on_hello(kit, InjectedEvent(event=_notice(), target_channel_ids=["ws"]), block=True)

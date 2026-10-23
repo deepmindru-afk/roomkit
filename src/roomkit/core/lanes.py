@@ -36,6 +36,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.core._reentrance import ReentryBudget, delivering
 from roomkit.core.locks import _has_room_lock, _held_rooms
 from roomkit.core.task_utils import start_named
 from roomkit.models.response_metadata import ResponseMetadata
@@ -166,7 +167,7 @@ class DeliveryCascade:
     __slots__ = (
         "_done",
         "_pending",
-        "_reentry_budget",
+        "budget",
         "caller_logs",
         "caller_logs_streamed",
         "cancelled",
@@ -184,12 +185,18 @@ class DeliveryCascade:
         "reader_detached",
     )
 
-    def __init__(self, room_id: str, *, reentry_budget: int) -> None:
+    def __init__(self, room_id: str, *, reentry_budget: int | ReentryBudget) -> None:
         self.room_id = room_id
         self._pending = 0
         self._done = asyncio.Event()
         self._done.set()
-        self._reentry_budget = reentry_budget
+        # Shared with the cascade it was drawn from when the room's own work
+        # made the call (RFC §9.5.1 Reentrance), else its own.
+        self.budget = (
+            reentry_budget
+            if isinstance(reentry_budget, ReentryBudget)
+            else ReentryBudget(reentry_budget)
+        )
         # Streaming responses captured during execution, consumed by the
         # caller after wait() — streaming delivery (TTS, long generations)
         # must not stall the lane. Every pass adds its own, so the list grows
@@ -375,10 +382,7 @@ class DeliveryCascade:
 
     def consume_reentry_budget(self) -> bool:
         """Take one reentry slot; ``False`` when the chain cap is exhausted."""
-        if self._reentry_budget <= 0:
-            return False
-        self._reentry_budget -= 1
-        return True
+        return self.budget.take()
 
     def add_streams(self, streams: list[StreamingResponse], *, chained: bool = False) -> None:
         """Queue streams for the caller's reader.
@@ -881,9 +885,13 @@ class RoomDeliveryLane:
         exception escaping it is a framework defect, logged and turned into
         a completed-empty execution so the cursor and the cascade still
         advance.
+
+        Its deliveries and turns are the room's work for the cascade: what
+        they send into the room draws on its budget (RFC §9.5.1).
         """
         try:
-            return await self._host._execute_plan(entry.plan, entry.cascade)
+            with delivering(self.room_id, entry.cascade.budget):
+                return await self._host._execute_plan(entry.plan, entry.cascade)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
