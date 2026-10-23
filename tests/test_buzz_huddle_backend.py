@@ -14,8 +14,11 @@ from unittest.mock import MagicMock
 import pytest
 
 import roomkit.voice.backends.buzz_huddle as buzz_huddle_module
+from roomkit import RoomKit
+from roomkit.core.exceptions import RoomAlreadyExistsError
 from roomkit.voice.backends.buzz_huddle import BuzzHuddleBackend
 from roomkit.voice.base import AudioChunk, VoiceCapability, VoiceSession
+from tests.test_framework import SimpleChannel
 
 # =============================================================================
 # Helpers
@@ -555,6 +558,43 @@ class TestBuzzHuddleWatcher:
             BuzzRelaySource,
             huddle_announcement_parser,
         )
+
+
+class TestAnnouncementsRoom:
+    """The watcher's feed writes to the room it opens, and to no other room
+    that holds its id (RFC §14.3: a room is created once)."""
+
+    async def _watcher(self) -> tuple[RoomKit, buzz_huddle_module.BuzzHuddleWatcher]:
+        kit = RoomKit()
+        kit.register_channel(SimpleChannel("buzz-huddle-events"))
+        watcher = make_watcher(StubVoiceChannel(), lambda **_kw: FakeDialClient())
+        watcher._kit = kit  # noqa: SLF001
+        return kit, watcher
+
+    async def test_a_restart_over_its_own_room_reuses_it(self) -> None:
+        kit, watcher = await self._watcher()
+        await kit.create_room(room_id="buzz-huddle-events-room")
+
+        await watcher._open_announcements_room()  # noqa: SLF001
+
+        binding = await kit.store.get_binding("buzz-huddle-events-room", "buzz-huddle-events")
+        assert binding is not None and binding.group is True
+        await kit.close()
+
+    @pytest.mark.parametrize("shape", ["another organization's", "closed"])
+    async def test_a_room_it_did_not_open_is_refused(self, shape: str) -> None:
+        kit, watcher = await self._watcher()
+        if shape == "closed":
+            await kit.create_room(room_id="buzz-huddle-events-room")
+            await kit.close_room("buzz-huddle-events-room")
+        else:
+            await kit.create_room(room_id="buzz-huddle-events-room", organization_id="globex")
+
+        with pytest.raises(RoomAlreadyExistsError, match="buzz-huddle-events-room"):
+            await watcher._open_announcements_room()  # noqa: SLF001
+
+        assert await kit.store.get_binding("buzz-huddle-events-room", "buzz-huddle-events") is None
+        await kit.close()
 
 
 class TestTTSStreamFailure:

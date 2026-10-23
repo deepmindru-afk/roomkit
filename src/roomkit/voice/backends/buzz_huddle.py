@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.core.exceptions import RoomAlreadyExistsError
 from roomkit.core.task_utils import cancel_and_wait
+from roomkit.models.enums import RoomStatus
 from roomkit.voice.backends._resample import build_streaming_resampler
 from roomkit.voice.backends.base import (
     AudioReceivedCallback,
@@ -72,6 +73,9 @@ else:
 
 
 logger = logging.getLogger("roomkit.voice.backends.buzz_huddle")
+
+# The statuses that refuse new events (RFC §5.1): a room in one takes no feed.
+_CLOSED = frozenset({RoomStatus.CLOSED, RoomStatus.ARCHIVED})
 
 
 _FRAME_SECONDS = 0.02
@@ -534,11 +538,25 @@ class BuzzHuddleWatcher:
         routed to a room of their own (RFC §10.4).
         """
         announcements_room = f"{self._events_channel_id}-room"
-        # A restart over a persistent store finds the room it opened: a room
-        # is created once and never replaced (RFC §14.3).
-        with contextlib.suppress(RoomAlreadyExistsError):
+        try:
             await self._kit.create_room(room_id=announcements_room)
+        except RoomAlreadyExistsError:
+            # A restart over a persistent store finds the room it opened: a
+            # room is created once and never replaced (RFC §14.3).
+            await self._check_own_room(announcements_room)
         await self._kit.attach_channel(announcements_room, self._events_channel_id, group=True)
+
+    async def _check_own_room(self, room_id: str) -> None:
+        """Refuse a room under *room_id* the watcher does not open: the feed
+        goes to a room of no organization that takes events, the one it
+        creates, and never to a room someone else created first (another
+        tenant's, or a closed one), which would receive every announcement."""
+        room = await self._kit.store.get_room(room_id)
+        if room is None or room.organization_id is not None or room.status in _CLOSED:
+            raise RoomAlreadyExistsError(
+                f"Room {room_id} is taken by a room this watcher does not open "
+                "(an open room of no organization): refusing to bridge its announcements"
+            )
 
     async def bridge(self, huddle_id: str) -> None:
         """Dial one huddle and keep the call bridged until it is over."""
