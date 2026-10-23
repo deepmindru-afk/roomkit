@@ -639,6 +639,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `commit_event()` must accept the keyword, or the first lifecycle record
   raises `TypeError`; the shipped stores and the ABC's default take it.
 
+- **BREAKING — a record stored BLOCKED and a record committed outside the
+  pipeline are no activity** (RFC §5.1, §10.1 step 10, §10.5, RMK-930).
+  A message a hook blocked or a muted source sent, an answer past the
+  chain-depth limit or the reentry budget, a `kit.commit_event()` record
+  and a delegated task's trace each moved the room's `last_activity_at`,
+  so an audit record nobody receives kept an idle room alive. They now
+  leave it. A `commit_event()` record's index is passed by the room's
+  delivery lane at its turn with nothing to run, as before.
+
 - **BREAKING — a room transition already done does nothing, and
   `close_room()` refuses an ARCHIVED room** (RFC §5.1, RMK-930).
   `close_room()` read no status: closing a CLOSED room wrote it again with

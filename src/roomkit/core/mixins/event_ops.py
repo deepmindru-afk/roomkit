@@ -58,8 +58,10 @@ class EventOpsMixin(HelpersMixin):
 
         For a trace, a display snapshot, the copy a branched conversation starts
         from. The record takes the room's next index, which its delivery lane
-        counts as delivered at once, so the room's next event never waits on
-        it; no delivery set, no hook and no broadcast follow. It is stored as
+        passes at its turn with nothing to run, so the room's next event waits
+        on it no longer than on the events before it; no delivery set, no hook
+        and no broadcast follow. It is no activity (RFC §5.1): the room's
+        ``last_activity_at`` stays, and a PAUSED room stays paused. It is stored as
         given, whatever the persistence policy, but for the record of its
         author, which the room fixes when the event names one
         (``metadata["author"]``, RFC §10.1 step 12, any value given dropped);

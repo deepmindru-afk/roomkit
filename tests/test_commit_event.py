@@ -2,19 +2,24 @@
 
 ``commit_event`` reads the room scoped to its tenant, refuses a room whose
 status refuses new events, and commits the record with the room's next index,
-counted delivered at once: the room's next event never waits on it. The
-record is stored as given, the source write rule (§7.5 rule 2) aside, and a
-hook already holding the room's lock calls it without deadlocking.
+which the delivery lane passes at its turn with nothing to run: the room's
+next event never waits on it longer than on the events before it. The record
+is no activity, is stored as given, the source write rule (§7.5 rule 2)
+aside, and a hook already holding the room's lock calls it without
+deadlocking.
 """
 
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 import pytest
 
 from roomkit import HookExecution, HookResult, HookTrigger, RoomKit
 from roomkit.core.exceptions import RoomClosedError, RoomNotFoundError
+from roomkit.models.channel import ChannelBinding, ChannelOutput
+from roomkit.models.context import RoomContext
 from roomkit.models.enums import EventStatus
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.room import Room
@@ -48,8 +53,8 @@ async def test_a_record_takes_the_next_index_and_reaches_no_one() -> None:
 
 
 async def test_the_next_event_does_not_wait_on_the_records_index() -> None:
-    """Counted delivered at once: a send_event right after never waits the
-    delivery gap timeout on a hole."""
+    """Passed at once with nothing before it in flight: a send_event right
+    after never waits the delivery gap timeout on a hole."""
     kit = RoomKit(delivery_gap_timeout=5.0)
     await _room(kit)
     committed = await kit.commit_event("r1", _record(), organization_id="tenant-a")
@@ -59,6 +64,64 @@ async def test_the_next_event_does_not_wait_on_the_records_index() -> None:
     )
 
     assert sent.index == committed.index + 1
+    await kit.close()
+
+
+class _Held(SimpleChannel):
+    """A transport whose delivery waits until it is released."""
+
+    def __init__(self, channel_id: str) -> None:
+        super().__init__(channel_id)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def deliver(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        self.entered.set()
+        await self.release.wait()
+        return await super().deliver(event, binding, context)
+
+
+async def test_a_record_behind_a_delivery_in_flight_is_passed_at_its_turn() -> None:
+    """RFC §10.5, §13.5: the record's index waits for the delivery before it,
+    then the lane passes it with nothing to run, and the next event's
+    delivery waits on it no longer than on the events before it."""
+    kit = RoomKit(delivery_gap_timeout=5.0)
+    await _room(kit)
+    held = _Held("out")
+    kit.register_channel(held)
+    await kit.attach_channel("r1", "out")
+    first = asyncio.create_task(kit.send_event("r1", "sms1", TextContent(body="first")))
+    await asyncio.wait_for(held.entered.wait(), timeout=1.0)
+
+    committed = await kit.commit_event("r1", _record(), organization_id="tenant-a")
+
+    assert await kit.store.get_delivered_index("r1") < committed.index - 1
+    held.release.set()
+    await asyncio.wait_for(first, timeout=1.0)
+    sent = await asyncio.wait_for(
+        kit.send_event("r1", "sms1", TextContent(body="next")), timeout=2.0
+    )
+    assert sent.index == committed.index + 1
+    assert await kit.store.get_delivered_index("r1") == sent.index
+    assert [e.content.body for e in held.delivered] == ["first", "next"]
+    await kit.close()
+
+
+async def test_a_record_is_no_activity() -> None:
+    """RFC §5.1, §10.5: a trace nobody receives does not keep the room
+    alive; ``last_activity_at`` stays where it was."""
+    kit = RoomKit()
+    await _room(kit)
+    room = await kit.get_room("r1")
+    long_ago = datetime(2026, 1, 1, tzinfo=UTC)
+    timers = room.timers.model_copy(update={"last_activity_at": long_ago})
+    await kit.store.update_room(room.model_copy(update={"timers": timers}))
+
+    await kit.commit_event("r1", _record(), organization_id="tenant-a")
+
+    assert (await kit.get_room("r1")).timers.last_activity_at == long_ago
     await kit.close()
 
 

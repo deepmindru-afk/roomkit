@@ -323,10 +323,12 @@ class HelpersMixin:
         index on the delivery cursor.
 
         For commits that must always be stored regardless of the persistence
-        policy: BLOCKED events (part of the timeline, they consume an index —
-        RFC §8.3), injected events, child-room traces.
+        policy and that nobody receives: BLOCKED events (part of the
+        timeline, they consume an index — RFC §8.3), records committed
+        outside the pipeline (``commit_event``, §10.5), child-room traces.
+        None is the room's activity (§5.1): ``last_activity_at`` stays.
         """
-        committed = await self._commit(room_id, event, activity=True)
+        committed = await self._commit(room_id, event, activity=False)
         await self._note_committed_index(room_id, committed.index)
         return committed
 

@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from roomkit import RoomKit, RoomTimers
-from roomkit.models.enums import EventType, Visibility
-from roomkit.models.event import SystemContent
+from roomkit import HookResult, HookTrigger, RoomContext, RoomKit, RoomTimers
+from roomkit.models.delivery import InboundMessage
+from roomkit.models.enums import EventStatus, EventType, Visibility
+from roomkit.models.event import RoomEvent, SystemContent, TextContent
 from tests.test_framework import SimpleChannel
 
 _LONG_AGO = datetime(2026, 1, 1, tzinfo=UTC)
@@ -46,4 +47,24 @@ async def test_a_lifecycle_record_is_no_activity() -> None:
     assert isinstance(record.content, SystemContent)
     assert (record.source.channel_id, record.visibility) == ("system", Visibility.INTERNAL)
     assert room.timers.last_activity_at == _LONG_AGO
+    await kit.close()
+
+
+async def test_a_record_stored_blocked_is_no_activity() -> None:
+    """RFC §10.1 step 10: a message a hook blocks is stored BLOCKED, an
+    audit record, and leaves ``last_activity_at``."""
+    kit = await _kit()
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST)
+    async def refuse(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        return HookResult.block("refused")
+
+    result = await kit.process_inbound(
+        InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="hi")),
+        room_id="r1",
+    )
+
+    assert result.blocked and result.event is not None
+    assert result.event.status is EventStatus.BLOCKED
+    assert (await kit.get_room("r1")).timers.last_activity_at == _LONG_AGO
     await kit.close()
