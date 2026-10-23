@@ -183,8 +183,14 @@ class _DeliverBreaks(_BufferingChannel):
 
 
 class _CancelsItsPull(_BufferingChannel):
-    """Pulls in a task, and cancels the pull after the second call starts, as a
-    voice cancels its read once every session barged in."""
+    """Cancels its pull of the failed response, as a voice cancels its read once
+    every session barged in: after the failure is read (the pull ended) or while
+    the response closes its calls, never before, which would leave the response
+    stopped rather than failed."""
+
+    def __init__(self, channel_id: str) -> None:
+        super().__init__(channel_id)
+        self.ending = asyncio.Event()
 
     async def deliver_stream(
         self,
@@ -199,9 +205,11 @@ class _CancelsItsPull(_BufferingChannel):
             if isinstance(item, RoomEvent) and item.type == EventType.TOOL_CALL_START:
                 starts += 1
         pull = asyncio.ensure_future(anext(text_stream))
-        await asyncio.sleep(0.005)
+        ending = asyncio.ensure_future(self.ending.wait())
+        await asyncio.wait({pull, ending}, timeout=1.0, return_when=asyncio.FIRST_COMPLETED)
         pull.cancel()
-        await asyncio.gather(pull, return_exceptions=True)
+        ending.cancel()
+        await asyncio.gather(pull, ending, return_exceptions=True)
         return ChannelOutput.empty()
 
 
@@ -516,14 +524,16 @@ async def test_the_response_failure_stays_the_turns_when_the_channel_fails_on_to
 async def test_a_pull_cancelled_while_the_failed_response_ends_leaves_no_call_pending() -> None:
     """The open calls are closed outside the read the channel cancels."""
     kit = RoomKit()
+    channel = _CancelsItsPull("stream")
 
     @kit.hook(HookTrigger.BEFORE_BROADCAST)
     async def slow_ends(event: RoomEvent, _ctx: RoomContext) -> HookResult:
         if event.type == EventType.TOOL_CALL_END:
+            channel.ending.set()
             await asyncio.sleep(0.015)
         return HookResult.allow()
 
-    turn = await _run(kit, _CancelsItsPull("stream"), intelligence=_OpensCallsThenFails("ai-1"))
+    turn = await _run(kit, channel, intelligence=_OpensCallsThenFails("ai-1"))
 
     ends = [
         r.content
