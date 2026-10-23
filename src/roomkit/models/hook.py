@@ -14,15 +14,16 @@ class InjectedEvent(BaseModel):
     """An event injected by a hook as a side effect (RFC §9.4).
 
     It is committed after the event whose hooks injected it, as a pass of
-    its own: it runs the ``BEFORE_BROADCAST`` hooks, which may block it, and
-    counts against the reentry budget. It keeps that event's chain depth,
-    carries no idempotency key and takes no source check; its visibility
-    names the targets the room binds. It is delivered to its transport
-    targets only, never to its own source, and asks no agent: an
-    intelligence channel among the targets reads it in its history, and a
-    transport hosting a model (a realtime voice channel, a conference with a
-    realtime model) takes it into the model's context silently. Its delivery
-    set fires ``AFTER_BROADCAST`` like any other.
+    its own once that event's locked section has released the room lock, so
+    another event may commit between them: it runs the ``BEFORE_BROADCAST``
+    hooks, which may block it, and counts against the reentry budget. It
+    keeps that event's chain depth, carries no idempotency key and takes no
+    source check; its visibility names the targets the room binds. It is
+    delivered to its transport targets only, never to its own source, and
+    asks no agent: an intelligence channel among the targets reads it in its
+    history, and a transport hosting a model (a realtime voice channel, a
+    conference with a realtime model) takes it into the model's context
+    silently. Its delivery set fires ``AFTER_BROADCAST`` like any other.
     """
 
     event: RoomEvent

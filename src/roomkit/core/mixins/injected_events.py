@@ -13,10 +13,12 @@ any other.
 An injected INSTRUCTION is dropped with a warning before any pass: only the
 application issues instructions.
 
-A pass started inside its cause's locked section takes the lock reentrantly,
-so it commits right after its cause with nothing between them: a stricter
-order than the RFC's, which runs the queued passes once the cause has
-released the lock.
+A locked section queues the events its hooks injected
+(:class:`~roomkit.core._queued_injections.QueuedInjections`) and their
+passes run once it has released the room lock (§9.4, §10.1 steps 10 to 14),
+each in a section of its own: another event may commit between a cause and
+what its hooks injected. The events an injected pass's own hooks inject run
+the same way, right after it, before the next of its cause's.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.core._changes import with_target
 from roomkit.core._instructions import without_fingerprint
+from roomkit.core._queued_injections import QueuedInjections
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.core.mixins.inbound_locked import (
@@ -144,6 +147,15 @@ class InjectedEventsMixin(HelpersMixin):
         await self._lane_injected_events(injected_events, room_id, cascade, cause=cause)
         await self._finish_cascade(cascade, room_id)
 
+    async def _run_queued(
+        self, queued: QueuedInjections, room_id: str, cascade: DeliveryCascade
+    ) -> None:
+        """Run the passes of the events a locked section queued, once it has
+        released the room lock (RFC §9.4, §10.1 steps 10 to 14), in the
+        order they were queued."""
+        for injected_events, cause in queued.take():
+            await self._lane_injected_events(injected_events, room_id, cascade, cause=cause)
+
     async def _run_injected_pass(
         self,
         room_id: str,
@@ -152,32 +164,49 @@ class InjectedEventsMixin(HelpersMixin):
         *,
         cause: RoomEvent,
     ) -> None:
-        """One injected event's own commit pass, under the room lock."""
+        """One injected event's own commit pass, in a locked section of its
+        own; then the passes of what its hooks injected, once it released
+        the lock."""
+        queued = QueuedInjections()
         async with self._lock_manager.locked(room_id):
-            event = _as_injected(injected.event, cause)
-            room_context = await self._open_pass(room_id, event)
-            if room_context is None:
-                return
-            event = event.model_copy(update={"visibility": _targets_scope(injected, room_context)})
-            event, context = provisional(event, room_context)
-            if not cascade.consume_reentry_budget():
-                # Past the budget it is not a pass: its hooks never run (§8.3).
-                await self._store_past_reentry_cap(room_id, event)
-                return
-            # An edit or a delete it carries is the hook's, a SYSTEM change
-            # only (RFC §10.3 rule 6); a refused one is logged, nothing stored.
-            check = await self._check_change(room_id, event, by_hook=True)
-            if check.refusal is not None:
-                return
-            decision = await self._gate_commit(
-                room_id, event, context, source_check=False, change=check
-            )
-            if isinstance(decision, _Refused):
-                return
-            if isinstance(decision, _Blocked):
-                await self._store_blocked(room_id, decision, cascade)
-                return
-            await self._commit_injected(room_id, decision, injected, event.visibility, cascade)
+            await self._injected_section(room_id, injected, cascade, queued, cause=cause)
+        await self._run_queued(queued, room_id, cascade)
+
+    async def _injected_section(
+        self,
+        room_id: str,
+        injected: InjectedEvent,
+        cascade: DeliveryCascade,
+        queued: QueuedInjections,
+        *,
+        cause: RoomEvent,
+    ) -> None:
+        """An injected event's locked section: its gates and its commit,
+        the events its hooks inject queued on *queued*."""
+        event = _as_injected(injected.event, cause)
+        room_context = await self._open_pass(room_id, event)
+        if room_context is None:
+            return
+        event = event.model_copy(update={"visibility": _targets_scope(injected, room_context)})
+        event, context = provisional(event, room_context)
+        if not cascade.consume_reentry_budget():
+            # Past the budget it is not a pass: its hooks never run (§8.3).
+            await self._store_past_reentry_cap(room_id, event)
+            return
+        # An edit or a delete it carries is the hook's, a SYSTEM change
+        # only (RFC §10.3 rule 6); a refused one is logged, nothing stored.
+        check = await self._check_change(room_id, event, by_hook=True)
+        if check.refusal is not None:
+            return
+        decision = await self._gate_commit(
+            room_id, event, context, source_check=False, change=check
+        )
+        if isinstance(decision, _Refused):
+            return
+        if isinstance(decision, _Blocked):
+            await self._store_blocked(room_id, decision, queued)
+            return
+        await self._commit_injected(room_id, decision, injected, event.visibility, cascade, queued)
 
     async def _commit_injected(
         self,
@@ -186,10 +215,11 @@ class InjectedEventsMixin(HelpersMixin):
         injected: InjectedEvent,
         scope: str,
         cascade: DeliveryCascade,
+        queued: QueuedInjections,
     ) -> None:
         """Commit an injected event its hooks let through and lane its
         delivery, under the lock its pass holds; then its hooks' side
-        effects and the events they injected in turn."""
+        effects, the events they injected queued on *queued*."""
         categories = {binding.channel_id: binding.category for binding in ready.context.bindings}
         event = ready.event.model_copy(
             update={
@@ -217,10 +247,7 @@ class InjectedEventsMixin(HelpersMixin):
         await self._persist_side_effects(
             room_id, sync_result.tasks, sync_result.observations, committed, context
         )
-        if sync_result.injected_events:
-            await self._lane_injected_events(
-                sync_result.injected_events, room_id, cascade, cause=committed
-            )
+        queued.add(sync_result.injected_events, committed)
 
     async def _injected_targets(
         self, room_id: str, event: RoomEvent, injected: InjectedEvent

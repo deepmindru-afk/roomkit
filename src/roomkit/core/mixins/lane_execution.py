@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._changes import with_target
 from roomkit.core._failure_log import needs_reporting
+from roomkit.core._queued_injections import QueuedInjections
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT, BroadcastResult, reply_turn_entry
 from roomkit.core.exceptions import RoomNotFoundError, error_type_name
 from roomkit.core.lanes import anchor_index
@@ -232,6 +233,7 @@ class LaneExecutionMixin(HelpersMixin):
     _announce_blocked: Any  # InboundLockedMixin
     _process_streaming_responses: Any  # InboundStreamingMixin
     _lane_injected_events: Any  # InjectedEventsMixin
+    _run_queued: Any  # InjectedEventsMixin
 
     # -- The planned commit gate --
 
@@ -1048,33 +1050,49 @@ class LaneExecutionMixin(HelpersMixin):
         response_visibility: str | None,
         cascade: DeliveryCascade,
     ) -> None:
-        """One response event's own commit pass, under a fresh room lock."""
+        """One response event's own commit pass, under a fresh room lock;
+        then the passes of what its hooks injected, once it released the
+        lock (RFC §9.4)."""
+        queued = QueuedInjections()
         async with self._lock_manager.locked(room_id):
-            # One read of what the lock protects (RFC §10.1 steps 6 and 12):
-            # the status gate, the source's right to write and the delivery
-            # plan all read this context, fresh under the lock, since
-            # concurrent commits may have landed after the trigger's plan.
-            context = await self._open_pass(room_id, reentry)
-            if context is None:
-                return
-            reentry, reentry_ctx = provisional(reentry, context)
-            # A response's edit or delete takes step 8a as an inbound one
-            # does (RFC §10.3); a refused one is logged, and nothing stored.
-            check = await self._check_change(room_id, reentry)
-            if check.refusal is not None:
-                return
+            await self._reentry_section(room_id, reentry, response_visibility, cascade, queued)
+        await self._run_queued(queued, room_id, cascade)
 
-            # BEFORE_BROADCAST sync hooks, then the source's right to write
-            # (RFC §10.1 steps 9 and 11): orchestration routing stamps
-            # _routed_to here, and a muted or read-only agent's answer is
-            # stored BLOCKED with what its hooks decided kept (§7.5 rule 3).
-            decision = await self._gate_commit(room_id, reentry, reentry_ctx, change=check)
-            if isinstance(decision, _Refused):
-                return
-            if isinstance(decision, _Blocked):
-                await self._store_blocked(room_id, decision, cascade)
-                return
-            await self._commit_reentry(room_id, decision, response_visibility, cascade)
+    async def _reentry_section(
+        self,
+        room_id: str,
+        reentry: RoomEvent,
+        response_visibility: str | None,
+        cascade: DeliveryCascade,
+        queued: QueuedInjections,
+    ) -> None:
+        """A response's locked section: its gates and its commit, the
+        events its hooks inject queued on *queued*."""
+        # One read of what the lock protects (RFC §10.1 steps 6 and 12):
+        # the status gate, the source's right to write and the delivery
+        # plan all read this context, fresh under the lock, since
+        # concurrent commits may have landed after the trigger's plan.
+        context = await self._open_pass(room_id, reentry)
+        if context is None:
+            return
+        reentry, reentry_ctx = provisional(reentry, context)
+        # A response's edit or delete takes step 8a as an inbound one
+        # does (RFC §10.3); a refused one is logged, and nothing stored.
+        check = await self._check_change(room_id, reentry)
+        if check.refusal is not None:
+            return
+
+        # BEFORE_BROADCAST sync hooks, then the source's right to write
+        # (RFC §10.1 steps 9 and 11): orchestration routing stamps
+        # _routed_to here, and a muted or read-only agent's answer is
+        # stored BLOCKED with what its hooks decided kept (§7.5 rule 3).
+        decision = await self._gate_commit(room_id, reentry, reentry_ctx, change=check)
+        if isinstance(decision, _Refused):
+            return
+        if isinstance(decision, _Blocked):
+            await self._store_blocked(room_id, decision, queued)
+            return
+        await self._commit_reentry(room_id, decision, response_visibility, cascade, queued)
 
     def _reentry_plan_factory(
         self,
@@ -1110,9 +1128,11 @@ class LaneExecutionMixin(HelpersMixin):
         ready: _Ready,
         response_visibility: str | None,
         cascade: DeliveryCascade,
+        queued: QueuedInjections,
     ) -> None:
         """Commit a response its gates accepted and lane its delivery (RFC
-        §10.1 step 12), under the lock its pass holds."""
+        §10.1 step 12), under the lock its pass holds; the events its hooks
+        injected are queued on *queued*."""
         reentry, binding = ready.event, ready.source_binding
         sync_result, context = ready.sync_result, ready.context
         # An edit's or a delete's target, written in the response's own
@@ -1120,9 +1140,9 @@ class LaneExecutionMixin(HelpersMixin):
         target, mutation_hook = target_update(reentry, ready.edit_delete_target)
         reentry = narrowed_to_target(reentry, target, context.bindings)
 
-        # Commit the response BEFORE delivering any events its hook
-        # injected: the response causes the injection, so it takes the
-        # lower index (mirrors the main path).
+        # Commit the response before the events its hooks injected, which
+        # run their passes once its section released the lock (RFC §9.4):
+        # the response causes the injection, so it takes the lower index.
         stored = await self._commit_to_lane(
             room_id,
             reentry.model_copy(update={"status": EventStatus.DELIVERED}),
@@ -1143,10 +1163,7 @@ class LaneExecutionMixin(HelpersMixin):
             )
         if stored is not None:
             cascade.response_events.append(stored)
-        if sync_result.injected_events:
-            await self._lane_injected_events(
-                sync_result.injected_events, room_id, cascade, cause=stored or reentry
-            )
+        queued.add(sync_result.injected_events, stored or reentry)
 
 
 def provisional(event: RoomEvent, context: RoomContext) -> tuple[RoomEvent, RoomContext]:

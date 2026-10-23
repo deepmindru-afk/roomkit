@@ -27,6 +27,7 @@ from roomkit.core._changes import CHANGE_REFUSALS
 from roomkit.core._instructions import names_an_agent, without_fingerprint
 from roomkit.core._kit_turn_hooks import KitTurnHooks
 from roomkit.core._kit_wiring import KitEvents, KitWiringEnv
+from roomkit.core._queued_injections import QueuedInjections
 from roomkit.core._turn_host import KitHost
 from roomkit.core._turn_runners import TurnRunners
 from roomkit.core.admission import RoomAdmission
@@ -1231,6 +1232,7 @@ class RoomKit(
             # locked pass has committed. The check and the wait for the turn
             # spend the same pre-commit budget as the locked gates (§13.6).
             deadline = asyncio.get_running_loop().time() + self._process_timeout
+            queued = QueuedInjections()
             async with contextlib.AsyncExitStack() as stack:
                 try:
                     async with asyncio.timeout_at(deadline):
@@ -1245,8 +1247,18 @@ class RoomKit(
                     # one ran, built its own, and the locked pass rebuilds one
                     # under the lock.
                     result = await self._process_locked(
-                        event, room_id, None, cascade, precheck=precheck, deadline=deadline
+                        event,
+                        room_id,
+                        None,
+                        cascade,
+                        queued=queued,
+                        precheck=precheck,
+                        deadline=deadline,
                     )
+            # What its hooks injected commits once its section released the
+            # lock, each in a section of its own (RFC §9.4). Under a caller
+            # that holds the room lock, the section it nests in still does.
+            await self._run_queued(queued, room_id, cascade)
             _raise_unless_committed(result, room_id)
             if isinstance(result.event, RoomEvent):
                 event = result.event

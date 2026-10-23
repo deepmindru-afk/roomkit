@@ -3,12 +3,15 @@ cascade (RFC §9.4, §8.3, §10.1 step 14)."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager
 
 import pytest
 
 from roomkit import RoomKit
+from roomkit.core.locks import InMemoryLockManager, _has_room_lock
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -17,6 +20,7 @@ from roomkit.models.enums import (
     ChannelCategory,
     ChannelType,
     EventStatus,
+    EventType,
     HookExecution,
     HookTrigger,
 )
@@ -91,7 +95,67 @@ async def _notices(kit: RoomKit, body: str = "notice") -> list[RoomEvent]:
     return [e for e in await _stored(kit) if _body(e) == body]
 
 
+class _WatchedLocks(InMemoryLockManager):
+    """Room locks that tell when a second caller asks for one."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.watch()
+
+    def watch(self) -> None:
+        """Count the callers asking for a lock from now on."""
+        self.asked = 0
+        self.second_asks = asyncio.Event()
+
+    @asynccontextmanager
+    async def locked(self, room_id: str) -> AsyncGenerator[None, None]:
+        if not _has_room_lock(room_id, self):
+            self.asked += 1
+            if self.asked == 2:
+                self.second_asks.set()
+        async with super().locked(room_id):
+            yield
+
+
 class TestItsPass:
+    @pytest.mark.parametrize("block", [False, True], ids=["cause delivered", "cause blocked"])
+    async def test_commits_once_its_cause_released_the_lock(self, block: bool) -> None:
+        """RFC §9.4, §10.1 steps 10 to 14: it commits in a section of its
+        own once its cause's has released the room lock, so an event
+        waiting for the lock meanwhile commits between them."""
+        locks = _WatchedLocks()
+        kit = RoomKit(lock_manager=locks)
+        await kit.create_room(room_id="r1")
+        for channel in (SimpleChannel("sms"), SimpleChannel("ws")):
+            kit.register_channel(channel)
+            await kit.attach_channel("r1", channel.channel_id)
+        in_section, go = asyncio.Event(), asyncio.Event()
+        notice = InjectedEvent(event=_notice(), target_channel_ids=["ws"])
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="slow_notifier")
+        async def slow_notifier(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if _body(event) != "hello":
+                return HookResult.allow()
+            in_section.set()
+            await go.wait()
+            if block:
+                return HookResult.block("held", injected=[notice])
+            return HookResult.allow(injected=[notice])
+
+        try:
+            locks.watch()
+            cause = asyncio.create_task(_hello(kit))
+            await in_section.wait()
+            # A direct injection asks for the lock at step 6 alone.
+            later = asyncio.create_task(kit.send_event("r1", "sms", TextContent(body="later")))
+            await locks.second_asks.wait()
+            go.set()
+            await asyncio.gather(cause, later)
+            stored = [_body(e) for e in await _stored(kit) if e.type == EventType.MESSAGE]
+            assert stored == ["hello", "later", "notice"]
+        finally:
+            await kit.close()
+
     async def test_is_committed_after_its_cause(self) -> None:
         kit, _, _ = await _room()
         _on_hello(kit, InjectedEvent(event=_notice(), target_channel_ids=["ws"]))
@@ -99,7 +163,9 @@ class TestItsPass:
             await _hello(kit)
             hello = next(e for e in await _stored(kit) if _body(e) == "hello")
             (notice,) = await _notices(kit)
-            assert notice.index == hello.index + 1
+            # Another event may commit between them (RFC §9.4): the agent's
+            # answer to hello, whose pass may take the lock first.
+            assert notice.index > hello.index
         finally:
             await kit.close()
 
@@ -157,7 +223,7 @@ class TestItsPass:
             await _hello(kit)
             (notice,) = await _notices(kit)
             (echoed,) = await _notices(kit, "echo")
-            assert echoed.index == notice.index + 1
+            assert echoed.index > notice.index
         finally:
             await kit.close()
 

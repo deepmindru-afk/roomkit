@@ -27,6 +27,7 @@ from roomkit.core._changes import (
     target_refusal,
     with_target,
 )
+from roomkit.core._queued_injections import QueuedInjections
 from roomkit.core.hooks import kept_identity
 from roomkit.core.lanes import DeliveryPlan
 from roomkit.core.mixins.helpers import (
@@ -185,7 +186,6 @@ class InboundLockedMixin(HelpersMixin):
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _commit_to_lane: Any  # see LaneExecutionMixin
-    _lane_injected_events: Any  # see InjectedEventsMixin
 
     # Stub for cross-mixin call — implemented by RoomKit._get_router().
     def _get_router(self) -> EventRouter: ...
@@ -278,6 +278,7 @@ class InboundLockedMixin(HelpersMixin):
         context: RoomContext | None,
         cascade: DeliveryCascade,
         *,
+        queued: QueuedInjections,
         resolved_identity: Identity | None = None,
         pending_id_result: IdentityResult | None = None,
         deadline: float | None = None,
@@ -305,6 +306,10 @@ class InboundLockedMixin(HelpersMixin):
         *precheck* is the outcome of the off-lock check (RFC §9.5.1), when
         the caller ran one: step 9 applies it and runs only the hooks that
         need the lock. ``None`` runs every hook here.
+
+        The events its hooks inject, whichever way the event ended, are
+        queued on *queued*: the caller runs their passes once it has
+        released the room lock (RFC §9.4, §10.1 steps 10 to 14).
         """
         # What is left of the caller's single pre-commit budget (RFC §13.6).
         # A deadline rather than the raw setting: the phase starts before this
@@ -338,16 +343,14 @@ class InboundLockedMixin(HelpersMixin):
         if isinstance(decision, InboundResult):
             return decision
         if isinstance(decision, _Blocked):
-            blocked_event = await self._store_blocked(room_id, decision, cascade)
+            blocked_event = await self._store_blocked(room_id, decision, queued)
             return InboundResult(event=blocked_event, blocked=True, reason=decision.reason)
         outcome = await self._run_commit(decision, room_id, cascade)
-        # Injected events from allow/modify hooks: committed and laned after
-        # the trigger (the trigger is committed and must never be contradicted
-        # by a late cancellation).
-        if outcome.sync_result.injected_events:
-            await self._lane_injected_events(
-                outcome.sync_result.injected_events, room_id, cascade, cause=outcome.event
-            )
+        # Injected events from allow/modify hooks: queued, each committed
+        # after the trigger once its section has released the lock (the
+        # trigger is committed and must never be contradicted by a late
+        # cancellation).
+        queued.add(outcome.sync_result.injected_events, outcome.event)
         return InboundResult(
             event=outcome.event, unavailable_targets=list(cascade.unavailable_targets)
         )
@@ -746,11 +749,12 @@ class InboundLockedMixin(HelpersMixin):
         )
 
     async def _store_blocked(
-        self, room_id: str, blocked: _Blocked, cascade: DeliveryCascade
+        self, room_id: str, blocked: _Blocked, queued: QueuedInjections
     ) -> RoomEvent:
         """Store what :meth:`_gate_commit` refused as its BLOCKED record, with
         its hook side effects (RFC §7.5 rule 3 — side effects are always
-        collected), then commit the events its hooks injected (§9.4).
+        collected), then queue the events its hooks injected on *queued*,
+        committed after it once its section released the lock (§9.4).
 
         Shared by every commit path, the hook block and the source
         write-permission block alike, so they cannot drift.
@@ -764,9 +768,7 @@ class InboundLockedMixin(HelpersMixin):
         await self._persist_side_effects(
             room_id, blocked.tasks, blocked.observations, blocked_event, blocked.context
         )
-        await self._lane_injected_events(
-            blocked.injected_events, room_id, cascade, cause=blocked_event
-        )
+        queued.add(blocked.injected_events, blocked_event)
         return blocked_event
 
     async def _run_deferred_async_hooks(

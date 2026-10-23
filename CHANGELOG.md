@@ -623,6 +623,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — a hook's injected events commit after their cause has
+  released the room lock** (RFC §9.4, §10.1 steps 10 to 14, §13.5,
+  RMK-930). Their passes ran inside the cause's locked section, taking the
+  lock again, so each committed right after its cause with nothing between
+  them and the room's critical section lasted as long as their hooks. The
+  section now queues them, and they run once it has released the lock,
+  each in a pass and a section of its own: another event may commit
+  between a cause and what its hooks injected (an event waiting for the
+  lock, an agent's answer to the cause), as it may between a trigger and
+  its response. They still commit before `process_inbound()` and
+  `send_event()` return, in the order their hooks ran, the events an
+  injected pass's own hooks inject right after it; the reentry budget, the
+  chain depth, the visibility and the targets are unchanged. A direct
+  `send_event()` from code holding the lock still commits ahead of the
+  cause, and what its own hooks inject runs once its nested section ends,
+  inside the section it nests in. Breaking for code that read an injected
+  event at the index after its cause's.
+
 - **BREAKING — a hook's injected event fires `AFTER_BROADCAST`, and a
   realtime host takes it silently** (RFC §9.4, RMK-930). Its delivery set,
   empty when it is stored only, now fires `AFTER_BROADCAST` like any other

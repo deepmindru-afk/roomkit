@@ -12,6 +12,7 @@ from roomkit.channels._runtime_record import RUNTIME_RECORD
 from roomkit.core._changes import for_channels
 from roomkit.core._delivery_keys import DeliveryKeys, NamedDelivery
 from roomkit.core._instructions import FINGERPRINT, names_an_agent
+from roomkit.core._queued_injections import QueuedInjections
 from roomkit.core.exceptions import (
     ChannelNotRegisteredError,
     RoomAlreadyExistsError,
@@ -137,6 +138,7 @@ class InboundMixin(HelpersMixin):
     _name_held: Any  # see VerificationMixin
     _record_held_cancellation: Any  # see VerificationMixin
     _process_locked: Any  # see InboundHost
+    _run_queued: Any  # see InjectedEventsMixin
     _consume_streams_when_cascade_completes: Any  # see LaneExecutionMixin
     _finish_cascade: Any  # see LaneExecutionMixin
     create_room: Any  # see InboundHost
@@ -573,6 +575,7 @@ class InboundMixin(HelpersMixin):
         *,
         defer_delivery: bool,
     ) -> InboundResult:
+        queued = QueuedInjections()
         async with AsyncExitStack() as stack:
             try:
                 async with asyncio.timeout_at(deadline):
@@ -591,6 +594,7 @@ class InboundMixin(HelpersMixin):
                 room_id,
                 context,
                 cascade,
+                queued=queued,
                 resolved_identity=resolved_identity,
                 pending_id_result=pending_id_result,
                 deadline=deadline,
@@ -601,6 +605,10 @@ class InboundMixin(HelpersMixin):
             # The lock's release comes before anything the delivery set
             # meets, so its failure is the earlier error (RFC §13.5).
             result.error = failed_release()
+        # What its hooks injected commits now, each in a section of its own,
+        # once the event's section released the lock (RFC §9.4, §10.1 steps
+        # 10 to 14): another event may commit between them.
+        await self._run_queued(queued, room_id, cascade)
 
         if defer_delivery:
             # Every result that reached this locked region gets a handle — a

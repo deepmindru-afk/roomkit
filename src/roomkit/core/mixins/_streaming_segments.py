@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from roomkit.channels._tool_event_result import tool_event_payload
 from roomkit.core._instructions import response_metadata
+from roomkit.core._queued_injections import QueuedInjections
 from roomkit.core.event_router import stream_record
 from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT
 from roomkit.core.mixins.inbound_locked import _Blocked, _Refused
@@ -630,7 +631,11 @@ class LaneSink:
             # Only a change is refused here, and a streamed row is text.
             return None
         if isinstance(decision, _Blocked):
-            await self._kit._store_blocked(room_id, decision, self._cascade)
+            # A row commits without the room lock: what its hooks injected
+            # runs its passes now, each taking the lock (RFC §9.5.1).
+            queued = QueuedInjections()
+            await self._kit._store_blocked(room_id, decision, queued)
+            await self._kit._run_queued(queued, room_id, self._cascade)
             logger.info(
                 "Streamed %s blocked (room %s): %s",
                 event.type.value,
