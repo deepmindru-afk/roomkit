@@ -1034,25 +1034,48 @@ async def test_an_answer_keeps_and_finds_the_event_it_answers(store) -> None:
     assert [e.id for e in answers] == [answer.id]
 
 
-async def test_init_adds_the_column_to_an_events_table_without_it(store) -> None:
+@pytest.mark.parametrize("column", ["addressed_to", "responds_to", "delivery_results"])
+async def test_init_adds_the_column_to_an_events_table_without_it(store, column: str) -> None:
     from roomkit.store.postgres import PostgresStore
 
     await store.create_room(Room(id="r1"))
     old = await store.add_event(_make_event(body="avant"))
     async with store._pool.acquire() as conn:
         await conn.execute("DROP INDEX IF EXISTS idx_events_room_responds_to")
-        await conn.execute("ALTER TABLE events DROP COLUMN responds_to")
+        await conn.execute(f"ALTER TABLE events DROP COLUMN {column}")
 
     upgraded = PostgresStore(dsn=POSTGRES_DSN)
     await upgraded.init(min_size=1, max_size=2)
     try:
         kept = await upgraded.get_event(old.id)
         async with upgraded._pool.acquire() as conn:
-            column = await conn.fetchval(
+            found = await conn.fetchval(
                 "SELECT 1 FROM information_schema.columns"
-                " WHERE table_name = 'events' AND column_name = 'responds_to'"
+                " WHERE table_schema = current_schema()"
+                " AND table_name = 'events' AND column_name = $1",
+                column,
             )
     finally:
         await upgraded.close()
-    assert column == 1
-    assert kept is not None and kept.responds_to is None
+    assert found == 1
+    assert kept is not None
+    assert (kept.addressed_to, kept.responds_to, kept.delivery_results) == (None, None, {})
+
+
+async def test_a_second_init_waits_on_no_reader_of_the_events(store) -> None:
+    """``init()`` on an up-to-date schema adds no column, so it takes no lock
+    that queues behind a reader of ``events`` (an ``ALTER TABLE`` takes
+    ACCESS EXCLUSIVE, which waits for every open transaction on the table)."""
+    import asyncpg
+
+    from roomkit.store.postgres import PostgresStore
+
+    reader = await asyncpg.connect(POSTGRES_DSN)
+    again = PostgresStore(dsn=POSTGRES_DSN)
+    try:
+        async with reader.transaction():
+            await reader.execute("SELECT count(*) FROM events")
+            await asyncio.wait_for(again.init(min_size=1, max_size=1), 3)
+    finally:
+        await again.close()
+        await reader.close()

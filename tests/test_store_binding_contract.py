@@ -689,14 +689,21 @@ class _DefaultCommit(InMemoryStore):
 
 
 async def test_the_default_commit_marks_a_deleted_target_s_edits_too() -> None:
+    """The ABC's default finds an edit by its content's target, as the
+    shipped stores do: a row typed otherwise that carries the edit (one
+    stored before step 8a told them apart) is marked too."""
     store = _DefaultCommit()
     room = await store.create_room(Room(id=uuid4().hex))
     target = await store.commit_event(room.id, make_event(room_id=room.id, body="v1"))
     edit, edited = _edit_of(target, "v2")
     edit = await store.commit_event(room.id, edit, target=edited)
+    untyped = await store.commit_event(
+        room.id, edit.model_copy(update={"id": uuid4().hex, "type": EventType.MESSAGE})
+    )
 
     deleted = edited.model_copy(update={"metadata": {**edited.metadata, "deleted": True}})
     await store.commit_event(room.id, _delete_of(target), target=deleted)
 
-    marked = await store.get_event(edit.id)
-    assert marked is not None and marked.metadata.get("deleted") is True
+    for row in (edit, untyped):
+        marked = await store.get_event(row.id)
+        assert marked is not None and marked.metadata.get("deleted") is True

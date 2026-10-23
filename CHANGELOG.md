@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `PostgresStore.init()` on an up-to-date schema takes no ACCESS EXCLUSIVE
+  lock on `events` (RMK-930). Its `ALTER TABLE events ADD COLUMN IF NOT
+  EXISTS` statements (`addressed_to`, `responds_to`, `delivery_results`)
+  took that lock on every boot, even with the column there, queuing behind
+  any open transaction on the table and holding up every query behind them.
+  Each column is now added only when `information_schema.columns` lacks it.
+
 - `SQLiteStore.search_events()` no longer finds a soft-deleted message's
   text (RFC §10.3, RMK-930): the commit that marked it `metadata.deleted`
   indexed its original content again. A deleted message is now left out of

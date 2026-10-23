@@ -731,11 +731,13 @@ class ConversationStore(ABC):
 
     async def _mark_edits_deleted(self, room_id: str, target_id: str) -> None:
         """Mark every edit of *target_id* deleted, through the store's own
-        reads and writes (the default :meth:`commit_event`'s, not atomic)."""
-        edits = EventFilter(event_types=[EventType.EDIT], include_blocked=True)
+        reads and writes (the default :meth:`commit_event`'s, not atomic). An
+        edit is told by its content's target, whatever its type, as the
+        shipped stores tell it."""
+        every_row = EventFilter(include_blocked=True)
         offset = 0
         while page := await self.list_events(
-            room_id, offset=offset, limit=_ROOM_PAGE, event_filter=edits
+            room_id, offset=offset, limit=_ROOM_PAGE, event_filter=every_row
         ):
             for edit in page:
                 if edits_target(edit, target_id):

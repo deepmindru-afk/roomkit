@@ -203,17 +203,35 @@ CREATE TABLE IF NOT EXISTS events (
     -- The outcome of the event's delivery set, written once it has run.
     delivery_results    JSONB NOT NULL DEFAULT '{}'
 );
--- Addressing arrived after events existed. Additive and unguarded: an
--- existing row is unaddressed (NULL), which is exactly the behaviour it was
--- stored under, so there is nothing to backfill and re-running is a no-op.
-ALTER TABLE events ADD COLUMN IF NOT EXISTS addressed_to TEXT[];
--- An answer names the event it answers (RFC §8.5). Additive like addressed_to:
--- no event stored before it named one, so existing rows are NULL and correct.
-ALTER TABLE events ADD COLUMN IF NOT EXISTS responds_to TEXT;
--- A delivery set's outcome (RFC §10.3, §14.3), which an UPDATE of the whole row
--- used to carry and drop. Additive: an existing row recorded none, and '{}' is
--- what it reads as.
-ALTER TABLE events ADD COLUMN IF NOT EXISTS delivery_results JSONB NOT NULL DEFAULT '{}';
+-- Columns that arrived after events existed, each additive, with nothing to
+-- backfill: addressing (an existing row is unaddressed, NULL, the behaviour it
+-- was stored under), the event an answer answers (RFC §8.5: no event stored
+-- before it named one), a delivery set's outcome (RFC §10.3, §14.3: an
+-- existing row recorded none, '{}'). Each is added only when missing: ALTER
+-- TABLE takes ACCESS EXCLUSIVE on events even when IF NOT EXISTS finds the
+-- column, which would queue every boot behind any open transaction on the
+-- table, and all the traffic behind it. Scoped to current_schema() as above.
+DO $$
+DECLARE
+    wanted RECORD;
+BEGIN
+    FOR wanted IN
+        SELECT * FROM (VALUES
+            ('addressed_to', 'TEXT[]'),
+            ('responds_to', 'TEXT'),
+            ('delivery_results', 'JSONB NOT NULL DEFAULT ''{}''')
+        ) AS columns(name, definition)
+    LOOP
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'events'
+              AND column_name = wanted.name
+        ) THEN
+            EXECUTE format('ALTER TABLE events ADD COLUMN %I %s', wanted.name, wanted.definition);
+        END IF;
+    END LOOP;
+END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_room_index ON events(room_id, index);
 CREATE INDEX IF NOT EXISTS idx_events_room_created ON events(room_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_room_type ON events(room_id, type);
