@@ -29,6 +29,7 @@ from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import (
     ConversationStore,
     address_linked,
+    deletes_edits,
     room_taken,
     target_gone,
     without_address,
@@ -1301,6 +1302,15 @@ class PostgresStore(ConversationStore):
                     conn, target, room_id=room_id
                 ):
                     raise target_gone(target)
+                if target is not None and deletes_edits(event, target):
+                    # Its edits hold versions of the deleted text (RFC §10.3).
+                    await conn.execute(
+                        "UPDATE events SET metadata = metadata || '{\"deleted\": true}'::jsonb"
+                        " WHERE room_id = $1 AND content->>'type' = 'edit'"
+                        " AND content->>'target_event_id' = $2",
+                        room_id,
+                        target.id,
+                    )
                 next_idx = await _reserve_event_index(conn, room_id)
                 indexed = event.model_copy(update={"index": next_idx})
                 await _insert_event(conn, indexed)

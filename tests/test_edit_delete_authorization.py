@@ -17,6 +17,7 @@ from roomkit.channels.ai import AIChannel
 from roomkit.channels.base import Channel
 from roomkit.core.exceptions import ChangeRefusedError
 from roomkit.core.framework import RoomKit
+from roomkit.core.visibility import visible_events
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -1021,4 +1022,63 @@ class TestADeliveryRecordUndoesNoChange:
         else:
             assert (stored.content, stored.metadata) == (TextContent(body="v1"), {"deleted": True})
         assert stored.delivery_results["flaky"]["status"] == "failed"
+        await kit.close()
+
+
+class _Reader(_Agent):
+    """An agent that answers nothing and keeps the history it is handed,
+    over a window of three events."""
+
+    def __init__(self, channel_id: str) -> None:
+        super().__init__(channel_id, lambda event, ctx: [])
+        self.histories: list[list[RoomEvent]] = []
+
+    @property
+    def recent_events_window(self) -> int:
+        return 3
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        self.histories.append(visible_events(context, self.channel_id))
+        return ChannelOutput.empty()
+
+
+class TestAnEditOutsideItsTargetsWindow:
+    """RFC §10.3: an edit of a deleted message holds a version of its text,
+    withheld whether or not the history still holds the message."""
+
+    @pytest.mark.parametrize("deleted", [True, False])
+    async def test_an_edit_is_withheld_with_the_message_it_corrected(self, deleted: bool) -> None:
+        kit = RoomKit(store=_WholeConversation())
+        kit.register_channel(_Transport("src"))
+        reader = _Reader("reader")
+        kit.register_channel(reader)
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "src")
+        await kit.attach_channel("r1", "reader", category=ChannelCategory.INTELLIGENCE)
+        said = await _post(kit, "my pin is 1234", sender_id="alice")
+        await kit.process_inbound(
+            InboundMessage(
+                channel_id="src",
+                sender_id="alice",
+                event_type=EventType.EDIT,
+                content=EditContent(
+                    target_event_id=said.id, new_content=TextContent(body="my pin is 5678")
+                ),
+            )
+        )
+        if deleted:
+            await _delete(kit, said, sender_id="alice", delete_type=DeleteType.SENDER)
+        else:
+            await _post(kit, "noted", sender_id="alice")
+        for filler in ("one", "two"):
+            await _post(kit, filler, sender_id="alice")
+
+        history = reader.histories[-1]
+        assert said.id not in [e.id for e in history]
+        [edit] = [e for e in history if e.type == EventType.EDIT]
+        shown = str(edit.content)
+        assert ("5678" in shown) is not deleted
+        assert "1234" not in " ".join(str(e.content) for e in history)
         await kit.close()

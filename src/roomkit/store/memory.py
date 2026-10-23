@@ -20,7 +20,10 @@ from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import (
     ConversationStore,
     address_linked,
+    deletes_edits,
+    edits_target,
     link_target,
+    marked_deleted,
     room_taken,
     target_gone,
     without_address,
@@ -596,6 +599,11 @@ class InMemoryStore(ConversationStore):
                 if stored is None or stored.room_id != room_id:
                     raise target_gone(target)
                 self._events[target.id] = target.model_copy(deep=True)
+            if target is not None and deletes_edits(event, target):
+                for eid in self._room_events.get(room_id, []):
+                    edit = self._events.get(eid)
+                    if edit is not None and edits_target(edit, target.id):
+                        self._events[eid] = marked_deleted(edit)
             events = self._room_events.setdefault(room_id, [])
             index = self._reserve_event_index(room_id)
             indexed = event.model_copy(update={"index": index}, deep=True)

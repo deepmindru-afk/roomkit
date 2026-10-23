@@ -17,7 +17,7 @@ from roomkit.core.exceptions import (
 )
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import EventType
-from roomkit.models.event import RoomEvent, ThreadSummary
+from roomkit.models.event import DeleteContent, EditContent, RoomEvent, ThreadSummary
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
@@ -53,6 +53,28 @@ def without_address(
     kept = [held for held in channel_addresses.get(channel_type, []) if held != address]
     rest = {key: value for key, value in channel_addresses.items() if key != channel_type}
     return {**rest, channel_type: kept} if kept else rest
+
+
+def deletes_edits(event: RoomEvent, target: RoomEvent | None) -> bool:
+    """Whether committing *event* with *target* marks the target's edits
+    deleted: *event* is a DELIVERED delete of it (RFC §10.3)."""
+    return (
+        target is not None
+        and event.type == EventType.DELETE
+        and isinstance(event.content, DeleteContent)
+        and event.content.target_event_id == target.id
+    )
+
+
+def edits_target(event: RoomEvent, target_id: str) -> bool:
+    """Whether *event* is an edit of *target_id*."""
+    content = event.content
+    return isinstance(content, EditContent) and content.target_event_id == target_id
+
+
+def marked_deleted(event: RoomEvent) -> RoomEvent:
+    """*event* marked ``metadata.deleted``, its other metadata kept."""
+    return event.model_copy(update={"metadata": {**event.metadata, "deleted": True}})
 
 
 def room_taken(room_id: str) -> RoomAlreadyExistsError:
@@ -652,7 +674,10 @@ class ConversationStore(ABC):
         :class:`~roomkit.core.exceptions.EventNotFoundError`, nothing
         written (§14.3). The framework passes it only with a change, so a
         store that does not accept the keyword still commits every other
-        event.
+        event. A delete also marks every edit of its target deleted
+        (``metadata.deleted``), in the same transaction: an edit holds a
+        version of the deleted text, withheld from a channel's history even
+        where the history does not hold the message (:func:`deletes_edits`).
 
         The converse does not hold, and that is deliberate. ``event_count`` is
         the running tally RFC §10.1 step 12 describes — ``event_count += 1``,
@@ -685,6 +710,8 @@ class ConversationStore(ABC):
         indexed = await self.add_event_auto_index(room_id, event)
         if target is not None:
             await self.update_event(target)
+        if target is not None and deletes_edits(event, target):
+            await self._mark_edits_deleted(room_id, target.id)
         room = await self.get_room(room_id)
         if room is not None:
             timers = room.timers.model_copy(update={"last_activity_at": datetime.now(UTC)})
@@ -701,6 +728,19 @@ class ConversationStore(ABC):
                 )
             )
         return indexed
+
+    async def _mark_edits_deleted(self, room_id: str, target_id: str) -> None:
+        """Mark every edit of *target_id* deleted, through the store's own
+        reads and writes (the default :meth:`commit_event`'s, not atomic)."""
+        edits = EventFilter(event_types=[EventType.EDIT], include_blocked=True)
+        offset = 0
+        while page := await self.list_events(
+            room_id, offset=offset, limit=_ROOM_PAGE, event_filter=edits
+        ):
+            for edit in page:
+                if edits_target(edit, target_id):
+                    await self.update_event(marked_deleted(edit))
+            offset += len(page)
 
     async def get_conversation(
         self,

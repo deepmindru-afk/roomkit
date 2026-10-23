@@ -226,8 +226,11 @@ def withheld(events: list[RoomEvent]) -> list[RoomEvent]:
     version of its text, stay with their content withheld.
 
     Deleted is what the event's mark says, ``metadata.deleted``, which only
-    an accepted delete's commit writes on its target (or the host, which
-    owns the record). A DELETE row proves nothing by itself: one stored
+    an accepted delete's commit writes, on its target and on each edit of it
+    (or the host, which owns the record): an edit is withheld whether or not
+    the history still holds the message it corrected. An edit of a message
+    the history marks deleted is withheld too, for an edit stored before
+    edits were marked. A DELETE row proves nothing by itself: one stored
     without step 8a (a host's ``commit_event``, a child room's trace) was
     never checked. The event keeps its id, index, type, source with the
     provider's message id, thread, metadata and ``channel_data``; its

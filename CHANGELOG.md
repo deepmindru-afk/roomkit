@@ -57,9 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for a discussion's dispatch turn, a rebuilt tool memory, an answer's cut
   record and the media an application keeps beside a message
   (`attached_media`). The stored record keeps its content, and so do the
-  contexts hooks receive. Deleted is what the target's `metadata.deleted`
-  says, which an accepted delete's commit writes: a DELETE row alone (one a
-  host's `commit_event()` stored, or a child room's trace) withholds nothing.
+  contexts hooks receive. Deleted is what a row's `metadata.deleted` says,
+  which an accepted delete's commit writes on its target and, in the same
+  transaction, on every edit of it, so an edit is withheld even where the
+  history no longer holds the message it corrected; a DELETE row alone (one
+  a host's `commit_event()` stored, or a child room's trace) withholds
+  nothing. An edit stored before this release, of a message deleted before
+  it, carries no mark: it is withheld while the history holds its target,
+  and no migration marks it, since a channel's conversation read serves
+  messages only and an edit reaches a history only with its own broadcast
+  or through a custom store that serves every row.
 
 - An edit or a delete has its target read and validated again once a hook
   ran under the room lock (RFC §10.1 step 9a, RMK-930). A delete committed

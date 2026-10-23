@@ -49,6 +49,7 @@ from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import (
     ConversationStore,
     address_linked,
+    deletes_edits,
     link_target,
     room_taken,
     target_gone,
@@ -1412,6 +1413,15 @@ class SQLiteStore(ConversationStore):
                 if held is None:
                     raise target_gone(target)
                 self._write_event_row(conn, target, replace=True)
+                if deletes_edits(event, target):
+                    # Its edits hold versions of the deleted text (RFC §10.3).
+                    conn.execute(
+                        "UPDATE events"
+                        " SET data = json_set(data, '$.metadata.deleted', json('true'))"
+                        " WHERE room_id = ? AND json_extract(data, '$.content.type') = 'edit'"
+                        " AND json_extract(data, '$.content.target_event_id') = ?",
+                        (room_id, target.id),
+                    )
             index = self._reserve_event_index(conn, room_id)
             indexed = event.model_copy(update={"index": index})
             self._write_event_row(conn, indexed)

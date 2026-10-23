@@ -643,3 +643,60 @@ async def test_a_delivery_record_writes_the_results_alone(
         assert stored.delivery_results == results
     finally:
         await contract_store.delete_room(room.id)
+
+
+async def test_a_delete_marks_its_target_s_edits_deleted(
+    contract_store: ConversationStore,
+) -> None:
+    """RFC §10.3: an edit holds a version of its target's text, so the
+    delete's commit marks it deleted with its target, in one transaction: a
+    history that holds the edit and not the message still withholds it."""
+    room = await contract_store.create_room(Room(id=uuid4().hex))
+    try:
+        store = contract_store
+        target = await store.commit_event(room.id, make_event(room_id=room.id, body="v1"))
+        other = await store.commit_event(room.id, make_event(room_id=room.id, body="other"))
+        edit, edited = _edit_of(target, "v2")
+        edit = await store.commit_event(room.id, edit, target=edited)
+        kept, kept_edited = _edit_of(other, "other, v2")
+        kept = await store.commit_event(room.id, kept, target=kept_edited)
+        stored = await store.get_event(target.id)
+        assert stored is not None
+
+        await store.commit_event(
+            room.id,
+            _delete_of(target),
+            target=stored.model_copy(update={"metadata": {**stored.metadata, "deleted": True}}),
+        )
+
+        marked = await store.get_event(edit.id)
+        assert marked is not None and marked.metadata.get("deleted") is True
+        assert marked.content == edit.content
+        untouched = await store.get_event(kept.id)
+        assert untouched is not None and "deleted" not in untouched.metadata
+    finally:
+        await contract_store.delete_room(room.id)
+
+
+class _DefaultCommit(InMemoryStore):
+    """A store that commits through the ABC's default, as a custom store
+    inheriting it does."""
+
+    async def commit_event(
+        self, room_id: str, event: RoomEvent, *, target: RoomEvent | None = None
+    ) -> RoomEvent:
+        return await ConversationStore.commit_event(self, room_id, event, target=target)
+
+
+async def test_the_default_commit_marks_a_deleted_target_s_edits_too() -> None:
+    store = _DefaultCommit()
+    room = await store.create_room(Room(id=uuid4().hex))
+    target = await store.commit_event(room.id, make_event(room_id=room.id, body="v1"))
+    edit, edited = _edit_of(target, "v2")
+    edit = await store.commit_event(room.id, edit, target=edited)
+
+    deleted = edited.model_copy(update={"metadata": {**edited.metadata, "deleted": True}})
+    await store.commit_event(room.id, _delete_of(target), target=deleted)
+
+    marked = await store.get_event(edit.id)
+    assert marked is not None and marked.metadata.get("deleted") is True
