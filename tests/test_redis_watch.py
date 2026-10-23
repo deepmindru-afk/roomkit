@@ -71,7 +71,7 @@ async def test_a_quiet_connection_that_answers_its_ping_is_kept(
     pubsub = _PubSub(answers=True)
 
     with caplog.at_level(logging.WARNING, logger="roomkit.redis"):
-        read = await _read_for(PubSubWatch("test"), pubsub, 0.4)
+        read = await _read_for(PubSubWatch("test"), pubsub, 0.2)  # four silences
 
     assert pubsub.pings >= 2
     assert pubsub.connection.dropped == 0
@@ -96,7 +96,7 @@ async def test_a_connection_that_never_answers_is_dropped_once_per_silence(
 async def test_nothing_is_pinged_while_nothing_is_subscribed() -> None:
     pubsub = _PubSub(answers=False, subscribed=False)
 
-    await _read_for(PubSubWatch("test"), pubsub, 0.2)
+    await _read_for(PubSubWatch("test"), pubsub, 0.12)  # past two silences
 
     assert (pubsub.pings, pubsub.connection.dropped) == (0, 0)
 

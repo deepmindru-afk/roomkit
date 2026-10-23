@@ -446,13 +446,32 @@ async def test_a_delegated_turn_s_failure_is_logged_once(
     assert [r.name for r in lines] == ["roomkit.tasks"]
 
 
-class _Late(Agent):
-    """An agent whose turn returns after the others'."""
+class _First(Agent):
+    """An agent whose turn returns first: *returned* is set once it has."""
+
+    def __init__(self, *args: Any, returned: asyncio.Event, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.returned = returned
 
     async def on_event(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:
-        await asyncio.sleep(0.2)
+        output = await super().on_event(event, binding, context)
+        self.returned.set()
+        return output
+
+
+class _Late(Agent):
+    """An agent whose turn returns once *after* is set: after another's."""
+
+    def __init__(self, *args: Any, after: asyncio.Event, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.after = after
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        await self.after.wait()
         return await super().on_event(event, binding, context)
 
 
@@ -461,13 +480,17 @@ async def test_a_cancelled_read_keeps_the_turns_of_the_streams_read_before() -> 
     returned (RFC §10.1 step 14): the read is cancelled during the second's
     stream, once the first's answer is stored. The caller's ``turns`` hold
     both, the first completed, the second cancelled."""
-    started = asyncio.Event()
+    started, fast_returned = asyncio.Event(), asyncio.Event()
     kit = RoomKit()
     kit.register_channel(SimpleChannel("tx"))
     kit.register_channel(
-        Agent("fast", provider=MockAIProvider(responses=["done"], streaming=True))
+        _First(
+            "fast",
+            provider=MockAIProvider(responses=["done"], streaming=True),
+            returned=fast_returned,
+        )
     )
-    kit.register_channel(_Late("slow", provider=_Slow(started)))
+    kit.register_channel(_Late("slow", provider=_Slow(started), after=fast_returned))
     await kit.create_room(room_id="r")
     await kit.attach_channel("r", "tx")
     for agent_id in ("fast", "slow"):

@@ -232,6 +232,27 @@ async def test_the_decision_taken_again_once_the_agent_thought_goes_through_the_
 _PRICE = Thought("They look for the licence price; I know it.", ("It costs 1,200 $.",))
 
 
+class _Late(MockThinker):
+    """Thinks as MockThinker does once *back* is set: the thought comes back
+    after the channel decided without it, however fast the runner is."""
+
+    def __init__(self, thoughts: list[Thought]) -> None:
+        super().__init__(thoughts)
+        self.back = asyncio.Event()
+
+    async def think(self, previous: Thought, context: Any) -> Thought:
+        await self.back.wait()
+        return await super().think(previous, context)
+
+
+async def _thought_back(kit: RoomKit, thinker: _Late) -> None:
+    """Let the thought come back and wait for the room's mind to be done with
+    it: the late decision it owes runs inside its thinking task."""
+    thinker.back.set()
+    mind = kit.channels["ai1"]._minds["r1"]  # type: ignore[attr-defined]
+    await asyncio.wait_for(asyncio.shield(mind._task), 2)
+
+
 def _decisions(kit: RoomKit) -> list[SpeakDecisionEvent]:
     """Every decision, through a SYNC hook that turns an offer into a raised hand."""
     seen: list[SpeakDecisionEvent] = []
@@ -246,24 +267,25 @@ def _decisions(kit: RoomKit) -> list[SpeakDecisionEvent]:
     return seen
 
 
-async def _said_and_thought(kit: RoomKit, *bodies: str) -> None:
+async def _said_and_thought(kit: RoomKit, thinker: _Late, *bodies: str) -> None:
     for body in bodies:
         await kit.process_inbound(
             InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body=body))
         )
-    await asyncio.sleep(0.5)  # the thinker's delay, past the channel's wait
+    await _thought_back(kit, thinker)
     await kit.close()
 
 
 async def test_a_thought_back_late_is_decided_again_for_the_hooks_and_runs_no_turn() -> None:
+    thinker = _Late([_PRICE])
     kit, provider = await _kit(
         MockSpeakPolicy(["silent", SpeakDecision("offer", reason="has something to add")]),
-        thinker=MockThinker([_PRICE], delay=0.2),
-        think_wait=0.05,
+        thinker=thinker,
+        think_wait=0.01,
     )
     seen = _decisions(kit)
 
-    await _said_and_thought(kit, "We are looking for the licence price.")
+    await _said_and_thought(kit, thinker, "We are looking for the licence price.")
 
     first, late = seen
     assert (first.late, first.decision.mode) == (False, "silent")
@@ -273,44 +295,47 @@ async def test_a_thought_back_late_is_decided_again_for_the_hooks_and_runs_no_tu
 
 
 async def test_a_late_decision_to_speak_runs_no_turn_either() -> None:
+    thinker = _Late([_PRICE])
     kit, provider = await _kit(
         MockSpeakPolicy(["silent", "speak"]),
-        thinker=MockThinker([_PRICE], delay=0.2),
-        think_wait=0.05,
+        thinker=thinker,
+        think_wait=0.01,
     )
     seen = _decisions(kit)
 
-    await _said_and_thought(kit, "We are looking for the licence price.")
+    await _said_and_thought(kit, thinker, "We are looking for the licence price.")
 
     assert [(e.late, e.decision.mode) for e in seen] == [(False, "silent"), (True, "speak")]
     assert provider.calls == []
 
 
 async def test_only_the_latest_event_s_thought_is_decided_late() -> None:
+    thinker = _Late([_PRICE])
     kit, _ = await _kit(
         MockSpeakPolicy(
             ["silent", "silent", SpeakDecision("offer", reason="has something to add")]
         ),
-        thinker=MockThinker([_PRICE], delay=0.2),
-        think_wait=0.05,
+        thinker=thinker,
+        think_wait=0.01,
     )
     seen = _decisions(kit)
 
-    await _said_and_thought(kit, "We are looking for the licence price.", "Anyone knows?")
+    await _said_and_thought(kit, thinker, "We are looking for the licence price.", "Anyone knows?")
 
     late = [e for e in seen if e.late]
     assert [e.event.content.body for e in late] == ["Anyone knows?"]  # ty: ignore[unresolved-attribute]
 
 
 async def test_a_thought_with_nothing_to_say_is_not_decided_late() -> None:
+    thinker = _Late([Thought("They talk about the weather.")])
     kit, _ = await _kit(
         MockSpeakPolicy(["silent", "offer"]),
-        thinker=MockThinker([Thought("They talk about the weather.")], delay=0.2),
-        think_wait=0.05,
+        thinker=thinker,
+        think_wait=0.01,
     )
     seen = _decisions(kit)
 
-    await _said_and_thought(kit, "Nice weather today.")
+    await _said_and_thought(kit, thinker, "Nice weather today.")
 
     assert [e.late for e in seen] == [False]
 
@@ -336,11 +361,12 @@ async def test_a_thought_taken_while_the_agent_answers_wants_to_say_nothing() ->
     the thought's context lacks that answer: what it wants to say is the answer
     itself, so it is said, and decided on neither in time nor late."""
     kit = RoomKit()
+    thinker = _Late([_PRICE])
     channel = AIChannel(
         "ai1",
         provider=MockAIProvider(responses=["Yes?"]),
         speak_policy=MockSpeakPolicy(["silent", SpeakDecision("offer", reason="has more")]),
-        thinker=MockThinker([_PRICE], delay=0.1),
+        thinker=thinker,
         think_wait=0.01,
     )
     kit.register_channel(channel)
@@ -354,7 +380,7 @@ async def test_a_thought_taken_while_the_agent_answers_wants_to_say_nothing() ->
     await kit.process_inbound(
         InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="I have it."))
     )
-    await asyncio.sleep(0.3)  # the thinker's delay, past the channel's wait
+    await _thought_back(kit, thinker)
     del channel._active_loops["answering"]
     thought = channel._thought_of("r1")
     await kit.close()

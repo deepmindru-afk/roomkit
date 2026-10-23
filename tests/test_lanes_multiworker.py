@@ -40,6 +40,10 @@ def make_worker(
     **kit_kwargs,
 ) -> tuple[RoomKit, RecordingChannel]:
     kit = RoomKit(store=store, lock_manager=locks, **kit_kwargs)
+    # Its lanes poll the shared cursor for the other worker's deliveries,
+    # backing off from 50 to 250 ms between reads: a test's pace instead.
+    kit._lanes._config.gap_backoff_initial = 0.002
+    kit._lanes._config.gap_backoff_max = 0.01
     kit.register_channel(SimpleChannel("src-a"))
     kit.register_channel(SimpleChannel("src-b"))
     recorder = RecordingChannel("recorder", tag, log)
@@ -93,7 +97,7 @@ async def test_crashed_worker_commit_is_skipped_and_room_recovers() -> None:
     locks = InMemoryLockManager()
     log: list[tuple[str, int]] = []
     kit_a, _ = make_worker(store, locks, "A", log)
-    kit_b, _ = make_worker(store, locks, "B", log, delivery_gap_timeout=0.2)
+    kit_b, _ = make_worker(store, locks, "B", log, delivery_gap_timeout=0.02)
     skipped: list[dict] = []
 
     @kit_b.on("delivery_skipped")

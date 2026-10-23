@@ -50,8 +50,10 @@ async def _text(kit: RoomKit, body: str) -> Any:
     )
 
 
-async def _settle() -> None:
-    await asyncio.sleep(0.2)
+async def _settle(kit: RoomKit) -> None:
+    """Until the ASYNC observers the message fired have run; the agent's turn
+    ran within process_inbound."""
+    await kit.hook_engine.drain_observers()
 
 
 def _prompt(ai: MockAIProvider) -> str:
@@ -68,7 +70,7 @@ async def test_an_unverified_message_is_held_from_the_agent() -> None:
         return HookResult.allow()  # watching only: the message stays held
 
     result = await _text(kit, "Did my transfer go through?")
-    await _settle()
+    await _settle(kit)
 
     stored = await kit.store.get_event(result.event.id)
     assert stored is not None
@@ -90,7 +92,7 @@ async def test_a_hook_lets_a_general_question_through_labelled() -> None:
 
     held = await _text(kit, "My account number is 12345, what's my balance?")
     passed = await _text(kit, "What are your opening hours?")
-    await _settle()
+    await _settle(kit)
 
     stored = await kit.store.get_event(passed.event.id)
     assert stored is not None and stored.visibility == "all"
@@ -125,7 +127,7 @@ async def test_a_verified_sender_reaches_the_agent() -> None:
     ai.calls.clear()
 
     result = await _text(kit, "Did my transfer go through?")
-    await _settle()
+    await _settle(kit)
 
     stored = await kit.store.get_event(result.event.id)
     assert stored is not None and stored.visibility == "all"
@@ -171,7 +173,7 @@ async def test_a_kit_without_a_policy_keeps_its_pipeline() -> None:
     kit, ai = _kit(policy=None)
 
     result = await _text(kit, "Did my transfer go through?")
-    await _settle()
+    await _settle(kit)
 
     assert result.event.source.verification is None
     assert result.event.visibility == "all"
@@ -183,7 +185,7 @@ async def test_a_policy_that_does_not_hold_only_labels() -> None:
     kit, ai = _kit(policy=VerificationPolicy(hold_unverified=False))
 
     result = await _text(kit, "Did my transfer go through?")
-    await _settle()
+    await _settle(kit)
 
     assert result.event.source.verification == VerificationStatus.UNVERIFIED
     assert result.event.visibility == "all"
@@ -270,7 +272,7 @@ async def test_a_verification_in_one_organization_does_not_label_another() -> No
         room_id="room-b",
         organization_id="org-b",
     )
-    await _settle()
+    await _settle(kit)
 
     assert result.event.source.verification == VerificationStatus.UNVERIFIED
     assert result.event.visibility == "transport"
@@ -324,7 +326,8 @@ async def test_an_unlabelled_event_has_no_sender_verification() -> None:
 async def test_a_new_link_goes_out_once_the_first_expired_unanswered() -> None:
     """The guide's hook asks for a request when none is open: one left
     unanswered past its expiry is not open, so the next message asks again."""
-    kit, _ = _kit(VerificationPolicy(request_ttl=0.3))
+    # Long enough for the second request to be read pending, the first one waited out.
+    kit, _ = _kit(VerificationPolicy(request_ttl=0.2))
     links: list[str] = []
 
     @kit.hook(HookTrigger.ON_VERIFICATION_REQUIRED)
@@ -338,7 +341,14 @@ async def test_a_new_link_goes_out_once_the_first_expired_unanswered() -> None:
         return HookResult.allow()
 
     await _text(kit, "hello")
-    await asyncio.sleep(0.4)
+
+    async def first_link_expired() -> bool:
+        state = await kit.verification_of("id-alice")
+        return state is not None and state.request_id is None
+
+    async with asyncio.timeout(5):  # its expiry timer ends the request unanswered
+        while not await first_link_expired():
+            await asyncio.sleep(0.01)
     await _text(kit, "still there?")
 
     assert len(links) == 2

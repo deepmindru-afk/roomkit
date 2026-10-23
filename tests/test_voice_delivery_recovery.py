@@ -143,7 +143,7 @@ async def test_worker_retries_only_explicit_non_submission_and_hooks_report_fina
     safe,
 ) -> None:
     async with voice_room(1) as (kit, _, provider, sessions):
-        backend = InMemoryDeliveryBackend()
+        backend = InMemoryDeliveryBackend(retry_delay=0.01)  # the retry, at a test's pace
         observations = []
 
         @kit.hook(HookTrigger.AFTER_DELIVER, execution=HookExecution.ASYNC)

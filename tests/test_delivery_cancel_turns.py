@@ -263,8 +263,7 @@ async def test_a_turn_queued_behind_the_room_s_turn_never_starts(
             # room's delivery lane, behind a message a transport still holds.
             await room.send("held", visibility="transport")
         b = await room.send("task B", "b")
-        await asyncio.sleep(0.1)
-        assert room.seen.started == ["task A"]
+        assert room.seen.started == ["task A"]  # B queued behind A
 
         assert await room.kit.cancel_delivery("b") == 1
         assert a.delivery is not None and b.delivery is not None
@@ -453,6 +452,13 @@ async def test_a_cancel_under_the_room_lock_returns_at_once(path: str, tmp_path:
         await _closed(room)
 
 
+async def _no_turn_follows() -> None:
+    """A turn the broadcast message would start begins a few steps after it:
+    a short bounded wait, as nothing can be awaited for a turn that must
+    not start."""
+    await asyncio.sleep(0.02)
+
+
 async def _settled(ready: Callable[[], Any]) -> None:
     async with asyncio.timeout(WAIT):
         while not ready():
@@ -578,7 +584,7 @@ async def test_an_event_injected_by_a_cancelled_delivery_starts_no_turn(
         assert b.delivery is not None
         await asyncio.wait_for(b.delivery.wait(), WAIT)
         await room.until_broadcast("task B")
-        await asyncio.sleep(0.1)
+        await _no_turn_follows()
 
         assert room.seen.started == []
     finally:
@@ -613,7 +619,7 @@ async def test_a_reentrant_call_s_key_names_its_delivery_until_it_runs(tmp_path:
         assert lead.delivery is not None
         await asyncio.wait_for(lead.delivery.wait(), WAIT)
         await room.until_broadcast("task B")
-        await asyncio.sleep(0.1)
+        await _no_turn_follows()
 
         assert counts == [1]
         assert "task B" not in room.seen.started
@@ -890,7 +896,7 @@ async def test_a_cancelled_call_that_times_out_before_its_commit_names_nothing_a
     """A call refused before its commit (its pre-commit budget spent, steps
     3 to 5) reports its refusal, whatever cancel reached it: no delivery,
     and its key released."""
-    room, pause = await _paused("steerless", tmp_path, budgeted, process_timeout=0.2)
+    room, pause = await _paused("steerless", tmp_path, budgeted, process_timeout=0.05)
     try:
         pause.armed = True
         call = asyncio.create_task(room.send("task A", "a"))

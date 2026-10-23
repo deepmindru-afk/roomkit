@@ -37,16 +37,19 @@ ALICE = "+15550000001"
 KEY = "task-42"
 
 
-class _SlowResolver(MockIdentityResolver):
-    """Identity resolution that reads a slow store: the call is in flight."""
+class _HeldResolver(MockIdentityResolver):
+    """Identity resolution that reads a store; held while *go* is clear, the
+    call is in flight."""
 
     def __init__(self, sender: str) -> None:
         super().__init__(mapping={sender: Identity(id=_identity(sender))})
         self.reading = asyncio.Event()
+        self.go = asyncio.Event()
+        self.go.set()
 
     async def resolve(self, message: Any, context: Any) -> Any:
         self.reading.set()
-        await asyncio.sleep(0.1)
+        await self.go.wait()
         return await super().resolve(message, context)
 
 
@@ -73,9 +76,9 @@ def _kit(
     ai: MockAIProvider | None = None,
     sender: str = ALICE,
     **policy: Any,
-) -> tuple[RoomKit, MockAIProvider, _SlowResolver]:
+) -> tuple[RoomKit, MockAIProvider, _HeldResolver]:
     ai = ai or MockAIProvider(responses=["answer"] * 20)
-    resolver = _SlowResolver(sender)
+    resolver = _HeldResolver(sender)
     kit = RoomKit(
         store=store or InMemoryStore(),
         identity_resolver=resolver,
@@ -99,8 +102,10 @@ def _message(body: str, key: str | None = KEY, sender: str = ALICE) -> InboundMe
     )
 
 
-async def _settle() -> None:
-    await asyncio.sleep(0.3)
+async def _until(predicate: Callable[[], Awaitable[bool]], timeout: float = 2.0) -> None:
+    async with asyncio.timeout(timeout):
+        while not await predicate():
+            await asyncio.sleep(0.01)
 
 
 async def _replies(kit: RoomKit, room_id: str) -> list[RoomEvent]:
@@ -109,6 +114,18 @@ async def _replies(kit: RoomKit, room_id: str) -> list[RoomEvent]:
 
 def _named_nothing(kit: RoomKit) -> bool:
     return kit._delivery_keys._named == {} and kit._delivery_keys._held == {}
+
+
+async def _cancellation_recorded(store: ConversationStore, event_id: str) -> None:
+    """Until the held event's hold marker records its delivery's cancellation:
+    written off the canceller, it is what another process's release reads."""
+
+    async def recorded() -> bool:
+        event = await store.get_event(event_id)
+        marker = event.metadata.get(HELD_KEY) if event is not None else None
+        return isinstance(marker, dict) and bool(marker.get("cancelled"))
+
+    await _until(recorded)
 
 
 async def _verify(kit: RoomKit, first: Any, door: str = "link", sender: str = ALICE) -> None:
@@ -125,28 +142,28 @@ async def _verify(kit: RoomKit, first: Any, door: str = "link", sender: str = AL
         await kit.process_inbound(_message(secret, key=None, sender=sender))
     else:
         await kit.complete_verification(request.id, secret)
-    await _settle()
 
 
 DOORS = ["link", "code"]
 
 
-async def _in_flight(kit: RoomKit, resolver: _SlowResolver) -> tuple[Any, int]:
+async def _in_flight(kit: RoomKit, resolver: _HeldResolver) -> tuple[Any, int]:
     """The message sent, cancelled while its call resolves the sender."""
+    resolver.go.clear()
     call = asyncio.create_task(kit.process_inbound(_message("Wire 500 to Bob")))
     await resolver.reading.wait()
     counted = await kit.cancel_delivery(KEY, reason="user_stopped")
+    resolver.go.set()
     return await call, counted
 
 
-async def _after_the_call(kit: RoomKit, resolver: _SlowResolver) -> tuple[Any, int]:
+async def _after_the_call(kit: RoomKit, resolver: _HeldResolver) -> tuple[Any, int]:
     """The message sent, cancelled once its call returned, the message held."""
     result = await kit.process_inbound(_message("Wire 500 to Bob"))
-    await _settle()
     return result, await kit.cancel_delivery(KEY, reason="user_stopped")
 
 
-WHEN: dict[str, Callable[[RoomKit, _SlowResolver], Awaitable[tuple[Any, int]]]] = {
+WHEN: dict[str, Callable[[RoomKit, _HeldResolver], Awaitable[tuple[Any, int]]]] = {
     "in flight": _in_flight,
     "after the call": _after_the_call,
 }
@@ -173,7 +190,6 @@ async def test_a_cancelled_held_message_is_released_with_no_answer(when: str, do
 async def test_a_held_message_nobody_cancelled_is_answered_and_named_no_more(door: str) -> None:
     kit, ai, _ = _kit()
     result = await kit.process_inbound(_message("Did my transfer go through?"))
-    await _settle()
     assert KEY in kit._delivery_keys._named
 
     await _verify(kit, result.event, door)
@@ -188,7 +204,6 @@ async def test_a_cancel_during_the_released_answer_cuts_it() -> None:
     agent = _SlowAgent()
     kit, _, _ = _kit(ai=agent)
     result = await kit.process_inbound(_message("Did my transfer go through?"))
-    await _settle()
     release = asyncio.create_task(_verify(kit, result.event))
     await asyncio.wait_for(agent.started.wait(), 2)
 
@@ -236,10 +251,9 @@ async def test_a_release_in_another_process_reads_the_cancellation(
     first, first_ai, _ = _kit(store=two_stores[0], sender=sender)
     second, second_ai, _ = _kit(store=two_stores[1], sender=sender)
     result = await first.process_inbound(_message("Wire 500 to Bob", sender=sender))
-    await _settle()
     if cancel:
         assert await first.cancel_delivery(KEY, reason="user_stopped") == 1
-        await _settle()
+        await _cancellation_recorded(two_stores[0], result.event.id)
 
     await _verify(second, result.event, sender=sender)
 
@@ -259,9 +273,7 @@ async def test_only_the_last_released_messages_cancellation_silences_the_release
     kit, ai, _ = _kit()
     earlier = await kit.process_inbound(_message("What's my balance?", key="earlier"))
     await kit.process_inbound(_message("Wire 500 to Bob", key="last"))
-    await _settle()
     assert await kit.cancel_delivery(cancelled, reason="user_stopped") == 1
-    await _settle()
 
     await _verify(kit, earlier.event)
 
@@ -271,9 +283,10 @@ async def test_only_the_last_released_messages_cancellation_silences_the_release
 
 
 async def test_a_held_message_past_its_release_age_is_named_no_more() -> None:
-    kit, _, _ = _kit(release_max_age=0.2)
+    kit, _, _ = _kit(release_max_age=0.02)
     await kit.process_inbound(_message("Wire 500 to Bob"))
-    await asyncio.sleep(0.3)
+    assert KEY in kit._delivery_keys._named
+    await asyncio.sleep(0.05)  # past the release age, which the key's lookup reads
 
     assert await kit.cancel_delivery(KEY) == 0
     assert _named_nothing(kit)
@@ -284,7 +297,6 @@ async def test_another_organizations_cancel_reaches_no_held_message() -> None:
     kit, ai, _ = _kit()
     room = await kit.create_room(organization_id="tenant-1")
     result = await kit.process_inbound(_message("Did my transfer go through?"), room_id=room.id)
-    await _settle()
 
     assert await kit.cancel_delivery(KEY, organization_id="tenant-2") == 0
     await _verify(kit, result.event)
@@ -312,7 +324,12 @@ async def test_a_release_during_the_held_messages_own_delivery_is_named() -> Non
     while not delivered:
         await asyncio.sleep(0.01)
     release = asyncio.create_task(_verify(kit, delivered[0]))
-    await asyncio.sleep(0.3)
+
+    async def released() -> bool:
+        stored = await kit.store.get_event(delivered[0].id)
+        return stored is not None and HELD_KEY not in stored.metadata
+
+    await _until(released)  # while the held message's delivery set still runs
     gate.set()
     await call
     await asyncio.wait_for(agent.started.wait(), 2)
@@ -329,7 +346,6 @@ async def test_a_release_from_a_hook_keeps_its_answer_named() -> None:
     the release's answer waits in the lane, still named, so a cancel stops it."""
     kit, ai, _ = _kit()
     held = await kit.process_inbound(_message("Wire 500 to Bob"))
-    await _settle()
     request, secret = await kit.request_verification(
         _identity(ALICE),
         room_id=held.event.room_id,
@@ -350,8 +366,11 @@ async def test_a_release_from_a_hook_keeps_its_answer_named() -> None:
         channel_id="bank", sender_id="advisor", content=TextContent(body="Verified by phone")
     )
     await kit.process_inbound(note, room_id=held.event.room_id)
-    await _settle()
 
+    async def answer_ran() -> bool:  # the release's answer, cancelled in the lane
+        return _named_nothing(kit)
+
+    await _until(answer_ran)
     assert counted == [1]
     assert ai.calls == []
     assert _named_nothing(kit)
@@ -390,7 +409,6 @@ async def test_the_handle_reaches_a_held_message_while_its_delivery_set_runs(whe
     await result.delivery.cancel(reason="user_stopped")
     gate.set()
     await result.delivery.wait()
-    await _settle()
 
     await _verify(kit, result.event)
 
@@ -411,7 +429,6 @@ async def test_a_held_message_nothing_will_release_is_not_named() -> None:
     keeping, _, _ = _kit(release_on_verify=False)
     for kit in (blocking, keeping):
         await kit.process_inbound(_message("Wire 500 to Bob"))
-        await _settle()
         assert await kit.cancel_delivery(KEY) == 0
         assert _named_nothing(kit)
         await kit.close()
@@ -420,7 +437,6 @@ async def test_a_held_message_nothing_will_release_is_not_named() -> None:
 async def test_a_held_message_without_a_key_is_named_no_longer_than_its_delivery() -> None:
     kit, ai, _ = _kit()
     result = await kit.process_inbound(_message("Did my transfer go through?", key=None))
-    await _settle()
     assert _named_nothing(kit)
 
     await _verify(kit, result.event)

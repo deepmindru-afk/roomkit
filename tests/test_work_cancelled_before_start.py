@@ -236,12 +236,14 @@ class _Link(ExecutorLink):
     def __init__(self, *, gone: bool = False) -> None:
         self.request = _request()
         self.gone = gone
+        self.refused = asyncio.Event()  # a frame it could not carry
 
     async def receive(self) -> Any:
         await asyncio.Event().wait()
 
     async def send(self, frame: Any) -> int:
         if self.gone:
+            self.refused.set()
             raise ConnectionError("the link is gone")
         return 1
 
@@ -259,11 +261,13 @@ async def test_a_turn_its_executor_never_ran_leaves_its_channel_unbuilt(gone: bo
     loop.set_exception_handler(lambda _loop, _context: None)
     try:
         with never_awaited() as unawaited:
-            executor.take(_Link(gone=gone))
+            link = _Link(gone=gone)
+            executor.take(link)
             if gone:
-                # The turn sends its Accepted, which the link refuses.
-                for _ in range(20):
-                    await asyncio.sleep(0.01)
+                # The turn sends its Accepted, which the link refuses: its task fails.
+                await asyncio.wait_for(link.refused.wait(), 1.0)
+                for _ in range(5):
+                    await asyncio.sleep(0)
             await executor.close()
             del executor
             await asyncio.sleep(0)

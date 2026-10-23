@@ -9,7 +9,6 @@ TOOL_CALL_END. ``ToolRefusedError`` keeps its words.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -30,6 +29,7 @@ from roomkit.models.tool_call import ToolCallEvent
 from roomkit.sandbox.executor import SandboxExecutor
 from roomkit.tasks.models import DelegatedTaskResult, TaskStatus
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from tests.channel_tasks import settled
 from tests.conference.test_conference_realtime import _call, realtime_kit
 from tests.test_realtime_fixed_tools import call
 from tests.test_realtime_tool_recovery import _injected
@@ -89,19 +89,18 @@ async def test_a_realtime_call_reads_the_class_and_observers_get_the_message() -
     kit, channel, provider, session, observed = await _realtime()
     try:
         result = await call(channel, provider, session, "lookup", {})
-        await asyncio.sleep(0.05)
     finally:
-        await kit.close()
+        await kit.close()  # drains the observers
 
     assert result == {"error": "Tool 'lookup' failed (ConnectionError)"}
     assert [e.error_detail for e in observed] == [f"ConnectionError: cannot reach {SECRET}"]
 
 
 async def test_a_recovered_call_that_raised_is_reported_to_the_model_and_the_observers() -> None:
-    kit, _channel, provider, session, observed = await _realtime()
+    kit, channel, provider, session, observed = await _realtime()
     try:
         await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
-        await asyncio.sleep(0.1)
+        await settled(channel)  # the recovered call, run and told
     finally:
         await kit.close()
 
@@ -208,11 +207,11 @@ def test_a_failed_delegated_task_reads_as_failed_without_its_error() -> None:
 
 
 async def test_a_recovered_call_is_reported_even_when_the_model_cannot_be_told() -> None:
-    kit, _channel, provider, session, observed = await _realtime()
+    kit, channel, provider, session, observed = await _realtime()
     try:
         provider.inject_text = AsyncMock(side_effect=RuntimeError("socket closed"))
         await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
-        await asyncio.sleep(0.1)
+        await settled(channel)  # the recovered call, run and its telling failed
     finally:
         await kit.close()
 
@@ -229,9 +228,8 @@ async def test_realtime_hooks_that_raised_on_an_unserved_call_reach_the_observer
 
     try:
         result = await call(channel, provider, session, "lookup", {})
-        await asyncio.sleep(0.05)
     finally:
-        await kit.close()
+        await kit.close()  # drains the observers
 
     assert result == {"error": "No handler for tool lookup"}
     assert [e.error_detail for e in observed] == [f"server: cannot reach {SECRET}"]

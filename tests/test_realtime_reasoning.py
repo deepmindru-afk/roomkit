@@ -56,6 +56,7 @@ from roomkit.voice.realtime.reasoning import (
     TranscriptLine,
     render_transcript_request,
 )
+from tests.channel_tasks import settled
 
 LOOKUP = {
     "name": "lookup",
@@ -140,8 +141,10 @@ async def _partials(
         await provider.simulate_transcription(session, text, role, False)
 
 
-async def _settle(seconds: float = 0.05) -> None:
-    await asyncio.sleep(seconds)
+async def _settle(channel: RealtimeVoiceChannel) -> None:
+    """Until what the channel started is done: the delegations, the hooks they
+    fire and the calls they run."""
+    await settled(channel)
 
 
 async def _spoken(provider: MockRealtimeProvider, timeout: float = 2.0) -> None:
@@ -172,7 +175,7 @@ class TestConfiguration:
 class TestLedger:
     async def test_transcript_since_the_previous_delegation(self) -> None:
         backend = _ScriptedBackend([ReasoningOutput("done", is_final=True)])
-        _, _, provider, session = await _channel(backend)
+        _, channel, provider, session = await _channel(backend)
 
         await _partials(
             provider,
@@ -185,7 +188,7 @@ class TestLedger:
         # The final repeats the deltas and must not be recorded twice.
         await provider.simulate_transcription(session, "How can I help?", "assistant", True)
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle()
+        await _settle(channel)
 
         assert len(backend.requests) == 1
         first = backend.requests[0]
@@ -197,7 +200,7 @@ class TestLedger:
 
         await _partials(provider, session, ("user", "And tomorrow?"))
         await provider.simulate_delegation(session, "d2", "integrator")
-        await _settle()
+        await _settle(channel)
 
         second = backend.requests[1]
         assert second.first is False
@@ -206,9 +209,9 @@ class TestLedger:
 
     async def test_request_carries_the_declared_catalogue(self) -> None:
         backend = _ScriptedBackend([ReasoningOutput("ok", is_final=True)])
-        _, _, provider, session = await _channel(backend, tools=[LOOKUP])
+        _, channel, provider, session = await _channel(backend, tools=[LOOKUP])
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle()
+        await _settle(channel)
         assert [t["name"] for t in backend.requests[0].tools] == ["lookup"]
         assert backend.requests[0].execute_tool is not None
 
@@ -221,10 +224,10 @@ class TestRelay:
                 ReasoningOutput("UA482 is cancelled.", spoken=True, is_final=True),
             ]
         )
-        _, _, provider, session = await _channel(backend)
+        _, channel, provider, session = await _channel(backend)
 
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle()
+        await _settle(channel)
 
         assert provider.delegation_outputs == [
             (session.id, "d1", "Checking the flight.", False),
@@ -233,15 +236,15 @@ class TestRelay:
 
     async def test_hosted_delegations_are_not_served(self) -> None:
         backend = _ScriptedBackend([ReasoningOutput("never", is_final=True)])
-        _, _, provider, session = await _channel(backend)
+        _, channel, provider, session = await _channel(backend)
         await provider.simulate_delegation(session, "d1", "hosted")
-        await _settle()
+        await _settle(channel)
         assert backend.requests == []
         assert provider.delegation_outputs == []
 
     async def test_hook_fires_while_the_backend_is_served(self) -> None:
         backend = _ScriptedBackend([ReasoningOutput("ok", is_final=True)])
-        kit, _, provider, session = await _channel(backend)
+        kit, channel, provider, session = await _channel(backend)
         seen: list[Any] = []
 
         @kit.hook(HookTrigger.ON_REALTIME_DELEGATION, HookExecution.ASYNC)
@@ -249,34 +252,37 @@ class TestRelay:
             seen.append((event.delegation_id, event.target))
 
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle()
+        await _settle(channel)
+        await kit.hook_engine.drain_observers()
         assert seen == [("d1", "integrator")]
         assert provider.delegation_outputs[-1][2] == "ok"
 
 
 class TestFallbacks:
     async def test_no_backend_declines_aloud(self) -> None:
-        _, _, provider, session = await _channel(None)
+        _, channel, provider, session = await _channel(None)
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle()
+        await _settle(channel)
         assert provider.delegation_outputs == [(session.id, "d1", FALLBACK_NO_BACKEND, True)]
 
     async def test_silent_backend_gets_a_spoken_fallback(self) -> None:
-        _, _, provider, session = await _channel(_ScriptedBackend([]))
+        _, channel, provider, session = await _channel(_ScriptedBackend([]))
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle()
+        await _settle(channel)
         assert provider.delegation_outputs == [(session.id, "d1", FALLBACK_NO_OUTPUT, True)]
 
     async def test_blank_outputs_count_as_silence(self) -> None:
-        _, _, provider, session = await _channel(_ScriptedBackend([ReasoningOutput("   ")]))
+        _, channel, provider, session = await _channel(_ScriptedBackend([ReasoningOutput("   ")]))
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle()
+        await _settle(channel)
         assert provider.delegation_outputs == [(session.id, "d1", FALLBACK_NO_OUTPUT, True)]
 
     async def test_failing_backend_gets_a_spoken_fallback(self) -> None:
-        _, _, provider, session = await _channel(_ScriptedBackend(error=RuntimeError("boom")))
+        _, channel, provider, session = await _channel(
+            _ScriptedBackend(error=RuntimeError("boom"))
+        )
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle()
+        await _settle(channel)
         assert provider.delegation_outputs == [(session.id, "d1", FALLBACK_FAILED, True)]
 
     @pytest.mark.parametrize(("status", "level"), [(None, logging.WARNING), (503, logging.ERROR)])
@@ -286,10 +292,10 @@ class TestFallbacks:
         """The reasoning backend's turn raises and logs nothing: the delegation
         that catches its provider error writes the one line, at its level."""
         exc = ProviderError("upstream down", provider="mock", status_code=status)
-        _, _, provider, session = await _channel(_ScriptedBackend(error=exc))
+        _, channel, provider, session = await _channel(_ScriptedBackend(error=exc))
         with caplog.at_level(logging.DEBUG):
             await provider.simulate_delegation(session, "d1", "integrator")
-            await _settle()
+            await _settle(channel)
 
         records = [
             r
@@ -302,22 +308,22 @@ class TestFallbacks:
 
     async def test_slow_backend_is_abandoned(self) -> None:
         backend = _ScriptedBackend([ReasoningOutput("late", is_final=True)], delay=0.5)
-        _, _, provider, session = await _channel(backend, timeout=0.05)
+        _, channel, provider, session = await _channel(backend, timeout=0.05)
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle(0.15)
+        await _settle(channel)
         assert provider.delegation_outputs == [(session.id, "d1", FALLBACK_TIMEOUT, True)]
 
 
 class TestIdleAndTeardown:
     async def test_a_running_delegation_keeps_the_session_busy(self) -> None:
-        backend = _ScriptedBackend([ReasoningOutput("ok", is_final=True)], delay=0.1)
+        backend = _ScriptedBackend([ReasoningOutput("ok", is_final=True)], delay=0.02)
         _, channel, provider, session = await _channel(backend)
 
         await provider.simulate_delegation(session, "d1", "integrator")
         await asyncio.sleep(0)
         assert not channel._idle_events[session.id].is_set()  # noqa: SLF001
 
-        await _settle(0.15)
+        await _settle(channel)
         assert provider.delegation_outputs[-1][2] == "ok"
         with pytest.raises(TimeoutError):
             await channel.wait_idle("r1", timeout=0.01)
@@ -333,7 +339,7 @@ class TestIdleAndTeardown:
         await provider.simulate_delegation(session, "d1", "integrator")
         await asyncio.sleep(0)
         await channel.end_session(session)
-        await _settle()
+        await _settle(channel)
 
         assert backend.ended == [session.id]
         assert provider.delegation_outputs == []
@@ -362,7 +368,9 @@ class TestBackendToolGate:
                 ("lookup", {}),  # schema: flight is required
             ],
         )
-        kit, _, provider, session = await _channel(backend, tools=[LOOKUP], tool_handler=handler)
+        kit, channel, provider, session = await _channel(
+            backend, tools=[LOOKUP], tool_handler=handler
+        )
         observed: list[ToolCallEvent] = []
 
         @kit.hook(HookTrigger.ON_TOOL_CALL, HookExecution.SYNC)
@@ -371,7 +379,7 @@ class TestBackendToolGate:
             return HookResult.allow()
 
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle()
+        await _settle(channel)
 
         ok, undeclared, invalid = backend.tool_results
         assert json.loads(ok) == {"status": "cancelled"}
@@ -392,14 +400,16 @@ class TestBackendToolGate:
         backend = _ScriptedBackend(
             [ReasoningOutput("done", is_final=True)], tool_calls=[("lookup", {"flight": "UA482"})]
         )
-        kit, _, provider, session = await _channel(backend, tools=[LOOKUP], tool_handler=handler)
+        kit, channel, provider, session = await _channel(
+            backend, tools=[LOOKUP], tool_handler=handler
+        )
 
         @kit.hook(HookTrigger.BEFORE_TOOL_USE, HookExecution.SYNC)
         async def deny(event: ToolCallEvent, ctx: Any) -> HookResult:
             return HookResult.block("outside business hours")
 
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle()
+        await _settle(channel)
 
         assert calls == []
         assert "outside business hours" in backend.tool_results[0]
@@ -411,9 +421,11 @@ class TestBackendToolGate:
         backend = _ScriptedBackend(
             [ReasoningOutput("done", is_final=True)], tool_calls=[("lookup", {"flight": "UA482"})]
         )
-        _, _, provider, session = await _channel(backend, tools=[LOOKUP], tool_handler=handler)
+        _, channel, provider, session = await _channel(
+            backend, tools=[LOOKUP], tool_handler=handler
+        )
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle()
+        await _settle(channel)
         assert json.loads(backend.tool_results[0]) == {
             "error": "Tool 'lookup' failed (RuntimeError)"
         }
@@ -951,7 +963,8 @@ class TestAgentBackendOnTheChannel:
         session = await channel.start_session("r1", "user-1", "fake-ws")
         await provider.simulate_delegation(session, "d1", "integrator")
         await _spoken(provider)
-        await _settle()
+        await _settle(channel)
+        await kit.hook_engine.drain_observers()  # the ASYNC ON_TOOL_CALL observer
         return kit, provider, observed, telemetry
 
     async def test_a_served_call_is_reported_once(self) -> None:
@@ -1028,7 +1041,10 @@ class TestAgentBackendCutOnTheChannel:
         MockAIProvider,
         MockTelemetryProvider,
     ]:
+        self.calling = asyncio.Event()
+
         async def slow(name: str, arguments: dict[str, Any]) -> str:
+            self.calling.set()
             await asyncio.sleep(5)
             return "{}"
 
@@ -1055,6 +1071,7 @@ class TestAgentBackendCutOnTheChannel:
             observed.append(event)
 
         session = await channel.start_session("r1", "user-1", "fake-ws")
+        self.kit = kit
         return channel, provider, session, observed, model, telemetry
 
     @staticmethod
@@ -1065,12 +1082,13 @@ class TestAgentBackendCutOnTheChannel:
         )
 
     async def test_a_call_its_timeout_cut_is_reported_once_cancelled(self) -> None:
-        _, provider, session, observed, _, _ = await self._served(
+        channel, provider, session, observed, _, _ = await self._served(
             [self._call(), AIResponse(content="done")], timeout=0.2
         )
 
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle(0.5)
+        await _settle(channel)  # its bound cuts the call it runs
+        await self.kit.hook_engine.drain_observers()
 
         [event] = observed
         assert (event.name, event.cancelled) == ("lookup", True)
@@ -1083,23 +1101,24 @@ class TestAgentBackendCutOnTheChannel:
         )
 
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle(0.2)
+        await asyncio.wait_for(self.calling.wait(), 5)  # its call runs
         await channel.end_session(session)
-        await _settle(0.2)
+        await _settle(channel)
+        await self.kit.hook_engine.drain_observers()
 
         [event] = observed
         assert (event.name, event.cancelled) == ("lookup", True)
         assert "The session ended" in str(event.result)
 
     async def test_the_next_delegation_sends_no_call_left_unanswered(self) -> None:
-        _, provider, session, _, model, _ = await self._served(
+        channel, provider, session, _, model, _ = await self._served(
             [self._call(), AIResponse(content="second answer")], timeout=0.2
         )
 
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle(0.5)
+        await _settle(channel)
         await provider.simulate_delegation(session, "d2", "integrator")
-        await _settle(0.3)
+        await _settle(channel)
 
         sent = model.calls[-1].messages
         parts = [p for m in sent if isinstance(m.content, list) for p in m.content]
@@ -1111,7 +1130,7 @@ class TestAgentBackendCutOnTheChannel:
         """Its generator is finalised in another context; nothing fails there."""
         failures: list[Any] = []
         asyncio.get_running_loop().set_exception_handler(lambda _l, ctx: failures.append(ctx))
-        _, provider, session, _, _, _ = await self._served(
+        channel, provider, session, _, _, _ = await self._served(
             [
                 AIResponse(
                     content="Let me check.",
@@ -1131,7 +1150,7 @@ class TestAgentBackendCutOnTheChannel:
         provider.submit_delegation_output = end_while_speaking  # type: ignore[method-assign]
         await provider.simulate_delegation(session, "d1", "integrator")
         for _ in range(5):
-            await _settle()
+            await _settle(channel)
             gc.collect()
 
         assert failures == []
@@ -1142,7 +1161,7 @@ class TestAgentBackendCutOnTheChannel:
         )
 
         await provider.simulate_delegation(session, "d1", "integrator")
-        await _settle(0.1)
+        await _settle(channel)
 
         [span] = telemetry.get_spans(SpanKind.LLM_GENERATE)
         assert span.parent_id is not None
@@ -1155,7 +1174,7 @@ class TestBackendCallBound:
 
     async def _served(self, *, agent_bound: float, channel_bound: float, waits: bool) -> Any:
         async def slow(name: str, arguments: dict[str, Any]) -> str:
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.06)  # three times the bound that must not apply
             return "slow result"
 
         model = MockAIProvider(
@@ -1199,28 +1218,25 @@ class TestBackendCallBound:
 
         session = await channel.start_session("r1", "user-1", "fake-ws")
         await provider.simulate_delegation(session, "d1", "integrator")
-        for _ in range(100):
-            if len(model.calls) == 2:
-                break
-            await _settle()
+        await _settle(channel)
         [result] = next(m for m in model.calls[-1].messages if m.role == "tool").content
         await kit.close()
         return result, observed
 
     async def test_the_voice_channels_bound_holds_not_the_agents(self) -> None:
-        result, observed = await self._served(agent_bound=0.1, channel_bound=5.0, waits=False)
+        result, observed = await self._served(agent_bound=0.02, channel_bound=5.0, waits=False)
 
         assert (result.result, result.is_error) == ("slow result", False)
         assert [(e.name, e.is_error, e.cancelled) for e in observed] == [("lookup", False, False)]
 
     async def test_the_voice_channels_bound_still_cuts_the_call(self) -> None:
-        result, observed = await self._served(agent_bound=5.0, channel_bound=0.1, waits=False)
+        result, observed = await self._served(agent_bound=5.0, channel_bound=0.02, waits=False)
 
         assert result.is_error and "ToolTimeoutError" in result.result
         assert [(e.name, e.is_error, e.cancelled) for e in observed] == [("lookup", True, False)]
 
     async def test_a_tool_that_waits_by_design_is_not_bounded(self) -> None:
-        result, observed = await self._served(agent_bound=0.1, channel_bound=0.1, waits=True)
+        result, observed = await self._served(agent_bound=0.02, channel_bound=0.02, waits=True)
 
         assert (result.result, result.is_error) == ("slow result", False)
         assert [(e.is_error, e.cancelled) for e in observed] == [(False, False)]

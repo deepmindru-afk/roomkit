@@ -608,27 +608,36 @@ async def test_the_turns_own_work_reads_why_it_was_cancelled() -> None:
 
 
 class _AckedLate(InMemoryTurnBackend):
-    """A backend that, as a distributed one, hands a turn over and then
-    waits for its acknowledgement: the turn already runs meanwhile."""
+    """A backend that, as a distributed one, hands a turn over (*handed*) and
+    then waits for its acknowledgement (*acked*): the turn already runs
+    meanwhile."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.handed, self.acked = asyncio.Event(), asyncio.Event()
 
     async def submit(self, request: Any) -> Any:
         link = await super().submit(request)
-        await asyncio.sleep(0.2)
+        self.handed.set()
+        await self.acked.wait()
         return link
 
 
 async def test_a_steer_reaches_a_turn_still_being_handed_over() -> None:
     channel = Steerable()
     channels = {channel.channel_id: channel}
-    client = TurnClient(
-        _AckedLate(), executor=TurnExecutor(channels.get, hosts=channels.__contains__)
-    )
+    backend = _AckedLate()
+    client = TurnClient(backend, executor=TurnExecutor(channels.get, hosts=channels.__contains__))
     output = asyncio.ensure_future(_start(client))
-    await asyncio.sleep(0.05)  # the turn runs on its executor; not yet handed over
+    await asyncio.wait_for(backend.handed.wait(), 2)  # handed over, not yet acknowledged
 
-    reached = await asyncio.wait_for(
-        client.steer(InjectMessage(content="x"), "agent", room_id="room"), 2
+    steering = asyncio.ensure_future(
+        client.steer(InjectMessage(content="x"), "agent", room_id="room")
     )
+    for _ in range(5):  # the steer under way while the handover waits
+        await asyncio.sleep(0)
+    backend.acked.set()
+    reached = await asyncio.wait_for(steering, 2)
 
     assert reached == 1
     channel.release.set()

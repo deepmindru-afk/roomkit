@@ -143,17 +143,17 @@ def server_port(tmp_path_factory: pytest.TempPathFactory) -> Iterator[int]:
         _wait_listening(port, log)
         yield port
     finally:
-        process.terminate()
+        process.kill()  # a test server: nothing to shut down gracefully
         process.wait(timeout=10)
 
 
 def _wait_listening(port: int, log: Path) -> None:
-    for _ in range(100):
+    for _ in range(500):
         try:
             socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
             return
         except OSError:
-            time.sleep(0.1)
+            time.sleep(0.02)
     pytest.fail(f"MCP server never listened:\n{log.read_text()}")
 
 

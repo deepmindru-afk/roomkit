@@ -4,6 +4,7 @@ the turn backend, where each agent runs (RFC §10.6.3, §19.7.5 rule 3)."""
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 from roomkit import Agent, AgentIdentity, ChannelDeclaration, Discussion, RoomKit
 from roomkit.memory.mock import MockMemoryProvider
@@ -29,6 +30,26 @@ def _ingested(memory: MockMemoryProvider) -> list[str]:
     ]
 
 
+async def _until(predicate: Callable[[], bool]) -> None:
+    async with asyncio.timeout(5):
+        while not predicate():
+            await asyncio.sleep(0.01)
+
+
+def _idle(kit: RoomKit) -> bool:
+    """The discussion runs no turn and has none to give: every message it was
+    going to hand on is committed, its hand-offs started."""
+    queue = kit.speak_queue("r")
+    return queue is not None and queue.speaking is None and set(queue.queue) <= queue.listening
+
+
+async def _settled(kit: RoomKit, handed: Callable[[], bool]) -> None:
+    """Until *handed* holds and the discussion is idle, then a moment for a
+    hand-off the test says never comes (a second one) to have landed."""
+    await _until(lambda: handed() and _idle(kit))
+    await asyncio.sleep(0.02)
+
+
 async def _say(kit: RoomKit, text: str) -> None:
     await kit.process_inbound(
         InboundMessage(channel_id="sms", sender_id="marie", content=TextContent(body=text)),
@@ -50,7 +71,13 @@ async def test_a_declared_agent_s_memory_is_handed_each_message_where_it_runs() 
     await kit.attach_channel("r", "sms")
 
     await _say(kit, "Hello everyone.")
-    await asyncio.sleep(0.3)
+    await _settled(
+        kit,
+        lambda: (
+            _ingested(memories["ana"]).count("bob here.") == 1
+            and _ingested(memories["bob"]).count("ana here.") == 1
+        ),
+    )
     handed = {cid: _ingested(memory) for cid, memory in memories.items()}
     await kit.close()
     await executor.close()
@@ -72,7 +99,7 @@ async def test_a_silent_discussion_turn_does_not_hand_the_message_again() -> Non
     await kit.attach_channel("r", "sms")
 
     await _say(kit, "@ana are you there?")
-    await asyncio.sleep(0.3)
+    await _settled(kit, lambda: bool(_ingested(quiet)))
     said = _ingested(quiet)
     await kit.close()
 
@@ -89,7 +116,7 @@ async def test_an_agent_no_executor_runs_misses_its_memory_and_the_room_goes_on(
     await kit.attach_channel("r", "sms")
 
     await asyncio.wait_for(_say(kit, "Hello."), 2)
-    await asyncio.sleep(0.2)
+    await _settled(kit, lambda: bool(_ingested(bob_memory)))
     said = _ingested(bob_memory)
     await kit.close()
 

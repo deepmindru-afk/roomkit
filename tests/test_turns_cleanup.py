@@ -33,7 +33,7 @@ from tests.redis_keys import delete_keys, key_prefix
 from tests.test_framework import SimpleChannel
 from tests.test_turns_backend import ScriptedChannel, _binding, _context, _event, _run
 
-QUICK = TurnTimeouts(cancel=0.2)
+QUICK = TurnTimeouts(cancel=0.05)
 
 
 def _client(channel: ScriptedChannel, timeouts: TurnTimeouts) -> TurnClient:
@@ -140,7 +140,7 @@ async def test_a_cancelled_cascade_nobody_waits_for_leaves_no_unretrieved_error(
 
     with caplog.at_level(logging.ERROR, logger="asyncio"):
         cascade.cancel("kit_closed")
-        await asyncio.sleep(0.5)  # past the cancel bound
+        await asyncio.sleep(3 * QUICK.cancel)  # past the cancel bound
         del cascade, stream
         gc.collect()
         await asyncio.sleep(0.01)
@@ -272,7 +272,7 @@ async def test_a_turn_whose_end_is_owed_stays_owed_when_its_owner_closes() -> No
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
-            await asyncio.sleep(0.6)
+            await asyncio.sleep(3 * QUICK.cancel)  # past the owner's close below
             raise
 
     channels = {"agent": ScriptedChannel(script)}
@@ -288,7 +288,7 @@ async def test_a_turn_whose_end_is_owed_stays_owed_when_its_owner_closes() -> No
     cascade.track(asyncio.ensure_future(slow_to_stop()), turn_work=True)
     await asyncio.sleep(0.05)
     cleanup = asyncio.ensure_future(cascade.cancel_and_wait("caller_cancelled", timeout=3.0))
-    await asyncio.sleep(0.4)  # past cancel_timeout: the turn is over, its end owed
+    await asyncio.sleep(2 * QUICK.cancel)  # past cancel_timeout: the turn is over, its end owed
 
     await client.close()
 

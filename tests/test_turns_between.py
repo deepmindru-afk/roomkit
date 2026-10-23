@@ -6,6 +6,7 @@ turn only."""
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -95,6 +96,12 @@ async def _say(kit: RoomKit, text: str = "Go.") -> None:
         InboundMessage(channel_id="sms", sender_id="marie", content=TextContent(body=text)),
         room_id="r",
     )
+
+
+async def _until(predicate: Callable[[], Any]) -> None:
+    async with asyncio.timeout(5):
+        while not predicate():
+            await asyncio.sleep(0.005)
 
 
 async def _after_the_turn(later: _Later) -> Any:
@@ -205,7 +212,8 @@ async def test_a_publication_after_the_turn_reaches_the_owner_for_its_room_only(
     later.work = work
     await _say(kit)
     await _after_the_turn(later)
-    await asyncio.sleep(0.1)
+    await _until(lambda: seen)
+    await asyncio.sleep(0.02)  # the other room's, published after it, would be in by now
     await host.close(kit)
 
     assert seen == ["r:typing_start"]
@@ -224,7 +232,12 @@ def _listener(thinker: MockThinker) -> AIChannel:
     )
 
 
-async def _thoughts_posted(kit: RoomKit, messages: list[str]) -> tuple[list[str], list[str]]:
+async def _thoughts_posted(
+    kit: RoomKit, messages: list[str], until: Callable[[list[str]], bool]
+) -> tuple[list[str], list[str]]:
+    """The thoughts posted and refused once *messages* were said and the posts
+    satisfy *until*; the caller closes the kit, which lets a hook still running
+    end, before it reads them."""
     posted: list[str] = []
     refused: list[str] = []
 
@@ -244,8 +257,9 @@ async def _thoughts_posted(kit: RoomKit, messages: list[str]) -> tuple[list[str]
     await kit.status_bus.subscribe(on_status)
     for text in messages:
         await _say(kit, text)
-        await asyncio.sleep(0.1)
-    await asyncio.sleep(0.6)
+    async with asyncio.timeout(5):
+        while not until(posted):
+            await asyncio.sleep(0.01)
     return posted, refused
 
 
@@ -264,17 +278,21 @@ async def test_a_thought_at_once_reaches_the_room_before_the_turn_s_output() -> 
     lands before the turn's output is read is the turn's own work."""
     kit = await _kit_with(_listener(MockThinker([Thought(text="Quick.")])))
 
-    posted, refused = await _thoughts_posted(kit, ["One."])
+    posted, refused = await _thoughts_posted(kit, ["One."], lambda posted: bool(posted))
     await kit.close()
 
     assert (posted, refused) == (["Quick."], [])
 
 
 async def test_a_thinker_running_across_turns_reports_under_the_latest_turn() -> None:
-    thinker = MockThinker([Thought(text="First."), Thought(text="Latest.")], delay=0.3)
+    # Each thought takes long enough for the second turn to be sent before the first lands.
+    thinker = MockThinker([Thought(text="First."), Thought(text="Latest.")], delay=0.15)
     kit = await _kit_with(_listener(thinker))
 
-    posted, refused = await _thoughts_posted(kit, ["One.", "Two."])
+    # The first thought began before the latest one: it has landed once the latest is in.
+    posted, refused = await _thoughts_posted(
+        kit, ["One.", "Two."], lambda posted: "Latest." in posted
+    )
     await kit.close()
 
     # The thought on the first event lands once the second turn was sent: that
@@ -345,7 +363,8 @@ async def test_a_framework_event_after_the_turn_reaches_the_owner() -> None:
     later.work = work
     await _say(kit)
     await _after_the_turn(later)
-    await asyncio.sleep(0.1)
+    await _until(lambda: seen)
+    await asyncio.sleep(0.02)  # a second delivery of it would be in by now
     await host.close(kit)
 
     assert seen == ["r:ana"]
@@ -390,7 +409,7 @@ async def test_a_publication_from_an_executor_no_longer_holding_the_room_is_drop
     takes_a[0] = False
     await _say(kit, "Now B.")  # the room's next turn of ana goes to the second executor
     await _after_the_turn(later)
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0.05)  # nothing to await: its publication would reach the owner by now
     await kit.close()
     await first.close()
     await second.close()
@@ -445,7 +464,8 @@ async def test_a_committed_event_goes_where_the_room_s_turns_would() -> None:
     kit.enable_room_hook("r", "audit")
 
     await _say(kit, "@bob hello")
-    await asyncio.sleep(0.2)
+    await _until(lambda: memories["b"].ingest_calls)
+    await asyncio.sleep(0.02)  # the other executor, handed it too, would have ingested it by now
     handed = {name: len(memory.ingest_calls) for name, memory in memories.items()}
     await kit.close()
     for executor in executors.values():

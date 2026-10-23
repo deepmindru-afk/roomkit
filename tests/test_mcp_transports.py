@@ -111,10 +111,10 @@ async def test_exiting_stops_the_server_process(server_script: str) -> None:
         server_pid = int(await mcp.call_tool("pid", {}))
         assert _alive(server_pid)
 
-    for _ in range(50):
+    for _ in range(500):
         if not _alive(server_pid):
             break
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.01)
     assert not _alive(server_pid)
 
 
@@ -221,13 +221,13 @@ async def test_http_transports_against_a_real_server(
             sys.executable, str(script), str(port), transport, stdout=out, stderr=out
         )
     try:
-        for _ in range(100):
+        for _ in range(500):
             try:
                 _reader, writer = await asyncio.open_connection("127.0.0.1", port)
                 writer.close()
                 break
             except OSError:
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.02)
         else:
             pytest.fail(f"MCP {transport} server never listened:\n{log.read_text()}")
         provider = MCPToolProvider.from_url(

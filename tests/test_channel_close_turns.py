@@ -422,6 +422,7 @@ async def test_a_close_from_a_hook_of_the_turn_does_not_wait_for_that_turn(
     assert "still running" not in caplog.text
 
 
+@pytest.mark.wallclock  # the first close waits out its bound, the second does not
 async def test_a_second_close_does_not_wait_again_for_a_turn_the_first_cut(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

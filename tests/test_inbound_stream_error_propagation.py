@@ -14,7 +14,6 @@ exception keeps its full traceback.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import AsyncIterator
 
@@ -91,7 +90,7 @@ async def _run_headless_turn(ai: AIChannel) -> tuple[InboundResult, list[RoomEve
     result = await kit.process_inbound(
         InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
     )
-    await asyncio.sleep(0.05)  # ON_ERROR runs after the room lock is released
+    await kit.hook_engine.drain_observers()  # ON_ERROR runs after the room lock is released
     await kit.close()
     return result, errors
 
@@ -443,11 +442,11 @@ async def test_regenerate_non_streaming_failure_fires_on_error() -> None:
     await kit.process_inbound(
         InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
     )
-    await asyncio.sleep(0.05)
+    await kit.hook_engine.drain_observers()
     before = len(errors)  # the inbound failure already fired one
 
     result = await kit.regenerate_response("r1")
-    await asyncio.sleep(0.05)
+    await kit.hook_engine.drain_observers()
     await kit.close()
 
     assert result is not None and result.error is not None
@@ -493,12 +492,12 @@ async def test_regenerate_fires_on_error_for_each_failed_agent() -> None:
     await kit.process_inbound(
         InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
     )
-    await asyncio.sleep(0.05)
+    await kit.hook_engine.drain_observers()
     inbound = sorted(event.source.channel_id for event in errors)
     errors.clear()
 
     result = await kit.regenerate_response("r1")
-    await asyncio.sleep(0.05)
+    await kit.hook_engine.drain_observers()
     await kit.close()
 
     assert inbound == ["ai1", "ai2"]

@@ -10,8 +10,11 @@ import asyncio
 from io import StringIO
 from unittest.mock import AsyncMock, patch
 
+import prompt_toolkit.patch_stdout
+import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.patch_stdout import StdoutProxy
 
 from roomkit.channels.cli import CLIChannel
 from roomkit.console import terminal_input
@@ -25,6 +28,19 @@ from roomkit.console._shell import (
 )
 from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
 from roomkit.realtime.memory import InMemoryRealtime
+
+
+class _WritesAtOnce(StdoutProxy):
+    """prompt_toolkit's stdout proxy, without the 0.2 s it pauses after each
+    write to bundle the next ones, which the shell's exit waits out."""
+
+    def __init__(self, sleep_between_writes: float = 0.0, raw: bool = False) -> None:
+        super().__init__(sleep_between_writes=0.0, raw=raw)
+
+
+@pytest.fixture(autouse=True)
+def _writes_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(prompt_toolkit.patch_stdout, "StdoutProxy", _WritesAtOnce)
 
 
 def _banner(models: list[BannerModel] | None = None) -> ConsoleBannerData:
@@ -249,6 +265,11 @@ class TestInterrupt:
 
             async def interrupt_then_continue() -> None:
                 await asyncio.wait_for(started.wait(), 5)
+                # A lone Esc waits ttimeoutlen (0.5 s) to tell itself from an
+                # escape sequence's start: a test's 10 ms.
+                app = active_shell_app()
+                assert app is not None
+                app.ttimeoutlen = 0.01
                 pipe.send_text("\x1b")  # Esc — stop this turn, stay in session
                 await asyncio.wait_for(cancelled.wait(), 5)
                 pipe.send_text("still here\n")

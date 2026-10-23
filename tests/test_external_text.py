@@ -580,6 +580,7 @@ def test_a_header_copy_with_an_invisible_character_is_found(hidden: str) -> None
         "runs in a name",
     ],
 )
+@pytest.mark.wallclock  # a second's budget on a million characters: the ReDoS guard
 def test_tags_are_read_in_linear_time(read: Callable[[], object]) -> None:
     """A run of characters after a tag's name, or a text of names never
     closed by ``>``, is read once: about a million characters, well within a
@@ -1353,6 +1354,7 @@ def _split_seconds(words: int) -> float:
     return min(runs)
 
 
+@pytest.mark.wallclock  # a ratio of two timings, which a loaded runner can stretch
 def test_a_long_framed_text_splits_in_linear_time() -> None:
     """Four times the text takes about four times as long, where copying what
     is left at every cut takes about sixteen."""

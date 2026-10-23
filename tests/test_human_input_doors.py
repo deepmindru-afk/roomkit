@@ -99,18 +99,19 @@ async def test_a_blocked_request_is_a_refusal(door: str) -> None:
 
 @EVERY_DOOR
 async def test_the_handler_s_timeout_bounds_the_call_not_the_channel_s(door: str) -> None:
+    # The channel's bound would end the call first, were it the one applied.
     seen, _ = await _ask(
-        door, _human(timeout=0.4), lambda event: HookResult.allow(), tool_timeout_seconds=0.1
+        door, _human(timeout=0.1), lambda event: HookResult.allow(), tool_timeout_seconds=0.02
     )
 
-    assert "Human input timed out after 0.4s" in str(seen.model_read)
+    assert "Human input timed out after 0.1s" in str(seen.model_read)
     assert [(e.is_error, e.refused) for e in seen.reports] == [(True, False)]
 
 
 @EVERY_DOOR
 async def test_a_bound_named_for_the_tool_still_applies(door: str) -> None:
     seen, _ = await _ask(
-        door, _human(timeout=3.0), lambda event: HookResult.allow(), tool_timeouts={"ask": 0.1}
+        door, _human(timeout=3.0), lambda event: HookResult.allow(), tool_timeouts={"ask": 0.02}
     )
 
     assert "ToolTimeoutError" in str(seen.model_read)

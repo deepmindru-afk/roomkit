@@ -6,6 +6,8 @@ import asyncio
 import contextlib
 from typing import Any
 
+import pytest
+
 from roomkit import (
     HookTrigger,
     InboundMessage,
@@ -16,6 +18,7 @@ from roomkit import (
 )
 from roomkit.channels import SMSChannel, WebSocketChannel
 from roomkit.channels.ai import AIChannel
+from roomkit.core.mixins import verification as verification_mixin
 from roomkit.core.mixins.verification import HELD_KEY
 from roomkit.identity.mock import MockIdentityResolver
 from roomkit.models.enums import DeleteType, EventType
@@ -26,6 +29,13 @@ from roomkit.providers.sms.mock import MockSMSProvider
 from tests.test_edit_delete_authorization import _SystemTransport
 
 ALICE = "+15550000001"
+
+
+@pytest.fixture(autouse=True)
+def _cheap_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A secret's scrypt at a test's cost (55 ms a hash otherwise), stored and
+    compared the same way."""
+    monkeypatch.setattr(verification_mixin, "_SCRYPT_N", 2**4)
 
 
 def _kit(**policy: Any) -> tuple[RoomKit, MockAIProvider, MockSMSProvider]:
@@ -54,7 +64,9 @@ async def _text(kit: RoomKit, body: str) -> Any:
 
 
 async def _settle() -> None:
-    await asyncio.sleep(0.3)
+    """Before a check that nothing was answered: the release runs the agents
+    within complete_verification, so one started would be in by now."""
+    await asyncio.sleep(0.05)
 
 
 def _prompts(ai: MockAIProvider) -> list[str]:
@@ -77,7 +89,6 @@ async def test_a_held_question_is_answered_once_verified() -> None:
     assert ai.calls == []
 
     await kit.complete_verification(request.id, secret)
-    await _settle()
 
     stored = await kit.store.get_event(asked.event.id)
     assert stored is not None and stored.visibility == "all"
@@ -126,7 +137,6 @@ async def test_a_code_reply_releases_too() -> None:
     )
 
     await _text(kit, code)
-    await _settle()
 
     assert len(ai.calls) == 1 and "What's my balance?" in _prompts(ai)[0]
     await kit.close()
@@ -149,7 +159,6 @@ async def test_only_the_requests_window_is_released() -> None:
     )
 
     await kit.complete_verification(request.id, secret)
-    await _settle()
 
     assert len(ai.calls) == 1
     assert "card limits" in _prompts(ai)[0]
@@ -167,7 +176,6 @@ async def test_nothing_is_released_twice() -> None:
         "id-alice", room_id=room_id, channel_id="sms", window_start=asked.event.created_at
     )
     await kit.complete_verification(request.id, secret)
-    await _settle()
 
     again, again_secret = await kit.request_verification(
         "id-alice", room_id=room_id, channel_id="sms", window_start=asked.event.created_at
@@ -189,7 +197,6 @@ async def test_the_release_keeps_to_its_bound() -> None:
     )
 
     await kit.complete_verification(request.id, secret)
-    await _settle()
 
     still = await kit.store.get_event(first.event.id)
     assert still is not None and HELD_KEY in still.metadata
@@ -236,7 +243,6 @@ async def test_a_marker_a_sender_supplies_releases_nothing() -> None:
     )
 
     await kit.complete_verification(request.id, secret)
-    await _settle()
 
     stored = await kit.store.get_event(stranger.event.id)
     assert stored is not None and HELD_KEY not in stored.metadata
@@ -265,7 +271,6 @@ async def test_only_a_message_the_pipeline_held_is_released() -> None:
     )
 
     await kit.complete_verification(request.id, secret)
-    await _settle()
 
     kept = await kit.store.get_event(copied.id)
     assert kept is not None and kept.visibility == "transport"

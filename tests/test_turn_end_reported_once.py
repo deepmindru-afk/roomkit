@@ -216,6 +216,35 @@ _FAILURE_LINES = {
 }
 
 
+# The loops that live until the close: the room's delivery lane, and the turn
+# backend's own when turns cross Redis.
+_LASTING = (
+    "roomkit-delivery-lane",
+    "roomkit-turns-inbox",
+    "roomkit-turns-outbox",
+    "roomkit-turns-live-executors",
+)
+
+
+async def _door_done() -> None:
+    """Until what the door left behind (a hand-back's bookkeeping, a pass's
+    detached stream, the observers they fire) has ended: a second report would
+    be in by then."""
+
+    def left() -> list[asyncio.Task[Any]]:
+        return [
+            task
+            for task in asyncio.all_tasks()
+            if task is not asyncio.current_task()
+            and not task.done()
+            and not task.get_name().startswith(_LASTING)
+        ]
+
+    async with asyncio.timeout(5):
+        while left():
+            await asyncio.sleep(0.001)
+
+
 def _lines(caplog: pytest.LogCaptureFixture) -> list[str]:
     return [
         f"{record.name}: {record.getMessage()}"
@@ -233,7 +262,7 @@ async def test_a_turns_end_is_reported_and_logged_once(
     kit, errors = await _DOORS[door](end)
     if end in _FAILURES:
         await until(lambda: bool(errors.heard), timeout=5)
-    await asyncio.sleep(0.1)
+    await _door_done()
     await kit.close()
 
     if end not in _FAILURES:

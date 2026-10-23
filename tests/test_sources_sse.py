@@ -564,8 +564,11 @@ class TestSSESourceIntegration:
             assert "sse-channel" in kit._sources
             assert kit._sources["sse-channel"] is source
 
-            # Wait for task to fail
-            await asyncio.sleep(0.1)
+            # Wait for its task to fail on connecting
+            async with asyncio.timeout(1):
+                while not mock_sse_ctx.__aenter__.await_count:
+                    await asyncio.sleep(0.005)
+            await asyncio.sleep(0)
 
             # Detach
             await kit.detach_source("sse-channel")

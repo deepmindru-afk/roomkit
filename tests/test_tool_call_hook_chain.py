@@ -9,7 +9,6 @@ of the next turn's prompt.
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 from typing import Any
 
@@ -72,7 +71,7 @@ async def _say(kit: RoomKit, body: str = "who is it?") -> None:
     await kit.process_inbound(
         InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body=body))
     )
-    await asyncio.sleep(0.05)  # the ASYNC observers are fire-and-forget
+    await kit.hook_engine.drain_observers()  # the ASYNC observers run on their own
 
 
 def _read_by_model(context: AIContext) -> list[str]:
@@ -315,7 +314,7 @@ async def _external_report(
     await handler._fire_on_tool_hook(
         "Read", {"path": "a.txt"}, "file contents", is_error=False, tool_call_id="t1", room_id="r1"
     )
-    await asyncio.sleep(0.05)
+    await kit.hook_engine.drain_observers()
     return observed, handler, kit
 
 
@@ -362,7 +361,7 @@ async def test_realtime_modify_reaches_the_model_and_the_observers(tmp_path) -> 
             observed.append(event)
 
         result = await call(channel, provider, session, "calendar", {"action": "read"})
-        await asyncio.sleep(0.05)
+        await channel._framework.hook_engine.drain_observers()
 
         assert result == {"ssn": "[REDACTED]"}
         assert ["[REDACTED]" in str(event.result) for event in observed] == [True]
@@ -384,7 +383,7 @@ async def test_realtime_observers_fire_after_a_block(tmp_path) -> None:
             observed.append(event)
 
         result = await call(channel, provider, session, "calendar", {"action": "read"})
-        await asyncio.sleep(0.05)
+        await channel._framework.hook_engine.drain_observers()
 
         assert result == {"error": "restricted"}
         assert [event.is_error for event in observed] == [True]
@@ -408,7 +407,7 @@ async def test_realtime_a_cleared_result_reads_null(tmp_path) -> None:
             observed.append(event)
 
         result = await call(channel, provider, session, "calendar", {"action": "read"})
-        await asyncio.sleep(0.05)
+        await channel._framework.hook_engine.drain_observers()
 
         assert result is None  # the model read JSON null
         assert [event.result for event in observed] == ["null"]
@@ -429,7 +428,7 @@ async def test_realtime_observers_see_a_replacement_as_the_model_reads_it(tmp_pa
             observed.append(event)
 
         result = await call(channel, provider, session, "calendar", {"action": "read"})
-        await asyncio.sleep(0.05)
+        await channel._framework.hook_engine.drain_observers()
 
         assert result == {"n": 1}
         assert [event.result for event in observed] == ['{"n": 1}']

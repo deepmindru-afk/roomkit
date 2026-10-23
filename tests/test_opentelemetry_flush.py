@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from collections.abc import Sequence
 
 import pytest
@@ -29,15 +28,17 @@ from roomkit.telemetry.opentelemetry import OpenTelemetryProvider  # noqa: E402
 
 
 class _SlowCollector(SpanExporter):
-    """A collector that takes *delay* seconds to accept a batch."""
+    """A collector that accepts a batch once *released*, at most *delay*
+    seconds after it was handed one."""
 
     def __init__(self, delay: float) -> None:
         self.delay = delay
         self.exported: list[str] = []
         self.done = threading.Event()
+        self.released = threading.Event()
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
-        time.sleep(self.delay)
+        self.released.wait(self.delay)
         self.exported.extend(span.name for span in spans)
         self.done.set()
         return SpanExportResult.SUCCESS
@@ -54,31 +55,29 @@ def _provider(collector: _SlowCollector, **kwargs: float) -> OpenTelemetryProvid
 
 
 def test_a_flush_returns_at_once_and_the_spans_still_leave() -> None:
-    collector = _SlowCollector(delay=1.0)
+    collector = _SlowCollector(delay=5.0)
     provider = _provider(collector)
     provider.end_span(provider.start_span(SpanKind.VOICE_SESSION, "session"))
 
-    started = time.monotonic()
     provider.flush()
     provider.flush()  # one already running: skipped, not queued behind it
-    returned_after = time.monotonic() - started
 
-    assert returned_after < 0.2
+    assert not collector.done.is_set()  # back while the collector still holds it
+    collector.released.set()
     assert collector.done.wait(timeout=5.0)
     assert collector.exported == ["roomkit.session"]
 
 
 def test_close_waits_for_the_export_within_its_bound(caplog: pytest.LogCaptureFixture) -> None:
-    collector = _SlowCollector(delay=2.0)
-    provider = _provider(collector, shutdown_flush_timeout=0.2)
+    collector = _SlowCollector(delay=5.0)
+    provider = _provider(collector, shutdown_flush_timeout=0.1)
     provider.start_span(SpanKind.VOICE_SESSION, "still open")
 
-    started = time.monotonic()
     with caplog.at_level(logging.WARNING, logger="roomkit.telemetry.otel"):
-        provider.close()
+        provider.close()  # the collector still holds the batch: the bound ends the wait
 
-    assert time.monotonic() - started < 1.0
-    assert "did not finish within 0.2s" in caplog.text
+    assert "did not finish within 0.1s" in caplog.text
+    collector.released.set()
 
 
 def test_close_exports_the_spans_it_ends_when_the_collector_answers() -> None:

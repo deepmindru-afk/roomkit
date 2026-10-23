@@ -512,17 +512,19 @@ class TestTheClaimFailsClosed:
         concurrent stranger: it is refused as a process timeout (RFC §13.6).
         The lock frees after the claim gave up and before the commit would:
         a claim that let the message through unrecorded commits it here."""
-        kit = RoomKit(store=store, process_timeout=0.5)
+        kit = RoomKit(store=store, process_timeout=0.05)
         kit.register_channel(SMSChannel("sms", provider=MockSMSProvider()))
         await kit.create_room(room_id="r")
         await kit.attach_channel("r", "sms")
+        holding = asyncio.Event()
 
         async def squatter() -> None:
             async with kit._lock_manager.locked("r"):  # noqa: SLF001
-                await asyncio.sleep(0.8)
+                holding.set()
+                await asyncio.sleep(0.08)  # past the budget the claim waits within
 
         holder = asyncio.create_task(squatter())
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(holding.wait(), 5)
         try:
             result = await asyncio.wait_for(
                 kit.process_inbound(

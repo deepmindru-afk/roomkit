@@ -35,15 +35,14 @@ class _SlowStreamProvider(MockAIProvider):
 
     def __init__(self) -> None:
         super().__init__(streaming=True)
-        self.streaming_started = asyncio.Event()
 
     async def generate_structured_stream(self, context: AIContext) -> AsyncIterator[StreamEvent]:
         for word in ("Voici ", "le début ", "de la réponse"):
             yield StreamTextDelta(text=word)
-        # The reader reads what came before the test hears it (RFC §10.6.4).
-        await asyncio.sleep(0.05)
-        self.streaming_started.set()
         await asyncio.sleep(3600)  # the part the user never waits for
+
+
+SAID = "Voici le début de la réponse"
 
 
 class _StreamingTransport(SimpleChannel):
@@ -65,6 +64,14 @@ class _StreamingTransport(SimpleChannel):
             if isinstance(chunk, str):
                 self.seen.append(chunk)
         return ChannelOutput.empty()
+
+
+async def _rendered(transport: _StreamingTransport) -> None:
+    """Until *transport* rendered what the provider streamed before it hung:
+    the reader read it before the test cuts the turn (RFC §10.6.4)."""
+    async with asyncio.timeout(5):
+        while "".join(getattr(transport, "seen", [])) != SAID:
+            await asyncio.sleep(0.005)
 
 
 async def _interrupted_turn() -> tuple[RoomKit, list[RoomEvent], _StreamingTransport]:
@@ -98,11 +105,11 @@ async def _interrupted_turn() -> tuple[RoomKit, list[RoomEvent], _StreamingTrans
             InboundMessage(channel_id="cli", sender_id="user", content=TextContent(body="go"))
         )
     )
-    await asyncio.wait_for(provider.streaming_started.wait(), timeout=5)
+    await _rendered(transport)
     turn.cancel()
     with pytest.raises(asyncio.CancelledError):
         await turn
-    await asyncio.sleep(0.05)  # let the async ON_ERROR hooks settle, if any
+    await kit.hook_engine.drain_observers()  # an ASYNC ON_ERROR hook, were one fired
 
     kit._captured_errors = errors  # type: ignore[attr-defined]
     return kit, errors, transport
@@ -155,7 +162,8 @@ class TestInterruptedTurn:
 async def test_deferred_cancellation_retains_persisted_response_events() -> None:
     provider = _SlowStreamProvider()
     kit = RoomKit()
-    kit.register_channel(_StreamingTransport("cli"))
+    transport = _StreamingTransport("cli")
+    kit.register_channel(transport)
     kit.register_channel(AIChannel("ai", provider=provider))
     await kit.create_room(room_id="room")
     await kit.attach_channel("room", "cli")
@@ -166,7 +174,7 @@ async def test_deferred_cancellation_retains_persisted_response_events() -> None
             room_id="room",
             defer_delivery=True,
         )
-        await asyncio.wait_for(provider.streaming_started.wait(), timeout=5)
+        await _rendered(transport)
         await kit.close()
         assert result.delivery is not None
         result = await result.delivery.wait()

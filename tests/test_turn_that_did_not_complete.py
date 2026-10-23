@@ -95,7 +95,7 @@ class _Turn:
         await self.kit.process_inbound(
             InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body=body))
         )
-        await asyncio.sleep(0.1)
+        await self.kit.hook_engine.drain_observers()  # the ASYNC report spy
 
     def spans(self) -> list[Any]:
         return self.telemetry.get_spans(SpanKind.LLM_GENERATE)
@@ -330,7 +330,7 @@ async def test_a_schema_turn_the_provider_interrupts_fails_in_either_loop(
     result = await turn.kit.process_inbound(
         InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
     )
-    await asyncio.sleep(0.1)
+    await turn.kit.hook_engine.drain_observers()
 
     assert isinstance(result.error, ResponseSchemaError)
     assert result.error.reason == "truncated"
@@ -363,7 +363,7 @@ async def test_a_final_answer_failing_its_schema_after_a_round_is_no_interruptio
     result = await turn.kit.process_inbound(
         InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
     )
-    await asyncio.sleep(0.1)
+    await turn.kit.hook_engine.drain_observers()
 
     assert isinstance(result.error, ResponseSchemaError)
     assert result.error.reason == "invalid_json"

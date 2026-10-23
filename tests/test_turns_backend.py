@@ -423,7 +423,7 @@ async def test_an_event_no_executor_takes_names_the_room_hooks_it_needs(
 
 
 async def test_a_silent_executor_loses_its_turn() -> None:
-    timeouts = TurnTimeouts(accept=0.5, heartbeat_interval=0.05, heartbeat_timeout=0.2)
+    timeouts = TurnTimeouts(accept=0.05, heartbeat_interval=0.01, heartbeat_timeout=0.04)
 
     class Mute(TurnExecutor):
         def take(self, link: Any) -> None:

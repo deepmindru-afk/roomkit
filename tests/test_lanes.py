@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from roomkit.core import lanes
 from roomkit.core.lanes import (
     DeliveryCascade,
     DeliveryPlan,
@@ -54,11 +55,13 @@ class FakeHost:
         self.reentered: list[str] = []
         self.framework_events: list[tuple[str, dict[str, Any] | None]] = []
         self.execute_gate: asyncio.Event | None = None
+        self.executing = asyncio.Event()  # set once a plan entered execution
         self.execute_raises: Exception | None = None
         self.on_execute: Any = None
         self.on_reentry: Any = None
 
     async def _execute_plan(self, plan: DeliveryPlan, cascade: Any) -> Any:
+        self.executing.set()
         if self.execute_gate is not None:
             await self.execute_gate.wait()
         if self.on_execute is not None:
@@ -184,7 +187,7 @@ async def test_gap_blocks_then_resumes_when_another_worker_advances() -> None:
     store, host, registry, _ = await make_rig(gap_timeout=10.0)
     cascade = DeliveryCascade(ROOM, reentry_budget=10)
     enqueue_exec(registry, cascade, "e1", 1)  # hole at index 0
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0.05)  # a few of its 10-20 ms backoffs: a skip would be in
     assert host.executed == []  # blocked on the hole, no skip yet
     # "Another worker" delivers index 0 and advances the shared cursor.
     assert await store.advance_delivered_index(ROOM, 0)
@@ -210,7 +213,7 @@ async def test_gap_skips_after_timeout_and_emits_delivery_skipped() -> None:
 
 @pytest.mark.asyncio
 async def test_skip_never_jumps_past_a_local_plan() -> None:
-    store, host, registry, _ = await make_rig(gap_timeout=0.05)
+    store, host, registry, _ = await make_rig(gap_timeout=0.02)
     cascade = DeliveryCascade(ROOM, reentry_budget=10)
     enqueue_exec(registry, cascade, "e1", 1)
     enqueue_exec(registry, cascade, "e3", 3)
@@ -255,13 +258,16 @@ async def test_execution_failure_resolves_wait_and_records_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_aborts_pending_work_and_wakes_waiters() -> None:
+async def test_close_aborts_pending_work_and_wakes_waiters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lanes, "_TASK_GRACE_S", 0.01)  # the hung task is cut at once
     store, host, registry, _ = await make_rig(close_grace=0.05)
     host.execute_gate = asyncio.Event()  # never set: execution hangs
     cascade = DeliveryCascade(ROOM, reentry_budget=10)
     enqueue_exec(registry, cascade, "e0", 0)
     enqueue_exec(registry, cascade, "e1", 1)
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(host.executing.wait(), 1.0)  # e0 dequeued, in _execute
     await asyncio.wait_for(registry.aclose(), timeout=2.0)
     await asyncio.wait_for(cascade.wait(), timeout=1.0)
     assert cascade.cancelled is not None
@@ -270,7 +276,9 @@ async def test_close_aborts_pending_work_and_wakes_waiters() -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_releases_the_delivery_it_cancelled_mid_execution() -> None:
+async def test_close_releases_the_delivery_it_cancelled_mid_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """One in-flight delivery and nothing else queued.
 
     The entry is off the queues while it executes, so ``_abort_pending`` can
@@ -278,11 +286,12 @@ async def test_close_releases_the_delivery_it_cancelled_mid_execution() -> None:
     With a sibling entry still queued the bug hides: aborting the sibling
     sets the cascade's event for everyone.
     """
+    monkeypatch.setattr(lanes, "_TASK_GRACE_S", 0.01)  # the hung task is cut at once
     store, host, registry, _ = await make_rig(close_grace=0.05)
     host.execute_gate = asyncio.Event()  # never set: execution hangs
     cascade = DeliveryCascade(ROOM, reentry_budget=10)
     enqueue_exec(registry, cascade, "e0", 0)
-    await asyncio.sleep(0.05)  # let the lane dequeue it and enter _execute
+    await asyncio.wait_for(host.executing.wait(), 1.0)  # dequeued, in _execute
     await asyncio.wait_for(registry.aclose(), timeout=2.0)
     await asyncio.wait_for(cascade.wait(), timeout=1.0)
     assert cascade.cancelled == "lane_cancelled"
@@ -307,8 +316,9 @@ async def test_idle_lane_retires_and_is_recreated_on_demand() -> None:
     cascade = DeliveryCascade(ROOM, reentry_budget=10)
     enqueue_exec(registry, cascade, "e0", 0)
     await asyncio.wait_for(cascade.wait(), timeout=2.0)
-    await asyncio.sleep(0.2)
-    assert registry._lanes == {}  # retired
+    async with asyncio.timeout(2.0):  # retired once idle past its 0.05 s
+        while registry._lanes:
+            await asyncio.sleep(0.01)
     cascade2 = DeliveryCascade(ROOM, reentry_budget=10)
     enqueue_exec(registry, cascade2, "e1", 1)
     await asyncio.wait_for(cascade2.wait(), timeout=2.0)
@@ -335,7 +345,9 @@ async def test_executor_runs_outside_the_enqueuers_lock_context() -> None:
         enqueue_exec(registry, cascade, "e0", 0)
         # The claim is a different key from the room lock, so the executor
         # delivers WHILE we still hold the room lock — the point of the lanes.
-        await asyncio.sleep(0.1)
+        async with asyncio.timeout(2.0):
+            while not seen:
+                await asyncio.sleep(0.005)
     await asyncio.wait_for(cascade.wait(), timeout=2.0)
     assert seen, "plan executed while the enqueuer held the room lock"
     (held, lane_room) = seen[0]
@@ -466,7 +478,7 @@ async def test_crashed_worker_hole_is_skipped_and_room_recovers() -> None:
     await store.create_room(Room(id=ROOM))
     locks = InMemoryLockManager()
     host_b = FakeHost(store)
-    reg_b = RoomLaneRegistry(host_b, locks, fast_config(gap_timeout=0.1))
+    reg_b = RoomLaneRegistry(host_b, locks, fast_config(gap_timeout=0.02))
     # Worker A: committed index 0, then crashed — no lane entry anywhere.
     cas_b = DeliveryCascade(ROOM, reentry_budget=10)
     cas_b.retain()
@@ -488,11 +500,12 @@ async def test_claim_blocks_gap_clock_while_owner_is_executing() -> None:
     await store.create_room(Room(id=ROOM))
     locks = InMemoryLockManager()
 
-    slow_gate = asyncio.Event()
+    slow_gate, slow_started = asyncio.Event(), asyncio.Event()
 
     class SlowHost(FakeHost):
         async def _execute_plan(self, plan: DeliveryPlan, cascade: Any) -> Any:
             if plan.event.id == "slow0":
+                slow_started.set()
                 await slow_gate.wait()  # long provider round trip
             self.executed.append(plan.event.id)
             return {}
@@ -502,15 +515,15 @@ async def test_claim_blocks_gap_clock_while_owner_is_executing() -> None:
     # B's gap timeout is SHORTER than A's execution: without the claim
     # gating the clock, B would skip past the in-flight index 0.
     reg_a = RoomLaneRegistry(host_a, locks, fast_config())
-    reg_b = RoomLaneRegistry(host_b, locks, fast_config(gap_timeout=0.05))
+    reg_b = RoomLaneRegistry(host_b, locks, fast_config(gap_timeout=0.02))
     cas_a = DeliveryCascade(ROOM, reentry_budget=10)
     cas_b = DeliveryCascade(ROOM, reentry_budget=10)
     cas_a.retain()
     reg_a.enqueue(ROOM, ExecEntry(plan=make_plan("slow0"), cascade=cas_a, index=0))
-    await asyncio.sleep(0.05)  # A's executor is now inside execute, claim held
+    await asyncio.wait_for(slow_started.wait(), 1.0)  # A's executor in execute, claim held
     cas_b.retain()
     reg_b.enqueue(ROOM, ExecEntry(plan=make_plan("b1"), cascade=cas_b, index=1))
-    await asyncio.sleep(0.3)  # far beyond B's gap timeout
+    await asyncio.sleep(0.1)  # five times B's gap timeout
     slow_gate.set()
     await asyncio.wait_for(asyncio.gather(cas_a.wait(), cas_b.wait()), timeout=2.0)
     assert host_a.executed == ["slow0"]

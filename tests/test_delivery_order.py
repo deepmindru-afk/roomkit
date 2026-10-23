@@ -49,6 +49,7 @@ class OrderChannel(Channel):
         self.order: list[str] = []
         self.gate: asyncio.Event | None = None
         self.gate_for: str | None = None
+        self.stalled = asyncio.Event()
 
     async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
         return RoomEvent(
@@ -62,6 +63,7 @@ class OrderChannel(Channel):
     ) -> ChannelOutput:
         body = getattr(event.content, "body", "")
         if self.gate is not None and body == self.gate_for:
+            self.stalled.set()
             await self.gate.wait()
         self.order.append(body)
         return ChannelOutput.empty()
@@ -91,7 +93,7 @@ async def test_committed_event_stays_off_the_cursor_until_it_is_delivered() -> N
     transport.gate_for = "greeting"
 
     greet = asyncio.create_task(kit.send_greeting(ROOM, agent_id="ai"))
-    await asyncio.sleep(0.1)
+    await asyncio.wait_for(transport.stalled.wait(), 3.0)
 
     delivered, latest = await _cursor(kit)
     assert transport.order == []  # still stalled in deliver()
@@ -114,7 +116,7 @@ async def test_a_later_index_does_not_overtake_a_stalled_inline_delivery() -> No
     assert binding is not None
 
     greet = asyncio.create_task(kit.send_greeting(ROOM, agent_id="ai"))
-    await asyncio.sleep(0.1)
+    await asyncio.wait_for(transport.stalled.wait(), 3.0)
     delivered, latest = await _cursor(kit)
 
     # Whatever the room commits next — a concurrent turn, another worker's
@@ -141,7 +143,7 @@ async def test_a_later_index_does_not_overtake_a_stalled_inline_delivery() -> No
             index=latest + 1,
         ),
     )
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0.02)  # an overtaking lane runs the plan at once, nothing to await
     assert transport.order == []  # the lane is held behind the greeting
 
     transport.gate.set()
@@ -216,7 +218,15 @@ async def test_a_streamed_segment_holds_the_cursor_until_it_is_delivered() -> No
             InboundMessage(channel_id="t", sender_id="u1", content=TextContent(body="go"))
         )
     )
-    await asyncio.sleep(0.2)  # the stream runs to its end; delivery is stalled
+    await asyncio.wait_for(transport.stalled.wait(), 3.0)  # delivery is stalled
+
+    async def stream_ended() -> bool:
+        events = await kit._store.list_events(ROOM)
+        return any(getattr(e.content, "body", "") == "second half" for e in events)
+
+    async with asyncio.timeout(3.0):  # the stream runs to its end, committing both
+        while not await stream_ended():
+            await asyncio.sleep(0.005)
 
     delivered, latest = await _cursor(kit)
     assert "first half" not in transport.order

@@ -29,33 +29,42 @@ class TestTheOperationGoesOn:
     async def test_a_sync_run_trigger_returns_before_a_slow_observer_ends(self) -> None:
         engine = HookEngine()
         seen: list[str] = []
+        release = asyncio.Event()
 
         async def slow_observer(text: str, ctx: RoomContext) -> None:
-            await asyncio.sleep(0.5)
+            await release.wait()
             seen.append(text)
 
         _register(engine, HookExecution.ASYNC, slow_observer, "slow")
-        result = await engine.run_sync_hooks(
-            "r1", HookTrigger.BEFORE_TTS, "hello", _ctx(), skip_event_filter=True
+        result = await asyncio.wait_for(
+            engine.run_sync_hooks(
+                "r1", HookTrigger.BEFORE_TTS, "hello", _ctx(), skip_event_filter=True
+            ),
+            1,
         )
-        assert result.allowed and seen == []  # returned while the observer still sleeps
+        assert result.allowed and seen == []  # returned while the observer still waits
 
+        release.set()
         await engine.drain_observers()
         assert seen == ["hello"]  # it ran all the same
 
     async def test_run_observers_returns_at_once_too(self) -> None:
         engine = HookEngine()
-        done = asyncio.Event()
+        done, release = asyncio.Event(), asyncio.Event()
 
         async def slow_observer(text: str, ctx: RoomContext) -> None:
-            await asyncio.sleep(0.5)
+            await release.wait()
             done.set()
 
         _register(engine, HookExecution.ASYNC, slow_observer, "slow")
-        await engine.run_observers(
-            "r1", HookTrigger.BEFORE_TTS, "hello", _ctx(), skip_event_filter=True
+        await asyncio.wait_for(
+            engine.run_observers(
+                "r1", HookTrigger.BEFORE_TTS, "hello", _ctx(), skip_event_filter=True
+            ),
+            1,
         )
         assert not done.is_set()
+        release.set()
         await engine.drain_observers()
         assert done.is_set()
 
@@ -99,17 +108,21 @@ class TestClose:
     async def test_close_waits_for_the_observers_still_running(self) -> None:
         kit = RoomKit()
         room = await kit.create_room()
-        finished = asyncio.Event()
+        finished, release = asyncio.Event(), asyncio.Event()
 
         @kit.hook(HookTrigger.BEFORE_TTS, execution=HookExecution.ASYNC)
         async def slow_observer(text: str, ctx: RoomContext) -> None:
-            await asyncio.sleep(0.2)
+            await release.wait()
             finished.set()
 
         await kit.hook_engine.run_sync_hooks(
             room.id, HookTrigger.BEFORE_TTS, "hello", _ctx(), skip_event_filter=True
         )
         assert not finished.is_set()
-        await kit.close()
+        closing = asyncio.ensure_future(kit.close())
+        await asyncio.wait({closing}, timeout=0.05)
+        assert not closing.done()  # it waits for the observer still running
+        release.set()
+        await asyncio.wait_for(closing, 5)
         assert finished.is_set()
         assert not kit.hook_engine._observers

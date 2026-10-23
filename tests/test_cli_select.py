@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.patch_stdout import StdoutProxy
 
 from roomkit.channels.cli import CLIChannel
 from roomkit.console import _terminal, terminal_select
@@ -21,6 +22,16 @@ DOWN = "\x1b[B"
 UP = "\x1b[A"
 ENTER = "\r"
 ESCAPE = "\x1b"
+_STDOUT_PROXY_INIT = StdoutProxy.__init__
+
+
+def _quick_proxy(
+    self: StdoutProxy, sleep_between_writes: float = 0.005, raw: bool = False
+) -> None:
+    """The shell's stdout proxy, batching its writes at a test's pace: its close
+    waits out the pause after the last write (0.2 s by default)."""
+    _STDOUT_PROXY_INIT(self, sleep_between_writes, raw)
+
 
 OPTIONS = [("claude-code", "Claude Code"), ("codex", "Codex"), ("gemini", "Gemini")]
 
@@ -35,10 +46,14 @@ async def _pick_under_shell(keys: str, **kwargs) -> str | None:
     kit = AsyncMock()
     captured: dict[str, str | None] = {}
     picker_up = asyncio.Event()
+    pickers: list = []
     real_build = _terminal._build_picker
 
     def spy_build(*args, **kwargs_):
         app = real_build(*args, **kwargs_)
+        # A lone escape is told from a sequence after this long: a test's scale.
+        app.ttimeoutlen = 0.01
+        pickers.append(app)
         picker_up.set()
         return app
 
@@ -53,7 +68,10 @@ async def _pick_under_shell(keys: str, **kwargs) -> str | None:
 
         async def send_keys() -> None:
             await asyncio.wait_for(picker_up.wait(), timeout=5)
-            await asyncio.sleep(0.05)  # let run_async attach its reader
+            async with asyncio.timeout(5):  # run_async attaches its reader as it starts
+                while not pickers[0].is_running:
+                    await asyncio.sleep(0.005)
+            await asyncio.sleep(0)
             pipe.send_text(keys)
 
         keyer = asyncio.create_task(send_keys())
@@ -66,18 +84,19 @@ async def _pick_under_shell(keys: str, **kwargs) -> str | None:
             pipe.send_text("quit\n")
 
         quitter = asyncio.create_task(quit_when_done())
-        await asyncio.wait_for(
-            run_console_shell(
-                cli,
-                kit,
-                "room-1",
-                sender_id="user",
-                banner=ConsoleBannerData(version="0.0.0", room_id="room-1"),
-                input=pipe,
-                output=DummyOutput(),
-            ),
-            timeout=10,
-        )
+        with patch.object(StdoutProxy, "__init__", _quick_proxy):
+            await asyncio.wait_for(
+                run_console_shell(
+                    cli,
+                    kit,
+                    "room-1",
+                    sender_id="user",
+                    banner=ConsoleBannerData(version="0.0.0", room_id="room-1"),
+                    input=pipe,
+                    output=DummyOutput(),
+                ),
+                timeout=10,
+            )
         await quitter
         await keyer
     return captured.get("result")

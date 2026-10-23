@@ -288,14 +288,25 @@ async def test_the_decision_taken_again_after_thinking_says_so() -> None:
     ]
 
 
+async def _until(condition: Any, timeout: float = 5.0) -> None:
+    async with asyncio.timeout(timeout):
+        while not condition():
+            await asyncio.sleep(0.005)
+
+
+async def _thought(channel: Any, thought: Thought) -> None:
+    """Until the room's thought is *thought*: the thinker call came back."""
+    await _until(lambda: channel._thought_of("r1") == thought)
+
+
 async def test_a_late_thought_waits_for_the_next_turn() -> None:
     policy = MockSpeakPolicy(["silent", "speak"])
-    thinker = MockThinker([PRICE], delay=0.2)
+    thinker = MockThinker([PRICE], delay=0.05)  # past the turn's think_wait
     channel, provider = _channel(policy, thinker, think_wait=0.01)
     first = _said("We are looking for the price.")
 
     assert (await channel.on_event(first, _BINDING, _context(first))).responded is False
-    await asyncio.sleep(0.3)
+    await _thought(channel, PRICE)  # it came back after the turn
     second = _said("Nova, any idea?")
     run = await respond(channel, second, _BINDING, _context(first, second))
 
@@ -306,14 +317,15 @@ async def test_a_late_thought_waits_for_the_next_turn() -> None:
 
 
 async def test_one_call_at_a_time_from_the_latest_context() -> None:
-    thinker = MockThinker([Thought("one"), Thought("two")], delay=0.1)
+    thinker = MockThinker([Thought("one"), Thought("two")], delay=0.03)
     channel, _ = _channel(MockSpeakPolicy(["silent"]), thinker, think_wait=0)
     events = [_said(f"turn {i}") for i in range(3)]
     for i, event in enumerate(events):
         await channel.on_event(event, _BINDING, _context(*events[: i + 1]))
         if i == 0:
-            await asyncio.sleep(0.02)  # the first call is running
-    await asyncio.sleep(0.35)
+            await _until(lambda: bool(thinker.calls))  # the first call is running
+    await _thought(channel, Thought("two"))
+    await asyncio.sleep(0.05)  # a third call, one at a time, would have run by now
 
     assert len(thinker.calls) == 2
     assert "turn 2" in str(thinker.calls[1][1].messages[-1].content)
@@ -330,7 +342,7 @@ async def test_what_it_says_meanwhile_does_not_come_back() -> None:
     # It speaks while the thinker call runs: the thought that comes back is said.
     channel._minds["r1"].thought = PRICE
     await respond(channel, _said("Nova ?"), _BINDING, _context(first))
-    await asyncio.sleep(0.2)
+    await _thought(channel, PRICE.said())  # the call that ran meanwhile came back
 
     assert channel._thought_of("r1") == PRICE.said()
 

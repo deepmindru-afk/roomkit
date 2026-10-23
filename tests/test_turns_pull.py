@@ -295,8 +295,10 @@ async def test_a_second_cut_lets_the_first_cut_s_close_run_the_stream_s_cleanup(
         await asyncio.gather(reader, return_exceptions=True)
     else:
         await client.steer(Cancel(), "agent", room_id="room")
-    await asyncio.sleep(0.2)
-    await client.close()
+    async with asyncio.timeout(1):  # the first cut's close runs the cleanup
+        while not log:
+            await asyncio.sleep(0.005)
+    await client.close()  # a second cleanup, were one run, would be logged by then
 
     assert log == [f"cleanup done under {turn_id}"]
 

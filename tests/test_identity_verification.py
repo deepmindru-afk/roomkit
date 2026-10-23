@@ -23,10 +23,20 @@ from roomkit import (
     VerificationRequestStatus,
     VerificationStatus,
 )
+from roomkit.core.mixins import verification as verification_mixin
 from roomkit.models.verification import Verification
 from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import SQLiteStore
+
+# The production work factor, ~55 ms a hash: what a leaked store's codes cost.
+_PRODUCTION_SCRYPT_N = verification_mixin._SCRYPT_N
+
+
+@pytest.fixture(autouse=True)
+def _cheap_hash(monkeypatch: pytest.MonkeyPatch) -> None:
+    """scrypt at a test's cost; the slow-hash test puts the production factor back."""
+    monkeypatch.setattr(verification_mixin, "_SCRYPT_N", 2**4)
 
 
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
@@ -60,6 +70,15 @@ def _kit(store: ConversationStore, **policy: float) -> tuple[RoomKit, list[Frame
             events.append(event)
 
     return kit, events
+
+
+async def _ended(events: list[FrameworkEvent], reason: str) -> None:
+    """Until a verification_ended of *reason* was announced: the expiry timer ran."""
+    async with asyncio.timeout(5):
+        while not any(
+            e.type == "verification_ended" and e.data.get("reason") == reason for e in events
+        ):
+            await asyncio.sleep(0.005)
 
 
 def _identity() -> str:
@@ -137,7 +156,7 @@ async def test_an_expired_request_cannot_be_completed(store: ConversationStore) 
     room = await _room(kit)
     alice = _identity()
     request, secret = await kit.request_verification(alice, room_id=room, channel_id="sms")
-    await asyncio.sleep(0.1)
+    await _ended(events, "expired")
 
     with pytest.raises(VerificationRefusedError) as refused:
         await kit.complete_verification(request.id, secret)
@@ -228,13 +247,13 @@ async def test_a_failed_request_ends_the_verification_in_force(
 async def test_an_unanswered_request_leaves_the_verification_in_force(
     store: ConversationStore,
 ) -> None:
-    kit, _ = _kit(store, request_ttl=0.5)  # scrypt takes ~55 ms a hash
+    kit, events = _kit(store, request_ttl=0.05)
     room = await _room(kit)
     alice = _identity()
     first, secret = await kit.request_verification(alice, room_id=room, channel_id="sms")
     await kit.complete_verification(first.id, secret)
     again, again_secret = await kit.request_verification(alice, room_id=room, channel_id="sms")
-    await asyncio.sleep(0.6)
+    await _ended(events, "expired")
 
     with pytest.raises(VerificationRefusedError):
         await kit.complete_verification(again.id, again_secret)
@@ -243,10 +262,13 @@ async def test_an_unanswered_request_leaves_the_verification_in_force(
     await kit.close()
 
 
-async def test_a_secret_is_stored_through_a_slow_hash(store: ConversationStore) -> None:
+async def test_a_secret_is_stored_through_a_slow_hash(
+    store: ConversationStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A 6-digit code read from a leaked store must not fall to a fast hash."""
     import hashlib
 
+    monkeypatch.setattr(verification_mixin, "_SCRYPT_N", _PRODUCTION_SCRYPT_N)
     kit, _ = _kit(store)
     room = await _room(kit)
     request, code = await kit.request_verification(
@@ -261,12 +283,12 @@ async def test_a_secret_is_stored_through_a_slow_hash(store: ConversationStore) 
 async def test_a_verification_reads_expired_once_its_time_passed(
     store: ConversationStore,
 ) -> None:
-    kit, _ = _kit(store, ttl=0.05)
+    kit, events = _kit(store, ttl=0.05)
     room = await _room(kit)
     alice = _identity()
     request, secret = await kit.request_verification(alice, room_id=room, channel_id="sms")
     await kit.complete_verification(request.id, secret)
-    await asyncio.sleep(0.1)
+    await _ended(events, "expired")
 
     state = await kit.verification_of(alice)
 

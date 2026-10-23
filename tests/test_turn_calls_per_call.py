@@ -298,9 +298,8 @@ async def test_a_handler_raising_while_reporting_leaves_the_call_reported_once(
     with caplog.at_level(logging.ERROR):
         await kit.process_inbound(_message())
     await _until(lambda: bool(reports))
-    await asyncio.sleep(0.05)
+    await kit.close()  # drains the ASYNC audit: a second report would be in
     _, ends = await _rows(kit)
-    await kit.close()
 
     assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == [
         "External tool handler failed reporting the call c1"
@@ -343,8 +342,7 @@ async def _backend_turn(rounds: list[list[AIToolCall]]) -> tuple[list[ToolCallEv
     session = await channel.start_session("r", "u", "ws")
     await provider.simulate_delegation(session, "d1", "integrator")
     await _until(lambda: len(model.calls) > len(rounds) and len(reports) == 2)
-    await asyncio.sleep(0.05)
-    await kit.close()
+    await kit.close()  # drains the ASYNC audit: a third report would be in
     return reports, ran
 
 

@@ -281,7 +281,7 @@ async def test_a_call_the_provider_ran_cut_while_reported_keeps_its_outcome(
 
 
 async def test_a_call_cut_while_its_observers_run_is_reported_once() -> None:
-    observing = asyncio.Event()
+    observing, observed_all = asyncio.Event(), asyncio.Event()
     handler = _Handler()
     kit = await _room(_channel(handler, [_call("Bash"), AIResponse(content="done")]))
     observed: list[ToolCallEvent] = []
@@ -291,13 +291,13 @@ async def test_a_call_cut_while_its_observers_run_is_reported_once() -> None:
         observed.append(event)
         observing.set()
         # Still observing when the turn is cancelled.
-        await asyncio.sleep(1)
+        await observed_all.wait()
 
     await _cut_while(kit, observing)
-    await asyncio.sleep(0.2)
+    observed_all.set()
+    await kit.close()  # drains the observers: a second report would be in
 
     assert [(e.name, e.cancelled) for e in observed] == [("Bash", False)]
-    await kit.close()
 
 
 async def test_a_local_call_cut_is_reported_by_the_channel_not_the_handler() -> None:

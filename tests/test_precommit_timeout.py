@@ -25,6 +25,8 @@ from roomkit.store.memory import InMemoryStore
 from tests.test_framework import SimpleChannel
 
 FAST = 0.2
+# A budget the test watches run out: what is measured is that it does.
+SHORT = 0.02
 
 
 class HangingStore(InMemoryStore):
@@ -46,8 +48,10 @@ class HangingChannel(SimpleChannel):
         raise AssertionError("unreachable")
 
 
-async def _kit(channel: SimpleChannel, store: InMemoryStore | None = None) -> RoomKit:
-    kit = RoomKit(store=store, process_timeout=FAST) if store else RoomKit(process_timeout=FAST)
+async def _kit(
+    channel: SimpleChannel, store: InMemoryStore | None = None, budget: float = SHORT
+) -> RoomKit:
+    kit = RoomKit(store=store, process_timeout=budget)
     kit.register_channel(channel)
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "sms1")
@@ -86,12 +90,15 @@ class TestTheWindowCoversWhatItClaims:
         """The pile-up: without this bound, every later message queues forever."""
         kit = await _kit(SimpleChannel("sms1"))
 
+        holding = asyncio.Event()
+
         async def squatter() -> None:
             async with kit._lock_manager.locked("r1"):  # noqa: SLF001
+                holding.set()
                 await asyncio.sleep(3600)
 
         holder = asyncio.create_task(squatter())
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(holding.wait(), 5)
         try:
             result = await _within_budget(kit)
         finally:
@@ -116,7 +123,7 @@ class TestTheWindowCoversWhatItClaims:
 
 class TestTheWindowStopsWhereItShould:
     async def test_a_healthy_message_commits(self) -> None:
-        kit = await _kit(SimpleChannel("sms1"))
+        kit = await _kit(SimpleChannel("sms1"), budget=FAST)
 
         result = await _within_budget(kit)
         timeline = await kit.get_timeline("r1")
@@ -134,10 +141,11 @@ class TestTheWindowStopsWhereItShould:
         assert result.blocked is True
         assert [getattr(e.content, "body", None) for e in timeline].count("hi") == 0
 
+    @pytest.mark.wallclock
     async def test_the_budget_is_spent_once_across_both_regions(self) -> None:
         """A deadline, not the setting re-applied: 0.2s means 0.2s, not 0.4s."""
         store = HangingStore()
-        kit = await _kit(SimpleChannel("sms1"), store)
+        kit = await _kit(SimpleChannel("sms1"), store, budget=FAST)
         store.armed = True
 
         started = asyncio.get_running_loop().time()
@@ -167,13 +175,17 @@ class TestDirectInjectionRaisesWhatItCannotReturn:
             async def slow(event, ctx):  # noqa: ANN001, ANN202
                 await asyncio.sleep(3600)
 
+        holding = asyncio.Event()
+
         async def squatter() -> None:
             async with kit._lock_manager.locked("r1"):  # noqa: SLF001
+                holding.set()
                 await asyncio.sleep(3600)
 
         before = await kit.store.list_events("r1")
         holder = asyncio.create_task(squatter()) if where == "lock" else None
-        await asyncio.sleep(0.05)
+        if holder is not None:
+            await asyncio.wait_for(holding.wait(), 5)
         try:
             with pytest.raises(ProcessTimeoutError):
                 await asyncio.wait_for(
@@ -182,8 +194,9 @@ class TestDirectInjectionRaisesWhatItCannotReturn:
         finally:
             if holder is not None:
                 holder.cancel()
-        await asyncio.sleep(0.05)
-        after = await kit.store.list_events("r1")
+        # A write still queued on the room's lock would land before this takes it.
+        async with asyncio.timeout(5), kit._lock_manager.locked("r1"):  # noqa: SLF001
+            after = await kit.store.list_events("r1")
 
         assert after == before
         assert [event.type for event in expired] == ["process_timeout"]

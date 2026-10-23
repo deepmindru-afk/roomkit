@@ -105,7 +105,7 @@ async def _say(kit: RoomKit, *bodies: str) -> None:
         await kit.process_inbound(
             InboundMessage(channel_id="sms1", sender_id="u", content=TextContent(body=body))
         )
-        await asyncio.sleep(0.05)
+        await kit.hook_engine.drain_observers()  # the ASYNC response spy
 
 
 async def _ai_messages(kit: RoomKit) -> list[str]:
@@ -311,7 +311,7 @@ async def test_an_interrupted_turn_is_an_error(streaming: bool) -> None:
     result = await kit.process_inbound(
         InboundMessage(channel_id="sms1", sender_id="u", content=TextContent(body="go"))
     )
-    await asyncio.sleep(0.05)
+    await kit.hook_engine.drain_observers()  # the ASYNC ON_ERROR card
 
     assert isinstance(result.error, ProviderError)
     assert len(errors) == 1

@@ -226,7 +226,9 @@ class TestWebSocketSourceWithMock:
         task = asyncio.create_task(source.start(emit))
 
         # Wait for messages to be processed
-        await asyncio.sleep(0.1)
+        async with asyncio.timeout(2):
+            while len(received) < 2:
+                await asyncio.sleep(0.005)
 
         # Stop the source
         await source.stop()
@@ -448,7 +450,9 @@ class TestWebSocketSourceImportError:
 
 
 class TestWebSocketSourceIntegration:
-    async def test_attach_websocket_source_to_roomkit(self) -> None:
+    async def test_attach_websocket_source_to_roomkit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import roomkit.sources.websocket as ws_module
         from roomkit.sources.websocket import WebSocketSource
 
@@ -462,29 +466,25 @@ class TestWebSocketSourceIntegration:
         # but we can verify the attach/detach flow works
 
         # Patch websockets to avoid actual connection
-        original = ws_module.websockets
         mock_ws = MagicMock()
         mock_connect = MagicMock()
         mock_connect.__aenter__ = AsyncMock(side_effect=asyncio.CancelledError())
         mock_connect.__aexit__ = AsyncMock(return_value=None)
         mock_ws.connect.return_value = mock_connect
-        ws_module.websockets = mock_ws
+        monkeypatch.setattr(ws_module, "websockets", mock_ws)
 
-        try:
-            await kit.attach_source("ws-channel", source, auto_restart=False)
+        await kit.attach_source("ws-channel", source, auto_restart=False)
 
-            # Verify source is tracked
-            assert "ws-channel" in kit._sources
-            assert kit._sources["ws-channel"] is source
+        # Verify source is tracked
+        assert "ws-channel" in kit._sources
+        assert kit._sources["ws-channel"] is source
 
-            # Wait a bit for the task to fail
-            await asyncio.sleep(0.1)
+        # The task fails on its connection attempt
+        await asyncio.wait({kit._source_tasks["ws-channel"]}, timeout=2)
+        assert mock_connect.__aenter__.await_count == 1
 
-            # Detach
-            await kit.detach_source("ws-channel")
+        # Detach
+        await kit.detach_source("ws-channel")
 
-            assert "ws-channel" not in kit._sources
-        finally:
-            ws_module.websockets = original
-
+        assert "ws-channel" not in kit._sources
         await kit.close()

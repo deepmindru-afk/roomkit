@@ -49,8 +49,8 @@ SLOW = {
     "description": "Answers slowly",
     "parameters": {"type": "object", "properties": {}},
 }
-BOUND = 0.05
-LONGER = 0.2  # past BOUND: a call that is not cut answers after this
+BOUND = 0.02
+LONGER = 0.06  # three times BOUND: a call that is not cut answers after this
 
 
 class _Hung:
@@ -107,7 +107,7 @@ class TestAnswerWithin:
     async def test_an_expired_bound_cancels_the_handler_and_raises(self) -> None:
         hung = _Hung()
 
-        with pytest.raises(ToolTimeoutError, match="'slow' did not answer within 0.05 s"):
+        with pytest.raises(ToolTimeoutError, match="'slow' did not answer within 0.02 s"):
             await answer_within(BOUND, "slow", hung.handler("slow", {}))
 
         assert hung.cancelled

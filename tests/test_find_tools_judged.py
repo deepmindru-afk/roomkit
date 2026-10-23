@@ -10,7 +10,6 @@ only after the call's result went out.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from dataclasses import replace
 from typing import Any
@@ -25,6 +24,7 @@ from roomkit.models.enums import ChannelType
 from roomkit.providers.ai.base import AIResponse, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.voice.realtime.mock import MockCall, MockRealtimeProvider, MockRealtimeTransport
+from tests.channel_tasks import settled
 from tests.conftest import make_event
 from tests.hook_sides import hook_on_its_side
 from tests.test_toolset_edges import (
@@ -332,9 +332,7 @@ class TestRealtimeReview:
             return HookResult.allow()
 
         await provider.simulate_tool_call(session, "c1", "find_tools", {"query": "spotify"})
-        for _ in range(50):
-            await asyncio.gather(*list(channel._scheduled_tasks), return_exceptions=True)
-            await asyncio.sleep(0.01)
+        await settled(channel)  # the call, its hook's reconnect and cancellation
 
         assert provider.tool_results == []
         assert not FOUND & channel._tool_search_support._exposed.get(session.id, set())

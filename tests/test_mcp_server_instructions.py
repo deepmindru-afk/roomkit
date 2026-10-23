@@ -8,7 +8,6 @@ compose a prompt: the AI channel's turn and the realtime session.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import sys
 import textwrap
@@ -43,6 +42,7 @@ from roomkit.voice.realtime.reasoning import (
     ReasoningRequest,
     TranscriptLine,
 )
+from tests.channel_tasks import settled
 from tests.conftest import make_event
 from tests.tool_loop_modes import respond
 
@@ -351,7 +351,7 @@ async def test_a_realtime_skill_activation_keeps_them_once(tmp_path: Path) -> No
     async with _in_session(rt) as session:
         provider.reconfigure = AsyncMock()  # type: ignore[method-assign]
         await provider.simulate_tool_call(session, "c1", "activate_skill", {"name": "combat"})
-        await asyncio.sleep(0.1)
+        await settled(rt)  # the reconfigure the activation schedules after its result
 
         sent = provider.reconfigure.call_args.kwargs["system_prompt"]
         assert sent.count(GM) == 1 and "Fight well." in sent

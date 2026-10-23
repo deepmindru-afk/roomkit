@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import types
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -604,7 +605,7 @@ class TestReceiveLoop:
                 if key.startswith("neonize"):
                     del sys.modules[key]
 
-    async def test_stop_signal_breaks_loop(self) -> None:
+    async def test_stop_signal_breaks_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import sys
 
         from roomkit.sources.neonize import WhatsAppPersonalSourceProvider
@@ -612,6 +613,12 @@ class TestReceiveLoop:
         source = WhatsAppPersonalSourceProvider()
 
         import roomkit.sources.neonize as nz_module
+
+        # The source looks at its stop signal once a second: once in 10 ms here.
+        real_sleep = asyncio.sleep
+        ticking = types.SimpleNamespace(**vars(asyncio))
+        ticking.sleep = lambda delay, result=None: real_sleep(min(delay, 0.01), result)
+        monkeypatch.setattr(nz_module, "asyncio", ticking)
 
         original_has = nz_module.HAS_NEONIZE
         original_client_cls = nz_module.NewAClient
@@ -629,6 +636,10 @@ class TestReceiveLoop:
         sys.modules["neonize.aioze"] = MagicMock()
         sys.modules["neonize.aioze.client"] = MagicMock(NewAClient=nz_module.NewAClient)
         sys.modules["neonize.aioze.events"] = fake_events
+        # What start() reads its device properties from, before it connects.
+        sys.modules["neonize.proto"] = MagicMock()
+        sys.modules["neonize.proto.waCompanionReg"] = MagicMock()
+        sys.modules["neonize.proto.waCompanionReg.WAWebProtobufsCompanionReg_pb2"] = MagicMock()
 
         try:
 
@@ -641,13 +652,7 @@ class TestReceiveLoop:
             assert source.status in (SourceStatus.CONNECTING, SourceStatus.CONNECTED)
 
             await source.stop()
-            await asyncio.sleep(1.5)
-
-            assert task.done() or source._should_stop()
-            if not task.done():
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+            await asyncio.wait_for(task, 1.0)  # the loop ends at its next look
         finally:
             nz_module.HAS_NEONIZE = original_has
             nz_module.NewAClient = original_client_cls  # type: ignore[assignment]

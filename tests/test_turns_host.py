@@ -495,7 +495,7 @@ async def test_a_verb_on_its_way_when_the_turn_ends_is_answered_first() -> None:
     add_observation = kit.store.add_observation
 
     async def slow_write(observation: Observation) -> None:
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.05)  # longer than what is left of the turn: a few ms
         await add_observation(observation)
 
     kit.store.add_observation = slow_write  # type: ignore[method-assign]

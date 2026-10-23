@@ -167,8 +167,9 @@ class TestRunWorkerLoop:
         sent = AsyncMock(return_value=DeliveryOutcome(status="sent"))
         with patch("roomkit.delivery.worker.execute_delivery", sent):
             task = asyncio.create_task(run_worker_loop(backend, kit, "w1", poll_timeout=0.1))
-            # Give the loop time to process
-            await asyncio.sleep(0.3)
+            async with asyncio.timeout(5):  # delivered, then acked
+                while not sent.await_count or item.id in backend._in_flight:
+                    await asyncio.sleep(0.005)
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
@@ -187,8 +188,9 @@ class TestRunWorkerLoop:
 
         with patch("roomkit.delivery.worker.execute_delivery", side_effect=RuntimeError("boom")):
             task = asyncio.create_task(run_worker_loop(backend, kit, "w1", poll_timeout=0.1))
-            # Give enough time for retries to exhaust
-            await asyncio.sleep(0.5)
+            async with asyncio.timeout(5):  # its retries exhausted
+                while not await backend.get_dead_letter_items():
+                    await asyncio.sleep(0.005)
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
@@ -203,7 +205,8 @@ class TestRunWorkerLoop:
         backend = InMemoryDeliveryBackend()
 
         task = asyncio.create_task(run_worker_loop(backend, kit, "w1", poll_timeout=0.1))
-        await asyncio.sleep(0.1)
+        for _ in range(3):  # the loop waiting on its first poll
+            await asyncio.sleep(0)
         task.cancel()
 
         with contextlib.suppress(asyncio.CancelledError):

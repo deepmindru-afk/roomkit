@@ -144,8 +144,7 @@ async def _external_door(outcome: str, how: str) -> Heard:
         turn.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await turn
-    await asyncio.sleep(0.2)
-    await kit.close()
+    await kit.close()  # waits for the turn's work and the observers its call fired
     return heard
 
 

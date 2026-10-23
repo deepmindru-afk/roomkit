@@ -249,7 +249,7 @@ class TestIdentification:
             room_id=room_id,
         )
         alice = await _alice_texts(kit, "Did my transfer go through?")
-        await _settle()
+        await _settle(kit)
 
         assert forged.event is not None and forged.event.source.verification is None
         assert alice.event is not None

@@ -64,9 +64,17 @@ async def _run_turn(kit: RoomKit, ai: AIChannel) -> list[EphemeralEvent]:
     )
 
     received: list[EphemeralEvent] = []
+    # The bus hands a subscriber its events in order, from a task of its own:
+    # once a marker published after the turn arrives, every event the turn
+    # published has.
+    marker = EphemeralEvent(room_id="r1", type=EphemeralEventType.CUSTOM, user_id="test")
+    delivered = asyncio.Event()
 
     async def on_event(ev: EphemeralEvent) -> None:
-        received.append(ev)
+        if ev.id == marker.id:
+            delivered.set()
+        else:
+            received.append(ev)
 
     await kit.realtime.subscribe_to_room("r1", on_event)
 
@@ -74,9 +82,8 @@ async def _run_turn(kit: RoomKit, ai: AIChannel) -> list[EphemeralEvent]:
         InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="go"))
     )
 
-    # InMemoryRealtime dispatches subscriber callbacks via background tasks;
-    # yield once so they run before we inspect the list.
-    await asyncio.sleep(0.05)
+    await kit.realtime.publish_to_room("r1", marker)
+    await asyncio.wait_for(delivered.wait(), 5)
     return received
 
 
@@ -384,7 +391,7 @@ async def test_a_provider_run_call_is_reported_as_the_provider_ran_it(decision: 
         observed.append(event)
 
     await _run_turn(kit, ai)
-    await asyncio.sleep(0.05)
+    await kit.hook_engine.drain_observers()  # the ASYNC audit, run
 
     assert [(e.result, e.is_error) for e in observed] == [("written", False)]
     await kit.close()
@@ -1191,7 +1198,9 @@ async def _turn_count_after_a_re_cancelled_consumer(*, tools: bool) -> int:
             pass
 
     task = asyncio.create_task(consume())
-    await asyncio.sleep(0.05)
+    async with asyncio.timeout(5):  # the consumer reads, the turn runs
+        while ai.active_turns != 1:
+            await asyncio.sleep(0.005)
     assert ai.active_turns == 1
     task.cancel()
     await asyncio.wait_for(publishing.wait(), 1)

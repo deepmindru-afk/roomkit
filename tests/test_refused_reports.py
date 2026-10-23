@@ -79,10 +79,11 @@ async def _room(kit: RoomKit, agent_id: str) -> None:
 
 
 async def _ask(kit: RoomKit) -> None:
+    """The person's message; the caller's ``kit.close()`` then waits for the
+    turn and the observers its calls fired."""
     await kit.process_inbound(
         InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="go"))
     )
-    await asyncio.sleep(0.2)
 
 
 async def _external_door(handler: Any, call: AIToolCall) -> _Heard:
@@ -445,12 +446,12 @@ async def _acp_ran_anyway(handler: Any) -> tuple[_Heard, list[Any]]:
         heard = _Heard(kit)
         await _room(kit, "acp-agent")
         await _ask(kit)
+        await kit.close()  # the turn and the observers it fired have run
         rows = [
             event.content
             for event in await kit.store.list_events("room-1")
             if event.type.value == "tool_call_end"
         ]
-        await kit.close()
         return heard, rows
 
 

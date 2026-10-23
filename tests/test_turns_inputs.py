@@ -254,10 +254,11 @@ async def test_a_detached_request_a_turn_raised_outlives_the_turn() -> None:
 async def test_a_request_asked_after_its_turn_ended_is_the_handlers_alone() -> None:
     answered: list[str] = []
     spawned: list[asyncio.Task[Any]] = []
+    turn_ended = asyncio.Event()
     human = HumanInputToolHandler(tool_names={"ask_user"}, timeout=2, tool_definitions=[ASK])
 
     async def later() -> None:
-        await asyncio.sleep(0.2)
+        await turn_ended.wait()  # asked once its turn is over
         pending = await human.handler.create(
             "ask_user", {"question": "Still there?"}, room_id="r1"
         )
@@ -282,6 +283,7 @@ async def test_a_request_asked_after_its_turn_ended_is_the_handlers_alone() -> N
     await kit.attach_channel("r1", "agent", category=ChannelCategory.INTELLIGENCE)
 
     await asyncio.wait_for(_say(kit), 5)
+    turn_ended.set()
     await asyncio.wait_for(spawned[0], 5)
 
     assert answered == ["Yes"]
@@ -303,7 +305,7 @@ async def test_a_rejection_reaches_the_tool_as_a_refusal() -> None:
 
 
 async def test_a_request_no_one_answers_in_time_is_closed_on_the_owner() -> None:
-    kit, _, _, asked, reports = await _kit(timeout=0.2)
+    kit, _, _, asked, reports = await _kit(timeout=0.02)
     turn = _say(kit)
     pending_id = await _asked(asked)
 

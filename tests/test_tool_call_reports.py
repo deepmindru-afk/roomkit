@@ -194,7 +194,7 @@ async def _acp_room(
     await kit.process_inbound(
         InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="go"))
     )
-    await asyncio.sleep(0.1)
+    await kit.hook_engine.drain_observers()  # the turn's reports, heard
     return kit, seen
 
 
@@ -513,12 +513,12 @@ async def test_an_acp_call_whose_report_is_cut_is_still_reported_once(
     await kit.create_room(room_id="room-1")
     await kit.attach_channel("room-1", "sms")
     await kit.attach_channel("room-1", "acp-agent", category=ChannelCategory.INTELLIGENCE)
-    held = asyncio.Event()
+    held, release = asyncio.Event(), asyncio.Event()
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="hold")
     async def hold(event: ToolCallEvent, ctx: Any) -> HookResult:
         held.set()
-        await asyncio.sleep(0.2)
+        await release.wait()  # the report under way when the turn is cut
         return HookResult.allow()
 
     seen = _observe(kit)
@@ -530,11 +530,11 @@ async def test_an_acp_call_whose_report_is_cut_is_still_reported_once(
     await asyncio.wait_for(held.wait(), 5)
     turn.cancel()
     await asyncio.gather(turn, return_exceptions=True)
+    release.set()
     await until(lambda: bool(seen))
-    await asyncio.sleep(0.3)
+    await kit.close()  # drains the observers: a second report would be in
 
     assert [(e.tool_call_id, e.is_error, e.cancelled) for e in seen] == [("tool-1", False, False)]
-    await kit.close()
 
 
 async def test_an_acp_call_refused_then_approved_fails_on_its_own(tmp_path: Path) -> None:
@@ -577,25 +577,30 @@ async def test_an_acp_call_refused_then_approved_fails_on_its_own(tmp_path: Path
     await kit.close()
 
 
-async def test_a_claimed_report_is_made_though_its_call_is_cut_meanwhile() -> None:
+async def test_a_claimed_report_is_made_though_its_call_is_cut_meanwhile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Once a call's one report is claimed, a cut of the call while its
     observers are told does not lose it (RFC §9.3)."""
     kit = RoomKit()
     await kit.create_room(room_id="r")
-    release = asyncio.Event()
+    telling, release = asyncio.Event(), asyncio.Event()
     observed: list[str] = []
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: Any, ctx: Any) -> None:
         observed.append(event.tool_call_id)
 
-    told = kit._tell_tool_call
+    # The judging's own teller: the kit's _tell_tool_call is not on this path.
+    tools = kit.turn_executor.wiring.tools
+    told = tools.tell_tool_call
 
     async def slow_tell(*args: Any) -> None:
+        telling.set()
         await release.wait()
         await told(*args)
 
-    kit._tell_tool_call = slow_tell  # type: ignore[method-assign]
+    monkeypatch.setattr(tools, "tell_tool_call", slow_tell)
     event = ToolCallEvent(
         channel_id="c",
         channel_type=ChannelType.AI,
@@ -606,10 +611,10 @@ async def test_a_claimed_report_is_made_though_its_call_is_cut_meanwhile() -> No
         room_id="r",
     )
     judging = asyncio.create_task(kit._judge_tool_call(event, "c", claim=lambda: True))
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(telling.wait(), 5)  # claimed, being told
     judging.cancel()
     release.set()
-    await asyncio.sleep(0.1)
+    await until(lambda: bool(observed))
+    await kit.close()  # drains the observers: a second report would be in
 
     assert observed == ["x1"]
-    await kit.close()

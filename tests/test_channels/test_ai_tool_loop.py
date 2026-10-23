@@ -352,7 +352,8 @@ class TestEvictedResultReading:
         """A single-line JSON result splits into size-bounded pages instead of
         coming back whole (line-based slicing returned the entire line)."""
         provider = MockAIProvider()
-        ch = AIChannel("ai1", provider=provider, evict_threshold_tokens=100)
+        # Above the page envelope's 512 chars: pages of 288 chars, a score of them.
+        ch = AIChannel("ai1", provider=provider, evict_threshold_tokens=400)
         large = json.dumps(
             {"emails": [{"id": f"msg-{i}", "subject": "x" * 40} for i in range(80)]}
         )

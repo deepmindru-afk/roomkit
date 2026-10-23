@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 
 from roomkit.channels.ai import AIChannel
@@ -195,10 +194,12 @@ async def _build_kit(
 
 
 async def _send_and_wait(kit: RoomKit) -> None:
-    """Send a message through the source channel and wait for delivery."""
+    """Send a message through the source channel, then close the kit: its
+    close drains the delivery lanes, so a delivery nobody should get, were one
+    queued, has landed by then."""
     msg = InboundMessage(channel_id="src", sender_id="u1", content=TextContent(body="Hi"))
     await kit.process_inbound(msg)
-    await asyncio.sleep(0.3)
+    await kit.close()
 
 
 # ---------------------------------------------------------------------------

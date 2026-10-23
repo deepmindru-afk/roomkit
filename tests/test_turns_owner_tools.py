@@ -37,6 +37,7 @@ from roomkit.tools.context import (
     current_tool_room_id,
 )
 from roomkit.turns._registry_tools import RegistryOwnerTools
+from tests.bounds import CUT, expire, opened_with_cut
 from tests.test_framework import SimpleChannel
 
 PROBE = AITool(name="probe", description="Probe the owner.", parameters={"type": "object"})
@@ -202,7 +203,9 @@ async def test_a_call_nothing_on_the_owner_serves_is_served_by_nothing() -> None
     await kit.close()
 
 
-async def test_a_call_past_its_bound_is_withdrawn_from_the_owner() -> None:
+async def test_a_call_past_its_bound_is_withdrawn_from_the_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     started = asyncio.Event()
     cancelled = asyncio.Event()
 
@@ -215,16 +218,19 @@ async def test_a_call_past_its_bound_is_withdrawn_from_the_owner() -> None:
             raise
         return "never"
 
-    agent = _agent("agent", _call("probe", {}), "too slow", tool_timeout_seconds=0.2)
+    agent = _agent("agent", _call("probe", {}), "too slow", tool_timeout_seconds=CUT)
     kit = await _kit(agent, attach=("agent",))
     kit._owner_tools.of("agent").register(
         orchestration_tool(PROBE, serve), room_id="r1", owner=object()
     )
     reports = _reports(kit)
+    bounds = opened_with_cut(monkeypatch)
 
-    await _say(kit, "go")
+    turn = asyncio.ensure_future(_say(kit, "go"))
+    await asyncio.wait_for(started.wait(), 2)
+    expire(bounds)  # the call's bound runs out while its handler serves it
+    await asyncio.wait_for(turn, 5)
 
-    assert started.is_set()
     await asyncio.wait_for(cancelled.wait(), 2)
     [report] = reports
     assert report.is_error
@@ -397,12 +403,15 @@ async def test_a_handlers_error_of_a_class_of_its_own_keeps_its_name() -> None:
     await kit.close()
 
 
-async def test_a_call_past_its_bound_is_cancelled_on_the_owner_while_its_turn_goes_on() -> None:
-    cancelled = asyncio.Event()
+async def test_a_call_past_its_bound_is_cancelled_on_the_owner_while_its_turn_goes_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started, cancelled = asyncio.Event(), asyncio.Event()
     committed: list[str] = []
     seen_during_turn: list[bool] = []
 
     async def slow(arguments: dict[str, Any]) -> str:
+        started.set()
         try:
             await asyncio.sleep(5)
         except asyncio.CancelledError:
@@ -423,7 +432,7 @@ async def test_a_call_past_its_bound_is_cancelled_on_the_owner_while_its_turn_go
         _call("probe", {}),
         _call("later", {}, call_id="c2"),
         "done",
-        tool_timeout_seconds=0.2,
+        tool_timeout_seconds=CUT,
     )
     owner = object()
     kit = await _kit(agent, attach=("agent",))
@@ -433,8 +442,12 @@ async def test_a_call_past_its_bound_is_cancelled_on_the_owner_while_its_turn_go
     kit._owner_tools.of("agent").register(
         orchestration_tool(later, after, waits=True), room_id="r1", owner=owner
     )
+    bounds = opened_with_cut(monkeypatch)
 
-    await _say(kit, "go")
+    turn = asyncio.ensure_future(_say(kit, "go"))
+    await asyncio.wait_for(started.wait(), 2)
+    expire(bounds)
+    await asyncio.wait_for(turn, 5)
 
     # Withdrawn at its bound, while the turn's next round ran: the handler
     # never committed what it was doing.

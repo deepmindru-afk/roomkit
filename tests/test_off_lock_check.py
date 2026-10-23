@@ -59,38 +59,53 @@ class TestOrderAndOverlap:
     async def test_checks_overlap_and_commits_keep_arrival_order(self) -> None:
         kit = RoomKit()
         peer = await _room(kit)
-        # A's check is slower than B's: B finishes first, still commits second.
-        kit.hook(HookTrigger.BEFORE_BROADCAST, name="pii", needs_lock=False)(
-            _scan({"A": 0.4, "B": 0.3})
-        )
+        checks: list[str] = []
+        b_checked = asyncio.Event()
 
-        loop = asyncio.get_running_loop()
-        start = loop.time()
+        async def scan(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            # A's check ends only once B's ran: it can only if the two overlap.
+            body = _body(event)
+            checks.append(f"+{body}")
+            if body == "A":
+                await asyncio.wait_for(b_checked.wait(), 1.0)
+            else:
+                b_checked.set()
+            checks.append(f"-{body}")
+            return HookResult.allow()
+
+        kit.hook(HookTrigger.BEFORE_BROADCAST, name="pii", needs_lock=False)(scan)
+
         first = asyncio.create_task(kit.process_inbound(_msg("A"), room_id="r1"))
         await asyncio.sleep(0.01)
         second = asyncio.create_task(kit.process_inbound(_msg("B"), room_id="r1"))
         a, b = await asyncio.gather(first, second)
-        elapsed = loop.time() - start
 
+        assert checks == ["+A", "+B", "-B", "-A"]  # B finishes first, still commits second
         assert a.event is not None and b.event is not None
         assert a.event.index < b.event.index
         assert [_body(e) for e in peer.delivered] == ["A", "B"]
-        # Serialized under the lock this is 0.7s; overlapped it is A's 0.4s.
-        assert elapsed < 0.6
         assert kit._admission.pending("r1") == 0
 
     async def test_locked_hook_still_serializes(self) -> None:
         kit = RoomKit()
         await _room(kit)
-        kit.hook(HookTrigger.BEFORE_BROADCAST, name="pii")(_scan({"A": 0.2, "B": 0.2}))
+        checks: list[str] = []
 
-        loop = asyncio.get_running_loop()
-        start = loop.time()
+        async def scan(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            # Each check leaves time for the other's to start, were it not locked.
+            checks.append(f"+{_body(event)}")
+            await asyncio.sleep(0.02)
+            checks.append(f"-{_body(event)}")
+            return HookResult.allow()
+
+        kit.hook(HookTrigger.BEFORE_BROADCAST, name="pii")(scan)
+
         await asyncio.gather(
             kit.process_inbound(_msg("A"), room_id="r1"),
             kit.process_inbound(_msg("B"), room_id="r1"),
         )
-        assert loop.time() - start >= 0.39
+
+        assert checks == ["+A", "-A", "+B", "-B"]
 
     async def test_blocked_first_message_releases_the_next(self) -> None:
         kit = RoomKit()

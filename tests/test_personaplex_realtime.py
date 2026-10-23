@@ -102,6 +102,12 @@ class _MockOpusReader:
         return np.array([], dtype=np.float32)
 
 
+async def _until(predicate: Any) -> None:
+    async with asyncio.timeout(5):
+        while not predicate():
+            await asyncio.sleep(0.005)
+
+
 # -- Fixtures --
 
 
@@ -133,7 +139,7 @@ def provider(_patch_deps: None):
 
     return PersonaPlexRealtimeProvider(
         server_url="wss://test:8998/api/chat",
-        response_end_timeout=0.15,
+        response_end_timeout=0.03,
     )
 
 
@@ -197,8 +203,7 @@ async def test_receive_audio_fires_callback(provider, mock_ws: MockWebSocket) ->
     mock_ws.push(bytes([_MSG_AUDIO]) + pcm_float.tobytes())
     mock_ws.push_close()
 
-    # Let receive loop process
-    await asyncio.sleep(0.05)
+    await _until(lambda: audio_received)  # the receive loop read it
 
     assert len(audio_received) == 1
     # Should be int16 PCM bytes
@@ -223,7 +228,7 @@ async def test_receive_text_fires_transcription(provider, mock_ws: MockWebSocket
     mock_ws.push(bytes([_MSG_TEXT]) + b" world")
     mock_ws.push_close()
 
-    await asyncio.sleep(0.05)
+    await _until(lambda: len(transcriptions) >= 2)
 
     # Should have partial transcriptions
     assert len(transcriptions) >= 2
@@ -247,7 +252,7 @@ async def test_receive_error_fires_callback(provider, mock_ws: MockWebSocket) ->
     mock_ws.push(bytes([_MSG_ERROR]) + b"something broke")
     mock_ws.push_close()
 
-    await asyncio.sleep(0.05)
+    await _until(lambda: errors)
 
     assert len(errors) == 1
     assert errors[0] == ("server_error", "something broke")
@@ -269,12 +274,10 @@ async def test_response_start_end(provider, mock_ws: MockWebSocket) -> None:
     mock_ws.push(bytes([_MSG_AUDIO]) + pcm.tobytes())
     mock_ws.push_close()
 
-    await asyncio.sleep(0.05)
-    assert "start" in events
-
-    # Wait for response_end timeout (0.15s configured in fixture)
-    await asyncio.sleep(0.2)
-    assert "end" in events
+    await _until(lambda: "start" in events)
+    # Then the response_end timeout (0.03 s in the fixture) of silence.
+    await _until(lambda: "end" in events)
+    assert events == ["start", "end"]
     await provider.disconnect(session)
 
 
@@ -315,7 +318,7 @@ async def test_disconnect_flushes_transcription(provider, mock_ws: MockWebSocket
     await provider.connect(session)
 
     mock_ws.push(bytes([_MSG_TEXT]) + b"partial")
-    await asyncio.sleep(0.05)
+    await _until(lambda: transcriptions)  # the partial, read
     mock_ws.push_close()
     await asyncio.sleep(0.05)
 

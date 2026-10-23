@@ -271,6 +271,7 @@ def test_a_copy_over_adjacent_text_parts_is_replaced() -> None:
     [" ", ". ", "\u200b", "*-_/", "\u0332", "\u0345"],
     ids=["spaces", "periods", "invisibles", "markup", "combining marks", "combining iota"],
 )
+@pytest.mark.wallclock  # a budget in seconds on a long run: the guard against a rescan
 def test_a_long_run_after_a_partial_copy_is_scanned_once(tail: str) -> None:
     text = f"{INSTRUCTION_MARKER[:60]}{tail * 200_000}X"
 

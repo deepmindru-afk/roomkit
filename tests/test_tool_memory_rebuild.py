@@ -60,7 +60,6 @@ async def _say(kit: RoomKit, body: str) -> None:
     await kit.process_inbound(
         InboundMessage(channel_id="sms1", sender_id="u", content=TextContent(body=body))
     )
-    await asyncio.sleep(0.05)
 
 
 @pytest.mark.parametrize("streaming", [True, False])
@@ -144,11 +143,11 @@ async def test_a_call_id_repeated_across_turns_rebuilds_both_calls(streaming: bo
 
 @pytest.mark.parametrize("streaming", [True, False])
 async def test_two_turns_at_once_reusing_a_call_id_rebuild_each_call(streaming: bool) -> None:
-    """The ends of two concurrent turns interleave: each pairs with its own
-    turn's start, read by the response's correlation id."""
+    """Two turns asked at once reusing a call id: each end pairs with its own
+    turn's start, read by the response's correlation id. The room runs the
+    two turns one after the other, its rows start, end, start, end."""
 
     async def slow_lookup(name: str, arguments: dict[str, Any]) -> str:
-        await asyncio.sleep(0.2)
         return f"result:{arguments.get('q')}"
 
     provider = MockAIProvider(
@@ -177,7 +176,6 @@ async def test_two_turns_at_once_reusing_a_call_id_rebuild_each_call(streaming: 
             InboundMessage(channel_id="sms1", sender_id="u2", content=TextContent(body="rome"))
         ),
     )
-    await asyncio.sleep(0.3)
 
     calls = await kit._build_tool_usage_loader("ai1")("r1")
 

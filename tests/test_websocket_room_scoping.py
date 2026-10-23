@@ -201,12 +201,12 @@ class TestFanOutIsBounded:
         ws.register_connection("zombie", hang, room_id="room-a")
         ws.register_connection("alice", fast, room_id="room-a")
 
-        started = asyncio.get_running_loop().time()
-        await ws.deliver(_event("room-a", "hi"), _binding("room-a"), _context("room-a"))
-        elapsed = asyncio.get_running_loop().time() - started
+        # Back once the hung socket's send_timeout ran out, never at its pace.
+        await asyncio.wait_for(
+            ws.deliver(_event("room-a", "hi"), _binding("room-a"), _context("room-a")), 1.0
+        )
 
         assert delivered == ["alice"]
-        assert elapsed < 1.0, f"the hung socket paced the room: {elapsed:.2f}s"
 
     async def test_a_hanging_connection_is_eventually_evicted(self) -> None:
         """A half-open socket never raises, so only a timeout can retire it."""
@@ -240,17 +240,24 @@ class TestFanOutIsBounded:
         assert ws._error_counts.get("flaky", 0) == 0
 
     async def test_slow_clients_do_not_add_up(self) -> None:
-        """Concurrent, not sequential: five slow sockets cost one slow socket."""
+        """Concurrent, not sequential: each socket's send is under way while the
+        others start, so none waits for another to finish."""
         ws = WebSocketChannel("ws", send_timeout=5.0)
+        started: list[str] = []
+        delivered: list[str] = []
+        all_started = asyncio.Event()
 
         async def slow(conn_id: str, event: RoomEvent) -> None:
-            await asyncio.sleep(0.1)
+            started.append(conn_id)
+            if len(started) == 5:
+                all_started.set()
+            # A sequential fan-out never starts the others while this one waits.
+            await asyncio.wait_for(all_started.wait(), 1.0)
+            delivered.append(conn_id)
 
         for i in range(5):
             ws.register_connection(f"c{i}", slow, room_id="room-a")
 
-        started = asyncio.get_running_loop().time()
         await ws.deliver(_event("room-a", "hi"), _binding("room-a"), _context("room-a"))
-        elapsed = asyncio.get_running_loop().time() - started
 
-        assert elapsed < 0.3, f"fan-out was sequential: {elapsed:.2f}s"
+        assert sorted(delivered) == [f"c{i}" for i in range(5)], "fan-out was sequential"
