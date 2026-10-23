@@ -6,43 +6,56 @@
     uv run python scripts/test_redundancy.py diff /tmp/rk/before /tmp/rk/after
 
 ``run`` runs the suite on one worker per core into a directory: a coverage
-context per test (``.coverage``) and a junit report (``junit.xml``). Arguments
-after ``--`` go to pytest. It measures every roomkit module, including the ones
-pyproject leaves out of coverage because CI lacks their native dependencies:
-with them left out, a test of such a module reads as reaching no library line,
-and deleting it drops no line the gate can see.
+context per test (``.coverage``), a junit report (``junit.xml``) and the digest
+of every library and test file (``manifest.json``). Arguments after ``--`` go
+to pytest. It measures every roomkit module, including the ones pyproject
+leaves out of coverage because CI lacks their native dependencies: with them
+left out, a test of such a module reads as reaching no library line, and
+deleting it drops no line the gate can see.
 
 ``candidates`` prints, per area, the test functions whose covered library lines
-are identical, the tests that ran no library line (skipped ones excluded), and
-the tests of 0.1 s or more, each with the lines no other test function covers.
-Identical lines are where to look, not a verdict: two tests reaching the same
-lines often check different things (a minimum and a maximum, two clock cases).
+are identical (a parametrized function counted as the union of its cases), the
+tests that ran no library line (skipped ones excluded), and the tests of 0.1 s
+or more, each with the lines no other test function covers. Identical lines are
+where to look, not a verdict: two tests reaching the same lines often check
+different things (a minimum and a maximum, two clock cases).
 
 ``files`` prints an area's test files, to time the area alone.
 
 ``diff`` prints the library lines the first run covered and the second did not,
-in two lists: the lines a test that reached them took away with it (gone from
-the second run), and the lines tests that still ran did not reach this time (a
-race decides some paths: a run-to-run difference, not a pruning's doing). It
-exits 1 when the first list is not empty, so a pruning batch names each line
-it dropped. A line the first run reached outside any test (at import) counts
-as taken away: only a test can have imported its module.
-Both runs must measure the same library source: a moved line reads as dropped.
+in two lists, and exits 1 when the first is not empty, so a pruning batch names
+each line it dropped:
 
-An area is a set of roomkit packages and the test directories that mirror them.
+- taken away: a test that reached the line is gone, failed, or sits in a file
+  that changed (a test rewritten in place may reach less under the same name);
+  a line reached only outside any test (at import) counts too, and every line
+  does when a helper or a conftest under ``tests/`` changed;
+- missed this time: every test that reached it passed again from the same
+  file, so a race decided the path (a run-to-run difference, not a pruning's
+  doing).
+
+It exits 2 when the runs do not compare: a manifest is missing, or the library
+changed and with it the line numbers. The gate sees lines, not branches, and a
+skipped test reaches nothing: deleting one is judged by reading it.
+
+An area is a set of roomkit modules and the test directories that mirror them.
 A file at the root of ``tests/`` belongs to the area most of its ``roomkit``
-import statements name; ``core`` is every package no other area claims.
+imports name, ``roomkit`` itself and ``roomkit.models`` aside (the vocabulary
+every area shares); ``core`` is every module no other area claims.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import re
 import subprocess  # nosec B404
 import sys
 import xml.etree.ElementTree as ET  # nosec B405 - the junit file is the run's own
 from collections import Counter, defaultdict
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import NamedTuple
 
@@ -50,24 +63,40 @@ from coverage import CoverageData
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# area -> (roomkit packages, test directories); core takes everything else.
+# area -> (roomkit modules, test directories); core takes everything else.
 AREAS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "providers": (
         ("roomkit.providers",),
         ("tests/test_providers", "tests/providers", "tests/text_conformance"),
     ),
-    "voice": (("roomkit.voice",), ("tests/voice",)),
-    "conference": (("roomkit.conference", "roomkit.video"), ("tests/conference", "tests/video")),
+    "voice": (
+        ("roomkit.voice", "roomkit.channels.voice", "roomkit.channels.realtime_voice"),
+        ("tests/voice",),
+    ),
+    "conference": (
+        (
+            "roomkit.conference",
+            "roomkit.video",
+            "roomkit.channels.conference",
+            "roomkit.channels.video",
+            "roomkit.channels.av",
+            "roomkit.channels.realtime_av",
+        ),
+        ("tests/conference", "tests/video"),
+    ),
     "orchestration": (
         ("roomkit.orchestration", "roomkit.tasks"),
         ("tests/orchestration", "tests/tasks"),
     ),
 }
 CORE = "core"
+# Imported by every area: a vote for none of them (``roomkit`` itself too).
+SHARED = ("roomkit.models",)
 SLOW = 0.1
 COVERAGE = ".coverage"
 JUNIT = "junit.xml"
-IMPORT = re.compile(r"^\s*(?:from|import)\s+(roomkit(?:\.\w+)?)", re.MULTILINE)
+MANIFEST = "manifest.json"
+IMPORT = re.compile(r"^\s*(?:from|import)\s+(roomkit(?:\.\w+)*)", re.MULTILINE)
 PHASE = re.compile(r"\|(?:setup|run|teardown)$")
 
 Line = tuple[str, int]
@@ -95,7 +124,8 @@ def area_of(test_file: str, root: Path = REPO_ROOT) -> str:
         return CORE
     named: Counter[str] = Counter()
     for module in IMPORT.findall((root / test_file).read_text(encoding="utf-8")):
-        named[_area_of_module(module)] += 1
+        if module != "roomkit" and not _within(module, SHARED):
+            named[_area_of_module(module)] += 1
     ranked = named.most_common(2)
     if not ranked or (len(ranked) == 2 and ranked[0][1] == ranked[1][1]):
         return CORE
@@ -103,10 +133,14 @@ def area_of(test_file: str, root: Path = REPO_ROOT) -> str:
 
 
 def _area_of_module(module: str) -> str:
-    for area, (packages, _) in AREAS.items():
-        if module in packages:
+    for area, (modules, _) in AREAS.items():
+        if _within(module, modules):
             return area
     return CORE
+
+
+def _within(module: str, packages: tuple[str, ...]) -> bool:
+    return any(module == package or module.startswith(package + ".") for package in packages)
 
 
 def library_path(measured: str) -> str:
@@ -118,16 +152,23 @@ def library_path(measured: str) -> str:
 
 def read_coverage(path: Path) -> dict[str, set[Line]]:
     """Return the library lines each test reached, its phases merged."""
+    reached: dict[str, set[Line]] = defaultdict(set)
+    for line, tests in _tests_by_line(path):
+        for test_id in tests:
+            reached[test_id].add(line)
+    return reached
+
+
+def _tests_by_line(path: Path, files: set[str] | None = None) -> Iterator[tuple[Line, set[str]]]:
+    """Yield each covered line of a run with the tests that reached it (at import: none)."""
     data = CoverageData(basename=str(path))
     data.read()
-    reached: dict[str, set[Line]] = defaultdict(set)
     for measured in data.measured_files():
         source = library_path(measured)
+        if files is not None and source not in files:
+            continue
         for number, contexts in data.contexts_by_lineno(measured).items():
-            for context in contexts:
-                if context:
-                    reached[PHASE.sub("", context)].add((source, number))
-    return reached
+            yield (source, number), {PHASE.sub("", c) for c in contexts if c}
 
 
 def covered_lines(path: Path) -> set[Line]:
@@ -163,25 +204,29 @@ def _node_id(classname: str, name: str, root: Path) -> str:
     return f"{classname}::{name}"
 
 
-def exclusive_lines(reached: dict[str, set[Line]]) -> Counter[str]:
+def by_function(reached: dict[str, set[Line]]) -> dict[str, set[Line]]:
+    """Return the lines each test function reached, the union of its cases."""
+    functions: dict[str, set[Line]] = defaultdict(set)
+    for test_id, lines in reached.items():
+        functions[function_of(test_id)] |= lines
+    return functions
+
+
+def exclusive_lines(functions: dict[str, set[Line]]) -> Counter[str]:
     """Return, per test function, how many lines no other test function covers."""
-    functions: dict[Line, set[str]] = defaultdict(set)
-    for test_id, lines in reached.items():
+    owners: dict[Line, set[str]] = defaultdict(set)
+    for function, lines in functions.items():
         for line in lines:
-            functions[line].add(function_of(test_id))
-    alone: Counter[str] = Counter()
-    for owners in functions.values():
-        if len(owners) == 1:
-            alone[next(iter(owners))] += 1
-    return alone
+            owners[line].add(function)
+    return Counter(next(iter(names)) for names in owners.values() if len(names) == 1)
 
 
-def identical_groups(reached: dict[str, set[Line]]) -> list[list[str]]:
+def identical_groups(functions: dict[str, set[Line]]) -> list[list[str]]:
     """Return the groups of two or more test functions reaching the same lines."""
-    by_lines: dict[frozenset[Line], set[str]] = defaultdict(set)
-    for test_id, lines in reached.items():
-        by_lines[frozenset(lines)].add(function_of(test_id))
-    groups = [sorted(functions) for functions in by_lines.values() if len(functions) > 1]
+    by_lines: dict[frozenset[Line], list[str]] = defaultdict(list)
+    for function, lines in functions.items():
+        by_lines[frozenset(lines)].append(function)
+    groups = [sorted(names) for names in by_lines.values() if len(names) > 1]
     return sorted(groups, key=lambda group: (-len(group), group))
 
 
@@ -200,14 +245,13 @@ class Areas:
 
 
 def print_groups(
-    groups: list[list[str]], reached: dict[str, set[Line]], alone: Counter[str]
+    groups: list[list[str]], functions: dict[str, set[Line]], alone: Counter[str]
 ) -> None:
     """Print the groups of functions reaching identical lines."""
     extra = sum(len(group) - 1 for group in groups)
     print(f"\n-- identical lines: {len(groups)} groups, {extra} functions beyond the first")
-    lines = {function_of(test_id): len(covered) for test_id, covered in reached.items()}
     for group in groups:
-        print(f"   {lines[group[0]]} lines")
+        print(f"   {len(functions[group[0]])} lines")
         for function in group:
             print(f"     {function}  (alone {alone[function]})")
 
@@ -240,15 +284,33 @@ def run(directory: Path, pytest_args: list[str]) -> int:
         *pytest_args,
     ]
     env = {**os.environ, "COVERAGE_FILE": str(directory / COVERAGE)}
+    write_manifest(directory)
     return subprocess.run(command, cwd=REPO_ROOT, env=env, check=False).returncode  # nosec B603
+
+
+def write_manifest(directory: Path, root: Path = REPO_ROOT) -> None:
+    """Record the digest of every library and test file a run is made of."""
+    sources = [*(root / "src" / "roomkit").rglob("*.py"), *(root / "tests").rglob("*.py")]
+    digests = {
+        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(sources)
+    }
+    (directory / MANIFEST).write_text(json.dumps(digests, indent=0), encoding="utf-8")
+
+
+def read_manifest(directory: Path) -> dict[str, str]:
+    """Return a run's file digests, empty when the run wrote none."""
+    path = directory / MANIFEST
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
 
 
 def candidates(directory: Path, areas: list[str]) -> None:
     """Print the totals and the three lists of candidates of each area asked for."""
     reached = read_coverage(directory / COVERAGE)
     outcomes = read_junit(directory / JUNIT)
-    alone = exclusive_lines(reached)
-    groups = identical_groups(reached)
+    functions = by_function(reached)
+    alone = exclusive_lines(functions)
+    groups = identical_groups(functions)
     where = Areas()
     for area in areas:
         ran = {t: o for t, o in outcomes.items() if not o.skipped and where.of(t) == area}
@@ -256,7 +318,7 @@ def candidates(directory: Path, areas: list[str]) -> None:
         failed = sum(o.failed for o in ran.values())
         if failed:
             print(f"   {failed} failed: the lines they reached are not the suite's")
-        print_groups([g for g in groups if any(where.of(f) == area for f in g)], reached, alone)
+        print_groups([g for g in groups if any(where.of(f) == area for f in g)], functions, alone)
         print_nothing(ran, reached)
         print_slow(ran, alone)
         print()
@@ -268,38 +330,41 @@ def files(area: str, root: Path = REPO_ROOT) -> list[str]:
     return sorted(test_file for test_file in found if area_of(test_file, root) == area)
 
 
-def diff(before: Path, after: Path) -> int:
-    """Print the lines ``after`` no longer covers, by cause; 1 if a test took one away."""
+def diff(before: Path, after: Path, root: Path = REPO_ROOT) -> int:
+    """Print the lines ``after`` no longer covers, by cause; 1 if a pruning took one away."""
+    was, now = read_manifest(before), read_manifest(after)
+    if not was or not now or _library(was) != _library(now):
+        print("-- the runs do not compare: a manifest is missing or the library changed")
+        return 2
     dropped = covered_lines(before / COVERAGE) - covered_lines(after / COVERAGE)
-    owners = reached_by(before / COVERAGE, dropped)
-    still_run = tests_of(after / COVERAGE)
-    lost = {line for line in dropped if not owners[line] or not owners[line] <= still_run}
-    print_lines("taken away with a test that is gone", lost)
-    print_lines("not reached this time by tests that still ran", dropped - lost)
+    owners = dict(_tests_by_line(before / COVERAGE, {source for source, _ in dropped}))
+    unchanged = unchanged_tests(was, now, read_junit(after / JUNIT, root))
+    lost = {line for line in dropped if not owners[line] or not owners[line] <= unchanged}
+    print_lines("taken away with a test that is gone, failed or changed", lost)
+    print_lines("missed this time by tests that passed again unchanged", dropped - lost)
     return 1 if lost else 0
 
 
-def reached_by(path: Path, lines: set[Line]) -> dict[Line, set[str]]:
-    """Return the tests of a run that reached each of ``lines``."""
-    data = CoverageData(basename=str(path))
-    data.read()
-    files = {source for source, _ in lines}
-    owners: dict[Line, set[str]] = {line: set() for line in lines}
-    for measured in data.measured_files():
-        source = library_path(measured)
-        if source not in files:
-            continue
-        for number, contexts in data.contexts_by_lineno(measured).items():
-            if (source, number) in owners:
-                owners[source, number] = {PHASE.sub("", c) for c in contexts if c}
-    return owners
+def _library(manifest: dict[str, str]) -> dict[str, str]:
+    return {path: digest for path, digest in manifest.items() if path.startswith("src/")}
 
 
-def tests_of(path: Path) -> set[str]:
-    """Return the tests that reached any library line in a run."""
-    data = CoverageData(basename=str(path))
-    data.read()
-    return {PHASE.sub("", context) for context in data.measured_contexts() if context}
+def unchanged_tests(
+    was: dict[str, str], now: dict[str, str], outcomes: dict[str, Outcome]
+) -> set[str]:
+    """Return the tests that passed in the second run from a file both runs share."""
+    changed = {
+        path
+        for path in was.keys() | now.keys()
+        if path.startswith("tests/") and was.get(path) != now.get(path)
+    }
+    if any(not Path(path).name.startswith("test_") for path in changed):
+        return set()  # a helper or a conftest changed: any test may reach less
+    return {
+        test_id
+        for test_id, outcome in outcomes.items()
+        if not (outcome.failed or outcome.skipped) and test_id.split("::", 1)[0] not in changed
+    }
 
 
 def print_lines(title: str, lines: set[Line]) -> None:
@@ -322,6 +387,14 @@ def _ranges(numbers: list[int]) -> str:
     return ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in spans)
 
 
+COMMANDS: dict[str, Callable[[argparse.Namespace], int | None]] = {
+    "run": lambda args: run(args.directory, [a for a in args.pytest_args if a != "--"]),
+    "candidates": lambda args: candidates(args.directory, args.area or [*AREAS, CORE]),
+    "files": lambda args: print("\n".join(files(args.area))),
+    "diff": lambda args: diff(args.before, args.after),
+}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -337,15 +410,7 @@ def main(argv: list[str] | None = None) -> int:
     gate.add_argument("before", type=Path)
     gate.add_argument("after", type=Path)
     args = parser.parse_args(argv)
-    if args.command == "run":
-        return run(args.directory, [a for a in args.pytest_args if a != "--"])
-    if args.command == "files":
-        print("\n".join(files(args.area)))
-        return 0
-    if args.command == "diff":
-        return diff(args.before, args.after)
-    candidates(args.directory, args.area or [*AREAS, CORE])
-    return 0
+    return COMMANDS[args.command](args) or 0
 
 
 if __name__ == "__main__":
