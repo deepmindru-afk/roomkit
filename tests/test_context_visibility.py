@@ -524,10 +524,8 @@ class TestWithheldContent:
             room=Room(id="r1"), bindings=[_binding("reader")], recent_events=list(events)
         )
 
-    def test_a_delete_in_the_history_withholds_its_target_and_its_edits(self) -> None:
-        """A history read before the target was marked (or past an edit whose
-        target it no longer holds) still withholds what the delete removed."""
-        target = _event("ws1", MARKER)
+    def test_a_deleted_target_is_withheld_with_its_edits(self) -> None:
+        target = _event("ws1", MARKER).model_copy(update={"metadata": {"deleted": True}})
         edit = _event("ws1", "").model_copy(
             update={
                 "type": EventType.EDIT,
@@ -550,12 +548,37 @@ class TestWithheldContent:
         )
         assert held[2].content == delete.content
 
-    def test_a_refused_delete_withholds_nothing(self) -> None:
+    @pytest.mark.parametrize("status", [EventStatus.BLOCKED, EventStatus.DELIVERED])
+    def test_a_delete_row_alone_withholds_nothing(self, status: EventStatus) -> None:
+        """Only the mark an accepted delete's commit writes on its target
+        withholds it: a row refused, or one stored without step 8a (a host's
+        ``commit_event``, a child room's trace), checked no authority."""
         target = _event("ws1", MARKER)
-        delete = _event("ws1", "", status=EventStatus.BLOCKED).model_copy(
+        delete = _event("ws1", "", status=status).model_copy(
             update={"type": EventType.DELETE, "content": DeleteContent(target_event_id=target.id)}
         )
 
         held = visible_events(self._context(target, delete), "reader")
 
-        assert [e.content for e in held] == [target.content]
+        assert held[0].content == target.content
+
+    async def test_a_delete_row_committed_outside_the_pipeline_hides_nothing(self) -> None:
+        kit, _provider = await _room()
+        said = await _say(kit, "ws1", "u1", MARKER)
+        row = RoomEvent(
+            room_id="r1",
+            type=EventType.DELETE,
+            source=EventSource(channel_id="ws2", channel_type=ChannelType.WEBSOCKET),
+            content=DeleteContent(target_event_id=said.id),
+            status=EventStatus.DELIVERED,
+        )
+        await kit.commit_event("r1", row)
+
+        # A history holding the row, as a store whose conversation read serves
+        # every row would hand it.
+        context = await kit._build_context("r1")
+        context = context.model_copy(update={"recent_events": [*context.recent_events, row]})
+        history = visible_events(context, "ai1")
+
+        assert [e.content for e in history if e.id == said.id] == [TextContent(body=MARKER)]
+        await kit.close()

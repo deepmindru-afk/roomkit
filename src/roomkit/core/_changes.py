@@ -225,20 +225,15 @@ def withheld(events: list[RoomEvent]) -> list[RoomEvent]:
     8, §10.3): a soft-deleted event, and an edit of one, which holds a
     version of its text, stay with their content withheld.
 
-    Deleted is what the event's mark says, or what an accepted DELETE among
-    *events* names: a history read before the mark was written, or holding
-    an edit whose target it does not hold, withholds it alike. The event
-    keeps its id, index, type, source with the provider's message id,
-    thread, metadata and ``channel_data``; its stored record keeps its
-    content, and so do the histories hooks read.
+    Deleted is what the event's mark says, ``metadata.deleted``, which only
+    an accepted delete's commit writes on its target (or the host, which
+    owns the record). A DELETE row proves nothing by itself: one stored
+    without step 8a (a host's ``commit_event``, a child room's trace) was
+    never checked. The event keeps its id, index, type, source with the
+    provider's message id, thread, metadata and ``channel_data``; its
+    stored record keeps its content, and so do the histories hooks read.
     """
     deleted = {event.id for event in events if is_deleted(event)}
-    deleted.update(
-        change.target_event_id
-        for event in events
-        if event.status == EventStatus.DELIVERED
-        and isinstance(change := change_of(event), DeleteContent)
-    )
     if not deleted:
         return events
     return [

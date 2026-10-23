@@ -52,7 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for a discussion's dispatch turn, a rebuilt tool memory, an answer's cut
   record and the media an application keeps beside a message
   (`attached_media`). The stored record keeps its content, and so do the
-  contexts hooks receive.
+  contexts hooks receive. Deleted is what the target's `metadata.deleted`
+  says, which an accepted delete's commit writes: a DELETE row alone (one a
+  host's `commit_event()` stored, or a child room's trace) withholds nothing.
 
 - An edit or a delete has its target read and validated again once a hook
   ran under the room lock (RFC §10.1 step 9a, RMK-930). A delete committed
