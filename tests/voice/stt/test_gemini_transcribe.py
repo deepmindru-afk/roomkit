@@ -282,13 +282,13 @@ class TestStream:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A long pause in someone's speech is not the end of their input."""
-        monkeypatch.setattr(gemini_transcribe, "_QUIET_AFTER_INPUT_S", 0.05)
+        monkeypatch.setattr(gemini_transcribe, "_QUIET_AFTER_INPUT_S", 0.01)
         session = _FakeSession([])
         provider, _ = _provider(session)
 
         async def slow_speaker() -> AsyncIterator[AudioChunk]:
             yield AudioChunk(data=b"\x01\x02", sample_rate=16000)
-            await asyncio.sleep(0.2)  # four times the quiet bound
+            await asyncio.sleep(0.04)  # four times the quiet bound
             yield AudioChunk(data=b"\x03\x04", sample_rate=16000)
 
         await asyncio.wait_for(_collect(provider.transcribe_stream(slow_speaker())), timeout=2)

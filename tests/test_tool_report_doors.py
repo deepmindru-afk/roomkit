@@ -174,11 +174,9 @@ async def test_a_reasoning_backend_s_call_is_reported_under_its_model_s_id(case:
         kit.hook(HookTrigger.BEFORE_TOOL_USE, name="gate")(before)
     session = await channel.start_session("r", "u", "ws")
     await provider.simulate_delegation(session, "d1", "integrator")
-    for _ in range(300):
-        if len(model.calls) > 1 and reports:
-            break
-        await asyncio.sleep(0.01)
-    await asyncio.sleep(0.05)
+    async with asyncio.timeout(5):  # the backend's answer comes after any report of its turn
+        while not (provider.delegation_outputs and reports):
+            await asyncio.sleep(0.01)
     await kit.close()
 
     assert [report.tool_call_id for report in reports] == ["d1:c1"]
@@ -211,10 +209,12 @@ async def _two_calls_text(streaming: bool) -> tuple[list[ToolCallEvent], list[di
 
 async def _two_calls_realtime() -> tuple[list[ToolCallEvent], list[dict[str, Any]]]:
     ran: list[dict[str, Any]] = []
+    second_refused = asyncio.Event()
 
     async def serves(name: str, arguments: dict[str, Any]) -> str:
         ran.append(dict(arguments))
-        await asyncio.sleep(0.2)
+        # In flight until the second call under its id has been refused.
+        await asyncio.wait_for(second_refused.wait(), 5)
         return f"fine {arguments['q']}"
 
     provider = MockRealtimeProvider()
@@ -234,6 +234,8 @@ async def _two_calls_realtime() -> tuple[list[ToolCallEvent], list[dict[str, Any
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
     async def audit(event: ToolCallEvent, context: Any) -> None:
         reports.append(event)
+        if event.refused:
+            second_refused.set()
 
     session = await channel.start_session("r", "u", "ws")
     await provider.simulate_tool_call(session, "c1", "lookup", {"q": "first"})

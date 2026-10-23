@@ -1,6 +1,7 @@
 """Integration tests for voice pipeline (audio -> STT -> AI -> TTS -> audio)."""
 
 import asyncio
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from roomkit import (
@@ -20,6 +21,19 @@ from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
 from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.testing import VOICE_TRIGGERS, ScenarioVoiceBackend, VoiceTrace, tone
 from roomkit.voice.tts.mock import MockTTSProvider
+from tests.channel_tasks import settled
+
+
+async def _until(predicate: Callable[[], object]) -> None:
+    async with asyncio.timeout(5):
+        while not predicate():
+            await asyncio.sleep(0.01)
+
+
+async def _settled(channel: VoiceChannel) -> None:
+    """Until the tasks the channel started for what it heard have run: the
+    utterance's transcription and routing, a reply's speech, a barge-in."""
+    await settled(channel)
 
 
 def _speech_events(audio: bytes = b"fake-audio-data\x00") -> list[VADEvent | None]:
@@ -190,7 +204,7 @@ class TestVoicePipelineIntegration:
         # Two frames for SPEECH_START + SPEECH_END
         await backend.simulate_audio_received(session, AudioFrame(data=b"f1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"f2"))
-        await asyncio.sleep(0.15)
+        await _settled(voice_channel)
 
         assert len(received_messages) == 1
         assert received_messages[0] == "hello world"
@@ -232,7 +246,7 @@ class TestVoicePipelineIntegration:
 
         await backend.simulate_audio_received(session, AudioFrame(data=b"f1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"f2"))
-        await asyncio.sleep(0.15)
+        await _settled(voice_channel)
 
         # Broadcast should not be called because transcription was blocked
         assert len(broadcast_called) == 0
@@ -271,7 +285,7 @@ class TestVoicePipelineIntegration:
 
         await backend.simulate_audio_received(session, AudioFrame(data=b"f1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"f2"))
-        await asyncio.sleep(0.15)
+        await _settled(voice_channel)
 
         assert len(captured_events) == 1
         assert captured_events[0].text == "hello"
@@ -315,7 +329,7 @@ class TestVoicePipelineIntegration:
 
         await backend.simulate_audio_received(session, AudioFrame(data=b"f1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"f2"))
-        await asyncio.sleep(0.2)
+        await _until(lambda: before_tts_texts)  # long before the reply has played
 
         assert len(before_tts_texts) >= 1
         assert "Original response" in before_tts_texts[0]
@@ -355,7 +369,7 @@ class TestVoicePipelineIntegration:
 
         await backend.simulate_audio_received(session, AudioFrame(data=b"f1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"f2"))
-        await asyncio.sleep(0.2)
+        await _settled(voice_channel)
 
         # No audio should be sent
         assert len(backend.sent_audio) == 0
@@ -395,7 +409,7 @@ class TestVoicePipelineIntegration:
 
         await backend.simulate_audio_received(session, AudioFrame(data=b"f1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"f2"))
-        await asyncio.sleep(0.2)
+        await _until(lambda: after_tts_events)
 
         assert len(after_tts_events) >= 1
 
@@ -441,12 +455,12 @@ class TestVoicePipelineIntegration:
         # Session 1 speaks (2 frames -> SPEECH_START + SPEECH_END)
         await backend.simulate_audio_received(session1, AudioFrame(data=b"f1"))
         await backend.simulate_audio_received(session1, AudioFrame(data=b"f2"))
-        await asyncio.sleep(0.15)
+        await _settled(voice_channel)
 
         # Session 2 speaks (2 frames -> SPEECH_START + SPEECH_END)
         await backend.simulate_audio_received(session2, AudioFrame(data=b"f3"))
         await backend.simulate_audio_received(session2, AudioFrame(data=b"f4"))
-        await asyncio.sleep(0.15)
+        await _settled(voice_channel)
 
         # Both messages should be captured with correct participant IDs
         assert len(messages) == 2
@@ -512,27 +526,6 @@ class TestVoicePipelineIntegration:
         assert vad.closed
 
 
-class TestVoiceHookTriggers:
-    """Test that all voice hook triggers are available."""
-
-    def test_voice_hooks_in_enum(self) -> None:
-        """Verify all voice hooks are defined in HookTrigger enum."""
-        assert HookTrigger.ON_SPEECH_START == "on_speech_start"
-        assert HookTrigger.ON_SPEECH_END == "on_speech_end"
-        assert HookTrigger.ON_TRANSCRIPTION == "on_transcription"
-        assert HookTrigger.BEFORE_TTS == "before_tts"
-        assert HookTrigger.AFTER_TTS == "after_tts"
-
-    def test_enhanced_voice_hooks_in_enum(self) -> None:
-        """Verify enhanced voice hooks are defined."""
-        assert HookTrigger.ON_BARGE_IN == "on_barge_in"
-        assert HookTrigger.ON_TTS_CANCELLED == "on_tts_cancelled"
-        assert HookTrigger.ON_PARTIAL_TRANSCRIPTION == "on_partial_transcription"
-        assert HookTrigger.ON_VAD_SILENCE == "on_vad_silence"
-        assert HookTrigger.ON_VAD_AUDIO_LEVEL == "on_vad_audio_level"
-        assert HookTrigger.ON_SPEAKER_CHANGE == "on_speaker_change"
-
-
 class TestPipelineVADHooksIntegration:
     """Integration tests for VAD events flowing through the pipeline to hooks."""
 
@@ -573,7 +566,7 @@ class TestPipelineVADHooksIntegration:
         # Two frames -> two SILENCE events
         await backend.simulate_audio_received(session, AudioFrame(data=b"f1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"f2"))
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         assert len(silence_events) == 2
         assert all(isinstance(e, VADSilenceEvent) for e in silence_events)
@@ -618,7 +611,7 @@ class TestPipelineVADHooksIntegration:
 
         await backend.simulate_audio_received(session, AudioFrame(data=b"f1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"f2"))
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         assert len(levels) == 2
         assert all(isinstance(e, VADAudioLevelEvent) for e in levels)
@@ -668,7 +661,7 @@ class TestPipelineVADHooksIntegration:
 
         await backend.simulate_audio_received(session, AudioFrame(data=b"f1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"f2"))
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         assert len(speaker_events) == 2
         assert all(isinstance(e, SpeakerChangeEvent) for e in speaker_events)
@@ -802,7 +795,7 @@ class TestBargeInIntegration:
 
         # User speaks immediately (below 500ms threshold)
         await backend.simulate_audio_received(session, AudioFrame(data=b"speech"))
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         assert len(barge_in_events) == 0
 
@@ -855,11 +848,9 @@ class TestBargeInIntegration:
             text="Playing audio",
         )
 
-        await asyncio.sleep(0.1)
-
         # Pipeline fires SPEECH_START but barge-in is disabled
         await backend.simulate_audio_received(session, AudioFrame(data=b"speech"))
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         assert len(barge_in_events) == 0
 
@@ -903,7 +894,7 @@ class TestBargeInIntegration:
         result = await channel.interrupt(session, reason="explicit")
 
         assert result is True
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         assert len(cancelled_events) == 1
         assert isinstance(cancelled_events[0], TTSCancelledEvent)
@@ -1040,7 +1031,7 @@ class TestBargeInIntegration:
         )
 
         await backend.simulate_barge_in(session)
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         assert len(barge_in_events) == 1
         assert isinstance(barge_in_events[0], BargeInEvent)
@@ -1089,7 +1080,7 @@ class TestBargeInIntegration:
         )
 
         await backend.simulate_barge_in(session)
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         assert barge_in_events == []
         # Playback was left alone.

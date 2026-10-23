@@ -64,6 +64,23 @@ class _TurnsSTT(STTProvider):
                 yield TranscriptionResult(text=self._finals.pop(0), is_final=True)
 
 
+class _Clock:
+    """``time`` as the voice STT module reads it, with time that can pass at once."""
+
+    def __init__(self) -> None:
+        self.offset = 0.0
+
+    def monotonic(self) -> float:
+        return time.monotonic() + self.offset
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+
+def _audio_seconds(stt: _TurnsSTT) -> float:
+    return sum(len(c.data) for c in stt.chunks) / (2 * 16000)
+
+
 async def _eventually(predicate: Callable[[], bool], timeout: float = 3.0) -> None:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -84,12 +101,13 @@ class _Room:
         self.kit = RoomKit(stt=stt, voice=self.backend)
         self.kit.register_channel(self.channel)
         self.transcripts: list[str] = []
-        self.slow: dict[str, float] = {}
+        self.held: dict[str, asyncio.Event] = {}
 
         @self.kit.hook(HookTrigger.ON_TRANSCRIPTION)
         async def on_transcription(event: Any, ctx: Any) -> HookResult:
             self.transcripts.append(event.text)
-            await asyncio.sleep(self.slow.get(event.text, 0))
+            if (hold := self.held.get(event.text)) is not None:
+                await asyncio.wait_for(hold.wait(), 3.0)
             return HookResult.allow()
 
     async def start(self) -> None:
@@ -163,12 +181,15 @@ class TestVoiceChannelKeepsTheStream:
     async def test_finals_are_routed_in_order_even_when_a_hook_is_slow(self) -> None:
         stt = _TurnsSTT(["First.", "Second."])
         room = _Room(stt)
-        room.slow = {"First.": 0.4}  # the second final arrives while the first is in its hook
+        first = room.held["First."] = asyncio.Event()
         await room.start()
 
         await room.speak()
         await _eventually(lambda: len(room.transcripts) == 1)
         await room.speak()
+        # The second final arrives while the first is still in its hook.
+        await _eventually(lambda: not stt._finals)
+        first.set()
         messages = await room.said(2)
         await room.channel.close()
 
@@ -179,24 +200,27 @@ class TestVoiceChannelKeepsTheStream:
     ) -> None:
         # A muted mic during playback sends nothing; the model's turn
         # detection runs on audio time, so the pause is sent as silence.
-        monkeypatch.setattr("roomkit.channels.voice._KEPT_STREAM_PACE_S", 0.1)
+        # The pause passes on the stream's clock at once, checked every 10 ms.
+        clock = _Clock()
+        monkeypatch.setattr("roomkit.channels._voice_stt.time", clock)
+        monkeypatch.setattr("roomkit.channels.voice._KEPT_STREAM_PACE_S", 0.01)
         stt = _TurnsSTT(["First.", "Second."])
         room = _Room(stt)
         await room.start()
 
-        opened = time.monotonic()
+        opened = clock.monotonic()
         await room.speak()
         await _eventually(lambda: len(room.transcripts) == 1)
-        await asyncio.sleep(0.6)
+        clock.offset += 0.6
+        await _eventually(lambda: _audio_seconds(stt) >= 0.6)
         await room.speak()
         await _eventually(lambda: len(room.transcripts) == 2)
-        elapsed = time.monotonic() - opened
+        elapsed = clock.monotonic() - opened
         await room.channel.close()
 
         assert stt.streams == 1
         assert any(not any(c.data) for c in stt.chunks)
-        audio = sum(len(c.data) for c in stt.chunks) / (2 * 16000)
-        assert audio >= elapsed - 0.35
+        assert _audio_seconds(stt) >= elapsed - 0.2
 
     async def test_a_turn_detector_joins_the_turns_it_finds_incomplete(self) -> None:
         # The kept stream's finals are routed under the ordering lock and their

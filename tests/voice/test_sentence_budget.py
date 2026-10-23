@@ -49,7 +49,7 @@ async def _stored(kit: RoomKit, room_id: str) -> Any:
 
 async def test_a_reply_past_its_budget_ends_at_the_first_sentence_over_it() -> None:
     # A model's tokens come apart in time: the turn reads ahead only what came.
-    kit, _, backend, tts, [session] = await voice_rooms(SIX, gap=0.05, max_sentences=2)
+    kit, _, backend, tts, [session] = await voice_rooms(SIX, gap=0.02, max_sentences=2)
 
     await ask(backend, session)
     [heard] = await said(tts, 1)
@@ -149,12 +149,11 @@ async def test_a_tool_call_after_the_sentence_over_the_budget_never_starts() -> 
         channel_id="voice-1", sender_id="user-0", content=TextContent(body="Hi")
     )
     await asyncio.wait_for(kit.process_inbound(asked, room_id=room.id), 5)
-    await asyncio.sleep(0.2)
+    await kit.close()  # the delivery and the turn run to their end first
 
     assert (model.booked, model.rounds) == (0, 1)
     reply = await _stored(kit, room.id)
     assert reply.metadata.get("cancelled") is True
-    await kit.close()
 
 
 class _BooksAfterManyWords(_BooksAfterTalking):
@@ -197,10 +196,9 @@ async def test_a_call_after_the_budget_never_starts_however_many_words_came_firs
         channel_id="voice-1", sender_id="user-0", content=TextContent(body="Hi")
     )
     await asyncio.wait_for(kit.process_inbound(asked, room_id=room.id), 5)
-    await asyncio.sleep(0.2)
+    await kit.close()  # the delivery and the turn run to their end first
 
     assert (model.booked, model.rounds) == (0, 1)
-    await kit.close()
 
 
 async def test_a_reply_of_exactly_its_budget_runs_to_its_end() -> None:
@@ -270,7 +268,7 @@ class _SlowTTS(_StreamingMockTTS):
     async def synthesize_stream_input(self, text_stream: Any, *, voice: str | None = None) -> Any:
         async def slow() -> AsyncIterator[str]:
             async for text in text_stream:
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.01)
                 yield text
 
         async for chunk in super().synthesize_stream_input(slow(), voice=voice):
@@ -307,8 +305,15 @@ async def test_a_reply_its_budget_stopped_keeps_the_record_its_turn_ended_with()
 
     await ask(backend, session)
     await said(tts, 1)
-    await asyncio.sleep(0.3)
-    [reply] = [e for e in await kit.store.list_events(room.id) if e.source.channel_id == "agent"]
+
+    async def replies() -> list[Any]:
+        events = await kit.store.list_events(room.id)
+        return [e for e in events if e.source.channel_id == "agent"]
+
+    async with asyncio.timeout(2):  # the turn's end lands on the stored reply
+        while not (stored := await replies()) or "prompt_returned" not in stored[0].metadata:
+            await asyncio.sleep(0.01)
+    [reply] = stored
     await kit.close()
 
     assert reply.metadata.get("cancelled") is True

@@ -327,7 +327,9 @@ class TestSilenceFill:
         backend.on_audio_received(lambda s, audio: received.append(audio))
 
         session, _client = await accept_fake(backend)
-        await asyncio.sleep(0.15)
+        async with asyncio.timeout(2):  # an idle session produces silence frames
+            while len(received) < 2:
+                await asyncio.sleep(0.005)
         await backend.disconnect(session)
 
         assert received, "idle session must produce silence frames"
@@ -340,7 +342,7 @@ class TestSilenceFill:
         backend.on_audio_received(lambda s, audio: received.append(audio))
 
         session, _client = await accept_fake(backend)
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.06)  # three 20 ms frames of silence a fill would have made
         await backend.disconnect(session)
 
         assert received == []
@@ -416,7 +418,9 @@ class TestEndWhenAlone:
         client = FakeHuddleClient(peers={0: "me" * 32})  # just us
         await backend.accept(session, client)
 
-        await asyncio.sleep(0.15)
+        async with asyncio.timeout(2):  # past the grace period
+            while not disconnected:
+                await asyncio.sleep(0.005)
 
         assert disconnected == [session]
         assert session.metadata["buzz_end_reason"] == "alone"

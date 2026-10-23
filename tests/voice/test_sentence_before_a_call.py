@@ -126,7 +126,9 @@ async def _voice_turn(
         channel_id="voice-1", sender_id="user-0", content=TextContent(body="Roll for me.")
     )
     await asyncio.wait_for(kit.process_inbound(asked, room_id=room.id), 5)
-    await asyncio.sleep(0.2)
+    async with asyncio.timeout(5):  # the reply said to its end: its transcript is sent
+        while not any(role == "assistant" for _, _, role in backend.sent_transcriptions):
+            await asyncio.sleep(0.01)
     return kit, backend, tts, dice, model, room.id
 
 

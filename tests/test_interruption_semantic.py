@@ -88,7 +88,11 @@ async def test_semantic_strategy_receives_each_partial_transcript() -> None:
         session_id=session.id, text="Your appointment is confirmed for Tuesday at ten."
     )
     await backend.simulate_audio_received(session, _SILENT_CHUNK)
-    await asyncio.sleep(0.3)
+    async with asyncio.timeout(5):  # both partials judged, the interruption reported
+        while len(detector.evaluations) < 2 or not barge_ins:
+            await asyncio.sleep(0.005)
+    for _ in range(10):  # a barge-in the acknowledgement fired would be in by now
+        await asyncio.sleep(0)
 
     # The detector judged the words the user said, in order.
     assert [c.transcript for c in detector.evaluations] == ["uh-huh", "wait, stop"]

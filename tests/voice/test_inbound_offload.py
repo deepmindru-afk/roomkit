@@ -48,6 +48,17 @@ async def _until(condition: Callable[[], bool], timeout: float = 2.0) -> bool:
     return True
 
 
+async def _frame_done(channel: Any) -> None:
+    """Until the frame in flight left the stages and what it sent home ran:
+    the DSP pool, when there is one, is idle (a close drained it already),
+    then the loop runs the callbacks it queued and the tasks those started."""
+    offload = channel._inbound_offload
+    if offload is not None:
+        assert await asyncio.to_thread(offload.wait_idle, timeout=5.0)
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
 class _StreamingSTT(MockSTTProvider):
     """A streaming STT that keeps what its streams heard apart from batch calls."""
 
@@ -251,9 +262,7 @@ class TestVoiceChannelWithOffload:
         # The DSP ran on the pool; wait for it, then for the scheduled
         # speech-end coroutine on the loop.
         assert await asyncio.to_thread(channel._inbound_offload.wait_idle, timeout=5.0)
-        await asyncio.sleep(0.15)
-
-        assert len(stt.calls) >= 1
+        assert await _until(lambda: len(stt.calls) >= 1)
         await kit.close()
 
     async def test_without_the_knob_processing_stays_inline(self) -> None:
@@ -405,7 +414,7 @@ class TestCloseWithAFrameInFlight:
         await backend.simulate_audio_received(session, AudioFrame(data=_FRAME))
 
         await channel.close()
-        await asyncio.sleep(0.1)
+        await _frame_done(channel)
 
         assert channel._stt_streams == {}
         alive = [t.get_name() for t in asyncio.all_tasks() if t is not asyncio.current_task()]
@@ -422,7 +431,7 @@ class TestCloseWithAFrameInFlight:
         await transport.simulate_client_audio(session, _FRAME)
 
         await channel.close()
-        await asyncio.sleep(0.1)
+        await _frame_done(channel)
 
         calls = [call.method for call in provider.calls]
         assert calls[calls.index("disconnect") + 1 :] == ["close"], calls
@@ -469,7 +478,7 @@ class TestSessionEndWithAFrameInFlight:
         await backend.simulate_audio_received(session, AudioFrame(data=_FRAME))
         channel.unbind_session(session)
         await backend.simulate_audio_received(session, AudioFrame(data=_FRAME))
-        await asyncio.sleep(0.2)
+        await _frame_done(channel)
 
         tally = channel._pipeline_speaker_tally
         assert tally is not None
@@ -494,10 +503,10 @@ class TestSessionEndWithAFrameInFlight:
         ending = asyncio.create_task(channel.end_session(session))
         await provider.disconnecting.wait()
         await transport.simulate_client_audio(session, _FRAME)
-        await asyncio.sleep(0.1)
+        await _frame_done(channel)
         provider.release.set()
         await ending
-        await asyncio.sleep(0.1)
+        await _frame_done(channel)
 
         calls = [call.method for call in provider.calls]
         assert "send_activity_start" not in calls, calls
@@ -514,7 +523,7 @@ class TestSessionEndWithAFrameInFlight:
         # Still in the denoiser on a worker when the session ends.
         await transport.simulate_client_audio(session, _FRAME)
         await channel.end_session(session)
-        await asyncio.sleep(0.2)
+        await _frame_done(channel)
 
         calls = [call.method for call in provider.calls]
         assert calls[calls.index("disconnect") + 1 :] == [], calls

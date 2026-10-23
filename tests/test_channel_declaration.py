@@ -42,6 +42,7 @@ from roomkit.turns import InMemoryTurnBackend, TurnExecutor
 from roomkit.voice import AudioPipelineConfig
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.stt.mock import MockSTTProvider
+from roomkit.voice.testing import VoiceTrace
 from roomkit.voice.tts.mock import MockTTSProvider
 from tests.test_framework import SimpleChannel
 
@@ -318,7 +319,8 @@ async def test_a_room_is_greeted_by_the_agent_s_last_registration(
     result = await kit.process_inbound(
         InboundMessage(channel_id="sms", sender_id="marie", content=TextContent(body="Hello"))
     )
-    await asyncio.sleep(0.3)
+    # The attach, then the greeting, run in observers: done once they all are.
+    await kit.hook_engine.drain_observers()
     events = await kit.store.list_events(result.event.room_id)
     await kit.close()
 
@@ -345,6 +347,7 @@ async def _greetings(agent: Agent, *, declared: bool) -> list[tuple[str, str]]:
     backend = MockVoiceBackend()
     stt, tts = MockSTTProvider(transcripts=["hi"]), MockTTSProvider()
     kit = RoomKit(stt=stt, tts=tts, voice=backend)
+    trace = VoiceTrace(kit, triggers=(HookTrigger.ON_SESSION_STARTED,))
     kit.register_channel(
         VoiceChannel("voice", stt=stt, tts=tts, backend=backend, pipeline=AudioPipelineConfig())
     )
@@ -354,7 +357,8 @@ async def _greetings(agent: Agent, *, declared: bool) -> list[tuple[str, str]]:
     await kit.attach_channel(room.id, agent.channel_id)
 
     await kit.connect_voice(room.id, "user-1", "voice")
-    await asyncio.sleep(0.2)
+    await trace.wait_for(HookTrigger.ON_SESSION_STARTED)
+    await kit.hook_engine.drain_observers()  # the greeting is one of its observers
     events = await kit.store.list_events(room.id)
     await kit.close()
     return [

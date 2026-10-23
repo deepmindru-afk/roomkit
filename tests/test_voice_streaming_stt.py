@@ -16,6 +16,7 @@ from roomkit.voice.pipeline.engine import AudioPipeline
 from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
 from roomkit.voice.stt.base import STTProvider
 from roomkit.voice.stt.mock import MockSTTProvider
+from tests.channel_tasks import settled
 
 
 def _session(sid: str = "s1") -> VoiceSession:
@@ -148,11 +149,15 @@ class _StreamingMockSTT(STTProvider):
 class _ErrorStreamingSTT(STTProvider):
     """Mock STT whose stream raises an exception."""
 
+    def __init__(self) -> None:
+        self.transcribe_calls: list[object] = []
+
     @property
     def supports_streaming(self) -> bool:
         return True
 
     async def transcribe(self, audio: object) -> TranscriptionResult:
+        self.transcribe_calls.append(audio)
         return TranscriptionResult(text="fallback")
 
     async def transcribe_stream(
@@ -205,6 +210,17 @@ def _build_kit(
     return kit, channel, backend, vad
 
 
+async def _settle(channel: VoiceChannel) -> None:
+    """Until the work the channel scheduled on the segment it heard is done."""
+    await settled(channel, timeout=2)
+
+
+async def _until(predicate: object, timeout: float = 2.0) -> None:
+    async with asyncio.timeout(timeout):
+        while not predicate():  # type: ignore[operator]
+            await asyncio.sleep(0.005)
+
+
 class TestStreamingSTTLifecycle:
     async def test_streaming_stt_uses_stream(self) -> None:
         """When STT supports streaming, frames are fed via queue."""
@@ -220,7 +236,7 @@ class TestStreamingSTTLifecycle:
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x02\x00"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x03\x00"))
 
-        await asyncio.sleep(0.2)
+        await _settle(channel)
 
         assert stt.stream_started is True
         # Frames are buffered before sending — verify total audio data received
@@ -242,7 +258,7 @@ class TestStreamingSTTLifecycle:
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x02\x00"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x03\x00"))
 
-        await asyncio.sleep(0.2)
+        await _settle(channel)
 
         assert len(stt.calls) == 1
 
@@ -259,10 +275,10 @@ class TestStreamingSTTLifecycle:
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x02\x00"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x03\x00"))
 
-        await asyncio.sleep(0.2)
+        await _settle(channel)
 
         # Batch fallback should have been called
-        assert stt.transcribe.__func__  # verify it's a real method
+        assert len(stt.transcribe_calls) == 1
 
     async def test_stream_cancelled_on_unbind(self) -> None:
         """Streaming STT is cancelled when session is unbound."""
@@ -280,8 +296,7 @@ class TestStreamingSTTLifecycle:
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x01\x00"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x02\x00"))
 
-        await asyncio.sleep(0.05)
-        assert session.id in channel._stt_streams
+        await _until(lambda: session.id in channel._stt_streams)
 
         # Unbind should cancel the stream
         channel.unbind_session(session)
@@ -300,7 +315,7 @@ class TestStreamingSTTLifecycle:
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x02\x00"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x03\x00"))
 
-        await asyncio.sleep(0.2)
+        await _settle(channel)
 
         # The stream should have consumed all speech audio
         total_data = b"".join(c.data for c in stt.stream_chunks)
@@ -321,8 +336,7 @@ class TestStreamingSTTLifecycle:
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x01\x00"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x02\x00"))
 
-        await asyncio.sleep(0.05)
-        assert session.id in channel._stt_streams
+        await _until(lambda: session.id in channel._stt_streams)
 
         await channel.close()
         assert len(channel._stt_streams) == 0
@@ -343,8 +357,7 @@ class TestStreamingSTTLifecycle:
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x01\x00"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x02\x00"))
 
-        await asyncio.sleep(0.05)
-        assert session.id in channel._stt_streams
+        await _until(lambda: session.id in channel._stt_streams)
 
         # Backend fires disconnect — VoiceChannel should auto-cleanup
         await backend.simulate_client_disconnected(session)

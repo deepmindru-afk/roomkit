@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from roomkit.voice.realtime.pacer import OutboundAudioPacer
 
 
@@ -27,7 +29,7 @@ class TestPushAndReceive:
         audio = _make_audio(20)
         pacer.push(audio)
         pacer.end_of_response()
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(pacer.wait_for_response_done(), timeout=1.0)
 
         await pacer.stop()
 
@@ -54,7 +56,7 @@ class TestPrebuffer:
             pacer.push(chunk)
 
         pacer.end_of_response()
-        await asyncio.sleep(0.3)
+        await asyncio.wait_for(pacer.wait_for_response_done(), timeout=1.0)
         await pacer.stop()
 
         assert len(received) >= 1
@@ -81,14 +83,13 @@ class TestInterrupt:
 
         # Immediately interrupt
         pacer.interrupt()
-        await asyncio.sleep(0.1)
 
         count_after_interrupt = len(received)
 
         # Push more audio (new response) to verify pacer still works
         pacer.push(_make_audio(20))
         pacer.end_of_response()
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(pacer.wait_for_response_done(), timeout=1.0)
 
         await pacer.stop()
 
@@ -117,7 +118,6 @@ class TestInterrupt:
 
         # Interrupt mid-pacing
         pacer.interrupt()
-        await asyncio.sleep(0.05)
 
         # Now send a new response to confirm pacer is alive
         send_event.clear()
@@ -139,20 +139,20 @@ class TestEndOfResponse:
         pacer = OutboundAudioPacer(send_fn, sample_rate=8000, prebuffer_ms=100)
         await pacer.start()
 
-        # First response
+        # First response, its pre-buffer's worth (5 x 20 ms)
         chunk = _make_audio(20)
-        for _ in range(10):
+        for _ in range(5):
             pacer.push(chunk)
         pacer.end_of_response()
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(pacer.wait_for_response_done(), timeout=1.0)
 
         first_response_count = len(received)
 
         # Second response
-        for _ in range(10):
+        for _ in range(5):
             pacer.push(chunk)
         pacer.end_of_response()
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(pacer.wait_for_response_done(), timeout=1.0)
 
         await pacer.stop()
 
@@ -222,7 +222,8 @@ class TestWaitForResponseDone:
 
         # Start waiting, then interrupt before it can finish
         wait_task = asyncio.create_task(pacer.wait_for_response_done())
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)  # the waiter waits
+        assert not wait_task.done()
         pacer.interrupt()
 
         # Should unblock quickly
@@ -246,6 +247,7 @@ class TestWaitForResponseDone:
 
 
 class TestLargeChunkPacing:
+    @pytest.mark.wallclock
     async def test_large_chunk_burst_is_capped(self) -> None:
         """A single large chunk should not burst more than prebuffer_ms."""
         received: list[bytes] = []
@@ -261,8 +263,8 @@ class TestLargeChunkPacing:
         pacer = OutboundAudioPacer(send_fn, sample_rate=8000, prebuffer_ms=100)
         await pacer.start()
 
-        # Push 1 second of audio as a SINGLE chunk (16000 bytes)
-        big_chunk = _make_audio(1000)  # 1s at 8kHz = 16000 bytes
+        # Push 400 ms of audio as a SINGLE chunk (6400 bytes)
+        big_chunk = _make_audio(400)  # 0.4 s at 8kHz = 6400 bytes
         pacer.push(big_chunk)
         pacer.end_of_response()
 
@@ -279,9 +281,9 @@ class TestLargeChunkPacing:
         # Remaining chunks should have been paced over time
         if len(timestamps) >= 3:
             span = timestamps[-1] - timestamps[0]
-            # Should take at least 500ms to pace 1s of audio (accounting
-            # for the 100ms prebuffer burst sent immediately)
-            assert span > 0.5
+            # ~0.24 s to pace 0.4 s of audio past its 100 ms burst and the
+            # 60 ms headroom: a burst would take none
+            assert span > 0.15
 
     async def test_small_chunks_not_split(self) -> None:
         """Chunks smaller than 2 frames should be sent as-is (no overhead)."""
@@ -297,7 +299,7 @@ class TestLargeChunkPacing:
         for _ in range(5):
             pacer.push(chunk)
         pacer.end_of_response()
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(pacer.wait_for_response_done(), timeout=1.0)
         await pacer.stop()
 
         # Each chunk should arrive individually (not split further)
@@ -305,6 +307,7 @@ class TestLargeChunkPacing:
 
 
 class TestJitterHeadroom:
+    @pytest.mark.wallclock
     async def test_headroom_keeps_phone_buffer_stocked(self) -> None:
         """With jitter headroom, pacing finishes ~headroom ms before wall-clock."""
         received: list[bytes] = []
@@ -343,6 +346,7 @@ class TestJitterHeadroom:
             assert span < 0.50  # should be ~0.42, definitely < 0.5
             assert span > 0.30  # not instantaneous either
 
+    @pytest.mark.wallclock
     async def test_zero_headroom_is_strict(self) -> None:
         """With headroom=0, pacing is strict wall-clock (original behavior)."""
         received: list[bytes] = []
@@ -388,7 +392,8 @@ class TestEmptyAudio:
         pacer.push(b"")  # Should be ignored by push()
         pacer.push(b"")  # Should be ignored by push()
         pacer.end_of_response()
-        await asyncio.sleep(0.1)
+        # The response's end comes after anything queued before it.
+        await asyncio.wait_for(pacer.wait_for_response_done(), timeout=1.0)
 
         await pacer.stop()
 
@@ -397,6 +402,7 @@ class TestEmptyAudio:
 
 
 class TestSilenceFillTiming:
+    @pytest.mark.wallclock
     async def test_no_silence_spliced_while_ahead(self) -> None:
         """Mid-response, fill must not fire while the pacer is still ahead.
 
@@ -443,18 +449,20 @@ class TestCancellation:
     """RMK-288: a cancellation reaches the task it is aimed at."""
 
     async def test_stop_keeps_its_callers_cancellation(self) -> None:
-        release = asyncio.Event()
+        release, writing = asyncio.Event(), asyncio.Event()
 
         async def send_fn(audio: bytes) -> None:
+            writing.set()
             await release.wait()  # a transport stuck mid-write
 
         pacer = OutboundAudioPacer(send_fn, sample_rate=8000, prebuffer_ms=0)
         await pacer.start()
         sender = pacer._task
         pacer.push(_make_audio(20))
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(writing.wait(), timeout=1.0)
         stopping = asyncio.create_task(pacer.stop())
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)  # the stop waits for the sender
+        assert not stopping.done()
 
         stopping.cancel()
         release.set()

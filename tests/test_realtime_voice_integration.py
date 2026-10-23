@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 from roomkit import (
     Channel,
@@ -17,6 +18,12 @@ from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import EventSource, RoomEvent
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+
+
+async def _until(predicate: Callable[[], object]) -> None:
+    async with asyncio.timeout(5):
+        while not predicate():
+            await asyncio.sleep(0.01)
 
 
 class ObserverChannel(Channel):
@@ -86,7 +93,7 @@ class TestSupervisorTextInjection:
             "supervisor",
             TextContent(body="Offer the customer a 20% discount"),
         )
-        await asyncio.sleep(0.1)
+        await _until(lambda: provider.injected_texts)
 
         # Content its author wrote, never the application's instruction
         assert len(provider.injected_texts) == 1
@@ -147,7 +154,7 @@ class TestTranscriptionsVisibleToAllChannels:
         await provider.simulate_transcription(
             session, "I can help you with that.", "assistant", True
         )
-        await asyncio.sleep(0.2)
+        await _until(lambda: observer.delivered_events)
 
         # Observer should have received the transcription event
         assert len(observer.delivered_events) > 0
@@ -192,7 +199,7 @@ class TestMutedChannelStillReceivesEvents:
             "supervisor",
             TextContent(body="Muted but still injecting"),
         )
-        await asyncio.sleep(0.1)
+        await _until(lambda: provider.injected_texts)
 
         # on_event is still called on muted channels (per EventRouter)
         # So text should still be injected into the provider

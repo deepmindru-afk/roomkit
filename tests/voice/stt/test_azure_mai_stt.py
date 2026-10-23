@@ -463,7 +463,7 @@ class TestStreaming:
         async with _server(handler) as url:
             with pytest.raises(AzureMAISTTError) as info:
                 await _collect(
-                    _provider(url, handshake_timeout_s=0.2),
+                    _provider(url, handshake_timeout_s=0.02),  # a bound it never meets
                     AudioChunk(data=_PCM_16K, sample_rate=16000),
                 )
 
@@ -495,7 +495,7 @@ class TestStreaming:
         async with _server(_scripted(record, [])) as url:
             with pytest.raises(AzureMAISTTError, match="no final transcript within") as info:
                 await _collect(
-                    _provider(url, final_timeout_s=0.2),
+                    _provider(url, final_timeout_s=0.02),  # a bound it never meets
                     AudioChunk(data=_PCM_16K, sample_rate=16000),
                 )
 

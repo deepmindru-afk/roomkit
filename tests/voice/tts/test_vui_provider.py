@@ -19,9 +19,11 @@ from roomkit.voice.tts.vui import VuiTTSConfig, VuiTTSProvider, VuiVoice
 
 
 class _SlowRow:
-    """A stand-in for the GPU row: 20 frames, 10 ms each."""
+    """A stand-in for the GPU row: 20 frames, ``frame_s`` seconds each (none
+    unless a test cuts a reply while it is being generated)."""
 
     instances: list[_SlowRow] = []
+    frame_s = 0.0
 
     capacity = 100_000
     reply_positions = 375
@@ -67,7 +69,7 @@ class _SlowRow:
             if cancel.is_set():
                 self.stopped_at = i
                 return
-            time.sleep(0.01)
+            time.sleep(self.frame_s)
             self.offset += 1
             yield b"\x01\x00" * 1920
 
@@ -97,7 +99,10 @@ async def test_streams_every_frame_then_a_final_marker(provider: VuiTTSProvider)
     assert chunks[-1].is_final and chunks[-1].data == b""
 
 
-async def test_closing_the_stream_stops_the_gpu_thread(provider: VuiTTSProvider) -> None:
+async def test_closing_the_stream_stops_the_gpu_thread(
+    provider: VuiTTSProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_SlowRow, "frame_s", 0.01)  # the reply is still being generated
     stream = provider.synthesize_stream("hello", context=_context())
     await anext(stream)
     await stream.aclose()  # barge-in
@@ -114,8 +119,9 @@ async def test_synthesize_returns_a_wav(provider: VuiTTSProvider) -> None:
 
 
 async def test_a_second_cancel_while_waiting_keeps_the_lock_until_the_thread_stops(
-    provider: VuiTTSProvider,
+    provider: VuiTTSProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(_SlowRow, "frame_s", 0.01)  # the reply is still being generated
     import asyncio
     import contextlib
 

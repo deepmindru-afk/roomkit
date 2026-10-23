@@ -235,6 +235,7 @@ class TestStreaming:
         assert "turn_detection" not in session
         assert session["speaker_references"] == {"Julie": base64.b64encode(b"RIFF-julie").decode()}
 
+    @pytest.mark.wallclock  # a real pause past diarized_pause_ms ends a turn
     async def test_each_speakers_turn_is_a_final_naming_them(self) -> None:
         # The live dialogue: a few words per segment, no turn events.
         record = _Record()

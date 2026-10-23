@@ -35,6 +35,12 @@ from tests.test_realtime_deepgram import _connect as deepgram_connect
 NAMELESS = "Tool call named no tool"
 
 
+async def _until(predicate: Any, timeout: float = 5.0) -> None:
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0.01)
+
+
 def _session() -> VoiceSession:
     return VoiceSession(
         id="s1",
@@ -52,7 +58,7 @@ async def test_deepgram_hands_on_a_call_that_named_no_tool() -> None:
     provider.on_tool_call(lambda *a: heard.append(a[1:3]))
     ws = await deepgram_connect(provider, session)
     ws.push(json.dumps({"type": "FunctionCallRequest", "functions": [{"id": "fc1"}]}))
-    await asyncio.sleep(0.1)
+    await _until(lambda: bool(heard))
 
     assert heard == [("fc1", "")]
     assert provider._holds_tool_call(session, "fc1")
@@ -60,14 +66,14 @@ async def test_deepgram_hands_on_a_call_that_named_no_tool() -> None:
 
 
 async def test_gpt_live_hands_on_a_call_that_named_no_tool() -> None:
-    provider = live_provider()
+    provider = live_provider(close_timeout_s=0.01)  # the fake socket never answers a close
     session = _session()
     heard: list[Any] = []
     provider.on_tool_call(lambda *a: heard.append(a[1:]))
     ws, _ = await live_connect(provider, session)
     ws.push(_response_event({"type": "response.created"}))
     ws.push(_function_call("c1", "", "{}"))
-    await asyncio.sleep(0.1)
+    await _until(lambda: bool(heard))
 
     assert heard == [("c1", "", {})]
     assert provider._holds_tool_call(session, "c1")
@@ -143,9 +149,15 @@ async def test_a_call_that_named_no_tool_is_refused_under_its_id(name: str | Non
 
 async def test_an_entry_refusal_waits_behind_the_barrier_under_the_wrapped_tool() -> None:
     names = [f"t{i}" for i in range(30)]
+    answer = asyncio.Event()  # the served call answers once the refusals are in
+
+    async def handler(*_: Any) -> str:
+        await answer.wait()
+        return "ok"
+
     kit, channel, provider, session, seen = await _channel(
         tools=[{"name": n, "description": n, "parameters": {"type": "object"}} for n in names],
-        tool_handler=lambda *a: asyncio.sleep(0.2, "ok"),
+        tool_handler=handler,
         tool_search=True,
     )
     assert channel._tool_search_support is not None
@@ -157,15 +169,16 @@ async def test_an_entry_refusal_waits_behind_the_barrier_under_the_wrapped_tool(
     await provider.simulate_tool_call(session, "d1", "call_tool", wrapped)
     await provider.simulate_tool_call(session, "d1", "call_tool", wrapped)
     await provider.simulate_tool_call(session, "", "call_tool", wrapped)
-    await asyncio.sleep(0.1)
+    # Nothing marks a call waiting behind the barrier: a refusal reported
+    # past it would be in by now.
+    await asyncio.sleep(0.02)
     reported_while_held = list(seen)
     barrier.release()
+    await _until(lambda: len(seen) == 2)  # the two refusals
+    answer.set()
     # The served call's result may go out after its report: wait for both,
     # the one result this scenario sends (the refused calls send none).
-    for _ in range(250):
-        if len(seen) == 3 and len(provider.tool_results) == 1:
-            break
-        await asyncio.sleep(0.02)
+    await _until(lambda: len(seen) == 3 and len(provider.tool_results) == 1)
     await kit.close()
 
     assert reported_while_held == []
@@ -183,8 +196,8 @@ async def test_an_id_less_call_on_an_ended_session_is_cancelled() -> None:
     await channel.end_session(session)
 
     await provider.simulate_tool_call(session, "", "t1", {})
-    await asyncio.sleep(0.1)
-    await kit.close()
+    await _until(lambda: bool(seen))
+    await kit.close()  # a second report would have run by now
 
     assert seen == [("", "t1", True, True)]
     assert provider.tool_results == []
@@ -202,8 +215,8 @@ async def test_an_unreadable_call_on_an_ended_session_is_cancelled(
     await channel.end_session(session)
 
     await provider.simulate_tool_call(session, "c1", name, arguments)
-    await asyncio.sleep(0.1)
-    await kit.close()
+    await _until(lambda: bool(seen))
+    await kit.close()  # a second report would have run by now
 
     assert seen == [("c1", name, True, True)]
     assert provider.tool_results == []
@@ -243,9 +256,21 @@ async def test_a_duplicate_s_observer_reconnecting_abandons_the_first_call() -> 
     """The duplicate serves no call's context: a reconnect its observer causes
     orphans the first call under the id, which is abandoned, nothing sent."""
     holder: dict[str, Any] = {}
+    running, answer = asyncio.Event(), asyncio.Event()
+    ended: list[str] = []
+
+    async def handler(*_: Any) -> str:
+        running.set()
+        try:
+            await answer.wait()
+        except asyncio.CancelledError:
+            ended.append("cut")
+            raise
+        ended.append("answered")
+        return "ok"
+
     kit, _, provider, session, seen = await _channel(
-        tools=[{"name": "t1", "parameters": {"type": "object"}}],
-        tool_handler=lambda *a: asyncio.sleep(0.3, "ok"),
+        tools=[{"name": "t1", "parameters": {"type": "object"}}], tool_handler=handler
     )
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="reconnects")
@@ -255,13 +280,13 @@ async def test_a_duplicate_s_observer_reconnecting_abandons_the_first_call() -> 
 
     holder["provider"] = provider
     await provider.simulate_tool_call(session, "d1", "t1", {})
-    await asyncio.sleep(0.02)
+    await asyncio.wait_for(running.wait(), 5)  # the first call runs its handler
     await provider.simulate_tool_call(session, "d1", "t1", {})
-    for _ in range(100):
-        if len(seen) == 2:
-            break
-        await asyncio.sleep(0.01)
-    await asyncio.sleep(0.4)
+    await _until(lambda: len(seen) == 2)
+    answer.set()  # a handler the abandonment left running answers now
+    await _until(lambda: bool(ended))
+    for _ in range(5):
+        await asyncio.sleep(0)  # its result, were it sent, is sent
     await kit.close()
 
     assert seen == [("d1", "t1", True, False), ("d1", "t1", True, True)]
@@ -280,9 +305,9 @@ async def test_closing_reports_the_calls_waiting_behind_the_barrier() -> None:
     await provider.simulate_tool_call(session, "d1", "t1", {})
     await provider.simulate_tool_call(session, "d1", "t1", {})
     await provider.simulate_tool_call(session, "", "t1", {})
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.01)  # the calls reach the barrier
     await kit.close()
-    await asyncio.sleep(0.05)
+    await _until(lambda: len(seen) == 3)
 
     assert sorted(seen) == [
         ("", "t1", True, True),
@@ -292,14 +317,14 @@ async def test_closing_reports_the_calls_waiting_behind_the_barrier() -> None:
 
 
 async def test_a_call_on_an_ended_session_leaves_no_barrier_behind() -> None:
-    kit, channel, provider, session, _ = await _channel(
+    kit, channel, provider, session, seen = await _channel(
         tools=[{"name": "t1", "parameters": {"type": "object"}}], tool_handler=lambda *a: "ok"
     )
     await channel.end_session(session)
 
     await provider.simulate_tool_call(session, "c1", "t1", {})
     await provider.simulate_tool_call(session, "", "t1", {})
-    await asyncio.sleep(0.1)
+    await _until(lambda: len(seen) == 2)  # both cancelled, past any barrier
 
     assert session.id not in channel._transcription_order_locks
     await kit.close()

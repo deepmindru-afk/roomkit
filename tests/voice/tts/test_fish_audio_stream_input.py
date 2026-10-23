@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
@@ -212,10 +211,14 @@ class TestFailures:
                 [c async for c in _provider(url).synthesize_stream_input(failing())]
 
     async def test_a_barge_in_does_not_wait_behind_unread_audio(self) -> None:
+        piled_up = asyncio.Event()
+
         async def flood(ws: ServerConnection) -> None:
             await ws.recv()  # start
-            for _ in range(200):  # faster than any transport plays it
+            for sent in range(200):  # faster than any transport plays it
                 await ws.send(msgpack.packb({"event": "audio", "audio": b"\x00\x00" * 800}))
+                if sent == 50:
+                    piled_up.set()
             await ws.wait_closed()
 
         async def endless() -> AsyncIterator[str]:
@@ -226,11 +229,8 @@ class TestFailures:
         async with _server(flood) as url:
             stream = _provider(url).synthesize_stream_input(endless())
             await anext(stream)
-            await asyncio.sleep(0.2)  # the audio piles up unread
-            started = time.monotonic()
-            await stream.aclose()
-
-        assert time.monotonic() - started < 2.0
+            await asyncio.wait_for(piled_up.wait(), 2)  # the audio piles up unread
+            await asyncio.wait_for(stream.aclose(), 2.0)  # never behind what is unread
 
 
 class _ClosedSocket:

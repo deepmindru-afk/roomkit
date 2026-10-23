@@ -31,6 +31,7 @@ from roomkit.voice.pipeline.backchannel.base import (
 from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
 from roomkit.voice.pipeline.vad.mock import MockVADProvider
 from roomkit.voice.stt.base import STTProvider
+from tests.channel_tasks import settled
 
 _ONSET = VADEvent(type=VADEventType.SPEECH_START, audio_bytes=b"\x01\x00" * 320)
 
@@ -58,6 +59,7 @@ class _PartialsSTT(STTProvider):
 
     def __init__(self, partials: list[str]) -> None:
         self._partials = partials
+        self.said = asyncio.Event()
 
     @property
     def supports_streaming(self) -> bool:
@@ -71,8 +73,11 @@ class _PartialsSTT(STTProvider):
     ) -> AsyncIterator[TranscriptionResult]:
         async for _ in audio_stream:
             break
-        for partial in self._partials:
-            yield TranscriptionResult(text=partial, is_final=False)
+        try:
+            for partial in self._partials:
+                yield TranscriptionResult(text=partial, is_final=False)
+        finally:
+            self.said.set()  # every partial read by the channel
         async for _ in audio_stream:
             pass
         yield TranscriptionResult(text=self._partials[-1], is_final=True)
@@ -160,6 +165,30 @@ async def _room(
     return kit, channel, session, detector, seen
 
 
+async def _until(predicate: Any, timeout: float = 2.0) -> None:
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0.005)
+
+
+async def _settle(channel: VoiceChannel, *, ended: bool = False) -> None:
+    """Until the work the channel scheduled on what it heard is done. The STT
+    stream of a held segment runs until the speech *ended*, then finishes; the
+    held segment's confirm timer outlives its verdict up to transcript_wait_ms
+    and is left out (a test needing its second look waits for what it does)."""
+    await settled(
+        channel,
+        lasting=("_confirm_barge_in",) if ended else ("_confirm_barge_in", "consume"),
+        timeout=3,
+    )
+
+
+# A min_speech_ms on the test's scale, and a pause past it: the second look a
+# held segment gets there would have cut by then.
+_MIN_SPEECH_MS = 50
+_PAST_MIN_SPEECH = 0.1
+
+
 async def test_speech_onset_alone_never_consults_the_detector() -> None:
     kit, channel, session, detector, seen = await _room(_BatchSTT())
 
@@ -173,50 +202,58 @@ async def test_speech_onset_alone_never_consults_the_detector() -> None:
 
 
 async def test_a_backchannel_lets_the_bot_talk_and_its_segment_is_discarded() -> None:
-    kit, channel, session, detector, seen = await _room(_PartialsSTT(["uh-huh"]))
+    stt = _PartialsSTT(["uh-huh"])
+    kit, channel, session, detector, seen = await _room(stt, min_speech_ms=_MIN_SPEECH_MS)
 
     channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(stt.said.wait(), 2)
+    await _settle(channel)
     channel._on_pipeline_speech_end(session, b"\x11\x22" * 160)  # noqa: SLF001
-    await asyncio.sleep(0.4)  # past min_speech_ms: the timer must not cut it
+    await _settle(channel, ended=True)
+    await asyncio.sleep(_PAST_MIN_SPEECH)  # past min_speech_ms: the timer must not cut it
 
+    assert session.id in channel._playing_sessions  # noqa: SLF001
+    await kit.close()
     assert detector.seen == ["uh-huh"]
     assert len(seen["backchannel"]) == 1
     assert seen["barge_in"] == []
     assert seen["transcription"] == []
-    assert session.id in channel._playing_sessions  # noqa: SLF001
-    await kit.close()
 
 
 async def test_an_acknowledged_utterance_running_long_is_not_cut() -> None:
     """Once "uh-huh" is recognized, speech still going at min_speech_ms is not
     judged again on duration alone."""
-    kit, channel, session, detector, seen = await _room(_PartialsSTT(["uh-huh"]), min_speech_ms=50)
+    stt = _PartialsSTT(["uh-huh"])
+    kit, channel, session, detector, seen = await _room(stt, min_speech_ms=_MIN_SPEECH_MS)
 
     channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(stt.said.wait(), 2)
+    await _settle(channel)
+    await asyncio.sleep(_PAST_MIN_SPEECH)  # still speaking at min_speech_ms
+    await kit.close()
 
     assert seen["barge_in"] == []
     assert len(seen["backchannel"]) == 1
-    await kit.close()
 
 
 async def test_a_real_interruption_cuts_in_and_becomes_the_turn() -> None:
-    kit, channel, session, detector, seen = await _room(_PartialsSTT(["attends", "attends, stop"]))
+    stt = _PartialsSTT(["attends", "attends, stop"])
+    kit, channel, session, detector, seen = await _room(stt)
 
     channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(stt.said.wait(), 2)
+    await _settle(channel)
 
-    assert len(seen["barge_in"]) == 1
     assert session.id not in channel._playing_sessions  # noqa: SLF001
     assert detector.seen == ["attends"]  # the first real words decide
 
     channel._on_pipeline_speech_end(session, b"\x11\x22" * 160)  # noqa: SLF001
-    await asyncio.sleep(0.1)
+    await _settle(channel, ended=True)
+    await kit.close()
 
+    assert len(seen["barge_in"]) == 1
     # The held stream kept the utterance from its first word.
     assert [e.text for e in seen["transcription"]] == ["attends, stop"]
-    await kit.close()
 
 
 async def test_without_streaming_stt_semantic_falls_back_to_confirmed() -> None:
@@ -226,11 +263,11 @@ async def test_without_streaming_stt_semantic_falls_back_to_confirmed() -> None:
     await asyncio.sleep(0.02)
     assert seen["barge_in"] == []
 
-    await asyncio.sleep(0.1)  # the speech sustained past min_speech_ms
+    await _until(lambda: seen["barge_in"])  # sustained past min_speech_ms: the second look
+    await kit.close()
 
     assert detector.seen == [""]  # judged on duration alone, once
     assert len(seen["barge_in"]) == 1
-    await kit.close()
 
 
 async def test_without_streaming_stt_a_short_blip_does_not_cut() -> None:
@@ -239,16 +276,18 @@ async def test_without_streaming_stt_a_short_blip_does_not_cut() -> None:
     channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
     await asyncio.sleep(0.02)
     channel._on_pipeline_speech_end(session, b"\x11\x22" * 160)  # noqa: SLF001
-    await asyncio.sleep(0.15)
+    await _settle(channel, ended=True)
+    await asyncio.sleep(_PAST_MIN_SPEECH)  # past the blip's min_speech_ms: no second look cuts
+    await kit.close()
 
     assert detector.seen == []
     assert seen["barge_in"] == []
     assert seen["transcription"] == []
-    await kit.close()
 
 
 async def test_a_held_segment_reaches_no_partial_hook() -> None:
-    kit, channel, session, detector, seen = await _room(_PartialsSTT(["uh-huh"]))
+    stt = _PartialsSTT(["uh-huh"])
+    kit, channel, session, detector, seen = await _room(stt)
     partials: list[Any] = []
 
     @kit.hook(HookTrigger.ON_PARTIAL_TRANSCRIPTION, HookExecution.ASYNC)
@@ -256,11 +295,12 @@ async def test_a_held_segment_reaches_no_partial_hook() -> None:
         partials.append(event)
 
     channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(stt.said.wait(), 2)
+    await _settle(channel)
+    await kit.close()
 
     assert detector.seen == ["uh-huh"]
     assert partials == []
-    await kit.close()
 
 
 async def test_a_speech_end_right_after_the_cut_in_keeps_the_turn() -> None:
@@ -277,77 +317,84 @@ async def test_a_speech_end_right_after_the_cut_in_keeps_the_turn() -> None:
     # The partial decides, and the speech ends before any task has run.
     channel._on_held_transcript(session, "r1", "attends, stop")  # noqa: SLF001
     channel._on_pipeline_speech_end(session, b"\x11\x22" * 160)  # noqa: SLF001
-    await asyncio.sleep(0.05)
+    await _until(lambda: processed)
+    await _settle(channel)
+    await kit.close()
 
     assert processed == [b"\x11\x22" * 160]
     assert len(seen["barge_in"]) == 1
-    await kit.close()
 
 
 async def test_phrase_detector_lets_the_bot_talk_through_an_okay() -> None:
+    stt = _PartialsSTT(["Okay."])
     kit, channel, session, _, seen = await _room(
-        _PartialsSTT(["Okay."]), detector=PhraseBackchannelDetector()
+        stt, detector=PhraseBackchannelDetector(), min_speech_ms=_MIN_SPEECH_MS
     )
 
     channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(stt.said.wait(), 2)
+    await _settle(channel)
     channel._on_pipeline_speech_end(session, b"\x11\x22" * 160)  # noqa: SLF001
-    await asyncio.sleep(0.4)
+    await _settle(channel, ended=True)
+    await asyncio.sleep(_PAST_MIN_SPEECH)
 
-    assert len(seen["backchannel"]) == 1
-    assert seen["barge_in"] == []
     assert session.id in channel._playing_sessions  # noqa: SLF001
     await kit.close()
+    assert len(seen["backchannel"]) == 1
+    assert seen["barge_in"] == []
 
 
 async def test_phrase_detector_cuts_in_when_the_okay_becomes_a_question() -> None:
-    kit, channel, session, _, seen = await _room(
-        _PartialsSTT(["Okay,", "Okay, and do you", "Okay, and do you remember"]),
-        detector=PhraseBackchannelDetector(),
-    )
+    stt = _PartialsSTT(["Okay,", "Okay, and do you", "Okay, and do you remember"])
+    kit, channel, session, _, seen = await _room(stt, detector=PhraseBackchannelDetector())
 
     channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(stt.said.wait(), 2)
+    await _settle(channel)
     channel._on_pipeline_speech_end(session, b"\x11\x22" * 160)  # noqa: SLF001
-    await asyncio.sleep(0.1)
+    await _settle(channel, ended=True)
 
-    assert len(seen["barge_in"]) == 1
     assert session.id not in channel._playing_sessions  # noqa: SLF001
-    assert [e.text for e in seen["transcription"]] == ["Okay, and do you remember"]
     await kit.close()
+    assert len(seen["barge_in"]) == 1
+    assert [e.text for e in seen["transcription"]] == ["Okay, and do you remember"]
 
 
 async def test_phrase_detector_talks_through_an_acknowledgement_said_word_by_word() -> None:
     """ "Je" alone may be "Je vois": the held segment waits for its next words (RMK-889)."""
+    stt = _PartialsSTT(["Je", "Je vois"])
     kit, channel, session, _, seen = await _room(
-        _PartialsSTT(["Je", "Je vois"]), detector=PhraseBackchannelDetector()
+        stt, detector=PhraseBackchannelDetector(), min_speech_ms=_MIN_SPEECH_MS
     )
 
     channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(stt.said.wait(), 2)
+    await _settle(channel)
     channel._on_pipeline_speech_end(session, b"\x11\x22" * 160)  # noqa: SLF001
-    await asyncio.sleep(0.4)
+    await _settle(channel, ended=True)
+    await asyncio.sleep(_PAST_MIN_SPEECH)
 
-    assert seen["barge_in"] == []
-    assert len(seen["backchannel"]) == 1
     assert session.id in channel._playing_sessions  # noqa: SLF001
     await kit.close()
+    assert seen["barge_in"] == []
+    assert len(seen["backchannel"]) == 1
 
 
 async def test_phrase_detector_cuts_in_on_a_final_left_pending() -> None:
     """ "No" might have been "noted": its final, "No", is judged whole and cuts."""
-    kit, channel, session, _, seen = await _room(
-        _PartialsSTT(["No"]), detector=PhraseBackchannelDetector()
-    )
+    stt = _PartialsSTT(["No"])
+    kit, channel, session, _, seen = await _room(stt, detector=PhraseBackchannelDetector())
 
     channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(stt.said.wait(), 2)
+    await _settle(channel)
     channel._on_pipeline_speech_end(session, b"\x11\x22" * 160)  # noqa: SLF001
-    await asyncio.sleep(0.4)
+    await _settle(channel, ended=True)
+    await _until(lambda: seen["transcription"])
+    await kit.close()
 
     assert len(seen["barge_in"]) == 1
     assert [e.text for e in seen["transcription"]] == ["No"]
-    await kit.close()
 
 
 class TestHeldSpeechEndingBeforeItsWords:
@@ -359,11 +406,11 @@ class TestHeldSpeechEndingBeforeItsWords:
             _FinalOnlySTT(final), detector=PhraseBackchannelDetector(), transcript_wait_ms=2000
         )
         channel._on_pipeline_vad_event(session, _ONSET)  # noqa: SLF001
-        await asyncio.sleep(0.05)
+        await _until(lambda: session.id in channel._stt_streams)  # noqa: SLF001 — held, transcribed
         if not bot_still_talking:
             channel._playing_sessions.pop(session.id)  # noqa: SLF001
         channel._on_pipeline_speech_end(session, b"\x11\x22" * 160)  # noqa: SLF001
-        await asyncio.sleep(0.2)
+        await _settle(channel, ended=True)
         # Whatever the verdict, no turn waits on the segment's transcript any more.
         assert channel._turn_transcripts_due == {}  # noqa: SLF001
         return kit, channel, session, seen

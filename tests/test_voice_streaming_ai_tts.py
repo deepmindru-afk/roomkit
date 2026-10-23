@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+
+import pytest
 
 from roomkit import RoomKit, VoiceChannel
 from roomkit.channels.ai import AIChannel
@@ -379,6 +381,17 @@ class TestAIChannelStreamingResponse:
 # ---------------------------------------------------------------------------
 
 
+async def _until(ready: Callable[[], object]) -> None:
+    async with asyncio.timeout(5):
+        while not ready():
+            await asyncio.sleep(0.005)
+
+
+def _said(backend: MockVoiceBackend) -> bool:
+    """Whether the assistant's final transcription was sent: the turn's end."""
+    return any(role == "assistant" for _, _, role in backend.sent_transcriptions)
+
+
 class TestStreamingAiToTts:
     async def test_streaming_pipeline_end_to_end(self) -> None:
         """Full flow: speech → STT → framework routes streaming AI → TTS → audio."""
@@ -396,7 +409,7 @@ class TestStreamingAiToTts:
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x02\x00"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x03\x00"))
 
-        await asyncio.sleep(0.5)
+        await _until(lambda: _said(backend))
 
         # AI streaming was called (via framework)
         assert len(ai.generate_stream_calls) == 1
@@ -430,7 +443,7 @@ class TestStreamingAiToTts:
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x02\x00"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x03\x00"))
 
-        await asyncio.sleep(0.5)
+        await _until(lambda: _said(backend))
 
         # Collect interim and final assistant transcriptions in order
         interim = [
@@ -477,10 +490,13 @@ class TestStreamingAiToTts:
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x02\x00"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x03\x00"))
 
-        await asyncio.sleep(0.5)
-
-        events = await kit._store.list_events(room.id, offset=0, limit=50)
-        texts = [e.content.body for e in events if hasattr(e.content, "body")]
+        async with asyncio.timeout(5):
+            while True:
+                events = await kit._store.list_events(room.id, offset=0, limit=50)
+                texts = [e.content.body for e in events if hasattr(e.content, "body")]
+                if "Response text." in texts:
+                    break
+                await asyncio.sleep(0.005)
         assert "Hello world" in texts  # user event
         assert "Response text." in texts  # AI event (stored by framework)
 
@@ -502,14 +518,14 @@ class TestStreamingAiToTts:
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x02\x00"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x03\x00"))
 
-        await asyncio.sleep(0.5)
+        await _until(lambda: tts.synthesize_stream_input_calls)  # once its stream ended
 
         assert tts.synthesize_stream_input_calls == [["non-streaming response"]]
         assert len(ai.generate_calls) >= 1
 
         await kit.close()
 
-    async def test_error_during_streaming_handled(self) -> None:
+    async def test_error_during_streaming_handled(self, caplog: pytest.LogCaptureFixture) -> None:
         """When streaming AI errors, it's handled gracefully."""
         ai = _ErrorStreamingAIProvider()
         tts = _StreamingInputTTS()
@@ -524,9 +540,8 @@ class TestStreamingAiToTts:
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x02\x00"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x03\x00"))
 
-        await asyncio.sleep(0.5)
-
         # Should not crash — error logged by framework
+        await _until(lambda: "streaming delivery of ai-1 to voice-1" in caplog.text)
         await kit.close()
 
     async def test_ai_context_uses_channel_config(self) -> None:
@@ -550,7 +565,7 @@ class TestStreamingAiToTts:
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x02\x00"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x03\x00"))
 
-        await asyncio.sleep(0.5)
+        await _until(lambda: ai.generate_stream_calls)
 
         assert len(ai.generate_stream_calls) == 1
         ctx = ai.generate_stream_calls[0]

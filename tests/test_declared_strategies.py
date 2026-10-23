@@ -133,8 +133,9 @@ async def test_a_supervisor_delegates_to_a_declared_worker_through_the_owner() -
     await _room(kit, Supervisor(supervisor="boss", workers=["ana"]))
 
     await _say(kit, "What is the weather in Quebec?")
-    await asyncio.sleep(0.2)
-    said = await _said(kit, "boss")
+    async with asyncio.timeout(5):  # the worker's answer reached the supervisor's answer
+        while "Sunny." not in (said := await _said(kit, "boss")):
+            await asyncio.sleep(0.005)
     await host.close(kit)
 
     assert "delegate_to_ana" in host.tools_seen("boss")
@@ -180,8 +181,9 @@ async def test_a_discussion_holds_declared_agents() -> None:
     await _room(kit, Discussion(agents=["ana", "bob"]))
 
     await _say(kit, "Hello everyone.")
-    await asyncio.sleep(0.3)
-    spoken = await _said(kit, "ana") + await _said(kit, "bob")
+    async with asyncio.timeout(5):  # the turns come after the message, given by the queue
+        while not (spoken := await _said(kit, "ana") + await _said(kit, "bob")):
+            await asyncio.sleep(0.005)
     await host.close(kit)
 
     assert spoken

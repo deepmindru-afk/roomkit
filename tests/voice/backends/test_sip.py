@@ -641,7 +641,7 @@ class TestSendAudio:
         pcm = b"\x00\x01" * 160
         await backend.send_audio(session, pcm)
         backend.end_of_response(session)
-        await asyncio.sleep(0.15)
+        await asyncio.wait_for(backend.wait_playback(session), 2)  # paced, through its EOR
 
         mock_call_session.send_audio_pcm.assert_called_once_with(pcm, 0)
 
@@ -657,7 +657,7 @@ class TestSendAudio:
         pcm = b"\x00\x01" * 320
         await backend.send_audio(session, pcm)
         backend.end_of_response(session)
-        await asyncio.sleep(0.15)
+        await asyncio.wait_for(backend.wait_playback(session), 2)  # paced, through its EOR
 
         calls = mock_call_session.send_audio_pcm.call_args_list
         assert len(calls) == 2
@@ -1355,7 +1355,9 @@ class TestHandleByeOrdering:
         backend._cleanup_session = tracked_cleanup
 
         backend._handle_bye(call, MagicMock())
-        await asyncio.sleep(0.05)
+        async with asyncio.timeout(2):  # the BYE is handled in a task of its own
+            while len(order) < 2:
+                await asyncio.sleep(0.005)
 
         assert order == ["close", "cleanup"]
 
@@ -1380,7 +1382,9 @@ class TestHandleByeOrdering:
         backend.on_call_disconnected(disconnect_cb)
 
         backend._handle_bye(call, MagicMock())
-        await asyncio.sleep(0.05)
+        async with asyncio.timeout(2):  # the BYE is handled in a task of its own
+            while len(order) < 2:
+                await asyncio.sleep(0.005)
 
         assert order == ["close", "disconnect_cb"]
 

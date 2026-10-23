@@ -8,6 +8,7 @@ when kept) and what it said itself, cut to what was actually heard.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import Any
@@ -125,6 +126,27 @@ async def _room(
     await kit.attach_channel("r1", "voice-1")
     sessions = [await kit.connect_voice("r1", f"user-{i}", "voice-1") for i in range(participants)]
     return kit, channel, backend, sessions
+
+
+async def _heard(channel: VoiceChannel, session: VoiceSession, ms: float) -> None:
+    """Until *ms* of the playback under way were handed to the transport and
+    20 ms of it played: what was heard is the time it played, at most the
+    audio sent, and a turn nothing of which was heard is not kept."""
+    async with asyncio.timeout(5):
+        while True:
+            playing = channel._playing_sessions.get(session.id)  # noqa: SLF001
+            if playing is not None and (playing.audio_ms or 0) >= ms:
+                break
+            await asyncio.sleep(0.001)
+    assert playing.first_audio_at is not None
+    await asyncio.sleep(max(0.0, playing.first_audio_at + 0.02 - time.monotonic()))
+
+
+async def _started(channel: VoiceChannel, session: VoiceSession) -> None:
+    """Until a playback took *session*, before its first audio."""
+    async with asyncio.timeout(5):
+        while channel._playing_sessions.get(session.id) is None:  # noqa: SLF001
+            await asyncio.sleep(0.001)
 
 
 def _binding() -> ChannelBinding:
@@ -266,7 +288,9 @@ class TestUserTurns:
         channel._on_pipeline_speech_end(session, before)
         channel._on_pipeline_dtmf(session, object())
         channel._on_pipeline_speech_end(session, during)
-        await asyncio.sleep(0.05)
+        async with asyncio.timeout(5):  # both transcriptions recorded
+            while len(channel._tts_context.turns(session.id)) < 2:  # type: ignore[union-attr]
+                await asyncio.sleep(0.001)
 
         first, second = channel._tts_context.turns(session.id)  # type: ignore[union-attr]
         assert (first.text, first.audio is not None) == ("first", True)
@@ -302,8 +326,9 @@ class TestUserTurns:
 
 
 class TestBargeIn:
+    @pytest.mark.wallclock
     async def test_the_assistant_turn_holds_only_what_was_heard(self) -> None:
-        tts = _PacedTTS(TTSContextLevel.AUDIO, pace_s=0.05)
+        tts = _PacedTTS(TTSContextLevel.AUDIO, pace_s=0.005)
         kit, channel, backend, [session] = await _room(
             tts, config=TTSContextConfig(include_audio=True)
         )
@@ -311,7 +336,11 @@ class TestBargeIn:
         speaking = asyncio.create_task(
             channel.say(session, "a b c d e f g h i j k l m n o p q r s t")
         )
-        await asyncio.sleep(0.2)
+        await _heard(channel, session, 2 * _CHUNK_MS)
+        # What was heard is the time it played, at most the audio sent: 60 ms.
+        started = channel._playing_sessions[session.id].first_audio_at  # noqa: SLF001
+        assert started is not None
+        await asyncio.sleep(max(0.0, started + 0.06 - time.monotonic()))
         await channel.interrupt(session, reason="barge_in")
         await speaking
 
@@ -324,11 +353,11 @@ class TestBargeIn:
         await kit.close()
 
     async def test_the_timeline_records_the_same_played_ms(self) -> None:
-        tts = _PacedTTS(TTSContextLevel.TEXT, pace_s=0.05)
+        tts = _PacedTTS(TTSContextLevel.TEXT, pace_s=0.005)
         kit, channel, backend, [session] = await _room(tts)
 
         speaking = asyncio.create_task(channel.say(session, "a b c d e f g h i j"))
-        await asyncio.sleep(0.2)
+        await _heard(channel, session, 2 * _CHUNK_MS)
         await channel.interrupt(session, reason="barge_in")
         await speaking
 
@@ -343,7 +372,7 @@ class TestBargeIn:
         kit, channel, backend, [session] = await _room(tts)
 
         speaking = asyncio.create_task(channel.say(session, "never heard"))
-        await asyncio.sleep(0.05)
+        await _started(channel, session)
         await channel.interrupt(session, reason="barge_in")
         speaking.cancel()
         await asyncio.gather(speaking, return_exceptions=True)
@@ -352,11 +381,11 @@ class TestBargeIn:
         await kit.close()
 
     async def test_a_replacing_call_hears_the_turn_it_cut(self) -> None:
-        tts = _PacedTTS(TTSContextLevel.TEXT, pace_s=0.05)
+        tts = _PacedTTS(TTSContextLevel.TEXT, pace_s=0.005)
         kit, channel, backend, [session] = await _room(tts)
 
         speaking = asyncio.create_task(channel.say(session, "a b c d e f g h i j"))
-        await asyncio.sleep(0.2)
+        await _heard(channel, session, 2 * _CHUNK_MS)
         await channel.say(session, "sorry")
         await speaking
 
@@ -371,7 +400,7 @@ class TestBargeIn:
     async def test_without_flush_the_timeline_and_context_agree(self) -> None:
         from roomkit.voice.interruption import InterruptionConfig
 
-        tts = _PacedTTS(TTSContextLevel.TEXT, pace_s=0.05)
+        tts = _PacedTTS(TTSContextLevel.TEXT, pace_s=0.005)
         backend = MockVoiceBackend(capabilities=VoiceCapability.INTERRUPTION)
         channel = VoiceChannel(
             "voice-1",
@@ -386,7 +415,7 @@ class TestBargeIn:
         session = await kit.connect_voice("r1", "user-0", "voice-1")
 
         speaking = asyncio.create_task(channel.say(session, "a b c d e f g h"))
-        await asyncio.sleep(0.2)
+        await _heard(channel, session, 2 * _CHUNK_MS)
         await channel.interrupt(session, reason="barge_in")
         await speaking
 
@@ -435,13 +464,13 @@ class TestLifecycle:
         await kit.close()
 
     async def test_a_turn_finishing_after_unbind_is_not_kept(self) -> None:
-        tts = _PacedTTS(TTSContextLevel.AUDIO, pace_s=0.05)
+        tts = _PacedTTS(TTSContextLevel.AUDIO, pace_s=0.005)
         kit, channel, backend, [session] = await _room(
             tts, config=TTSContextConfig(include_audio=True)
         )
 
         speaking = asyncio.create_task(channel.say(session, "a b c d e f"))
-        await asyncio.sleep(0.15)
+        await _heard(channel, session, _CHUNK_MS)
         channel.unbind_session(session)
         await speaking
 

@@ -29,10 +29,12 @@ _SILENT_CHUNK = AudioFrame(data=b"\x00\x00" * 1600)
 
 
 class _ScriptSTT(STTProvider):
-    """Server-endpointing STT that says its scripted results on the first cycle."""
+    """Server-endpointing STT that says its scripted results on the first cycle;
+    ``closed`` once the channel let its stream go."""
 
     def __init__(self, results: list[TranscriptionResult]) -> None:
         self._results = list(results)
+        self.closed = asyncio.Event()
 
     @property
     def supports_streaming(self) -> bool:
@@ -44,14 +46,21 @@ class _ScriptSTT(STTProvider):
     async def transcribe_stream(
         self, audio_stream: AsyncIterator[AudioChunk], *, language: str | None = None
     ) -> AsyncIterator[TranscriptionResult]:
-        async for _ in audio_stream:
-            break
-        while self._results:
-            yield self._results.pop(0)
+        try:
+            async for _ in audio_stream:
+                break
+            while self._results:
+                yield self._results.pop(0)
+        finally:
+            self.closed.set()
 
 
-async def _talk_over(results: list[TranscriptionResult], *, hook_delay: float):
-    """A playback, then *results* from the STT; ON_BARGE_IN takes *hook_delay*."""
+async def _talk_over(
+    results: list[TranscriptionResult], *, hook_delay: float, cut: bool
+) -> tuple[list[str], list[object]]:
+    """A playback, then *results* from the STT; ON_BARGE_IN takes *hook_delay*.
+    Over once the final reached the room and the cut ran (*cut*), else once the
+    channel let the STT's stream go."""
     detector = MockBackchannelDetector(decisions=[BackchannelDecision(is_backchannel=False)])
     stt = _ScriptSTT(results)
     backend = MockVoiceBackend(capabilities=VoiceCapability.INTERRUPTION)
@@ -90,9 +99,14 @@ async def _talk_over(results: list[TranscriptionResult], *, hook_delay: float):
         session_id=session.id, text="Demain à Québec, il fera entre 2,9 et 8,1 degrés."
     )
     await backend.simulate_audio_received(session, _SILENT_CHUNK)
-    await asyncio.sleep(0.5)
+    async with asyncio.timeout(5):
+        if cut:
+            while not (heard and cuts):
+                await asyncio.sleep(0.01)
+        else:
+            await stt.closed.wait()
     await channel.close()
-    await kit.close()
+    await kit.close()  # an observer still running has run
     return heard, cuts
 
 
@@ -103,6 +117,7 @@ async def test_the_final_of_the_words_that_cut_the_agent_reaches_the_room() -> N
             TranscriptionResult(text="Attends, et pour Montréal ?", is_final=True),
         ],
         hook_delay=0.1,
+        cut=True,
     )
     assert len(cuts) == 1
     assert heard == ["Attends, et pour Montréal ?"]
@@ -113,6 +128,7 @@ async def test_a_final_over_a_playback_nobody_cut_is_still_echo() -> None:
     heard, cuts = await _talk_over(
         [TranscriptionResult(text="il fera entre 2,9 et 8,1 degrés", is_final=True)],
         hook_delay=0.0,
+        cut=False,
     )
     assert cuts == []
     assert heard == []

@@ -8,7 +8,9 @@ one and cut it off. ``say()`` still takes the floor at once.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
+import logging
 import time
 import wave
 from collections.abc import AsyncIterator
@@ -17,6 +19,7 @@ from typing import Any
 import pytest
 
 from roomkit import HookExecution, HookTrigger, RoomKit, VoiceChannel
+from roomkit.channels import _voice_tts
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelType
@@ -30,10 +33,12 @@ _RATE = 16000
 
 
 class _TimedTTS(TTSProvider):
-    """Each text plays for ``seconds``; records when each one starts and ends."""
+    """Each text plays for ``seconds``, or until *release* is set; records when
+    each one starts and ends."""
 
-    def __init__(self, seconds: float = 0.3) -> None:
+    def __init__(self, seconds: float = 0.05, release: asyncio.Event | None = None) -> None:
         self._seconds = seconds
+        self._release = release or asyncio.Event()
         self.played: list[tuple[str, float, float]] = []
 
     async def synthesize(self, text: str, *, voice: str | None = None) -> Any:
@@ -44,7 +49,8 @@ class _TimedTTS(TTSProvider):
     ) -> AsyncIterator[AudioChunk]:
         start = time.monotonic()
         yield AudioChunk(data=b"\x00\x00" * int(_RATE * self._seconds), sample_rate=_RATE)
-        await asyncio.sleep(self._seconds)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._release.wait(), self._seconds)
         self.played.append((text, start, time.monotonic()))
 
 
@@ -92,6 +98,47 @@ class _PacedBackend(MockVoiceBackend):
         return [entry[0] for entry in whole]
 
 
+def _short_drain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The echo drain of a playback sent whole, without an AEC, on a test's scale."""
+    monkeypatch.setattr(_voice_tts, "_PLAYBACK_DRAIN_S", 0.02)
+
+
+async def _drained(session: VoiceSession) -> None:
+    """Until no playback of *session* drains its echo any more."""
+
+    def draining() -> bool:
+        name = f"finish_playback:{session.id}"
+        return any(t.get_name() == name and not t.done() for t in asyncio.all_tasks())
+
+    async with asyncio.timeout(5):
+        while draining():
+            await asyncio.sleep(0.005)
+
+
+async def _playing(channel: VoiceChannel, session: VoiceSession, text: str) -> None:
+    """Until *text* is the playback under way on *session*."""
+    async with asyncio.timeout(5):
+        while True:
+            playing = channel._playing_sessions.get(session.id)  # noqa: SLF001
+            if playing is not None and playing.text == text:
+                return
+            await asyncio.sleep(0.005)
+
+
+async def _waiting(caplog: pytest.LogCaptureFixture, responses: int) -> None:
+    """Until *responses* responses wait for the playback under way."""
+    async with asyncio.timeout(5):
+        while caplog.text.count("Response waits for the playback under way") < responses:
+            await asyncio.sleep(0.005)
+
+
+@pytest.fixture
+def waits(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
+    """The channel's log, where a response says it waits for the playback under way."""
+    caplog.set_level(logging.INFO, logger="roomkit.voice")
+    return caplog
+
+
 def _wav(seconds: float) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
@@ -136,7 +183,7 @@ async def test_responses_play_one_after_the_other_whole() -> None:
     tasks = []
     for text in texts:
         tasks.append(asyncio.create_task(channel._send_tts(session, text, response=True)))  # noqa: SLF001
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.01)  # the next one comes while this one plays
     await asyncio.gather(*tasks)
     await kit.close()
 
@@ -147,13 +194,12 @@ async def test_responses_play_one_after_the_other_whole() -> None:
 
 
 async def test_say_still_takes_the_floor_at_once() -> None:
-    tts = _TimedTTS(seconds=1.0)
-    kit, channel, session, cancelled = await _room(tts)
+    backend = _PacedBackend()
+    kit, channel, session, cancelled = await _room(_ChunkTTS(5.0), backend)
 
-    answer = asyncio.create_task(
-        channel._send_tts(session, "A long answer.", response=True)  # noqa: SLF001
-    )
-    await asyncio.sleep(0.2)
+    answer = _respond(channel, session, "A long answer.")
+    await _playing(channel, session, "A long answer.")
+    channel._tts = _ChunkTTS(0.01)  # noqa: SLF001 - a short announcement
     await channel.say(session, "An announcement.")
     await answer
     await kit.close()
@@ -161,29 +207,37 @@ async def test_say_still_takes_the_floor_at_once() -> None:
     assert [event.reason for event in cancelled] == ["new_tts"]
 
 
-async def test_the_last_playbacks_drain_leaves_the_next_one_playing() -> None:
+async def test_the_last_playbacks_drain_leaves_the_next_one_playing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Without an AEC a playback sent whole is kept for its echo to drain; the
     response that took over is no longer its to end when that delay is up."""
-    kit, channel, session, cancelled = await _room(_TimedTTS(seconds=0.1))
+    _short_drain(monkeypatch)
+    kit, channel, session, cancelled = await _room(_TimedTTS(seconds=0.01))
     await channel._send_tts(session, "Starting it.", response=True)  # noqa: SLF001
-    channel._tts = _TimedTTS(seconds=2.5)  # noqa: SLF001
+    ended = asyncio.Event()
+    channel._tts = _TimedTTS(seconds=5.0, release=ended)  # noqa: SLF001
     result = asyncio.create_task(
         channel._send_tts(session, "Here are the campaigns.", response=True)  # noqa: SLF001
     )
-    await asyncio.sleep(2.2)  # past the first one's drain
+    await _playing(channel, session, "Here are the campaigns.")
+    await _drained(session)  # the first one's drain is up
 
     playing = channel._playing_sessions.get(session.id)  # noqa: SLF001
     assert playing is not None and playing.text == "Here are the campaigns."
+    ended.set()
     await result
     await kit.close()
     assert cancelled == []
 
 
 class _ChunkTTS(TTSProvider):
-    """Each text is one chunk of ``seconds`` of audio; streams one chunk per sentence."""
+    """Each text is one chunk of ``seconds`` of audio (or of its own length in
+    *lengths*); streams one chunk per sentence."""
 
-    def __init__(self, seconds: float) -> None:
+    def __init__(self, seconds: float, lengths: dict[str, float] | None = None) -> None:
         self._seconds = seconds
+        self._lengths = lengths or {}
 
     @property
     def supports_streaming_input(self) -> bool:
@@ -195,7 +249,8 @@ class _ChunkTTS(TTSProvider):
     async def synthesize_stream(
         self, text: str, *, voice: str | None = None
     ) -> AsyncIterator[AudioChunk]:
-        yield AudioChunk(data=b"\x00\x00" * int(_RATE * self._seconds), sample_rate=_RATE)
+        seconds = self._lengths.get(text, self._seconds)
+        yield AudioChunk(data=b"\x00\x00" * int(_RATE * seconds), sample_rate=_RATE)
 
     async def synthesize_stream_input(
         self, text_stream: AsyncIterator[str], *, voice: str | None = None
@@ -212,9 +267,9 @@ async def test_waiting_responses_take_the_session_one_at_a_time() -> None:
     """Woken together when the playback under way is sent, only one of them
     plays: the others wait on it, even past a transcription send that yields."""
     backend = _PacedBackend()
-    kit, channel, session, cancelled = await _room(_ChunkTTS(0.3), backend)
+    kit, channel, session, cancelled = await _room(_ChunkTTS(0.05), backend)
     tasks = [_respond(channel, session, "First.")]
-    await asyncio.sleep(0.05)
+    await _playing(channel, session, "First.")
     tasks += [_respond(channel, session, "Second."), _respond(channel, session, "Third.")]
     await asyncio.gather(*tasks)
     await kit.close()
@@ -223,13 +278,16 @@ async def test_waiting_responses_take_the_session_one_at_a_time() -> None:
     assert cancelled == []
 
 
-async def test_say_while_a_response_waits_plays_before_it_never_with_it() -> None:
+async def test_say_while_a_response_waits_plays_before_it_never_with_it(
+    waits: pytest.LogCaptureFixture,
+) -> None:
     backend = _PacedBackend()
-    kit, channel, session, cancelled = await _room(_ChunkTTS(0.5), backend)
+    tts = _ChunkTTS(0.02, {"A long answer.": 3.0})
+    kit, channel, session, cancelled = await _room(tts, backend)
     answer = _respond(channel, session, "A long answer.")
-    await asyncio.sleep(0.1)
+    await _playing(channel, session, "A long answer.")
     result = _respond(channel, session, "The task's result.")
-    await asyncio.sleep(0.1)
+    await _waiting(waits, 1)
     await channel.say(session, "An announcement.")
     await asyncio.gather(answer, result)
     await kit.close()
@@ -242,10 +300,10 @@ async def test_a_response_cuts_a_play_under_way() -> None:
     """``play()`` is the application's audio, not the agent's words: a response
     cuts it, as before, even after a spoken playback left its event set."""
     backend = _PacedBackend()
-    kit, channel, session, cancelled = await _room(_ChunkTTS(0.1), backend)
+    kit, channel, session, cancelled = await _room(_ChunkTTS(0.02), backend)
     await _respond(channel, session, "Hello.")
     hold = asyncio.create_task(channel.play(session, _wav(3.0), text="Hold music"))
-    await asyncio.sleep(0.2)
+    await _playing(channel, session, "Hold music")
     await _respond(channel, session, "Your answer.")
     await hold
     await kit.close()
@@ -254,27 +312,36 @@ async def test_a_response_cuts_a_play_under_way() -> None:
     assert [(event.reason, event.text) for event in cancelled] == [("new_tts", "Hold music")]
 
 
-async def test_a_cut_playbacks_drain_leaves_the_next_one_playing() -> None:
+async def test_a_cut_playbacks_drain_leaves_the_next_one_playing(
+    monkeypatch: pytest.MonkeyPatch, waits: pytest.LogCaptureFixture
+) -> None:
     """Without an AEC, the drain of a playback a barge-in cut does not end the
     response that started in its place."""
+    _short_drain(monkeypatch)
     backend = _PacedBackend()
     kit, channel, session, _cancelled = await _room(_ChunkTTS(3.0), backend)
     answer = _respond(channel, session, "A long answer.")
-    await asyncio.sleep(0.1)
+    await _playing(channel, session, "A long answer.")
     result = _respond(channel, session, "The task's result.")
-    await asyncio.sleep(0.1)
+    await _waiting(waits, 1)
     await channel.interrupt(session, reason="barge_in")
-    await asyncio.sleep(2.4)  # past the cut playback's drain
+    await answer
+    await _playing(channel, session, "The task's result.")
+    await _drained(session)  # the cut playback's drain is up
 
     playing = channel._playing_sessions.get(session.id)  # noqa: SLF001
     assert playing is not None and playing.text == "The task's result."
-    await asyncio.gather(answer, result)
+    await channel.interrupt(session)  # the result's 3 s are not what this test reads
+    await result
     await kit.close()
 
 
-async def test_a_streamed_response_leaves_the_session_after_its_drain() -> None:
+async def test_a_streamed_response_leaves_the_session_after_its_drain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Without an AEC, a streamed response ends after its drain: its whole
     text is set on the playback itself, which the drain ends by identity."""
+    _short_drain(monkeypatch)
     kit, channel, session, _cancelled = await _room(_ChunkTTS(0.05))
     binding = ChannelBinding(room_id="r1", channel_id="voice-1", channel_type=ChannelType.VOICE)
     event = RoomEvent(
@@ -291,7 +358,7 @@ async def test_a_streamed_response_leaves_the_session_after_its_drain() -> None:
     await channel.deliver_stream(sentences(), event, binding, context)
     playing = channel._playing_sessions.get(session.id)  # noqa: SLF001
     assert playing is not None and playing.text.endswith("A second sentence here.")
-    await asyncio.sleep(2.3)  # past its drain
+    await _drained(session)
 
     assert channel._playing_sessions.get(session.id) is None  # noqa: SLF001
     await kit.close()
@@ -321,13 +388,13 @@ async def test_a_play_reads_as_playing_until_its_audio_is_sent() -> None:
     as playing, so waiting for playback waits for it, and cutting it is a
     cut, not the end of a drain."""
     backend = _PacedBackend()
-    kit, channel, session, _cancelled = await _room(_ChunkTTS(0.1), backend)
+    kit, channel, session, _cancelled = await _room(_ChunkTTS(0.02), backend)
     await _respond(channel, session, "Hello.")
     hold = asyncio.create_task(channel.play(session, _wav(1.0), text="Hold music"))
-    await asyncio.sleep(0.2)
+    await _playing(channel, session, "Hold music")
 
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(channel.wait_playback_done("r1"), timeout=0.2)
+    with pytest.raises(TimeoutError):  # 1 s of audio left to send
+        await asyncio.wait_for(channel.wait_playback_done("r1"), timeout=0.05)
     playing = channel._playing_sessions[session.id]  # noqa: SLF001
     await channel.interrupt(session)
     await hold
@@ -342,8 +409,8 @@ async def test_a_play_cuts_the_playback_under_way() -> None:
     backend = _PacedBackend()
     kit, channel, session, cancelled = await _room(_ChunkTTS(3.0), backend)
     answer = _respond(channel, session, "A long answer.")
-    await asyncio.sleep(0.2)
-    await channel.play(session, _wav(0.3), text="Hold music")
+    await _playing(channel, session, "A long answer.")
+    await channel.play(session, _wav(0.05), text="Hold music")
     await answer
     await kit.close()
 
@@ -357,33 +424,36 @@ async def test_a_response_draining_its_echo_is_taken_over_not_cut(call: str) -> 
     application plays next takes the session over without cancelling it or
     flushing the audio still leaving the transport."""
     backend = _PacedBackend()
-    kit, channel, session, cancelled = await _room(_ChunkTTS(0.1), backend)
+    kit, channel, session, cancelled = await _room(_ChunkTTS(0.02), backend)
     await _respond(channel, session, "Please hold.")
     if call == "say":
         await channel.say(session, "One moment.")
     else:
-        await channel.play(session, _wav(0.2), text="Hold music")
+        await channel.play(session, _wav(0.02), text="Hold music")
     await kit.close()
 
     assert backend._cuts.get(session.id, 0) == 0  # noqa: SLF001
     assert cancelled == []
 
 
+@pytest.mark.wallclock
 async def test_a_cut_play_reports_what_was_heard_of_it() -> None:
     """A ``play()`` cut short reports the audio heard of it, which joins the
-    session's played total the echo guard reads."""
+    session's played total the echo guard reads: the backend sends in real
+    time, so what was heard is the time it played."""
     backend = _PacedBackend()
     kit, channel, session, cancelled = await _room(_ChunkTTS(0.1), backend)
     hold = asyncio.create_task(channel.play(session, _wav(3.0), text="Hold music"))
-    await asyncio.sleep(0.5)
+    await _playing(channel, session, "Hold music")
+    await asyncio.sleep(0.2)
     await channel.interrupt(session, reason="barge_in")
     await hold
     await kit.close()
 
     assert [event.text for event in cancelled] == ["Hold music"]
-    assert 300 <= cancelled[0].audio_position_ms <= 1000
+    assert 100 <= cancelled[0].audio_position_ms <= 1000
     played = channel._session_played_ms[session.id]  # noqa: SLF001
-    assert 300 <= played <= 1000
+    assert 100 <= played <= 1000
 
 
 class _StuckBackend(MockVoiceBackend):
@@ -398,19 +468,22 @@ class _StuckBackend(MockVoiceBackend):
         await asyncio.Event().wait()
 
 
-async def test_responses_waiting_on_a_session_are_let_go_when_it_is_unbound() -> None:
+async def test_responses_waiting_on_a_session_are_let_go_when_it_is_unbound(
+    waits: pytest.LogCaptureFixture,
+) -> None:
     backend = _StuckBackend()
     kit, channel, session, _cancelled = await _room(_ChunkTTS(0.1), backend)
     first = _respond(channel, session, "First.")
-    await asyncio.sleep(0.05)
+    await _playing(channel, session, "First.")
     second = _respond(channel, session, "Second.")
-    await asyncio.sleep(0.05)
+    await _waiting(waits, 1)
     assert backend.sends == 1
 
     channel.unbind_session(session)
-    await asyncio.sleep(0.05)
 
-    assert backend.sends == 2  # no longer waiting on a send that never returns
+    async with asyncio.timeout(5):  # no longer waiting on a send that never returns
+        while backend.sends < 2:
+            await asyncio.sleep(0.005)
     for task in (first, second):
         task.cancel()
     await asyncio.gather(first, second, return_exceptions=True)
@@ -423,8 +496,9 @@ async def test_held_speech_waits_while_a_response_took_the_session_over(
     """Without an AEC, the drain of a playback sent whole that a response took
     over does not hand the speech held during playback on: the bot is still
     speaking, and that response's own end hands it on."""
+    _short_drain(monkeypatch)
     backend = _PacedBackend()
-    kit, channel, session, _cancelled = await _room(_ChunkTTS(0.5), backend)
+    kit, channel, session, _cancelled = await _room(_ChunkTTS(0.05), backend)
     handed_on_while_speaking: list[bool] = []
 
     async def hand_on(session_id: str) -> None:
@@ -432,10 +506,10 @@ async def test_held_speech_waits_while_a_response_took_the_session_over(
 
     monkeypatch.setattr(channel, "_flush_queued_speech", hand_on)
     first = _respond(channel, session, "First.")
-    await asyncio.sleep(0.1)
+    await _playing(channel, session, "First.")
     second = _respond(channel, session, "Second.")
     await asyncio.gather(first, second)
-    await asyncio.sleep(2.4)  # past the second's drain
+    await _drained(session)  # past the second's drain
     await kit.close()
 
     assert handed_on_while_speaking == [False]

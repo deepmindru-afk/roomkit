@@ -34,6 +34,13 @@ def _audit(kit: RoomKit) -> list[tuple[str, bool]]:
     return seen
 
 
+async def _reported(seen: list[tuple[str, bool]]) -> None:
+    """Until the cut call's report came; the kit's close lets a second one in."""
+    async with asyncio.timeout(2):
+        while not seen:
+            await asyncio.sleep(0.005)
+
+
 @pytest.mark.parametrize("door", ["provider", "recovered"])
 async def test_a_call_the_session_s_end_cuts_before_its_task_ran_is_reported(door: str) -> None:
     provider = MockRealtimeProvider()
@@ -63,7 +70,7 @@ async def test_a_call_the_session_s_end_cuts_before_its_task_ran_is_reported(doo
         assert recovered
     # The session ends in the step the call arrived in, before its task ran.
     await channel.end_session(session)
-    await asyncio.sleep(0.1)
+    await _reported(seen)
     await kit.close()
 
     assert seen == [("lookup", True)] and ran == []
@@ -89,7 +96,7 @@ async def test_a_conference_reports_a_call_that_arrives_while_it_ends(end: str) 
         await kit.detach_channel(ROOM, "conf")
     else:
         await channel.unplug_realtime()
-    await asyncio.sleep(0.1)
+    await _reported(seen)
     await kit.close()
 
     assert seen == [("lookup", True)]

@@ -33,6 +33,7 @@ from roomkit.voice.interruption import (
 from roomkit.voice.pipeline import AudioPipelineConfig
 from roomkit.voice.pipeline.backchannel import PhraseBackchannelDetector
 from roomkit.voice.stt.base import STTProvider
+from tests.channel_tasks import settled
 
 RESPONSE = "Salut ! Ça va très bien, merci. Et toi, comment tu vas ?"
 _SILENT_CHUNK = AudioFrame(data=b"\x00\x00" * 1600)
@@ -122,6 +123,7 @@ class _StagedSTT(STTProvider):
         self._partials, self._final = partials, final
         self.release = asyncio.Event()
         self.partials_said = asyncio.Event()
+        self.final_taken = asyncio.Event()
 
     @property
     def supports_streaming(self) -> bool:
@@ -139,8 +141,19 @@ class _StagedSTT(STTProvider):
             yield TranscriptionResult(text=text, is_final=False)
         self.partials_said.set()
         await self.release.wait()
-        yield TranscriptionResult(text=self._final, is_final=True)
+        try:
+            yield TranscriptionResult(text=self._final, is_final=True)
+        finally:
+            # Read: the channel asks for the next result, or closes the stream.
+            self.final_taken.set()
         await asyncio.Event().wait()  # the stream stays open, as a live one does
+
+
+async def _settle(channel: VoiceChannel) -> None:
+    """Until the work the channel started from what it heard is done: the tasks
+    it schedules for a barge-in or a turn, which its close cancels. Its
+    continuous STT loop runs as long as its session and is left out."""
+    await settled(channel, lasting=("run_continuous",), timeout=2)
 
 
 async def _speak_over(partials: list[str], final: str, *, played_before_ms: int = 0):
@@ -183,11 +196,12 @@ async def _speak_over(partials: list[str], final: str, *, played_before_ms: int 
     )
     await backend.simulate_audio_received(session, _SILENT_CHUNK)
     await asyncio.wait_for(stt.partials_said.wait(), 2)
-    await asyncio.sleep(0.2)
+    await _settle(channel)
     channel._playing_sessions.pop(session.id, None)  # noqa: SLF001 — the response ended
     channel._last_tts_ended_at[session.id] = time.monotonic()  # noqa: SLF001
     stt.release.set()
-    await asyncio.sleep(0.3)
+    await asyncio.wait_for(stt.final_taken.wait(), 2)
+    await _settle(channel)
     await channel.close()
     await kit.close()
     return turns, cuts, partials
@@ -245,13 +259,18 @@ class _ScriptedSTT(STTProvider):
     ) -> AsyncIterator[TranscriptionResult]:
         async for _ in audio_stream:
             break
-        while self._script:
-            step = self._script.pop(0)
-            if isinstance(step, tuple):
-                self._at.setdefault(step[1], asyncio.Event()).set()
-                await self._go.setdefault(step[1], asyncio.Event()).wait()
-                continue
-            yield step
+        try:
+            while self._script:
+                step = self._script.pop(0)
+                if isinstance(step, tuple):
+                    self._at.setdefault(step[1], asyncio.Event()).set()
+                    await self._go.setdefault(step[1], asyncio.Event()).wait()
+                    continue
+                yield step
+        finally:
+            # Every step read, the stream then kept or closed by the channel.
+            if not self._script:
+                self._at.setdefault("end", asyncio.Event()).set()
         await asyncio.Event().wait()
 
 
@@ -318,6 +337,12 @@ class _Call:
     async def hear(self, frame: AudioFrame = _SILENT_CHUNK) -> None:
         await self.backend.simulate_audio_received(self.session, frame)
 
+    async def heard(self, step: str) -> None:
+        """Until the STT reached *step* and the channel's work on what came
+        before it is done."""
+        await self.stt.reached(step)
+        await _settle(self.channel)
+
 
 async def test_a_one_word_answer_starting_a_word_of_the_response_cuts_in() -> None:
     """ "No" over "I'm not sure": a lone word is matched whole (review of RMK-697)."""
@@ -325,11 +350,10 @@ async def test_a_one_word_answer_starting_a_word_of_the_response_cuts_in() -> No
     async with _Call(script, InterruptionStrategy.IMMEDIATE) as call:
         call.play("I'm not sure I follow. Could you say that again?")
         await call.hear()
-        await call.stt.reached("final")
-        await asyncio.sleep(0.1)
+        await call.heard("final")
         call.end()
         call.stt.go("final")
-        await asyncio.sleep(0.3)
+        await call.heard("end")
 
     assert len(call.cuts) == 1
     assert call.turns == ["No."]
@@ -352,10 +376,9 @@ async def test_a_final_saying_more_than_the_echo_cuts_in_while_it_plays(
     async with _Call(script, strategy) as call:
         call.play(RESPONSE)
         await call.hear()
-        await call.stt.reached("final")
-        await asyncio.sleep(0.1)
+        await call.heard("final")
         call.stt.go("final")
-        await asyncio.sleep(0.3)
+        await call.heard("end")
 
     assert len(call.cuts) == 1
     assert call.turns == ["Salut, attends une seconde"]
@@ -374,11 +397,10 @@ async def test_an_echo_verdict_ends_with_its_response() -> None:
     async with _Call(script, InterruptionStrategy.IMMEDIATE) as call:
         call.play(RESPONSE)
         await call.hear()
-        await call.stt.reached("later")
-        await asyncio.sleep(0.1)
+        await call.heard("later")
         call.end(seconds_ago=60)
         call.stt.go("later")
-        await asyncio.sleep(0.3)
+        await call.heard("end")
 
     assert call.turns == ["Très bien, merci"]
 
@@ -393,11 +415,10 @@ async def test_speech_starting_once_nothing_plays_is_no_echo() -> None:
     async with _Call(script, InterruptionStrategy.IMMEDIATE) as call:
         call.play(RESPONSE)
         await call.hear()
-        await call.stt.reached("later")
-        await asyncio.sleep(0.1)
+        await call.heard("later")
         call.end()
         call.stt.go("later")
-        await asyncio.sleep(0.3)
+        await call.heard("end")
 
     assert call.turns == ["Très bien, merci"]
 
@@ -410,19 +431,19 @@ async def test_loud_echo_before_its_words_waits_for_them(strategy: InterruptionS
     the guard is open it waits for words, and they are the echo's (review of
     RMK-697)."""
     script = [("wait", "words"), _partial("Salut"), ("wait", "final"), _final("Salut")]
-    async with _Call(script, strategy) as call:
+    # Past min_speech_ms, a run with no guard would cut under either strategy.
+    async with _Call(script, strategy, min_speech_ms=60) as call:
         call.play(RESPONSE)
         loop = asyncio.get_running_loop()
         started = loop.time()
-        while loop.time() - started < 0.5:  # half a second of loud echo
+        while loop.time() - started < 0.15:  # loud echo, words not in yet
             await call.hear(_LOUD_CHUNK)
             await asyncio.sleep(0.02)
         call.stt.go("words")
-        await call.stt.reached("final")
-        await asyncio.sleep(0.1)
+        await call.heard("final")
         call.end()
         call.stt.go("final")
-        await asyncio.sleep(0.3)
+        await call.heard("end")
 
     assert call.cuts == []
     assert call.turns == []
@@ -450,6 +471,7 @@ class _UnfinishedPartialSTT(STTProvider):
 
     def __init__(self, partial: str) -> None:
         self._partial = partial
+        self.said = asyncio.Event()
 
     @property
     def supports_streaming(self) -> bool:
@@ -463,7 +485,10 @@ class _UnfinishedPartialSTT(STTProvider):
     ) -> AsyncIterator[TranscriptionResult]:
         async for _ in audio_stream:
             break
-        yield TranscriptionResult(text=self._partial, is_final=False)
+        try:
+            yield TranscriptionResult(text=self._partial, is_final=False)
+        finally:
+            self.said.set()  # read by the channel
         async for _ in audio_stream:
             pass
 
@@ -480,9 +505,10 @@ async def _echo_then_next_response(*, grace_passed: bool) -> list[object]:
     from roomkit.voice.pipeline.backchannel import PhraseBackchannelDetector
 
     backend = MockVoiceBackend()
+    stt = _UnfinishedPartialSTT("Je")
     channel = VoiceChannel(
         "voice-1",
-        stt=_UnfinishedPartialSTT("Je"),
+        stt=stt,
         backend=backend,
         pipeline=AudioPipelineConfig(),
         interruption=InterruptionConfig(
@@ -513,7 +539,8 @@ async def _echo_then_next_response(*, grace_passed: bool) -> list[object]:
     )
     for _ in range(3):
         await backend.simulate_audio_received(session, _SILENT_CHUNK)
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(stt.said.wait(), 2)
+    await _settle(channel)
     assert channel._echo_bursts.get(session.id)  # noqa: SLF001 — "Je" taken for the echo
 
     await channel.interrupt(session, reason="new_tts")
@@ -525,10 +552,10 @@ async def _echo_then_next_response(*, grace_passed: bool) -> list[object]:
         started_at=datetime.now(UTC),
     )
     loud = AudioFrame(data=(2000).to_bytes(2, "little", signed=True) * 320)
-    for _ in range(15):  # 300 ms of the cut response's tail
+    for _ in range(8):  # 160 ms of the cut response's tail: past 5 frames and 50 ms
         await backend.simulate_audio_received(session, loud)
         await asyncio.sleep(0.02)
-    await asyncio.sleep(0.1)
+    await _settle(channel)
     await channel.close()
     await kit.close()
     return cuts
@@ -572,7 +599,17 @@ class _ScriptedDiarizingSTT(STTProvider):
         async for _ in audio_stream:
             break
         while (result := await self.results.get()) is not None:
-            yield result
+            try:
+                yield result
+            finally:
+                # Read: the channel asks for the next result, or closes the stream.
+                self.results.task_done()
+        self.results.task_done()
+
+    async def read(self, channel: VoiceChannel) -> None:
+        """Until the channel read every result put and its work on them is done."""
+        await asyncio.wait_for(self.results.join(), 2)
+        await _settle(channel)
 
 
 async def test_a_later_partial_of_an_echo_cuts_no_later_response() -> None:
@@ -621,7 +658,7 @@ async def test_a_later_partial_of_an_echo_cuts_no_later_response() -> None:
     )
     await stt.results.put(TranscriptionResult(text="", is_speech_start=True))
     await stt.results.put(TranscriptionResult(text="I'm", is_final=False))
-    await asyncio.sleep(0.1)
+    await stt.read(channel)
     assert channel._echo_bursts.get(session.id)  # noqa: SLF001 — taken for the echo
 
     # Sent whole, the next response takes the session over.
@@ -632,7 +669,7 @@ async def test_a_later_partial_of_an_echo_cuts_no_later_response() -> None:
         started_at=datetime.now(UTC),
     )
     await stt.results.put(TranscriptionResult(text="I'm starting that", is_final=False))
-    await asyncio.sleep(0.2)
+    await stt.read(channel)
     await channel.close()
     await kit.close()
 
@@ -692,9 +729,8 @@ async def _voices_over_a_response(
     for utterance in utterances:
         if utterance is None:
             await stt.results.put(None)
-            await asyncio.sleep(0.05)
-            await backend.simulate_audio_received(session, _SILENT_CHUNK)
-            await asyncio.sleep(0.05)
+            await stt.read(channel)  # the stream closed
+            await backend.simulate_audio_received(session, _SILENT_CHUNK)  # the next one opens
             continue
         voice, words, over = utterance
         if over:
@@ -707,12 +743,12 @@ async def _voices_over_a_response(
         for count in (1, 2):
             partial = " ".join(words.split()[:count])
             await stt.results.put(TranscriptionResult(text=partial, is_final=False))
-        await asyncio.sleep(0.05)
+        await stt.read(channel)
         playing.pop(session.id, None)  # cut, or over
         await stt.results.put(
             TranscriptionResult(text=words, segments=[SpeakerSegment(voice, words)])
         )
-        await asyncio.sleep(0.1)
+        await stt.read(channel)
     await channel.close()
     await kit.close()
     return turns, cuts

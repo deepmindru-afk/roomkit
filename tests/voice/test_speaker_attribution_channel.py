@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import pytest
@@ -35,15 +35,16 @@ from roomkit.voice.tts.mock import MockTTSProvider
 _FRAME = AudioFrame(data=b"\x01\x00" * 1600)  # 3200 bytes: one STT buffer flush
 
 
-class _SlowAI(MockAIProvider):
-    """An AI that takes a while to answer, so its reply is still pending."""
+class _HeldAI(MockAIProvider):
+    """An AI whose answer waits for ``release``, so its reply is still pending."""
 
-    def __init__(self, delay: float) -> None:
+    def __init__(self) -> None:
         super().__init__(responses=["D'accord."])
-        self._delay = delay
+        self.asked, self.release = asyncio.Event(), asyncio.Event()
 
     async def generate(self, context: Any) -> Any:
-        await asyncio.sleep(self._delay)
+        self.asked.set()
+        await asyncio.wait_for(self.release.wait(), 5)
         return await super().generate(context)
 
 
@@ -135,35 +136,32 @@ class _Room:
         stt: STTProvider,
         pipeline: AudioPipelineConfig | None = None,
         *,
-        ai_delay: float | None = None,
+        ai: _HeldAI | None = None,
     ) -> None:
         self.backend = MockVoiceBackend()
         self.channel = VoiceChannel(
             "voice-1",
             stt=stt,
-            tts=MockTTSProvider() if ai_delay is not None else None,
+            tts=MockTTSProvider() if ai is not None else None,
             backend=self.backend,
             pipeline=pipeline or AudioPipelineConfig(),
         )
         self.kit = RoomKit(stt=stt, voice=self.backend)
         self.kit.register_channel(self.channel)
-        self._ai = ai_delay is not None
-        if ai_delay is not None:
-            self.kit.register_channel(AIChannel("ai-1", provider=_SlowAI(ai_delay)))
+        self._ai = ai is not None
+        if ai is not None:
+            self.kit.register_channel(AIChannel("ai-1", provider=ai))
         self.transcriptions: list[Any] = []
-        self.transcribed_at: list[float] = []
         self.speaker_changes: list[Any] = []
         self.rename: dict[str, str] = {}
         self.participants: dict[str, str] = {}
-        self.slow_hook: dict[str, float] = {}
-        self.started = time.monotonic()
+        self.hold: dict[str, Callable[[], Awaitable[None]]] = {}
 
         @self.kit.hook(HookTrigger.ON_TRANSCRIPTION)
         async def on_transcription(event: Any, ctx: Any) -> HookResult:
             self.transcriptions.append(event)
-            self.transcribed_at.append(time.monotonic() - self.started)
-            if event.speaker in self.slow_hook:
-                await asyncio.sleep(self.slow_hook[event.speaker])
+            if event.speaker in self.hold:
+                await self.hold[event.speaker]()
             # A participant matched by the label, or by the words for a test
             # where one label stands for two people.
             person = self.participants.get(event.text) or self.participants.get(event.speaker)
@@ -189,7 +187,6 @@ class _Room:
             await self.kit.attach_channel(room.id, "ai-1")
         self.session = await self.kit.join(room.id, "voice-1", participant_id="owner")
         assert self.channel._continuous_stt
-        self.started = time.monotonic()
 
     async def speak(self) -> None:
         await self.backend.simulate_audio_received(self.session, _FRAME)
@@ -347,7 +344,7 @@ class TestVoiceChannelCarriesLabels:
 
         await room.speak()
         await _eventually(lambda: len(room.transcriptions) == 1)
-        await asyncio.sleep(0.3)  # the channel reconnects
+        # Spoken while the channel reconnects: carried over to the new stream.
         await room.speak()
         messages = await room.messages(2)
         await room.channel.close()
@@ -358,6 +355,7 @@ class TestVoiceChannelCarriesLabels:
         await _eventually(lambda: len(room.speaker_changes) == 2)
         assert all(c.is_new_speaker for c in room.speaker_changes)
 
+    @pytest.mark.wallclock
     async def test_silence_keeps_the_stream_alive_through_a_quiet_spell(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -383,6 +381,7 @@ class TestVoiceChannelCarriesLabels:
         audio = sum(len(c.data) for c in stt.chunks) / (2 * 16000)
         assert audio >= elapsed - 0.35  # kept within a pacing period or so of the clock
 
+    @pytest.mark.wallclock
     async def test_a_lossy_stream_is_caught_up_in_its_pauses(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -394,7 +393,7 @@ class TestVoiceChannelCarriesLabels:
         await room.start()
 
         opened = time.monotonic()
-        for _ in range(8):
+        for _ in range(4):  # 0.6 s short of real time without the catch-up
             await room.speak()  # 0.1 s of audio...
             await asyncio.sleep(0.25)  # ...every 0.25 s
         elapsed = time.monotonic() - opened
@@ -407,7 +406,12 @@ class TestVoiceChannelCarriesLabels:
     async def test_finals_are_routed_in_order_even_when_a_hook_is_slow(self) -> None:
         stt = _DiarizingSTT([[SpeakerSegment("A", "Premier.")], [SpeakerSegment("B", "Second.")]])
         room = _Room(stt)
-        room.slow_hook = {"A": 0.4}  # B's final arrives while A is in its hook
+
+        async def until_b_is_said() -> None:
+            await _eventually(lambda: not stt._finals)  # B's final has left the STT...
+            await asyncio.sleep(0.05)  # ...and would overtake A here, were finals not in order
+
+        room.hold = {"A": until_b_is_said}  # B's final arrives while A is in its hook
         await room.start()
 
         await room.speak()
@@ -469,49 +473,49 @@ class TestTheReplyDoesNotHoldBackTheNextFinal:
     # not after the reply has played (and then dropped as echo of it).
 
     async def test_without_diarization(self) -> None:
-        room = _Room(_PlainSTT(["Une table", "pour deux"]), ai_delay=0.8)
+        ai = _HeldAI()
+        room = _Room(_PlainSTT(["Une table", "pour deux"]), ai=ai)
         await room.start()
 
         await room.speak()
-        await _eventually(lambda: len(room.transcriptions) == 1)
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(ai.asked.wait(), 5)  # the reply to the first final is pending
         await room.speak()
-        await _eventually(lambda: len(room.transcriptions) == 2)
+        await _eventually(lambda: len(room.transcriptions) == 2)  # heard while it still is
+        ai.release.set()
         messages = await room.messages(2)
         await room.kit.close()
 
-        assert room.transcribed_at[1] < 0.7
         assert [m.content.body for m in messages] == ["Une table", "pour deux"]
 
     async def test_with_a_kept_stream(self) -> None:
-        room = _Room(_KeptPlainSTT(["Une table", "pour deux"]), ai_delay=0.8)
+        ai = _HeldAI()
+        room = _Room(_KeptPlainSTT(["Une table", "pour deux"]), ai=ai)
         await room.start()
 
         await room.speak()
-        await _eventually(lambda: len(room.transcriptions) == 1)
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(ai.asked.wait(), 5)  # the reply to the first final is pending
         await room.speak()
-        await _eventually(lambda: len(room.transcriptions) == 2)
+        await _eventually(lambda: len(room.transcriptions) == 2)  # heard while it still is
+        ai.release.set()
         messages = await room.messages(2)
         await room.kit.close()
 
-        assert room.transcribed_at[1] < 0.7
         assert [m.content.body for m in messages] == ["Une table", "pour deux"]
 
     async def test_with_diarization(self) -> None:
         stt = _DiarizingSTT([[SpeakerSegment("A", "Une table")], [SpeakerSegment("B", "Non.")]])
-        room = _Room(stt, ai_delay=0.8)
+        ai = _HeldAI()
+        room = _Room(stt, ai=ai)
         await room.start()
 
         await room.speak()
-        await _eventually(lambda: len(room.transcriptions) == 1)
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(ai.asked.wait(), 5)  # the reply to the first final is pending
         await room.speak()
-        await _eventually(lambda: len(room.transcriptions) == 2)
+        await _eventually(lambda: len(room.transcriptions) == 2)  # heard while it still is
+        ai.release.set()
         messages = await room.messages(2)
         await room.kit.close()
 
-        assert room.transcribed_at[1] < 0.7
         assert _said(messages) == [("Speaker A", "Une table"), ("Speaker B", "Non.")]
 
 

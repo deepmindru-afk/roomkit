@@ -41,18 +41,19 @@ class TestPlay:
 
         assert loop.time() - started < 0.1
 
+    @pytest.mark.wallclock
     async def test_realtime_playback_paces_one_frame_per_frame_ms(self) -> None:
         backend = ScenarioVoiceBackend()
         session = await _session(backend)
         loop = asyncio.get_running_loop()
 
         started = loop.time()
-        sent = await backend.play(session, tone(200))
+        sent = await backend.play(session, tone(60))
 
-        assert sent == 10
-        # Ten frames are due 20 ms apart, anchored on the start: the last one
-        # cannot be delivered before 200 ms have elapsed.
-        assert loop.time() - started >= 0.19
+        assert sent == 3
+        # Three frames are due 20 ms apart, anchored on the start: the last one
+        # cannot be delivered before 60 ms have elapsed.
+        assert loop.time() - started >= 0.055
 
     async def test_plays_a_wav_file(self, tmp_path) -> None:
         backend = ScenarioVoiceBackend()

@@ -556,6 +556,7 @@ class TestStreaming:
         assert "6 characters of a turn arrived after its final" in caplog.text
         assert "please" not in caplog.text  # the person's words stay out of the log
 
+    @pytest.mark.wallclock  # a live capture replayed in real time
     async def test_two_turns_as_the_live_service_cut_them(self) -> None:
         # Mistral's aggressive preset at a 480 ms delay, live on 2026-10-21, a
         # fifth of the time: the first turn ended after "capital", and " of",
@@ -700,7 +701,7 @@ class TestStreaming:
         async with _server(silent) as url:
             with pytest.raises(VoxtralSTTError, match="no end of transcript") as info:
                 await _collect(
-                    _provider(url, final_timeout_s=0.2),
+                    _provider(url, final_timeout_s=0.02),  # a bound the service never meets
                     AudioChunk(data=_PCM_16K, sample_rate=16000),
                 )
 
@@ -1004,6 +1005,7 @@ class TestVoiceChannelContinuous:
         assert speech_starts
         assert record.update["session"]["turn_detection"]["min_silence_ms"] == 500
 
+    @pytest.mark.wallclock  # a live capture replayed in real time
     async def test_a_turn_started_during_the_wait_stays_whole(self) -> None:
         # The live capture: the next turn starts before the first one's last
         # words. The server plays its events while the audio comes and stops

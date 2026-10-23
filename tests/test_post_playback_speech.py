@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from roomkit import HookExecution, HookTrigger, RoomKit, VoiceChannel
+from roomkit.channels import _voice_tts
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import ChannelType
 from roomkit.voice.audio_frame import AudioFrame
@@ -21,6 +24,15 @@ from roomkit.voice.pipeline.aec.mock import MockAECProvider
 from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
 from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.mock import MockTTSProvider
+from tests.channel_tasks import settled
+
+
+async def _settled(channel: VoiceChannel) -> None:
+    """Until the channel's work on the reply is done: every task it tracks but
+    a playback's echo drain or tail, which outlive the reply on purpose."""
+    await settled(channel, lasting=("finish_playback:", "aec_echo_tail:"))
+    for _ in range(10):  # the ASYNC transcription hook it fired
+        await asyncio.sleep(0)
 
 
 async def _reply_right_after_playback(
@@ -65,7 +77,7 @@ async def _reply_right_after_playback(
     frame = AudioFrame(data=b"\x01\x00" * 160)
     await backend.simulate_audio_received(session, frame)
     await backend.simulate_audio_received(session, frame)
-    await asyncio.sleep(0.2)
+    await _settled(channel)
     return heard, channel, session.id, kit
 
 
@@ -93,7 +105,10 @@ class TestSpeechRightAfterPlayback:
         assert heard == []
         await kit.close()
 
-    async def test_aec_stays_active_through_the_echo_tail(self) -> None:
+    async def test_aec_stays_active_through_the_echo_tail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(_voice_tts, "_AEC_ECHO_TAIL_S", 0.2)
         aec = MockAECProvider()
         _, channel, session_id, kit = await _reply_right_after_playback(aec)
 
@@ -103,6 +118,7 @@ class TestSpeechRightAfterPlayback:
         assert aec.active_changes[-1] == (session_id, True)
 
         # ...and is bypassed once the tail has decayed.
-        await asyncio.sleep(0.5)
-        assert aec.active_changes[-1] == (session_id, False)
+        async with asyncio.timeout(5):
+            while aec.active_changes[-1] != (session_id, False):
+                await asyncio.sleep(0.005)
         await kit.close()

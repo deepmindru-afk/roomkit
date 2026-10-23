@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -38,6 +38,7 @@ from roomkit.voice.interruption import InterruptionConfig
 from roomkit.voice.pipeline.config import AudioPipelineConfig
 from roomkit.voice.realtime.events import RealtimeTranscriptionEvent
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from tests.channel_tasks import settled
 
 
 @pytest.fixture
@@ -75,6 +76,18 @@ async def room_id(kit: RoomKit) -> str:
     room = await kit.create_room()
     await kit.attach_channel(room.id, "rt-voice-1")
     return room.id
+
+
+async def _until(ready: Callable[[], bool]) -> None:
+    async with asyncio.timeout(5):
+        while not ready():
+            await asyncio.sleep(0.001)
+
+
+async def _settled(channel: RealtimeVoiceChannel) -> None:
+    """Until the work the provider's callbacks started is done: the channel
+    runs each one in a task it tracks."""
+    await settled(channel)
 
 
 class TestSessionLifecycle:
@@ -345,7 +358,7 @@ class TestTranscriptions:
 
         # Simulate final transcription from provider
         await provider.simulate_transcription(session, "Hello world", "user", True)
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         # Verify a RoomEvent was emitted
         events = await kit.get_timeline(room_id)
@@ -384,7 +397,7 @@ class TestTranscriptions:
             await kit._build_context(room_id),
         )
         await provider.simulate_transcription(session, "second answer", "assistant", True)
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         depths = {
             e.content.body: e.chain_depth
@@ -405,7 +418,7 @@ class TestTranscriptions:
 
         # Simulate non-final transcription
         await provider.simulate_transcription(session, "Hel", "user", False)
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         # No RoomEvent should be stored (only sent to client UI)
         events = await kit.get_timeline(room_id)
@@ -447,7 +460,7 @@ class TestTranscriptions:
             await provider.simulate_transcription(
                 session, "D'accord, je termine la session.", "assistant", True
             )
-            await asyncio.sleep(0.1)
+            await _settled(channel)
 
         # No RoomEvent could be emitted — the channel is gone.
         events = await kit.get_timeline(room_id)
@@ -545,7 +558,7 @@ class TestToolCalls:
 
         # Simulate tool call from provider
         await provider.simulate_tool_call(session, "call-123", "get_weather", {"city": "NYC"})
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         # Verify tool result was submitted back to provider
         assert len(provider.tool_results) == 1
@@ -577,7 +590,7 @@ class TestToolCalls:
         session = await ch.start_session(room.id, "user-1", "fake-ws")
 
         await provider.simulate_tool_call(session, "call-big", "big_tool", {})
-        await asyncio.sleep(0.1)
+        await _settled(ch)
 
         assert len(provider.tool_results) == 1
         _session_id, _call_id, submitted = provider.tool_results[0]
@@ -615,7 +628,7 @@ class TestToolCalls:
         session = await ch.start_session(room.id, "user-1", "fake-ws")
 
         await provider.simulate_tool_call(session, "call-ctx", "whoami", {})
-        await asyncio.sleep(0.1)
+        await _settled(ch)
 
         assert seen == {"room_id": room.id, "actor": "user-1", "tenant": "acme"}
         assert current_tool_room_id() is None
@@ -645,7 +658,7 @@ class TestToolCalls:
         session = await ch.start_session(room.id, "user-1", "fake-ws")
 
         await provider.simulate_transcription(session, "call:whoami{}", "assistant")
-        await asyncio.sleep(0.1)
+        await _settled(ch)
 
         assert seen == {"room_id": room.id, "actor": "user-1"}
 
@@ -687,7 +700,7 @@ class TestToolCalls:
         session = await ch.start_session(room.id, "user-1", "fake-ws")
 
         await provider.simulate_tool_call(session, "call-gate", "whoami", {})
-        await asyncio.sleep(0.1)
+        await _settled(ch)
 
         call = seen.pop("call")
         assert (call.tool_call_id, call.channel_id) == ("call-gate", "rt-gate")
@@ -736,7 +749,7 @@ class TestToolCalls:
         session = await ch.start_session(room.id, "user-1", "fake-ws")
 
         await provider.simulate_tool_call(session, "call-sm", "small_tool", {})
-        await asyncio.sleep(0.1)
+        await _settled(ch)
 
         assert len(provider.tool_results) == 1
         _session_id, _call_id, submitted = provider.tool_results[0]
@@ -765,7 +778,7 @@ class TestToolCalls:
         session = await ch.start_session(room.id, "user-1", "fake-ws")
 
         await provider.simulate_tool_call(session, "call-d", "dict_tool", {})
-        await asyncio.sleep(0.1)
+        await _settled(ch)
 
         assert len(provider.tool_results) == 1
         assert provider.tool_results[0][2] == '{"status": "ok", "value": 42}'
@@ -797,7 +810,7 @@ class TestToolCalls:
 
         with caplog.at_level(logging.WARNING, logger="roomkit.channels.realtime_voice"):
             await provider.simulate_tool_call(session, "call-w", "big_tool", {})
-            await asyncio.sleep(0.1)
+            await _settled(ch)
 
         assert any("held the event loop" in r.message for r in caplog.records)
         assert len(provider.tool_results) == 1  # result still submitted
@@ -875,11 +888,11 @@ class TestTranscriptionHooks:
 
         # This one should be blocked
         await provider.simulate_transcription(session, "blocked text", "user", True)
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         # This one should pass
         await provider.simulate_transcription(session, "allowed text", "user", True)
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         events = await kit.get_timeline(room_id)
         text_events = [e for e in events if isinstance(e.content, TextContent)]
@@ -905,7 +918,7 @@ class TestTranscriptionHooks:
             return HookResult.block("Blocked for testing")
 
         await provider.simulate_transcription(session, "Should be blocked", "user", True)
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         events = await kit.get_timeline(room_id)
         text_events = [
@@ -936,7 +949,7 @@ class TestHookContextSkip:
 
         with patch.object(kit, "_build_context", wraps=kit._build_context) as spy:
             await provider.simulate_transcription(session, "Hel", "user", False)
-            await asyncio.sleep(0.1)
+            await _settled(channel)
 
         spy.assert_not_called()
 
@@ -955,7 +968,7 @@ class TestHookContextSkip:
 
         session = await channel.start_session(room_id, "user-1", "fake-ws")
         await provider.simulate_transcription(session, "Hel", "user", False)
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         assert seen == ["Hel"]
 
@@ -988,7 +1001,7 @@ class TestHookContextSkip:
         session = await channel.start_session(room_id, "user-1", "fake-ws")
         await provider.simulate_transcription(session, "Salut !", "user", False)
         await provider.simulate_transcription(session, "Salut !", "user", True)
-        await asyncio.sleep(0.2)
+        await _settled(channel)
 
         assert order == [("Salut !", False), ("Salut !", True)]
 
@@ -1031,7 +1044,7 @@ class TestHookContextSkip:
         session = await channel.start_session(room_id, "user-1", "fake-ws")
         await provider.simulate_transcription(session, "Quelle heure ?", "user", True)
         await provider.simulate_tool_call(session, "call-1", "get_current_time", {})
-        await asyncio.sleep(0.3)
+        await _settled(channel)
 
         assert timeline == ["tx:Quelle heure ?", "tool:get_current_time"]
 
@@ -1047,7 +1060,7 @@ class TestHookContextSkip:
         with patch.object(kit, "_build_context", wraps=kit._build_context) as spy:
             await provider.simulate_speech_start(session)
             await provider.simulate_speech_end(session)
-            await asyncio.sleep(0.1)
+            await _settled(channel)
 
         spy.assert_not_called()
 
@@ -1072,7 +1085,7 @@ class TestHookContextSkip:
         await provider.simulate_speech_start(session)
         await asyncio.sleep(0.05)
         await provider.simulate_speech_end(session)
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         assert order == ["start", "end"]
 
@@ -1322,8 +1335,8 @@ class TestResamplingEnabled:
         audio_24k = struct.pack("<240h", *([500] * 240))
         await provider.simulate_audio(session, audio_24k)
         await provider.simulate_audio(session, audio_24k)
-        # Allow time for the queue-based sender's pre-buffer timeout
-        await asyncio.sleep(0.2)
+        # Sent once the queue-based sender's pre-buffer times out
+        await _until(lambda: bool(transport.sent_audio))
 
         # Transport should receive resampled audio (different size)
         assert len(transport.sent_audio) >= 1
@@ -1720,9 +1733,7 @@ class TestEndOfResponseOrdering:
         for i in range(5):
             await provider.simulate_audio(session, f"chunk-{i}".encode())
         await provider.simulate_response_end(session)
-
-        # Let all tasks complete
-        await asyncio.sleep(0.1)
+        await _until(lambda: "end_of_response" in call_log)  # sent last
 
         # All audio calls must appear before end_of_response
         assert "end_of_response" in call_log
@@ -1757,7 +1768,7 @@ class TestEndOfResponseOrdering:
         await provider.simulate_response_start(session)
         await provider.simulate_audio(session, b"\x01\x00" * 160)
         await provider.simulate_response_end(session)
-        await asyncio.sleep(0.1)
+        await _until(lambda: (session.id, False) in aec.active_changes)
 
         assert aec.active_changes == [(session.id, True), (session.id, False)]
         assert aec.reset_streams == []
@@ -2175,7 +2186,7 @@ class TestSendWorkerOrdering:
         for i in range(5):
             await provider.simulate_audio(session, f"chunk-{i}".encode())
         await provider.simulate_response_end(session)
-        await asyncio.sleep(0.1)
+        await _until(lambda: "end_of_response" in call_log)  # sent last
 
         assert call_log.count("audio") == 5
         eor_index = call_log.index("end_of_response")

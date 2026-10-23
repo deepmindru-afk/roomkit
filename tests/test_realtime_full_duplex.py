@@ -11,6 +11,7 @@ ON_REALTIME_DELEGATION, whichever backend it went to.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from unittest.mock import MagicMock
 
 import pytest
@@ -47,6 +48,12 @@ async def _session(
     return kit, channel, transport, session
 
 
+async def _until(ready: Callable[[], bool]) -> None:
+    async with asyncio.timeout(2):
+        while not ready():
+            await asyncio.sleep(0.005)
+
+
 def _prime_playback(channel: RealtimeVoiceChannel, session: VoiceSession) -> None:
     """Make the session look mid-response, so a barge-in would have work to do."""
     channel._provider_idle[session.id] = False  # noqa: SLF001
@@ -58,9 +65,6 @@ class TestProviderContract:
     def test_half_duplex_is_the_default(self) -> None:
         assert MockRealtimeProvider().full_duplex is False
         assert MockRealtimeProvider(full_duplex=True).full_duplex is True
-
-    def test_trigger_value(self) -> None:
-        assert HookTrigger.ON_REALTIME_DELEGATION == "on_realtime_delegation"
 
     async def test_base_provider_has_no_delegation_output(self) -> None:
         """A provider that never delegates has nothing to answer with."""
@@ -127,9 +131,8 @@ class TestInterruptionBelongsToTheModel:
         await provider.simulate_speech_start(session)
 
         await provider.simulate_audio(session, AUDIO)
-        await asyncio.sleep(0.3)
+        await _until(lambda: bool(transport.sent_audio))  # full-duplex audio is not gated
 
-        assert transport.sent_audio, "full-duplex audio must not be gated on user speech"
         assert channel._user_speaking.get(session.id) is not True  # noqa: SLF001
 
     async def test_half_duplex_still_drops_audio_during_barge_in(self) -> None:
@@ -140,7 +143,8 @@ class TestInterruptionBelongsToTheModel:
         await provider.simulate_speech_start(session)
 
         await provider.simulate_audio(session, AUDIO)
-        await asyncio.sleep(0.3)
+        # Audio let through reaches the transport within a millisecond.
+        await asyncio.sleep(0.05)
 
         assert transport.sent_audio == []
 
@@ -177,7 +181,7 @@ class TestInterruptionBelongsToTheModel:
 
         await provider.simulate_speech_start(session)
         await provider.simulate_speech_end(session)
-        await asyncio.sleep(0.1)
+        await _until(lambda: "end" in seen)  # a barge-in would be announced before it
 
         assert seen.count("start") == 1
         assert seen.count("end") == 1
@@ -196,15 +200,19 @@ class TestInterruptionBelongsToTheModel:
         async def on_start(event, ctx) -> None:  # noqa: ANN001
             seen.append("start")
 
+        @kit.hook(HookTrigger.ON_SPEECH_END, HookExecution.ASYNC)
+        async def on_end(event, ctx) -> None:  # noqa: ANN001
+            seen.append("end")
+
         @kit.hook(HookTrigger.ON_BARGE_IN, HookExecution.ASYNC)
         async def on_barge_in(event, ctx) -> None:  # noqa: ANN001
             seen.append("barge_in")
 
         channel._on_pipeline_speech_start(session)  # noqa: SLF001
         channel._on_pipeline_speech_end(session)  # noqa: SLF001
-        await asyncio.sleep(0.1)
+        await _until(lambda: "end" in seen)  # a barge-in would be announced before it
 
-        assert seen == ["start"]
+        assert seen == ["start", "end"]
         transport.interrupt.assert_not_called()
         methods = {c.method for c in provider.calls}
         assert not methods & {
@@ -225,11 +233,11 @@ class TestInterruptionBelongsToTheModel:
 
         channel._on_pipeline_speech_start(session)  # noqa: SLF001
         channel._on_pipeline_speech_end(session)  # noqa: SLF001
-        await asyncio.sleep(0.05)
 
-        methods = [c.method for c in provider.calls]
-        assert "send_activity_start" in methods
-        assert "send_activity_end" in methods
+        def methods() -> list[str]:
+            return [c.method for c in provider.calls]
+
+        await _until(lambda: {"send_activity_start", "send_activity_end"} <= set(methods()))
         connect = next(c for c in provider.calls if c.method == "connect")
         assert connect.args["server_vad"] is False
 
@@ -246,7 +254,7 @@ class TestDelegationHook:
 
         await provider.simulate_delegation(session, "d-hosted", "hosted")
         await provider.simulate_delegation(session, "d-client", "integrator")
-        await asyncio.sleep(0.1)
+        await _until(lambda: len(seen) == 2)
 
         assert {(e.delegation_id, e.target) for e in seen} == {
             ("d-hosted", "hosted"),

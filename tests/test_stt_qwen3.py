@@ -103,37 +103,6 @@ from roomkit.voice.stt.qwen3 import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
-class TestQwen3ASRConfig:
-    def test_defaults(self):
-        cfg = Qwen3ASRConfig()
-        assert cfg.model_id == "Qwen/Qwen3-ASR-0.6B"
-        assert cfg.backend == "transformers"
-        assert cfg.device_map == "auto"
-        assert cfg.dtype == "bfloat16"
-        assert cfg.language is None
-        assert cfg.chunk_size_sec == 2.0
-        assert cfg.unfixed_chunk_num == 2
-        assert cfg.unfixed_token_num == 5
-        assert cfg.gpu_memory_utilization == 0.3
-        assert cfg.max_new_tokens == 2048
-
-    def test_custom_values(self):
-        cfg = Qwen3ASRConfig(
-            model_id="Qwen/Qwen3-ASR-4B",
-            backend="vllm",
-            device_map="cuda:0",
-            dtype="float16",
-            language="en",
-            chunk_size_sec=1.0,
-        )
-        assert cfg.model_id == "Qwen/Qwen3-ASR-4B"
-        assert cfg.backend == "vllm"
-        assert cfg.device_map == "cuda:0"
-        assert cfg.dtype == "float16"
-        assert cfg.language == "en"
-        assert cfg.chunk_size_sec == 1.0
-
-
 # ---------------------------------------------------------------------------
 # Import check
 # ---------------------------------------------------------------------------

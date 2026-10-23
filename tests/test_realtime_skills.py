@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -14,6 +13,7 @@ from roomkit import RoomKit
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.skills.registry import SkillRegistry
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from tests.channel_tasks import settled
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -42,6 +42,12 @@ def _make_skill(
         for fname, content in references:
             (refs_dir / fname).write_text(content, encoding="utf-8")
     return skill_dir
+
+
+async def _settled(channel: RealtimeVoiceChannel) -> None:
+    """Until the tasks the channel started for a tool call have run, the
+    reconfigure an activation schedules after its result included."""
+    await settled(channel)
 
 
 def _registry_with_skill(tmp_path: Path, **kwargs: Any) -> SkillRegistry:
@@ -100,7 +106,7 @@ class TestSkillsPromptInjection:
             await provider.simulate_tool_call(
                 session, "activation", "activate_skill", {"name": "test-skill"}
             )
-            await asyncio.wait_for(asyncio.gather(*list(channel._scheduled_tasks)), 5)
+            await _settled(channel)
             result = json.loads(provider.tool_results[-1][2])
             assert reason in result["error"]
             assert not result.get("ok")
@@ -208,7 +214,7 @@ class TestSkillToolHandling:
         await provider.simulate_tool_call(
             session, "call-1", "activate_skill", {"name": "test-skill"}
         )
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         assert len(provider.tool_results) == 1
         _sid, call_id, result_json = provider.tool_results[0]
@@ -248,7 +254,7 @@ class TestSkillToolHandling:
         await provider.simulate_tool_call(
             session, "call-1", "activate_skill", {"name": "test-skill"}
         )
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         provider.reconfigure.assert_called_once()
         sent_prompt = provider.reconfigure.call_args.kwargs.get("system_prompt", "")
@@ -307,7 +313,7 @@ class TestSkillToolHandling:
         await provider.simulate_tool_call(
             session, "call-1", "activate_skill", {"name": "test-skill"}
         )
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         assert call_order == ["submit_tool_result", "reconfigure"], (
             f"Expected submit_tool_result before reconfigure, got {call_order}"
@@ -408,7 +414,7 @@ class TestSkillToolHandling:
         await provider.simulate_tool_call(
             session, "call-1", "activate_skill", {"name": "test-skill"}
         )
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         provider.reconfigure.assert_not_called()
         assert len(captured_results) == 1
@@ -460,7 +466,7 @@ class TestSkillToolHandling:
         await provider.simulate_tool_call(
             session, "call-1", "activate_skill", {"name": "test-skill"}
         )
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         provider.submit_tool_result.assert_called_once()
         provider.reconfigure.assert_not_called()
@@ -494,7 +500,7 @@ class TestSkillToolHandling:
         await provider.simulate_tool_call(
             session, "call-b", "activate_skill", {"name": "test-skill"}
         )
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         # Body must appear at most once in the latest reconfigure prompt
         last_prompt = provider.reconfigure.call_args.kwargs.get("system_prompt", "")
@@ -522,7 +528,7 @@ class TestSkillToolHandling:
         await provider.simulate_tool_call(
             session, "call-2", "activate_skill", {"name": "nonexistent"}
         )
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         result = json.loads(provider.tool_results[0][2])
         assert "error" in result
@@ -551,7 +557,7 @@ class TestSkillToolHandling:
         await provider.simulate_tool_call(
             session, "call-2", "activate_skill", {"name": "gated-skill"}
         )
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         result = json.loads(provider.tool_results[0][2])
         assert "unavailable in this context" in result["error"]
@@ -584,7 +590,7 @@ class TestSkillToolHandling:
             "read_skill_reference",
             {"skill_name": "test-skill", "filename": "info.md"},
         )
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         result = json.loads(provider.tool_results[0][2])
         assert result["content"] == "Reference content here."
@@ -615,7 +621,7 @@ class TestSkillToolHandling:
         await provider.simulate_tool_call(
             session, "call-4", "activate_skill", {"name": "test-skill"}
         )
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         # User handler should NOT have been called for skill tools
         user_handler.assert_not_called()
@@ -701,7 +707,7 @@ class TestSkillToolGating:
         await provider.simulate_tool_call(
             session, "call-5", "activate_skill", {"name": "test-skill"}
         )
-        await asyncio.sleep(0.1)
+        await _settled(channel)
 
         # reconfigure should have been called with the now-visible tools
         provider.reconfigure.assert_called_once()

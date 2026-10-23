@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
-import time
+import threading
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -316,9 +316,9 @@ class _IdentifiesAtSpeechEnd(DiarizationProvider):
     that frame, so this is the case a count taken at SPEECH_END would miss.
     """
 
-    def __init__(self, speakers: list[str], *, delay_s: float = 0.0) -> None:
+    def __init__(self, speakers: list[str], *, held: threading.Semaphore | None = None) -> None:
         self._speakers = list(speakers)
-        self._delay_s = delay_s
+        self._held = held
 
     @property
     def name(self) -> str:
@@ -327,17 +327,18 @@ class _IdentifiesAtSpeechEnd(DiarizationProvider):
     def process(self, frame: AudioFrame, stream: str) -> DiarizationResult | None:
         if not frame.metadata.get("vad_speech_end") or not self._speakers:
             return None
-        time.sleep(self._delay_s)  # an embedding takes a while, off the loop
+        if self._held is not None:  # an embedding takes a while, off the loop
+            self._held.acquire(timeout=5)
         return _heard(self._speakers.pop(0))
 
 
 class TestAStageThatIdentifiesAtSpeechEnd:
-    def _room(self, *, threads: int | None, delay_s: float) -> _Room:
+    def _room(self, *, threads: int | None, held: threading.Semaphore | None) -> _Room:
         backend = MockVoiceBackend()
         stt = MockSTTProvider(transcripts=["Bonjour.", "Salut."])
         pipeline = AudioPipelineConfig(
             vad=MockVADProvider(events=_utterance() * 2),
-            diarization=_IdentifiesAtSpeechEnd(["speaker_0", "speaker_1"], delay_s=delay_s),
+            diarization=_IdentifiesAtSpeechEnd(["speaker_0", "speaker_1"], held=held),
             inbound_dsp_threads=threads,
         )
         voice = VoiceChannel(
@@ -345,17 +346,23 @@ class TestAStageThatIdentifiesAtSpeechEnd:
         )
         return _Room(voice, backend, stt)
 
-    @pytest.mark.parametrize(
-        ("threads", "delay_s"), [(None, 0.0), (1, 0.2)], ids=["inline", "dsp-thread"]
-    )
+    @pytest.mark.parametrize("threads", [None, 1], ids=["inline", "dsp-thread"])
     async def test_the_closing_frames_speaker_names_the_utterance(
-        self, threads: int | None, delay_s: float
+        self, threads: int | None
     ) -> None:
         # On a DSP thread the speech-end task reaches the speaker while the
         # stage is still identifying: it waits for the answer.
-        room = self._room(threads=threads, delay_s=delay_s)
+        held = threading.Semaphore(0) if threads else None
+        room = self._room(threads=threads, held=held)
         await room.start()
         await room.frames(6)
+        if held is not None:
+            for said in (1, 2):
+                async with asyncio.timeout(5):
+                    while len(room.backend.sent_transcriptions) < said:
+                        await asyncio.sleep(0.005)
+                await asyncio.sleep(0.01)  # past its transcript: it waits for the speaker
+                held.release()
         messages = await room.messages(2)
         await room.channel.close()
         assert [m.metadata.get("speaker_label") for m in messages] == ["0", "1"]

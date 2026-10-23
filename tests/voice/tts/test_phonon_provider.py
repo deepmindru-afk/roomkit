@@ -20,7 +20,10 @@ CHUNK_SAMPLES = 1920
 
 
 class _FakeStream:
-    """A ptts AudioStream: CHUNKS float32 chunks of 80 ms, 10 ms each."""
+    """A ptts AudioStream: CHUNKS float32 chunks of 80 ms, ``pace`` seconds
+    each to generate (none unless a test needs a stream that lasts)."""
+
+    pace = 0.0
 
     def __init__(self, tts: _FakeTTS, samples: np.ndarray) -> None:
         self._tts = tts
@@ -41,7 +44,7 @@ class _FakeStream:
     def __next__(self) -> np.ndarray:
         if self.closed or self.sent == CHUNKS:
             raise StopIteration
-        time.sleep(0.01)
+        time.sleep(self.pace)
         self.sent += 1
         return self._samples
 
@@ -188,7 +191,10 @@ async def test_the_voice_argument_overrides_the_default(fake_ptts: types.ModuleT
     assert provider.default_voice == "Noémie"
 
 
-async def test_closing_the_stream_stops_the_runtime_stream(provider: PhononTTSProvider) -> None:
+async def test_closing_the_stream_stops_the_runtime_stream(
+    provider: PhononTTSProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_FakeStream, "pace", 0.005)  # still generating at the barge-in
     stream = provider.synthesize_stream("Bonjour")
     await anext(stream)
     await stream.aclose()  # barge-in
@@ -199,7 +205,11 @@ async def test_closing_the_stream_stops_the_runtime_stream(provider: PhononTTSPr
     assert tts.running == 0
 
 
-async def test_concurrent_replies_share_one_loaded_model(provider: PhononTTSProvider) -> None:
+async def test_concurrent_replies_share_one_loaded_model(
+    provider: PhononTTSProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_FakeStream, "pace", 0.005)  # long enough to overlap
+
     async def speak(text: str) -> int:
         return len([c async for c in provider.synthesize_stream(text)])
 

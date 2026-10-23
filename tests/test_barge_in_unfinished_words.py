@@ -23,6 +23,7 @@ from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
 from roomkit.voice.pipeline import AudioPipelineConfig
 from roomkit.voice.pipeline.backchannel import PhraseBackchannelDetector
 from roomkit.voice.stt.base import STTProvider
+from tests.channel_tasks import settled
 
 _SILENT_CHUNK = AudioFrame(data=b"\x00\x00" * 1600)
 
@@ -34,6 +35,7 @@ class _ScriptSTT(STTProvider):
     def __init__(self, results: list[TranscriptionResult], *, kept: bool = False) -> None:
         self._results = list(results)
         self._kept = kept
+        self.spent = asyncio.Event()
 
     @property
     def supports_streaming(self) -> bool:
@@ -51,8 +53,18 @@ class _ScriptSTT(STTProvider):
     ) -> AsyncIterator[TranscriptionResult]:
         async for _ in audio_stream:
             break
-        while self._results:
-            yield self._results.pop(0)
+        try:
+            while self._results:
+                yield self._results.pop(0)
+        finally:
+            if not self._results:
+                self.spent.set()  # every result read by the channel
+
+
+async def _settle(channel: VoiceChannel) -> None:
+    """Until the work the channel scheduled on what it heard is done; its
+    continuous STT loop runs as long as the session and is left out."""
+    await settled(channel, lasting=("run_continuous",), timeout=2)
 
 
 def _partials(*texts: str) -> list[TranscriptionResult]:
@@ -108,7 +120,8 @@ async def _said_over_the_agent(
         session_id=session.id, text=response
     )
     await backend.simulate_audio_received(session, _SILENT_CHUNK)
-    await asyncio.sleep(0.4)
+    await asyncio.wait_for(stt.spent.wait(), 2)
+    await _settle(channel)
     await channel.close()
     await kit.close()
     return heard, cuts, backchannels

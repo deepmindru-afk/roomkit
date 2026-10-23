@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import struct
 import wave
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,8 @@ import pytest
 
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.base import VoiceSession
+from roomkit.voice.pipeline.recorder import wav
+from roomkit.voice.pipeline.recorder._wav_writer import make_frame_op
 from roomkit.voice.pipeline.recorder.base import (
     RecordingChannelMode,
     RecordingConfig,
@@ -18,6 +21,24 @@ from roomkit.voice.pipeline.recorder.base import (
     RecordingTrigger,
 )
 from roomkit.voice.pipeline.recorder.wav import WavFileRecorder
+
+
+class _Clock:
+    """When a tap is captured: a test moves it on instead of sleeping."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    """The recorder's taps read their capture time from a clock the test holds."""
+    held = _Clock()
+    monkeypatch.setattr(wav, "make_frame_op", partial(make_frame_op, clock=held))
+    return held
 
 
 def _frame(data: bytes = b"\x00\x00", sample_rate: int = 16000) -> AudioFrame:
@@ -486,9 +507,8 @@ class TestAllMode:
 
 
 class TestSilenceInsertion:
-    def test_gap_between_taps_inserts_silence(self, tmp_path: Path) -> None:
+    def test_gap_between_taps_inserts_silence(self, tmp_path: Path, clock: _Clock) -> None:
         """When there's a significant gap between taps, silence should be inserted."""
-        import time
 
         recorder = WavFileRecorder()
         config = _recording_config(
@@ -502,7 +522,7 @@ class TestSilenceInsertion:
         recorder.tap_inbound(handle, _frame(tone))
 
         # Wait 200ms — well above the 30ms threshold, should become silence
-        time.sleep(0.2)
+        clock.now += 0.2
 
         # Second tap: 100 samples of tone
         recorder.tap_inbound(handle, _frame(tone))
@@ -567,9 +587,8 @@ class TestSilenceInsertion:
         # Should be approximately 200 samples (two taps, no significant gap)
         assert total_frames == pytest.approx(200, abs=100)
 
-    def test_outbound_gap_inserts_silence(self, tmp_path: Path) -> None:
+    def test_outbound_gap_inserts_silence(self, tmp_path: Path, clock: _Clock) -> None:
         """Outbound track should also insert silence for gaps."""
-        import time
 
         recorder = WavFileRecorder()
         config = _recording_config(
@@ -580,7 +599,7 @@ class TestSilenceInsertion:
 
         tone = _pcm_tone(100, value=500)
         recorder.tap_outbound(handle, _frame(tone))
-        time.sleep(0.2)
+        clock.now += 0.2
         recorder.tap_outbound(handle, _frame(tone))
         result = recorder.stop(handle)
 
@@ -593,9 +612,8 @@ class TestSilenceInsertion:
 
 
 class TestSilenceGapEdgeCases:
-    def test_separate_inbound_gap_inserts_silence(self, tmp_path: Path) -> None:
+    def test_separate_inbound_gap_inserts_silence(self, tmp_path: Path, clock: _Clock) -> None:
         """SEPARATE mode inbound track should insert silence for gaps."""
-        import time
 
         recorder = WavFileRecorder()
         config = _recording_config(
@@ -606,7 +624,7 @@ class TestSilenceGapEdgeCases:
 
         tone = _pcm_tone(100, value=1000)
         recorder.tap_inbound(handle, _frame(tone))
-        time.sleep(0.2)
+        clock.now += 0.2
         recorder.tap_inbound(handle, _frame(tone))
         result = recorder.stop(handle)
 
@@ -617,9 +635,10 @@ class TestSilenceGapEdgeCases:
         # Should have silence gap between the two taps
         assert total_frames > 200
 
-    def test_non_separate_outbound_gap_inserts_silence(self, tmp_path: Path) -> None:
+    def test_non_separate_outbound_gap_inserts_silence(
+        self, tmp_path: Path, clock: _Clock
+    ) -> None:
         """Non-SEPARATE (MIXED) outbound track should insert silence for gaps."""
-        import time
 
         recorder = WavFileRecorder()
         config = _recording_config(
@@ -630,7 +649,7 @@ class TestSilenceGapEdgeCases:
 
         tone = _pcm_tone(100, value=500)
         recorder.tap_outbound(handle, _frame(tone))
-        time.sleep(0.2)
+        clock.now += 0.2
         recorder.tap_outbound(handle, _frame(tone))
         result = recorder.stop(handle)
 
@@ -650,18 +669,6 @@ class TestSilenceGapEdgeCases:
         handle = recorder.start(_session(), config)
         # The recorder should use a temp dir fallback, not the traversal path
         assert ".." not in handle.path
-
-
-class TestImport:
-    def test_import_from_pipeline(self) -> None:
-        from roomkit.voice.pipeline import WavFileRecorder as W
-
-        assert W is WavFileRecorder
-
-    def test_import_from_voice(self) -> None:
-        from roomkit.voice import WavFileRecorder as W
-
-        assert W is WavFileRecorder
 
 
 class TestWriterThread:

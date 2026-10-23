@@ -733,10 +733,6 @@ class TestVoiceChannelContinuous:
             await kit.attach_channel(room.id, "voice-1")
             session = await kit.join(room.id, "voice-1", participant_id="owner")
 
-            await backend.simulate_audio_received(session, AudioFrame(data=_PCM_16K * 2))
-            await asyncio.sleep(0.3)
-            await backend.simulate_audio_received(session, AudioFrame(data=_PCM_16K * 2))
-
             async def said() -> list[tuple[Any, str]]:
                 events = await kit.store.list_events(room.id, offset=0, limit=20)
                 return [
@@ -744,6 +740,13 @@ class TestVoiceChannelContinuous:
                     for e in events
                     if e.source.channel_id == "voice-1" and e.type == EventType.MESSAGE
                 ]
+
+            await backend.simulate_audio_received(session, AudioFrame(data=_PCM_16K * 2))
+            for _ in range(150):  # the first turn reached the room: its audio went out
+                if await said():
+                    break
+                await asyncio.sleep(0.02)
+            await backend.simulate_audio_received(session, AudioFrame(data=_PCM_16K * 2))
 
             await _eventually(lambda: record.connections >= 1)
             for _ in range(150):

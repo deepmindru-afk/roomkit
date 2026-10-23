@@ -94,7 +94,7 @@ async def test_an_auto_greeting_is_the_model_s_own_turn_on_every_realtime_channe
         if any(call.method == "inject_text" for call in provider.calls):
             break
         await asyncio.sleep(0.01)
-    await asyncio.sleep(0.1)
+    await kit.hook_engine.drain_observers()  # the greeting's observer, a broadcast included
     await kit.close()
 
     injected = [

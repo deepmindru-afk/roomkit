@@ -156,11 +156,20 @@ async def _connect(kit: RoomKit) -> Any:
     return await kit.connect_voice(room.id, "user-1", "voice-1")
 
 
-async def _speak(backend: MockVoiceBackend, session: Any) -> None:
-    """One utterance: SPEECH_START, a mid frame, SPEECH_END."""
+async def _speak(channel: VoiceChannel, backend: MockVoiceBackend, session: Any) -> None:
+    """One utterance: SPEECH_START, a mid frame, SPEECH_END, then its
+    transcription and routing, which the channel runs in tasks of its own."""
     for byte in (b"\x01\x00", b"\x02\x00", b"\x03\x00"):
         await backend.simulate_audio_received(session, AudioFrame(data=byte))
-    await asyncio.sleep(0.15)
+    async with asyncio.timeout(5):
+        while pending := [t for t in channel._scheduled_tasks if not t.done()]:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+
+async def _until(predicate: Any) -> None:
+    async with asyncio.timeout(5):
+        while not predicate():
+            await asyncio.sleep(0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +183,7 @@ class TestPerSessionLanguage:
         kit, channel, backend = _vad_kit(stt)
         session = await _connect(kit)
 
-        await _speak(backend, session)
+        await _speak(channel, backend, session)
 
         assert stt.languages_requested == [None]
         assert channel.get_stt_language(session) is None
@@ -184,12 +193,12 @@ class TestPerSessionLanguage:
         kit, channel, backend = _vad_kit(stt, utterances=3)
         session = await _connect(kit)
 
-        await _speak(backend, session)
+        await _speak(channel, backend, session)
         channel.set_stt_language(session, "fr-CA")
         assert channel.get_stt_language(session) == "fr-CA"
-        await _speak(backend, session)
+        await _speak(channel, backend, session)
         channel.set_stt_language(session, None)
-        await _speak(backend, session)
+        await _speak(channel, backend, session)
 
         assert stt.languages_requested == [None, "fr-CA", None]
 
@@ -199,7 +208,7 @@ class TestPerSessionLanguage:
         session = await _connect(kit)
 
         channel.set_stt_language(session, "fr-CA")
-        await _speak(backend, session)
+        await _speak(channel, backend, session)
 
         assert stt.languages_requested == ["fr-CA"]
 
@@ -275,7 +284,7 @@ class TestEventsCarryLanguage:
             return HookResult.allow()
 
         session = await _connect(kit)
-        await _speak(backend, session)
+        await _speak(channel, backend, session)
 
         assert seen == ["fr"]
 
@@ -294,7 +303,7 @@ class TestEventsCarryLanguage:
             return HookResult.allow()
 
         session = await _connect(kit)
-        await _speak(backend, session)
+        await _speak(channel, backend, session)
 
         assert partials == ["fr"]
         assert finals == ["fr"]
@@ -310,7 +319,7 @@ class TestEventsCarryLanguage:
             return HookResult.allow()
 
         session = await _connect(kit)
-        await _speak(backend, session)
+        await _speak(channel, backend, session)
 
         assert seen == ["es"]
 
@@ -340,7 +349,7 @@ class TestLanguageLockInVadMode:
         session = await _connect(kit)
 
         assert channel.get_stt_language(session) == "multi"
-        await _speak(backend, session)
+        await _speak(channel, backend, session)
         assert stt.languages_requested == ["multi"]
 
     async def test_the_reported_language_pins_the_next_utterance(self) -> None:
@@ -349,8 +358,8 @@ class TestLanguageLockInVadMode:
         kit, channel, backend = _vad_kit(stt, utterances=2, lock=lock)
         session = await _connect(kit)
 
-        await _speak(backend, session)
-        await _speak(backend, session)
+        await _speak(channel, backend, session)
+        await _speak(channel, backend, session)
 
         assert stt.languages_requested == ["multi", "fr-CA"]
         assert channel.get_stt_language(session) == "fr-CA"
@@ -369,7 +378,7 @@ class TestLanguageLockInVadMode:
         session = await _connect(kit)
 
         for _ in range(4):
-            await _speak(backend, session)
+            await _speak(channel, backend, session)
 
         assert stt.languages_requested == ["multi", "fr-CA", "fr-CA", "multi"]
         # an empty stream falls back to batch, which is asked in the same language
@@ -382,7 +391,7 @@ class TestLanguageLockInVadMode:
         session = await _connect(kit)
 
         for _ in range(3):
-            await _speak(backend, session)
+            await _speak(channel, backend, session)
 
         assert stt.languages_requested == ["multi", "fr", "fr"]
         assert channel.get_stt_language(session) == "multi"
@@ -392,7 +401,7 @@ class TestLanguageLockInVadMode:
         lock = STTLanguageLock()
         kit, channel, backend = _vad_kit(stt, lock=lock)
         session = await _connect(kit)
-        await _speak(backend, session)
+        await _speak(channel, backend, session)
         assert lock.language_for(session.id) == "fr"
 
         await kit.disconnect_voice(session)
@@ -432,13 +441,11 @@ class TestContinuousMode:
         assert channel._continuous_stt
 
         await backend.simulate_audio_received(session, _CHUNK)
-        await asyncio.sleep(0.3)
-        assert stt.languages_requested == [None]
+        await _until(lambda: stt.languages_requested == [None])
 
         channel.set_stt_language(session, "fr-CA")
-        await asyncio.sleep(0.3)
         await backend.simulate_audio_received(session, _CHUNK)
-        await asyncio.sleep(0.3)
+        await _until(lambda: len(stt.languages_requested) == 2)
 
         assert stt.languages_requested == [None, "fr-CA"]
         await channel.close()
@@ -457,9 +464,9 @@ class TestContinuousMode:
         session = await _connect(kit)
 
         await backend.simulate_audio_received(session, _CHUNK)
-        await asyncio.sleep(0.3)
+        await _until(lambda: seen == ["fr"])  # the lock read the first cycle's language
         await backend.simulate_audio_received(session, _CHUNK)
-        await asyncio.sleep(0.3)
+        await _until(lambda: len(stt.languages_requested) == 2)
 
         assert stt.languages_requested == ["multi", "fr-CA"]
         assert seen[:1] == ["fr"]

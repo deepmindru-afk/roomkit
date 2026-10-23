@@ -20,10 +20,14 @@ from roomkit.voice.pipeline import AudioPipelineConfig
 from roomkit.voice.stt.base import STTProvider
 
 _LOUD = AudioFrame(data=(1000).to_bytes(2, "little", signed=True) * 320)  # 20 ms, RMS 1000
+# How long a run of sound waits for its words, on a test's scale: past the
+# first 100 ms the STT is handed, so its words come inside the wait.
+_WORDS_WAIT_MS = 200
 
 
 class _HearsAfter(STTProvider):
-    """A streaming STT that hears *words* 0.2 s into the audio, or nothing at all."""
+    """A streaming STT that hears *words* in the first audio it is handed
+    (100 ms of it), inside the run's wait for them, or nothing at all."""
 
     def __init__(self, words: str | None) -> None:
         self._words = words
@@ -40,7 +44,6 @@ class _HearsAfter(STTProvider):
     ) -> AsyncIterator[TranscriptionResult]:
         async for _ in audio_stream:
             break
-        await asyncio.sleep(0.2)
         if self._words:
             yield TranscriptionResult(text=self._words, is_final=False)
         async for _ in audio_stream:
@@ -51,12 +54,14 @@ def _semantic(*, cut_without_words: bool) -> InterruptionConfig:
     return InterruptionConfig(
         strategy=InterruptionStrategy.SEMANTIC,
         backchannel_detector=PhraseBackchannelDetector(cut_without_words=cut_without_words),
-        transcript_wait_ms=1000,
+        min_speech_ms=40,
+        transcript_wait_ms=_WORDS_WAIT_MS,
     )
 
 
 async def _cut(words: str | None, *, cut_without_words: bool) -> bool:
-    """Whether 2 s of loud audio, with *words* heard in it, cut the agent's reply."""
+    """Whether loud audio, with *words* heard in it, cuts the agent's reply:
+    fed until it does, at most twice the run's wait for words."""
     backend = MockVoiceBackend()
     channel = VoiceChannel(
         "voice",
@@ -75,11 +80,11 @@ async def _cut(words: str | None, *, cut_without_words: bool) -> bool:
         "r1",
         ChannelBinding(room_id="r1", channel_id="voice", channel_type=ChannelType.VOICE),
     )
-    cuts: list[Any] = []
+    cut = asyncio.Event()
 
     @kit.hook(HookTrigger.ON_BARGE_IN, HookExecution.ASYNC)
     async def on_barge_in(event: Any, ctx: Any) -> None:
-        cuts.append(event)
+        cut.set()
 
     channel._playing_sessions[session.id] = TTSPlaybackState(
         session_id=session.id,
@@ -87,13 +92,14 @@ async def _cut(words: str | None, *, cut_without_words: bool) -> bool:
         started_at=datetime.now(UTC) - timedelta(seconds=2),
     )
     try:
-        for _ in range(100):  # 2 s of loud audio while the agent speaks
+        for _ in range(2 * _WORDS_WAIT_MS // 20):  # loud audio while the agent speaks
             await backend.simulate_audio_received(session, _LOUD)
             await asyncio.sleep(0.02)
-        await asyncio.sleep(0.2)
+            if cut.is_set():
+                break
     finally:
-        await kit.close()
-    return bool(cuts)
+        await kit.close()  # a barge-in decided by the last frame reaches its hook first
+    return cut.is_set()
 
 
 async def test_sound_without_words_cuts_by_default() -> None:

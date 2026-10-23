@@ -603,6 +603,21 @@ class TestVoiceChannelBridge:
 # ======================================================================
 
 
+async def _until(predicate: object, timeout: float = 5.0) -> None:
+    """Until *predicate* holds."""
+    async with asyncio.timeout(timeout):
+        while not predicate():  # type: ignore[operator]
+            await asyncio.sleep(0.01)
+
+
+async def _decided(decisions: list) -> None:
+    """Until the BEFORE_BRIDGE_AUDIO hook decided, then a few loop turns: a
+    frame it let through would be forwarded by then."""
+    await _until(lambda: bool(decisions))
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
 def _make_frame(
     samples: list[int],
     sample_rate: int = 16000,
@@ -1160,7 +1175,7 @@ class TestBeforeBridgeAudioHook:
 
         frame = AudioFrame(data=b"\x01\x02" * 160, sample_rate=16000)
         await backend.simulate_audio_received(s1, frame)
-        await asyncio.sleep(0.1)
+        await _until(lambda: any(sid == s2.id for sid, _ in backend.sent_audio))
 
         assert len(captured) >= 1
         assert captured[0].session.id == s1.id
@@ -1177,13 +1192,16 @@ class TestBeforeBridgeAudioHook:
 
         kit, voice, backend, s1, s2 = await self._setup_bridged_kit()
 
+        blocked = []
+
         @kit.hook(HookTrigger.BEFORE_BRIDGE_AUDIO, execution=HookExecution.SYNC)
         async def block_all(event, ctx):
+            blocked.append(event)
             return HookResult.block(reason="muted")
 
         frame = AudioFrame(data=b"\x01\x02" * 160, sample_rate=16000)
         await backend.simulate_audio_received(s1, frame)
-        await asyncio.sleep(0.1)
+        await _decided(blocked)
 
         # No audio should have been forwarded
         forwarded = [sid for sid, _ in backend.sent_audio if sid == s2.id]
@@ -1196,8 +1214,11 @@ class TestBeforeBridgeAudioHook:
 
         kit, voice, backend, s1, s2 = await self._setup_bridged_kit()
 
+        decided = []
+
         @kit.hook(HookTrigger.BEFORE_BRIDGE_AUDIO, execution=HookExecution.SYNC)
         async def block_s1_only(event, ctx):
+            decided.append(event.session.id)
             if event.session.id == s1.id:
                 return HookResult.block(reason="s1_muted")
             return HookResult.allow()
@@ -1205,14 +1226,15 @@ class TestBeforeBridgeAudioHook:
         # Audio from s1 should be blocked
         frame = AudioFrame(data=b"\x01\x02" * 160, sample_rate=16000)
         await backend.simulate_audio_received(s1, frame)
-        await asyncio.sleep(0.1)
+        await _decided(decided)
+        assert decided == [s1.id]
 
         forwarded_from_s1 = [sid for sid, _ in backend.sent_audio if sid == s2.id]
         assert len(forwarded_from_s1) == 0, "Audio from s1 should be blocked"
 
         # Audio from s2 should pass through
         await backend.simulate_audio_received(s2, frame)
-        await asyncio.sleep(0.1)
+        await _until(lambda: any(sid == s1.id for sid, _ in backend.sent_audio))
 
         forwarded_from_s2 = [sid for sid, _ in backend.sent_audio if sid == s1.id]
         assert len(forwarded_from_s2) >= 1, "Audio from s2 should pass through"
@@ -1304,7 +1326,7 @@ class TestBridgeWithSTT:
         for _ in range(4):
             await backend.simulate_audio_received(s1, frame)
 
-        await asyncio.sleep(0.2)
+        await _until(lambda: bool(transcripts))
 
         # Bridge: Bob should have received forwarded audio
         forwarded_to_bob = [sid for sid, _ in backend.sent_audio if sid == s2.id]
@@ -1366,7 +1388,7 @@ class TestBridgeWithTTS:
         # TTS: AI speaks into the call for session s1
         backend.sent_audio.clear()
         await voice.say(s1, "Hello Alice, I am the AI moderator.")
-        await asyncio.sleep(0.1)
+        await _until(lambda: any(sid == s1.id for sid, _ in backend.sent_audio))
 
         # TTS should have produced audio sent to s1
         tts_to_alice = [sid for sid, _ in backend.sent_audio if sid == s1.id]
@@ -1433,13 +1455,12 @@ class TestBridgeWithInterruption:
 
         # Start TTS for Alice (simulates AI speaking)
         await voice.say(s1, "Hello Alice, this is a long message from the AI.")
-        await asyncio.sleep(0.05)
 
         # Alice speaks (barge-in) — this should cancel TTS
         frame = AudioFrame(data=b"\x00\x80" * 160, sample_rate=16000)
         for _ in range(4):
             await backend.simulate_audio_received(s1, frame)
-        await asyncio.sleep(0.1)
+        await _until(lambda: any(sid == s2.id for sid, _ in backend.sent_audio))
 
         # Bridge should still forward Alice's audio to Bob
         forwarded_to_bob = [sid for sid, _ in backend.sent_audio if sid == s2.id]

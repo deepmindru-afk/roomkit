@@ -24,6 +24,7 @@ from roomkit.voice.backends.sip import (
     SIPVoiceBackend,
 )
 from roomkit.voice.base import VoiceSessionState
+from tests.bounds import expire, opened_with_cut
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -446,7 +447,7 @@ class TestDialCodecSelection:
 
 class TestDisconnectOutgoing:
     async def test_backend_close_can_finish_slow_media_and_remaining_sessions(
-        self, backend: SIPVoiceBackend
+        self, backend: SIPVoiceBackend, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         backend._uac.send_invite = MagicMock(
             side_effect=[FakeOutgoingCall(call_id="out-1"), FakeOutgoingCall(call_id="out-2")]
@@ -457,15 +458,23 @@ class TestDisconnectOutgoing:
                 for _ in range(2)
             ]
 
+        closing, finished = asyncio.Event(), asyncio.Event()
+
         async def slow_close() -> None:
-            await asyncio.sleep(2.01)
+            closing.set()
+            await finished.wait()
 
         backend._session_states[sessions[0].id].call_session.close = slow_close
         backend._registration_task = None
         backend._stats_task = None
         backend._registered = False
         backend._uas = types.SimpleNamespace(stop=AsyncMock())
-        await backend.close()
+        bounds = opened_with_cut(monkeypatch, seconds=None)
+        close = asyncio.ensure_future(backend.close())
+        await asyncio.wait_for(closing.wait(), 5)
+        expire(bounds)  # whatever bound the shutdown opened runs out mid media close
+        finished.set()
+        await asyncio.wait_for(close, 5)
         assert all(session.state == VoiceSessionState.ENDED for session in sessions)
         assert not backend._session_states
         backend._uas.stop.assert_awaited_once()
@@ -541,18 +550,26 @@ class TestDisconnectOutgoing:
         assert call.hangup.call_count == 2
         assert session.state == VoiceSessionState.ENDED
 
-    async def test_expiry_bounds_stalled_media_close(self, backend: SIPVoiceBackend) -> None:
+    async def test_expiry_bounds_stalled_media_close(
+        self, backend: SIPVoiceBackend, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         with patch("aiosipua.build_sdp", return_value=FakeSdpMessage()):
             session = await backend.dial(to_uri=TO_URI, from_uri=FROM_URI, proxy_addr=PROXY_ADDR)
         state = backend._session_states[session.id]
+        stalled = asyncio.Event()
 
         async def stalled_close() -> None:
+            stalled.set()
             await asyncio.Event().wait()
 
         state.call_session.close = stalled_close
         notified = MagicMock()
         backend.on_call_disconnected(notified)
-        await asyncio.wait_for(backend._expire_session(session.id, state), timeout=3)
+        bounds = opened_with_cut(monkeypatch, seconds=2)  # the expiry's own bound
+        expiry = asyncio.ensure_future(backend._expire_session(session.id, state))
+        await asyncio.wait_for(stalled.wait(), 5)
+        expire(bounds)
+        await asyncio.wait_for(expiry, 5)
         assert backend.get_session(session.id) is None
         notified.assert_called_once_with(session)
 

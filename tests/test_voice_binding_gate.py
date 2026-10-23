@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 from roomkit import (
     RoomKit,
     VoiceChannel,
@@ -17,10 +15,17 @@ from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
 from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.mock import MockTTSProvider
+from tests.channel_tasks import settled
 
 # ---------------------------------------------------------------------------
 # VoiceChannel — binding-gated audio
 # ---------------------------------------------------------------------------
+
+
+async def _settle(channel: VoiceChannel | RealtimeVoiceChannel) -> None:
+    """Until the work the channel scheduled on the audio it got (a segment's
+    transcription, a forwarded frame, a tool call) is done."""
+    await settled(channel, timeout=2)
 
 
 def _speech_events(audio: bytes = b"\x01\x00" * 80) -> list[VADEvent | None]:
@@ -63,7 +68,7 @@ class TestVoiceChannelBindingGate:
 
         await backend.simulate_audio_received(session, AudioFrame(data=b"frame1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"frame2"))
-        await asyncio.sleep(0.15)
+        await _settle(channel)
 
         # STT should have been called (audio reached the pipeline)
         assert len(stt.calls) >= 1
@@ -77,7 +82,7 @@ class TestVoiceChannelBindingGate:
 
         await backend.simulate_audio_received(session, AudioFrame(data=b"frame1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"frame2"))
-        await asyncio.sleep(0.15)
+        await _settle(channel)
 
         # STT should NOT have been called (audio gated)
         assert len(stt.calls) == 0
@@ -91,7 +96,7 @@ class TestVoiceChannelBindingGate:
 
         await backend.simulate_audio_received(session, AudioFrame(data=b"frame1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"frame2"))
-        await asyncio.sleep(0.15)
+        await _settle(channel)
 
         assert len(stt.calls) == 0
         await kit.close()
@@ -104,7 +109,7 @@ class TestVoiceChannelBindingGate:
 
         await backend.simulate_audio_received(session, AudioFrame(data=b"frame1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"frame2"))
-        await asyncio.sleep(0.15)
+        await _settle(channel)
 
         assert len(stt.calls) == 0
         await kit.close()
@@ -118,7 +123,7 @@ class TestVoiceChannelBindingGate:
 
         await backend.simulate_audio_received(session, AudioFrame(data=b"frame1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"frame2"))
-        await asyncio.sleep(0.15)
+        await _settle(channel)
 
         assert len(stt.calls) >= 1
         await kit.close()
@@ -140,7 +145,7 @@ class TestVoiceChannelBindingGate:
 
         await backend.simulate_audio_received(session, AudioFrame(data=b"frame1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"frame2"))
-        await asyncio.sleep(0.15)
+        await _settle(channel)
 
         # Audio should have been gated after mute
         assert len(stt.calls) == 0
@@ -158,7 +163,7 @@ class TestVoiceChannelBindingGate:
 
         await backend.simulate_audio_received(session, AudioFrame(data=b"frame1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"frame2"))
-        await asyncio.sleep(0.15)
+        await _settle(channel)
 
         # Audio should flow again
         assert len(stt.calls) >= 1
@@ -181,7 +186,7 @@ class TestVoiceChannelBindingGate:
 
         await backend.simulate_audio_received(session, AudioFrame(data=b"frame1"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"frame2"))
-        await asyncio.sleep(0.15)
+        await _settle(channel)
 
         assert len(stt.calls) == 0
         await kit.close()
@@ -235,7 +240,7 @@ class TestRealtimeVoiceChannelBindingGate:
         session = sessions[0]
 
         await transport.simulate_client_audio(session, b"client-audio")
-        await asyncio.sleep(0.05)
+        await _settle(channel)
 
         assert len(provider.sent_audio) == 1
         await kit.close()
@@ -246,7 +251,7 @@ class TestRealtimeVoiceChannelBindingGate:
         session = sessions[0]
 
         await transport.simulate_client_audio(session, b"client-audio")
-        await asyncio.sleep(0.05)
+        await _settle(channel)
 
         assert len(provider.sent_audio) == 0
         await kit.close()
@@ -257,7 +262,7 @@ class TestRealtimeVoiceChannelBindingGate:
         session = sessions[0]
 
         await transport.simulate_client_audio(session, b"client-audio")
-        await asyncio.sleep(0.05)
+        await _settle(channel)
 
         assert len(provider.sent_audio) == 0
         await kit.close()
@@ -268,7 +273,7 @@ class TestRealtimeVoiceChannelBindingGate:
         session = sessions[0]
 
         await transport.simulate_client_audio(session, b"client-audio")
-        await asyncio.sleep(0.05)
+        await _settle(channel)
 
         assert len(provider.sent_audio) == 0
         await kit.close()
@@ -279,7 +284,7 @@ class TestRealtimeVoiceChannelBindingGate:
         session = sessions[0]
 
         await transport.simulate_client_audio(session, b"client-audio")
-        await asyncio.sleep(0.05)
+        await _settle(channel)
 
         assert len(provider.sent_audio) == 1
         await kit.close()
@@ -291,14 +296,14 @@ class TestRealtimeVoiceChannelBindingGate:
 
         # Verify audio works initially
         await transport.simulate_client_audio(session, b"audio-before")
-        await asyncio.sleep(0.05)
+        await _settle(channel)
         assert len(provider.sent_audio) == 1
 
         # Mute dynamically
         await kit.mute(room_id, "rt-voice-1")
 
         await transport.simulate_client_audio(session, b"audio-after")
-        await asyncio.sleep(0.05)
+        await _settle(channel)
 
         # Should still be 1 (second audio was gated)
         assert len(provider.sent_audio) == 1
@@ -311,14 +316,14 @@ class TestRealtimeVoiceChannelBindingGate:
 
         # Verify audio is gated
         await transport.simulate_client_audio(session, b"audio-before")
-        await asyncio.sleep(0.05)
+        await _settle(channel)
         assert len(provider.sent_audio) == 0
 
         # Unmute dynamically
         await kit.unmute(room_id, "rt-voice-1")
 
         await transport.simulate_client_audio(session, b"audio-after")
-        await asyncio.sleep(0.05)
+        await _settle(channel)
 
         assert len(provider.sent_audio) == 1
         await kit.close()
@@ -331,7 +336,7 @@ class TestRealtimeVoiceChannelBindingGate:
         await kit.set_access(room_id, "rt-voice-1", Access.READ_ONLY)
 
         await transport.simulate_client_audio(session, b"audio-gated")
-        await asyncio.sleep(0.05)
+        await _settle(channel)
 
         assert len(provider.sent_audio) == 0
         await kit.close()
@@ -363,7 +368,7 @@ class TestMuteOnToolCall:
         session = await channel.start_session(room.id, "user-1", "fake-ws")
 
         await provider.simulate_tool_call(session, "call-1", "get_data", {})
-        await asyncio.sleep(0.1)
+        await _settle(channel)
 
         # Transport should have been muted and then unmuted
         mute_calls = [c for c in transport.calls if c.method == "set_input_muted"]
@@ -390,7 +395,7 @@ class TestMuteOnToolCall:
         session = await channel.start_session(room.id, "user-1", "fake-ws")
 
         await provider.simulate_tool_call(session, "call-1", "get_data", {})
-        await asyncio.sleep(0.1)
+        await _settle(channel)
 
         # Transport should NOT have been muted
         mute_calls = [c for c in transport.calls if c.method == "set_input_muted"]

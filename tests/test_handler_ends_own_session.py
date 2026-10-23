@@ -41,10 +41,10 @@ Ending = Callable[[], Awaitable[Any]]
 
 class _Calls:
     """The handlers' side: the hang-up call ends the session once the other
-    call is running, then works *after* seconds more; the other runs until
-    it is cancelled."""
+    call is running, then works *after* seconds more, or until *after* is
+    set; the other runs until it is cancelled."""
 
-    def __init__(self, after: float = 0.0) -> None:
+    def __init__(self, after: float | asyncio.Event = 0.0) -> None:
         self.ending: Ending | None = None
         self.after = after
         self.lookup_running = asyncio.Event()
@@ -64,7 +64,9 @@ class _Calls:
         assert self.ending is not None
         await self.ending()
         self.ended.set()
-        if self.after:
+        if isinstance(self.after, asyncio.Event):
+            await self.after.wait()
+        elif self.after:
             # Without a wait the handler returns at once: an ending it did
             # not await then runs while the call delivers and reports.
             await asyncio.sleep(self.after)
@@ -132,7 +134,7 @@ _CONFERENCE_ENDINGS: dict[str, Callable[[RoomKit, Any, Any], Ending]] = {
 }
 
 
-async def _realtime(ending: str, after: float = 0.0) -> _Run:
+async def _realtime(ending: str, after: float | asyncio.Event = 0.0) -> _Run:
     provider = MockRealtimeProvider()
     calls = _Calls(after)
 
@@ -158,7 +160,7 @@ async def _realtime(ending: str, after: float = 0.0) -> _Run:
     return _Run(calls, reports, kit, channel, session)
 
 
-async def _conference(ending: str, after: float = 0.0) -> _Run:
+async def _conference(ending: str, after: float | asyncio.Event = 0.0) -> _Run:
     provider = MockRealtimeProvider()
     calls = _Calls(after)
 
@@ -217,7 +219,7 @@ async def _backend(ending: str) -> _Run:
     return _Run(calls, reports, kit, channel, session, model)
 
 
-async def _host(host: str, ending: str, after: float = 0.0) -> _Run:
+async def _host(host: str, ending: str, after: float | asyncio.Event = 0.0) -> _Run:
     return await (_realtime if host == "realtime" else _conference)(ending, after)
 
 
@@ -283,10 +285,16 @@ _ENDS_ITS_SESSION = [("realtime", "end_session"), ("conference", "detach")]
 
 @pytest.mark.parametrize(("host", "ending"), _ENDS_ITS_SESSION)
 async def test_a_spared_call_still_working_at_close_is_waited_for(host: str, ending: str) -> None:
-    run = await _host(host, ending, after=0.3)
+    working = asyncio.Event()
+    run = await _host(host, ending, after=working)
     await asyncio.wait_for(run.calls.ended.wait(), 3)
 
-    await asyncio.wait_for(run.kit.close(), 5)
+    closing = asyncio.ensure_future(run.kit.close())
+    await until(lambda: "lookup cancelled" in run.calls.trace)  # the close is under way
+    await asyncio.sleep(0.01)
+    assert not closing.done()  # held while the hang-up call works
+    working.set()
+    await asyncio.wait_for(closing, 5)
 
     assert sorted(run.calls.trace) == ["hangup returned", "lookup cancelled"]
     assert sorted(run.reports) == [("c1", False), ("c2", True)]
@@ -296,12 +304,12 @@ async def test_a_spared_call_still_working_at_close_is_waited_for(host: str, end
 async def test_a_spared_call_past_the_close_bound_is_cut_and_reported(
     host: str, ending: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(_realtime_endings, "CLOSE_WAIT_S", 0.1)
+    monkeypatch.setattr(_realtime_endings, "CLOSE_WAIT_S", 0.02)
     run = await _host(host, ending, after=30)
     await asyncio.wait_for(run.calls.ended.wait(), 3)
 
     await asyncio.wait_for(run.kit.close(), 5)
-    await asyncio.sleep(0.05)
+    await until(lambda: len(run.reports) == 2)  # the cut call is reported as it unwinds
 
     assert run.calls.trace == ["lookup cancelled"]
     assert sorted(run.reports) == [("c1", True), ("c2", True)]
@@ -311,8 +319,7 @@ async def test_a_spared_call_past_the_close_bound_is_cut_and_reported(
 async def test_a_spared_call_is_held_only_while_it_runs(host: str, ending: str) -> None:
     run = await _host(host, ending)
     await until(lambda: len(run.calls.trace) == 2)
-    await asyncio.sleep(0.05)
     realtime = run.channel if host == "realtime" else run.channel._realtime
 
-    assert len(realtime._spared_calls) == 0
+    await until(lambda: len(realtime._spared_calls) == 0)  # let go once it returned
     await asyncio.wait_for(run.kit.close(), 5)

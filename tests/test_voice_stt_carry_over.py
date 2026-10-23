@@ -64,6 +64,7 @@ class _HangsThenRecords(STTProvider):
         self.release = asyncio.Event()
         self.received: list[bytes] = []
         self.calls = 0
+        self.recorded = asyncio.Event()  # the next stream ran out of audio and ended
 
     @property
     def supports_streaming(self) -> bool:
@@ -81,8 +82,9 @@ class _HangsThenRecords(STTProvider):
             raise ConnectionError("handshake timed out")
         while True:
             try:
-                chunk = await asyncio.wait_for(anext(audio_stream), timeout=0.3)
+                chunk = await asyncio.wait_for(anext(audio_stream), timeout=0.05)
             except (TimeoutError, StopAsyncIteration):
+                self.recorded.set()
                 return
             self.received.append(chunk.data)
         yield TranscriptionResult(text="", is_final=True)  # pragma: no cover
@@ -102,13 +104,15 @@ async def test_a_reconnect_after_a_hang_carries_the_last_seconds_only(
 
     # The first chunk opens the stream that hangs; 8 s more queue up behind it.
     await backend.simulate_audio_received(session, AudioFrame(data=_TENTH))
-    await asyncio.sleep(0.05)
+    async with asyncio.timeout(2):  # the first stream is open, and hangs
+        while stt.calls < 1:
+            await asyncio.sleep(0.005)
     for _ in range(80):
         await backend.simulate_audio_received(session, AudioFrame(data=_TENTH))
     await asyncio.sleep(0.05)
     with caplog.at_level(logging.WARNING, logger="roomkit.voice"):
         stt.release.set()
-        await asyncio.sleep(0.8)
+        await asyncio.wait_for(stt.recorded.wait(), 3)
 
     assert stt.calls == 2
     assert len(b"".join(stt.received)) == len(_TENTH) * int(_CARRY_OVER_MAX_S * 10)

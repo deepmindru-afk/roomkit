@@ -12,6 +12,7 @@ a hook, and this is about the reads the voice side adds.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ from roomkit import (
 )
 from roomkit.channels.conference import ConferenceChannel
 from roomkit.channels.voice import TTSPlaybackState, VoiceChannel
+from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.models.context import RoomContext
 from roomkit.models.event import TextContent
 from roomkit.voice.audio_frame import AudioFrame
@@ -110,7 +112,6 @@ async def _voice_room(
 async def _speak(backend: MockVoiceBackend, session: Any) -> None:
     for byte in (b"\x01\x00", b"\x02\x00", b"\x03\x00"):
         await backend.simulate_audio_received(session, AudioFrame(data=byte))
-    await asyncio.sleep(0.15)
 
 
 async def _vad_utterance() -> tuple[RoomKit, str, Act]:
@@ -135,11 +136,7 @@ async def _turn_after_wait() -> tuple[RoomKit, str, Act]:
     channel = VoiceChannel("voice-1", stt=stt, backend=backend, pipeline=pipeline)
     kit, session, room_id = await _voice_room(channel, backend)
 
-    async def act() -> None:
-        await _speak(backend, session)
-        await asyncio.sleep(0.3)
-
-    return kit, room_id, act
+    return kit, room_id, lambda: _speak(backend, session)
 
 
 async def _barge_in() -> tuple[RoomKit, str, Act]:
@@ -167,11 +164,11 @@ async def _continuous_final() -> tuple[RoomKit, str, Act]:
     )
     kit, session, room_id = await _voice_room(channel, backend)
 
-    async def act() -> None:
-        await backend.simulate_audio_received(session, AudioFrame(data=b"\x01\x00" * 1600))
-        await asyncio.sleep(0.3)
-
-    return kit, room_id, act
+    return (
+        kit,
+        room_id,
+        lambda: backend.simulate_audio_received(session, AudioFrame(data=b"\x01\x00" * 1600)),
+    )
 
 
 async def _batch_flush() -> tuple[RoomKit, str, Act]:
@@ -196,36 +193,42 @@ async def _say() -> tuple[RoomKit, str, Act]:
     return kit, room_id, lambda: channel.say(session, "hello there")
 
 
-async def _realtime_room() -> tuple[RoomKit, MockRealtimeProvider, Any, str]:
-    provider = MockRealtimeProvider()
-    channel = RealtimeVoiceChannel(
-        "rt-voice-1", provider=provider, transport=MockRealtimeTransport()
-    )
+async def _realtime_room() -> tuple[
+    RoomKit, MockRealtimeProvider, MockRealtimeTransport, Any, str
+]:
+    provider, transport = MockRealtimeProvider(), MockRealtimeTransport()
+    channel = RealtimeVoiceChannel("rt-voice-1", provider=provider, transport=transport)
     kit = RoomKit()
     kit.register_channel(channel)
     room = await kit.create_room()
     await kit.attach_channel(room.id, "rt-voice-1")
     session = await channel.start_session(room.id, "user-1", "fake-ws")
-    return kit, provider, session, room.id
+    return kit, provider, transport, session, room.id
 
 
 async def _realtime_final() -> tuple[RoomKit, str, Act]:
-    kit, provider, session, room_id = await _realtime_room()
+    kit, provider, _, session, room_id = await _realtime_room()
 
-    async def act() -> None:
-        await provider.simulate_transcription(session, "hello there", "user", True)
-        await asyncio.sleep(0.1)
-
-    return kit, room_id, act
+    return (
+        kit,
+        room_id,
+        lambda: provider.simulate_transcription(session, "hello there", "user", True),
+    )
 
 
 async def _realtime_speech() -> tuple[RoomKit, str, Act]:
-    kit, provider, session, room_id = await _realtime_room()
+    kit, provider, transport, session, room_id = await _realtime_room()
+
+    def told() -> int:
+        return sum(1 for _, message in transport.sent_messages if message["type"] == "speaking")
 
     async def act() -> None:
         await provider.simulate_speech_start(session)
         await provider.simulate_speech_end(session)
-        await asyncio.sleep(0.1)
+        # Each edge's hooks ran before the client is told who speaks.
+        async with asyncio.timeout(5):
+            while told() < 2:
+                await asyncio.sleep(0.01)
 
     return kit, room_id, act
 
@@ -353,15 +356,27 @@ async def _transcript_reached(kit: RoomKit, room_id: str) -> bool:
     )
 
 
+async def _routed(kit: RoomKit, room_id: str) -> None:
+    """Until the transcript is in the timeline: the door's events are behind it.
+    A room deleted before is not there until the inbound opens it again."""
+    async with asyncio.timeout(5):
+        while True:
+            with contextlib.suppress(RoomNotFoundError):
+                if await _transcript_reached(kit, room_id):
+                    return
+            await asyncio.sleep(0.01)
+
+
 @pytest.mark.parametrize("door", list(DOORS.values()), ids=list(DOORS))
 async def test_no_hook_no_read(door: Door) -> None:
     kit, room_id, act = await door.setup()
     try:
         reads = _spy_voice_reads(kit)
         await act()
-        assert reads == []
         if door.routes:
-            assert await _transcript_reached(kit, room_id)
+            await _routed(kit, room_id)
+        await kit.close()  # what the door left running has run
+        assert reads == []
     finally:
         await kit.close()
 
@@ -374,7 +389,10 @@ async def test_hooks_read_once_per_event(door: Door) -> None:
         _register(kit, door.triggers, seen)
         reads = _spy_voice_reads(kit)
         await act()
-        await asyncio.sleep(0.05)  # async observers run off the event
+        async with asyncio.timeout(5):  # async observers run off the event
+            while {trigger for trigger, _ in seen} != set(door.triggers):
+                await asyncio.sleep(0.01)
+        await kit.close()  # a second read of an event would be in by now
         assert {trigger for trigger, _ in seen} == set(door.triggers)
         assert {room for _, room in seen} == {room_id}
         assert len(reads) == door.events
@@ -394,8 +412,9 @@ async def test_an_utterance_whose_room_is_gone_reaches_the_inbound(observer: boo
             _register(kit, (HookTrigger.ON_SPEECH_END,), seen)
         await kit.store.delete_room(room_id)
         await act()
+        await _routed(kit, room_id)
+        await kit.close()  # the observer, had it run, would be in
         assert seen == []
-        assert await _transcript_reached(kit, room_id)
     finally:
         await kit.close()
 
@@ -408,6 +427,9 @@ async def test_a_sync_hook_whose_context_fails_to_read_drops_the_utterance() -> 
         _register(kit, (HookTrigger.ON_TRANSCRIPTION,), seen)
         await kit.store.delete_room(room_id)
         await act()
+        # Nothing marks an utterance dropped: let through, it would have
+        # reopened its room within a few milliseconds of its transcript.
+        await asyncio.sleep(0.05)
         assert seen == []
         assert await kit.store.get_room(room_id) is None
     finally:

@@ -338,13 +338,13 @@ class TestBargeInDuringStreamedResponse:
         # The pull is cancelled while the text before a tool call crosses a
         # slow BEFORE_BROADCAST hook: that commit must still land.
         kit, voice, _, ai, room_id, (session,) = await _setup()
-        committing = asyncio.Event()
+        committing, committed = asyncio.Event(), asyncio.Event()
 
         @kit.hook(HookTrigger.BEFORE_BROADCAST)
         async def slow(event: RoomEvent, ctx: Any) -> HookResult:
             if event.source.channel_id == "ai-1" and event.type == EventType.MESSAGE:
                 committing.set()
-                await asyncio.sleep(0.1)
+                await committed.wait()  # as slow as the barge-in needs
             return HookResult.allow()
 
         ai.release.set()
@@ -352,6 +352,7 @@ class TestBargeInDuringStreamedResponse:
         await asyncio.wait_for(committing.wait(), 2)
 
         await voice.interrupt(session, reason="barge_in")
+        committed.set()
         await asyncio.wait_for(turn, 2)
 
         rows = [e for e in _ai_rows(await _events(kit, room_id)) if e.type == EventType.MESSAGE]
@@ -398,19 +399,20 @@ class TestBargeInDuringStreamedResponse:
         """Barge in while the first *row_type* row of the round commits."""
         ai = _RoundAI(ids)
         kit, voice, _, _, room_id, (session,) = await _setup(ai=ai)
-        committing = asyncio.Event()
+        committing, committed = asyncio.Event(), asyncio.Event()
 
         @kit.hook(HookTrigger.BEFORE_BROADCAST)
         async def slow(event: RoomEvent, ctx: Any) -> HookResult:
             first = not committing.is_set()
             if event.source.channel_id == "ai-1" and event.type == row_type and first:
                 committing.set()
-                await asyncio.sleep(0.1)
+                await committed.wait()  # as slow as the barge-in needs
             return HookResult.allow()
 
         turn = _turn(kit, room_id)
         await asyncio.wait_for(committing.wait(), 2)
         await voice.interrupt(session, reason="barge_in")
+        committed.set()
         await asyncio.wait_for(turn, 2)
         rows = _ai_rows(await _events(kit, room_id))
         await kit.close()

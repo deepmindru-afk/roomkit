@@ -19,9 +19,11 @@ from roomkit.voice.tts.pocket import PocketTTSConfig, PocketTTSProvider
 
 
 class _SlowModel:
-    """A stand-in for the loaded model: 20 chunks of 80 ms, 10 ms each."""
+    """A stand-in for the loaded model: 20 chunks of 80 ms, ``pace`` seconds
+    apart: none, unless a test needs the model's thread busy a while."""
 
     instances: list[_SlowModel] = []
+    pace = 0.0
 
     def __init__(self, config: PocketTTSConfig) -> None:
         self.config = config
@@ -40,10 +42,16 @@ class _SlowModel:
                 if cancel.is_set():
                     self.stopped_at = i
                     return
-                time.sleep(0.01)
+                time.sleep(self.pace)
                 yield b"\x01\x00" * 1920
         finally:
             self.running -= 1
+
+
+@pytest.fixture
+def busy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A model that takes 10 ms a chunk: a reply can be cut, or overlap another, mid-way."""
+    monkeypatch.setattr(_SlowModel, "pace", 0.01)
 
 
 @pytest.fixture
@@ -69,6 +77,7 @@ async def test_the_voice_argument_picks_a_configured_voice(provider: PocketTTSPr
     assert _SlowModel.instances[0].calls == [("Salut", "moi")]
 
 
+@pytest.mark.usefixtures("busy")
 async def test_closing_the_stream_stops_the_model_thread(provider: PocketTTSProvider) -> None:
     stream = provider.synthesize_stream("Bonjour")
     await anext(stream)
@@ -79,7 +88,11 @@ async def test_closing_the_stream_stops_the_model_thread(provider: PocketTTSProv
     assert not provider._lock.locked()
 
 
-async def test_concurrent_replies_never_share_the_model(provider: PocketTTSProvider) -> None:
+async def test_concurrent_replies_never_share_the_model(
+    provider: PocketTTSProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_SlowModel, "pace", 0.002)  # 40 ms a reply: two at once would overlap
+
     async def speak(text: str) -> int:
         return len([c async for c in provider.synthesize_stream(text)])
 
@@ -89,6 +102,7 @@ async def test_concurrent_replies_never_share_the_model(provider: PocketTTSProvi
     assert _SlowModel.instances[0].max_running == 1  # one model, loaded once
 
 
+@pytest.mark.usefixtures("busy")
 async def test_a_cancelled_consumer_waits_for_the_thread_before_unlocking(
     provider: PocketTTSProvider,
 ) -> None:

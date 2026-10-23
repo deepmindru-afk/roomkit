@@ -110,6 +110,15 @@ async def _channel(
     return ch, started, observed
 
 
+async def _reported(observed: list[ToolCallEvent], calls: int) -> None:
+    """Until the observing hook was told of *calls* calls, each one ended."""
+    async with asyncio.timeout(5):
+        while len(observed) < calls:
+            await asyncio.sleep(0.001)
+    for _ in range(5):  # what the report's end still runs
+        await asyncio.sleep(0)
+
+
 class TestTheCallWhoseHandlerReconnected:
     async def test_it_runs_to_its_end_and_is_reported_served(self) -> None:
         provider = ReconnectingProvider()
@@ -125,7 +134,7 @@ class TestTheCallWhoseHandlerReconnected:
         holder.update(ch=ch, session=session)
 
         await provider.simulate_tool_call(session, "h1", "switch_agent", {})
-        await asyncio.sleep(0.1)
+        await _reported(observed, 1)
 
         assert provider.reconfigured == [session.id]
         assert provider.injected(session) == ["Introduce yourself"]
@@ -151,7 +160,7 @@ class TestTheCallWhoseHandlerReconnected:
         holder.update(ch=ch, session=session)
 
         await provider.simulate_tool_call(session, "h1", "switch_agent", {})
-        await asyncio.sleep(0.1)
+        await _reported(observed, 1)
 
         assert provider.tool_results == []
         assert [(e.tool_call_id, e.cancelled, e.is_error) for e in observed] == [
@@ -173,7 +182,7 @@ class TestTheCallWhoseHandlerReconnected:
         holder.update(ch=ch, sessions=sessions)
 
         await provider.simulate_tool_call(sessions[0], "h1", "switch_agent", {})
-        await asyncio.sleep(0.1)
+        await _reported(observed, 1)
 
         assert sorted(provider.reconfigured) == sorted(s.id for s in sessions)
         assert [(e.tool_call_id, e.cancelled) for e in observed] == [("h1", False)]
@@ -206,7 +215,7 @@ class TestTheOtherCallsTheReconnectOrphaned:
 
         await provider.simulate_tool_call(session, "h1", "switch_agent", {})
         await asyncio.wait_for(lookup_interrupted.wait(), 1)
-        await asyncio.sleep(0.1)
+        await _reported(observed, 2)
 
         assert provider.tool_results == []
         assert sorted((e.tool_call_id, e.cancelled) for e in observed) == [
@@ -235,7 +244,7 @@ class TestTheOtherCallsTheReconnectOrphaned:
         # The application reconfigures the session, outside any handler
         await ch.reconfigure_session(session, system_prompt="New.")
         await asyncio.wait_for(interrupted.wait(), 1)
-        await asyncio.sleep(0.05)
+        await _reported(observed, 1)
 
         assert provider.tool_results == []
         assert [(e.tool_call_id, e.cancelled) for e in observed] == [("c1", True)]
@@ -259,7 +268,7 @@ class TestTheOtherCallsTheReconnectOrphaned:
         await asyncio.wait_for(started.wait(), 1)
 
         await provider.simulate_tool_call(session, "c", "switch_agent", {})
-        await asyncio.sleep(0.1)
+        await _reported(observed, 2)
 
         assert sorted((e.session.id == session.id, e.cancelled) for e in observed) == [
             (False, True),
@@ -283,12 +292,12 @@ class TestTheOtherCallsTheReconnectOrphaned:
         ch, [session], observed = await _channel(provider, handler)
         holder.update(ch=ch, session=session)
         await provider.simulate_tool_call(session, "c1", "switch_agent", {})
-        await asyncio.sleep(0.1)
+        await _reported(observed, 1)
         # The new connection issues the same id, then drops while it runs
         await provider.inbox.put(("call", ("c1", "lookup", {})))
         await asyncio.wait_for(started.wait(), 1)
         await provider.inbox.put(("drop", None))
-        await asyncio.sleep(0.1)
+        await _reported(observed, 2)
         for loop in provider.receive_loops:
             loop.cancel()
 
@@ -314,7 +323,7 @@ class TestIdleAfterACallThatOwesNothing:
         ch, [session], observed = await _channel(provider, switch_agent)
         holder.update(ch=ch, session=session)
         await provider.simulate_tool_call(session, "h1", "switch_agent", {})
-        await asyncio.sleep(0.1)
+        await _reported(observed, 1)
         assert [(e.tool_call_id, e.cancelled) for e in observed] == [("h1", False)]
 
         await ch.wait_idle(session.room_id, timeout=0.5)
@@ -332,7 +341,7 @@ class TestIdleAfterACallThatOwesNothing:
         await provider.simulate_tool_call(session, "c1", "lookup", {})
         await asyncio.wait_for(started.wait(), 1)
         await ch.reconfigure_session(session, system_prompt="New.")
-        await asyncio.sleep(0.05)
+        await _reported(observed, 1)
         assert [(e.tool_call_id, e.cancelled) for e in observed] == [("c1", True)]
 
         await ch.wait_idle(session.room_id, timeout=0.5)
@@ -372,7 +381,10 @@ class TestSpeechToSpeechHandoff:
             "handoff_conversation",
             {"target": "agent-advisor", "reason": "help", "summary": "ctx"},
         )
-        await asyncio.sleep(0.2)
+        await _reported(observed, 1)
+        async with asyncio.timeout(5):  # each session greeted by the new agent
+            while not (provider.injected(caller) and provider.injected(listener)):
+                await asyncio.sleep(0.001)
 
         assert sorted(provider.reconfigured) == sorted([caller.id, listener.id])
         assert len(provider.injected(caller)) == 1

@@ -7,13 +7,18 @@ continues the voice of the previous ones.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
+from roomkit import RoomKit, VoiceChannel
+from roomkit.voice.backends.mock import MockVoiceBackend
+from roomkit.voice.base import VoiceCapability
 from roomkit.voice.tts._elevenlabs_stitching import (
     MAX_REQUEST_IDS,
     REQUEST_ID_TTL_S,
@@ -225,12 +230,14 @@ class TestProvider:
         assert calls[1]["previous_text"] == "One."
 
 
+def _heard_some(channel: VoiceChannel, session: Any) -> bool:
+    """Whether some audio of the playback under way reached the transport."""
+    playing = channel._playing_sessions.get(session.id)  # noqa: SLF001
+    return playing is not None and bool(playing.audio_ms)
+
+
 class TestThroughTheVoiceChannel:
     async def test_each_response_continues_the_previous_ones(self) -> None:
-        from roomkit import RoomKit, VoiceChannel
-        from roomkit.voice.backends.mock import MockVoiceBackend
-        from roomkit.voice.base import VoiceCapability
-
         provider, calls = _provider(output_format="pcm_16000")
         backend = MockVoiceBackend(capabilities=VoiceCapability.INTERRUPTION)
         channel = VoiceChannel("voice", tts=provider, backend=backend)
@@ -256,12 +263,6 @@ class TestThroughTheVoiceChannel:
         await kit.close()
 
     async def test_after_a_barge_in_nothing_is_sent(self) -> None:
-        import asyncio
-
-        from roomkit import RoomKit, VoiceChannel
-        from roomkit.voice.backends.mock import MockVoiceBackend
-        from roomkit.voice.base import VoiceCapability
-
         provider, calls = _provider(output_format="pcm_16000")
         backend = MockVoiceBackend(capabilities=VoiceCapability.INTERRUPTION)
         channel = VoiceChannel("voice", tts=provider, backend=backend)
@@ -277,9 +278,11 @@ class TestThroughTheVoiceChannel:
         async def paced(**kwargs: Any) -> AsyncIterator[Any]:
             calls.append(kwargs)
 
+            pace = 0.02 if len(calls) == 1 else 0.0  # the answer the barge-in cuts
+
             async def gen() -> AsyncIterator[bytes]:
                 for chunk in slow:
-                    await asyncio.sleep(0.03)
+                    await asyncio.sleep(pace)
                     yield chunk
 
             response = MagicMock()
@@ -289,7 +292,13 @@ class TestThroughTheVoiceChannel:
 
         provider._client.text_to_speech.with_raw_response.stream = paced
         speaking = asyncio.create_task(channel.say(session, "A long answer."))
-        await asyncio.sleep(0.1)
+        async with asyncio.timeout(5):
+            while not _heard_some(channel, session):
+                await asyncio.sleep(0.001)
+        # Cut once 80 ms of it were heard, its text with them, chunks still to come.
+        started = channel._playing_sessions[session.id].first_audio_at  # noqa: SLF001
+        assert started is not None
+        await asyncio.sleep(max(0.0, started + 0.08 - time.monotonic()))
         await channel.interrupt(session, reason="barge_in")
         await speaking
         await channel.say(session, "Sorry, go ahead.")

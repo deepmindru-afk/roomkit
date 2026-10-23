@@ -21,6 +21,7 @@ from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
 from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
+from tests.channel_tasks import settled
 
 
 async def _voice_room(
@@ -39,6 +40,11 @@ async def _voice_room(
         ChannelBinding(room_id=room.id, channel_id="voice-1", channel_type=ChannelType.VOICE),
     )
     return kit, channel, session
+
+
+async def _settled(channel: VoiceChannel) -> None:
+    """Until the tasks the channel started have run."""
+    await settled(channel)
 
 
 def _playing(channel: VoiceChannel, session_id: str) -> None:
@@ -70,8 +76,11 @@ class TestConfirmedStrategyInterrupts:
         assert barge_ins == []
         assert session.id in channel._suppressed_sessions
 
-        # The speech sustains past min_speech_ms.
-        await asyncio.sleep(0.15)
+        # The speech sustains past min_speech_ms: the confirmation fires.
+        async with asyncio.timeout(5):
+            while not barge_ins:
+                await asyncio.sleep(0.01)
+        await _settled(channel)  # the barge-in it started has run
         assert len(barge_ins) == 1
         # Confirmed speech is no longer treated as echo.
         assert session.id not in channel._suppressed_sessions
@@ -82,7 +91,7 @@ class TestConfirmedStrategyInterrupts:
     async def test_speech_shorter_than_minimum_does_not_interrupt(self) -> None:
         """A blip during playback stays a blip — and stays suppressed."""
         kit, channel, session = await _voice_room(
-            InterruptionConfig(strategy=InterruptionStrategy.CONFIRMED, min_speech_ms=200)
+            InterruptionConfig(strategy=InterruptionStrategy.CONFIRMED, min_speech_ms=80)
         )
         barge_ins: list[object] = []
 
@@ -96,7 +105,7 @@ class TestConfirmedStrategyInterrupts:
         # Speech ends well before the minimum.
         channel._on_pipeline_speech_end(session, b"\x00\x00" * 80)
 
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.12)  # past the minimum: a confirmation left armed fires by now
         assert barge_ins == []
         assert session.id in channel._playing_sessions
 

@@ -68,10 +68,12 @@ async def _call(
     name: str,
     args: Any,
 ) -> dict[str, Any]:
-    call_id = f"call-{len(provider.tool_results)}"
+    answered = len(provider.tool_results)
+    call_id = f"call-{answered}"
     await provider.simulate_tool_call(session, call_id, name, args)
-    await asyncio.gather(*list(channel._scheduled_tasks))
-    await asyncio.sleep(0.05)
+    async with asyncio.timeout(2):  # its result reaches the provider
+        while len(provider.tool_results) == answered:
+            await asyncio.sleep(0.005)
     assert provider.tool_results[-1][:2] == (session.id, call_id)
     raw = provider.tool_results[-1][2]
     try:

@@ -10,7 +10,6 @@ silent context: the model has no pending FunctionResponse to answer.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import pytest
@@ -33,6 +32,7 @@ from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.event import TextContent
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from tests.channel_tasks import settled
 
 LOOKUP_TOOL: list[dict[str, Any]] = [
     {
@@ -79,6 +79,12 @@ def _injected(provider: MockRealtimeProvider) -> list[str]:
     return [text for _sid, text, _role in provider.injected_texts]
 
 
+async def _handled(channel: RealtimeVoiceChannel) -> None:
+    """Until every task the channel scheduled for a transcription has run: the
+    recovered call, its gate, its outcome told to the model."""
+    await settled(channel)
+
+
 class TestRecoveredCallsAreGated:
     async def test_a_blocking_hook_prevents_the_side_effect(
         self, provider: MockRealtimeProvider
@@ -96,7 +102,7 @@ class TestRecoveredCallsAreGated:
             return HookResult.block("lookup is off limits")
 
         await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
 
         assert called == []
         assert any("denied" in t and "lookup is off limits" in t for t in _injected(provider))
@@ -113,7 +119,7 @@ class TestRecoveredCallsAreGated:
         _kit, _channel, session = await _session(provider, "rt-rec-missing", handler=handler)
 
         await provider.simulate_transcription(session, "call:lookup{limit:3}", "assistant")
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
 
         assert called == []
         assert any("missing required argument 'city'" in t for t in _injected(provider))
@@ -133,7 +139,7 @@ class TestRecoveredCallsAreGated:
         await provider.simulate_transcription(
             session, "call:lookup{city:Paris,limit:many}", "assistant"
         )
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
 
         assert called == []
         assert any("must be of type integer" in t for t in _injected(provider))
@@ -153,7 +159,7 @@ class TestRecoveredCallsAreGated:
         await provider.simulate_transcription(
             session, "call:lookup{city:Paris,country:FR}", "assistant"
         )
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
 
         assert called == []
         assert any("unknown argument 'country'" in t for t in _injected(provider))
@@ -174,7 +180,7 @@ class TestRecoveredCallsAreGated:
             return HookResult(action="allow", metadata={"arguments": {"city": "Montreal"}})
 
         await provider.simulate_transcription(session, "call:lookup{city:[CITY_1]}", "assistant")
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
 
         assert called == [{"city": "Montreal"}]
 
@@ -195,7 +201,7 @@ class TestRecoveredCallsAreGated:
             return HookResult.allow()
 
         await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
 
         assert served == []
 
@@ -210,7 +216,7 @@ class TestRecoveredCallsAreGated:
             return HookResult.block("no")
 
         await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
 
         assert provider.tool_results == []
 
@@ -233,7 +239,7 @@ class TestARecoveredCallCanBeRefused:
         _kit, _channel, session = await _session(provider, "rt-rec-refused", handler=declines)
 
         await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
 
         injected = _injected(provider)
         assert any("Error: Tool 'lookup' is temporarily unavailable." in t for t in injected), (
@@ -256,7 +262,7 @@ class TestRecoveryStillWorks:
         _kit, _channel, session = await _session(provider, "rt-rec-ok", handler=handler)
 
         await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
 
         assert called == [{"city": "Paris"}]
         assert any("completed" in t and "22 degrees" in t for t in _injected(provider))
@@ -277,7 +283,7 @@ class TestRecoveryStillWorks:
         await provider.simulate_transcription(
             session, "call:lookup{city:Paris,limit:3}", "assistant"
         )
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
 
         assert called == [{"city": "Paris", "limit": 3}]
 
@@ -294,7 +300,7 @@ class TestRecoveryStillWorks:
         _kit, _channel, session = await _session(provider, "rt-rec-unknown", handler=handler)
 
         await provider.simulate_transcription(session, "call:drop_table{name:users}", "assistant")
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
 
         assert called == []
         assert _injected(provider) == []
@@ -324,7 +330,7 @@ class TestRecoveredResultsFollowChannelPolicy:
         session = await channel.start_session(room.id, "u1", "ws")
 
         await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
-        await asyncio.sleep(0.1)
+        await _handled(channel)
 
         injected = _injected(provider)[-1]
         assert "truncated" in injected
@@ -342,7 +348,7 @@ class TestRecoveredResultsFollowChannelPolicy:
             raise RuntimeError("hook is broken")
 
         await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
 
         injected = _injected(provider)[-1]
         assert injected.startswith("[Tool lookup failed]\n<tool_result>\n")
@@ -363,7 +369,7 @@ class TestRecoveredResultsFollowChannelPolicy:
             raise RuntimeError("hook is broken")
 
         await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
 
         assert any("sunny" in t for t in _injected(provider))
 
@@ -442,7 +448,7 @@ class TestSpokenCallParsing:
         await provider.simulate_transcription(
             session, "Bien sur, je regarde. call:lookup{city:Paris}", "assistant"
         )
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
 
         assert called == [{"city": "Paris"}]
         timeline = await kit.get_timeline(room_id)
@@ -464,7 +470,7 @@ class TestSpokenCallParsing:
         said = "You can type call:lookup{city:Paris} to search."
 
         await provider.simulate_transcription(session, said, "assistant")
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
 
         assert called == []
         timeline = await kit.get_timeline(session.room_id)
@@ -480,7 +486,7 @@ class TestSpokenCallParsing:
 
         text = "call:lookup{city:Paris}"
         assert channel._try_recover_tool_call_from_text(session, text)[0]
-        await asyncio.gather(*list(channel._scheduled_tasks))
+        await _handled(channel)
 
         (injected,) = _injected(provider)
         assert "failed" in injected and "No handler for tool lookup" in injected
@@ -494,7 +500,7 @@ class TestSpokenCallParsing:
         room_id = session.room_id
 
         await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
 
         timeline = await kit.get_timeline(room_id)
         assert [e for e in timeline if isinstance(e.content, TextContent)] == []
@@ -535,7 +541,8 @@ class TestARefusedRecoveredCallIsObserved:
         observed, served = self._observe(kit)
 
         await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
+        await kit.close()  # the ASYNC audit has run
 
         assert [(e.name, e.is_error, e.result) for e in observed] == [
             ("lookup", True, "Error: Tool 'lookup' is temporarily unavailable.")
@@ -559,7 +566,8 @@ class TestARefusedRecoveredCallIsObserved:
             return HookResult.block("lookup is off limits")
 
         await provider.simulate_transcription(session, "call:lookup{city:Paris}", "assistant")
-        await asyncio.sleep(0.1)
+        await _handled(_channel)
+        await kit.close()  # the ASYNC audit has run
 
         assert called == []
         assert len(observed) == 1

@@ -12,7 +12,6 @@ import base64
 import contextlib
 import json
 import re
-import time
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import patch
@@ -387,20 +386,23 @@ class TestAgainstARealSocket:
     """What the fake cannot show: flow control and a close that yields."""
 
     async def test_a_barge_in_does_not_wait_behind_unread_audio(self) -> None:
+        sent = 0
+
         async def flood(ws: ServerConnection) -> None:
+            nonlocal sent
             await ws.recv()  # the open message
             for _ in range(200):  # faster than any transport plays it
                 await ws.send(_audio_message())
+                sent += 1
             await ws.wait_closed()
 
         async with _server(flood):
             stream = _stream(_endless())
             await anext(stream)
-            await asyncio.sleep(0.2)  # the audio piles up unread
-            started = time.monotonic()
-            await stream.aclose()
-
-        assert time.monotonic() - started < 2.0
+            async with asyncio.timeout(5):
+                while sent < 200:  # all of it buffered, none read: piled up unread
+                    await asyncio.sleep(0.01)
+            await asyncio.wait_for(stream.aclose(), 2.0)
 
     async def test_an_error_of_the_text_stream_propagates(self) -> None:
         async def echo(ws: ServerConnection) -> None:

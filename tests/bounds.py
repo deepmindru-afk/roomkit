@@ -1,8 +1,9 @@
 """Library bounds a test expires itself.
 
 A budget under test is configured as :data:`CUT` seconds, a value no default
-uses: :func:`opened_with_cut` keeps every ``asyncio.timeout`` opened with it,
-and :func:`expire` ends them at the moment the test chooses. The cut goes
+uses: :func:`opened_with_cut` keeps every ``asyncio.timeout`` opened with it
+(or with a bound the library sets itself), and :func:`expire` ends them at
+the moment the test chooses. The cut goes
 through the library's own bound and its own timeout path, on a slow runner as
 on a fast one, and costs no wall-clock wait.
 """
@@ -17,14 +18,18 @@ import pytest
 CUT = 20.0
 
 
-def opened_with_cut(monkeypatch: pytest.MonkeyPatch) -> list[asyncio.Timeout]:
-    """Every ``asyncio.timeout`` opened with :data:`CUT` seconds from now on."""
+def opened_with_cut(
+    monkeypatch: pytest.MonkeyPatch, seconds: float | None = CUT
+) -> list[asyncio.Timeout]:
+    """Every ``asyncio.timeout`` opened with *seconds* from now on: :data:`CUT`
+    by default, a bound the library sets itself when given, every bound when
+    None (a test proving that none cuts a step)."""
     opened: list[asyncio.Timeout] = []
     opens = asyncio.timeout
 
     def timeout(delay: float | None) -> asyncio.Timeout:
         bound = opens(delay)
-        if delay == CUT:
+        if seconds is None or delay == seconds:
             opened.append(bound)
         return bound
 

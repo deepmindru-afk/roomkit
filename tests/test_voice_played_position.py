@@ -10,9 +10,12 @@ sound yet is not past its grace period.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+import pytest
 
 from roomkit import HookExecution, HookTrigger, RoomKit, VoiceChannel
 from roomkit.channels.voice import TTSPlaybackState
@@ -29,10 +32,12 @@ _ONE_SECOND = b"\x00\x00" * _RATE
 
 
 class _SlowStartTTS(TTSProvider):
-    """Synthesis that takes ``latency_s`` before its first second of audio."""
+    """Synthesis that takes ``latency_s`` before its first second of audio,
+    then keeps its stream open until *release* is set (a second at most)."""
 
     def __init__(self, latency_s: float) -> None:
         self._latency_s = latency_s
+        self.release = asyncio.Event()
 
     async def synthesize(self, text: str, *, voice: str | None = None) -> Any:
         raise NotImplementedError
@@ -42,7 +47,8 @@ class _SlowStartTTS(TTSProvider):
     ) -> AsyncIterator[AudioChunk]:
         await asyncio.sleep(self._latency_s)
         yield AudioChunk(data=_ONE_SECOND, sample_rate=_RATE)
-        await asyncio.sleep(1)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self.release.wait(), 1)
 
 
 async def _room(
@@ -63,8 +69,10 @@ async def _room(
     return kit, channel, session
 
 
+@pytest.mark.wallclock
 async def test_cancel_hook_reports_the_position_the_timeline_records() -> None:
-    kit, channel, session = await _room(_SlowStartTTS(latency_s=0.3))
+    tts = _SlowStartTTS(latency_s=0.2)
+    kit, channel, session = await _room(tts)
     cancelled: list[Any] = []
 
     @kit.hook(HookTrigger.ON_TTS_CANCELLED, HookExecution.ASYNC)
@@ -72,17 +80,25 @@ async def test_cancel_hook_reports_the_position_the_timeline_records() -> None:
         cancelled.append(event)
 
     speaking = asyncio.create_task(channel.say(session, "a slow answer"))
-    await asyncio.sleep(0.6)
-    await channel.interrupt(session, reason="barge_in")
-    await speaking
+    async with asyncio.timeout(5):  # its first audio, past the synthesis latency
+        while (playing := channel._playing_sessions.get(session.id)) is None or (  # noqa: SLF001
+            playing.first_audio_at is None
+        ):
+            await asyncio.sleep(0.005)
     await asyncio.sleep(0.05)
+    await channel.interrupt(session, reason="barge_in")
+    tts.release.set()
+    await speaking
+    async with asyncio.timeout(5):
+        while not cancelled:
+            await asyncio.sleep(0.005)
 
     events = await kit.store.list_events("r1")
     [stored] = [e for e in events if e.metadata.get("interrupted")]
     [event] = cancelled
     assert event.audio_position_ms == stored.metadata["played_ms"]
-    # About 300 ms were heard; the 300 ms of synthesis latency are not counted.
-    assert event.audio_position_ms < 450
+    # About 50 ms were heard; the 200 ms of synthesis latency are not counted.
+    assert event.audio_position_ms < 200
     await kit.close()
 
 

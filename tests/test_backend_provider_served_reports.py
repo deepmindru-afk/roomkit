@@ -72,13 +72,13 @@ async def test_a_provider_served_call_cut_while_judged_is_reported_once_served()
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "rt")
     session = await channel.start_session("r1", "u1", "ws")
-    judging = asyncio.Event()
+    judging, judged = asyncio.Event(), asyncio.Event()
     reports: list[Any] = []
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.SYNC, name="slow")
     async def slow(event: Any, ctx: Any) -> HookResult:
         judging.set()
-        await asyncio.sleep(0.3)
+        await asyncio.wait_for(judged.wait(), 3)
         return HookResult.allow()
 
     @kit.hook(HookTrigger.ON_TOOL_CALL, execution=HookExecution.ASYNC, name="audit")
@@ -88,7 +88,10 @@ async def test_a_provider_served_call_cut_while_judged_is_reported_once_served()
     await provider.simulate_delegation(session, "d1", "integrator")
     await asyncio.wait_for(judging.wait(), 3)
     await channel.end_session(session)
-    await asyncio.sleep(0.5)
-    await kit.close()
+    judged.set()  # the chain's verdict comes once the delegation ended
+    async with asyncio.timeout(3):
+        while not reports:
+            await asyncio.sleep(0.01)
+    await kit.close()  # a second report would be in by the end of its ASYNC hooks
 
     assert [(e.name, e.is_error, e.result) for e in reports] == [("web_search", False, "3 hits")]

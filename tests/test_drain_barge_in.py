@@ -23,6 +23,12 @@ from roomkit.voice.pipeline import AudioPipelineConfig, MockVADProvider
 from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
 from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.base import TTSProvider
+from tests.channel_tasks import settled
+
+
+async def _settle(channel: VoiceChannel) -> None:
+    """Until the work the channel scheduled on what it heard (a barge-in) is done."""
+    await settled(channel, timeout=2)
 
 
 def _speech_events(audio: bytes = b"fake-audio-data\x00") -> list[VADEvent | None]:
@@ -86,12 +92,11 @@ class TestDrainBargeInPrevention:
 
         # VAD fires SPEECH_START during drain
         await backend.simulate_audio_received(session, AudioFrame(data=b"speech"))
-        await asyncio.sleep(0.15)
+        await _settle(channel)
+        await kit.close()  # its ASYNC hooks run to their end first
 
         # Barge-in should NOT have fired
         assert len(barge_in_events) == 0
-
-        await kit.close()
 
     async def test_vad_speech_start_during_active_playback_triggers_barge_in(self) -> None:
         """Sanity check: barge-in still works during real playback (not drain)."""
@@ -138,12 +143,11 @@ class TestDrainBargeInPrevention:
 
         # VAD fires SPEECH_START
         await backend.simulate_audio_received(session, AudioFrame(data=b"speech"))
-        await asyncio.sleep(0.15)
+        await _settle(channel)
+        await kit.close()  # its ASYNC hooks run to their end first
 
         # Barge-in SHOULD fire
         assert len(barge_in_events) == 1
-
-        await kit.close()
 
     async def test_backend_barge_in_during_drain_skips(self) -> None:
         """Backend-detected barge-in during drain period does NOT fire."""
@@ -179,11 +183,10 @@ class TestDrainBargeInPrevention:
 
         # Backend fires barge-in
         channel._on_backend_barge_in(session)
-        await asyncio.sleep(0.1)
+        await _settle(channel)
+        await kit.close()  # its ASYNC hooks run to their end first
 
         assert len(barge_in_events) == 0
-
-        await kit.close()
 
 
 # ---------------------------------------------------------------------------
@@ -192,10 +195,10 @@ class TestDrainBargeInPrevention:
 
 
 class _SlowTTS(TTSProvider):
-    """TTS provider that delays audio delivery to simulate slow playback."""
+    """TTS provider whose audio comes once ``release`` is set: a slow playback."""
 
-    def __init__(self, delay: float = 0.5) -> None:
-        self._delay = delay
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
         self.called = False
 
     @property
@@ -219,7 +222,7 @@ class _SlowTTS(TTSProvider):
             chunks.append(text)
         self.called = True
         # Simulate slow audio delivery
-        await asyncio.sleep(self._delay)
+        await asyncio.wait_for(self.release.wait(), 5)
         yield AudioChunk(data=b"slow-audio", sample_rate=16000, is_final=True)
 
 
@@ -251,7 +254,7 @@ class TestEarlyStreamingStorage:
     async def test_response_stored_before_audio_playback_ends(self) -> None:
         """Response event in store as soon as text stream exhausts, before TTS finishes."""
         ai = _StreamingAIProvider(["Hello ", "from ", "AI."])
-        tts = _SlowTTS(delay=1.0)
+        tts = _SlowTTS()
         stt = MockSTTProvider(transcripts=["User message"])
         backend = MockVoiceBackend()
         vad = MockVADProvider(events=_speech_events())
@@ -274,17 +277,15 @@ class TestEarlyStreamingStorage:
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x02\x00"))
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x03\x00"))
 
-        # Wait long enough for text to stream but NOT for TTS audio delay
-        # Text stream should exhaust quickly, TTS takes 1s
-        await asyncio.sleep(0.5)
+        async def stored() -> list[str]:
+            events = await kit._store.list_events(room.id, offset=0, limit=50)
+            return [e.content.body for e in events if hasattr(e.content, "body")]
 
-        # Check store — response should already be there
-        events = await kit._store.list_events(room.id, offset=0, limit=50)
-        texts = [e.content.body for e in events if hasattr(e.content, "body")]
-        assert "Hello from AI." in texts, (
-            f"Expected 'Hello from AI.' in store before TTS finishes, got: {texts}"
-        )
+        # The text stream exhausts at once; the TTS audio waits for release.
+        async with asyncio.timeout(2):
+            while "Hello from AI." not in await stored():
+                await asyncio.sleep(0.01)
 
-        # Wait for full completion
-        await asyncio.sleep(1.5)
+        assert not tts.release.is_set()  # stored before the TTS audio ended
+        tts.release.set()  # the playback ends
         await kit.close()

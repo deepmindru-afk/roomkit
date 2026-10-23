@@ -108,8 +108,9 @@ async def test_sip_barge_in_uses_paced_position(sip, rate, generation_ended, loc
         # Excludes the known RTP lead, and never truncates to future audio.
         assert 0 < position < transmitted_ms < 1000
         assert provider.interrupt.await_count == int(local_vad and not generation_ended)
-        await asyncio.sleep(0.03)
-        assert not backend.is_playing(carrier)
+        async with asyncio.timeout(1):  # the cut playback ends
+            while backend.is_playing(carrier):
+                await asyncio.sleep(0.005)
     finally:
         await channel.close()
         await backend.close()

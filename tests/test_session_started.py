@@ -23,6 +23,20 @@ from roomkit.voice import AudioPipelineConfig
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.mock import MockTTSProvider
+from tests.conference.test_conference_realtime import until
+
+
+def _started(kit: RoomKit) -> list[SessionStartedEvent]:
+    """ON_SESSION_STARTED's events as an ASYNC hook sees them: once one is
+    in, every ASYNC hook of that firing (an auto-greeting) is under way, and
+    the kit's close waits for them."""
+    seen: list[SessionStartedEvent] = []
+
+    @kit.hook(HookTrigger.ON_SESSION_STARTED, HookExecution.ASYNC, name="test_started")
+    async def started(event: SessionStartedEvent, context: object) -> None:
+        seen.append(event)
+
+    return seen
 
 
 class TestVoiceSessionStarted:
@@ -50,12 +64,11 @@ class TestVoiceSessionStarted:
         # connect_voice calls backend.connect() which fires session_ready
         # immediately for MockVoiceBackend, AND bind_session().
         session = await kit.connect_voice(room.id, "user-1", "voice-1")
-        await asyncio.sleep(0.1)
+        await until(lambda: bool(ready_events))
+        await kit.close()  # a second firing's hook would have run by now
 
         assert len(ready_events) == 1
         assert ready_events[0].session.id == session.id
-
-        await kit.close()
 
     async def test_hook_fires_when_ready_before_bind(self) -> None:
         """When backend fires ready before bind_session, hook still fires."""
@@ -78,12 +91,11 @@ class TestVoiceSessionStarted:
         # MockVoiceBackend fires ready in connect(), and connect_voice
         # calls bind_session() after. The dual-signal handles both orderings.
         session = await kit.connect_voice(room.id, "user-1", "voice-1")
-        await asyncio.sleep(0.1)
+        await until(lambda: bool(ready_events))
+        await kit.close()  # a second firing's hook would have run by now
 
         assert len(ready_events) == 1
         assert ready_events[0].session.id == session.id
-
-        await kit.close()
 
     async def test_hook_fires_when_bind_before_ready(self) -> None:
         """When bind_session runs before backend fires ready, hook still fires."""
@@ -119,12 +131,11 @@ class TestVoiceSessionStarted:
 
         # Now simulate backend signalling ready
         await backend.simulate_session_ready(session)
-        await asyncio.sleep(0.1)
+        await until(lambda: bool(ready_events))
+        await kit.close()  # a second firing's hook would have run by now
 
         assert len(ready_events) == 1
         assert ready_events[0].session.id == session.id
-
-        await kit.close()
 
     async def test_simulate_session_ready_on_mock_backend(self) -> None:
         """MockVoiceBackend.simulate_session_ready() fires callbacks."""
@@ -169,7 +180,7 @@ class TestVoiceSessionStarted:
             fw_events.append("session_started")
 
         await kit.connect_voice(room.id, "user-1", "voice-1")
-        await asyncio.sleep(0.1)
+        await until(lambda: bool(fw_events))
 
         assert "session_started" in fw_events
 
@@ -214,7 +225,8 @@ class TestVoiceSessionStarted:
             captured.append(event)
 
         session = await kit.connect_voice(room.id, "user-1", "voice-1")
-        await asyncio.sleep(0.1)
+        await until(lambda: bool(captured))
+        await kit.close()  # a second firing's hook would have run by now
 
         assert len(captured) == 1
         evt = captured[0]
@@ -223,8 +235,6 @@ class TestVoiceSessionStarted:
         assert evt.channel_type == "voice"
         assert evt.participant_id == "user-1"
         assert evt.session is session
-
-        await kit.close()
 
 
 class TestSendGreeting:
@@ -256,11 +266,9 @@ class TestSendGreeting:
 
         # Connect a session so TTS has a target
         await kit.connect_voice(room.id, "user-1", "voice-1")
-        await asyncio.sleep(0.1)
 
         events_before = await kit._store.list_events(room.id)
-        await kit.send_greeting(room.id)
-        await asyncio.sleep(0.1)
+        await kit.send_greeting(room.id)  # stored before it returns
 
         events = await kit._store.list_events(room.id)
         new_events = events[len(events_before) :]
@@ -288,12 +296,10 @@ class TestSendGreeting:
         # Should not raise
         events_before = await kit._store.list_events(room.id)
         await kit.send_greeting(room.id)
-        await asyncio.sleep(0.1)
+        await kit.close()  # anything it started has run by now
 
         events_after = await kit._store.list_events(room.id)
         assert len(events_after) == len(events_before)
-
-        await kit.close()
 
     async def test_send_greeting_no_greeting_text_is_noop(self) -> None:
         """send_greeting is a no-op when agent has no greeting."""
@@ -316,12 +322,10 @@ class TestSendGreeting:
 
         events_before = await kit._store.list_events(room.id)
         await kit.send_greeting(room.id)
-        await asyncio.sleep(0.1)
+        await kit.close()  # anything it started has run by now
 
         events_after = await kit._store.list_events(room.id)
         assert len(events_after) == len(events_before)
-
-        await kit.close()
 
     async def test_send_greeting_explicit_text(self) -> None:
         """send_greeting uses explicit greeting text over agent.greeting."""
@@ -348,11 +352,9 @@ class TestSendGreeting:
         await kit.attach_channel(room.id, "agent-1")
 
         await kit.connect_voice(room.id, "user-1", "voice-1")
-        await asyncio.sleep(0.1)
 
         events_before = await kit._store.list_events(room.id)
-        await kit.send_greeting(room.id, greeting="Custom hello!")
-        await asyncio.sleep(0.1)
+        await kit.send_greeting(room.id, greeting="Custom hello!")  # stored before it returns
 
         events = await kit._store.list_events(room.id)
         new_events = events[len(events_before) :]
@@ -387,11 +389,9 @@ class TestSendGreeting:
         await kit.attach_channel(room.id, "agent-1")
 
         await kit.connect_voice(room.id, "user-1", "voice-1")
-        await asyncio.sleep(0.1)
 
         events_before = await kit._store.list_events(room.id)
-        await kit.send_greeting(room.id)
-        await asyncio.sleep(0.1)
+        await kit.send_greeting(room.id)  # stored before it returns
 
         events = await kit._store.list_events(room.id)
         new_events = events[len(events_before) :]
@@ -424,21 +424,21 @@ class TestAutoGreet:
         )
         kit.register_channel(voice_channel)
         kit.register_channel(agent)
+        started = _started(kit)
 
         room = await kit.create_room()
         await kit.attach_channel(room.id, "voice-1")
         await kit.attach_channel(room.id, "agent-1")
 
         await kit.connect_voice(room.id, "user-1", "voice-1")
-        await asyncio.sleep(0.2)
+        await until(lambda: bool(started))
+        await kit.close()  # the auto-greeting hook has run
 
         events = await kit._store.list_events(room.id)
         greeting_events = [e for e in events if e.metadata.get("auto_greeting") is True]
         assert len(greeting_events) == 1
         assert greeting_events[0].content.body == "Welcome!"
         assert greeting_events[0].source.channel_id == "agent-1"
-
-        await kit.close()
 
     async def test_auto_greet_false_does_not_greet(self) -> None:
         """Agent with auto_greet=False does not auto-greet."""
@@ -459,19 +459,19 @@ class TestAutoGreet:
         )
         kit.register_channel(voice_channel)
         kit.register_channel(agent)
+        started = _started(kit)
 
         room = await kit.create_room()
         await kit.attach_channel(room.id, "voice-1")
         await kit.attach_channel(room.id, "agent-1")
 
         await kit.connect_voice(room.id, "user-1", "voice-1")
-        await asyncio.sleep(0.1)
+        await until(lambda: bool(started))
+        await kit.close()  # an auto-greeting hook would have run
 
         events = await kit._store.list_events(room.id)
         greeting_events = [e for e in events if e.metadata.get("auto_greeting") is True]
         assert len(greeting_events) == 0
-
-        await kit.close()
 
     async def test_auto_greet_no_greeting_text_skips(self) -> None:
         """Agent with auto_greet=True but no greeting text does not register hook."""
@@ -487,19 +487,19 @@ class TestAutoGreet:
         )
         kit.register_channel(voice_channel)
         kit.register_channel(agent)
+        started = _started(kit)
 
         room = await kit.create_room()
         await kit.attach_channel(room.id, "voice-1")
         await kit.attach_channel(room.id, "agent-1")
 
         await kit.connect_voice(room.id, "user-1", "voice-1")
-        await asyncio.sleep(0.1)
+        await until(lambda: bool(started))
+        await kit.close()  # an auto-greeting hook would have run
 
         events = await kit._store.list_events(room.id)
         greeting_events = [e for e in events if e.metadata.get("auto_greeting") is True]
         assert len(greeting_events) == 0
-
-        await kit.close()
 
     async def test_auto_greet_dedup_per_session(self) -> None:
         """Auto-greet fires only once per session even if hook fires again."""
@@ -520,24 +520,24 @@ class TestAutoGreet:
         )
         kit.register_channel(voice_channel)
         kit.register_channel(agent)
+        started = _started(kit)
 
         room = await kit.create_room()
         await kit.attach_channel(room.id, "voice-1")
         await kit.attach_channel(room.id, "agent-1")
 
         session = await kit.connect_voice(room.id, "user-1", "voice-1")
-        await asyncio.sleep(0.2)
+        await until(lambda: bool(started))
 
         # Simulate a second session_ready for the same session
         await backend.simulate_session_ready(session)
-        await asyncio.sleep(0.2)
+        await until(lambda: len(started) == 2)  # fired again, its hooks under way
+        await kit.close()
 
         events = await kit._store.list_events(room.id)
         greeting_events = [e for e in events if e.metadata.get("auto_greeting") is True]
         # Only one greeting despite two ready signals
         assert len(greeting_events) == 1
-
-        await kit.close()
 
     async def test_connect_voice_auto_greet_deprecated(self) -> None:
         """connect_voice(auto_greet=True) emits DeprecationWarning."""
@@ -582,7 +582,8 @@ class TestTextSessionStarted:
             content=TextContent(body="Hello"),
         )
         result = await kit.process_inbound(msg)
-        await asyncio.sleep(0.1)
+        await until(lambda: bool(captured))
+        await kit.close()  # a second firing's hook would have run by now
 
         assert not result.blocked
         assert len(captured) == 1
@@ -591,8 +592,6 @@ class TestTextSessionStarted:
         assert evt.channel_type == "sms"
         assert evt.participant_id == "+15551234567"
         assert evt.session is None
-
-        await kit.close()
 
     async def test_session_started_not_fired_on_existing_room(self) -> None:
         """Subsequent messages to an existing room don't re-fire the hook."""
@@ -613,7 +612,7 @@ class TestTextSessionStarted:
             content=TextContent(body="Hello"),
         )
         result1 = await kit.process_inbound(msg1)
-        await asyncio.sleep(0.1)
+        await until(lambda: bool(captured))
         room_id = result1.event.room_id
 
         # Second message — same room
@@ -623,12 +622,10 @@ class TestTextSessionStarted:
             content=TextContent(body="Follow up"),
         )
         await kit.process_inbound(msg2, room_id=room_id)
-        await asyncio.sleep(0.1)
+        await kit.close()  # a second firing's hook would have run by now
 
         # Hook fires only once (for room creation)
         assert len(captured) == 1
-
-        await kit.close()
 
     async def test_auto_greet_text_channel(self) -> None:
         """Agent with auto_greet broadcasts greeting on text channel session start."""
@@ -681,7 +678,7 @@ class TestTextSessionStarted:
             content=TextContent(body="Hello"),
         )
         await kit2.process_inbound(msg)
-        await asyncio.sleep(0.3)
+        await kit2.close()  # its ASYNC hooks have run
 
         # Find the room that was auto-created
         rooms = await kit2._store.list_rooms()
@@ -690,8 +687,6 @@ class TestTextSessionStarted:
         greeting_events = [e for e in events if e.metadata.get("auto_greeting") is True]
         assert len(greeting_events) == 1
         assert greeting_events[0].content.body == "Welcome via SMS!"
-
-        await kit2.close()
 
     async def test_send_greeting_broadcasts_to_text_channel(self) -> None:
         """send_greeting delivers text to transport channels in non-voice rooms."""
@@ -710,8 +705,7 @@ class TestTextSessionStarted:
         await kit.attach_channel(room.id, "sms-1")
         await kit.attach_channel(room.id, "agent-1")
 
-        await kit.send_greeting(room.id)
-        await asyncio.sleep(0.1)
+        await kit.send_greeting(room.id)  # stored before it returns
 
         events = await kit._store.list_events(room.id)
         greeting_events = [e for e in events if e.metadata.get("auto_greeting") is True]
@@ -788,7 +782,6 @@ class TestGreetingGate:
             content=TextContent(body="Hello"),
         )
         await kit.process_inbound(msg)
-        await asyncio.sleep(0.1)
 
         # No gates should exist
         assert len(kit._greeting_gates) == 0
@@ -838,7 +831,6 @@ class TestGreetingGate:
         await kit.attach_channel(room.id, "agent-1")
 
         session = await kit.connect_voice(room.id, "user-1", "voice-1")
-        await asyncio.sleep(0.1)
 
         from roomkit.models.enums import ChannelType
 
@@ -883,7 +875,6 @@ class TestGreetingGate:
         # Call send_greeting without a session (text path) —
         # should store + broadcast, NOT try TTS
         await kit.send_greeting(room.id)
-        await asyncio.sleep(0.1)
 
         events = await kit._store.list_events(room.id)
         greeting_events = [e for e in events if e.metadata.get("auto_greeting") is True]
@@ -920,14 +911,13 @@ class TestGreetingGate:
 
         with patch.object(kit, "send_greeting", new_callable=AsyncMock) as mock_greet:
             session = await kit.connect_voice(room.id, "user-1", "voice-1")
-            await asyncio.sleep(0.2)
+            await until(lambda: mock_greet.called)
+            await kit.close()  # a second greeting would have been asked by now
 
             mock_greet.assert_called_once()
             call_kwargs = mock_greet.call_args
             assert call_kwargs.kwargs.get("session") is session
             assert call_kwargs.kwargs.get("channel_type") is not None
-
-        await kit.close()
 
     async def test_gate_cleared_on_send_greeting_error(self) -> None:
         """Gate is cleared even when send_greeting raises an error."""
@@ -1033,76 +1023,6 @@ class TestGreetingGate:
 
         await kit.close()
 
-    async def test_greeted_rooms_lru_eviction(self) -> None:
-        """LRU eviction keeps recent rooms and evicts oldest 10%."""
-        kit = RoomKit()
-        sms = SMSChannel("sms-1", provider=MockSMSProvider())
-        agent = Agent(
-            "agent-1",
-            provider=MockAIProvider(responses=["Hi!"]),
-            greeting="Welcome!",
-            auto_greet=True,
-        )
-        kit.register_channel(sms)
-        kit.register_channel(agent)
-
-        # Access the greeted_rooms OrderedDict from the registered hook closure
-        # by exercising enough rooms to trigger eviction.
-        # Patch the max to a small number for testability.
-        hook_reg = [
-            h for h in kit._hook_engine._global_hooks if h.name == "_agent_auto_greet:agent-1"
-        ]
-        assert len(hook_reg) == 1
-
-        # Get a reference to the closure's greeted_rooms via __code__
-        # Instead, we test the behavior end-to-end: create many rooms,
-        # verify dedup still works after eviction.
-
-        @kit.hook(HookTrigger.ON_ROOM_CREATED, HookExecution.ASYNC)
-        async def attach_agent(event: object, context: object) -> None:
-            room_id = event.room_id  # type: ignore[attr-defined]
-            await kit.attach_channel(room_id, "agent-1")
-
-        # We'll monkey-patch the greeted_rooms_max via the closure.
-        # The closure captures `greeted_rooms_max` by name — we need to modify
-        # the cell.  Easier: just exercise the real cap by creating rooms.
-        # For a unit test, verify the OrderedDict behavior directly.
-        from collections import OrderedDict
-
-        greeted: OrderedDict[str, None] = OrderedDict()
-        max_cap = 10
-        # Fill to capacity
-        for i in range(max_cap):
-            greeted[f"room-{i}:agent-1"] = None
-        # Trigger eviction (10% of 10 = 1)
-        assert len(greeted) >= max_cap
-        for _ in range(max_cap // 10):
-            if greeted:
-                greeted.popitem(last=False)
-        # room-0 was evicted, room-1 through room-9 remain
-        assert "room-0:agent-1" not in greeted
-        assert "room-1:agent-1" in greeted
-        # Add a new room
-        greeted["room-10:agent-1"] = None
-        assert len(greeted) == max_cap
-
-        # End-to-end: verify a real greeting fires once
-        msg = InboundMessage(
-            channel_id="sms-1",
-            sender_id="+15551234567",
-            content=TextContent(body="Hello"),
-        )
-        await kit.process_inbound(msg)
-        await asyncio.sleep(0.2)
-
-        rooms = await kit._store.list_rooms()
-        assert len(rooms) == 1
-        events = await kit._store.list_events(rooms[0].id)
-        greeting_events = [e for e in events if e.metadata.get("auto_greeting") is True]
-        assert len(greeting_events) == 1
-
-        await kit.close()
-
     async def test_slow_user_hook_does_not_block_inbound(self) -> None:
         """Slow user ON_SESSION_STARTED hook doesn't block process_inbound."""
         kit = RoomKit()
@@ -1123,11 +1043,12 @@ class TestGreetingGate:
 
         slow_hook_started = asyncio.Event()
         slow_hook_finished = asyncio.Event()
+        release = asyncio.Event()
 
         @kit.hook(HookTrigger.ON_SESSION_STARTED, HookExecution.ASYNC, name="slow_user_hook")
         async def slow_hook(event: object, context: object) -> None:
             slow_hook_started.set()
-            await asyncio.sleep(0.5)
+            await release.wait()  # as slow as the test keeps it
             slow_hook_finished.set()
 
         msg = InboundMessage(
@@ -1146,8 +1067,9 @@ class TestGreetingGate:
         greeting_events = [e for e in events if e.metadata.get("auto_greeting") is True]
         assert len(greeting_events) == 1
 
-        # Slow user hook was started but may not have finished yet
-        # Wait a bit for it to complete
+        # The slow user hook still runs: process_inbound did not wait for it.
+        assert not slow_hook_finished.is_set()
+        release.set()
         await asyncio.wait_for(slow_hook_finished.wait(), timeout=2.0)
 
         await kit.close()

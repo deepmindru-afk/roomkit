@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,12 @@ from roomkit.video.backends.mock import MockVideoBackend
 from roomkit.video.video_frame import VideoFrame
 from roomkit.voice.backends.mock import MockVoiceBackend
 from roomkit.voice.pipeline.config import AudioPipelineConfig
+
+
+async def _until(ready: Callable[[], object]) -> None:
+    async with asyncio.timeout(5):
+        while not ready():
+            await asyncio.sleep(0.005)
 
 
 class _RefusingRecorder(MockMediaRecorder):
@@ -392,7 +399,7 @@ class TestVoiceRoomRecording:
 
         for _i in range(5):
             await backend.simulate_audio_received(session, AudioFrame(data=b"\x00" * 320))
-        await asyncio.sleep(0.05)
+        await _until(lambda: recorder.chunks)
 
         assert len(recorder.tracks) == 1
         assert recorder.tracks[0].kind == "audio"
@@ -442,7 +449,7 @@ class TestVoiceRoomRecording:
         # Simulate speech → STT → AI → TTS → outbound audio
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x00" * 320))
         await backend.simulate_audio_received(session, AudioFrame(data=b"\x00" * 320))
-        await asyncio.sleep(0.2)
+        await _until(lambda: backend.sent_audio)
 
         # TTS was called and audio sent to backend
         assert len(tts.calls) >= 1, "TTS should have been called"
@@ -452,7 +459,7 @@ class TestVoiceRoomRecording:
         chunks_before = len(recorder.chunks)
         for _ in range(10):
             await backend.simulate_audio_received(session, AudioFrame(data=b"\x00" * 320))
-        await asyncio.sleep(0.05)
+        await _until(lambda: len(recorder.chunks) > chunks_before)
 
         # Verify inbound frames are being recorded (mixed with any pending outbound)
         assert len(recorder.chunks) > chunks_before

@@ -94,7 +94,7 @@ def _speech(audio: bytes) -> list[VADEvent | None]:
 
 
 async def _setup(
-    transcripts: list[str],
+    transcripts: list[str], *, min_speech_ms: int = 300
 ) -> tuple[RoomKit, MockVoiceBackend, _ThinkingAI, str, VoiceSession]:
     backend, ai = MockVoiceBackend(), _ThinkingAI()
     vad = MockVADProvider(events=_speech(b"\x01\x00" * 4) + _speech(b"\x02\x00" * 4))
@@ -105,7 +105,7 @@ async def _setup(
         backend=backend,
         pipeline=AudioPipelineConfig(vad=vad),
         interruption=InterruptionConfig(
-            strategy=InterruptionStrategy.CONFIRMED, min_speech_ms=300
+            strategy=InterruptionStrategy.CONFIRMED, min_speech_ms=min_speech_ms
         ),
     )
     kit = RoomKit(voice=backend)
@@ -146,12 +146,12 @@ async def _route_first_turn(backend: MockVoiceBackend, ai: _ThinkingAI, session:
 
 class TestResumingBeforeTheResponseIsHeard:
     async def test_the_response_waits_then_the_merged_turn_is_answered_once(self) -> None:
-        kit, backend, ai, room_id, session = await _setup([FIRST, MORE])
+        kit, backend, ai, room_id, session = await _setup([FIRST, MORE], min_speech_ms=30)
         await _route_first_turn(backend, ai, session)
 
         await _frame(backend, session)  # the user resumes
         ai.release.set()  # the first answer is ready to be said
-        await asyncio.sleep(0.35)
+        await asyncio.sleep(0.05)  # past the 30 ms that confirm the user's speech
         assert _said(backend) == []  # nothing is said over the user
 
         await _frame(backend, session)  # speech ends: MORE

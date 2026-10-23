@@ -95,10 +95,12 @@ class TestTokens:
 
         assert neutralize_tokens(text) == text
 
+    @pytest.mark.wallclock
     def test_a_long_run_of_marks_stays_linear(self) -> None:
         # Two adjacent quantifiers matching the same characters would
-        # backtrack quadratically on participant text (RMK-595).
-        hostile = "<|" * 250_000 + "<\u200b" * 250_000 + "<" + "\U0001f600" * 250_000 + "|>"
+        # backtrack quadratically on participant text (RMK-595): about 10^10
+        # steps on these 100,000-character runs, far past the budget.
+        hostile = "<|" * 100_000 + "<\u200b" * 100_000 + "<" + "\U0001f600" * 100_000 + "|>"
 
         started = time.perf_counter()
         neutralize_tokens(hostile)
@@ -106,6 +108,7 @@ class TestTokens:
 
         assert time.perf_counter() - started < 3.0
 
+    @pytest.mark.wallclock
     def test_a_run_of_open_directions_stays_linear(self) -> None:
         hostile = "[" * 200_000 + "<" * 200_000
 

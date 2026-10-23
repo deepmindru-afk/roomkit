@@ -477,12 +477,15 @@ class TestLocalAudioSpeakerPlayback:
         backend.on_audio_played(lambda _s, frame: played.append(frame.metadata["played_bytes"]))
 
         task = asyncio.create_task(backend.send_audio(session, _response(3 * _BLOCK)))
-        for _ in range(20):
-            await asyncio.sleep(0.03)  # the queue is retried every block (20 ms)
-            if task.done():
-                break
-            _drain_block(backend)
-        await asyncio.wait_for(task, 1)
+        async with asyncio.timeout(1):
+            while not task.done():
+                # The full queue is retried every block (20 ms): play what it holds,
+                # and once the whole response is queued, play its end.
+                queued = backend._speaker._buffered
+                if queued or sum(played) + queued >= 3 * _BLOCK:
+                    _drain_block(backend)
+                await asyncio.sleep(0.002)
+        await task
 
         assert sum(played) == 3 * _BLOCK
 

@@ -14,18 +14,24 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from roomkit.channels.voice import TTSPlaybackState
-from tests.test_interruption_semantic_wait import _room, _SlowPartialSTT, _talk
+from tests.test_interruption_semantic_wait import _LOUD, _room, _SlowPartialSTT
 
 
-def _slow_store(kit: Any, delay: float) -> None:
-    """Make every context build wait ``delay`` seconds, as a loaded store does."""
+def _held_store(kit: Any) -> tuple[list[str], asyncio.Event]:
+    """Make every context build wait until the returned event is set, as a
+    loaded store does; each build asked for while it is held is noted."""
     build = kit._build_context  # noqa: SLF001
+    building: list[str] = []
+    release = asyncio.Event()
 
-    async def slow(room_id: str, *args: Any, **kwargs: Any) -> Any:
-        await asyncio.sleep(delay)
+    async def held(room_id: str, *args: Any, **kwargs: Any) -> Any:
+        if not release.is_set():
+            building.append(room_id)
+            await asyncio.wait_for(release.wait(), 5)
         return await build(room_id, *args, **kwargs)
 
-    kit._build_context = slow  # noqa: SLF001
+    kit._build_context = held  # noqa: SLF001
+    return building, release
 
 
 def _count_interrupts(channel: Any) -> list[str]:
@@ -50,17 +56,27 @@ async def _until(condition: Any, timeout: float = 5.0) -> None:
 class TestBargeInOnce:
     async def test_continued_speech_during_a_slow_barge_in_fires_it_once(self) -> None:
         kit, channel, session, backend, seen = await _room(
-            _SlowPartialSTT("attends, stop", delay=0.2), vad=False
+            _SlowPartialSTT("attends, stop", delay=0), vad=False
         )
-        _slow_store(kit, 0.3)
+        building, release = _held_store(kit)
         interrupts = _count_interrupts(channel)
 
-        # 600 ms of speech: five more energy runs land while the first
-        # barge-in is still building its context.
-        await _talk(backend, session, 0.6)
-        await _until(lambda: interrupts)
-        await asyncio.sleep(0.1)  # room for a duplicate to show up
+        # Speech until the first barge-in is building its context (its speech
+        # runs past min_speech_ms, a wall-clock measure)...
+        async with asyncio.timeout(5):
+            while not building:
+                await backend.simulate_audio_received(session, _LOUD)
+                await asyncio.sleep(0.01)
+        # ...then five more energy runs land while it is still building.
+        for _ in range(25):
+            await backend.simulate_audio_received(session, _LOUD)
+            await asyncio.sleep(0)
+        await asyncio.sleep(0.01)  # a barge-in they started is building too by now
+        release.set()
+        # Every barge-in that started ends in its interrupt.
+        await _until(lambda: len(interrupts) >= len(building) and len(seen["barge_in"]) >= 1)
 
+        assert len(building) == 1
         assert len(seen["barge_in"]) == 1
         assert interrupts == ["barge_in"]
         await kit.close()

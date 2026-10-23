@@ -232,7 +232,7 @@ async def test_no_provider_audio_reaches_the_people_under_output_mute(host: str)
     for _ in range(3):
         await provider.simulate_audio(session, b"\x01\x00" * 480)
     await provider.simulate_response_end(session)
-    await asyncio.sleep(0.1)
+    await rt.channel.wait_idle(ROOM, timeout=2)  # the response's audio went as far as it goes
     heard = rt.audio_heard()
     await rt.kit.close()
 
@@ -639,8 +639,9 @@ async def test_a_host_is_not_idle_while_a_call_runs_nor_before_its_answer(host: 
     assert session is not None
 
     async def idle() -> bool:
+        # The idle event follows each change of state: an idle host returns at once.
         try:
-            await rt.channel.wait_idle(ROOM, timeout=0.1)
+            await rt.channel.wait_idle(ROOM, timeout=0.01)
         except TimeoutError:
             return False
         return True

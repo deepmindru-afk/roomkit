@@ -9,6 +9,7 @@ reports each once: ``ON_SESSION_STARTED`` for the call,
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import patch
 
@@ -85,13 +86,21 @@ async def _room_answering_calls() -> tuple[RoomKit, AudioVideoChannel, Any, dict
 async def _invite(backend: Any, *, has_video: bool) -> _FakeCall:
     call = _FakeCall(sdp_offer=_make_sdp_offer(has_video=has_video))
     await backend._handle_invite(call)
-    await asyncio.sleep(0.05)
     return call
 
 
-async def _bye(backend: Any, call: _FakeCall) -> None:
+def _bye(backend: Any, call: _FakeCall) -> None:
     backend._handle_bye(call, object())
-    await asyncio.sleep(0.05)
+
+
+async def _until(ready: Callable[[], bool]) -> None:
+    """Until *ready*: the hooks run on their own, the BYE's teardown too. A
+    few more loop turns let a second report scheduled alongside show."""
+    async with asyncio.timeout(2):
+        while not ready():
+            await asyncio.sleep(0.005)
+    for _ in range(10):
+        await asyncio.sleep(0)
 
 
 def test_an_av_backend_is_a_voice_backend_whose_video_is_a_facet() -> None:
@@ -104,10 +113,12 @@ def test_an_av_backend_is_a_voice_backend_whose_video_is_a_facet() -> None:
 async def test_an_audio_only_call_starts_and_ends_without_video() -> None:
     kit, av, backend, fired = await _room_answering_calls()
     call = await _invite(backend, has_video=False)
+    await _until(lambda: bool(fired["call"]))
     assert fired["call"] == ["session-1"]
     assert "session-1" in av._session_bindings
 
-    await _bye(backend, call)
+    _bye(backend, call)
+    await _until(lambda: "session-1" not in av._session_bindings)
 
     # The BYE unbinds the call: binding, pipeline and STT go with it.
     assert "session-1" not in av._session_bindings
@@ -118,11 +129,13 @@ async def test_an_audio_only_call_starts_and_ends_without_video() -> None:
 async def test_a_call_with_video_reports_the_call_and_its_video_once_each() -> None:
     kit, av, backend, fired = await _room_answering_calls()
     call = await _invite(backend, has_video=True)
+    await _until(lambda: bool(fired["call"] and fired["video_started"]))
     assert fired["call"] == ["session-1"]
     assert fired["video_started"] == ["session-1"]
     assert backend.video.get_session("session-1") is not None
 
-    await _bye(backend, call)
+    _bye(backend, call)
+    await _until(lambda: bool(fired["video_ended"]))
 
     assert fired["video_ended"] == ["session-1"]
     assert "session-1" not in av._session_bindings
@@ -134,10 +147,11 @@ async def test_a_call_with_video_reports_the_call_and_its_video_once_each() -> N
 async def test_a_call_the_channel_ends_reports_its_video_ended_once() -> None:
     kit, av, backend, fired = await _room_answering_calls()
     await _invite(backend, has_video=True)
+    await _until(lambda: bool(fired["video_started"]))
     session = backend.get_session("session-1")
 
     await av.disconnect_session(session, ROOM)
-    await asyncio.sleep(0.05)
+    await _until(lambda: bool(fired["video_ended"]))
 
     assert fired["video_ended"] == ["session-1"]
     assert "session-1" not in av._session_bindings
@@ -151,17 +165,17 @@ async def test_the_realtime_bridge_lets_a_call_go_on_its_bye(has_video: bool) ->
     backend = _sip_backend()
     bridge = RealtimeAVBridge(MockRealtimeProvider(), backend)
     call = await _invite(backend, has_video=has_video)
-    assert "session-1" in bridge._calls
+    await _until(lambda: "session-1" in bridge._calls)
 
-    await _bye(backend, call)
-
-    assert bridge._calls == {}
+    _bye(backend, call)
+    await _until(lambda: bridge._calls == {})
     await bridge.close()
 
 
 async def test_the_video_api_left_on_the_backend_warns_and_reaches_the_facet() -> None:
     backend = _sip_backend()
     await _invite(backend, has_video=True)
+    await _until(lambda: backend.video.get_session("session-1") is not None)
     frames: list[Any] = []
 
     with pytest.warns(DeprecationWarning, match=r"\.video\.on_video_received\(\)"):
