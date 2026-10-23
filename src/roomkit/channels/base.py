@@ -408,12 +408,14 @@ class Channel(ABC):
         room_id: str,
         binding: ChannelBinding,
     ) -> None:
-        """Notify the channel that a room's binding has changed.
+        """Notify the channel of a room's binding as stored.
 
-        Called by the framework after ``mute()``, ``unmute()``, or
-        ``set_access()`` update the store.  Override in session-based
-        channels (voice, realtime voice) to update cached binding state
-        used for audio gating.  Default: no-op.
+        Called by the framework after ``mute()``, ``unmute()``,
+        ``mute_output()``, ``unmute_output()`` or ``set_access()``, a call
+        that changed nothing included (RFC §7.2): it sets a stale cached
+        state right.  Override in session-based channels (voice, realtime
+        voice) to update cached binding state used for audio gating.
+        Default: no-op.
         """
 
     async def on_room_attached(  # noqa: B027

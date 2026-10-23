@@ -135,27 +135,50 @@ class TestChannelLifecycleHooks:
         assert len(fired) == 0
 
 
+class _GatedChannel(SimpleChannel):
+    """A channel that keeps the binding state it was last pushed, as a
+    session-based channel caches it for audio gating."""
+
+    def __init__(self, channel_id: str) -> None:
+        super().__init__(channel_id)
+        self.pushed: list[ChannelBinding] = []
+
+    def update_binding(self, room_id: str, binding: ChannelBinding) -> None:
+        self.pushed.append(binding)
+
+
+# (operation, its arguments, what the stored binding holds already, whether
+# the call pushes the binding to the channel's gate)
 _NO_CHANGE = [
-    ("mute", (), {"muted": True}),
-    ("unmute", (), {}),
-    ("mute_output", (), {"output_muted": True}),
-    ("unmute_output", (), {}),
-    ("set_visibility", ("all",), {}),
-    ("set_access", (Access.READ_ONLY,), {"access": Access.READ_ONLY}),
-    ("update_binding_metadata", ({"team": "blue"},), {"metadata": {"team": "blue"}}),
+    ("mute", (), {"muted": True}, True),
+    ("unmute", (), {}, True),
+    ("mute_output", (), {"output_muted": True}, True),
+    ("unmute_output", (), {}, True),
+    ("set_visibility", ("all",), {}, False),
+    ("set_access", (Access.READ_ONLY,), {"access": Access.READ_ONLY}, True),
+    ("update_binding_metadata", ({"team": "blue"},), {"metadata": {"team": "blue"}}, False),
 ]
 
 
-@pytest.mark.parametrize(("operation", "args", "stored"), _NO_CHANGE)
+@pytest.mark.parametrize(("operation", "args", "stored", "pushes"), _NO_CHANGE)
 async def test_a_binding_change_that_changes_nothing_writes_and_fires_nothing(
-    operation: str, args: tuple[Any, ...], stored: dict[str, Any], monkeypatch: Any
+    operation: str,
+    args: tuple[Any, ...],
+    stored: dict[str, Any],
+    pushes: bool,
+    monkeypatch: Any,
 ) -> None:
     """RFC §7.2: a retried call duplicates no hook and no record, and the
-    binding is not written again."""
+    binding is not written again. A gate change still pushes the binding as
+    stored to the channel, whose cached state may have drifted from it (the
+    store written by another process): a repeated mute must not leave audio
+    flowing."""
     kit = RoomKit()
-    kit.register_channel(SimpleChannel("sms1"))
+    channel = _GatedChannel("sms1")
+    kit.register_channel(channel)
     await kit.create_room(room_id="r1")
     binding = await kit.attach_channel("r1", "sms1")
+    # Written behind the channel's back: its cached state is now stale.
     await kit.store.update_binding(binding.model_copy(update=stored))
     before = await kit.store.get_binding("r1", "sms1")
     count = (await kit.get_room("r1")).event_count
@@ -168,12 +191,14 @@ async def test_a_binding_change_that_changes_nothing_writes_and_fires_nothing(
 
     writes: list[ChannelBinding] = []
     monkeypatch.setattr(kit.store, "update_binding", _recording(writes))
+    channel.pushed.clear()
 
     result = await getattr(kit, operation)("r1", "sms1", *args)
 
     assert result == before
     assert writes == []
     assert fired == []
+    assert channel.pushed == ([before] if pushes else [])
     assert (await kit.get_room("r1")).event_count == count
     await kit.close()
 

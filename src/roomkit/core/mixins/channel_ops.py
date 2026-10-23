@@ -621,7 +621,7 @@ class ChannelOpsMixin(HelpersMixin):
             binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
             updated = binding.model_copy(update={"muted": True})
             if updated == binding:
-                return binding
+                return self._gate_unchanged(room_id, channel_id, binding)
             result = await self._store.update_binding(updated)
             self._notify_binding_updated(room_id, channel_id, result)
             await self._emit_system_event(
@@ -650,7 +650,7 @@ class ChannelOpsMixin(HelpersMixin):
             binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
             updated = binding.model_copy(update={"muted": False})
             if updated == binding:
-                return binding
+                return self._gate_unchanged(room_id, channel_id, binding)
             result = await self._store.update_binding(updated)
             self._notify_binding_updated(room_id, channel_id, result)
             await self._emit_system_event(
@@ -679,7 +679,7 @@ class ChannelOpsMixin(HelpersMixin):
             binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
             updated = binding.model_copy(update={"output_muted": True})
             if updated == binding:
-                return binding
+                return self._gate_unchanged(room_id, channel_id, binding)
             result = await self._store.update_binding(updated)
             self._notify_binding_updated(room_id, channel_id, result)
             return result
@@ -693,7 +693,7 @@ class ChannelOpsMixin(HelpersMixin):
             binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
             updated = binding.model_copy(update={"output_muted": False})
             if updated == binding:
-                return binding
+                return self._gate_unchanged(room_id, channel_id, binding)
             result = await self._store.update_binding(updated)
             self._notify_binding_updated(room_id, channel_id, result)
             return result
@@ -746,7 +746,7 @@ class ChannelOpsMixin(HelpersMixin):
             old_access = binding.access
             updated = binding.model_copy(update={"access": access})
             if updated == binding:
-                return binding
+                return self._gate_unchanged(room_id, channel_id, binding)
             result = await self._store.update_binding(updated)
             self._notify_binding_updated(room_id, channel_id, result)
             await self._emit_system_event(
@@ -811,6 +811,17 @@ class ChannelOpsMixin(HelpersMixin):
         if organization_id is not None:
             await self.get_room(room_id, organization_id=organization_id)
         return await self._store.list_bindings(room_id)
+
+    def _gate_unchanged(
+        self, room_id: str, channel_id: str, binding: ChannelBinding
+    ) -> ChannelBinding:
+        """A gate change (mute, access) that changes nothing (RFC §7.2):
+        nothing is written and nothing fires, but the channel is told the
+        binding as stored, since its cached gate state may have drifted from
+        the store (another process wrote it): a repeated mute never leaves
+        audio flowing."""
+        self._notify_binding_updated(room_id, channel_id, binding)
+        return binding
 
     def _notify_binding_updated(
         self, room_id: str, channel_id: str, binding: ChannelBinding

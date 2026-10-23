@@ -642,8 +642,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `update_binding_metadata()`, `mute_output()` and `unmute_output()` wrote
   the binding (and a `CHANNEL_UPDATED` record) with the values it held. Each
   now returns the binding as stored, with no write, no record and no hook,
-  so a retried call duplicates nothing. Breaking for a hook that counted
-  every `mute()` call rather than every change.
+  so a retried call duplicates nothing. A gate change (`mute()`, `unmute()`,
+  `mute_output()`, `unmute_output()`, `set_access()`) still pushes the
+  binding as stored to the channel (`Channel.update_binding()`), whose
+  cached gate state may have drifted from the store: a repeated mute never
+  leaves audio flowing. Breaking for a hook that counted every `mute()`
+  call rather than every change.
 
 - **BREAKING — a direct `update_event()` that changes nothing writes and
   fires nothing** (RFC §10.3, RMK-930). Given the content, the source or
