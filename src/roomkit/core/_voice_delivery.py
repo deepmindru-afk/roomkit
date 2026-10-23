@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import logging
-from collections.abc import Callable
-from contextlib import nullcontext
+from collections.abc import Callable, Generator
+from contextlib import contextmanager, nullcontext
 from typing import TYPE_CHECKING, Any
 
 from roomkit.models.channel import ChannelBinding
@@ -27,11 +28,32 @@ def active_sessions(channel: Any, room_id: str) -> list[Any]:
     return [s for s in channel.get_room_sessions(room_id) if s.state != VoiceSessionState.ENDED]
 
 
+_INJECTED_DELIVERY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "roomkit_injected_delivery", default=False
+)
+"""Whether the current task delivers a hook-injected event (RFC §9.4)."""
+
+
+@contextmanager
+def delivering_injected() -> Generator[None]:
+    """Scope the delivery of a hook-injected event (RFC §9.4): it asks no
+    agent, so a transport hosting a model takes it silently."""
+    token = _INJECTED_DELIVERY.set(True)
+    try:
+        yield
+    finally:
+        _INJECTED_DELIVERY.reset(token)
+
+
 def injection_silent(binding: ChannelBinding) -> bool:
     """Whether text injected into a realtime host's model under *binding* asks
     no answer: a muted, output-muted or unwritable binding withholds the
-    model's response, its context still taking the text (RFC §7.2, §7.5)."""
-    return binding.muted or binding.output_muted or not binding.can_write
+    model's response, its context still taking the text (RFC §7.2, §7.5),
+    and so does the delivery of an event a hook injected, which asks no
+    agent (§9.4)."""
+    return (
+        binding.muted or binding.output_muted or not binding.can_write or _INJECTED_DELIVERY.get()
+    )
 
 
 def _record(ctx: DeliveryContext, channel_id: str, session_id: str) -> VoiceDeliveryRecord:

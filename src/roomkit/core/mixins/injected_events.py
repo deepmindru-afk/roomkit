@@ -6,7 +6,10 @@ chain with every hook under the lock, and counts against the cascade's
 reentry budget. It keeps its cause's chain depth, names its targets as its
 visibility, carries no idempotency key, and takes no source check: it is the
 hook's, not a channel's. It is delivered to its transport targets only,
-under the rules of any delivery, never to its own source, and asks no agent.
+under the rules of any delivery, never to its own source, and asks no agent:
+a transport hosting a model takes it into the model's context silently. Its
+delivery set, empty when it is stored only, fires ``AFTER_BROADCAST`` like
+any other.
 An injected INSTRUCTION is dropped with a warning before any pass: only the
 application issues instructions.
 
@@ -29,7 +32,6 @@ from roomkit.core.mixins.inbound_locked import (
     _Blocked,
     _Ready,
     _Refused,
-    mutation_plan,
     target_update,
 )
 from roomkit.core.mixins.lane_execution import provisional
@@ -204,7 +206,7 @@ class InjectedEventsMixin(HelpersMixin):
         context = with_target(ready.context, target)
         targets = await self._injected_targets(room_id, event, injected)
 
-        def factory(committed: RoomEvent) -> DeliveryPlan | None:
+        def factory(committed: RoomEvent) -> DeliveryPlan:
             return _injected_plan(committed, ready, context, targets, mutation_hook)
 
         stored = await self._commit_to_lane(
@@ -249,13 +251,11 @@ def _injected_plan(
     context: RoomContext,
     targets: list[ChannelBinding],
     mutation_hook: tuple[HookTrigger, RoomEvent] | None,
-) -> DeliveryPlan | None:
+) -> DeliveryPlan:
     """The delivery plan of an injected event, under *context*: its
-    transport targets, no reentry, no ``AFTER_BROADCAST``, and the mutation
-    trigger of an edit or a delete (RFC §10.3); ``None`` when it is stored
-    only and changes nothing."""
-    if not targets:
-        return mutation_plan(committed, context, mutation_hook, injected=True)
+    transport targets, none when it is stored only, no reentry, the mutation
+    trigger of an edit or a delete (RFC §10.3), and its ``AFTER_BROADCAST``
+    once its delivery set has run, like any other (§9.4)."""
     # An unbound source (a hook's own, as "system") transcodes as a channel
     # of its type with default capabilities.
     source_binding = ready.source_binding or ChannelBinding(
@@ -270,5 +270,4 @@ def _injected_plan(
         targets=targets,
         injected=True,
         mutation_hook=mutation_hook,
-        fire_after_broadcast=False,
     )

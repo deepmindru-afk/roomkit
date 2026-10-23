@@ -26,7 +26,8 @@ from roomkit.channels import _conference_realtime
 from roomkit.channels.conference import ConferenceChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.enums import ChannelType
-from roomkit.models.event import TextContent
+from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.tool_call import ToolCallEvent
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.injection import VoiceInjectionResult
@@ -217,6 +218,38 @@ async def test_a_broadcast_is_injected_silently_under_a_muted_binding(
     await rt.kit.close()
 
     assert provider.injections == [("@src: “hello”", silent)]
+
+
+@HOSTS
+async def test_a_hook_s_injected_event_is_taken_silently(host: str) -> None:
+    """RFC §9.4: an injected event asks no agent, and a transport hosting a
+    model is one: the model takes it into its context and answers nothing."""
+    provider = _Provider()
+    rt = _Host(host, provider, [])
+    await rt.attach()
+    await rt.start()
+    notice = RoomEvent(
+        room_id=ROOM,
+        source=EventSource(channel_id="src", channel_type=ChannelType.AI),
+        content=TextContent(body="notice"),
+    )
+
+    @rt.kit.hook(HookTrigger.BEFORE_BROADCAST, name="notify")
+    async def notify(event: RoomEvent, ctx: Any) -> HookResult:
+        if getattr(event.content, "body", None) != "hello":
+            return HookResult.allow()
+        return HookResult.allow(
+            injected=[InjectedEvent(event=notice, target_channel_ids=["host"])]
+        )
+
+    await rt.kit.send_event(ROOM, "src", TextContent(body="hello"), chain_depth=1)
+    await until(lambda: len(provider.injections) == 2)
+    await rt.kit.close()
+
+    assert [(("notice" in text), silent) for text, silent in provider.injections] == [
+        (False, False),
+        (True, True),
+    ]
 
 
 @HOSTS

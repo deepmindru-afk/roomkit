@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,6 +14,7 @@ from roomkit.core._changes import for_channels
 from roomkit.core._failure_log import log_failure
 from roomkit.core._instructions import response_metadata
 from roomkit.core._turn_runners import TurnRunner
+from roomkit.core._voice_delivery import delivering_injected
 from roomkit.core.circuit_breaker import CircuitBreaker
 from roomkit.core.exceptions import NoRecipientError
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan
@@ -759,7 +761,12 @@ class EventRouter:
             target_results.append(tr)
 
         try:
-            await asyncio.gather(*[_process_target(t) for t in targets], return_exceptions=True)
+            # An injected event asks no agent (RFC §9.4): the targets' tasks
+            # inherit the scope, which a host of a model reads.
+            with delivering_injected() if plan.injected else nullcontext():
+                await asyncio.gather(
+                    *[_process_target(t) for t in targets], return_exceptions=True
+                )
         except asyncio.CancelledError:
             # The caller gave up: the streams the targets already returned
             # will not be read, and are closed rather than left open.

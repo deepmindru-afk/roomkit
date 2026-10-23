@@ -728,10 +728,15 @@ class LaneExecutionMixin(HelpersMixin):
 
         if plan.injected:
             # Its targets' side effects are collected, as at any delivery
-            # (RFC §9.4, §10.2 step 3); nothing else follows it.
+            # (RFC §9.4, §10.2 step 3), and its AFTER_BROADCAST fires like
+            # any other's; no reentry and no delivery report follow it.
             await self._persist_side_effects(
                 room_id, result.tasks, result.observations, event, context
             )
+            if plan.fire_after_broadcast:
+                await self._hook_engine.run_async_hooks(
+                    room_id, HookTrigger.AFTER_BROADCAST, event, context
+                )
             return
 
         # A failure before the cascade holds the streams leaves nobody to read them.

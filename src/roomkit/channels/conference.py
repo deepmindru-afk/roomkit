@@ -1251,7 +1251,9 @@ class ConferenceChannel(
             # room's voice, so a text event joins its conversation context
             # rather than being synthesized over it (RFC 12.10.12), as
             # content its author wrote, never as the application's
-            # instruction (RFC §12.4), as on a realtime voice channel.
+            # instruction (RFC §12.4), as on a realtime voice channel;
+            # silent for an event a hook injected, which asks no agent
+            # (RFC §9.4).
             await compile_mark_patterns()
             text = broadcast_text(event, event.content.body, context, self.channel_id)
             if text is None:

@@ -19,7 +19,10 @@ class InjectedEvent(BaseModel):
     carries no idempotency key and takes no source check; its visibility
     names the targets the room binds. It is delivered to its transport
     targets only, never to its own source, and asks no agent: an
-    intelligence channel among the targets reads it in its history.
+    intelligence channel among the targets reads it in its history, and a
+    transport hosting a model (a realtime voice channel, a conference with a
+    realtime model) takes it into the model's context silently. Its delivery
+    set fires ``AFTER_BROADCAST`` like any other.
     """
 
     event: RoomEvent

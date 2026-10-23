@@ -87,8 +87,9 @@ class DeliveryPlan:
     Immutable once enqueued. ``targets`` is the delivery set (RFC §10.1 step
     12): eligible bindings resolved against state consistent with the
     committed timeline. ``injected`` marks a hook-injected event (RFC §9.4):
-    its targets are transports only, so it asks no agent, and nothing
-    follows its delivery, no reentry and no ``AFTER_BROADCAST``.
+    its targets are transports only, so it asks no agent (a transport
+    hosting a model takes it silently), and no reentry follows its delivery;
+    its ``AFTER_BROADCAST`` fires like any other's.
     """
 
     event: RoomEvent
@@ -109,9 +110,10 @@ class DeliveryPlan:
     hook_tasks: list[Task] = field(default_factory=list)
     hook_observations: list[Observation] = field(default_factory=list)
     # Whether the event's AFTER_BROADCAST hooks (and side-effect persistence)
-    # fire after its set executes. False preserves the paths that never fired
-    # them: injected events and a trigger without a source binding. A rerun
-    # keeps its side effects and never repeats its AFTER_BROADCAST.
+    # fire after its set executes. False preserves the path that never fired
+    # them: a trigger without a source binding. A rerun keeps its side
+    # effects and never repeats its AFTER_BROADCAST. An injected event fires
+    # its own (RFC §9.4).
     fire_after_broadcast: bool = True
     # Trace continuity across the lane boundary: the caller's current span
     # (and its backend context), captured at plan time. The lane executor

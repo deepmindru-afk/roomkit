@@ -17,6 +17,7 @@ from roomkit.models.enums import (
     ChannelCategory,
     ChannelType,
     EventStatus,
+    HookExecution,
     HookTrigger,
 )
 from roomkit.models.event import EventContent, EventSource, RichContent, RoomEvent, TextContent
@@ -291,6 +292,22 @@ class TestItsDelivery:
         try:
             await _hello(kit)
             assert "notice" not in [_body(e) for e in ws.delivered]
+        finally:
+            await kit.close()
+
+    @pytest.mark.parametrize("targets", [["ws"], None], ids=["delivered", "stored only"])
+    async def test_fires_after_broadcast_like_any_other(self, targets: list[str] | None) -> None:
+        kit, _, _ = await _room()
+        _on_hello(kit, InjectedEvent(event=_notice(), target_channel_ids=targets))
+        seen: list[str | None] = []
+
+        @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="audit")
+        async def audit(event: RoomEvent, ctx: RoomContext) -> None:
+            seen.append(_body(event))
+
+        try:
+            await _hello(kit)
+            assert seen.count("notice") == 1
         finally:
             await kit.close()
 

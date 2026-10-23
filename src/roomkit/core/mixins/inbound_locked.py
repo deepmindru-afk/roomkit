@@ -784,8 +784,6 @@ def mutation_plan(
     committed: RoomEvent,
     context: RoomContext,
     mutation_hook: tuple[HookTrigger, RoomEvent] | None,
-    *,
-    injected: bool = False,
 ) -> DeliveryPlan | None:
     """The plan of a committed event that has nothing to deliver: none,
     unless it is a change, whose RFC §10.3 mutation trigger still fires once
@@ -798,7 +796,6 @@ def mutation_plan(
         source_binding=None,
         context=context,
         targets=[],
-        injected=injected,
         mutation_hook=mutation_hook,
         fire_after_broadcast=False,
     )

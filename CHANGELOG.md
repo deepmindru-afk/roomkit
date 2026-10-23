@@ -614,6 +614,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — a hook's injected event fires `AFTER_BROADCAST`, and a
+  realtime host takes it silently** (RFC §9.4, RMK-930). Its delivery set,
+  empty when it is stored only, now fires `AFTER_BROADCAST` like any other
+  event's, so an audit hook sees the notices hooks inject. An injected
+  event asks no agent, and a transport hosting a model is one: a realtime
+  voice channel, or a conference with a realtime model, among its targets
+  now takes its text into the model's context silently, where the model
+  answered it. Breaking for a hook on `AFTER_BROADCAST` that assumed it
+  never saw an injected event, and for an application that relied on a
+  realtime model answering one: inject that event with `send_event()`
+  instead.
+
 - **BREAKING — only the framework writes the visibility `internal`** (RFC
   §7.3, §8.5, §9.4, RMK-930). `internal` marks a record the framework
   wrote (a voice channel's interruption record, which an agent reads as
