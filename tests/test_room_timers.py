@@ -363,3 +363,18 @@ async def test_the_component_applies_a_due_pause_with_what_it_was_given() -> Non
     assert paused.status is RoomStatus.PAUSED
     assert (await read_room("due")).paused_at == paused.paused_at
     assert reports[-1] == str(HookTrigger.ON_ROOM_PAUSED)
+
+
+async def test_close_room_on_a_room_its_timer_closes_returns_it_as_stored() -> None:
+    """The transitions' records are counted in the room it returns."""
+    kit, _heard = await _kit(
+        timers=RoomTimers(
+            inactive_after_seconds=60, closed_after_seconds=60, last_activity_at=_ago(3600)
+        )
+    )
+
+    closed = await kit.close_room("r1")
+
+    assert closed.status is RoomStatus.CLOSED
+    assert closed == await kit.get_room("r1")
+    await kit.close()

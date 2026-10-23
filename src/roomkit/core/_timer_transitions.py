@@ -109,8 +109,7 @@ class TimerTransitions:
         hooks: list[asyncio.Task[None]] = []
         async with self._lock_manager.locked(room_id):
             room = await self._read_room(room_id, organization_id=organization_id)
-            if await self.apply_due(room, hooks=hooks) is not room:
-                room = await self._read_room(room_id)
+            room = await self.apply_due(room, hooks=hooks)
         await self.settle(room_id, hooks)
         return room
 
@@ -134,9 +133,10 @@ class TimerTransitions:
     async def apply_due(
         self, room: Room, *, hooks: list[asyncio.Task[None]] | None = None
     ) -> Room:
-        """*room* with the transitions due now applied; call under its lock,
-        before the section reads its status. *room* itself when nothing is
-        due, which costs no I/O.
+        """*room* with the transitions due now applied, as stored once they
+        are, their records counted; call under its lock, before the section
+        reads its status. *room* itself when nothing is due, which costs no
+        I/O.
 
         The transitions are written in one write, each at the instant it fell
         due; a close stops the room's recordings first. Each then has its
@@ -157,10 +157,13 @@ class TimerTransitions:
             await self._store.update_room(after)
         for transition in due:
             await self._announce(room.id, transition)
-        task = self._fire_hooks(room.id, due, await self._build_context(room.id))
+        # Read once the records are written: the room as stored, which the
+        # hooks receive and the caller is handed.
+        context = await self._build_context(room.id)
+        task = self._fire_hooks(room.id, due, context)
         if hooks is not None:
             hooks.append(task)
-        return after
+        return context.room
 
     async def room_due(self, room_id: str, *, organization_id: str | None = None) -> Room | None:
         """The room, read under its lock with its due transitions applied, or
