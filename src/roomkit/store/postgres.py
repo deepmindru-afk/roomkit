@@ -141,6 +141,20 @@ async def _observe_event_index(conn: Any, room_id: str, event_index: int) -> Non
     )
 
 
+def _room_filter(params: list[Any], status: str | None, organization_id: str | None) -> str:
+    """The conditions narrowing a routing lookup joined on ``rooms r`` to a
+    status and an organization when either is named (RFC §10.4, §17.2); their
+    values are appended to *params*, numbered after those already there."""
+    clause = ""
+    if status is not None:
+        params.append(status.value if hasattr(status, "value") else status)
+        clause += f" AND r.status = ${len(params)}"
+    if organization_id is not None:
+        params.append(organization_id)
+        clause += f" AND r.organization_id = ${len(params)}"
+    return clause
+
+
 async def _file_address(
     conn: Any, channel_type: str, address: str, identity_id: str, organization_id: str
 ) -> None:
@@ -855,7 +869,12 @@ class PostgresStore(ConversationStore):
         return matches[0] if matches else None
 
     async def find_room_id_by_binding(
-        self, channel_id: str, participant_id: str, status: str | None = None
+        self,
+        channel_id: str,
+        participant_id: str,
+        status: str | None = None,
+        *,
+        organization_id: str | None = None,
     ) -> str | None:
         # Newest room first, id as tie-breaker, like the other stores.
         query = (
@@ -864,25 +883,25 @@ class PostgresStore(ConversationStore):
             "WHERE b.channel_id = $1 AND b.participant_id = $2"
         )
         params: list[Any] = [channel_id, participant_id]
-        if status is not None:
-            query += " AND r.status = $3"
-            params.append(status.value if hasattr(status, "value") else status)
+        query += _room_filter(params, status, organization_id)
         query += ' ORDER BY r.created_at DESC, b.room_id COLLATE "C" DESC LIMIT 1'
         async with self._acquire() as conn:
             row = await conn.fetchrow(query, *params)
         return row["room_id"] if row is not None else None
 
     async def find_room_id_by_participant(
-        self, participant_id: str, status: str | None = None
+        self,
+        participant_id: str,
+        status: str | None = None,
+        *,
+        organization_id: str | None = None,
     ) -> str | None:
         # Newest room first, id as tie-breaker, like the other stores.
         query = (
             "SELECT p.room_id FROM participants p JOIN rooms r ON r.id = p.room_id WHERE p.id = $1"
         )
         params: list[Any] = [participant_id]
-        if status is not None:
-            query += " AND r.status = $2"
-            params.append(status.value if hasattr(status, "value") else status)
+        query += _room_filter(params, status, organization_id)
         query += ' ORDER BY r.created_at DESC, p.room_id COLLATE "C" DESC LIMIT 1'
         async with self._acquire() as conn:
             row = await conn.fetchrow(query, *params)
@@ -893,30 +912,23 @@ class PostgresStore(ConversationStore):
         channel_id: str,
         status: str | None = None,
         limit: int = 2,
+        *,
+        organization_id: str | None = None,
     ) -> list[str]:
         # ORDER BY is not decoration here: without it the planner picks the row
         # and the same stored state can route two different ways, in the same
         # deployment (RFC §10.4). Ordered like the in-memory store — oldest
         # room first, id as tie-breaker — so the two agree.
-        if status is not None:
-            status_val = status.value if hasattr(status, "value") else status
-            query = (
-                "SELECT b.room_id FROM bindings b "
-                "JOIN rooms r ON r.id = b.room_id "
-                "WHERE b.channel_id = $1 AND r.status = $2 "
-                'ORDER BY r.created_at, b.room_id COLLATE "C" LIMIT $3'
-            )
-            async with self._acquire() as conn:
-                rows = await conn.fetch(query, channel_id, status_val, limit)
-        else:
-            query = (
-                "SELECT b.room_id FROM bindings b "
-                "JOIN rooms r ON r.id = b.room_id "
-                "WHERE b.channel_id = $1 "
-                'ORDER BY r.created_at, b.room_id COLLATE "C" LIMIT $2'
-            )
-            async with self._acquire() as conn:
-                rows = await conn.fetch(query, channel_id, limit)
+        params: list[Any] = [channel_id]
+        query = (
+            "SELECT b.room_id FROM bindings b JOIN rooms r ON r.id = b.room_id"
+            " WHERE b.channel_id = $1"
+        )
+        query += _room_filter(params, status, organization_id)
+        params.append(limit)
+        query += f' ORDER BY r.created_at, b.room_id COLLATE "C" LIMIT ${len(params)}'
+        async with self._acquire() as conn:
+            rows = await conn.fetch(query, *params)
         return [row["room_id"] for row in rows]
 
     # ── Event operations ─────────────────────────────────────────

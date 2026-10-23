@@ -8,13 +8,19 @@ when given one, refuse a room belonging to anyone else.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
 from roomkit import Access, AgentResponsePolicy, RoomKit, RoomTimers
+from roomkit.channels import SMSChannel
 from roomkit.core.exceptions import RoomNotFoundError
+from roomkit.core.inbound_router import InboundRoomRouter
 from roomkit.models.delivery import InboundMessage
+from roomkit.models.enums import ChannelType
 from roomkit.models.event import TextContent
+from roomkit.models.identity import Identity
+from roomkit.providers.sms.mock import MockSMSProvider
 from tests.test_framework import SimpleChannel
 
 
@@ -199,6 +205,28 @@ def _message() -> InboundMessage:
     return InboundMessage(channel_id="sms1", sender_id="+15550001", content=TextContent(body="hi"))
 
 
+class _AnswersWith(InboundRoomRouter):
+    """A custom router giving one answer, recording the organization and the
+    identity it was given."""
+
+    def __init__(self, room_id: str | None) -> None:
+        self.room_id = room_id
+        self.asked: list[tuple[str | None, str | None]] = []
+
+    async def route(
+        self,
+        channel_id: str,
+        channel_type: ChannelType,
+        participant_id: str | None = None,
+        channel_data: dict[str, Any] | None = None,
+        *,
+        organization_id: str | None = None,
+        identity: Identity | None = None,
+    ) -> str | None:
+        self.asked.append((organization_id, identity.id if identity is not None else None))
+        return self.room_id
+
+
 class TestScopedInbound:
     """``process_inbound`` scopes the room a message lands in: routed or
     explicit, a room of another organization is not found to the caller, before
@@ -222,17 +250,97 @@ class TestScopedInbound:
         await kit.process_inbound(_message(), room_id="fresh-room", organization_id="acme")
         assert (await kit.get_room("fresh-room")).organization_id == "acme"
 
-    async def test_a_routed_room_of_another_organization_is_not_found(self) -> None:
-        """The router picked the room off the channel's binding; the scope
-        still applies to what it picked."""
+    @pytest.mark.parametrize("names_the_sender", [True, False], ids=["step-1", "step-3"])
+    async def test_the_default_router_never_returns_another_organizations_room(
+        self, names_the_sender: bool
+    ) -> None:
+        """RFC §10.4: the default strategy searches the caller's organization
+        only, so the sender's room at another tenant, or the one room of
+        another tenant bound to the channel, is not a candidate: the message
+        gets a room of its own organization."""
         kit = RoomKit()
         kit.register_channel(SimpleChannel("sms1"))
         await kit.create_room(room_id="globex-room", organization_id="globex")
+        sender = _message().sender_id if names_the_sender else None
+        await kit.attach_channel("globex-room", "sms1", participant_id=sender)
+        before = await kit.store.list_events("globex-room")
+
+        result = await kit.process_inbound(_message(), organization_id="acme")
+
+        assert result.event is not None and result.event.room_id != "globex-room"
+        assert (await kit.get_room(result.event.room_id)).organization_id == "acme"
+        assert await kit.store.list_events("globex-room") == before
+
+    async def test_a_router_answering_another_organizations_room_fails_the_message(
+        self,
+    ) -> None:
+        """The answer is held to step 2's rules whoever gave it (RFC §10.1)."""
+        router = _AnswersWith("globex-room")
+        kit = RoomKit(inbound_router=router)
+        kit.register_channel(SimpleChannel("sms1"))
+        await kit.create_room(room_id="globex-room", organization_id="globex")
         await kit.attach_channel("globex-room", "sms1")
-        before = len(await kit.store.list_events("globex-room"))
+        before = await kit.store.list_events("globex-room")
+
         with pytest.raises(RoomNotFoundError):
             await kit.process_inbound(_message(), organization_id="acme")
-        assert len(await kit.store.list_events("globex-room")) == before
+
+        assert await kit.store.list_events("globex-room") == before
+        binding = await kit.store.get_binding("globex-room", "sms1")
+        assert binding is not None and binding.participant_id is None
+
+    async def test_a_room_a_router_answers_that_does_not_exist_is_created_with_its_id(
+        self,
+    ) -> None:
+        kit = RoomKit(inbound_router=_AnswersWith("fresh-room"))
+        kit.register_channel(SimpleChannel("sms1"))
+
+        result = await kit.process_inbound(_message(), organization_id="acme")
+
+        assert result.event is not None and result.event.room_id == "fresh-room"
+        assert (await kit.get_room("fresh-room")).organization_id == "acme"
+        binding = await kit.store.get_binding("fresh-room", "sms1")
+        assert binding is not None and binding.participant_id == _message().sender_id
+
+    async def test_the_router_is_given_the_organization_and_the_identity(self) -> None:
+        """Read once, scoped to the caller's organization (RFC §10.4, §17.2):
+        an identity of an organization is no one's to an unscoped call."""
+        router = _AnswersWith(None)
+        kit = RoomKit(inbound_router=router)
+        kit.register_channel(SimpleChannel("sms1"))
+        await kit.store.create_identity(Identity(id="id-alice", organization_id="acme"))
+        await kit.store.link_address("id-alice", "sms", _message().sender_id, "acme")
+
+        await kit.process_inbound(_message(), organization_id="acme")
+        await kit.process_inbound(_message())
+
+        assert router.asked == [("acme", "id-alice"), (None, None)]
+
+    async def test_an_address_linked_within_an_organization_finds_its_persons_room(
+        self,
+    ) -> None:
+        """The host added alice under her identity, then linked her number in
+        its organization: her first text from that number lands in her room,
+        which only step 1, by the identity, can find (two rooms share the
+        number)."""
+        kit = RoomKit()
+        kit.register_channel(SMSChannel("sms", provider=MockSMSProvider()))
+        for room_id in ("alice-room", "carol-room"):
+            await kit.create_room(room_id=room_id, organization_id="acme")
+        await kit.attach_channel("carol-room", "sms", participant_id="+15550000003")
+        await kit.attach_channel("alice-room", "sms")
+        await kit.add_member("alice-room", "sms", "id-alice")
+        await kit.store.create_identity(Identity(id="id-alice", organization_id="acme"))
+        await kit.store.link_address("id-alice", str(ChannelType.SMS), "+15550000001", "acme")
+
+        result = await kit.process_inbound(
+            InboundMessage(
+                channel_id="sms", sender_id="+15550000001", content=TextContent(body="hi")
+            ),
+            organization_id="acme",
+        )
+
+        assert result.event is not None and result.event.room_id == "alice-room"
 
     async def test_unscoped_processing_is_unchanged(self) -> None:
         kit = await _two_tenants()

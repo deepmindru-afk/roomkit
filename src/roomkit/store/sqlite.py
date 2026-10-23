@@ -196,6 +196,19 @@ def _write_transaction(conn: sqlite3.Connection) -> Generator[None, None, None]:
         raise
 
 
+def _filter_rooms(
+    where: list[str], params: list[Any], status: str | None, organization_id: str | None
+) -> None:
+    """Narrow a routing lookup joined on ``rooms r`` to a status and an
+    organization when either is named (RFC §10.4, §17.2)."""
+    if status is not None:
+        where.append("r.status = ?")
+        params.append(status)
+    if organization_id is not None:
+        where.append("r.organization_id = ?")
+        params.append(organization_id)
+
+
 class SQLiteSchemaError(RuntimeError):
     """Raised when a SQLite file cannot be migrated or is from a newer schema."""
 
@@ -962,18 +975,27 @@ class SQLiteStore(ConversationStore):
         return matches[0] if matches else None
 
     async def find_room_id_by_binding(
-        self, channel_id: str, participant_id: str, status: str | None = None
+        self,
+        channel_id: str,
+        participant_id: str,
+        status: str | None = None,
+        *,
+        organization_id: str | None = None,
     ) -> str | None:
-        return await self._run(self._x_find_room_id_by_binding, channel_id, participant_id, status)
+        return await self._run(
+            self._x_find_room_id_by_binding, channel_id, participant_id, status, organization_id
+        )
 
     def _x_find_room_id_by_binding(
-        self, channel_id: str, participant_id: str, status: str | None
+        self,
+        channel_id: str,
+        participant_id: str,
+        status: str | None,
+        organization_id: str | None,
     ) -> str | None:
         where = ["b.channel_id = ?", "b.participant_id = ?"]
         params: list[Any] = [channel_id, participant_id]
-        if status is not None:
-            where.append("r.status = ?")
-            params.append(status)
+        _filter_rooms(where, params, status, organization_id)
         row = (
             self._db()
             .execute(
@@ -987,18 +1009,22 @@ class SQLiteStore(ConversationStore):
         return row[0] if row is not None else None
 
     async def find_room_id_by_participant(
-        self, participant_id: str, status: str | None = None
+        self,
+        participant_id: str,
+        status: str | None = None,
+        *,
+        organization_id: str | None = None,
     ) -> str | None:
-        return await self._run(self._x_find_room_id_by_participant, participant_id, status)
+        return await self._run(
+            self._x_find_room_id_by_participant, participant_id, status, organization_id
+        )
 
     def _x_find_room_id_by_participant(
-        self, participant_id: str, status: str | None
+        self, participant_id: str, status: str | None, organization_id: str | None
     ) -> str | None:
         where = ["p.id = ?"]
         params: list[Any] = [participant_id]
-        if status is not None:
-            where.append("r.status = ?")
-            params.append(status)
+        _filter_rooms(where, params, status, organization_id)
         row = (
             self._db()
             .execute(
@@ -1012,18 +1038,23 @@ class SQLiteStore(ConversationStore):
         return row[0] if row is not None else None
 
     async def find_room_ids_by_channel(
-        self, channel_id: str, status: str | None = None, limit: int = 2
+        self,
+        channel_id: str,
+        status: str | None = None,
+        limit: int = 2,
+        *,
+        organization_id: str | None = None,
     ) -> list[str]:
-        return await self._run(self._x_find_room_ids_by_channel, channel_id, status, limit)
+        return await self._run(
+            self._x_find_room_ids_by_channel, channel_id, status, limit, organization_id
+        )
 
     def _x_find_room_ids_by_channel(
-        self, channel_id: str, status: str | None, limit: int
+        self, channel_id: str, status: str | None, limit: int, organization_id: str | None
     ) -> list[str]:
         where = ["b.channel_id = ?"]
         params: list[Any] = [channel_id]
-        if status is not None:
-            where.append("r.status = ?")
-            params.append(status)
+        _filter_rooms(where, params, status, organization_id)
         params.append(limit)
         rows = self._db().execute(
             f"""SELECT r.id FROM bindings b JOIN rooms r ON r.id = b.room_id

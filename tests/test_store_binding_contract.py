@@ -452,3 +452,73 @@ async def test_a_participant_record_finds_its_room_never_a_binding(
     finally:
         for room in rooms:
             await store.delete_room(room.id)
+
+
+class _StoreWithoutTheRoutingLookups(InMemoryStore):
+    """A store that overrides none of the routing lookups: the base fallbacks,
+    over a single-room ``find_room_id_by_channel`` of its own."""
+
+    find_room_id_by_binding = ConversationStore.find_room_id_by_binding
+    find_room_id_by_participant = ConversationStore.find_room_id_by_participant
+    find_room_ids_by_channel = ConversationStore.find_room_ids_by_channel
+
+    async def find_room_id_by_channel(
+        self, channel_id: str, status: str | None = None
+    ) -> str | None:
+        found = await InMemoryStore.find_room_ids_by_channel(self, channel_id, status, limit=1)
+        return found[0] if found else None
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize("step", ["binding", "participant", "one-room"])
+async def test_the_default_router_reads_the_organizations_rooms_only(
+    contract_store: ConversationStore, fallback: bool, step: str
+) -> None:
+    """RFC §10.4: the default strategy searches the caller's organization
+    only, every room when the call names none. A newer room of another
+    tenant neither wins over the organization's own nor hides it, and does
+    not make the channel's one room of the organization ambiguous."""
+    store = _StoreWithoutTheRoutingLookups() if fallback else contract_store
+    if fallback and not isinstance(contract_store, InMemoryStore):
+        pytest.skip("the fallback runs over the in-memory store")
+    channel, tag = f"sms-{uuid4().hex}", uuid4().hex
+    sender = f"alice-{tag}"
+    t0 = datetime(2026, 10, 8, 12, tzinfo=UTC)
+    rooms = [
+        Room(id=f"acme-{tag}", organization_id="acme", created_at=t0),
+        Room(id=f"globex-{tag}", organization_id="globex", created_at=t0 + timedelta(seconds=1)),
+    ]
+    for room in rooms:
+        await store.create_room(room)
+        await store.add_binding(
+            ChannelBinding(
+                room_id=room.id,
+                channel_id=channel,
+                channel_type=ChannelType.SMS,
+                participant_id=sender if step == "binding" else None,
+            )
+        )
+        if step == "participant":
+            await store.add_participant(
+                Participant(id=sender, room_id=room.id, channel_id=channel)
+            )
+    router = DefaultInboundRoomRouter(store)
+
+    async def routes(organization_id: str | None) -> str | None:
+        return await router.route(
+            channel, ChannelType.SMS, participant_id=sender, organization_id=organization_id
+        )
+
+    try:
+        assert await routes("acme") == f"acme-{tag}"
+        assert await routes("globex") == f"globex-{tag}"
+        assert await routes("initech") is None
+        if not fallback:
+            # Unscoped, both rooms are candidates: the newest is the sender's
+            # (step 1), and two rooms bound to the channel make step 3
+            # ambiguous, which the unscoped fallback cannot tell (it reads
+            # one room).
+            assert await routes(None) == (None if step == "one-room" else f"globex-{tag}")
+    finally:
+        for room in rooms:
+            await store.delete_room(room.id)

@@ -417,6 +417,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   person's place); `hush` no longer reads "are you ready to listen?" as a
   request for quiet (7/7, the former 5/7).
 
+- **BREAKING — the router is given the organization and the identity**
+  (RFC §10.4, §17.2, RMK-930). `InboundRoomRouter.route()` takes the
+  keyword-only `organization_id` (the one `process_inbound` acts for) and
+  `identity` (the sender's, resolved by the framework once per message
+  within that organization), and `channel_data` now carries the message's
+  metadata; a custom router overriding `route` must accept both keywords.
+  The default router searches the organization's rooms only, every room
+  when the call names none: a sender whose newest room belongs to another
+  tenant got `RoomNotFoundError` and now gets a room of the caller's
+  organization, and an identity linked within an organization routes its
+  addresses, where only unscoped links did. A custom router's answer is held
+  to the rules of a room the caller names: another organization's room
+  raises `RoomNotFoundError`, a missing id is created under it.
+  `find_room_ids_by_channel()`, `find_room_id_by_binding()` and
+  `find_room_id_by_participant()` take a keyword-only `organization_id`
+  (`None` reads every room), which a custom store overriding them must
+  accept. `roomkit.core.inbound_router.sender_known_as()` gives way to
+  `known_as(sender, identity)`, which reads no store.
+
 - **BREAKING — an address belongs to one identity per organization** (RFC
   §5.6, §14.1, §17.2, RMK-930). `link_address()` of an address another
   identity of the organization holds raises `AddressLinkedError`, and so does

@@ -15,8 +15,8 @@ from roomkit.core.exceptions import ChannelNotRegisteredError, RoomNotFoundError
 from roomkit.core.inbound_router import (
     binding_admits,
     binding_names_no_one,
+    known_as,
     recordable_sender,
-    sender_known_as,
 )
 from roomkit.core.locks import collecting_release_failures, failed_release
 from roomkit.core.mixins.channel_ops import is_channel_detached
@@ -159,14 +159,15 @@ class InboundMixin(HelpersMixin):
                 200, say); ``delivery_results`` is backfilled by
                 ``delivery.wait()``.
             organization_id: The organization the caller acts for (RFC
-                §17.2). The room the message would land in is checked
-                against it before any event is committed or any channel
-                auto-attached: a room belonging to another organization is
-                reported as **not found**, whether the caller named it or
-                the router picked it (the router itself is not organization
-                aware, so on the routed path the refusal is the outcome, not
-                a room of the caller's own); a room the caller names that
-                does not exist yet is created under it. That auto-create
+                §17.2). The router is given it, with the sender's identity
+                resolved within it, and the default router searches that
+                organization's rooms only (every room when it is unset). The
+                room the message would land in is checked against it before
+                any event is committed or any channel auto-attached: a room
+                belonging to another organization is reported as **not
+                found**, whether the caller named it or a custom router
+                answered it; a room the caller names, or a router answers,
+                that does not exist yet is created under it. That auto-create
                 makes a miss observable, so a scoped caller passes room ids
                 it resolved itself, never one it was handed. Left unset, the
                 read is unscoped and behaves as it always has. A library has
@@ -699,17 +700,24 @@ class InboundMixin(HelpersMixin):
         channel: Channel,
         room_id: str | None,
         organization_id: str | None,
+        identity: Identity | None = None,
     ) -> tuple[str, bool]:
         """The room *message* goes to, opened or attached as needed (RFC §10.1 step 2).
 
         The caller's *room_id* when it named one, the router's answer
-        otherwise. Returns the room id and whether the room was just created.
+        otherwise: the router is given the caller's organization and the
+        sender's *identity* in it (§10.4), and its answer is held to the
+        rules of an id the caller named. Returns the room id and whether the
+        room was just created.
         """
         if room_id is None:
             room_id = await self._inbound_router.route(
                 channel_id=message.channel_id,
                 channel_type=channel.channel_type,
                 participant_id=_conversation(message, channel),
+                channel_data=message.metadata,
+                organization_id=organization_id,
+                identity=identity,
             )
         if room_id is None:
             return await self._open_room_for(message, None, organization_id), True
@@ -800,16 +808,39 @@ class InboundMixin(HelpersMixin):
         with a custom router that sends several strangers to one room that
         is not a group, every sender after the first is asked twice.
         """
-        room_id, created = await self._find_or_open_room(message, channel, None, organization_id)
-        if created or await self._claim_binding(room_id, message, channel):
+        sender = _conversation(message, channel)
+        identity = await self._routing_identity(channel, sender, organization_id)
+        own = known_as(sender, identity)
+        room_id, created = await self._find_or_open_room(
+            message, channel, None, organization_id, identity
+        )
+        if created or await self._claim_binding(room_id, message, channel, own):
             return room_id, created
-        room_id, created = await self._find_or_open_room(message, channel, None, organization_id)
+        room_id, created = await self._find_or_open_room(
+            message, channel, None, organization_id, identity
+        )
         if not created:
-            await self._claim_binding(room_id, message, channel)
+            await self._claim_binding(room_id, message, channel, own)
         return room_id, created
 
+    async def _routing_identity(
+        self, channel: Channel, sender: str, organization_id: str | None
+    ) -> Identity | None:
+        """The sender's identity as routing names them (RFC §10.4, §14.1).
+
+        Read once per message, before the first route, within the caller's
+        organization (§17.2), so the router and the record's check know the
+        sender alike. A message with no address, and the framework's own
+        sender, read none.
+        """
+        if not recordable_sender(sender):
+            return None
+        return await self._store.resolve_identity(
+            str(channel.channel_type), sender, organization_id
+        )
+
     async def _claim_binding(
-        self, room_id: str, message: InboundMessage, channel: Channel
+        self, room_id: str, message: InboundMessage, channel: Channel, own: frozenset[str]
     ) -> bool:
         """Whether the routed sender may stay in *room_id*, recording them on a free binding.
 
@@ -817,9 +848,9 @@ class InboundMixin(HelpersMixin):
         and the first sender routed through it is that correspondent: the
         router then finds them there and admits no one else (RFC §10.4). The
         sender stays when the binding names them, by their address or the
-        identity the store resolves it to, or when they are a participant of
-        the room reached through this channel (one of several members the
-        router found by their record; RFC §5.5).
+        identity the store resolves it to (*own*), or when they are a
+        participant of the room reached through this channel (one of several
+        members the router found by their record; RFC §5.5).
         Anyone else was admitted against a binding another sender claimed
         since, and is routed again.
         """
@@ -831,11 +862,7 @@ class InboundMixin(HelpersMixin):
             binding_names_no_one(binding) or _lacks_recipient(binding, message, channel)
         ):
             binding = await self._record_sender(room_id, message, channel)
-        if binding is None or binding_admits(binding, frozenset({sender})):
-            return True
-        if binding_admits(
-            binding, await sender_known_as(self._store, channel.channel_type, sender)
-        ):
+        if binding is None or binding_admits(binding, own):
             return True
         participant = await self._store.get_participant(room_id, sender)
         return participant is not None and reached(participant, message.channel_id)

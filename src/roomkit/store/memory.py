@@ -287,7 +287,12 @@ class InMemoryStore(ConversationStore):
         return matches[0] if matches else None
 
     async def find_room_id_by_binding(
-        self, channel_id: str, participant_id: str, status: str | None = None
+        self,
+        channel_id: str,
+        participant_id: str,
+        status: str | None = None,
+        *,
+        organization_id: str | None = None,
     ) -> str | None:
         # The participant index holds every room a binding names the
         # participant in, so this reads a handful of rooms, not all of them.
@@ -297,28 +302,37 @@ class InMemoryStore(ConversationStore):
             binding = self._bindings.get(room_id, {}).get(channel_id)
             if room is None or binding is None or binding.participant_id != participant_id:
                 continue
-            if status is not None and room.status.value != status:
+            if not _matches(room, status, organization_id):
                 continue
             if best is None or _recency(room) > best:
                 best = _recency(room)
         return best[1] if best is not None else None
 
     async def find_room_id_by_participant(
-        self, participant_id: str, status: str | None = None
+        self,
+        participant_id: str,
+        status: str | None = None,
+        *,
+        organization_id: str | None = None,
     ) -> str | None:
         best: tuple[float, str] | None = None
         for room_id in self._participant_room_index.get(participant_id, ()):
             room = self._rooms.get(room_id)
             if room is None or participant_id not in self._participants.get(room_id, {}):
                 continue
-            if status is not None and room.status.value != status:
+            if not _matches(room, status, organization_id):
                 continue
             if best is None or _recency(room) > best:
                 best = _recency(room)
         return best[1] if best is not None else None
 
     async def find_room_ids_by_channel(
-        self, channel_id: str, status: str | None = None, limit: int = 2
+        self,
+        channel_id: str,
+        status: str | None = None,
+        limit: int = 2,
+        *,
+        organization_id: str | None = None,
     ) -> list[str]:
         # Ordered by the room's creation time, oldest first, with the id as
         # tie-breaker: dict insertion order would be an accident of how the
@@ -329,9 +343,7 @@ class InMemoryStore(ConversationStore):
             if channel_id not in bindings:
                 continue
             room = self._rooms.get(room_id)
-            if room is None:
-                continue
-            if status is not None and room.status.value != status:
+            if room is None or not _matches(room, status, organization_id):
                 continue
             matched.append(_recency(room))
         matched.sort()
@@ -789,6 +801,14 @@ class InMemoryStore(ConversationStore):
             for oid in obs_ids
             if oid in self._observations
         ]
+
+
+def _matches(room: Room, status: str | None, organization_id: str | None) -> bool:
+    """Whether a routing lookup keeps *room*: of *status* and of
+    *organization_id* when either is named (RFC §10.4, §17.2)."""
+    if status is not None and room.status.value != status:
+        return False
+    return organization_id is None or room.organization_id == organization_id
 
 
 def _recency(room: Room) -> tuple[float, str]:

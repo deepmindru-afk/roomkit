@@ -12,6 +12,7 @@ from roomkit.core.inbound_router import (
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelType, RoomStatus
 from roomkit.models.event import TextContent
+from roomkit.models.identity import Identity
 from roomkit.store.memory import InMemoryStore
 from tests.test_framework import SimpleChannel
 
@@ -112,6 +113,9 @@ class TestInboundRoutingIntegration:
                 channel_type: ChannelType,
                 participant_id: str | None = None,
                 channel_data: dict[str, Any] | None = None,
+                *,
+                organization_id: str | None = None,
+                identity: Identity | None = None,
             ) -> str | None:
                 return "custom-room"
 

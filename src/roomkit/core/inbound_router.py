@@ -10,6 +10,7 @@ from typing import Any
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.delivery import SYSTEM_SENDER_ID
 from roomkit.models.enums import ChannelType, RoomStatus
+from roomkit.models.identity import Identity
 from roomkit.models.store_filter import EventFilter
 from roomkit.store.base import ConversationStore
 
@@ -32,12 +33,29 @@ class InboundRoomRouter(ABC):
         channel_type: ChannelType,
         participant_id: str | None = None,
         channel_data: dict[str, Any] | None = None,
+        *,
+        organization_id: str | None = None,
+        identity: Identity | None = None,
     ) -> str | None:
         """Return room_id for the message, or ``None`` to create a new room.
 
         *participant_id* is the address naming the message's conversation
         (``Channel.conversation_address``): the sender's, or on a chat
-        channel the chat it was posted in.
+        channel the chat it was posted in. *channel_data* is the message's
+        metadata.
+
+        *organization_id* is the organization the caller acts for (RFC
+        §17.2), ``None`` when the call names none. *identity* is the one the
+        store resolves *participant_id* to within that organization
+        (``resolve_identity``), read by the framework once per message
+        before the first route, or ``None``: the router and the check made
+        when the sender is recorded name the sender alike (RFC §10.4).
+
+        The answer is held to RFC §10.1 step 2's rules whoever gave it: a
+        room of another organization than *organization_id* fails the
+        message (``RoomNotFoundError``), and a room id the store lacks is
+        created under that id. An override must accept both keywords; the
+        framework passes them on every call.
         """
         ...
 
@@ -69,12 +87,19 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         channel_type: ChannelType,
         participant_id: str | None = None,
         channel_data: dict[str, Any] | None = None,
+        *,
+        organization_id: str | None = None,
+        identity: Identity | None = None,
     ) -> str | None:
+        # The organization's rooms only, every room when the call names none
+        # (RFC §10.4, §17.2): another tenant's room is no candidate, so it
+        # neither wins nor makes the organization's one room ambiguous.
+        own = known_as(participant_id, identity)
         # Step 1 (RFC §10.4): the sender's own room. Tried first because it
         # identifies the conversation, where a binding of the channel to some
         # room only identifies the pipe.
         if participant_id:
-            room_id = await self._senders_room(channel_id, channel_type, participant_id)
+            room_id = await self._senders_room(channel_id, participant_id, own, organization_id)
             if room_id is not None:
                 return room_id
 
@@ -86,10 +111,10 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         # that room is open to this sender: on a shared number, the one room
         # bound to it is the first correspondent's conversation.
         candidates = await self._store.find_room_ids_by_channel(
-            channel_id, status=str(RoomStatus.ACTIVE), limit=2
+            channel_id, status=str(RoomStatus.ACTIVE), limit=2, organization_id=organization_id
         )
         if len(candidates) == 1:
-            if await self._admits(candidates[0], channel_id, channel_type, participant_id or None):
+            if await self._admits(candidates[0], channel_id, participant_id or None, own):
                 return candidates[0]
             return None
         if len(candidates) > 1:
@@ -107,9 +132,10 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         return None
 
     async def _senders_room(
-        self, channel_id: str, channel_type: ChannelType, sender: str
+        self, channel_id: str, sender: str, own: frozenset[str], organization_id: str | None
     ) -> str | None:
-        """The latest active room that is *sender*'s own (RFC §10.4 step 1).
+        """The latest active room of *organization_id* that is *sender*'s own
+        (RFC §10.4 step 1); *own* holds the address and its identity's id.
 
         First the room whose binding of this very channel names the sender: a
         binding speaks for its own channel, so a correspondent of one number
@@ -127,14 +153,17 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         elsewhere, which would then carry that room's messages to this sender.
         """
         active = str(RoomStatus.ACTIVE)
-        known = await sender_known_as(self._store, channel_type, sender)
-        names = (sender, *sorted(known - {sender}))
+        names = (sender, *sorted(own - {sender}))
         for name in names:
-            room_id = await self._store.find_room_id_by_binding(channel_id, name, status=active)
+            room_id = await self._store.find_room_id_by_binding(
+                channel_id, name, status=active, organization_id=organization_id
+            )
             if room_id is not None:
                 return room_id
         for name in names:
-            room_id = await self._store.find_room_id_by_participant(name, status=active)
+            room_id = await self._store.find_room_id_by_participant(
+                name, status=active, organization_id=organization_id
+            )
             if room_id is not None and await self._joined_through(room_id, channel_id, name):
                 return room_id
         return None
@@ -145,7 +174,7 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         return participant is not None and channel_id in participant.connected_via
 
     async def _admits(
-        self, room_id: str, channel_id: str, channel_type: ChannelType, sender: str | None
+        self, room_id: str, channel_id: str, sender: str | None, own: frozenset[str]
     ) -> bool:
         """Whether the one room bound to *channel_id* is open to *sender* (RFC §10.4).
 
@@ -164,7 +193,6 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
             # counts as a correspondent's: a sender borrowing the name, on a
             # channel whose senders choose their id, gets a room of its own.
             return False
-        own = await sender_known_as(self._store, channel_type, sender)
         if not binding_admits(binding, own):
             return False
         recipient = self._recipient_of(binding) if self._recipient_of is not None else None
@@ -180,20 +208,16 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         return not await _heard_from_other(self._store, room_id, channel_id, own)
 
 
-async def sender_known_as(
-    store: ConversationStore, channel_type: ChannelType, sender: str | None
-) -> frozenset[str]:
+def known_as(sender: str | None, identity: Identity | None) -> frozenset[str]:
     """The ids a room may know *sender* by: the address, and its identity.
 
     Identity resolution names a participant and stamps an event with the
     identity's id, not the address (RFC §11), so the identity the store
-    resolves the address to is the sender's own too. The router is not given
-    the caller's organization, so only an unscoped registration resolves
-    here (§17.2).
+    resolves the address to, within the caller's organization (§17.2), is
+    the sender's own too.
     """
-    if sender is None:
+    if not sender:
         return frozenset()
-    identity = await store.resolve_identity(str(channel_type), sender)
     return frozenset({sender} if identity is None else {sender, identity.id})
 
 

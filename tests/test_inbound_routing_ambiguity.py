@@ -135,9 +135,11 @@ class TestStepThreeAdmitsOneConversation:
     """The one room bound to a channel is someone's conversation once anything
     names a correspondent (RFC §10.4 step 3)."""
 
-    async def _route(self, store: InMemoryStore, sender: str | None = "bob") -> str | None:
+    async def _route(
+        self, store: InMemoryStore, sender: str | None = "bob", identity: Identity | None = None
+    ) -> str | None:
         return await DefaultInboundRoomRouter(store).route(
-            "ws", ChannelType.WEBSOCKET, participant_id=sender
+            "ws", ChannelType.WEBSOCKET, participant_id=sender, identity=identity
         )
 
     async def test_a_binding_naming_another_sender_refuses(self) -> None:
@@ -236,10 +238,8 @@ class TestStepThreeAdmitsOneConversation:
 
     async def test_what_names_the_senders_identity_is_their_own(self) -> None:
         """Identity resolution names participants and stamps events with the
-        identity, not the address: the identity the store resolves counts."""
+        identity, not the address: the identity the router is given counts."""
         store = await _store_with_rooms("r1")
-        await store.create_identity(Identity(id="id-bob"))
-        await store.link_address("id-bob", str(ChannelType.WEBSOCKET), "bob")
         await store.add_participant(
             Participant(id="id-bob", room_id="r1", channel_id="ws", identity_id="id-bob")
         )
@@ -247,5 +247,6 @@ class TestStepThreeAdmitsOneConversation:
             "r1", make_event(room_id="r1", channel_id="ws", participant_id="id-bob")
         )
 
-        assert await self._route(store) == "r1"
+        assert await self._route(store, identity=Identity(id="id-bob")) == "r1"
+        assert await self._route(store) is None
         assert await self._route(store, sender="carol") is None

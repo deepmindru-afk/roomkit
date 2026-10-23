@@ -297,7 +297,12 @@ class ConversationStore(ABC):
         ...
 
     async def find_room_ids_by_channel(
-        self, channel_id: str, status: str | None = None, limit: int = 2
+        self,
+        channel_id: str,
+        status: str | None = None,
+        limit: int = 2,
+        *,
+        organization_id: str | None = None,
     ) -> list[str]:
         """Room IDs bound to *channel_id*, deterministically ordered.
 
@@ -306,19 +311,42 @@ class ConversationStore(ABC):
         not belong to (RFC §10.4). ``find_room_id_by_channel`` cannot express
         that — it returns one id either way — so this returns up to *limit*,
         and the default of 2 is enough to answer "is this ambiguous?".
+        *organization_id* keeps the rooms of that organization only (RFC
+        §17.2); ``None`` reads every room.
 
         Implementations MUST order the result deterministically: the same
         stored state has to give the same answer whatever the backend.
 
         This is not abstract, so a store written before it existed keeps
         working — it falls back to the single lookup and therefore cannot
-        report ambiguity. Override it.
+        report ambiguity, and to a scan of the organization's rooms when one
+        is named. Override it.
         """
-        room_id = await self.find_room_id_by_channel(channel_id, status=status)
-        return [room_id] if room_id is not None else []
+        if organization_id is None:
+            room_id = await self.find_room_id_by_channel(channel_id, status=status)
+            return [room_id] if room_id is not None else []
+        # Ordered as timestamps: a naive created_at beside an aware one would
+        # make the datetimes themselves refuse to compare.
+        matched: list[tuple[float, str]] = []
+        offset = 0
+        while True:
+            rooms = await self.find_rooms(
+                organization_id=organization_id, status=status, limit=_ROOM_PAGE, offset=offset
+            )
+            for room in rooms:
+                if await self.get_binding(room.id, channel_id) is not None:
+                    matched.append((room.created_at.timestamp(), room.id))
+            if len(rooms) < _ROOM_PAGE:
+                return [room_id for _created_at, room_id in sorted(matched)[:limit]]
+            offset += len(rooms)
 
     async def find_room_id_by_binding(
-        self, channel_id: str, participant_id: str, status: str | None = None
+        self,
+        channel_id: str,
+        participant_id: str,
+        status: str | None = None,
+        *,
+        organization_id: str | None = None,
     ) -> str | None:
         """The latest room whose binding of *channel_id* names *participant_id*.
 
@@ -326,14 +354,15 @@ class ConversationStore(ABC):
         created for, or the first one routed to it. It speaks for its own
         channel only, so a correspondent of one number is not taken to that
         room when they write to another (§10.4 step 1). Latest by creation
-        time, the room id breaking a tie, in every store.
+        time, the room id breaking a tie, in every store; among the rooms of
+        *organization_id* only when one is named (§17.2).
 
         Not abstract, so a store that does not override it keeps working:
         the fallback reads the binding of every room bound to the channel.
         Override it with an indexed query.
         """
         room_ids = await self.find_room_ids_by_channel(
-            channel_id, status=status, limit=sys.maxsize
+            channel_id, status=status, limit=sys.maxsize, organization_id=organization_id
         )
         for room_id in reversed(room_ids):
             binding = await self.get_binding(room_id, channel_id)
@@ -342,13 +371,18 @@ class ConversationStore(ABC):
         return None
 
     async def find_room_id_by_participant(
-        self, participant_id: str, status: str | None = None
+        self,
+        participant_id: str,
+        status: str | None = None,
+        *,
+        organization_id: str | None = None,
     ) -> str | None:
         """The latest room where *participant_id* is a participant (RFC §10.4 step 1).
 
         Participant records only, never a binding: a binding speaks for its
         own channel and is read by :meth:`find_room_id_by_binding`. Latest by
-        creation time, the room id breaking a tie, in every store.
+        creation time, the room id breaking a tie, in every store; among the
+        rooms of *organization_id* only when one is named (§17.2).
 
         Not abstract, so a store that does not override it keeps working:
         the fallback pages through the rooms. Override it with an indexed
@@ -357,7 +391,9 @@ class ConversationStore(ABC):
         best: tuple[datetime, str] | None = None
         offset = 0
         while True:
-            rooms = await self.find_rooms(status=status, limit=_ROOM_PAGE, offset=offset)
+            rooms = await self.find_rooms(
+                organization_id=organization_id, status=status, limit=_ROOM_PAGE, offset=offset
+            )
             for room in rooms:
                 newer = best is None or (room.created_at, room.id) > best
                 if newer and await self.get_participant(room.id, participant_id) is not None:
