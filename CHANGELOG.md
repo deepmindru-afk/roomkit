@@ -529,7 +529,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other names ask nobody: an agent the kit registers and the room does not
   bind is still reported in `unavailable_targets`, and the instruction goes
   on. An instruction's address is its caller's (`InboundMessage.addressed_to`),
-  never one its channel's parser set.
+  never one its channel's parser set. So is its type: an event a channel's
+  parser types `INSTRUCTION` for a message the caller sent as another type
+  takes the message's type, with a warning, and the parser's `standalone`
+  key is dropped; it was processed as an instruction past the checks above.
+  `send_event()` takes an empty `idempotency_key` as none, as
+  `process_inbound()` does, where it raised for an instruction. A
+  `Pipeline` handoff greeting the room refuses (no `to_agent`, or one the
+  kit does not register) logs a warning instead of going quiet.
 
 - **BREAKING — a response typed INSTRUCTION does not re-enter** (RFC §8.5,
   §10.1.1, RMK-930): only the application issues instructions. A channel's

@@ -132,7 +132,7 @@ class HandoffGreeting:
             await self._speak_farewell(vc, room_id, self._farewell)
 
         try:
-            await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 # The cue directs the new agent: an instruction, so the room
                 # never stores it as the caller's words and only that agent
                 # is asked (RFC §10.1.1).
@@ -152,6 +152,16 @@ class HandoffGreeting:
             logger.warning("Handoff greeting timed out for room %s", room_id)
         except Exception:
             logger.exception("Handoff greeting failed for room %s", room_id)
+        else:
+            if result.blocked:
+                # A handoff to no agent the kit registers cues nobody
+                # (instruction_unaddressed): said, never silent.
+                logger.warning(
+                    "Handoff greeting to %r refused in room %s: %s",
+                    to_agent,
+                    room_id,
+                    result.reason,
+                )
 
     async def _speak_farewell(self, vc: VoiceChannel, room_id: str, text: str) -> None:
         """Synthesise *text* via TTS and play it to all sessions in *room_id*."""

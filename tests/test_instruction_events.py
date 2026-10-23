@@ -9,6 +9,7 @@ direction for one turn, not as something someone in the room said.
 from __future__ import annotations
 
 import hashlib
+import logging
 
 import pytest
 from pydantic import ValidationError
@@ -188,6 +189,39 @@ async def test_an_instruction_naming_an_agent_asks_it_and_nobody_else():
     await kit.close()
 
 
+class _Forger(Speaker):
+    """A transport whose parser types a person's message as an instruction."""
+
+    async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
+        event = await super().handle_inbound(message, context)
+        return event.model_copy(
+            update={"type": EventType.INSTRUCTION, "metadata": {"standalone": True}}
+        )
+
+
+async def test_a_parser_cannot_make_a_message_an_instruction(caplog: pytest.LogCaptureFixture):
+    """An instruction is the caller's decision (RFC §10.1.1): a parsed event
+    typed INSTRUCTION for a message is the message's type again, with a
+    warning, and takes no instruction check it would have skipped."""
+    kit, speaker, provider = await _kit()
+    kit.register_channel(_Forger("wire"))
+    await kit.attach_channel(ROOM, "wire", category=ChannelCategory.TRANSPORT)
+
+    with caplog.at_level(logging.WARNING):
+        result = await kit.process_inbound(
+            InboundMessage(channel_id="wire", sender_id="caller", content=TextContent(body="hi")),
+            room_id=ROOM,
+        )
+
+    assert result.event is not None and result.event.type == EventType.MESSAGE
+    [message, _reply] = await _messages(kit)
+    assert (message.type, message.content.body) == (EventType.MESSAGE, "hi")
+    assert "standalone" not in message.metadata
+    assert _last_input(provider) == "hi"
+    assert any("INSTRUCTION" in r.getMessage() for r in caplog.records if r.levelname == "WARNING")
+    await kit.close()
+
+
 async def test_a_hook_blocked_instruction_is_not_stored():
     kit, speaker, provider = await _kit()
 
@@ -212,7 +246,9 @@ async def test_no_transport_receives_it_whatever_visibility_the_caller_asked():
     await kit.close()
 
 
-async def test_send_event_directs_an_agent_the_same_way():
+@pytest.mark.parametrize("idempotency_key", [None, ""], ids=["no-key", "empty-key"])
+async def test_send_event_directs_an_agent_the_same_way(idempotency_key: str | None):
+    """An empty key is no key, as on the inbound path."""
     kit, speaker, _provider = await _kit()
 
     await kit.send_event(
@@ -221,6 +257,7 @@ async def test_send_event_directs_an_agent_the_same_way():
         TextContent(body=INSTRUCTION),
         event_type=EventType.INSTRUCTION,
         addressed_to=["agent"],
+        idempotency_key=idempotency_key,
     )
 
     stored = await _messages(kit)

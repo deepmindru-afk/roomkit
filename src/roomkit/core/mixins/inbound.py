@@ -1059,6 +1059,8 @@ def _apply_message_fields(event: RoomEvent, message: InboundMessage) -> RoomEven
     """
     if message.event_type == EventType.INSTRUCTION:
         event = _as_instruction(event, message)
+    elif event.type == EventType.INSTRUCTION:
+        event = _not_an_instruction(event, message)
 
     # Caller-requested visibility (e.g. ``"transport"`` for a proactive
     # notification that must not wake the room's intelligence channel).
@@ -1133,6 +1135,23 @@ def _as_instruction(event: RoomEvent, message: InboundMessage) -> RoomEvent:
     if message.standalone:
         metadata[STANDALONE] = True
     return event.model_copy(update={"metadata": metadata})
+
+
+def _not_an_instruction(event: RoomEvent, message: InboundMessage) -> RoomEvent:
+    """*event*, which its channel's parser typed INSTRUCTION, as the message
+    the caller sent: an instruction is the caller's decision (RFC §10.1.1),
+    and the wire would otherwise issue the application's directive past the
+    checks the caller's takes before anything is read. The parser's
+    ``standalone`` word goes with the type."""
+    logger.warning(
+        "Channel %s parsed a %s as an INSTRUCTION: only the caller issues one, it stays a %s",
+        message.channel_id,
+        message.event_type,
+        message.event_type,
+        extra={"channel_id": message.channel_id},
+    )
+    metadata = {k: v for k, v in event.metadata.items() if k != STANDALONE}
+    return event.model_copy(update={"type": message.event_type, "metadata": metadata})
 
 
 def _conversation(message: InboundMessage, channel: Channel) -> str:

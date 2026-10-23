@@ -1115,7 +1115,8 @@ class RoomKit(
                     "An INSTRUCTION must name an agent it directs (addressed_to): "
                     "an intelligence channel the kit registers"
                 )
-            if idempotency_key is not None:
+            # An empty key is no key, as on the inbound path.
+            if idempotency_key:
                 raise ValueError("An INSTRUCTION is never stored and takes no idempotency_key")
             # The parameter's word alone: a metadata key of the same name is
             # dropped, never honoured (the instruction is never stored).

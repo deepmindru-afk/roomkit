@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,10 +13,11 @@ from roomkit.channels.agent import Agent
 from roomkit.channels.voice import VoiceChannel
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
-from roomkit.models.delivery import InboundMessage
+from roomkit.models.delivery import InboundMessage, InboundResult
 from roomkit.models.enums import ChannelCategory, ChannelType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.room import Room
+from roomkit.orchestration._handoff_greeting import HandoffGreeting
 from roomkit.orchestration.state import get_conversation_state
 from roomkit.orchestration.strategies.pipeline import Pipeline, _build_stages
 from roomkit.providers.ai.mock import MockAIProvider
@@ -210,8 +212,9 @@ async def test_the_pipeline_strategy_greets_on_a_handoff_in_its_room_only() -> N
     kit, _ = await _voice_kit(strategy)
     cues: list[tuple[str, str, list[str] | None]] = []
 
-    async def cue(message: InboundMessage, *, room_id: str) -> None:
+    async def cue(message: InboundMessage, *, room_id: str) -> InboundResult:
         cues.append((room_id, message.content.body, message.addressed_to))
+        return InboundResult()
 
     kit.process_inbound = cue  # type: ignore[method-assign]
     for room_id in ("r1", "r2"):
@@ -230,6 +233,26 @@ async def test_the_pipeline_strategy_greets_on_a_handoff_in_its_room_only() -> N
     assert cues == [("r1", "Introduce yourself.", ["b"])]
     assert {HookTrigger.ON_HANDOFF, HookTrigger.BEFORE_TTS} <= triggers
     assert not kit.hook_engine._room_hooks.get("r2")
+
+
+@pytest.mark.parametrize("to_agent", ["", "gone"], ids=["no-agent", "unregistered"])
+async def test_a_handoff_greeting_the_room_refuses_is_logged(
+    to_agent: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A cue to no agent the kit registers is refused (RFC §10.1.1 step 1):
+    the handoff says so rather than going quiet."""
+    kit, _ = await _voice_kit(Pipeline(agents=["a", "b"], voice_channel_id="voice"))
+    greeting = HandoffGreeting(kit, "voice", "Introduce yourself.", None)
+
+    with caplog.at_level(logging.WARNING, logger="roomkit.orchestration"):
+        await greeting._greet("r1", to_agent)
+    await kit.close()
+
+    assert any(
+        "r1" in r.getMessage() and "instruction_unaddressed" in r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING"
+    )
 
 
 def _handoff(room_id: str) -> RoomEvent:
