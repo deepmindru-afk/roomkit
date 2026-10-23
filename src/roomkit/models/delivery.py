@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from roomkit.models._time import UtcDatetime
-from roomkit.models._visibility import parse_visibility
+from roomkit.models._visibility import parse_given_visibility, parse_visibility
 from roomkit.models.enums import EventType, Visibility
 from roomkit.models.event import EventContent, RoomEvent
 from roomkit.models.response_metadata import ResponseMetadata, merge_caller_record
@@ -95,7 +95,9 @@ class InboundMessage(BaseModel):
     # Event visibility scope. The default ``"all"`` reaches every channel
     # (transports + intelligence). Set ``"transport"`` to deliver into a room
     # WITHOUT triggering its intelligence channel — e.g. a proactive
-    # notification the agent should not react to.
+    # notification the agent should not react to. Never ``"internal"``, which
+    # marks a record the framework wrote (RFC §7.3): store a message for no
+    # channel with ``"none"``.
     visibility: str = Visibility.ALL
     # Which intelligence channels this message asks to act (RFC §19.3), by
     # channel id. ``None`` addresses nobody in particular — every eligible
@@ -138,9 +140,16 @@ class InboundMessage(BaseModel):
             raise ValueError("standalone applies to an INSTRUCTION only")
         return self
 
-    @field_validator("visibility", "response_visibility")
+    @field_validator("visibility")
     @classmethod
-    def _visibility_grammar(cls, value: str | None) -> str | None:
+    def _visibility_grammar(cls, value: str) -> str:
+        """A visibility in its normal form, an invalid one refused, and
+        ``internal``, the framework's mark (RFC §7.3)."""
+        return parse_given_visibility(value)
+
+    @field_validator("response_visibility")
+    @classmethod
+    def _response_visibility_grammar(cls, value: str | None) -> str | None:
         """A visibility in its normal form, an invalid one refused (RFC §7.3)."""
         return None if value is None else parse_visibility(value)
 

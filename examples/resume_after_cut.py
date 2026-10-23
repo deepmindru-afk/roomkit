@@ -13,9 +13,12 @@ cut (RFC §12.3.13). On the next turn:
 A question over the cut ("Wait, and for Montreal?") wants the turn instead: the
 turn decides as without a cut.
 
-The voice channel's record is written here the way ``VoiceChannel`` writes it,
+The voice channel's record is committed here as ``VoiceChannel`` writes it,
 from a voice channel bound to the room (a record from anywhere else is not
-trusted), so the example runs without audio. ``CLASSIFIER=jev`` (with ``TYPESAFE_API_KEY``)
+trusted), so the example runs without audio. Only the framework writes the
+visibility ``internal`` that marks it (RFC §7.3), which ``send_event``
+refuses: the example stores it as a record outside the pipeline
+(``kit.commit_event``, RFC §10.5). ``CLASSIFIER=jev`` (with ``TYPESAFE_API_KEY``)
 judges on Jev; the default mock answers as Jev did.
 
 Run with:
@@ -35,13 +38,16 @@ from shared import require_env, setup_logging
 from roomkit import (
     AIGenerationEvent,
     ChannelCategory,
+    ChannelType,
     Classifier,
     ClassifierSpeakPolicy,
+    EventSource,
     HookExecution,
     HookResult,
     HookTrigger,
     JevClassifier,
     MockClassifier,
+    RoomEvent,
     RoomKit,
     SMSChannel,
     SpeakDecisionEvent,
@@ -122,17 +128,20 @@ async def main() -> None:
         if e.source.channel_id == "nova" and e.type == EventType.MESSAGE
     )
     # What a VoiceChannel records when a barge-in cuts the answer (RFC §12.3.13).
-    await kit.send_event(
+    await kit.commit_event(
         "call",
-        "voice",
-        TextContent(body=FORECAST),
-        metadata={
-            "interrupted": True,
-            "played_ms": 1200,
-            "answer_channel_id": "nova",
-            "answer_responds_to": answer.responds_to,
-        },
-        visibility=Visibility.INTERNAL,
+        RoomEvent(
+            room_id="call",
+            source=EventSource(channel_id="voice", channel_type=ChannelType.VOICE),
+            content=TextContent(body=FORECAST),
+            metadata={
+                "interrupted": True,
+                "played_ms": 1200,
+                "answer_channel_id": "nova",
+                "answer_responds_to": answer.responds_to,
+            },
+            visibility=Visibility.INTERNAL,
+        ),
     )
     logger.info("  (Nova was cut off after 1.2 s)")
     await say("Ok great, thanks.")

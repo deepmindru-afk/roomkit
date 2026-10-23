@@ -121,7 +121,7 @@ async def test_the_conversation_holds_only_what_the_notified_channel_may_read() 
     kit, _assistant, worker = await _kit()
     await kit.send_event("call", "phone", TextContent(body="for all"), addressed_to=[])
     await kit.send_event(
-        "call", "phone", TextContent(body="internal note"), addressed_to=[], visibility="internal"
+        "call", "phone", TextContent(body="internal note"), addressed_to=[], visibility="none"
     )
 
     task = await kit.delegate("call", "worker", "Summarise.", notify="assistant", conversation=5)

@@ -2046,7 +2046,9 @@ class VoiceChannel(
             metadata["answer_channel_id"] = playback.answer_channel_id
             metadata["answer_responds_to"] = playback.answer_responds_to
         try:
-            await self._framework.send_event(
+            # The framework's own record (RFC §6.4), the one that writes
+            # ``internal`` (§7.3), which ``send_event`` refuses.
+            await self._framework._send_event(
                 room_id,
                 self.channel_id,
                 TextContent(body=playback.text),

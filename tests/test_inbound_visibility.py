@@ -100,14 +100,14 @@ class TestInboundVisibility:
             isinstance(e.content, TextContent) and e.content.body == "Notification" for e in events
         )
 
-    async def test_internal_visibility_reaches_no_channel_but_is_stored(self) -> None:
+    async def test_none_visibility_reaches_no_channel_but_is_stored(self) -> None:
         kit, provider = await _kit()
         await kit.process_inbound(
             InboundMessage(
                 channel_id="ws-user",
                 sender_id="u1",
                 content=TextContent(body="Internal"),
-                visibility=Visibility.INTERNAL,
+                visibility=Visibility.NONE,
             ),
             room_id="room-1",
         )

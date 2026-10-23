@@ -68,9 +68,9 @@ async def _room(
 
 
 class TestHiddenEventsStayHidden:
-    """The card's success criterion: four scopes x set on the event / on the binding."""
+    """The card's success criterion: each hidden scope x set on the event / on the binding."""
 
-    @pytest.mark.parametrize("scope", ["transport", "none", "internal", "ws2"])
+    @pytest.mark.parametrize("scope", ["transport", "none", "ws2"])
     @pytest.mark.parametrize("on_binding", [False, True])
     async def test_hidden_event_never_reaches_the_model(
         self, scope: str, on_binding: bool
@@ -130,15 +130,15 @@ class TestHiddenEventsStayHidden:
 
     async def test_a_detached_source_does_not_erase_its_history(self) -> None:
         # No binding left to resolve: the event's own scope is the whole
-        # answer. Ordinary history survives the detach; an internal event
-        # stays hidden because it says so on the event itself.
+        # answer. Ordinary history survives the detach; an event for no
+        # channel stays hidden because it says so on the event itself.
         kit, provider = await _room()
 
         await kit.process_inbound(
             InboundMessage(channel_id="ws1", sender_id="u1", content=TextContent(body=MARKER))
         )
         await kit.send_event(
-            "r1", "ws1", TextContent(body="INTERNAL-MARKER"), visibility=Visibility.INTERNAL
+            "r1", "ws1", TextContent(body="INTERNAL-MARKER"), visibility=Visibility.NONE
         )
         assert await kit.detach_channel("r1", "ws1")
 

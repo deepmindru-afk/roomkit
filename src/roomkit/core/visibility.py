@@ -9,6 +9,7 @@ one turn later that the broadcast answered at delivery.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable
 
 from roomkit.core._changes import withheld
@@ -18,6 +19,8 @@ from roomkit.models.context import RoomContext
 from roomkit.models.enums import ChannelCategory, Visibility
 from roomkit.models.event import RoomEvent
 from roomkit.models.store_filter import received_events
+
+logger = logging.getLogger("roomkit.framework")
 
 _CATEGORIES = {
     Visibility.TRANSPORT: ChannelCategory.TRANSPORT,
@@ -115,6 +118,23 @@ def _ids(visibility: str) -> set[str]:
 def _listing(ids: Iterable[str]) -> str:
     listed = sorted(set(ids))
     return ",".join(listed) if listed else Visibility.NONE
+
+
+def without_framework_mark(event: RoomEvent) -> RoomEvent:
+    """*event*, a channel's answer or a row of its stream, as the pipeline
+    commits it: one carrying ``internal``, which only the framework writes,
+    with ``none`` and a warning logged (RFC §7.3, §8.5). It is stored and
+    reaches no channel, as asked, without the mark of the framework's own
+    records."""
+    if event.visibility != Visibility.INTERNAL:
+        return event
+    logger.warning(
+        "Channel %s answered with the visibility 'internal', which only the framework "
+        "writes: committed with 'none'",
+        event.source.channel_id,
+        extra={"room_id": event.room_id, "channel_id": event.source.channel_id},
+    )
+    return event.model_copy(update={"visibility": Visibility.NONE})
 
 
 def visibility_allows(visibility: str, target_binding: ChannelBinding) -> bool:

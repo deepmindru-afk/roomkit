@@ -39,6 +39,19 @@ def parse_visibility(value: str) -> str:
     return ",".join(sorted(set(items)))
 
 
+def parse_given_visibility(value: str) -> str:
+    """*value* in its normal form (:func:`parse_visibility`), as an
+    integrator gives it: ``internal``, which marks a record the framework
+    wrote (RFC §7.3), is refused with :class:`ValueError` too."""
+    visibility = parse_visibility(value)
+    if visibility == Visibility.INTERNAL:
+        raise ValueError(
+            "visibility 'internal' marks a record the framework writes (RFC §7.3): "
+            "an event stored for no channel takes 'none'"
+        )
+    return visibility
+
+
 def check_channel_id(channel_id: str) -> None:
     """Refuse a channel id a visibility could not name (RFC §7.3): a
     keyword, an id holding a comma, or one starting or ending with

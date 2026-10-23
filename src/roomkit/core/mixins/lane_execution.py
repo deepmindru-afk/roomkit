@@ -34,7 +34,11 @@ from roomkit.core.mixins.inbound_locked import (
     target_update,
 )
 from roomkit.core.task_utils import await_unless_cut, start_named
-from roomkit.core.visibility import narrowed_to_target, with_committed_visibility
+from roomkit.core.visibility import (
+    narrowed_to_target,
+    with_committed_visibility,
+    without_framework_mark,
+)
 from roomkit.models.delivery import DeliveryError, DeliveryResult
 from roomkit.models.enums import ChannelCategory, EventStatus, EventType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent
@@ -946,7 +950,7 @@ class LaneExecutionMixin(HelpersMixin):
         produced it: a trigger's delivery set or a regeneration.
         """
         for response in responses:
-            reentry = scoped(response, response_visibility)
+            reentry = without_framework_mark(scoped(response, response_visibility))
             if not cascade.consume_reentry_budget():
                 await self._store_past_reentry_cap(room_id, reentry)
                 continue

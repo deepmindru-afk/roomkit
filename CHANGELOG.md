@@ -607,6 +607,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — only the framework writes the visibility `internal`** (RFC
+  §7.3, §8.5, §9.4, RMK-930). `internal` marks a record the framework
+  wrote (a voice channel's interruption record, which an agent reads as
+  the cut it was), yet every door took it from integrator code. It is now
+  refused with `ValueError`, before anything is read or written, by
+  `attach_channel()`, `set_visibility()`, `send_event()` and
+  `InboundMessage(visibility=...)` (a pydantic `ValidationError`); a
+  `BEFORE_BROADCAST` hook's modify that writes it has the event's
+  visibility put back; and a channel's answer, or a row of its stream,
+  carrying it (a channel's own, or the trigger's `response_visibility`)
+  is committed with `none`, a warning logged. An event stored for no
+  channel takes `none`. `kit.commit_event()`, a record outside the
+  pipeline, still stores the visibility it is given. Migrate:
+  `visibility="internal"` → `visibility="none"`.
+
 - **BREAKING — a room is created once** (RFC §14.3, §10.1 step 2,
   RMK-930). The in-memory and SQLite stores replaced the room held under an
   id that `create_room()` was given again (`INSERT OR REPLACE`): a second

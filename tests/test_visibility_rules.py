@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from pydantic import ValidationError
 
@@ -321,5 +323,84 @@ class TestALiveStream:
         try:
             await kit.process_inbound(_message("hello"))
             assert "".join(streamed["push"]) == "answer"
+        finally:
+            await kit.close()
+
+
+class _SaysInternal(AILikeChannel):
+    """An agent whose answer carries the framework's mark."""
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        output = await super().on_event(event, binding, context)
+        marked = [e.model_copy(update={"visibility": "internal"}) for e in output.response_events]
+        return output.model_copy(update={"response_events": marked})
+
+
+class TestOnlyTheFrameworkWritesInternal:
+    """RFC §7.3: ``internal`` marks a record the framework wrote; a door
+    refuses it before anything is read or written, a hook's modify cannot
+    write it, and a channel's answer carrying it is stored ``none``."""
+
+    @pytest.mark.parametrize("door", ["attach", "binding update", "inbound", "injection"])
+    async def test_a_door_refuses_it_with_nothing_written(self, door: str) -> None:
+        kit = await _room(_Told("sms"))
+        kit.register_channel(_Told("ws"))
+        enters = {
+            "attach": lambda: kit.attach_channel("r1", "ws", visibility="internal"),
+            "binding update": lambda: kit.set_visibility("r1", "sms", "internal"),
+            "inbound": lambda: kit.process_inbound(_message("x", visibility="internal")),
+            "injection": lambda: kit.send_event(
+                "r1", "sms", TextContent(body="x"), visibility="internal"
+            ),
+        }
+        before = await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
+        try:
+            with pytest.raises((ValueError, ValidationError), match="internal"):
+                await enters[door]()
+            after = await kit.store.list_events(
+                "r1", event_filter=EventFilter(include_blocked=True)
+            )
+            bindings = {b.channel_id: b.visibility for b in await kit.store.list_bindings("r1")}
+            assert (len(after), bindings) == (len(before), {"sms": "all"})
+        finally:
+            await kit.close()
+
+    async def test_a_hook_writing_it_has_the_visibility_put_back(self) -> None:
+        kit = await _room(_Told("sms"))
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="hide")
+        async def hide(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            return HookResult.modify(event.model_copy(update={"visibility": "internal"}))
+
+        try:
+            result = await kit.process_inbound(_message("hello", visibility="sms"))
+            assert result.event is not None
+            assert result.event.visibility == "sms"
+        finally:
+            await kit.close()
+
+    async def test_an_answer_carrying_it_is_stored_for_no_channel(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        kit = await _room(
+            _Told("sms"), _SaysInternal("ai"), ai={"category": ChannelCategory.INTELLIGENCE}
+        )
+        try:
+            with caplog.at_level(logging.WARNING):
+                await kit.process_inbound(_message("hello"))
+            answers = [e for e in await kit.store.list_events("r1") if _body(e) == "AI reply"]
+            assert [e.visibility for e in answers] == ["none"]
+            assert any("internal" in r.getMessage() for r in caplog.records)
+        finally:
+            await kit.close()
+
+    async def test_a_stream_row_carrying_it_is_stored_for_no_channel(self) -> None:
+        kit, _ = await _streaming_room({})
+        try:
+            await kit.process_inbound(_message("hello", response_visibility="internal"))
+            answers = [e for e in await kit.store.list_events("r1") if _body(e) == "answer"]
+            assert [e.visibility for e in answers] == ["none"]
         finally:
             await kit.close()

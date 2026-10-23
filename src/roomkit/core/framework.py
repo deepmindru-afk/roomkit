@@ -93,7 +93,7 @@ from roomkit.core.mixins import (
 from roomkit.core.task_utils import cancel_and_wait, held_runs
 from roomkit.core.transcoder import DefaultContentTranscoder
 from roomkit.identity.base import IdentityResolver
-from roomkit.models._visibility import parse_visibility
+from roomkit.models._visibility import parse_given_visibility, parse_visibility
 from roomkit.models.channel import ChannelBinding, ChannelOutput, RateLimit
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import STANDALONE, InboundResult
@@ -1075,8 +1075,10 @@ class RoomKit(
             participant_id: Optional participant/sender ID for the event source
             metadata: Optional event metadata
             visibility: Event visibility, a keyword (``all``, ``none``,
-                ``internal``, ``transport``, ``intelligence``) or channel ids
-                (RFC §7.3); committed intersected with the source binding's
+                ``transport``, ``intelligence``) or channel ids (RFC §7.3);
+                committed intersected with the source binding's. ``internal``,
+                which marks a record the framework wrote, raises
+                ``ValueError``: an event stored for no channel takes ``none``
             provider: Optional provider/backend name for event attribution
             response_visibility: Controls where the AI's response is delivered.
                 Uses the same vocabulary as visibility. None means no restriction.
@@ -1102,6 +1104,50 @@ class RoomKit(
                 nothing of the room — no history, no memory provider call
                 (RFC §10.1.1 step 7). Raises on any other event type.
         """
+        return await self._send_event(
+            room_id,
+            channel_id,
+            content,
+            event_type=event_type,
+            chain_depth=chain_depth,
+            participant_id=participant_id,
+            metadata=metadata,
+            # Only the framework writes ``internal`` (RFC §7.3), refused here
+            # before anything is read.
+            visibility=parse_given_visibility(visibility),
+            provider=provider,
+            response_visibility=response_visibility,
+            created_at=created_at,
+            parent_event_id=parent_event_id,
+            idempotency_key=idempotency_key,
+            addressed_to=addressed_to,
+            organization_id=organization_id,
+            standalone=standalone,
+        )
+
+    async def _send_event(
+        self,
+        room_id: str,
+        channel_id: str,
+        content: Any,
+        *,
+        event_type: EventType = EventType.MESSAGE,
+        chain_depth: int = 0,
+        participant_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        visibility: str = Visibility.ALL,
+        provider: str | None = None,
+        response_visibility: str | None = None,
+        created_at: datetime | None = None,
+        parent_event_id: str | None = None,
+        idempotency_key: str | None = None,
+        addressed_to: list[str] | None = None,
+        organization_id: str | None = None,
+        standalone: bool = False,
+    ) -> RoomEvent:
+        """:meth:`send_event` for the framework's own records too, whose
+        *visibility* may be ``internal`` (an interruption record, RFC §6.4,
+        §7.3)."""
         from roomkit.telemetry.base import SpanKind
         from roomkit.telemetry.context import get_current_span, reset_span, set_current_span
 

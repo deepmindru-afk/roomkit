@@ -15,7 +15,7 @@ from roomkit.core.exceptions import (
     ConferenceAlreadyAttachedError,
 )
 from roomkit.core.mixins.helpers import HelpersMixin
-from roomkit.models._visibility import check_channel_id, parse_visibility
+from roomkit.models._visibility import check_channel_id, parse_given_visibility
 from roomkit.models.channel import ChannelBinding, ChannelDeclaration
 from roomkit.models.enums import (
     Access,
@@ -299,10 +299,11 @@ class ChannelOpsMixin(HelpersMixin):
         an agent attached without one takes part as an intelligence channel,
         a transport as a transport. *organization_id* scopes the operation to
         one tenant (RFC §17.2); a room belonging to another organization is
-        reported as not found. An invalid *visibility* raises ``ValueError``
-        (RFC §7.3).
+        reported as not found. An invalid *visibility*, and ``internal``,
+        which marks a record the framework wrote, raise ``ValueError`` (RFC
+        §7.3).
         """
-        visibility = parse_visibility(visibility)
+        visibility = parse_given_visibility(visibility)
         async with self._lock_manager.locked(room_id):
             room = await self.get_room(room_id, organization_id=organization_id)
             channel = self._channels.get(channel_id)
@@ -695,9 +696,10 @@ class ChannelOpsMixin(HelpersMixin):
         *,
         organization_id: str | None = None,
     ) -> ChannelBinding:
-        """Set visibility for a channel in a room. An invalid *visibility*
-        raises ``ValueError`` (RFC §7.3)."""
-        visibility = parse_visibility(visibility)
+        """Set visibility for a channel in a room. An invalid *visibility*,
+        and ``internal``, which marks a record the framework wrote, raise
+        ``ValueError`` (RFC §7.3)."""
+        visibility = parse_given_visibility(visibility)
         async with self._lock_manager.locked(room_id):
             binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
             old_visibility = binding.visibility

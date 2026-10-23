@@ -68,11 +68,22 @@ class TurnScope:
 
         The trigger's thread root is inherited, so the reply lands in the same
         thread (already normalised to a root by the locked pipeline); a
-        top-level trigger keeps the reply top-level.
+        top-level trigger keeps the reply top-level. A scope of ``internal``,
+        which only the framework writes, commits the rows with ``none``,
+        with a warning (RFC §7.3, §8.5).
         """
+        visibility = trigger.response_visibility or Visibility.ALL
+        if visibility == Visibility.INTERNAL:
+            logger.warning(
+                "The answer to event %s is scoped 'internal', which only the framework "
+                "writes: its stream's rows are committed with 'none'",
+                trigger.id,
+                extra={"room_id": trigger.room_id, "event_id": trigger.id},
+            )
+            visibility = Visibility.NONE
         return cls(
             chain_depth=trigger.chain_depth + 1,
-            visibility=trigger.response_visibility or Visibility.ALL,
+            visibility=visibility,
             response_visibility=trigger.response_visibility,
             parent_event_id=trigger.parent_event_id,
         )

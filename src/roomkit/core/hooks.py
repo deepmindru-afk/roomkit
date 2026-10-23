@@ -18,6 +18,7 @@ from roomkit.models.enums import (
     EventType,
     HookExecution,
     HookTrigger,
+    Visibility,
 )
 from roomkit.models.event import DeleteContent, EditContent, EventContent, RoomEvent
 from roomkit.models.hook import HookResult, InjectedEvent
@@ -259,8 +260,9 @@ def kept_identity(original: RoomEvent, replacement: RoomEvent) -> RoomEvent:
     event an EDIT or a DELETE targets, its ``edit_source`` or ``delete_type``
     and its kind of content (:func:`_kept_content`), an INSTRUCTION's
     visibility, address and ``standalone`` word, and the instruction
-    fingerprint the pipeline wrote on a response, or its absence. The hook's
-    other changes stand."""
+    fingerprint the pipeline wrote on a response, or its absence. A
+    visibility of ``internal``, which only the framework writes (§7.3), is
+    put back too. The hook's other changes stand."""
     kept: dict[str, Any] = {
         name: getattr(original, name)
         for name in _KEPT_FIELDS
@@ -272,6 +274,8 @@ def kept_identity(original: RoomEvent, replacement: RoomEvent) -> RoomEvent:
     if original.type == EventType.INSTRUCTION:
         kept["visibility"] = original.visibility
         kept["addressed_to"] = original.addressed_to
+    elif replacement.visibility == Visibility.INTERNAL != original.visibility:
+        kept["visibility"] = original.visibility
     metadata = kept_metadata(original, replacement.metadata)
     if metadata != replacement.metadata:
         kept["metadata"] = metadata
