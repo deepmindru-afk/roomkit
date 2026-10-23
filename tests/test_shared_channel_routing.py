@@ -881,14 +881,17 @@ class TestTheLockChecksTheRoomAgain:
     router read it can make it someone else's conversation, or a closed one.
     Then nothing is written and the message is routed once more."""
 
+    @pytest.mark.parametrize("sender", [BOB, ""], ids=["bob", "no-address"])
     async def test_someone_heard_on_the_channel_since_the_route_keeps_the_sender_out(
-        self, store: ConversationStore
+        self, store: ConversationStore, sender: str
     ) -> None:
+        """A message with no address is held to step 3's conditions under the
+        lock as any sender is (RFC §10.4)."""
         shop = _Shop(store)
         room = await shop.open_free_room()
-        _before_the_lock(shop.kit, BOB, lambda: shop.text(CAROL, "carol: hi", room_id=room))
+        _before_the_lock(shop.kit, sender, lambda: shop.text(CAROL, "carol: hi", room_id=room))
 
-        bob_room = await shop.room_of(BOB, "bob: hello")
+        bob_room = await shop.room_of(sender, "bob: hello")
 
         assert bob_room != room
         assert await shop.named_on(room) is None

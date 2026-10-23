@@ -286,8 +286,9 @@ async def still_the_messages(
     than the sender (its participant, else its recipient); a binding naming
     no one that the room no longer opens to the sender by step 3's
     conditions, unless the sender is a participant reached through the
-    channel. The framework's own sender and a message with no address are
-    no one's correspondent, and are recorded on no binding.
+    channel; a message with no address is held to those conditions too. The
+    framework's own sender and a message with no address are no one's
+    correspondent, and are recorded on no binding.
     """
     if room.status in _REFUSING:
         return False
@@ -313,9 +314,12 @@ async def still_the_messages(
         return True
     if correspondent is not None:
         return named
-    if not recordable_sender(sender) or members:
+    if sender == SYSTEM_SENDER_ID or members:
         return True
-    return await step_three_admits(store, binding, sender, own, recipient)
+    # A message with no address is held to step 3's conditions as any sender
+    # is (RFC §10.4): someone heard or reached on the channel since the
+    # router read the room makes it no longer the message's.
+    return await step_three_admits(store, binding, sender or None, own, recipient)
 
 
 def known_as(sender: str | None, identity: Identity | None) -> frozenset[str]:

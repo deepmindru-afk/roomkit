@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A message with no address is checked again under the room lock as any
+  sender is (RFC §10.1 step 2, §10.4, RMK-930). The claim skipped step 3's
+  re-check for it, so someone heard or reached on the channel between the
+  router's read and the lock no longer kept it out: it landed in that
+  person's conversation. It is now routed once more, as a sender's message
+  is; only the framework's own sender (`system`) is spared the re-check.
+
 - A delivery status is not given the one room of its channel when that
   room's binding delivers to another number (RFC §5.7, §10.4, RMK-930). The
   fallback to the one ACTIVE room bound to the channel checked the binding's
