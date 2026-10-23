@@ -169,6 +169,63 @@ def _body(event: RoomEvent) -> str | None:
     return event.content.body if isinstance(event.content, TextContent) else None
 
 
+class _Verified(Channel):
+    """An agent whose answers, under its own source, claim a verification."""
+
+    channel_type = ChannelType.AI
+    category = ChannelCategory.INTELLIGENCE
+
+    async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
+        raise NotImplementedError
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        if event.source.channel_id == self.channel_id:
+            return ChannelOutput.empty()
+        answer = RoomEvent(
+            room_id=event.room_id,
+            source=EventSource(
+                channel_id=self.channel_id,
+                channel_type=self.channel_type,
+                participant_id="assistant",
+                provider="MockAI",
+                verification=VerificationStatus.VERIFIED,
+            ),
+            content=TextContent(body="answer"),
+        )
+        return ChannelOutput(responded=True, response_events=[answer])
+
+    async def deliver(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        return ChannelOutput.empty()
+
+
+async def test_a_response_under_its_own_source_keeps_its_fields_but_no_verification() -> None:
+    """RFC §8.5: verification is a received sender's, and a response is no
+    message received; the rest of the source its channel wrote stays."""
+    kit = RoomKit()
+    await kit.create_room(room_id="r1")
+    for channel in (SimpleChannel("sms"), _Verified("ai")):
+        kit.register_channel(channel)
+        await kit.attach_channel("r1", channel.channel_id)
+    try:
+        await kit.process_inbound(
+            InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="hi"))
+        )
+        events = await kit.store.list_events("r1")
+    finally:
+        await kit.close()
+    [answer] = [e for e in events if e.source.channel_id == "ai"]
+    source = answer.source
+    assert (source.participant_id, source.provider, source.verification) == (
+        "assistant",
+        "MockAI",
+        None,
+    )
+
+
 async def test_a_response_carries_no_idempotency_key(caplog: pytest.LogCaptureFixture) -> None:
     _, answer = await _answered(caplog)
     assert answer.idempotency_key is None
@@ -229,9 +286,11 @@ async def _streamed() -> tuple[list[RoomEvent], _StreamTarget]:
     return [e for e in events if e.source.channel_id == "ai"], target
 
 
-async def test_a_streamed_answer_travels_outbound() -> None:
+async def test_a_streamed_answer_travels_outbound_and_carries_no_verification() -> None:
     answers, _ = await _streamed()
-    assert [e.source.direction for e in answers] == [EventDirection.OUTBOUND]
+    assert [(e.source.direction, e.source.verification) for e in answers] == [
+        (EventDirection.OUTBOUND, None)
+    ]
 
 
 async def test_a_streamed_answer_is_rendered_under_an_outbound_event() -> None:

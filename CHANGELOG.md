@@ -15,6 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the channel default. Channel-owned tools retain their dispatch and an
   unoffered tool remains refused.
 
+- The pipeline clears `source.verification` on every response (RFC §8.5,
+  RMK-930): a verification is a received sender's (§11.7), and a response
+  is no message received. A buffered response under its own source kept a
+  verification its channel wrote, so a channel could commit its answer as
+  `verified`; only a response claiming another source was cleared. Its
+  other source fields (participant, provider, ids, raw payload) stay.
+  Streamed rows already carried none. Breaking only for a custom channel
+  that set a verification on its own responses, or a reader that relied on
+  it: such a response is now stored with `verification=None`.
+
 ### Added
 
 - A thought that comes back after its event was decided is decided late

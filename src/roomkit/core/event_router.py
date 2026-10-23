@@ -195,11 +195,15 @@ def _dropped_as_instruction(
 
 def _as_response(resp: RoomEvent, trigger: RoomEvent, responder: ChannelBinding) -> RoomEvent:
     """One response of *responder* to *trigger*, as :func:`_answering` writes it."""
+    # Under its own source a response keeps what its channel wrote, never a
+    # verification: that is a received sender's, and a response is no message
+    # received (RFC §8.5, §11.7).
     source = resp.source.model_copy(
         update={
             "channel_id": responder.channel_id,
             "channel_type": responder.channel_type,
             "direction": EventDirection.OUTBOUND,
+            "verification": None,
         }
     )
     if resp.source.channel_id != responder.channel_id:
