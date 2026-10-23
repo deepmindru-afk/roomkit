@@ -28,6 +28,7 @@ from roomkit.core._instructions import names_an_agent, without_fingerprint
 from roomkit.core._kit_turn_hooks import KitTurnHooks
 from roomkit.core._kit_wiring import KitEvents, KitWiringEnv
 from roomkit.core._queued_injections import QueuedInjections
+from roomkit.core._timer_transitions import TimerTransitions
 from roomkit.core._turn_host import KitHost
 from roomkit.core._turn_runners import TurnRunners
 from roomkit.core.admission import RoomAdmission
@@ -87,7 +88,6 @@ from roomkit.core.mixins import (
     RegenerateMixin,
     RoomLifecycleMixin,
     RoomRecordingMixin,
-    RoomTimersMixin,
     SourceOpsMixin,
     StrategyMixin,
     VerificationMixin,
@@ -183,7 +183,6 @@ class RoomKit(
     ChannelOpsMixin,
     ChannelStateMixin,
     RoomLifecycleMixin,
-    RoomTimersMixin,
     MembershipMixin,
     VoiceOpsMixin,
     RecordingMixin,
@@ -535,6 +534,20 @@ class RoomKit(
         from roomkit.recorder._room_recorder_manager import RoomRecorderManager
 
         self._room_recorder_mgr = RoomRecorderManager()
+        # Room timer transitions, applied by every locked section and by the
+        # host's check (RFC §5.1).
+        self._room_timers = TimerTransitions(
+            store=self._store,
+            lock_manager=self._lock_manager,
+            read_room=self.get_room,
+            store_closed=self._store_refusing_room,
+            stop_recordings=self._stop_room_recordings,
+            write_record=self._emit_system_event,
+            emit=self._emit_framework_event,
+            fire_hook=self._fire_lifecycle_hook,
+            build_context=self._build_context,
+            background=self._pending_hook_tasks,
+        )
 
     def _start_turns(
         self, backend: TurnBackend | None, error_classes: Iterable[type[Exception]]

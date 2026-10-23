@@ -107,6 +107,7 @@ if TYPE_CHECKING:
     )
     from roomkit.channels._task_planner import PlanUpdatedCallback
     from roomkit.channels.base import Channel
+    from roomkit.core._timer_transitions import TimerTransitions
     from roomkit.core.hooks import HookEngine, IdentityHookRegistration
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.room import Room
@@ -176,6 +177,7 @@ class HelpersMixin:
     _ensure_status_bus_subscribed: Any  # RoomKit's — the StatusBus listened to from now on
     _lanes: Any  # RoomLaneRegistry — set by RoomKit.__init__
     _room_close_epoch: int  # counted by _store_refusing_room — set by RoomKit.__init__
+    _room_timers: TimerTransitions  # the rooms' due timer transitions — set by RoomKit.__init__
     _process_timeout: float  # the pre-commit bound (RFC §13.6) — set by RoomKit.__init__
     turn_executor: Any  # RoomKit's own TurnExecutor, whose wiring the turn triggers run on
 

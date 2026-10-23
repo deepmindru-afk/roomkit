@@ -70,8 +70,6 @@ class RegenerateMixin(HelpersMixin):
     _get_router: Any  # see RegenerateHost
     _enqueue_exec: Any  # see RegenerateHost
     _finish_cascade: Any  # see RegenerateHost
-    _apply_due_timers: Any  # see RoomTimersMixin
-    _due_context: Any  # see RoomTimersMixin
 
     async def regenerate_target(self, room_id: str) -> RoomEvent | None:
         """The event :meth:`regenerate_response` would re-run the agent on.
@@ -280,7 +278,7 @@ class RegenerateMixin(HelpersMixin):
                         trigger = await self._store.get_event(event_id)
                 except TimeoutError:
                     return await self._refuse_on_timeout(room_id, operation="regenerate")
-                context = await self._due_context(
+                context = await self._room_timers.due_context(
                     context, lambda: self._build_context(room_id, reads_history=True)
                 )
                 if context.room.status in _REFUSING_STATUSES:
@@ -373,7 +371,7 @@ class RegenerateMixin(HelpersMixin):
         they wrote the room and its records."""
         if not due_transitions(context.room, datetime.now(UTC)):
             return context, found
-        await self._apply_due_timers(context.room)
+        await self._room_timers.apply_due(context.room)
         return await self._regenerate_target(room_id)
 
     async def _refuse_regeneration(

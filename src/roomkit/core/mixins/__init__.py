@@ -24,7 +24,6 @@ from roomkit.core.mixins.recording import RecordingMixin
 from roomkit.core.mixins.regenerate import RegenerateMixin
 from roomkit.core.mixins.room_lifecycle import RoomLifecycleMixin
 from roomkit.core.mixins.room_recording import RoomRecordingMixin
-from roomkit.core.mixins.room_timers import RoomTimersMixin
 from roomkit.core.mixins.source_ops import SourceOpsMixin
 from roomkit.core.mixins.strategies import StrategyMixin
 from roomkit.core.mixins.verification import VerificationMixin
@@ -55,7 +54,6 @@ __all__ = [
     "RoomRecordingMixin",
     "RegenerateMixin",
     "RoomLifecycleMixin",
-    "RoomTimersMixin",
     "SourceOpsMixin",
     "StrategyMixin",
     "VerificationMixin",

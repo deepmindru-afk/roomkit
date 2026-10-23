@@ -211,7 +211,6 @@ class InboundLockedMixin(HelpersMixin):
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _commit_to_lane: Any  # see LaneExecutionMixin
-    _apply_due_timers: Any  # see RoomTimersMixin
 
     # Stub for cross-mixin call — implemented by RoomKit._get_router().
     def _get_router(self) -> EventRouter: ...
@@ -361,7 +360,7 @@ class InboundLockedMixin(HelpersMixin):
             # RFC §5.1, §10.1 step 6: the room's due transitions apply first,
             # out of the window, and the gate reads the status they leave;
             # once, since the second pass checks no timer.
-            await self._apply_due_timers(decision.room)
+            await self._room_timers.apply_due(decision.room)
             decision = await _within(deadline, precommit(timers=False))
         if decision is None:
             return await self._refuse_on_timeout(room_id, event_id=event.id)

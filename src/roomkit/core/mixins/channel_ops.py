@@ -161,8 +161,6 @@ class ChannelOpsMixin(HelpersMixin):
     _build_room_tasks_loader: Any  # see ChannelOpsHost
     _refuse_discussion_binding: Any  # see DiscussionMixin
     _on_room_detached: Any  # see ChannelStateMixin
-    _apply_due_timers: Any  # see RoomTimersMixin
-    _room_due: Any  # see RoomTimersMixin
     turn_executor: Any  # see RoomKit
     _kit_turn_hooks: Any  # see RoomKit
 
@@ -309,7 +307,7 @@ class ChannelOpsMixin(HelpersMixin):
         async with self._lock_manager.locked(room_id):
             room = await self.get_room(room_id, organization_id=organization_id)
             # RFC §5.1: the room's due timer transitions apply first.
-            room = await self._apply_due_timers(room)
+            room = await self._room_timers.apply_due(room)
             channel = self._channels.get(channel_id)
             if channel is None:
                 raise ChannelNotRegisteredError(f"Channel {channel_id} not registered")
@@ -506,7 +504,7 @@ class ChannelOpsMixin(HelpersMixin):
         """
         async with self._lock_manager.locked(room_id):
             # RFC §5.1: the room's due timer transitions apply first.
-            await self._room_due(room_id, organization_id=organization_id)
+            await self._room_timers.room_due(room_id, organization_id=organization_id)
             binding = await self._store.get_binding(room_id, channel_id)
             if binding is None:
                 return False
@@ -840,7 +838,7 @@ class ChannelOpsMixin(HelpersMixin):
     ) -> ChannelBinding:
         """The binding a binding change starts from, read under the room
         lock once the room's due timer transitions are applied (RFC §5.1)."""
-        await self._room_due(room_id, organization_id=organization_id)
+        await self._room_timers.room_due(room_id, organization_id=organization_id)
         return await self._get_binding(room_id, channel_id)
 
     async def _get_binding(

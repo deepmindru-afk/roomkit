@@ -250,8 +250,6 @@ class LaneExecutionMixin(HelpersMixin):
     _process_streaming_responses: Any  # InboundStreamingMixin
     _lane_injected_events: Any  # InjectedEventsMixin
     _run_queued: Any  # InjectedEventsMixin
-    _due_context: Any  # RoomTimersMixin
-    _room_due: Any  # RoomTimersMixin
 
     # -- The planned commit gate --
 
@@ -458,7 +456,7 @@ class LaneExecutionMixin(HelpersMixin):
             context = await self._build_context(room_id)
         except RoomNotFoundError:
             return None
-        return await self._due_context(context, lambda: self._build_context(room_id))
+        return await self._room_timers.due_context(context, lambda: self._build_context(room_id))
 
     def _plan_factory(
         self,
@@ -923,7 +921,7 @@ class LaneExecutionMixin(HelpersMixin):
         as any refused pass's, ``operation = reentry`` (§8.2). Call under the
         room lock, which ``close_room()`` takes, once the room's due timer
         transitions are applied (§5.1)."""
-        room = await self._room_due(room_id)
+        room = await self._room_timers.room_due(room_id)
         if not _refuses_writes(room):
             return False
         await self._refuse_closed_room(

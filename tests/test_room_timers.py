@@ -29,9 +29,12 @@ from roomkit import (
     RoomStatus,
     RoomTimers,
 )
+from roomkit.core._timer_transitions import TimerTransitions
+from roomkit.core.locks import InMemoryLockManager
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.event import SystemContent, TextContent
 from roomkit.models.room import Room
+from roomkit.store.memory import InMemoryStore
 from tests.conftest import make_event
 from tests.test_framework import AILikeChannel, SimpleChannel
 
@@ -301,3 +304,62 @@ async def test_a_response_pass_applies_the_due_transitions_first() -> None:
     assert heard.reports.count("room_paused:timer") == 2
     assert (await kit.get_room("r1")).status is RoomStatus.ACTIVE
     await kit.close()
+
+
+async def test_the_component_applies_a_due_pause_with_what_it_was_given() -> None:
+    """``TimerTransitions`` on its own dependencies: nothing due costs
+    nothing and returns the room read; a due pause is written, recorded,
+    reported, then its hook fired once the lock is free."""
+    store = InMemoryStore()
+    locks = InMemoryLockManager()
+    reports: list[str] = []
+
+    async def read_room(room_id: str, *, organization_id: str | None = None) -> Room:
+        room = await store.get_room(room_id)
+        assert room is not None
+        return room
+
+    async def record(room_id: str, event_type: Any, **kwargs: Any) -> None:
+        reports.append(kwargs["code"])
+
+    async def emit(name: str, **kwargs: Any) -> None:
+        reports.append(f"{name}:{kwargs['data']['reason']}")
+
+    async def fire_hook(room_id: str, trigger: HookTrigger, *args: Any, **kwargs: Any) -> None:
+        reports.append(str(trigger))
+
+    async def context(room_id: str) -> RoomContext:
+        return RoomContext(room=await read_room(room_id))
+
+    async def stop(room_id: str) -> None:
+        reports.append("stopped")
+
+    timers = TimerTransitions(
+        store=store,
+        lock_manager=locks,
+        read_room=read_room,
+        store_closed=store.update_room,
+        stop_recordings=stop,
+        write_record=record,
+        emit=emit,
+        fire_hook=fire_hook,
+        build_context=context,
+        background=set(),
+    )
+    idle = await store.create_room(
+        Room(id="idle", timers=RoomTimers(inactive_after_seconds=60, last_activity_at=_ago(30)))
+    )
+    due = await store.create_room(
+        Room(id="due", timers=RoomTimers(inactive_after_seconds=60, last_activity_at=_ago(90)))
+    )
+    hooks: list[asyncio.Task[None]] = []
+
+    assert await timers.apply_due(idle, hooks=hooks) is idle
+    async with locks.locked("due"):
+        paused = await timers.apply_due(due, hooks=hooks)
+        assert reports == ["room_paused_by_timer", "room_paused:timer"]
+    await timers.settle("due", hooks)
+
+    assert paused.status is RoomStatus.PAUSED
+    assert (await read_room("due")).paused_at == paused.paused_at
+    assert reports[-1] == str(HookTrigger.ON_ROOM_PAUSED)

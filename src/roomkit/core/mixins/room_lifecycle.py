@@ -67,7 +67,7 @@ class RoomLifecycleHost(Protocol):
 
 
 class RoomLifecycleMixin(HelpersMixin):
-    """Room lifecycle operations: create, close, archive, participants.
+    """Room lifecycle operations: create, close, archive, timers, participants.
 
     Host contract: :class:`RoomLifecycleHost`.
     """
@@ -86,8 +86,6 @@ class RoomLifecycleMixin(HelpersMixin):
     _stop_room_recordings: Any  # see RoomLifecycleHost
     _install_strategy: Any  # see StrategyMixin
     _forget_strategy: Any  # see StrategyMixin
-    _apply_due_timers: Any  # see RoomTimersMixin
-    _await_timer_hooks: Any  # see RoomTimersMixin
 
     async def create_room(
         self,
@@ -233,14 +231,14 @@ class RoomLifecycleMixin(HelpersMixin):
         try:
             async with self._lock_manager.locked(room_id):
                 room = await self.get_room(room_id, organization_id=organization_id)
-                room = await self._apply_due_timers(room, hooks=hooks)
+                room = await self._room_timers.apply_due(room, hooks=hooks)
                 if room.status is RoomStatus.CLOSED:
                     return room
                 if room.status is RoomStatus.ARCHIVED:
                     raise TransitionRefusedError(room_id, room.status, "close")
                 return await self._close(room)
         finally:
-            await self._await_timer_hooks(room_id, hooks)
+            await self._room_timers.settle(room_id, hooks)
 
     async def _close(self, room: Room) -> Room:
         """Close *room*, an ACTIVE or a PAUSED one, under its lock."""
@@ -280,7 +278,7 @@ class RoomLifecycleMixin(HelpersMixin):
         try:
             async with self._lock_manager.locked(room_id):
                 room = await self.get_room(room_id, organization_id=organization_id)
-                room = await self._apply_due_timers(room, hooks=hooks)
+                room = await self._room_timers.apply_due(room, hooks=hooks)
                 if room.status is RoomStatus.ARCHIVED:
                     return room
                 await self._stop_room_recordings(room_id)
@@ -298,7 +296,7 @@ class RoomLifecycleMixin(HelpersMixin):
                 )
                 return result
         finally:
-            await self._await_timer_hooks(room_id, hooks)
+            await self._room_timers.settle(room_id, hooks)
 
     async def set_room_timers(
         self,
@@ -356,6 +354,34 @@ class RoomLifecycleMixin(HelpersMixin):
                 extra={"room_id": room_id},
             )
             return await self._store.update_room(room)
+
+    async def check_room_timers(self, room_id: str, *, organization_id: str | None = None) -> Room:
+        """Apply the room's due timer transitions (RFC §5.1), for a room
+        nobody writes to.
+
+        An ACTIVE room pauses once ``inactive_after_seconds`` passed since its
+        last activity, or since its creation before any; a PAUSED room
+        closes once ``closed_after_seconds`` passed since ``paused_at``. Each
+        transition takes the instant it fell due, however late the check:
+        one long after both pauses the room at the first instant and closes
+        it at the second, in one write. Each emits ``room_paused`` or
+        ``room_closed`` (``reason = timer``), then fires ``ON_ROOM_PAUSED``
+        or ``ON_ROOM_CLOSED`` once the room lock is released, before this
+        returns. Every locked operation on the room applies them as well.
+
+        Returns the room as stored once its due transitions are applied.
+        *organization_id* scopes the check to one tenant (RFC §17.2).
+        """
+        return await self._room_timers.check(room_id, organization_id=organization_id)
+
+    async def check_all_timers(self, *, organization_id: str | None = None) -> list[Room]:
+        """Check the timers of every ACTIVE and PAUSED room
+        (:meth:`check_room_timers`) and return the rooms that transitioned.
+
+        *organization_id* limits the check to one tenant's rooms; with none,
+        every room is checked.
+        """
+        return await self._room_timers.check_all(organization_id=organization_id)
 
     async def update_room_metadata(
         self,
