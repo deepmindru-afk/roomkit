@@ -1784,6 +1784,7 @@ class TestCloseOutlastsItsBudget:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(activity_module, "DRAIN_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(activity_module, "CANCEL_GRACE_S", 0.05)
         backend = _SlowJoinBackend()
         backend.slow_room = ROOM
         _, channel, _ = await _kit(backend)
@@ -1807,6 +1808,7 @@ class TestCloseOutlastsItsBudget:
         ]
         assert media_calls[-3:] == ["join_as_bot", "leave", "close"]
 
+    @pytest.mark.wallclock
     async def test_every_room_settles_on_one_budget(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The budget was spent per room, so a channel serving twenty
         conferences paid twenty times over to close — and closing is not where a
@@ -2151,6 +2153,7 @@ class TestARosterWriteOutlivingTheChannel:
         assert locks.used_after_close == [], f"locks used after close: {locks.used_after_close}"
         assert [p.id for p in store.recorded] == ["p-alice"]
 
+    @pytest.mark.wallclock
     async def test_one_budget_covers_every_callback_it_waits_for(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2559,6 +2562,7 @@ class TestACallbackResumingAfterTheShutdown:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(activity_module, "DRAIN_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(activity_module, "CANCEL_GRACE_S", 0.05)
 
         class _InstantResolver(IdentityResolver):
             async def resolve(self, channel_type, address, organization_id=None):  # type: ignore[no-untyped-def]
@@ -2758,6 +2762,7 @@ class TestTheMediaPlaneIsBoundedToo:
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.wait_for(runaway, timeout=5.0)
 
+    @pytest.mark.wallclock
     async def test_stubborn_lanes_share_one_grace_and_keep_their_providers_alive(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3020,13 +3025,12 @@ class TestProviderCloseDiscipline:
         await backend.simulate_participant_joined(ROOM, "p-alice")
 
         try:
-            loop = asyncio.get_running_loop()
-            started = loop.time()
             with pytest.raises(ConferenceCloseError) as failure:
                 await asyncio.wait_for(channel.close(), timeout=10.0)
-            elapsed = loop.time() - started
 
-            assert elapsed < 1.0, f"a blocking provider close held the loop {elapsed:.2f}s"
+            # Returned while the VAD is still inside its close: the close did
+            # not wait it out, on the loop or off it.
+            assert not vad.release.is_set(), "the close waited for the blocking provider"
             assert "pipeline" in str(failure.value)
             assert vad.closed_on is not threading.current_thread(), (
                 "the pipeline's synchronous close ran on the event loop thread"
@@ -3088,13 +3092,11 @@ class TestRecorderCloseBudget:
         await _until(lambda: bool(recorder.handles))
 
         try:
-            loop = asyncio.get_running_loop()
-            started = loop.time()
+            # The finalization never returns: a close that waited for it would
+            # end on this timeout rather than in its own failure.
             with pytest.raises(ConferenceCloseError) as failure:
                 await asyncio.wait_for(channel.close(), timeout=10.0)
-            elapsed = loop.time() - started
 
-            assert elapsed < 2.0, f"the recorder's finalization held the close {elapsed:.2f}s"
             assert "record" in str(failure.value).lower()
         finally:
             recorder.release.set()

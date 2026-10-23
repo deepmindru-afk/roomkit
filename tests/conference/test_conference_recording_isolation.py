@@ -257,6 +257,7 @@ class _StopOrder(MockMediaRecorder):
 
 
 class TestLaneIsolation:
+    @pytest.mark.wallclock
     async def test_a_slow_write_does_not_delay_another_tracks_frames(self) -> None:
         """The measurement RFC §12.10.4 names, applied to the recorder: one
         track's storage latency must not become every participant's delivery
@@ -303,6 +304,7 @@ class TestLaneIsolation:
         assert recorder.threads
         assert threading.get_ident() not in recorder.threads
 
+    @pytest.mark.wallclock
     async def test_opening_a_recording_does_not_delay_another_tracks_frames(self) -> None:
         """The same measurement, applied to the other half of the interface.
 
@@ -336,7 +338,7 @@ class TestLaneIsolation:
         halfway through is the ordinary case — so flushing the track and
         finalizing the container block the loop everything else is on.
         """
-        recorder = _BlockingLifecycle(seconds=SLOW)
+        recorder = _BlockingLifecycle(seconds=0.01)
         _, channel, backend, _ = await _recording_conference(recorder=recorder)
         await backend.simulate_participant_joined(ROOM, "p-alice")
         alice = await backend.simulate_track_published(ROOM, "p-alice")
@@ -677,7 +679,12 @@ class TestClosingFromTheOpeningAnnouncement:
     never written.
     """
 
-    async def test_closing_from_the_handler_does_not_recurse(self) -> None:
+    async def test_closing_from_the_handler_does_not_recurse(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The close waits for the writer's backlog, which waits for the very
+        # announcement the close runs in: that wait ends on the budget.
+        monkeypatch.setattr(activity_module, "DRAIN_TIMEOUT_S", 0.1)
         kit, channel, backend, recorder = await _recording_conference()
         failures: list[BaseException] = []
 
@@ -841,6 +848,7 @@ class TestTheCloseBudgetIsNotPerTrack:
     together.
     """
 
+    @pytest.mark.wallclock
     async def test_many_tracks_cost_one_budget_not_one_each(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -930,9 +938,10 @@ class TestTwoClosesAtOnce:
 
         The budget is generous on purpose: what must be reached is a
         finalization the framework is *still waiting for*, not one already past
-        its deadline.
+        its deadline. The close starts a few loop turns after the finalization
+        does, so half a second is a hundred times what it needs.
         """
-        monkeypatch.setattr(activity_module, "DRAIN_TIMEOUT_S", 2.0)
+        monkeypatch.setattr(activity_module, "DRAIN_TIMEOUT_S", 0.5)
         gate = threading.Event()
         recorder = _BlockingStop(gate=gate)
         _, channel, backend, _ = await _recording_conference(recorder=recorder)

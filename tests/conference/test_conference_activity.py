@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
 from roomkit.channels._conference_activity import RoomActivity
 
 ROOM = "room-1"
@@ -63,6 +65,7 @@ class TestDraining:
         gate.set()
         await working
 
+    @pytest.mark.wallclock
     async def test_the_timeout_is_a_budget_for_the_whole_drain(self) -> None:
         """Per item, seven wedged activities at five seconds each is
         thirty-five — past the thirty the hook engine cancels a lifecycle hook
@@ -89,6 +92,7 @@ class TestDraining:
         gate.set()
         await asyncio.gather(*working)
 
+    @pytest.mark.wallclock
     async def test_drain_all_shares_one_budget_across_rooms(self) -> None:
         activity = RoomActivity()
         gate = asyncio.Event()

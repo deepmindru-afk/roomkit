@@ -252,6 +252,7 @@ class TestLatencyInjection:
         assert await _elapsed(backend.simulate_audio(track, backend.frame_for(track))) >= SLOW
         assert backend.deliveries[-1].elapsed >= SLOW
 
+    @pytest.mark.wallclock
     async def test_a_slow_subscriber_is_measured_on_the_frame_it_held(self) -> None:
         """RFC §12.10.4 makes lane isolation checkable from outside — "delaying
         recognition on one track and measuring frame delivery on another" — and

@@ -14,7 +14,9 @@ from roomkit.video.video_frame import VideoFrame
 # Mock mss module
 # ---------------------------------------------------------------------------
 
-WIDTH, HEIGHT = 1920, 1080
+# Small on purpose: every grab copies the whole screen, and a frame of a real
+# screen's size costs the test its bytes for nothing it checks.
+WIDTH, HEIGHT = 64, 36
 PIXEL_COUNT = WIDTH * HEIGHT
 RGB_BYTES = bytes([0xFF, 0x00, 0x00] * PIXEL_COUNT)  # All red
 
@@ -40,6 +42,29 @@ def _mock_mss_module(screenshot: MagicMock | None = None) -> MagicMock:
     mock.mss.return_value.__enter__ = MagicMock(return_value=sct)
     mock.mss.return_value.__exit__ = MagicMock(return_value=False)
     return mock
+
+
+def _collect(backend, count: int) -> tuple[list[VideoFrame], asyncio.Event]:
+    """Gather the frames a backend delivers; the event is set at ``count``."""
+    received: list[VideoFrame] = []
+    enough = asyncio.Event()
+
+    def collect(_session, frame: VideoFrame) -> None:
+        received.append(frame)
+        if len(received) >= count:
+            enough.set()
+
+    backend.on_video_received(collect)
+    return received, enough
+
+
+async def _until_thread(predicate, *, timeout: float = 5.0) -> None:
+    """Poll what the capture thread changes, which nothing on the loop can await."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        assert loop.time() < deadline, "the capture thread did not get there in time"
+        await asyncio.sleep(0.005)
 
 
 @pytest.fixture
@@ -158,9 +183,6 @@ class TestScreenCaptureBackendCallbacks:
 
         session = await backend.connect("room-1", "user-1", "video-1")
         await backend.start_capture(session)
-
-        # Let capture thread start
-        await asyncio.sleep(0.05)
         await backend.stop_capture(session)
 
         assert len(ready) == 1
@@ -168,17 +190,13 @@ class TestScreenCaptureBackendCallbacks:
 
     async def test_video_received_callback(self, backend):
         """Capture thread delivers frames via on_video_received."""
-        received: list[VideoFrame] = []
-        backend.on_video_received(lambda _s, f: received.append(f))
+        received, enough = _collect(backend, 1)
 
         session = await backend.connect("room-1", "user-1", "video-1")
         await backend.start_capture(session)
-
-        # Let a few frames arrive
-        await asyncio.sleep(0.3)
+        await asyncio.wait_for(enough.wait(), timeout=5.0)
         await backend.stop_capture(session)
 
-        assert len(received) >= 1
         frame = received[0]
         assert frame.codec == "raw_rgb24"
         assert frame.width == WIDTH
@@ -200,20 +218,17 @@ class TestScreenCaptureBackendRegion:
 
             backend = ScreenCaptureBackend(region=(100, 200, 800, 600), fps=5)
 
-        received: list[VideoFrame] = []
-        backend.on_video_received(lambda _s, f: received.append(f))
+        _, enough = _collect(backend, 1)
 
-        # Update mock screenshot dimensions for the region
+        # The grabbed region is a screenshot of its own size.
         sct = mock_mss.mss.return_value.__enter__.return_value
-        region_rgb = bytes([0x00, 0xFF, 0x00] * (800 * 600))
-        sct.grab.return_value = _make_screenshot(region_rgb, 800, 600)
+        sct.grab.return_value = _make_screenshot(bytes([0x00, 0xFF, 0x00] * 8 * 6), 8, 6)
 
         session = await backend.connect("room-1", "user-1", "video-1")
         await backend.start_capture(session)
-        await asyncio.sleep(0.3)
+        await asyncio.wait_for(enough.wait(), timeout=5.0)
         await backend.stop_capture(session)
 
-        assert len(received) >= 1
         # _resolve_monitor should have built the region dict
         grab_arg = sct.grab.call_args[0][0]
         assert grab_arg == {"left": 100, "top": 200, "width": 800, "height": 600}
@@ -227,15 +242,15 @@ class TestScreenCaptureBackendDiffSkipping:
 
             backend = ScreenCaptureBackend(fps=30, diff_threshold=0.01)
 
-        received: list[VideoFrame] = []
-        backend.on_video_received(lambda _s, f: received.append(f))
+        received, _ = _collect(backend, 1)
+        sct = mock_mss.mss.return_value.__enter__.return_value
 
         session = await backend.connect("room-1", "user-1", "video-1")
         await backend.start_capture(session)
-        await asyncio.sleep(0.2)
+        await _until_thread(lambda: sct.grab.call_count >= 3)
         await backend.stop_capture(session)
 
-        # With identical screenshots, only the first frame should be delivered
+        # Three identical screenshots, one frame delivered
         assert len(received) == 1
 
     async def test_different_frames_not_skipped(self, mock_mss):
@@ -257,16 +272,12 @@ class TestScreenCaptureBackendDiffSkipping:
 
             backend = ScreenCaptureBackend(fps=30, diff_threshold=0.01)
 
-        received: list[VideoFrame] = []
-        backend.on_video_received(lambda _s, f: received.append(f))
+        _, enough = _collect(backend, 2)
 
         session = await backend.connect("room-1", "user-1", "video-1")
         await backend.start_capture(session)
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(enough.wait(), timeout=5.0)
         await backend.stop_capture(session)
-
-        # Alternating frames should all be delivered
-        assert len(received) >= 2
 
     async def test_no_diff_threshold_delivers_all(self, mock_mss):
         """With diff_threshold=0 (default), all frames are delivered."""
@@ -275,16 +286,13 @@ class TestScreenCaptureBackendDiffSkipping:
 
             backend = ScreenCaptureBackend(fps=30, diff_threshold=0.0)
 
-        received: list[VideoFrame] = []
-        backend.on_video_received(lambda _s, f: received.append(f))
+        # Identical screenshots, every one delivered
+        _, enough = _collect(backend, 2)
 
         session = await backend.connect("room-1", "user-1", "video-1")
         await backend.start_capture(session)
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(enough.wait(), timeout=5.0)
         await backend.stop_capture(session)
-
-        # Even identical frames should all be delivered
-        assert len(received) >= 2
 
 
 class TestScreenCaptureBackendMonitorValidation:
@@ -295,13 +303,14 @@ class TestScreenCaptureBackendMonitorValidation:
 
             backend = ScreenCaptureBackend(monitor=99, fps=5)
 
-        received: list[VideoFrame] = []
-        backend.on_video_received(lambda _s, f: received.append(f))
+        received, _ = _collect(backend, 1)
+        context = mock_mss.mss.return_value
 
         session = await backend.connect("room-1", "user-1", "video-1")
         await backend.start_capture(session)
-        await asyncio.sleep(0.1)
+        await _until_thread(lambda: context.__exit__.called)
         await backend.stop_capture(session)
 
-        # Thread exits gracefully, no frames delivered
-        assert len(received) == 0
+        # The thread left without grabbing anything
+        assert received == []
+        assert context.__enter__.return_value.grab.call_count == 0
