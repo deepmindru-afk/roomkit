@@ -6,6 +6,8 @@ import json
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from roomkit.video.pipeline.overlay.base import Overlay
 from tests.private_module import load_private_copy
 
@@ -66,24 +68,16 @@ class TestRichOverlayRenderer:
         renderer, _, _, _ = _make_renderer()
         assert renderer.overlay_type == "rich"
 
-    def test_skips_empty_content(self) -> None:
+    @pytest.mark.parametrize("content", ["", b"bytes"])
+    def test_content_with_no_text_is_skipped(self, content: object) -> None:
         renderer, image_mod, _, _ = _make_renderer()
         canvas = MagicMock()
         canvas.shape = (480, 640, 3)
 
-        overlay = Overlay(id="r1", content="", overlay_type="rich")
+        overlay = Overlay(id="r1", content=content, overlay_type="rich")
         result = renderer.render(canvas, overlay, 640, 480)
         assert result is canvas
         image_mod.new.assert_not_called()
-
-    def test_skips_non_string_content(self) -> None:
-        renderer, image_mod, _, _ = _make_renderer()
-        canvas = MagicMock()
-        canvas.shape = (480, 640, 3)
-
-        overlay = Overlay(id="r1", content=b"bytes", overlay_type="rich")
-        result = renderer.render(canvas, overlay, 640, 480)
-        assert result is canvas
 
     def test_renders_plain_text(self) -> None:
         renderer, image_mod, draw_mod, np_mod = _make_renderer()

@@ -46,22 +46,21 @@ def test_parse_json_embedded_in_text() -> None:
     assert result["cx"] == 50
 
 
-def test_parse_json_fallback_with_label() -> None:
-    raw = 'garbled "found": true, "cx": 42, "cy": 99, broken json "label": "Search"'
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            'garbled "found": true, "cx": 42, "cy": 99, broken json "label": "Search"',
+            {"found": True, "cx": 42, "cy": 99, "label": "Search"},
+        ),
+        ('"found": false, "cx": 0, "cy": 0', {"found": False, "cx": 0, "cy": 0, "label": ""}),
+    ],
+    ids=["with-label", "without-label"],
+)
+def test_parse_json_fallback(raw: str, expected: dict[str, object]) -> None:
     result = _parse_json_response(raw)
     assert result is not None
-    assert result["found"] is True
-    assert result["cx"] == 42
-    assert result["cy"] == 99
-    assert result["label"] == "Search"
-
-
-def test_parse_json_fallback_without_label() -> None:
-    raw = '"found": false, "cx": 0, "cy": 0'
-    result = _parse_json_response(raw)
-    assert result is not None
-    assert result["found"] is False
-    assert result["label"] == ""
+    assert {key: result[key] for key in expected} == expected
 
 
 def test_parse_json_garbage() -> None:

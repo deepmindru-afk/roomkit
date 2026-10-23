@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from roomkit.video.pipeline.overlay.base import Overlay
 from tests.private_module import load_private_copy
 
@@ -62,24 +64,16 @@ class TestImageOverlayRenderer:
         renderer, _, _ = _make_renderer()
         assert renderer.overlay_type == "image"
 
-    def test_skips_non_bytes_content(self) -> None:
+    @pytest.mark.parametrize("content", ["not bytes", b""])
+    def test_content_with_no_image_is_skipped(self, content: object) -> None:
         renderer, cv2, _ = _make_renderer()
         canvas = MagicMock()
         canvas.shape = (480, 640, 3)
 
-        overlay = Overlay(id="i1", content="not bytes", overlay_type="image")
+        overlay = Overlay(id="i1", content=content, overlay_type="image")
         result = renderer.render(canvas, overlay, 640, 480)
         assert result is canvas
         cv2.imdecode.assert_not_called()
-
-    def test_skips_empty_bytes(self) -> None:
-        renderer, cv2, _ = _make_renderer()
-        canvas = MagicMock()
-        canvas.shape = (480, 640, 3)
-
-        overlay = Overlay(id="i1", content=b"", overlay_type="image")
-        result = renderer.render(canvas, overlay, 640, 480)
-        assert result is canvas
 
     def test_decodes_image(self) -> None:
         renderer, cv2, np_mod = _make_renderer()

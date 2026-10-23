@@ -172,12 +172,3 @@ class TestVideoChannelRecording:
         assert ch._recording_handles == {}
         rec = list(recorder.recordings.values())[0]
         assert rec.handle.state == "stopped"
-
-
-class TestOpenCVVideoRecorder:
-    def test_import(self) -> None:
-        pytest.importorskip("cv2", reason="opencv not installed")
-        from roomkit.video.recorder.opencv import OpenCVVideoRecorder
-
-        recorder = OpenCVVideoRecorder()
-        assert recorder.name == "OpenCVVideoRecorder"

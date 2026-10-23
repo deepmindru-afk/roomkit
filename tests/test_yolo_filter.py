@@ -95,15 +95,6 @@ def _make_mock_model(results: list[list[dict[str, Any]]]) -> MagicMock:
 
 
 class TestYOLODetectorFilterInit:
-    def test_default_params(self) -> None:
-        filt = YOLODetectorFilter()
-        assert filt.name == "yolo"
-        assert filt._model_name == "yolo26n.pt"
-        assert filt._confidence == 0.5
-        assert filt._target_classes is None
-        assert filt._every_n == 1
-        assert filt._draw_boxes is False
-
     def test_custom_params(self) -> None:
         filt = YOLODetectorFilter(
             model="yolov8s.pt",

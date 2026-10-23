@@ -134,31 +134,18 @@ class TestStartRecording:
             assert handle.path.endswith(".mp4")
             assert handle.id  # Non-empty
 
-    def test_start_with_auto_codec_uses_mp4v(self, tmp_path: Any) -> None:
+    @pytest.mark.parametrize(("asked", "used"), [("auto", "mp4v"), ("XVID", "XVID")])
+    def test_start_picks_the_codec(self, tmp_path: Any, asked: str, used: str) -> None:
         fake_cv2 = _FakeCV2()
         with patch("roomkit.video.recorder.opencv._import_cv2", return_value=fake_cv2):
             from roomkit.video.recorder.opencv import OpenCVVideoRecorder
 
             recorder = OpenCVVideoRecorder()
             session = _make_session()
-            config = VideoRecordingConfig(storage=str(tmp_path), codec="auto")
+            config = VideoRecordingConfig(storage=str(tmp_path), codec=asked)
 
             handle = recorder.start(session, config)
-            active = recorder._active[handle.id]
-            assert active.codec == "mp4v"
-
-    def test_start_with_custom_codec(self, tmp_path: Any) -> None:
-        fake_cv2 = _FakeCV2()
-        with patch("roomkit.video.recorder.opencv._import_cv2", return_value=fake_cv2):
-            from roomkit.video.recorder.opencv import OpenCVVideoRecorder
-
-            recorder = OpenCVVideoRecorder()
-            session = _make_session()
-            config = VideoRecordingConfig(storage=str(tmp_path), codec="XVID")
-
-            handle = recorder.start(session, config)
-            active = recorder._active[handle.id]
-            assert active.codec == "XVID"
+            assert recorder._active[handle.id].codec == used
 
     def test_start_creates_lazy_writer(self, tmp_path: Any) -> None:
         fake_cv2 = _FakeCV2()

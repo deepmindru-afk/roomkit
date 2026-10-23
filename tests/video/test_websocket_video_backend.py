@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
+import pytest
+
 from roomkit.video.backends.websocket import (
     _HEADER_SIZE,
     _HEADER_STRUCT,
@@ -58,7 +60,12 @@ class TestWebSocketVideoBackendLifecycle:
 class TestWebSocketVideoBackendBinaryProtocol:
     """Binary frame parsing and serialization."""
 
-    async def test_parse_h264_frame(self):
+    # flags: bit 0 keyframe, bits 1-3 codec id (0 h264, 1 vp8, 2 raw_rgb24).
+    @pytest.mark.parametrize(
+        ("flags", "codec", "keyframe"),
+        [(0x01, "h264", True), (0x02, "vp8", False), (0x05, "raw_rgb24", True)],
+    )
+    async def test_a_binary_frame_is_parsed(self, flags: int, codec: str, keyframe: bool):
         backend = WebSocketVideoBackend()
         session = await backend.connect("room-1", "user-1", "video")
         backend._connection_sessions["conn-1"] = session.id
@@ -66,59 +73,12 @@ class TestWebSocketVideoBackendBinaryProtocol:
         received = []
         backend.on_video_received(lambda s, f: received.append((s, f)))
 
-        # Build binary frame: flags=0x01 (keyframe, h264), seq=42
-        flags = 0x01  # keyframe=1, codec_id=0 (h264)
-        seq = 42
-        header = _HEADER_STRUCT.pack(flags, seq)
-        payload = b"\x00\x00\x00\x01\x67"  # fake H.264 NAL
+        payload = b"\x00\x00\x00\x01\x67"
+        backend._handle_binary_frame("conn-1", _HEADER_STRUCT.pack(flags, 42) + payload)
 
-        backend._handle_binary_frame("conn-1", header + payload)
-
-        assert len(received) == 1
-        _, frame = received[0]
-        assert frame.codec == "h264"
-        assert frame.keyframe is True
-        assert frame.sequence == 42
+        [(_, frame)] = received
+        assert (frame.codec, frame.keyframe, frame.sequence) == (codec, keyframe, 42)
         assert frame.data == payload
-
-    async def test_parse_vp8_frame(self):
-        backend = WebSocketVideoBackend()
-        session = await backend.connect("room-1", "user-1", "video")
-        backend._connection_sessions["conn-1"] = session.id
-
-        received = []
-        backend.on_video_received(lambda s, f: received.append(f))
-
-        # flags: keyframe=0, codec_id=1 (vp8) → bits 1-3 = 001 → 0x02
-        flags = 0x02
-        header = _HEADER_STRUCT.pack(flags, 0)
-        payload = b"\x00" * 50
-
-        backend._handle_binary_frame("conn-1", header + payload)
-
-        assert len(received) == 1
-        assert received[0].codec == "vp8"
-        assert received[0].keyframe is False
-
-    async def test_parse_raw_rgb24_frame(self):
-        backend = WebSocketVideoBackend()
-        session = await backend.connect("room-1", "user-1", "video")
-        backend._connection_sessions["conn-1"] = session.id
-
-        received = []
-        backend.on_video_received(lambda s, f: received.append(f))
-
-        # flags: keyframe=1, codec_id=2 (raw_rgb24) → 0x04 | 0x01 = 0x05
-        flags = 0x05
-        header = _HEADER_STRUCT.pack(flags, 10)
-        payload = b"\xff" * (640 * 480 * 3)
-
-        backend._handle_binary_frame("conn-1", header + payload)
-
-        assert len(received) == 1
-        assert received[0].codec == "raw_rgb24"
-        assert received[0].keyframe is True
-        assert received[0].sequence == 10
 
     async def test_short_message_ignored(self):
         backend = WebSocketVideoBackend()

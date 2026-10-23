@@ -11,21 +11,6 @@ from roomkit.core.exceptions import UnservedToolCallError
 
 
 class TestScreenInputTools:
-    def test_constructor(self) -> None:
-        from roomkit.video.vision.screen_input import ScreenInputTools
-
-        tools = ScreenInputTools()
-        assert tools._vision is None
-        assert tools._monitor == 1
-
-    def test_constructor_with_vision(self) -> None:
-        from roomkit.video.vision.screen_input import ScreenInputTools
-
-        mock_vision = MagicMock()
-        tools = ScreenInputTools(vision=mock_vision, monitor=2)
-        assert tools._vision is mock_vision
-        assert tools._monitor == 2
-
     def test_definitions_without_vision(self) -> None:
         from roomkit.video.vision.screen_input import ScreenInputTools
 

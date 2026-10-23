@@ -108,17 +108,10 @@ class TestMockVideoResizer:
 
 
 class TestVideoPipelinePassthrough:
-    def test_no_stages_returns_frame(self) -> None:
+    @pytest.mark.parametrize("frame", [_encoded_frame(keyframe=True), _raw_frame()])
+    def test_no_stages_returns_the_frame(self, frame: VideoFrame) -> None:
         pipeline = VideoPipeline(VideoPipelineConfig())
-        frame = _encoded_frame(keyframe=True)
-        result = pipeline.process_inbound("s1", frame)
-        assert result is frame
-
-    def test_raw_frame_passthrough(self) -> None:
-        pipeline = VideoPipeline(VideoPipelineConfig())
-        frame = _raw_frame()
-        result = pipeline.process_inbound("s1", frame)
-        assert result is frame
+        assert pipeline.process_inbound("s1", frame) is frame
 
 
 # ---------------------------------------------------------------------------

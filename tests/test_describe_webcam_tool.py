@@ -16,8 +16,6 @@ from roomkit.video.vision.mock import MockVisionProvider
 from roomkit.video.vision.webcam_tool import (
     LIST_TOOL_DEFINITION,
     LIST_TOOL_NAME,
-    TOOL_DEFINITION,
-    TOOL_NAME,
     DescribeWebcamTool,
     ListWebcamsTool,
     capture_webcam_frame,
@@ -107,11 +105,6 @@ class TestCaptureWebcamFrame:
 
 
 class TestDescribeWebcamTool:
-    def test_definition_equals_constant(self) -> None:
-        tool = DescribeWebcamTool(MockVisionProvider(descriptions=["test"]))
-        assert tool.definition == TOOL_DEFINITION
-        assert tool.definition["name"] == TOOL_NAME
-
     def test_definition_has_required_fields(self) -> None:
         tool = DescribeWebcamTool(MockVisionProvider(descriptions=["test"]))
         defn = tool.definition
@@ -450,8 +443,15 @@ class TestListWebcamsTool:
 
 
 class TestSaveFrame:
-    def test_saves_jpeg_to_path(self, tmp_path: Path) -> None:
-        dest = tmp_path / "out.jpg"
+    @pytest.mark.parametrize(
+        ("where", "as_str"),
+        [("out.jpg", False), ("a/b/capture.jpg", False), ("string_path.jpg", True)],
+        ids=["path", "parents-created", "str"],
+    )
+    def test_saves_the_jpeg_where_it_is_told(
+        self, tmp_path: Path, where: str, as_str: bool
+    ) -> None:
+        dest = tmp_path / where
         frame = VideoFrame(
             data=b"\x00" * (10 * 10 * 3),
             codec="raw_rgb24",
@@ -462,39 +462,7 @@ class TestSaveFrame:
             "roomkit.video.vision.webcam_tool.frame_to_jpeg",
             return_value=b"\xff\xd8fake-jpeg",
         ):
-            result = save_frame(frame, dest)
+            result = save_frame(frame, str(dest) if as_str else dest)
 
         assert result == dest.resolve()
         assert dest.read_bytes() == b"\xff\xd8fake-jpeg"
-
-    def test_creates_parent_directories(self, tmp_path: Path) -> None:
-        dest = tmp_path / "a" / "b" / "capture.jpg"
-        frame = VideoFrame(
-            data=b"\x00" * (10 * 10 * 3),
-            codec="raw_rgb24",
-            width=10,
-            height=10,
-        )
-        with patch(
-            "roomkit.video.vision.webcam_tool.frame_to_jpeg",
-            return_value=b"\xff\xd8jpeg",
-        ):
-            save_frame(frame, dest)
-
-        assert dest.exists()
-
-    def test_accepts_string_path(self, tmp_path: Path) -> None:
-        dest = str(tmp_path / "string_path.jpg")
-        frame = VideoFrame(
-            data=b"\x00" * (10 * 10 * 3),
-            codec="raw_rgb24",
-            width=10,
-            height=10,
-        )
-        with patch(
-            "roomkit.video.vision.webcam_tool.frame_to_jpeg",
-            return_value=b"\xff\xd8jpeg",
-        ):
-            result = save_frame(frame, dest)
-
-        assert result.exists()

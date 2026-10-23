@@ -69,26 +69,20 @@ class TestScreenCaptureBackendProperties:
 
 
 class TestScreenCaptureBackendConfig:
-    def test_invalid_fps(self, mock_mss):
+    @pytest.mark.parametrize(
+        ("options", "message"),
+        [
+            ({"fps": 0}, "fps must be >= 1"),
+            ({"scale": 0.0}, "scale must be in"),
+            ({"scale": 1.5}, "scale must be in"),
+        ],
+    )
+    def test_an_invalid_option_is_refused(self, mock_mss, options, message):
         with patch("roomkit.video.backends.screen._import_mss", return_value=mock_mss):
             from roomkit.video.backends.screen import ScreenCaptureBackend
 
-            with pytest.raises(ValueError, match="fps must be >= 1"):
-                ScreenCaptureBackend(fps=0)
-
-    def test_invalid_scale_zero(self, mock_mss):
-        with patch("roomkit.video.backends.screen._import_mss", return_value=mock_mss):
-            from roomkit.video.backends.screen import ScreenCaptureBackend
-
-            with pytest.raises(ValueError, match="scale must be in"):
-                ScreenCaptureBackend(scale=0.0)
-
-    def test_invalid_scale_over(self, mock_mss):
-        with patch("roomkit.video.backends.screen._import_mss", return_value=mock_mss):
-            from roomkit.video.backends.screen import ScreenCaptureBackend
-
-            with pytest.raises(ValueError, match="scale must be in"):
-                ScreenCaptureBackend(scale=1.5)
+            with pytest.raises(ValueError, match=message):
+                ScreenCaptureBackend(**options)
 
 
 class TestScreenCaptureBackendConnect:

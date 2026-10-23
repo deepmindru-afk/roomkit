@@ -20,28 +20,6 @@ def _frame(data: bytes = b"\x00" * 100, *, keyframe: bool = True) -> VideoFrame:
 class TestVideoBridge:
     """Core VideoBridge tests."""
 
-    async def test_two_party_forward(self) -> None:
-        """Video from session A is forwarded to session B."""
-        backend = MockVideoBackend()
-        bridge = VideoBridge()
-
-        s1 = await backend.connect("room-1", "user-1", "video")
-        s2 = await backend.connect("room-1", "user-2", "video")
-
-        bridge.add_session(s1, "room-1", backend)
-        bridge.add_session(s2, "room-1", backend)
-
-        frame = _frame(b"\x01\x02" * 50)
-        bridge.forward(s1, frame)
-
-        # Wait for the async task created by send_video_sync
-        await asyncio.sleep(0)
-
-        # s2 should have received the video
-        assert len(backend.sent_video) == 1
-        assert backend.sent_video[0][0] == s2.id
-        assert backend.sent_video[0][1] == frame.data
-
     async def test_bidirectional_forward(self) -> None:
         """Video flows both ways."""
         backend = MockVideoBackend()

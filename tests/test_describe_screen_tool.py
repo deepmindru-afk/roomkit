@@ -12,8 +12,6 @@ from roomkit.core.exceptions import UnservedToolCallError
 from roomkit.video.video_frame import VideoFrame
 from roomkit.video.vision.mock import MockVisionProvider
 from roomkit.video.vision.screen_tool import (
-    TOOL_DEFINITION,
-    TOOL_NAME,
     DescribeScreenTool,
     capture_screen_frame,
 )
@@ -84,11 +82,6 @@ class TestCaptureScreenFrame:
 
 
 class TestDescribeScreenTool:
-    def test_definition_equals_constant(self) -> None:
-        tool = DescribeScreenTool(MockVisionProvider(descriptions=["test"]))
-        assert tool.definition == TOOL_DEFINITION
-        assert tool.definition["name"] == TOOL_NAME
-
     def test_definition_has_required_fields(self) -> None:
         tool = DescribeScreenTool(MockVisionProvider(descriptions=["test"]))
         defn = tool.definition

@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from roomkit.video.pipeline.overlay.base import Overlay, OverlayPosition
 from tests.private_module import load_private_copy
 
@@ -62,24 +64,16 @@ class TestTextOverlayRenderer:
         # putText should have been called during patch rendering
         cv2.putText.assert_called()
 
-    def test_skips_empty_content(self) -> None:
+    @pytest.mark.parametrize("content", ["", b"bytes"])
+    def test_content_with_no_text_is_skipped(self, content: object) -> None:
         renderer, cv2, _ = _make_renderer()
         canvas = MagicMock()
         canvas.shape = (480, 640, 3)
 
-        overlay = Overlay(id="t1", content="")
-        result = renderer.render(canvas, overlay, 640, 480)
-        assert result is canvas  # unchanged
-        cv2.putText.assert_not_called()
-
-    def test_skips_non_string_content(self) -> None:
-        renderer, cv2, _ = _make_renderer()
-        canvas = MagicMock()
-        canvas.shape = (480, 640, 3)
-
-        overlay = Overlay(id="t1", content=b"bytes")
+        overlay = Overlay(id="t1", content=content)
         result = renderer.render(canvas, overlay, 640, 480)
         assert result is canvas
+        cv2.putText.assert_not_called()
 
     def test_cache_invalidation(self) -> None:
         renderer, _, _ = _make_renderer()
@@ -94,7 +88,7 @@ class TestTextOverlayRenderer:
         renderer.clear_cache()
         assert len(renderer._cache) == 0
 
-    def test_custom_style(self) -> None:
+    def test_the_style_reaches_opencv_in_its_channel_order(self) -> None:
         renderer, cv2, np_mod = _make_renderer()
         canvas = MagicMock()
         canvas.shape = (480, 640, 3)
@@ -105,7 +99,10 @@ class TestTextOverlayRenderer:
             style={"font_scale": 1.5, "color": (255, 0, 0)},
         )
         renderer.render(canvas, overlay, 640, 480)
-        cv2.putText.assert_called()
+
+        font_scale, color = cv2.putText.call_args.args[4:6]
+        assert font_scale == 1.5
+        assert color == (0, 0, 255, 255), "RGB red is BGR (0, 0, 255) to OpenCV"
 
 
 class TestOverlayPosition:

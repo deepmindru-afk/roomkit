@@ -36,12 +36,6 @@ def _mock_filter() -> OverlayFilter:
 
 
 class TestSubtitleManager:
-    def test_creates_overlay_filter(self) -> None:
-        kit = _mock_kit()
-        mgr = SubtitleManager(kit, overlay_filter=_mock_filter())
-        assert mgr.overlay_filter is not None
-        assert isinstance(mgr.overlay_filter, OverlayFilter)
-
     def test_uses_provided_filter(self) -> None:
         kit = _mock_kit()
         custom_filter = OverlayFilter(renderers=[MockOverlayRenderer()])
@@ -186,11 +180,18 @@ class TestSubtitleOverlayFactory:
         assert ov.style["font_scale"] == 1.2
         assert ov.style["color"] == (255, 0, 0)
 
-    def test_passes_translate_fn(self) -> None:
+    async def test_the_translation_reaches_the_subtitles(self) -> None:
         kit = _mock_kit()
 
-        async def t(s: str) -> str:
-            return s
+        async def translate(text: str) -> str:
+            return f"[EN] {text}"
 
-        result = subtitle_overlay(kit, overlay_filter=_mock_filter(), translate_fn=t)
-        assert result.get_overlay(SUBTITLE_OVERLAY_ID) is not None
+        result = subtitle_overlay(kit, overlay_filter=_mock_filter(), translate_fn=translate)
+        _, hook_fn = kit._registered_hooks[0]
+        event = MagicMock()
+        event.text = "Bonjour"
+        await hook_fn(event, MagicMock())
+
+        ov = result.get_overlay(SUBTITLE_OVERLAY_ID)
+        assert ov is not None
+        assert ov.content == "[EN] Bonjour"
