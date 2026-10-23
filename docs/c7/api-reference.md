@@ -254,6 +254,7 @@ RoomKit exports **348 symbols** from `roomkit`. Providers and voice types import
 | `RoomNotFoundError` | Room does not exist |
 | `RoomAlreadyExistsError` | A room created under an id the store holds (RFC §14.3) |
 | `RoomClosedError` | Room's status refuses new events (RFC §5.1) |
+| `ReentrantCallError` | A message routed back into the room whose lock the caller holds, or from an off-lock hook's body or a parse; nothing written (RFC §9.5.1) |
 | `TransitionRefusedError` | A lifecycle transition from a status it does not leave, such as `close_room()` on an ARCHIVED room; nothing written (RFC §5.1) |
 | `ChangeRefusedError` | `send_event()` of an edit or a delete step 8a refused; `reason` says why (RFC §10.3) |
 | `EventNotFoundError` | A store's `commit_event()` of a change whose target the room no longer holds (RFC §14.3) |
@@ -292,7 +293,7 @@ kit = RoomKit(
     realtime=None,                 # RealtimeBackend for ephemeral events (default: InMemoryRealtime)
     max_chain_depth=5,             # Max reentry chain depth — AI-to-AI loop prevention
     identity_timeout=10.0,         # Identity resolution timeout (seconds)
-    process_timeout=30.0,          # Locked inbound processing timeout (seconds)
+    process_timeout=30.0,          # One deadline from a call's start to its decision (seconds)
     stt=None,                      # STTProvider for transcription
     tts=None,                      # TTSProvider for synthesis
     voice=None,                    # VoiceBackend for real-time audio transport
@@ -392,7 +393,7 @@ kit = RoomKit(
 | `setup_task_tools(agent)` | Give an agent (or the id of one the kit holds) `task_status` and `cancel_task`, served by the room's owner: the room's own tasks only (RFC §23.4) |
 | `await start_task(room_id, agent_id, task, hand_back?)` | Start an agent's background task from the host, for any agent of the room |
 | `send_greeting(room_id, channel_id?, greeting?, ...)` | Send greeting |
-| `send_event(room_id, channel_id, content, ...)` | Send event directly |
+| `send_event(room_id, channel_id, content, ...)` | Send event directly: `INBOUND` from a transport, `OUTBOUND` from an intelligence channel; from the room's own work (a hook, a parse, a delivery, a turn) it draws on that work's reentry budget (RFC §10.5, §9.5.1) |
 | `await steer(directive, channel_id, *, room_id=None, turn_id=None)` | Steer the running turns of an intelligence channel the kit started, wherever they run; answers the loops reached (RFC §21.3, §10.6.8) |
 | `await channel_call(channel_id, room_id, verb, *, organization_id=None, **arguments)` | Run a per-room verb of a channel attached to the room, on the executor holding the room's state (an ACP agent's `set_config_option`, `close_session`, `session_config`, `config_options`); what the room keeps for the channel is stored in its metadata, written by this call alone (RFC §10.6.3, §6.4) |
 | `await answer_input(request_id, value)` / `await reject_input(request_id, reason)` | Answer or reject a turn's human-input request, wherever its tool runs; an early answer is held 60 s, a second one returns `False` (RFC §10.6.5) |

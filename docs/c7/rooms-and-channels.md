@@ -138,6 +138,12 @@ await kit.attach_channel("room", "channel", access=Access.WRITE_ONLY)
 await kit.set_access("room", "channel", Access.NONE)
 ```
 
+A message from a channel that cannot write (read-only, `NONE`, muted) is
+stored `BLOCKED`, as is one a hook blocks, with the visibility it would have
+been delivered with: its own intersected with its channel's binding (RFC
+§7.3). A host reading the room's refused records sees no more of one than
+its channels would have seen of the message.
+
 ## Muting Channels
 
 Muting suppresses a channel's output (AI responses) without detaching it. Side effects (tasks, observations) still fire.
@@ -207,7 +213,7 @@ Events carry typed content. RoomKit supports 11 content types, all discriminated
 | `AudioContent` | `"audio"` | `url`, `mime_type`, `duration_seconds`, `transcript` | Voice messages |
 | `VideoContent` | `"video"` | `url`, `mime_type`, `duration_seconds`, `thumbnail_url` | Video messages |
 | `LocationContent` | `"location"` | `latitude`, `longitude`, `label`, `address` | Geographic coordinates |
-| `CompositeContent` | `"composite"` | `parts` (list of EventContent, max depth 5) | Multi-part messages |
+| `CompositeContent` | `"composite"` | `parts` (list of EventContent, max depth 5, a sixth level refused wherever content enters the kit) | Multi-part messages |
 | `TemplateContent` | `"template"` | `template_id`, `language`, `parameters`, `body` | WhatsApp Business / RCS templates |
 | `SystemContent` | `"system"` | `body`, `code`, `data` (dict) | System-generated events |
 | `EditContent` | `"edit"` | `target_event_id`, `new_content`, `edit_source` | Message edits |
@@ -232,7 +238,8 @@ AudioContent(url="https://example.com/voice.ogg", mime_type="audio/ogg", transcr
 LocationContent(latitude=40.7128, longitude=-74.0060, label="NYC Office")
 TemplateContent(template_id="order_confirm", language="en", parameters={"1": "ORD-123"})
 
-# Multi-part (max depth 5)
+# Multi-part (max depth 5: a message, a parsed event, a hook's result, an
+# answer or a send_event() holding a sixth level is refused, nothing stored)
 CompositeContent(parts=[
     TextContent(body="Here's the photo:"),
     MediaContent(url="https://example.com/photo.jpg", mime_type="image/jpeg"),

@@ -147,8 +147,9 @@ of its own (RFC §9.4):
   through. A hook may block it (stored `BLOCKED`), and what its hooks inject
   is committed after it the same way.
 - It counts against the reentry budget (`10 × max_chain_depth` per inbound
-  message). Past it, it is stored `BLOCKED` with `reentry_loop_cap` and its
-  hooks do not run.
+  message or direct injection, shared with what the room's own work sends
+  into the room, below). Past it, it is stored `BLOCKED` with
+  `reentry_loop_cap` and its hooks do not run.
 - It keeps its cause's chain depth and carries no idempotency key. Its
   visibility names the targets the room binds (`none` when it has none), and
   a hook may narrow it, never widen it.
@@ -172,6 +173,48 @@ committed the same way. No other trigger commits injected events: a SYNC hook
 on `BEFORE_DELIVER`, `ON_VERIFICATION_REQUIRED` or any other trigger that
 returns some has them dropped, with a warning naming the hook and the trigger.
 
+### Calling into the room from a hook
+
+A hook may call `kit.send_event()` or `kit.process_inbound()` into the room of
+the event it runs for. The call is part of that event's work (RFC §9.5.1):
+
+- From a locked hook (or any code under the room lock), it is **nested**: it
+  takes no admission ticket, runs every `BEFORE_BROADCAST` hook under the lock
+  and commits ahead of the event being processed. What its own hooks inject
+  joins the queue of the section holding the lock, committed once that
+  section has released it, after the event being processed.
+- From an off-lock hook's body (`needs_lock=False`), it is **adopted beside**
+  the event: no ticket, every hook under the lock, its own section for its
+  commit, still ahead of the event.
+- Either way it draws on the event's reentry budget, one pass as it starts: a
+  hook that injects on every event stops at the cap. Past it, `send_event()`
+  stores the event `BLOCKED` with `reentry_loop_cap`, no hook run, and returns
+  that record; `process_inbound()` returns `blocked=True,
+  reason="reentry_loop_cap"` with no event.
+- A message routed back into the room (`process_inbound()` with no
+  `room_id`) raises `ReentrantCallError` before anything is written: its room
+  is known only once routed, so it cannot be adopted. Name the room instead.
+
+A channel's `handle_inbound()` stands in its message's admission order the
+same way: what it sends into its room is adopted beside the message, on its
+budget, and a message it routes back into that room raises
+`ReentrantCallError`. A call from a delivery set's work (a transport's
+`deliver()`, an agent's turn, a tool handler) is a new arrival with its own
+ticket and `process_timeout`, but it draws on the budget of the cascade that
+delivers, and a call made within a turn is at least as deep as the turn's
+response, so a transport or an agent that sends into its room every time it
+is reached stops at the cap or at `max_chain_depth`.
+
+```python
+@kit.hook(HookTrigger.BEFORE_BROADCAST)
+async def acknowledge(event, ctx):
+    if event.source.channel_id == "receipts":
+        return HookResult.allow()  # its own receipt runs this hook too
+    # Nested: committed ahead of the event, within this event's budget.
+    await kit.send_event(event.room_id, "receipts", TextContent(body="Received."))
+    return HookResult.allow()
+```
+
 The visibility `internal` marks a record the framework wrote, and only the
 framework writes it: a `BEFORE_BROADCAST` modify that writes it, or that changes
 it on a record that holds it (a voice channel's interruption record), has the
@@ -180,9 +223,10 @@ event's visibility put back.
 ### What happens when a hook fails
 
 A hook that does not produce a usable result — it raises, it exceeds its
-timeout, it returns something that is not a `HookResult`, or it returns a
-`modify` whose payload is the wrong type for the trigger — is treated as
-**allow**, and the error is logged. A broken hook must not be able to take a
+timeout, it returns something that is not a `HookResult`, it returns a
+`modify` whose payload is the wrong type for the trigger, or its replacement
+or an event it injects holds more than five composite levels (RFC §5.3) — is
+treated as **allow**, and the error is logged. A broken hook must not be able to take a
 room down, so the event goes through.
 
 **Three triggers invert that**, because their payload is content a hook may

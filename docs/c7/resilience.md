@@ -96,6 +96,32 @@ kit = RoomKit(max_chain_depth=3)  # Stricter limit
 
 When an AI response triggers another AI response, chain depth increments. Processing stops when the limit is reached.
 
+What a turn sends into a room itself (`send_event()` or `process_inbound()`
+from its channel, a tool handler or a `TurnHost` verb) is at least as deep as
+the turn's response, so an agent that injects through another channel at each
+turn stops at the limit too. Besides the depth, each cascade (an inbound
+message or a direct injection) has a reentry budget of `10 ×
+max_chain_depth` passes: its responses, its hooks' injected events, and what
+the room's own work sends into the room (a hook, a parse, a delivery, a
+turn). Past it, an answer or an injected event is stored `BLOCKED` with
+`reentry_loop_cap`, and a message the room's work sends is refused
+`reentry_loop_cap`, so a transport whose `deliver()` sends into its own room
+stops too.
+
+## Processing Timeout
+
+`process_timeout` (seconds, default 30) is one deadline from the call's start
+to its decision (RFC §13.6): routing, with the identity it reads, the router
+and step 2's waits for the room lock, then the context build, the parse, the
+off-lock checks and the locked gates. Past it, `process_inbound()` returns
+`blocked=True, reason="process_timeout"` and `send_event()` raises
+`ProcessTimeoutError`, nothing of the event written; the `process_timeout`
+framework event names no room when the deadline passed while the message was
+routed. A room step 2 creates is completed whatever the deadline, and step 2's
+attach or record of a routed sender in a room that exists is bounded on its
+wait for the lock only. The commit and everything after it (delivery,
+answers, side effects) carry no deadline.
+
 ## Room Lifecycle Timers
 
 Auto-transition rooms based on inactivity (RFC §5.1):
