@@ -198,6 +198,33 @@ class TestAKeyNamesOnePublicationInItsRoom:
             assert [e.id for e in await self._keyed(kit)] == [published.event_id]
             assert agents["a"].solicited == ["spoof", "done"]
 
+    async def test_a_room_lock_held_past_process_timeout_refuses_the_publication(
+        self,
+    ) -> None:
+        """The section's wait for the room lock is bounded as the pipeline's
+        own is (RFC §13.6): nothing is published."""
+        kit, agents = await self._kit()
+        kit._process_timeout = 0.05  # noqa: SLF001
+        held, release = asyncio.Event(), asyncio.Event()
+
+        async def hold() -> None:
+            async with kit.lock_manager.locked("r1"):
+                held.set()
+                await release.wait()
+
+        async with kit:
+            holder = asyncio.create_task(hold())
+            await held.wait()
+            try:
+                outcome = await kit.deliver("r1", "done", idempotency_key="k")
+            finally:
+                release.set()
+                await holder
+
+            assert (outcome.status, outcome.reason) == ("blocked", "process_timeout")
+            assert await self._keyed(kit) == []
+            assert agents["a"].solicited == []
+
     async def test_send_event_refuses_the_publication_namespace(self) -> None:
         kit, _agents = await self._kit()
         async with kit:

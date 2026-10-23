@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING
 
 from roomkit.channels.base import hosts_realtime_model
@@ -90,18 +89,6 @@ async def replay_publication(ctx: DeliveryContext) -> DeliveryOutcome | None:
     return None
 
 
-@asynccontextmanager
-async def _publication_section(ctx: DeliveryContext) -> AsyncGenerator[None]:
-    """The room lock around a keyed publication's lookup, its transport's
-    resolution and its commit (RFC §22.1, §14.3): a concurrent replay waits
-    for the first and finds its key. Nothing held for any other delivery."""
-    if not _keyed_publication(ctx):
-        yield
-        return
-    async with ctx.kit._lock_manager.locked(ctx.room_id):  # noqa: SLF001
-        yield
-
-
 async def prepare_delivery(
     ctx: DeliveryContext,
     channel_id: str | None = None,
@@ -164,7 +151,17 @@ async def deliver_to_channel(ctx: DeliveryContext, channel_id: str) -> DeliveryO
     A keyed publication looks its key up within the room, resolves its
     transport and commits in one section under the room lock (RFC §22.1);
     its turn is awaited once the lock is released."""
-    async with _publication_section(ctx):
+    async with AsyncExitStack() as section:
+        if _keyed_publication(ctx):
+            # A concurrent replay waits for the first and finds its key. The
+            # wait for the lock is bounded by process_timeout, as the
+            # pipeline's own is (RFC §13.6).
+            kit = ctx.kit
+            try:
+                async with asyncio.timeout(kit._process_timeout):
+                    await section.enter_async_context(kit._lock_manager.locked(ctx.room_id))
+            except TimeoutError:
+                return _text_outcome(await kit._refuse_on_timeout(ctx.room_id))
         published = await replay_publication(ctx)
         if published is not None:
             return published
