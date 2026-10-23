@@ -27,7 +27,7 @@ from roomkit.models.enums import (
     ParticipantRole,
 )
 from roomkit.models.event import EventSource, RoomEvent, TextContent
-from roomkit.models.hook import HookResult
+from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.participant import Participant
 from roomkit.orchestration.strategies.discussion import (
     Discussion,
@@ -178,6 +178,39 @@ async def test_an_agent_s_answer_typed_instruction_gives_no_turn() -> None:
 
     assert b.calls == []
     assert _queue(kit).queue == ()
+    await kit.close()
+
+
+async def test_a_hook_s_injected_instruction_gives_no_turn() -> None:
+    """A hook directs an agent with ``send_event``, never by injecting an
+    instruction, which is dropped before any pass (RFC §9.4)."""
+    a, b = _provider("a answers"), _provider("b answers")
+    kit = RoomKit()
+    seen = _follow(kit)
+    await _room(kit, {"a": a, "b": b})
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST)
+    async def direct(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if event.source.channel_id != "chat":
+            return HookResult.allow()
+        if event.type == EventType.INSTRUCTION:
+            return HookResult.allow()
+        instruction = RoomEvent(
+            room_id=event.room_id,
+            type=EventType.INSTRUCTION,
+            source=event.source,
+            content=TextContent(body="Summarise the incident."),
+            addressed_to=["a"],
+        )
+        return HookResult.allow(
+            injected=[InjectedEvent(event=instruction, target_channel_ids=["a"])]
+        )
+
+    await _say(kit, "@b go")
+    await _settle(kit)
+
+    assert (len(a.calls), len(b.calls)) == (0, 1)
+    assert [who for change, who in seen if change == SpeakQueueChange.QUEUED] == [("b",)]
     await kit.close()
 
 

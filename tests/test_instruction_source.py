@@ -13,13 +13,15 @@ import logging
 
 import pytest
 
-from roomkit import AIChannel, RoomKit
+from roomkit import AIChannel, HookResult, HookTrigger, RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory, ChannelType, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.hook import InjectedEvent
 from roomkit.models.store_filter import EventFilter
+from roomkit.models.task import Task
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.test_framework import AILikeChannel, SimpleChannel
 
@@ -89,5 +91,68 @@ async def test_a_response_typed_instruction_does_not_re_enter(caplog: pytest.Log
     ]
     assert _bodies(speaker.delivered) == ["hello", "Noted."]
     assert provider.calls == []
+    assert any("INSTRUCTION" in r.getMessage() for r in caplog.records if r.levelname == "WARNING")
+    await kit.close()
+
+
+async def test_a_hook_s_injected_instruction_is_dropped_and_the_rest_stands(
+    caplog: pytest.LogCaptureFixture,
+):
+    """RFC §9.4: dropped with a warning before any pass, so no hook runs on
+    it and nothing of it is stored or delivered; the result's other injected
+    events and its tasks stand."""
+    kit = RoomKit()
+    speaker = SimpleChannel("speaker")
+    provider = MockAIProvider(["I will not."])
+    for channel in (SimpleChannel("sms"), speaker):
+        kit.register_channel(channel)
+    kit.register_channel(AIChannel("agent", provider=provider))
+    await kit.create_room(room_id=ROOM)
+    for channel_id in ("sms", "speaker", "agent"):
+        await kit.attach_channel(ROOM, channel_id)
+    seen: list[EventType] = []
+    hook_source = EventSource(channel_id="moderation", channel_type=ChannelType.SYSTEM)
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST)
+    async def direct(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        seen.append(event.type)
+        if event.source.channel_id != "sms":
+            return HookResult.allow()
+        instruction = RoomEvent(
+            room_id=ROOM,
+            type=EventType.INSTRUCTION,
+            source=hook_source,
+            content=TextContent(body=DIRECTION),
+            addressed_to=["agent"],
+        )
+        notice = RoomEvent(room_id=ROOM, source=hook_source, content=TextContent(body="Seen."))
+        return HookResult(
+            action="allow",
+            injected_events=[
+                InjectedEvent(event=instruction, target_channel_ids=["speaker", "agent"]),
+                InjectedEvent(event=notice, target_channel_ids=["speaker"]),
+            ],
+            tasks=[Task(id="t1", room_id=ROOM, title="review")],
+        )
+
+    with caplog.at_level(logging.WARNING):
+        await kit.process_inbound(
+            InboundMessage(
+                channel_id="sms",
+                sender_id="caller",
+                content=TextContent(body="hello"),
+                addressed_to=[],
+            ),
+            room_id=ROOM,
+        )
+
+    stored = await kit.store.list_events(ROOM, event_filter=EventFilter(include_blocked=True))
+    assert _bodies([e for e in stored if e.type != EventType.CHANNEL_ATTACHED]) == [
+        "hello",
+        "Seen.",
+    ]
+    assert _bodies(speaker.delivered) == ["hello", "Seen."]
+    assert EventType.INSTRUCTION not in seen and provider.calls == []
+    assert [t.id for t in await kit.store.list_tasks(ROOM)] == ["t1"]
     assert any("INSTRUCTION" in r.getMessage() for r in caplog.records if r.levelname == "WARNING")
     await kit.close()

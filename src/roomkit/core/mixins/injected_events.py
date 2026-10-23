@@ -7,6 +7,8 @@ reentry budget. It keeps its cause's chain depth, names its targets as its
 visibility, carries no idempotency key, and takes no source check: it is the
 hook's, not a channel's. It is delivered to its transport targets only,
 under the rules of any delivery, never to its own source, and asks no agent.
+An injected INSTRUCTION is dropped with a warning before any pass: only the
+application issues instructions.
 
 A pass started inside its cause's locked section takes the lock reentrantly,
 so it commits right after its cause with nothing between them: a stricter
@@ -26,7 +28,7 @@ from roomkit.core.mixins.inbound_locked import _Blocked, _Ready
 from roomkit.core.mixins.lane_execution import provisional
 from roomkit.core.visibility import intersect_visibility, visibility_allows
 from roomkit.models.channel import ChannelBinding
-from roomkit.models.enums import Access, ChannelCategory, EventStatus, Visibility
+from roomkit.models.enums import Access, ChannelCategory, EventStatus, EventType, Visibility
 from roomkit.models.event import RoomEvent, with_pipeline_id
 
 if TYPE_CHECKING:
@@ -52,6 +54,27 @@ def _as_injected(event: RoomEvent, cause: RoomEvent) -> RoomEvent:
             }
         )
     )
+
+
+def _without_instructions(
+    injected_events: list[InjectedEvent], cause: RoomEvent
+) -> list[InjectedEvent]:
+    """*injected_events* without the instructions among them (RFC §9.4,
+    §10.1.1): only the application issues an instruction, which a hook sends
+    with ``send_event()``. Each one dropped is logged, before any pass: no
+    hook runs on it, and nothing of it is stored or delivered."""
+    kept: list[InjectedEvent] = []
+    for injected in injected_events:
+        if injected.event.type != EventType.INSTRUCTION:
+            kept.append(injected)
+            continue
+        logger.warning(
+            "A hook injected an INSTRUCTION while deciding on event %s: dropped, since only "
+            "the application issues instructions (send_event); the rest of its result stands",
+            cause.id,
+            extra={"room_id": cause.room_id, "event_id": cause.id},
+        )
+    return kept
 
 
 def _targets_scope(injected: InjectedEvent, context: RoomContext) -> str:
@@ -89,8 +112,9 @@ class InjectedEventsMixin(HelpersMixin):
         cause: RoomEvent,
     ) -> None:
         """Commit each event *cause*'s hooks injected as a pass of
-        *cascade*, in order (RFC §9.4), whichever way *cause* ended."""
-        for injected in injected_events:
+        *cascade*, in order (RFC §9.4), whichever way *cause* ended; an
+        instruction among them is dropped before any pass."""
+        for injected in _without_instructions(injected_events, cause):
             await self._run_injected_pass(room_id, injected, cascade, cause=cause)
 
     async def _inject_off_lock(

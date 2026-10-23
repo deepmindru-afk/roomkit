@@ -530,6 +530,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so one agent could direct another in the application's name. An agent
   that wants another to act addresses its answer (`addressed_to`).
 
+- **BREAKING — a hook's injected INSTRUCTION is dropped** (RFC §9.4,
+  §10.1.1, RMK-930): an `InjectedEvent` of type `INSTRUCTION` is dropped
+  with a warning before any pass, so no hook runs on it and nothing of it is
+  stored or delivered; the result's other injected events, tasks and
+  observations stand. It was delivered unstored to its transport targets
+  and, in a discussion, queued as a turn for the agent it addressed. A hook
+  that wants an agent directed calls `kit.send_event(...,
+  event_type=EventType.INSTRUCTION, addressed_to=[...])`, which takes the
+  instruction's checks.
+
 - **BREAKING — `ParticipantRole.AGENT` is a human agent** (RFC §5, §6.4,
   §19.7.5 rule 2, RMK-911), an advisor or a support representative, as the
   role table says: a participant with that role takes part like a member.
