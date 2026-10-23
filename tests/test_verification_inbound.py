@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
+
 from roomkit import (
     HookResult,
     HookTrigger,
@@ -16,6 +18,7 @@ from roomkit import (
 )
 from roomkit.channels import SMSChannel
 from roomkit.channels.ai import AIChannel
+from roomkit.core.mixins import verification as verification_mixin
 from roomkit.core.mixins.verification import HELD_KEY
 from roomkit.identity.mock import MockIdentityResolver
 from roomkit.models.identity import Identity
@@ -26,6 +29,13 @@ ALICE = "+15550000001"
 
 
 _DEFAULT = VerificationPolicy()
+
+
+@pytest.fixture(autouse=True)
+def _cheap_hash(monkeypatch: pytest.MonkeyPatch) -> None:
+    """scrypt at a test's cost (its production factor is pinned in
+    tests/test_identity_verification.py): a short TTL is not spent hashing."""
+    monkeypatch.setattr(verification_mixin, "_SCRYPT_N", 2**4)
 
 
 def _kit(policy: VerificationPolicy | None = _DEFAULT) -> tuple[RoomKit, MockAIProvider]:

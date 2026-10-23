@@ -88,6 +88,16 @@ class TestFrameworkInjection:
 
         assert channel.called_with == []
 
+    def test_the_contract_must_be_implemented(self) -> None:
+        """A channel that declares the contract and leaves set_framework out is
+        refused, rather than built and never handed the framework."""
+
+        class _Undeclared(FrameworkAwareChannel, _Inert):
+            pass
+
+        with pytest.raises(TypeError):
+            _Undeclared("undeclared")  # type: ignore[abstract]
+
 
 class TestSessionChannelsDeclareIt:
     """Every channel that routes its own inbound media declares the contract.

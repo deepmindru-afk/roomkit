@@ -620,45 +620,35 @@ class TestReceiveLoop:
         ticking.sleep = lambda delay, result=None: real_sleep(min(delay, 0.01), result)
         monkeypatch.setattr(nz_module, "asyncio", ticking)
 
-        original_has = nz_module.HAS_NEONIZE
-        original_client_cls = nz_module.NewAClient
-        nz_module.HAS_NEONIZE = True
-
+        monkeypatch.setattr(nz_module, "HAS_NEONIZE", True)
         mock_client = MagicMock()
         mock_client.connect = AsyncMock()
         mock_client.disconnect = MagicMock()
         mock_client.event = lambda cls: lambda fn: fn
-        nz_module.NewAClient = MagicMock(return_value=mock_client)  # type: ignore[assignment]
+        monkeypatch.setattr(nz_module, "NewAClient", MagicMock(return_value=mock_client))
 
-        # Mock neonize events module
-        fake_events = MagicMock()
-        sys.modules["neonize"] = MagicMock()
-        sys.modules["neonize.aioze"] = MagicMock()
-        sys.modules["neonize.aioze.client"] = MagicMock(NewAClient=nz_module.NewAClient)
-        sys.modules["neonize.aioze.events"] = fake_events
-        # What start() reads its device properties from, before it connects.
-        sys.modules["neonize.proto"] = MagicMock()
-        sys.modules["neonize.proto.waCompanionReg"] = MagicMock()
-        sys.modules["neonize.proto.waCompanionReg.WAWebProtobufsCompanionReg_pb2"] = MagicMock()
+        # The neonize modules start() imports, its device properties' included.
+        for name, module in {
+            "neonize": MagicMock(),
+            "neonize.aioze": MagicMock(),
+            "neonize.aioze.client": MagicMock(NewAClient=nz_module.NewAClient),
+            "neonize.aioze.events": MagicMock(),
+            "neonize.proto": MagicMock(),
+            "neonize.proto.waCompanionReg": MagicMock(),
+            "neonize.proto.waCompanionReg.WAWebProtobufsCompanionReg_pb2": MagicMock(),
+        }.items():
+            monkeypatch.setitem(sys.modules, name, module)
 
-        try:
+        async def emit(msg: InboundMessage) -> InboundResult:
+            return InboundResult()
 
-            async def emit(msg: InboundMessage) -> InboundResult:
-                return InboundResult()
+        task = asyncio.create_task(source.start(emit))
+        await asyncio.sleep(0.05)
 
-            task = asyncio.create_task(source.start(emit))
-            await asyncio.sleep(0.05)
+        assert source.status in (SourceStatus.CONNECTING, SourceStatus.CONNECTED)
 
-            assert source.status in (SourceStatus.CONNECTING, SourceStatus.CONNECTED)
-
-            await source.stop()
-            await asyncio.wait_for(task, 1.0)  # the loop ends at its next look
-        finally:
-            nz_module.HAS_NEONIZE = original_has
-            nz_module.NewAClient = original_client_cls  # type: ignore[assignment]
-            for key in list(sys.modules):
-                if key.startswith("neonize"):
-                    del sys.modules[key]
+        await source.stop()
+        await asyncio.wait_for(task, 1.0)  # the loop ends at its next look
 
     async def test_message_counting(self) -> None:
         from roomkit.sources.neonize import WhatsAppPersonalSourceProvider

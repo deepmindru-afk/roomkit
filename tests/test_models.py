@@ -606,3 +606,18 @@ def test_a_value_out_of_its_range_is_refused(model: type, values: dict[str, floa
 )
 def test_a_content_names_its_kind_where_it_is_stored_and_sent(content: object, kind: str) -> None:
     assert content.model_dump(mode="json")["type"] == kind  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("model", "field", "default"),
+    [
+        (RichContent(body="**bold**"), "format", "markdown"),  # RFC §5.3
+        (TemplateContent(template_id="welcome_v1"), "language", "en"),  # RFC §5.3
+        (ToolCallContent(tool_name="web_search", tool_id="call-1"), "status", "pending"),  # §5.3
+        (RetryPolicy(), "exponential_base", 2.0),  # RFC §13.2
+    ],
+    ids=["rich-format", "template-language", "tool-call-status", "retry-base"],
+)
+def test_the_defaults_the_rfc_sets(model: object, field: str, default: object) -> None:
+    """Values a stored or sent content takes when its author left them out."""
+    assert getattr(model, field) == default

@@ -241,6 +241,18 @@ def path(request: pytest.FixtureRequest) -> str:
     return str(request.param)
 
 
+async def _waiting_on_the_room_lock(room: Room) -> None:
+    """Until a turn waits on the ACP channel's lock of the room, behind the
+    turn that holds it."""
+    channel = next(c for c in room.kit.channels.values() if hasattr(c, "_room_locks"))
+    async with asyncio.timeout(WAIT):
+        while True:
+            lock = channel._room_locks.get("r")  # noqa: SLF001
+            if lock is not None and any(not w.done() for w in lock._waiters or ()):  # noqa: SLF001
+                return
+            await asyncio.sleep(0.005)
+
+
 async def _closed(room: Room) -> None:
     for gate in room.seen.gates.values():
         gate.set()
@@ -263,6 +275,10 @@ async def test_a_turn_queued_behind_the_room_s_turn_never_starts(
             # room's delivery lane, behind a message a transport still holds.
             await room.send("held", visibility="transport")
         b = await room.send("task B", "b")
+        if path == "acp":
+            # An ACP room's turns hold its session lock: B leaves the lane and
+            # waits on that lock, which is where the cancel must find it.
+            await _waiting_on_the_room_lock(room)
         assert room.seen.started == ["task A"]  # B queued behind A
 
         assert await room.kit.cancel_delivery("b") == 1

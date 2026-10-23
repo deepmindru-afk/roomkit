@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Sequence
 
 import pytest
@@ -54,28 +55,34 @@ def _provider(collector: _SlowCollector, **kwargs: float) -> OpenTelemetryProvid
     return OpenTelemetryProvider(tracer_provider=tracer_provider, **kwargs)
 
 
+@pytest.mark.wallclock  # how soon flush() returns is the behaviour
 def test_a_flush_returns_at_once_and_the_spans_still_leave() -> None:
     collector = _SlowCollector(delay=5.0)
     provider = _provider(collector)
     provider.end_span(provider.start_span(SpanKind.VOICE_SESSION, "session"))
 
+    started = time.monotonic()
     provider.flush()
     provider.flush()  # one already running: skipped, not queued behind it
 
+    assert time.monotonic() - started < 0.2
     assert not collector.done.is_set()  # back while the collector still holds it
     collector.released.set()
     assert collector.done.wait(timeout=5.0)
     assert collector.exported == ["roomkit.session"]
 
 
+@pytest.mark.wallclock  # that the bound ends the wait is the behaviour
 def test_close_waits_for_the_export_within_its_bound(caplog: pytest.LogCaptureFixture) -> None:
     collector = _SlowCollector(delay=5.0)
     provider = _provider(collector, shutdown_flush_timeout=0.1)
     provider.start_span(SpanKind.VOICE_SESSION, "still open")
 
+    started = time.monotonic()
     with caplog.at_level(logging.WARNING, logger="roomkit.telemetry.otel"):
         provider.close()  # the collector still holds the batch: the bound ends the wait
 
+    assert time.monotonic() - started < 1.0
     assert "did not finish within 0.1s" in caplog.text
     collector.released.set()
 

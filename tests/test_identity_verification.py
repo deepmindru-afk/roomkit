@@ -262,6 +262,12 @@ async def test_an_unanswered_request_leaves_the_verification_in_force(
     await kit.close()
 
 
+def test_the_secret_hash_keeps_its_production_work_factor() -> None:
+    """The factor a leaked store's codes are hashed with: lowering it makes
+    each one cheaper to break."""
+    assert _PRODUCTION_SCRYPT_N == 2**15
+
+
 async def test_a_secret_is_stored_through_a_slow_hash(
     store: ConversationStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
