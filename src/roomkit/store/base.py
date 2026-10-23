@@ -72,6 +72,11 @@ def edits_target(event: RoomEvent, target_id: str) -> bool:
     return isinstance(content, EditContent) and content.target_event_id == target_id
 
 
+def is_marked_deleted(event: RoomEvent) -> bool:
+    """Whether *event* carries an accepted delete's mark (``metadata.deleted``)."""
+    return event.metadata.get("deleted") is True
+
+
 def marked_deleted(event: RoomEvent) -> RoomEvent:
     """*event* marked ``metadata.deleted``, its other metadata kept."""
     return event.model_copy(update={"metadata": {**event.metadata, "deleted": True}})
@@ -728,6 +733,27 @@ class ConversationStore(ABC):
                 )
             )
         return indexed
+
+    async def write_change_target(self, room_id: str, target: RoomEvent) -> None:
+        """Write *target* as the edit or the delete the persistence policy
+        keeps out of the timeline changed it (RFC §10.3): the target's row
+        alone, no row of the change, and when the target is now deleted
+        (``metadata.deleted``) every edit of it marked deleted too, in one
+        transaction, as :meth:`commit_event` does with a change it stores.
+        A target *room_id* no longer holds raises
+        :class:`~roomkit.core.exceptions.EventNotFoundError`, nothing
+        written.
+
+        The default is **NOT atomic**: it writes through :meth:`update_event`
+        and marks the edits through the store's own reads and writes. A store
+        that can do it in one transaction SHOULD override it.
+        """
+        stored = await self.get_event(target.id)
+        if stored is None or stored.room_id != room_id:
+            raise target_gone(target)
+        await self.update_event(target)
+        if is_marked_deleted(target):
+            await self._mark_edits_deleted(room_id, target.id)
 
     async def _mark_edits_deleted(self, room_id: str, target_id: str) -> None:
         """Mark every edit of *target_id* deleted, through the store's own

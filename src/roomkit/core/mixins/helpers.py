@@ -306,7 +306,7 @@ class HelpersMixin:
         if self._persistence_policy is not None and not self._persistence_policy.should_persist(
             event.type
         ):
-            await self._write_unstored_change(target)
+            await self._write_unstored_change(room_id, target)
             return None
         committed = await self._commit(room_id, event, target=target)
         await self._note_committed_index(room_id, committed.index)
@@ -338,12 +338,13 @@ class HelpersMixin:
         change = {} if target is None else {"target": target}
         return await self._store.commit_event(room_id, authored, **change)
 
-    async def _write_unstored_change(self, target: RoomEvent | None) -> None:
+    async def _write_unstored_change(self, room_id: str, target: RoomEvent | None) -> None:
         """Write *target* as the edit or the delete the persistence policy
         keeps out of the timeline changed it: with no row of its own to
-        commit, the change is its target's update alone."""
+        commit, the change is its target's update alone, a delete marking the
+        target's edits deleted with it (RFC §10.3)."""
         if target is not None:
-            await self._store.update_event(target)
+            await self._store.write_change_target(room_id, target)
 
     async def _with_author(self, room_id: str, event: RoomEvent) -> RoomEvent:
         """*event* carrying the record of its author, under the room lock,

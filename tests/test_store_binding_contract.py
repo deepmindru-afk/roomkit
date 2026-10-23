@@ -679,13 +679,31 @@ async def test_a_delete_marks_its_target_s_edits_deleted(
 
 
 class _DefaultCommit(InMemoryStore):
-    """A store that commits through the ABC's default, as a custom store
-    inheriting it does."""
+    """A store that commits and writes a change's target through the ABC's
+    defaults, as a custom store inheriting them does."""
 
     async def commit_event(
         self, room_id: str, event: RoomEvent, *, target: RoomEvent | None = None
     ) -> RoomEvent:
         return await ConversationStore.commit_event(self, room_id, event, target=target)
+
+    async def write_change_target(self, room_id: str, target: RoomEvent) -> None:
+        await ConversationStore.write_change_target(self, room_id, target)
+
+
+async def test_the_default_target_write_marks_a_deleted_target_s_edits_too() -> None:
+    store = _DefaultCommit()
+    room = await store.create_room(Room(id=uuid4().hex))
+    target = await store.commit_event(room.id, make_event(room_id=room.id, body="v1"))
+    edit, edited = _edit_of(target, "v2")
+    edit = await store.commit_event(room.id, edit, target=edited)
+
+    await store.write_change_target(
+        room.id, edited.model_copy(update={"metadata": {**edited.metadata, "deleted": True}})
+    )
+
+    marked = await store.get_event(edit.id)
+    assert marked is not None and marked.metadata.get("deleted") is True
 
 
 async def test_the_default_commit_marks_a_deleted_target_s_edits_too() -> None:
@@ -707,3 +725,35 @@ async def test_the_default_commit_marks_a_deleted_target_s_edits_too() -> None:
     for row in (edit, untyped):
         marked = await store.get_event(row.id)
         assert marked is not None and marked.metadata.get("deleted") is True
+
+
+async def test_a_change_s_target_is_written_alone_with_its_edits_marked(
+    contract_store: ConversationStore,
+) -> None:
+    """RFC §10.3: a change the persistence policy keeps out of the timeline
+    writes its target alone, no row of its own, and a delete marks the
+    target's edits deleted with it, in one transaction."""
+    room = await contract_store.create_room(Room(id=uuid4().hex))
+    try:
+        store = contract_store
+        target = await store.commit_event(room.id, make_event(room_id=room.id, body="v1"))
+        edit, edited = _edit_of(target, "v2")
+        edit = await store.commit_event(room.id, edit, target=edited)
+        before = await store.get_room(room.id)
+        assert before is not None
+
+        await store.write_change_target(room.id, edited.model_copy(update={"metadata": {}}))
+        assert "deleted" not in (await store.get_event(edit.id)).metadata  # type: ignore[union-attr]
+        deleted = edited.model_copy(update={"metadata": {**edited.metadata, "deleted": True}})
+        await store.write_change_target(room.id, deleted)
+
+        assert await store.get_event(target.id) == deleted
+        marked = await store.get_event(edit.id)
+        assert marked is not None and marked.metadata.get("deleted") is True
+        after = await store.get_room(room.id)
+        assert after is not None and after.event_count == before.event_count
+        assert len(await store.list_events(room.id)) == 2
+        with pytest.raises(EventNotFoundError):
+            await store.write_change_target(room.id, make_event(room_id=room.id))
+    finally:
+        await contract_store.delete_room(room.id)

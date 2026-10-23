@@ -50,6 +50,7 @@ from roomkit.store.base import (
     ConversationStore,
     address_linked,
     deletes_edits,
+    is_marked_deleted,
     link_target,
     room_taken,
     target_gone,
@@ -191,6 +192,17 @@ def _fts_text(event: RoomEvent) -> str:
 
 def _load_event(data: str) -> RoomEvent:
     return RoomEvent.model_validate_json(data)
+
+
+def _mark_edits_deleted(conn: sqlite3.Connection, room_id: str, target_id: str) -> None:
+    """Mark every edit of *target_id* deleted, in the caller's transaction:
+    an edit holds a version of the deleted text (RFC §10.3)."""
+    conn.execute(
+        "UPDATE events SET data = json_set(data, '$.metadata.deleted', json('true'))"
+        " WHERE room_id = ? AND json_extract(data, '$.content.type') = 'edit'"
+        " AND json_extract(data, '$.content.target_event_id') = ?",
+        (room_id, target_id),
+    )
 
 
 @contextmanager
@@ -1106,6 +1118,23 @@ class SQLiteStore(ConversationStore):
             self._write_event_row(conn, event, replace=True)
         return event
 
+    async def write_change_target(self, room_id: str, target: RoomEvent) -> None:
+        await self._run(self._x_write_change_target, room_id, target)
+
+    def _x_write_change_target(self, room_id: str, target: RoomEvent) -> None:
+        """The target's row, and its edits' marks when it is now deleted, in
+        one SQLite transaction; no row of the change (RFC §10.3)."""
+        conn = self._db()
+        with _write_transaction(conn):
+            held = conn.execute(
+                "SELECT 1 FROM events WHERE id = ? AND room_id = ?", (target.id, room_id)
+            ).fetchone()
+            if held is None:
+                raise target_gone(target)
+            self._write_event_row(conn, target, replace=True)
+            if is_marked_deleted(target):
+                _mark_edits_deleted(conn, room_id, target.id)
+
     async def record_delivery_results(
         self, room_id: str, event_id: str, results: dict[str, Any]
     ) -> None:
@@ -1414,14 +1443,7 @@ class SQLiteStore(ConversationStore):
                     raise target_gone(target)
                 self._write_event_row(conn, target, replace=True)
                 if deletes_edits(event, target):
-                    # Its edits hold versions of the deleted text (RFC §10.3).
-                    conn.execute(
-                        "UPDATE events"
-                        " SET data = json_set(data, '$.metadata.deleted', json('true'))"
-                        " WHERE room_id = ? AND json_extract(data, '$.content.type') = 'edit'"
-                        " AND json_extract(data, '$.content.target_event_id') = ?",
-                        (room_id, target.id),
-                    )
+                    _mark_edits_deleted(conn, room_id, target.id)
             index = self._reserve_event_index(conn, room_id)
             indexed = event.model_copy(update={"index": index})
             self._write_event_row(conn, indexed)

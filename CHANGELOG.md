@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A delete the persistence policy keeps out of the timeline still marks
+  its target's edits deleted (RFC §10.3, RMK-930). With no row of its own to
+  commit, the change wrote its target alone through `update_event()`: the
+  target was marked, its edits were not, and an edit a history held without
+  its message showed the deleted text again. The new
+  `ConversationStore.write_change_target(room_id, target)` writes the
+  target and, when it is now deleted, marks every edit of it, in one
+  transaction and with no row of the change; the in-memory, SQLite and
+  Postgres stores do it atomically, and the default a custom store inherits
+  writes through `update_event()` (not atomic). A target the room no longer
+  holds raises `EventNotFoundError`, nothing written.
+
 - `PostgresStore.init()` on an up-to-date schema takes no ACCESS EXCLUSIVE
   lock on `events` (RMK-930). Its `ALTER TABLE events ADD COLUMN IF NOT
   EXISTS` statements (`addressed_to`, `responds_to`, `delivery_results`)

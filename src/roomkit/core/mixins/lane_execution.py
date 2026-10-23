@@ -273,7 +273,7 @@ class LaneExecutionMixin(HelpersMixin):
             and self._persistence_policy is not None
             and not self._persistence_policy.should_persist(event.type)
         ):
-            await self._write_unstored_change(target)
+            await self._write_unstored_change(room_id, target)
             if plan_factory is not None:
                 if event.type != EventType.INSTRUCTION:
                     # Delivered unstored, still a turn its readers name.

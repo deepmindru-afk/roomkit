@@ -22,6 +22,7 @@ from roomkit.store.base import (
     address_linked,
     deletes_edits,
     edits_target,
+    is_marked_deleted,
     link_target,
     marked_deleted,
     room_taken,
@@ -393,6 +394,23 @@ class InMemoryStore(ConversationStore):
         self._events[event.id] = event
         return event
 
+    async def write_change_target(self, room_id: str, target: RoomEvent) -> None:
+        async with self._lock_for(room_id):
+            stored = self._events.get(target.id)
+            if stored is None or stored.room_id != room_id:
+                raise target_gone(target)
+            self._events[target.id] = target.model_copy(deep=True)
+            if is_marked_deleted(target):
+                self._mark_edits_deleted_now(room_id, target.id)
+
+    def _mark_edits_deleted_now(self, room_id: str, target_id: str) -> None:
+        """Mark every edit of *target_id* deleted (RFC §10.3), under the
+        caller's critical section."""
+        for eid in self._room_events.get(room_id, []):
+            edit = self._events.get(eid)
+            if edit is not None and edits_target(edit, target_id):
+                self._events[eid] = marked_deleted(edit)
+
     async def record_delivery_results(
         self, room_id: str, event_id: str, results: dict[str, Any]
     ) -> None:
@@ -600,10 +618,7 @@ class InMemoryStore(ConversationStore):
                     raise target_gone(target)
                 self._events[target.id] = target.model_copy(deep=True)
             if target is not None and deletes_edits(event, target):
-                for eid in self._room_events.get(room_id, []):
-                    edit = self._events.get(eid)
-                    if edit is not None and edits_target(edit, target.id):
-                        self._events[eid] = marked_deleted(edit)
+                self._mark_edits_deleted_now(room_id, target.id)
             events = self._room_events.setdefault(room_id, [])
             index = self._reserve_event_index(room_id)
             indexed = event.model_copy(update={"index": index}, deep=True)

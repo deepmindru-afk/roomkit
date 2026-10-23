@@ -43,6 +43,7 @@ from roomkit.models.event import (
     TextContent,
 )
 from roomkit.models.hook import HookResult, InjectedEvent
+from roomkit.models.store_filter import PersistencePolicy
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
 
@@ -1048,9 +1049,18 @@ class TestAnEditOutsideItsTargetsWindow:
     """RFC §10.3: an edit of a deleted message holds a version of its text,
     withheld whether or not the history still holds the message."""
 
-    @pytest.mark.parametrize("deleted", [True, False])
-    async def test_an_edit_is_withheld_with_the_message_it_corrected(self, deleted: bool) -> None:
-        kit = RoomKit(store=_WholeConversation())
+    @pytest.mark.parametrize(
+        ("deleted", "stored"),
+        [(True, True), (True, False), (False, True)],
+        ids=["deleted", "deleted, the delete unstored", "not deleted"],
+    )
+    async def test_an_edit_is_withheld_with_the_message_it_corrected(
+        self, deleted: bool, stored: bool
+    ) -> None:
+        """A delete the persistence policy keeps out of the timeline still
+        marks its target and the target's edits."""
+        policy = None if stored else PersistencePolicy(exclude_types={EventType.DELETE})
+        kit = RoomKit(store=_WholeConversation(), persistence_policy=policy)
         kit.register_channel(_Transport("src"))
         reader = _Reader("reader")
         kit.register_channel(reader)
@@ -1070,7 +1080,8 @@ class TestAnEditOutsideItsTargetsWindow:
         )
         if deleted:
             await _delete(kit, said, sender_id="alice", delete_type=DeleteType.SENDER)
-        else:
+        if not deleted or not stored:
+            # The row a stored delete takes, so the message leaves the window.
             await _post(kit, "noted", sender_id="alice")
         for filler in ("one", "two"):
             await _post(kit, filler, sender_id="alice")

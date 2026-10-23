@@ -30,6 +30,7 @@ from roomkit.store.base import (
     ConversationStore,
     address_linked,
     deletes_edits,
+    is_marked_deleted,
     room_taken,
     target_gone,
     without_address,
@@ -148,6 +149,18 @@ async def _update_event_row(conn: Any, event: RoomEvent, *, room_id: str | None 
         room_id,
     )
     return status != "UPDATE 0"
+
+
+async def _mark_edits_deleted(conn: Any, room_id: str, target_id: str) -> None:
+    """Mark every edit of *target_id* deleted, on *conn*'s transaction: an
+    edit holds a version of the deleted text (RFC §10.3)."""
+    await conn.execute(
+        "UPDATE events SET metadata = metadata || '{\"deleted\": true}'::jsonb"
+        " WHERE room_id = $1 AND content->>'type' = 'edit'"
+        " AND content->>'target_event_id' = $2",
+        room_id,
+        target_id,
+    )
 
 
 async def _reserve_event_index(conn: Any, room_id: str) -> int:
@@ -1011,6 +1024,16 @@ class PostgresStore(ConversationStore):
                 await _update_event_row(conn, event)
         return event
 
+    async def write_change_target(self, room_id: str, target: RoomEvent) -> None:
+        # The target's row, and its edits' marks when it is now deleted, in
+        # one transaction; no row of the change (RFC §10.3).
+        with self._query_span("write_change_target", "events"):
+            async with self._acquire() as conn, conn.transaction():
+                if not await _update_event_row(conn, target, room_id=room_id):
+                    raise target_gone(target)
+                if is_marked_deleted(target):
+                    await _mark_edits_deleted(conn, room_id, target.id)
+
     async def record_delivery_results(
         self, room_id: str, event_id: str, results: dict[str, Any]
     ) -> None:
@@ -1303,14 +1326,7 @@ class PostgresStore(ConversationStore):
                 ):
                     raise target_gone(target)
                 if target is not None and deletes_edits(event, target):
-                    # Its edits hold versions of the deleted text (RFC §10.3).
-                    await conn.execute(
-                        "UPDATE events SET metadata = metadata || '{\"deleted\": true}'::jsonb"
-                        " WHERE room_id = $1 AND content->>'type' = 'edit'"
-                        " AND content->>'target_event_id' = $2",
-                        room_id,
-                        target.id,
-                    )
+                    await _mark_edits_deleted(conn, room_id, target.id)
                 next_idx = await _reserve_event_index(conn, room_id)
                 indexed = event.model_copy(update={"index": next_idx})
                 await _insert_event(conn, indexed)
