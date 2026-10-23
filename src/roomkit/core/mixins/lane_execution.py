@@ -758,7 +758,7 @@ class LaneExecutionMixin(HelpersMixin):
         # answer, and is chained.
         cascade.add_streams(result.streaming_responses, chained=not plan.answers_caller)
 
-        await self._commit_blocked_events(room_id, result)
+        await self._commit_blocked_events(room_id, result, plan.response_visibility)
 
         if plan.fire_after_broadcast:
             await self._persist_side_effects(
@@ -880,16 +880,19 @@ class LaneExecutionMixin(HelpersMixin):
                 responds_to=event.id,
             )
 
-    async def _commit_blocked_events(self, room_id: str, result: BroadcastResult) -> None:
+    async def _commit_blocked_events(
+        self, room_id: str, result: BroadcastResult, response_visibility: str | None = None
+    ) -> None:
         """Commit the records a delivery set blocked (RFC §8.1, §8.3, §14.3).
 
         Blocked events are still indexed: an agent not asked past the depth
         limit and a muted source's response (§7.5 rule 2) both land here,
-        whichever path broadcast the trigger. A room that refuses writes takes
-        neither, each refusal announced (§5.1).
+        whichever path broadcast the trigger, each within the answer scope
+        its trigger asked for, as a response is. A room that refuses writes
+        takes neither, each refusal announced (§5.1).
         """
         for blocked in result.blocked_events:
-            await self._commit_blocked_response(room_id, blocked)
+            await self._commit_blocked_response(room_id, scoped(blocked, response_visibility))
 
     async def _refuses_record(self, room_id: str, record: RoomEvent) -> bool:
         """Whether the room's status refuses *record*, stored in place of a
@@ -917,7 +920,10 @@ class LaneExecutionMixin(HelpersMixin):
         §7.5), so each is indexed and announced alike. ``max_chain_depth`` is
         the limit that stopped it when not the kit's (a discussion's, §19.7.5).
         A room that refuses writes takes none, the refusal announced (§5.1).
+        One carrying ``internal``, which only the framework writes, is stored
+        ``none``, as the answer it stands in for would be (§7.3, §8.5).
         """
+        blocked = without_framework_mark(blocked)
         async with self._lock_manager.locked(room_id):
             if await self._refuses_record(room_id, blocked):
                 return

@@ -665,7 +665,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `attach_channel()`, `set_visibility()`, `send_event()` and
   `InboundMessage(visibility=...)` (a pydantic `ValidationError`); a
   `BEFORE_BROADCAST` hook's modify that writes it has the event's
-  visibility put back; and a channel's answer, or a row of its stream,
+  visibility put back; and a channel's answer, a row of its stream, or
+  the record stored in place of an answer at the chain-depth limit,
   carrying it (a channel's own, or the trigger's `response_visibility`)
   is committed with `none`, a warning logged. An event stored for no
   channel takes `none`. `kit.commit_event()`, a record outside the

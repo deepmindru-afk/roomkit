@@ -396,6 +396,26 @@ class TestOnlyTheFrameworkWritesInternal:
         finally:
             await kit.close()
 
+    async def test_the_record_in_place_of_an_answer_carrying_it_is_stored_for_no_channel(
+        self,
+    ) -> None:
+        kit = RoomKit(max_chain_depth=1)
+        await kit.create_room(room_id="r1")
+        for channel in (_Told("sms"), AILikeChannel("ai")):
+            kit.register_channel(channel)
+        await kit.attach_channel("r1", "sms")
+        await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+        try:
+            # The depth limit keeps the agent from being asked: its record
+            # takes the answer's scope.
+            await kit.process_inbound(_message("hello", response_visibility="internal"))
+            records = await kit.store.list_events(
+                "r1", event_filter=EventFilter(include_blocked=True)
+            )
+            assert [e.visibility for e in records if e.source.channel_id == "ai"] == ["none"]
+        finally:
+            await kit.close()
+
     async def test_a_stream_row_carrying_it_is_stored_for_no_channel(self) -> None:
         kit, _ = await _streaming_room({})
         try:
