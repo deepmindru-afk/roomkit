@@ -105,6 +105,7 @@ from roomkit.conference import (
 from roomkit.core.delivery import DeliveryStrategy, Immediate, Queued, WaitForIdle
 from roomkit.core.exceptions import (
     AddressLinkedError,
+    ChangeRefusedError,
     ChannelRefusalError,
     ConferenceAlreadyAttachedError,
     ConferenceCapabilityError,
@@ -408,6 +409,7 @@ __all__ = [
     "ProcessTimeoutError",
     "RoomNotFoundError",
     "EventNotFoundError",
+    "ChangeRefusedError",
     "ChannelNotFoundError",
     "ChannelAlreadyRegisteredError",
     "ChannelNotRegisteredError",

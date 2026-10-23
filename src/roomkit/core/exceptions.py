@@ -87,6 +87,21 @@ class EventNotFoundError(RoomKitError):
     """
 
 
+class ChangeRefusedError(RoomKitError):
+    """An edit or a delete was refused at RFC §10.1 step 8a, nothing written.
+
+    Raised by direct injection (RFC §10.5), whose contract is the committed
+    event. ``reason`` names why: ``target_event_not_found``,
+    ``identity_required_for_edit``, ``not_authorized`` or
+    ``not_original_author`` (§10.3). The inbound path returns
+    ``InboundResult(blocked=True, reason=...)`` instead.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"edit or delete refused: {reason}")
+        self.reason = reason
+
+
 class RoomClosedError(RoomKitError):
     """Room's status refuses new events (RFC §5.1).
 

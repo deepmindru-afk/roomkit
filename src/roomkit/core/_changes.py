@@ -36,6 +36,11 @@ NOT_AUTHORIZED = "not_authorized"
 NOT_ORIGINAL_AUTHOR = "not_original_author"
 """Step 8a's refusal of a sender's change of another's event."""
 
+CHANGE_REFUSALS = frozenset(
+    {TARGET_NOT_FOUND, IDENTITY_REQUIRED, NOT_AUTHORIZED, NOT_ORIGINAL_AUTHOR}
+)
+"""Every reason step 8a refuses a change with (RFC §10.1)."""
+
 _CHANGE_TYPES = frozenset({EventType.EDIT, EventType.DELETE})
 _ADMINISTRATORS = frozenset({ParticipantRole.OWNER, ParticipantRole.AGENT})
 _GONE = frozenset({ParticipantStatus.LEFT, ParticipantStatus.BANNED})

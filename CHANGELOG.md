@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Edit and delete validation (RFC §10.1 step 8a) runs on every pass that
+  commits an event, not only on an inbound message (RFC §10.3, §9.4,
+  RMK-930). An agent's response and a hook's injected event skipped it: an
+  EDIT or a DELETE among them was committed and applied natively by
+  edit-capable channels with no target, author or authority checked, and
+  its target was never updated. Both now take step 8a; an accepted one
+  writes its target in its own commit and fires `ON_EVENT_UPDATED` or
+  `ON_EVENT_DELETED`, so an agent edits its own responses, and no one
+  else's. An injected change is the hook's, whatever source it names, and
+  makes a SYSTEM change only (a SYSTEM delete, an edit whose `edit_source`
+  is `system`): one claiming a sender's or an administrator's authority is
+  refused `not_authorized`. A refused response or injected change is logged
+  at warning level and not stored. `send_event()` of a change step 8a
+  refuses raises the new `ChangeRefusedError` (its `reason` the refusal),
+  where it returned the event uncommitted. Breaking for a caller of
+  `send_event()` that read that event, and for a hook that injected a
+  change in a participant's name.
+
 - Who may edit or delete follows RFC §10.3 rules 3 to 6 (RMK-930). An ADMIN
   delete is an OWNER's or an AGENT's, neither LEFT nor BANNED, as the
   participant the sender is on their channel: an OWNER who had left or been

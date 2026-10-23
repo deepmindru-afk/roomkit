@@ -335,9 +335,8 @@ class HelpersMixin:
         not take it still commits every other event.
         """
         authored = await self._with_author(room_id, event)
-        if target is None:
-            return await self._store.commit_event(room_id, authored)
-        return await self._store.commit_event(room_id, authored, target=target)
+        change = {} if target is None else {"target": target}
+        return await self._store.commit_event(room_id, authored, **change)
 
     async def _write_unstored_change(self, target: RoomEvent | None) -> None:
         """Write *target* as the edit or the delete the persistence policy

@@ -24,11 +24,18 @@ from typing import TYPE_CHECKING, Any
 from roomkit.core._instructions import without_fingerprint
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan
 from roomkit.core.mixins.helpers import HelpersMixin
-from roomkit.core.mixins.inbound_locked import _Blocked, _Ready
+from roomkit.core.mixins.inbound_locked import _Blocked, _Ready, mutation_plan, target_update
 from roomkit.core.mixins.lane_execution import provisional
 from roomkit.core.visibility import intersect_visibility, visibility_allows
 from roomkit.models.channel import ChannelBinding
-from roomkit.models.enums import Access, ChannelCategory, EventStatus, EventType, Visibility
+from roomkit.models.enums import (
+    Access,
+    ChannelCategory,
+    EventStatus,
+    EventType,
+    HookTrigger,
+    Visibility,
+)
 from roomkit.models.event import RoomEvent, with_pipeline_id
 
 if TYPE_CHECKING:
@@ -100,6 +107,7 @@ class InjectedEventsMixin(HelpersMixin):
     _finish_cascade: Any  # LaneExecutionMixin
     _open_pass: Any  # LaneExecutionMixin
     _store_past_reentry_cap: Any  # LaneExecutionMixin
+    _check_change: Any  # InboundLockedMixin
     _gate_commit: Any  # InboundLockedMixin
     _store_blocked: Any  # InboundLockedMixin
 
@@ -147,10 +155,16 @@ class InjectedEventsMixin(HelpersMixin):
                 # Past the budget it is not a pass: its hooks never run (§8.3).
                 await self._store_past_reentry_cap(room_id, event)
                 return
+            # An edit or a delete it carries is the hook's, a SYSTEM change
+            # only (RFC §10.3 rule 6); a refused one is logged, nothing stored.
+            check = await self._check_change(room_id, event, by_hook=True)
+            if check.refusal is not None:
+                return
             decision = await self._gate_commit(room_id, event, context, source_check=False)
             if isinstance(decision, _Blocked):
                 await self._store_blocked(room_id, decision, cascade)
                 return
+            decision.edit_delete_target = check.target
             await self._commit_injected(room_id, decision, injected, event.visibility, cascade)
 
     async def _commit_injected(
@@ -174,11 +188,16 @@ class InjectedEventsMixin(HelpersMixin):
             }
         )
         targets = await self._injected_targets(room_id, event, injected)
+        # An edit's or a delete's target, written in the event's own commit
+        # (RFC §10.3, §14.3).
+        target, mutation_hook = target_update(event, ready.edit_delete_target)
 
         def factory(committed: RoomEvent) -> DeliveryPlan | None:
-            return _injected_plan(committed, ready, targets)
+            return _injected_plan(committed, ready, targets, mutation_hook)
 
-        stored = await self._commit_to_lane(room_id, event, cascade, factory, policy_aware=False)
+        stored = await self._commit_to_lane(
+            room_id, event, cascade, factory, policy_aware=False, target=target
+        )
         committed = stored or event
         sync_result = ready.sync_result
         await self._persist_side_effects(
@@ -213,12 +232,17 @@ class InjectedEventsMixin(HelpersMixin):
 
 
 def _injected_plan(
-    committed: RoomEvent, ready: _Ready, targets: list[ChannelBinding]
+    committed: RoomEvent,
+    ready: _Ready,
+    targets: list[ChannelBinding],
+    mutation_hook: tuple[HookTrigger, RoomEvent] | None,
 ) -> DeliveryPlan | None:
     """The delivery plan of an injected event: its transport targets, no
-    reentry, no ``AFTER_BROADCAST``; ``None`` when it is stored only."""
+    reentry, no ``AFTER_BROADCAST``, and the mutation trigger of an edit or
+    a delete (RFC §10.3); ``None`` when it is stored only and changes
+    nothing."""
     if not targets:
-        return None
+        return mutation_plan(committed, ready.context, mutation_hook, injected=True)
     # An unbound source (a hook's own, as "system") transcodes as a channel
     # of its type with default capabilities.
     source_binding = ready.source_binding or ChannelBinding(
@@ -232,5 +256,6 @@ def _injected_plan(
         context=ready.context,
         targets=targets,
         injected=True,
+        mutation_hook=mutation_hook,
         fire_after_broadcast=False,
     )

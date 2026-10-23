@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 from roomkit.channels.base import Channel
 from roomkit.channels.websocket import SendFn, StreamSendFn, WebSocketChannel
+from roomkit.core._changes import CHANGE_REFUSALS
 from roomkit.core._instructions import names_an_agent, without_fingerprint
 from roomkit.core._kit_turn_hooks import KitTurnHooks
 from roomkit.core._kit_wiring import KitEvents, KitWiringEnv
@@ -32,6 +33,7 @@ from roomkit.core.admission import RoomAdmission
 from roomkit.core.delivery import DeliveryStrategy
 from roomkit.core.event_router import EventRouter
 from roomkit.core.exceptions import (
+    ChangeRefusedError,
     ChannelAlreadyRegisteredError,
     ChannelNotFoundError,
     ChannelNotRegisteredError,
@@ -140,6 +142,8 @@ def _raise_unless_committed(result: InboundResult, room_id: str) -> None:
         raise ProcessTimeoutError(
             f"Room {room_id}: process_timeout expired before the event was committed"
         )
+    if result.event is None and result.reason in CHANGE_REFUSALS:
+        raise ChangeRefusedError(result.reason)
 
 
 # Re-export exception classes so existing ``from roomkit.core.framework import ...``

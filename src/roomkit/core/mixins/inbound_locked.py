@@ -26,6 +26,7 @@ from roomkit.core._changes import (
     target_refusal,
 )
 from roomkit.core.hooks import kept_identity
+from roomkit.core.lanes import DeliveryPlan
 from roomkit.core.mixins.helpers import (
     _RECENT_EVENTS_LIMIT,
     _REFUSING_STATUSES,
@@ -612,7 +613,7 @@ class InboundLockedMixin(HelpersMixin):
         # The edit/delete target as the commit writes it, now that the event
         # is authorized and hook-allowed (RFC §10.3 — mutation must not
         # precede the block decision), in the event's own transaction.
-        target, mutation_hook = _target_update(event, ready.edit_delete_target)
+        target, mutation_hook = target_update(event, ready.edit_delete_target)
 
         # Commit point (RFC §10.1 step 12): persist DELIVERED and bump the
         # room counters atomically, PLAN the broadcast against binding state
@@ -622,24 +623,11 @@ class InboundLockedMixin(HelpersMixin):
         router = self._get_router()
 
         def plan_factory(committed: RoomEvent) -> Any:
-            from roomkit.core.lanes import DeliveryPlan
-
             cascade.unavailable_targets = list(committed.addressed_to or [])
             if source_binding is None:
-                if mutation_hook is None:
-                    return None  # nothing to broadcast, nothing to fire
                 # No source binding: no broadcast, but the RFC §10.3 mutation
-                # trigger must still fire once the commit is visible — an
-                # empty plan carries it. A binding-less trigger fires no
-                # AFTER_BROADCAST and persists no hook side effects.
-                return DeliveryPlan(
-                    event=committed,
-                    source_binding=None,
-                    context=context,
-                    targets=[],
-                    mutation_hook=mutation_hook,
-                    fire_after_broadcast=False,
-                )
+                # trigger must still fire once the commit is visible.
+                return mutation_plan(committed, context, mutation_hook)
             # Refresh context locally by appending the committed event, so
             # the delivery set (and the AI's on_event) sees the trigger. An
             # instruction is not part of the room's history (RFC §10.1.1):
@@ -767,7 +755,31 @@ class InboundLockedMixin(HelpersMixin):
             await self._hook_engine.run_async_hooks(room_id, trigger, ev, ctx)
 
 
-def _target_update(
+def mutation_plan(
+    committed: RoomEvent,
+    context: RoomContext,
+    mutation_hook: tuple[HookTrigger, RoomEvent] | None,
+    *,
+    injected: bool = False,
+) -> DeliveryPlan | None:
+    """The plan of a committed event that has nothing to deliver: none,
+    unless it is a change, whose RFC §10.3 mutation trigger still fires once
+    the commit is visible, off the lock. It fires no ``AFTER_BROADCAST`` and
+    persists no hook side effects."""
+    if mutation_hook is None:
+        return None
+    return DeliveryPlan(
+        event=committed,
+        source_binding=None,
+        context=context,
+        targets=[],
+        injected=injected,
+        mutation_hook=mutation_hook,
+        fire_after_broadcast=False,
+    )
+
+
+def target_update(
     event: RoomEvent, target: RoomEvent | None
 ) -> tuple[RoomEvent | None, tuple[HookTrigger, RoomEvent] | None]:
     """What *event*'s commit writes on its edit or delete *target*, and the

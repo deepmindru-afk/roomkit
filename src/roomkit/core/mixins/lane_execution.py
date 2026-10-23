@@ -25,7 +25,7 @@ from roomkit.core.mixins.helpers import (
     HelpersMixin,
     _refuses_writes,
 )
-from roomkit.core.mixins.inbound_locked import _Blocked, _Ready
+from roomkit.core.mixins.inbound_locked import _Blocked, _Ready, mutation_plan, target_update
 from roomkit.core.task_utils import await_unless_cut, start_named
 from roomkit.core.visibility import with_committed_visibility
 from roomkit.models.delivery import DeliveryError, DeliveryResult
@@ -215,6 +215,7 @@ class LaneExecutionMixin(HelpersMixin):
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _get_router: Any  # RoomKit._get_router
     _handle_block: Any  # InboundLockedMixin
+    _check_change: Any  # InboundLockedMixin
     _gate_commit: Any  # InboundLockedMixin
     _store_blocked: Any  # InboundLockedMixin
     _announce_blocked: Any  # InboundLockedMixin
@@ -1026,6 +1027,11 @@ class LaneExecutionMixin(HelpersMixin):
             if context is None:
                 return
             reentry, reentry_ctx = provisional(reentry, context)
+            # A response's edit or delete takes step 8a as an inbound one
+            # does (RFC §10.3); a refused one is logged, and nothing stored.
+            check = await self._check_change(room_id, reentry)
+            if check.refusal is not None:
+                return
 
             # BEFORE_BROADCAST sync hooks, then the source's right to write
             # (RFC §10.1 steps 9 and 11): orchestration routing stamps
@@ -1035,21 +1041,31 @@ class LaneExecutionMixin(HelpersMixin):
             if isinstance(decision, _Blocked):
                 await self._store_blocked(room_id, decision, cascade)
                 return
+            decision.edit_delete_target = check.target
             await self._commit_reentry(room_id, decision, response_visibility, cascade)
 
     def _reentry_plan_factory(
-        self, ready: _Ready, response_visibility: str | None
-    ) -> Callable[[RoomEvent], DeliveryPlan]:
+        self,
+        ready: _Ready,
+        response_visibility: str | None,
+        mutation_hook: tuple[HookTrigger, RoomEvent] | None,
+    ) -> Callable[[RoomEvent], DeliveryPlan | None]:
         """The plan builder of a response its gates accepted, called on the
         committed event: its delivery set, scoped as its trigger asked, with
-        its hooks' tasks and observations for after delivery."""
+        its hooks' tasks and observations for after delivery, and the
+        mutation trigger of an edit or a delete (RFC §10.3). A detached
+        source has no delivery set: its plan, if any, fires the trigger."""
+        binding = ready.source_binding
+        if binding is None:
+            return lambda committed: mutation_plan(committed, ready.context, mutation_hook)
         router = self._get_router()
 
         def factory(committed: RoomEvent) -> DeliveryPlan:
-            child = router.plan(committed, ready.source_binding, ready.context)
+            child = router.plan(committed, binding, ready.context)
             child.response_visibility = response_visibility
             child.hook_tasks = list(ready.sync_result.tasks)
             child.hook_observations = list(ready.sync_result.observations)
+            child.mutation_hook = mutation_hook
             return child
 
         return factory
@@ -1065,30 +1081,30 @@ class LaneExecutionMixin(HelpersMixin):
         §10.1 step 12), under the lock its pass holds."""
         reentry, binding = ready.event, ready.source_binding
         sync_result, context = ready.sync_result, ready.context
+        # An edit's or a delete's target, written in the response's own
+        # commit (RFC §10.3, §14.3).
+        target, mutation_hook = target_update(reentry, ready.edit_delete_target)
 
         # Commit the response BEFORE delivering any events its hook
         # injected: the response causes the injection, so it takes the
         # lower index (mirrors the main path).
+        stored = await self._commit_to_lane(
+            room_id,
+            reentry.model_copy(update={"status": EventStatus.DELIVERED}),
+            cascade,
+            self._reentry_plan_factory(ready, response_visibility, mutation_hook),
+            target=target,
+        )
         if binding is None:
             # A detached source has no delivery plan. Keep its timeline
             # response, but only after the same filtering and side effects
             # as a response whose source is still attached.
-            stored = await self._persist_committed(
-                room_id, reentry.model_copy(update={"status": EventStatus.DELIVERED})
-            )
             await self._persist_side_effects(
                 room_id,
                 sync_result.tasks,
                 sync_result.observations,
                 stored or reentry,
                 context,
-            )
-        else:
-            stored = await self._commit_to_lane(
-                room_id,
-                reentry.model_copy(update={"status": EventStatus.DELIVERED}),
-                cascade,
-                self._reentry_plan_factory(ready, response_visibility),
             )
         if stored is not None:
             cascade.response_events.append(stored)

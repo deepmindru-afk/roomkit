@@ -7,19 +7,25 @@ must not thereby let them choose their own authority.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
+
 import pytest
 
 from roomkit.channels.base import Channel
+from roomkit.core.exceptions import ChangeRefusedError
 from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import (
+    ChannelCategory,
     ChannelType,
     DeleteType,
     EventDirection,
     EventStatus,
     EventType,
+    HookExecution,
     HookTrigger,
     ParticipantRole,
     ParticipantStatus,
@@ -33,7 +39,7 @@ from roomkit.models.event import (
     RoomEvent,
     TextContent,
 )
-from roomkit.models.hook import HookResult
+from roomkit.models.hook import HookResult, InjectedEvent
 
 
 class _Transport(Channel):
@@ -517,4 +523,211 @@ class TestWhoMayChange:
         )
 
         assert (result.blocked, result.reason) == (False, None)
+        await kit.close()
+
+
+type _Answer = Callable[[RoomEvent, RoomContext], list[RoomEvent]]
+
+
+class _Agent(Channel):
+    """An intelligence channel answering each other channel's event with
+    what *answer* returns."""
+
+    channel_type = ChannelType.AI
+    category = ChannelCategory.INTELLIGENCE
+
+    def __init__(self, channel_id: str, answer: _Answer) -> None:
+        super().__init__(channel_id)
+        self._answer = answer
+
+    async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
+        raise NotImplementedError
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        responses = self._answer(event, context)
+        return ChannelOutput(responded=bool(responses), response_events=responses)
+
+    async def deliver(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        return ChannelOutput.empty()
+
+
+def _said(event: RoomEvent, body: str) -> bool:
+    return isinstance(event.content, TextContent) and event.content.body == body
+
+
+def _change(room_id: str, source: EventSource, content: EditContent | DeleteContent) -> RoomEvent:
+    kind = EventType.EDIT if isinstance(content, EditContent) else EventType.DELETE
+    return RoomEvent(room_id=room_id, type=kind, source=source, content=content)
+
+
+def _tracked(kit: RoomKit, trigger: HookTrigger) -> list[RoomEvent]:
+    seen: list[RoomEvent] = []
+
+    @kit.hook(trigger, execution=HookExecution.ASYNC)
+    async def track(event: RoomEvent, ctx: RoomContext) -> None:
+        seen.append(event)
+
+    return seen
+
+
+async def _with_peer(kit: RoomKit) -> _Editable:
+    peer = _Editable("peer")
+    kit.register_channel(peer)
+    await kit.attach_channel("r1", "peer")
+    return peer
+
+
+def _changes_handed(peer: _Editable) -> list[RoomEvent]:
+    return [e for e in peer.delivered if e.type in (EventType.EDIT, EventType.DELETE)]
+
+
+class TestEveryPassValidates:
+    """RFC §10.3: step 8a runs on every pass that commits an event, a
+    response's and an injected event's included, and a refused response or
+    injected change is logged and not stored."""
+
+    async def test_an_agent_edits_its_own_response(self) -> None:
+        kit = await _setup()
+
+        def answer(event: RoomEvent, ctx: RoomContext) -> list[RoomEvent]:
+            source = EventSource(channel_id="agent", channel_type=ChannelType.AI)
+            if _said(event, "hi"):
+                return [RoomEvent(room_id="r1", source=source, content=TextContent(body="draft"))]
+            if _said(event, "fix it"):
+                draft = next(e for e in ctx.recent_events if e.source.channel_id == "agent")
+                edit = EditContent(target_event_id=draft.id, new_content=TextContent(body="final"))
+                return [_change("r1", source, edit)]
+            return []
+
+        kit.register_channel(_Agent("agent", answer))
+        await kit.attach_channel("r1", "agent", category=ChannelCategory.INTELLIGENCE)
+        updated = _tracked(kit, HookTrigger.ON_EVENT_UPDATED)
+
+        await _post(kit, "hi", sender_id="alice")
+        await _post(kit, "fix it", sender_id="alice")
+
+        drafts = [e for e in await kit._store.list_events("r1") if e.source.channel_id == "agent"]
+        draft = next(e for e in drafts if e.type == EventType.MESSAGE)
+        assert (draft.content, draft.metadata.get("edited")) == (TextContent(body="final"), True)
+        assert [e.id for e in updated] == [draft.id]
+        await kit.close()
+
+    async def test_a_response_naming_a_participant_does_not_edit_their_message(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        kit = await _setup()
+        peer = await _with_peer(kit)
+        original = await _post(kit, "v1", sender_id="alice")
+
+        def answer(event: RoomEvent, ctx: RoomContext) -> list[RoomEvent]:
+            if not _said(event, "go"):
+                return []
+            source = EventSource(
+                channel_id="agent", channel_type=ChannelType.AI, participant_id="alice"
+            )
+            edit = EditContent(target_event_id=original.id, new_content=TextContent(body="x"))
+            return [_change("r1", source, edit)]
+
+        kit.register_channel(_Agent("agent", answer))
+        await kit.attach_channel("r1", "agent", category=ChannelCategory.INTELLIGENCE)
+
+        with caplog.at_level(logging.WARNING, logger="roomkit.framework"):
+            await _post(kit, "go", sender_id="alice")
+
+        stored = await kit._store.get_event(original.id)
+        assert stored is not None and stored.content == TextContent(body="v1")
+        timeline = await kit._store.list_events("r1")
+        assert not [e for e in timeline if e.type == EventType.EDIT]
+        assert _changes_handed(peer) == []
+        assert "not_original_author" in caplog.text
+        await kit.close()
+
+    @pytest.mark.parametrize(
+        "claimed",
+        [
+            DeleteContent(target_event_id="", delete_type=DeleteType.SENDER),
+            DeleteContent(target_event_id="", delete_type=DeleteType.ADMIN),
+            EditContent(target_event_id="", new_content=TextContent(body="x")),
+            EditContent(
+                target_event_id="", new_content=TextContent(body="x"), edit_source="sender"
+            ),
+        ],
+        ids=["a sender's delete", "an admin delete", "a sourceless edit", "a sender's edit"],
+    )
+    async def test_a_hook_never_changes_in_a_participant_s_name(
+        self, claimed: EditContent | DeleteContent, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An injected change is the hook's, whatever source it names (RFC
+        §9.4, §10.3 rule 6): one claiming another authority than the
+        system's is refused, even under the author's own source."""
+        kit = await _setup()
+        peer = await _with_peer(kit)
+        await kit.add_member("r1", "src", "owner-1", role=ParticipantRole.OWNER)
+        original = await _post(kit, "v1", sender_id="alice")
+        change = claimed.model_copy(update={"target_event_id": original.id})
+        source = original.source
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST)
+        async def rewriter(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if not _said(event, "go"):
+                return HookResult.allow()
+            injected = _change("r1", source, change)
+            return HookResult.allow([InjectedEvent(event=injected, target_channel_ids=["peer"])])
+
+        with caplog.at_level(logging.WARNING, logger="roomkit.framework"):
+            await _post(kit, "go", sender_id="alice")
+
+        stored = await kit._store.get_event(original.id)
+        assert stored is not None and stored.content == TextContent(body="v1")
+        assert not stored.metadata
+        timeline = await kit._store.list_events("r1")
+        assert not [e for e in timeline if e.type in (EventType.EDIT, EventType.DELETE)]
+        assert _changes_handed(peer) == []
+        assert "not_authorized" in caplog.text
+        await kit.close()
+
+    async def test_a_hook_s_system_delete_marks_its_target(self) -> None:
+        kit = await _setup()
+        peer = await _with_peer(kit)
+        original = await _post(kit, "v1", sender_id="alice")
+        deleted = _tracked(kit, HookTrigger.ON_EVENT_DELETED)
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST)
+        async def janitor(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if not _said(event, "go"):
+                return HookResult.allow()
+            source = EventSource(channel_id="janitor", channel_type=ChannelType.SYSTEM)
+            delete = DeleteContent(target_event_id=original.id, delete_type=DeleteType.SYSTEM)
+            injected = _change("r1", source, delete)
+            return HookResult.allow([InjectedEvent(event=injected, target_channel_ids=["peer"])])
+
+        await _post(kit, "go", sender_id="alice")
+
+        stored = await kit._store.get_event(original.id)
+        assert stored is not None and stored.metadata.get("deleted") is True
+        assert [e.id for e in deleted] == [original.id]
+        assert [e.content for e in _changes_handed(peer)] == [
+            DeleteContent(target_event_id=original.id, delete_type=DeleteType.SYSTEM)
+        ]
+        await kit.close()
+
+    async def test_a_refused_direct_injection_raises_with_its_reason(self) -> None:
+        kit = await _setup()
+        original = await _post(kit, "v1", sender_id="alice")
+
+        with pytest.raises(ChangeRefusedError) as refused:
+            await kit.send_event(
+                "r1",
+                "src",
+                DeleteContent(target_event_id=original.id, delete_type=DeleteType.SENDER),
+                event_type=EventType.DELETE,
+                participant_id="mallory",
+            )
+
+        assert refused.value.reason == "not_original_author"
+        assert not [e for e in await kit._store.list_events("r1") if e.type == EventType.DELETE]
         await kit.close()
