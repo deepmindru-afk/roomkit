@@ -391,9 +391,14 @@ class HooksApiMixin(HelpersMixin):
         if not recipient:
             return candidates[0]
         # The one room is the recipient's only if its binding could name them:
-        # a binding naming another correspondent is that person's room.
+        # a binding naming another correspondent, its participant or else its
+        # recipient in the channel's form (RFC §5.7), is that person's room.
         binding = await self._store.get_binding(candidates[0], channel_id)
         if binding is None or not binding_admits(binding, frozenset({recipient})):
+            return None
+        delivers_to = channel.recipient_address(binding) if channel is not None else None
+        named_by_recipient = not binding.group and binding.participant_id is None
+        if named_by_recipient and delivers_to not in (None, recipient):
             return None
         return candidates[0]
 

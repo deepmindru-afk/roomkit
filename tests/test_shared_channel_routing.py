@@ -577,6 +577,38 @@ class TestADeliveryStatus:
 
         assert seen == ["acme-alice"]
 
+    async def test_the_one_room_delivering_to_another_number_is_not_the_status(
+        self, store: ConversationStore
+    ) -> None:
+        """The fallback of the one ACTIVE room reads its binding's recipient as
+        step 3 does: Bob's room is closed, Alice's, delivering to her number
+        and naming no correspondent, is not Bob's."""
+        shop = _Shop(store)
+        bob_room = await shop.room_of(BOB)
+        await shop.kit.close_room(bob_room)
+        await shop.kit.create_room(room_id="alice")
+        await store.add_binding(
+            ChannelBinding(
+                room_id="alice",
+                channel_id="sms",
+                channel_type="sms",
+                metadata={"phone_number": ALICE},
+            )
+        )
+        seen: list[str] = []
+
+        @shop.kit.hook(HookTrigger.ON_DELIVERY_STATUS)
+        async def record(status: Any, ctx: Any) -> None:
+            seen.append(ctx.room.id)
+
+        await shop.kit.process_delivery_status(
+            DeliveryStatus(
+                provider="mock", message_id="m", status="sent", channel_id="sms", recipient=BOB
+            )
+        )
+
+        assert seen == []
+
 
 class TestTheClaimFailsClosed:
     async def test_a_claim_the_lock_outlasts_refuses_the_message(

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A delivery status is not given the one room of its channel when that
+  room's binding delivers to another number (RFC §5.7, §10.4, RMK-930). The
+  fallback to the one ACTIVE room bound to the channel checked the binding's
+  correspondent only, so a binding naming no correspondent but carrying
+  another person's recipient took the status, as step 3 never lets a sender
+  in. The binding's recipient, in the channel's form, now names its
+  correspondent there too.
+
 - A delivery status is dispatched within the organization the caller acts
   for (RFC §17.2, RMK-930). `process_webhook(meta, channel_id,
   organization_id=...)` scoped only an inbound message: a status that named no
