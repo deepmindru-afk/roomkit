@@ -1536,6 +1536,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   told from a sender's message, so a replay across the upgrade publishes
   once more; an inbound key starting with `roomkit:publication:` is no key.
 
+- **BREAKING — a direct injection's source travels as its channel's
+  category says** (RFC §10.5, RMK-930). `send_event()` stamped every event
+  `INBOUND`, an intelligence channel's included, so an agent's event read
+  as a message coming in: its author was the participant it named, and an
+  agent that edited or deleted its own injected message without naming one
+  was refused `identity_required_for_edit`. The source is now `OUTBOUND`
+  for an intelligence channel, whose event is its own words going out, as
+  its responses are, and `INBOUND` for a transport. Migrate: a hook
+  registered with `directions=[EventDirection.INBOUND]` to see an agent's
+  `send_event()` adds `OUTBOUND`; code that reads an agent's injected event
+  as a participant's reads its channel as its author.
+
 ### Removed
 
 - **BREAKING — `roomkit.core.visibility.effective_visibility`** (RMK-902). An

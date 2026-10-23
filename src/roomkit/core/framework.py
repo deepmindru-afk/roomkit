@@ -103,7 +103,9 @@ from roomkit.models.context import RoomContext
 from roomkit.models.delivery import STANDALONE, InboundResult
 from roomkit.models.enums import (
     AgentResponsePolicy,
+    ChannelCategory,
     ChannelType,
+    EventDirection,
     EventStatus,
     EventType,
     HookTrigger,
@@ -1213,6 +1215,15 @@ class RoomKit(
             source=EventSource(
                 channel_id=channel_id,
                 channel_type=binding.channel_type,
+                # Its channel's category gives its direction (RFC §10.5): a
+                # transport's event stands for a message coming in, an
+                # intelligence channel's is its own words going out, as its
+                # responses are.
+                direction=(
+                    EventDirection.OUTBOUND
+                    if binding.category == ChannelCategory.INTELLIGENCE
+                    else EventDirection.INBOUND
+                ),
                 participant_id=participant_id,
                 provider=provider,
             ),

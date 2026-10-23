@@ -743,6 +743,32 @@ class TestEveryPassValidates:
         ]
         await kit.close()
 
+    async def test_an_agent_edits_its_own_direct_injection(self) -> None:
+        """A direct injection's source travels as its channel's category says
+        (RFC §10.5): OUTBOUND for an intelligence channel, whose event is its
+        own words going out, so it edits its message as its channel, with no
+        participant named; a transport's stays INBOUND."""
+        kit = await _setup()
+        kit.register_channel(_Agent("agent", lambda event, ctx: []))
+        await kit.attach_channel("r1", "agent", category=ChannelCategory.INTELLIGENCE)
+
+        said = await kit.send_event("r1", "agent", TextContent(body="draft"))
+        heard = await kit.send_event("r1", "src", TextContent(body="hi"), participant_id="alice")
+        await kit.send_event(
+            "r1",
+            "agent",
+            EditContent(target_event_id=said.id, new_content=TextContent(body="final")),
+            event_type=EventType.EDIT,
+        )
+
+        assert (said.source.direction, heard.source.direction) == (
+            EventDirection.OUTBOUND,
+            EventDirection.INBOUND,
+        )
+        stored = await kit._store.get_event(said.id)
+        assert stored is not None and stored.content == TextContent(body="final")
+        await kit.close()
+
     async def test_a_refused_direct_injection_raises_with_its_reason(self) -> None:
         kit = await _setup()
         original = await _post(kit, "v1", sender_id="alice")
