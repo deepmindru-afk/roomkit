@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from roomkit.models.context import RoomContext
     from roomkit.models.event import RoomEvent
     from roomkit.models.identity import Identity, IdentityResult
+    from roomkit.models.room import Room
     from roomkit.store.base import ConversationStore
     from roomkit.telemetry.base import TelemetryProvider
 
@@ -714,6 +715,7 @@ class InboundMixin(HelpersMixin):
         rules of an id the caller named. Returns the room id and whether the
         room was just created.
         """
+        routed = room_id is None
         if room_id is None:
             room_id = await self._inbound_router.route(
                 channel_id=message.channel_id,
@@ -725,14 +727,25 @@ class InboundMixin(HelpersMixin):
             )
         if room_id is None:
             return await self._open_room_for(message, None, organization_id), True
-        return room_id, await self._ensure_room_and_binding(message, room_id, organization_id)
+        created = await self._ensure_room_and_binding(
+            message, room_id, organization_id, attach=not routed
+        )
+        return room_id, created
 
     async def _ensure_room_and_binding(
-        self, message: InboundMessage, room_id: str, organization_id: str | None
+        self,
+        message: InboundMessage,
+        room_id: str,
+        organization_id: str | None,
+        *,
+        attach: bool = True,
     ) -> bool:
         """Create the named room, or attach the channel to it, when either is missing.
 
-        Returns whether the room was just created.
+        A routed room is not attached here (*attach* false): it is attached
+        under the lock that checks it is still the message's (``_claim_room``),
+        so a room that is not gets no binding. Returns whether the room was
+        just created.
         """
         # Ensure room exists; auto-create if needed (e.g. voice session
         # with a room_id from SIP headers that hasn't been created yet).
@@ -755,8 +768,10 @@ class InboundMixin(HelpersMixin):
                 if room is not None and room.organization_id != organization_id:
                     raise RoomNotFoundError(f"Room {room_id} not found")
                 room_present = room is not None
-            binding_present = room_present and await self._store.binding_exists(
-                room_id, message.channel_id
+            binding_present = (
+                not attach
+                or room_present
+                and await self._store.binding_exists(room_id, message.channel_id)
             )
         if not room_present:
             await self._open_room_for(message, room_id, organization_id)
@@ -850,9 +865,10 @@ class InboundMixin(HelpersMixin):
         status change runs, against the room as the lock finds it
         (``still_the_messages``, RFC §10.1 step 2); *own* holds the ids the
         sender is known by. A room no longer the message's is left as it was.
-        Otherwise a binding that is not a group and names no one records the
-        sender as its correspondent: the router then finds them there and
-        admits no one else (§10.4). The wait for the lock is bounded by
+        Otherwise a room that does not bind the channel has it attached, and
+        a binding that is not a group and names no one records the sender as
+        its correspondent: the router then finds them there and admits no
+        one else (§10.4). The wait for the lock is bounded by
         ``process_timeout``: past it the message is refused (§13.6), never
         let in unrecorded, which would leave the room open to a concurrent
         stranger.
@@ -873,9 +889,24 @@ class InboundMixin(HelpersMixin):
                 self._store, room, channel_id, binding, sender, own, recipient
             ):
                 return False
+            if binding is None:
+                binding = await self._attach_routed(room, channel_id)
             if binding is not None and recordable_sender(sender):
                 await self._record_sender(room_id, binding, message, channel)
             return True
+
+    async def _attach_routed(self, room: Room, channel_id: str) -> ChannelBinding | None:
+        """Attach *channel_id* to a routed *room* that does not bind it, under
+        the room lock the caller holds; ``None`` when the integrator detached
+        it (RFC §7.5 rule 7), the message then going on unbound.
+
+        The binding is read again after the attach: its ``ON_CHANNEL_ATTACHED``
+        hooks run under the same lock and may have changed it.
+        """
+        if is_channel_detached(room, channel_id):
+            return None
+        await self.attach_channel(room.id, channel_id)
+        return await self._store.get_binding(room.id, channel_id)
 
     async def _record_sender(
         self, room_id: str, binding: ChannelBinding, message: InboundMessage, channel: Channel

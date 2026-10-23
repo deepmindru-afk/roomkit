@@ -699,6 +699,30 @@ class TestTheLockChecksTheRoomAgain:
         stored = await store.list_events(alice_room)
         assert all(e.source.participant_id != BOB for e in stored)
 
+    @pytest.mark.parametrize("status", [RoomStatus.CLOSED, RoomStatus.PAUSED])
+    async def test_a_room_not_bound_to_the_channel_is_attached_only_if_still_the_messages(
+        self, store: ConversationStore, status: RoomStatus
+    ) -> None:
+        """A routed room that does not bind the channel is attached under the
+        same lock as the check: one no longer the message's gets no binding."""
+        shop = _Shop(store)
+        await shop.kit.create_room(room_id="elsewhere")
+        await _set_status(store, "elsewhere", status)
+        shop.kit._inbound_router = _AnswersWith("elsewhere")  # noqa: SLF001
+
+        assert await shop.room_of(BOB) != "elsewhere"
+        assert await store.get_binding("elsewhere", "sms") is None
+
+    async def test_a_room_not_bound_to_the_channel_is_attached_naming_the_sender(
+        self, store: ConversationStore
+    ) -> None:
+        shop = _Shop(store)
+        await shop.kit.create_room(room_id="elsewhere")
+        shop.kit._inbound_router = _AnswersWith("elsewhere")  # noqa: SLF001
+
+        assert await shop.room_of(BOB) == "elsewhere"
+        assert await shop.named_on("elsewhere") == BOB
+
     @pytest.mark.parametrize(
         ("binding", "kept"),
         [("names-the-sender", True), ("group", True), ("names-no-one", False)],

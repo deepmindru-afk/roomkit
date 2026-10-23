@@ -146,7 +146,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another correspondent, by its participant or else its recipient, leave
   the room as it was: the message is routed once more, its identity not read
   again, and a second answer that is not the message's, like none, gives it
-  a new room. Before, a room closed meanwhile refused the message
+  a new room. A routed room that does not bind the channel is attached under
+  that lock, after the check, so one that is no longer the message's gets no
+  binding. Before, a room closed meanwhile refused the message
   `room_closed`, the second answer was kept whatever it was, and a stranger
   routed to a binding holding only a recipient wrote that recipient on it.
   A member of the room reached through the channel no longer lands in it
