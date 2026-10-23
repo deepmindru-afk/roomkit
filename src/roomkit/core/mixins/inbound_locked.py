@@ -11,8 +11,11 @@ the room's delivery lane (:mod:`roomkit.core.lanes`,
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
+from collections.abc import Coroutine
 from dataclasses import KW_ONLY, dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._authors import People
@@ -28,6 +31,7 @@ from roomkit.core._changes import (
     with_target,
 )
 from roomkit.core._queued_injections import QueuedInjections
+from roomkit.core._room_timers import due_transitions
 from roomkit.core.hooks import kept_identity
 from roomkit.core.lanes import DeliveryPlan
 from roomkit.core.mixins.helpers import (
@@ -57,6 +61,7 @@ if TYPE_CHECKING:
     from roomkit.core.hooks import HookEngine, SyncPipelineResult
     from roomkit.core.lanes import DeliveryCascade
     from roomkit.models.channel import ChannelBinding
+    from roomkit.models.room import Room
     from roomkit.store.base import ConversationStore
 
 logger = logging.getLogger("roomkit.framework")
@@ -130,6 +135,26 @@ class _Refused:
     reason: str
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class _TimersDue:
+    """Decision returned by ``_run_precommit``: the room's timers fell due
+    before its section (RFC §5.1). The caller applies them outside the
+    ``process_timeout`` window, the room's state and not the event's, and
+    decides again on the room they leave."""
+
+    room: Room
+
+
+async def _within[T](deadline: float, work: Coroutine[Any, Any, T]) -> T | None:
+    """*work*'s result, or ``None`` when *deadline* (the loop's clock) passed
+    first, the work cancelled: the ``process_timeout`` window (RFC §13.6)."""
+    remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+    try:
+        return await asyncio.wait_for(work, timeout=remaining)
+    except TimeoutError:
+        return None
+
+
 @dataclass(slots=True, eq=False)
 class _Proceed:
     """Marker returned by ``_run_commit`` once the event has committed,
@@ -186,6 +211,7 @@ class InboundLockedMixin(HelpersMixin):
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
     _commit_to_lane: Any  # see LaneExecutionMixin
+    _apply_due_timers: Any  # see RoomTimersMixin
 
     # Stub for cross-mixin call — implemented by RoomKit._get_router().
     def _get_router(self) -> EventRouter: ...
@@ -318,25 +344,26 @@ class InboundLockedMixin(HelpersMixin):
         # caller configured for 30s wait 60. ``None`` means the caller did not
         # open a window (a reentry pass, a direct commit), so this region is
         # the whole of it.
-        remaining = (
-            self._process_timeout
-            if deadline is None
-            else max(0.0, deadline - asyncio.get_running_loop().time())
+        if deadline is None:
+            deadline = asyncio.get_running_loop().time() + self._process_timeout
+        precommit = functools.partial(
+            self._run_precommit,
+            event,
+            room_id,
+            context,
+            cascade,
+            resolved_identity=resolved_identity,
+            pending_id_result=pending_id_result,
+            precheck=precheck,
         )
-        try:
-            decision = await asyncio.wait_for(
-                self._run_precommit(
-                    event,
-                    room_id,
-                    context,
-                    cascade,
-                    resolved_identity=resolved_identity,
-                    pending_id_result=pending_id_result,
-                    precheck=precheck,
-                ),
-                timeout=remaining,
-            )
-        except TimeoutError:
+        decision = await _within(deadline, precommit())
+        while isinstance(decision, _TimersDue):
+            # RFC §5.1, §10.1 step 6: the room's due transitions apply first,
+            # out of the window, and the gate reads the status they leave;
+            # once, since the second pass checks no timer.
+            await self._apply_due_timers(decision.room)
+            decision = await _within(deadline, precommit(timers=False))
+        if decision is None:
             return await self._refuse_on_timeout(room_id, event_id=event.id)
 
         # --- past this line nothing is cancellable by ``process_timeout`` ---
@@ -365,13 +392,16 @@ class InboundLockedMixin(HelpersMixin):
         resolved_identity: Identity | None = None,
         pending_id_result: IdentityResult | None = None,
         precheck: SyncPipelineResult | None = None,
-    ) -> InboundResult | _Blocked | _Ready:
+        timers: bool = True,
+    ) -> InboundResult | _Blocked | _Ready | _TimersDue:
         """Pre-commit critical section (RFC §10.1 steps 6-11) — decides only.
 
         Returns an :class:`InboundResult` for a refusal that leaves no trace
         (closed room, duplicate, invalid edit/delete), a :class:`_Blocked` for
         one that owes the timeline a BLOCKED record, or a :class:`_Ready` for
-        an event that passed every gate.
+        an event that passed every gate; with *timers*, a
+        :class:`_TimersDue` for a room whose timer transitions fell due,
+        before anything else is read.
 
         Writes nothing to the timeline: the caller performs every durable
         write once this coroutine has returned, so a ``process_timeout``
@@ -403,6 +433,8 @@ class InboundLockedMixin(HelpersMixin):
             event = event.model_copy(update={"visibility": Visibility.INTELLIGENCE})
 
         context = await self._build_context(room_id, carrying=context)
+        if timers and due_transitions(context.room, datetime.now(UTC)):
+            return _TimersDue(context.room)
 
         # RFC §5.1 / §10.1 step 6 — a room whose status refuses new events
         # refuses them here, at the one point every entry converges on: inbound

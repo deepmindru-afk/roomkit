@@ -145,7 +145,10 @@ async def _archive(kit: RoomKit) -> None:
 
 async def _time_out(kit: RoomKit) -> None:
     past = datetime.now(UTC) - timedelta(seconds=10)
-    await kit.set_room_timers("r1", RoomTimers(closed_after_seconds=0, last_activity_at=past))
+    await kit.set_room_timers(
+        "r1",
+        RoomTimers(inactive_after_seconds=0, closed_after_seconds=0, last_activity_at=past),
+    )
     await kit.check_room_timers("r1")
 
 

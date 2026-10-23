@@ -764,3 +764,32 @@ async def test_a_change_s_target_is_written_alone_with_its_edits_marked(
             await store.write_change_target(room.id, make_event(room_id=room.id))
     finally:
         await contract_store.delete_room(room.id)
+
+
+@pytest.mark.parametrize("activity", [True, False])
+async def test_a_delivered_commit_resumes_a_paused_room_and_no_other_does(
+    contract_store: ConversationStore, activity: bool
+) -> None:
+    """RFC §5.1, §10.1 step 12: an activity commit moves ``last_activity_at``
+    and resumes a PAUSED room, ACTIVE with ``paused_at`` null, in the
+    commit's transaction; a commit that is no activity writes neither."""
+    paused_at = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    room = await contract_store.create_room(
+        Room(id=uuid4().hex, status=RoomStatus.PAUSED, paused_at=paused_at)
+    )
+    assert await contract_store.get_room(room.id) == room
+
+    await contract_store.commit_event(
+        room.id, make_event(room_id=room.id, body="hi"), activity=activity
+    )
+
+    stored = await contract_store.get_room(room.id)
+    assert stored is not None
+    if activity:
+        assert (stored.status, stored.paused_at) == (RoomStatus.ACTIVE, None)
+        assert stored.timers.last_activity_at is not None
+    else:
+        assert (stored.status, stored.paused_at) == (RoomStatus.PAUSED, paused_at)
+        assert stored.timers.last_activity_at is None
+    found = await contract_store.find_rooms(status=str(stored.status))
+    assert room.id in {r.id for r in found}

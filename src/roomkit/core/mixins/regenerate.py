@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import AsyncExitStack
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._changes import withdrawn
+from roomkit.core._room_timers import due_transitions
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT
 from roomkit.core.exceptions import RoomClosedError
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan, anchor_index
@@ -68,6 +70,8 @@ class RegenerateMixin(HelpersMixin):
     _get_router: Any  # see RegenerateHost
     _enqueue_exec: Any  # see RegenerateHost
     _finish_cascade: Any  # see RegenerateHost
+    _apply_due_timers: Any  # see RoomTimersMixin
+    _due_context: Any  # see RoomTimersMixin
 
     async def regenerate_target(self, room_id: str) -> RoomEvent | None:
         """The event :meth:`regenerate_response` would re-run the agent on.
@@ -276,6 +280,9 @@ class RegenerateMixin(HelpersMixin):
                         trigger = await self._store.get_event(event_id)
                 except TimeoutError:
                     return await self._refuse_on_timeout(room_id, operation="regenerate")
+                context = await self._due_context(
+                    context, lambda: self._build_context(room_id, reads_history=True)
+                )
                 if context.room.status in _REFUSING_STATUSES:
                     return await self._refuse_closed_room(
                         room_id, status=context.room.status, operation="regenerate", event=trigger
@@ -315,6 +322,7 @@ class RegenerateMixin(HelpersMixin):
                     context, found = await self._regenerate_target(room_id)
             except TimeoutError:
                 return await self._refuse_on_timeout(room_id, operation="regenerate")
+            context, found = await self._due_selection(room_id, context, found)
             refusal = await self._refuse_regeneration(room_id, context, found, trigger_id)
             if refusal is not None or found is None:
                 return refusal
@@ -334,6 +342,7 @@ class RegenerateMixin(HelpersMixin):
                     context, found = await self._regenerate_target(room_id)
             except TimeoutError:
                 return await self._refuse_on_timeout(room_id, operation="regenerate")
+            context, found = await self._due_selection(room_id, context, found)
             refusal = await self._refuse_regeneration(room_id, context, found, trigger_id)
             if refusal is not None or found is None:
                 return refusal
@@ -352,6 +361,20 @@ class RegenerateMixin(HelpersMixin):
             return None
         await discussion.queue_regeneration(trigger, agents)
         return InboundResult(event=trigger)
+
+    async def _due_selection(
+        self,
+        room_id: str,
+        context: RoomContext,
+        found: tuple[RoomEvent, ChannelBinding] | None,
+    ) -> tuple[RoomContext, tuple[RoomEvent, ChannelBinding] | None]:
+        """The selection made under the room lock, once the room's due timer
+        transitions are applied (RFC §5.1): made again when one was, since
+        they wrote the room and its records."""
+        if not due_transitions(context.room, datetime.now(UTC)):
+            return context, found
+        await self._apply_due_timers(context.room)
+        return await self._regenerate_target(room_id)
 
     async def _refuse_regeneration(
         self,

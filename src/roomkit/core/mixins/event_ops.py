@@ -50,6 +50,8 @@ class EventOpsMixin(HelpersMixin):
     _hook_engine: HookEngine
     _lock_manager: RoomLockManager
     get_room: Any  # see EventOpsHost / RoomLifecycleMixin
+    _apply_due_timers: Any  # see RoomTimersMixin
+    _room_due: Any  # see RoomTimersMixin
 
     async def commit_event(
         self, room_id: str, event: RoomEvent, *, organization_id: str | None = None
@@ -83,6 +85,7 @@ class EventOpsMixin(HelpersMixin):
             raise ValueError(f"commit_event into {room_id} got an event of room {event.room_id}")
         async with self._lock_manager.locked(room_id):
             room = await self.get_room(room_id, organization_id=organization_id)
+            room = await self._apply_due_timers(room)
             if _refuses_writes(room):
                 raise RoomClosedError(f"Room {room_id} does not accept new events")
             return await self._commit_indexed(room_id, event)
@@ -113,6 +116,10 @@ class EventOpsMixin(HelpersMixin):
         as stored (RFC §10.3).
         """
         async with self._lock_manager.locked(room_id):
+            # At any status, once the room's due timer transitions are
+            # applied (RFC §10.3, §5.1).
+            if await self._room_due(room_id) is None:
+                return None
             target = await self._store.get_event(event_id)
             if target is None or target.room_id != room_id:
                 return None
@@ -147,6 +154,8 @@ class EventOpsMixin(HelpersMixin):
         fires).
         """
         async with self._lock_manager.locked(room_id):
+            if await self._room_due(room_id) is None:
+                return []
             target = await self._store.get_event(event_id)
             if target is None or target.room_id != room_id:
                 return []

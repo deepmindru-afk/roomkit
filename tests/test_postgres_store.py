@@ -146,6 +146,7 @@ def _room_row(room: Room) -> dict:
         "agent_response_policy": room.agent_response_policy.value,
         "created_at": room.created_at,
         "updated_at": room.updated_at,
+        "paused_at": room.paused_at,
         "closed_at": room.closed_at,
     }
 

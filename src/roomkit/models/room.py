@@ -12,10 +12,19 @@ from roomkit.models.enums import AgentResponsePolicy, RoomStatus
 
 
 class RoomTimers(BaseModel):
-    """Timer configuration for a room."""
+    """Timer configuration for a room (RFC §5.1).
+
+    An ACTIVE room pauses once ``inactive_after_seconds`` passed without
+    activity, counted from ``last_activity_at``, or from the room's
+    ``created_at`` while it has had none; a PAUSED room closes once
+    ``closed_after_seconds`` passed from its ``paused_at``. Its activity is
+    the events the pipeline stores DELIVERED, which also resume it when
+    PAUSED.
+    """
 
     inactive_after_seconds: int | None = Field(default=None, ge=0)
     closed_after_seconds: int | None = Field(default=None, ge=0)
+    # The instant of the room's last activity; None while it has had none.
     last_activity_at: UtcDatetime | None = None
 
 
@@ -27,6 +36,9 @@ class Room(BaseModel):
     status: RoomStatus = RoomStatus.ACTIVE
     created_at: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))
+    # When the room was paused (RFC §5.1); None unless PAUSED. The close
+    # timer counts from it.
+    paused_at: UtcDatetime | None = None
     closed_at: UtcDatetime | None = None
     timers: RoomTimers = Field(default_factory=RoomTimers)
     # What an agent's own output solicits here (RFC §19.3.1). Room state, not

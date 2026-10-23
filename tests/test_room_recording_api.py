@@ -152,7 +152,11 @@ async def test_an_explicit_stop_returns_and_announces_each_result() -> None:
 
 async def _close_by_timer(kit: RoomKit) -> None:
     room = await kit.get_room("r1")
-    idle = RoomTimers(closed_after_seconds=1, last_activity_at=datetime.now(UTC) - timedelta(1))
+    idle = RoomTimers(
+        inactive_after_seconds=1,
+        closed_after_seconds=1,
+        last_activity_at=datetime.now(UTC) - timedelta(1),
+    )
     await kit.store.update_room(room.model_copy(update={"timers": idle}))
     await kit.check_room_timers("r1")
 

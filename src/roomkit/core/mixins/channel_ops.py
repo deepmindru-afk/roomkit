@@ -161,6 +161,8 @@ class ChannelOpsMixin(HelpersMixin):
     _build_room_tasks_loader: Any  # see ChannelOpsHost
     _refuse_discussion_binding: Any  # see DiscussionMixin
     _on_room_detached: Any  # see ChannelStateMixin
+    _apply_due_timers: Any  # see RoomTimersMixin
+    _room_due: Any  # see RoomTimersMixin
     turn_executor: Any  # see RoomKit
     _kit_turn_hooks: Any  # see RoomKit
 
@@ -306,6 +308,8 @@ class ChannelOpsMixin(HelpersMixin):
         visibility = parse_given_visibility(visibility)
         async with self._lock_manager.locked(room_id):
             room = await self.get_room(room_id, organization_id=organization_id)
+            # RFC §5.1: the room's due timer transitions apply first.
+            room = await self._apply_due_timers(room)
             channel = self._channels.get(channel_id)
             if channel is None:
                 raise ChannelNotRegisteredError(f"Channel {channel_id} not registered")
@@ -501,8 +505,8 @@ class ChannelOpsMixin(HelpersMixin):
         room belonging to another organization is reported as not found.
         """
         async with self._lock_manager.locked(room_id):
-            if organization_id is not None:
-                await self.get_room(room_id, organization_id=organization_id)
+            # RFC §5.1: the room's due timer transitions apply first.
+            await self._room_due(room_id, organization_id=organization_id)
             binding = await self._store.get_binding(room_id, channel_id)
             if binding is None:
                 return False
@@ -618,7 +622,7 @@ class ChannelOpsMixin(HelpersMixin):
         """Mute a channel in a room. Muting a muted channel writes nothing and
         fires nothing (RFC §7.2)."""
         async with self._lock_manager.locked(room_id):
-            binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
+            binding = await self._due_binding(room_id, channel_id, organization_id)
             updated = binding.model_copy(update={"muted": True})
             if updated == binding:
                 return self._gate_unchanged(room_id, channel_id, binding)
@@ -647,7 +651,7 @@ class ChannelOpsMixin(HelpersMixin):
         """Unmute a channel in a room. Unmuting a channel that is not muted
         writes nothing and fires nothing (RFC §7.2)."""
         async with self._lock_manager.locked(room_id):
-            binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
+            binding = await self._due_binding(room_id, channel_id, organization_id)
             updated = binding.model_copy(update={"muted": False})
             if updated == binding:
                 return self._gate_unchanged(room_id, channel_id, binding)
@@ -676,7 +680,7 @@ class ChannelOpsMixin(HelpersMixin):
         """Mute AI/provider output for a channel — audio from the provider
         will not be forwarded to the transport."""
         async with self._lock_manager.locked(room_id):
-            binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
+            binding = await self._due_binding(room_id, channel_id, organization_id)
             updated = binding.model_copy(update={"output_muted": True})
             if updated == binding:
                 return self._gate_unchanged(room_id, channel_id, binding)
@@ -690,7 +694,7 @@ class ChannelOpsMixin(HelpersMixin):
         """Unmute AI/provider output for a channel — audio from the provider
         will be forwarded to the transport."""
         async with self._lock_manager.locked(room_id):
-            binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
+            binding = await self._due_binding(room_id, channel_id, organization_id)
             updated = binding.model_copy(update={"output_muted": False})
             if updated == binding:
                 return self._gate_unchanged(room_id, channel_id, binding)
@@ -712,7 +716,7 @@ class ChannelOpsMixin(HelpersMixin):
         writes nothing (RFC §7.2)."""
         visibility = parse_given_visibility(visibility)
         async with self._lock_manager.locked(room_id):
-            binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
+            binding = await self._due_binding(room_id, channel_id, organization_id)
             old_visibility = binding.visibility
             updated = binding.model_copy(update={"visibility": visibility})
             if updated == binding:
@@ -742,7 +746,7 @@ class ChannelOpsMixin(HelpersMixin):
         """Set access level for a channel in a room. The access the binding
         holds already writes nothing (RFC §7.2)."""
         async with self._lock_manager.locked(room_id):
-            binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
+            binding = await self._due_binding(room_id, channel_id, organization_id)
             old_access = binding.access
             updated = binding.model_copy(update={"access": access})
             if updated == binding:
@@ -773,7 +777,7 @@ class ChannelOpsMixin(HelpersMixin):
         """Update metadata on a channel binding, merged into what it holds.
         An update that changes nothing writes nothing (RFC §7.2)."""
         async with self._lock_manager.locked(room_id):
-            binding = await self._get_binding(room_id, channel_id, organization_id=organization_id)
+            binding = await self._due_binding(room_id, channel_id, organization_id)
             updated = binding.model_copy(update={"metadata": {**binding.metadata, **metadata}})
             channel = self._channels.get(channel_id)
             if channel is not None:
@@ -830,6 +834,14 @@ class ChannelOpsMixin(HelpersMixin):
         channel = self._channels.get(channel_id)
         if channel is not None:
             channel.update_binding(room_id, binding)
+
+    async def _due_binding(
+        self, room_id: str, channel_id: str, organization_id: str | None
+    ) -> ChannelBinding:
+        """The binding a binding change starts from, read under the room
+        lock once the room's due timer transitions are applied (RFC §5.1)."""
+        await self._room_due(room_id, organization_id=organization_id)
+        return await self._get_binding(room_id, channel_id)
 
     async def _get_binding(
         self, room_id: str, channel_id: str, *, organization_id: str | None = None

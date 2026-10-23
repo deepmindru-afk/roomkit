@@ -114,6 +114,8 @@ CREATE TABLE IF NOT EXISTS rooms (
     agent_response_policy TEXT NOT NULL DEFAULT 'agent_chain',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- When the room was paused (RFC §5.1); NULL unless paused.
+    paused_at       TIMESTAMPTZ,
     closed_at       TIMESTAMPTZ
 );
 
@@ -160,6 +162,22 @@ BEGIN
         ALTER TABLE rooms ALTER COLUMN latest_index DROP NOT NULL;
         ALTER TABLE rooms ALTER COLUMN latest_index DROP DEFAULT;
         UPDATE rooms SET latest_index = NULL WHERE event_count = 0;
+    END IF;
+END $$;
+-- The instant a room paused (RFC §5.1), which its close timer counts from.
+-- Added only when missing, as for delivered_index: a room stored paused
+-- before it takes its last modification, which the pause was, once; no later
+-- boot scans the table.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'rooms'
+          AND column_name = 'paused_at'
+    ) THEN
+        ALTER TABLE rooms ADD COLUMN paused_at TIMESTAMPTZ;
+        UPDATE rooms SET paused_at = updated_at WHERE status = 'paused';
     END IF;
 END $$;
 -- Additive: the default IS the behaviour every existing room ran under, so

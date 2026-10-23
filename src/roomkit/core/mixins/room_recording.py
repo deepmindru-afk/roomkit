@@ -64,6 +64,7 @@ class RoomRecordingMixin(HelpersMixin):
     _hook_engine: HookEngine
     _store: ConversationStore
     get_room: Any  # see RoomRecordingHost / RoomLifecycleMixin
+    _apply_due_timers: Any  # see RoomTimersMixin
 
     async def start_room_recording(
         self,
@@ -91,6 +92,7 @@ class RoomRecordingMixin(HelpersMixin):
         """
         async with self._lock_manager.locked(room_id):
             room = await self.get_room(room_id, organization_id=organization_id)
+            room = await self._apply_due_timers(room)
             if _refuses_writes(room):
                 raise RoomClosedError(f"Room {room_id} does not accept new recordings")
             started = self._room_recorder_mgr.start(room_id, recorders)

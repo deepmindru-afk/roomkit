@@ -1062,6 +1062,29 @@ async def test_init_adds_the_column_to_an_events_table_without_it(store, column:
     assert (kept.addressed_to, kept.responds_to, kept.delivery_results) == (None, None, {})
 
 
+async def test_init_records_when_a_room_stored_paused_before_paused_at_paused(store) -> None:
+    """RFC §5.1: a store from before ``paused_at`` gains the column, and a
+    room stored paused takes its last modification as the instant it paused."""
+    from roomkit.models.enums import RoomStatus
+    from roomkit.store.postgres import PostgresStore
+
+    paused = await store.create_room(Room(id="r1", status=RoomStatus.PAUSED))
+    await store.create_room(Room(id="r2"))
+    async with store._pool.acquire() as conn:
+        await conn.execute("ALTER TABLE rooms DROP COLUMN paused_at")
+
+    upgraded = PostgresStore(dsn=POSTGRES_DSN)
+    await upgraded.init(min_size=1, max_size=2)
+    try:
+        was_paused = await upgraded.get_room("r1")
+        active = await upgraded.get_room("r2")
+    finally:
+        await upgraded.close()
+    assert was_paused is not None and active is not None
+    assert was_paused.paused_at == paused.updated_at
+    assert active.paused_at is None
+
+
 async def test_a_second_init_waits_on_no_reader_of_the_events(store) -> None:
     """``init()`` on an up-to-date schema adds no column, so it takes no lock
     that queues behind a reader of ``events`` (an ``ALTER TABLE`` takes

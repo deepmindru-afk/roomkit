@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -66,7 +67,7 @@ class RoomLifecycleHost(Protocol):
 
 
 class RoomLifecycleMixin(HelpersMixin):
-    """Room lifecycle operations: create, close, timers, participants.
+    """Room lifecycle operations: create, close, archive, participants.
 
     Host contract: :class:`RoomLifecycleHost`.
     """
@@ -85,6 +86,8 @@ class RoomLifecycleMixin(HelpersMixin):
     _stop_room_recordings: Any  # see RoomLifecycleHost
     _install_strategy: Any  # see StrategyMixin
     _forget_strategy: Any  # see StrategyMixin
+    _apply_due_timers: Any  # see RoomTimersMixin
+    _await_timer_hooks: Any  # see RoomTimersMixin
 
     async def create_room(
         self,
@@ -109,10 +112,12 @@ class RoomLifecycleMixin(HelpersMixin):
             organization_id: Optional organization/tenant ID for multi-tenant
                 isolation. Stored on the room and used for org-level queries.
             timers: Optional lifecycle timers (auto-pause / auto-close on
-                inactivity). When the timers omit ``last_activity_at``, the
-                idle clock starts at creation time. See
-                :meth:`check_room_timers` / :meth:`check_all_timers` for
-                evaluating the thresholds.
+                inactivity, RFC §5.1). While the room has had no activity,
+                ``last_activity_at`` stays unset and inactivity counts from
+                its ``created_at``. Every locked section applies the
+                transitions due, and :meth:`check_room_timers` /
+                :meth:`check_all_timers` apply them to a room nobody writes
+                to.
 
         Room ids are global, across organizations: a room is created once
         (RFC §14.3), so an id the store holds is refused whichever
@@ -133,8 +138,6 @@ class RoomLifecycleMixin(HelpersMixin):
                 already started are stopped (RFC §12.11).
         """
         refuse_room_state(metadata or {})
-        if timers is not None and timers.last_activity_at is None:
-            timers = timers.model_copy(update={"last_activity_at": datetime.now(UTC)})
         room = Room(
             id=room_id or uuid4().hex,
             organization_id=organization_id,
@@ -215,8 +218,9 @@ class RoomLifecycleMixin(HelpersMixin):
     async def close_room(self, room_id: str, *, organization_id: str | None = None) -> Room:
         """Close a room (RFC §5.1).
 
-        A room already CLOSED is returned as it is: nothing is written, no
-        hook fires and no framework event is emitted.
+        The room's due timer transitions apply first. A room already CLOSED
+        is returned as it is: nothing is written, no hook fires and no
+        framework event is emitted.
 
         *organization_id* scopes the operation to one tenant (RFC §17.2); a
         room belonging to another organization is reported as not found.
@@ -225,31 +229,39 @@ class RoomLifecycleMixin(HelpersMixin):
             TransitionRefusedError: the room is ARCHIVED, which no call
                 leaves; nothing is written.
         """
-        async with self._lock_manager.locked(room_id):
-            room = await self.get_room(room_id, organization_id=organization_id)
-            if room.status is RoomStatus.CLOSED:
-                return room
-            if room.status is RoomStatus.ARCHIVED:
-                raise TransitionRefusedError(room_id, room.status, "close")
-            # Stop room-level media recorders before closing, once the scoped
-            # read has found the room: a refused call stops nothing (§12.11).
-            await self._stop_room_recordings(room_id)
-            room = room.model_copy(
-                update={"status": RoomStatus.CLOSED, "closed_at": datetime.now(UTC)}
-            )
-            result = await self._store_refusing_room(room)
-            await self._fire_lifecycle_hook(
-                room_id,
-                HookTrigger.ON_ROOM_CLOSED,
-                EventType.SYSTEM,
-                code="room_closed",
-                message=f"Room {room_id} closed",
-                data={"room_id": room_id},
-            )
-            await self._emit_framework_event(
-                "room_closed", room_id=room_id, data={"room_id": room_id}
-            )
-            return result
+        hooks: list[asyncio.Task[None]] = []
+        try:
+            async with self._lock_manager.locked(room_id):
+                room = await self.get_room(room_id, organization_id=organization_id)
+                room = await self._apply_due_timers(room, hooks=hooks)
+                if room.status is RoomStatus.CLOSED:
+                    return room
+                if room.status is RoomStatus.ARCHIVED:
+                    raise TransitionRefusedError(room_id, room.status, "close")
+                return await self._close(room)
+        finally:
+            await self._await_timer_hooks(room_id, hooks)
+
+    async def _close(self, room: Room) -> Room:
+        """Close *room*, an ACTIVE or a PAUSED one, under its lock."""
+        room_id = room.id
+        # Stop room-level media recorders before closing, once the scoped
+        # read has found the room: a refused call stops nothing (§12.11).
+        await self._stop_room_recordings(room_id)
+        room = room.model_copy(
+            update={"status": RoomStatus.CLOSED, "closed_at": datetime.now(UTC), "paused_at": None}
+        )
+        result = await self._store_refusing_room(room)
+        await self._fire_lifecycle_hook(
+            room_id,
+            HookTrigger.ON_ROOM_CLOSED,
+            EventType.SYSTEM,
+            code="room_closed",
+            message=f"Room {room_id} closed",
+            data={"room_id": room_id},
+        )
+        await self._emit_framework_event("room_closed", room_id=room_id, data={"room_id": room_id})
+        return result
 
     async def archive_room(self, room_id: str, *, organization_id: str | None = None) -> Room:
         """Archive a room — the terminal storage state (RFC §5.1).
@@ -260,26 +272,33 @@ class RoomLifecycleMixin(HelpersMixin):
         at every status, archived included.
 
         This is the only path to the status, and therefore the only source of
-        the ``room_archived`` framework event (§8.2). A room already ARCHIVED
-        is returned as it is: nothing is written or emitted.
+        the ``room_archived`` framework event (§8.2). The room's due timer
+        transitions apply first. A room already ARCHIVED is returned as it
+        is: nothing is written or emitted.
         """
-        async with self._lock_manager.locked(room_id):
-            room = await self.get_room(room_id, organization_id=organization_id)
-            if room.status is RoomStatus.ARCHIVED:
-                return room
-            await self._stop_room_recordings(room_id)
-            room = room.model_copy(
-                update={
-                    "status": RoomStatus.ARCHIVED,
-                    "closed_at": room.closed_at or datetime.now(UTC),
-                    "updated_at": datetime.now(UTC),
-                }
-            )
-            result = await self._store_refusing_room(room)
-            await self._emit_framework_event(
-                "room_archived", room_id=room_id, data={"room_id": room_id}
-            )
-            return result
+        hooks: list[asyncio.Task[None]] = []
+        try:
+            async with self._lock_manager.locked(room_id):
+                room = await self.get_room(room_id, organization_id=organization_id)
+                room = await self._apply_due_timers(room, hooks=hooks)
+                if room.status is RoomStatus.ARCHIVED:
+                    return room
+                await self._stop_room_recordings(room_id)
+                room = room.model_copy(
+                    update={
+                        "status": RoomStatus.ARCHIVED,
+                        "closed_at": room.closed_at or datetime.now(UTC),
+                        "paused_at": None,
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+                result = await self._store_refusing_room(room)
+                await self._emit_framework_event(
+                    "room_archived", room_id=room_id, data={"room_id": room_id}
+                )
+                return result
+        finally:
+            await self._await_timer_hooks(room_id, hooks)
 
     async def set_room_timers(
         self,
@@ -291,16 +310,15 @@ class RoomLifecycleMixin(HelpersMixin):
         """Set or replace the lifecycle timers for an existing room.
 
         When ``timers.last_activity_at`` is unset, the room's existing activity
-        timestamp is preserved (or the current time is used for a room that has
-        seen no activity yet), so adjusting thresholds never resets the idle
-        clock. Use :meth:`check_room_timers` / :meth:`check_all_timers` to apply
-        the thresholds.
+        timestamp is preserved, so adjusting thresholds never resets the idle
+        clock; a room that has had no activity keeps none, and its
+        inactivity counts from its creation (RFC §5.1). The thresholds apply
+        from the next locked section on, or the next
+        :meth:`check_room_timers` / :meth:`check_all_timers`.
         """
         async with self._lock_manager.locked(room_id):
             room = await self.get_room(room_id, organization_id=organization_id)
-            last_activity = (
-                timers.last_activity_at or room.timers.last_activity_at or datetime.now(UTC)
-            )
+            last_activity = timers.last_activity_at or room.timers.last_activity_at
             timers = timers.model_copy(update={"last_activity_at": last_activity})
             room = room.model_copy(update={"timers": timers, "updated_at": datetime.now(UTC)})
             return await self._store.update_room(room)
@@ -338,108 +356,6 @@ class RoomLifecycleMixin(HelpersMixin):
                 extra={"room_id": room_id},
             )
             return await self._store.update_room(room)
-
-    async def check_room_timers(self, room_id: str, *, organization_id: str | None = None) -> Room:
-        """Check and apply timer-based transitions for a single room.
-
-        Returns the room (possibly transitioned to PAUSED or CLOSED).
-        """
-        async with self._lock_manager.locked(room_id):
-            room = await self.get_room(room_id, organization_id=organization_id)
-
-            if room.status in (RoomStatus.CLOSED, RoomStatus.ARCHIVED):
-                return room
-
-            timers = room.timers
-            if timers.last_activity_at is None:
-                return room
-
-            elapsed = (datetime.now(UTC) - timers.last_activity_at).total_seconds()
-
-            # Check closed threshold first (supersedes pause)
-            if timers.closed_after_seconds is not None and elapsed > timers.closed_after_seconds:
-                if room.status != RoomStatus.CLOSED:
-                    # A room closing stops its recordings, whichever path closes it.
-                    await self._stop_room_recordings(room_id)
-                    room = room.model_copy(
-                        update={"status": RoomStatus.CLOSED, "closed_at": datetime.now(UTC)}
-                    )
-                    await self._store_refusing_room(room)
-                    await self._emit_system_event(
-                        room_id,
-                        EventType.SYSTEM,
-                        code="room_closed_by_timer",
-                        message=f"Room {room_id} closed after {elapsed:.0f}s inactivity",
-                        data={
-                            "elapsed_seconds": elapsed,
-                            "threshold": timers.closed_after_seconds,
-                        },
-                        # The record OF the closing, written once the status has
-                        # flipped — the one write a CLOSED room still owes its
-                        # timeline (RFC §5.1).
-                        records_transition=True,
-                    )
-                    await self._fire_lifecycle_hook(
-                        room_id,
-                        HookTrigger.ON_ROOM_CLOSED,
-                        EventType.SYSTEM,
-                        code="room_closed_by_timer",
-                        message=f"Room {room_id} closed by timer",
-                        data={"elapsed_seconds": elapsed},
-                    )
-                    await self._emit_framework_event(
-                        "room_closed", room_id=room_id, data={"reason": "timer"}
-                    )
-                return room
-
-            # Check pause threshold (only for ACTIVE rooms)
-            if (
-                room.status == RoomStatus.ACTIVE
-                and timers.inactive_after_seconds is not None
-                and elapsed > timers.inactive_after_seconds
-            ):
-                room = room.model_copy(
-                    update={"status": RoomStatus.PAUSED, "updated_at": datetime.now(UTC)}
-                )
-                await self._store.update_room(room)
-                await self._emit_system_event(
-                    room_id,
-                    EventType.SYSTEM,
-                    code="room_paused_by_timer",
-                    message=f"Room {room_id} paused after {elapsed:.0f}s inactivity",
-                    data={"elapsed_seconds": elapsed, "threshold": timers.inactive_after_seconds},
-                )
-                await self._fire_lifecycle_hook(
-                    room_id,
-                    HookTrigger.ON_ROOM_PAUSED,
-                    EventType.SYSTEM,
-                    code="room_paused_by_timer",
-                    message=f"Room {room_id} paused by timer",
-                    data={"elapsed_seconds": elapsed},
-                )
-                await self._emit_framework_event(
-                    "room_paused", room_id=room_id, data={"reason": "timer"}
-                )
-
-            return room
-
-    async def check_all_timers(self, *, organization_id: str | None = None) -> list[Room]:
-        """Check one tenant's active/paused room timers.
-
-        With no organization scope, preserves the single-tenant/all-rooms
-        behaviour.
-        """
-        transitioned: list[Room] = []
-        for status in (RoomStatus.ACTIVE, RoomStatus.PAUSED):
-            rooms = await self._store.find_rooms(
-                organization_id=organization_id, status=status.value
-            )
-            for room in rooms:
-                old_status = room.status
-                updated = await self.check_room_timers(room.id, organization_id=organization_id)
-                if updated.status != old_status:
-                    transitioned.append(updated)
-        return transitioned
 
     async def update_room_metadata(
         self,

@@ -16,11 +16,11 @@ from roomkit.core.exceptions import (
     RoomAlreadyExistsError,
 )
 from roomkit.models.channel import ChannelBinding
-from roomkit.models.enums import EventType
+from roomkit.models.enums import EventType, RoomStatus
 from roomkit.models.event import DeleteContent, EditContent, RoomEvent, ThreadSummary
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
-from roomkit.models.room import Room, RoomTimers
+from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
@@ -93,13 +93,19 @@ def target_gone(target: RoomEvent) -> EventNotFoundError:
     return EventNotFoundError(f"Event {target.id} is not in room {target.room_id}")
 
 
-def committed_timers(room: Room, activity: bool) -> RoomTimers:
-    """*room*'s timers once a commit is stored (RFC §5.1): an event the
-    pipeline stores DELIVERED is the room's activity and moves
-    ``last_activity_at`` to now; anything else leaves it."""
+def committed_state(room: Room, activity: bool) -> dict[str, Any]:
+    """What a commit writes on *room* beside its counters, in the commit's
+    transaction (RFC §5.1): an event the pipeline stores DELIVERED is the
+    room's activity, which moves ``last_activity_at`` to the commit's
+    instant and resumes a PAUSED room (ACTIVE, ``paused_at`` null); anything
+    else writes nothing."""
     if not activity:
-        return room.timers
-    return room.timers.model_copy(update={"last_activity_at": datetime.now(UTC)})
+        return {}
+    now = datetime.now(UTC)
+    state: dict[str, Any] = {"timers": room.timers.model_copy(update={"last_activity_at": now})}
+    if room.status is RoomStatus.PAUSED:
+        state.update(status=RoomStatus.ACTIVE, paused_at=None, updated_at=now)
+    return state
 
 
 def address_linked(channel_type: str) -> AddressLinkedError:
@@ -687,11 +693,12 @@ class ConversationStore(ABC):
 
         *activity* says whether the commit is the room's activity (RFC
         §5.1): an event stored DELIVERED through the pipeline. Only then
-        does ``timers.last_activity_at`` move to the commit's instant. The
-        framework passes ``activity=False`` for what is no activity, a
-        lifecycle record, a record stored BLOCKED and a record committed
-        outside the pipeline, which leave it; a store MUST accept the
-        keyword.
+        does ``timers.last_activity_at`` move to the commit's instant, and a
+        PAUSED room resume (ACTIVE, ``paused_at`` null), in the same
+        transaction (:func:`committed_state`). The framework passes
+        ``activity=False`` for what is no activity, a lifecycle record, a
+        record stored BLOCKED and a record committed outside the pipeline,
+        which leave both; a store MUST accept the keyword.
 
         *target* is the target of the DELIVERED edit or delete *event* is, as
         its commit writes it (RFC §10.3): the edited content and
@@ -749,7 +756,7 @@ class ConversationStore(ABC):
                         # does not silently behave differently after deletions.
                         "event_count": room.event_count + 1,
                         "latest_index": indexed.index,
-                        "timers": committed_timers(room, activity),
+                        **committed_state(room, activity),
                     }
                 )
             )

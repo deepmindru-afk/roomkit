@@ -70,23 +70,20 @@ async def main() -> None:
     # --- Room 2: Timer-based auto-transitions ---
     print("\n=== Room 2: Timer-based lifecycle ===")
 
-    # Create room with short timers for demo (normally minutes/hours).
-    # Timers can be set right at creation — last_activity_at starts automatically.
+    # Create room with short timers for demo (normally minutes/hours). Until
+    # the room has some activity, its inactivity counts from its creation.
     room2 = await kit.create_room(
         room_id="room-timed",
         timers=RoomTimers(
-            inactive_after_seconds=5,  # Pause after 5s inactivity
-            closed_after_seconds=10,  # Close after 10s inactivity
+            inactive_after_seconds=5,  # Pause after 5s without activity
+            closed_after_seconds=10,  # Close after 10s paused
         ),
     )
     await kit.attach_channel("room-timed", "ws-user")
     ws.subscribe("conn", "room-timed")
-
-    # Simulate activity then inactivity by manipulating timer state
-    room2 = await kit.get_room("room-timed")
     print(f"  Created: status={room2.status}")
 
-    # Send a message (this updates last_activity_at)
+    # A delivered message is the room's activity: it moves last_activity_at.
     await kit.process_inbound(
         InboundMessage(
             channel_id="ws-user",
@@ -96,7 +93,6 @@ async def main() -> None:
     )
 
     # Backdate last_activity_at to simulate 6s of inactivity for the demo.
-    # set_room_timers() replaces the timers without the model_copy boilerplate.
     await kit.set_room_timers(
         "room-timed",
         RoomTimers(
@@ -106,23 +102,18 @@ async def main() -> None:
         ),
     )
 
-    # Check timers — should transition to PAUSED (6s > 5s threshold)
+    # Check timers: PAUSED, its paused_at the instant it fell due (1s ago).
     room2 = await kit.check_room_timers("room-timed")
-    print(f"  After 6s inactivity: status={room2.status}")
+    print(f"  After 6s inactivity: status={room2.status}, paused_at={room2.paused_at}")
     await asyncio.sleep(0.05)
 
-    # Simulate more time passing (11s total)
-    await kit.set_room_timers(
-        "room-timed",
-        RoomTimers(
-            inactive_after_seconds=5,
-            closed_after_seconds=10,
-            last_activity_at=datetime.now(UTC) - timedelta(seconds=11),
-        ),
+    # Simulate the room staying paused for 11s: the close timer counts from
+    # paused_at. A host would simply call check_room_timers() later.
+    await kit.store.update_room(
+        room2.model_copy(update={"paused_at": datetime.now(UTC) - timedelta(seconds=11)})
     )
-
     room2 = await kit.check_room_timers("room-timed")
-    print(f"  After 11s inactivity: status={room2.status}")
+    print(f"  After 11s paused: status={room2.status}")
     await asyncio.sleep(0.05)
 
     # --- Room 3: check_all_timers for batch processing ---
@@ -130,8 +121,7 @@ async def main() -> None:
     await kit.create_room(room_id="room-batch", timers=RoomTimers(inactive_after_seconds=2))
     await kit.attach_channel("room-batch", "ws-user")
     ws.subscribe("conn", "room-batch")
-    # Attaching a channel counts as activity: backdate once it is attached,
-    # so the room has been idle for 3s (> 2s threshold).
+    # Backdate the last activity: the room has been idle for 3s (> 2s).
     await kit.set_room_timers(
         "room-batch",
         RoomTimers(

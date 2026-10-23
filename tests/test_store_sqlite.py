@@ -17,7 +17,7 @@ import pytest
 from roomkit import RoomKit
 from roomkit.core.mixins.verification import HELD_KEY
 from roomkit.models.channel import ChannelBinding
-from roomkit.models.enums import ChannelType, EventStatus, EventType
+from roomkit.models.enums import ChannelType, EventStatus, EventType, RoomStatus
 from roomkit.models.event import DeleteContent
 from roomkit.models.room import Room
 from roomkit.store.sqlite import _SCHEMA_VERSION, SQLiteSchemaError, SQLiteStore
@@ -302,6 +302,33 @@ class TestPersistence:
             )
             found = await store.get_event_by_idempotency_key("r1", "k", channel_id="email")
             assert found is not None and found.content.body == "second"
+        finally:
+            await store.close()
+
+    async def test_v8_database_records_when_its_paused_rooms_paused(self, tmp_path) -> None:
+        """A room a v8 file stored paused takes its last modification as the
+        instant it paused (RFC §5.1), which its close timer counts from."""
+        path = tmp_path / "v8.db"
+        store = SQLiteStore(path)
+        paused = await store.create_room(Room(id="r1", status=RoomStatus.PAUSED))
+        await store.create_room(Room(id="r2"))
+        await store.close()
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            UPDATE rooms SET data = json_remove(data, '$.paused_at');
+            PRAGMA user_version=8;
+            """
+        )
+        conn.close()
+
+        store = SQLiteStore(path)
+        try:
+            upgraded = await store.get_room("r1")
+            active = await store.get_room("r2")
+            assert upgraded is not None and active is not None
+            assert upgraded.paused_at == paused.updated_at
+            assert active.paused_at is None
         finally:
             await store.close()
 

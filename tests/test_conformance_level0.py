@@ -112,8 +112,8 @@ class TestModels:
     async def test_timers_auto_pause_and_close(self) -> None:
         """§25.1 / §5 — room timers drive auto-pause and auto-close (behavioural).
 
-        A room idle past ``inactive_after_seconds`` transitions to PAUSED; idle
-        past ``closed_after_seconds`` transitions to CLOSED."""
+        A room idle past ``inactive_after_seconds`` transitions to PAUSED; one
+        paused past ``closed_after_seconds`` transitions to CLOSED."""
         kit = RoomKit()
         await kit.create_room(room_id="pause")
         await kit.create_room(room_id="close")
@@ -125,7 +125,8 @@ class TestModels:
         assert (await kit.check_room_timers("pause")).status is RoomStatus.PAUSED
 
         await kit.set_room_timers(
-            "close", RoomTimers(closed_after_seconds=1, last_activity_at=past)
+            "close",
+            RoomTimers(inactive_after_seconds=1, closed_after_seconds=1, last_activity_at=past),
         )
         assert (await kit.check_room_timers("close")).status is RoomStatus.CLOSED
 

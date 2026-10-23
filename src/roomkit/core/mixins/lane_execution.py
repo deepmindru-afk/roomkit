@@ -250,6 +250,8 @@ class LaneExecutionMixin(HelpersMixin):
     _process_streaming_responses: Any  # InboundStreamingMixin
     _lane_injected_events: Any  # InjectedEventsMixin
     _run_queued: Any  # InjectedEventsMixin
+    _due_context: Any  # RoomTimersMixin
+    _room_due: Any  # RoomTimersMixin
 
     # -- The planned commit gate --
 
@@ -449,11 +451,14 @@ class LaneExecutionMixin(HelpersMixin):
 
     async def _existing_room_context(self, room_id: str) -> RoomContext | None:
         """The room's context, or ``None`` when the room is gone. Call under
-        the room lock, so the context is what the lock protects."""
+        the room lock, so the context is what the lock protects: the room's
+        due timer transitions are applied first (RFC §5.1), as at any
+        section that reads its status."""
         try:
-            return await self._build_context(room_id)
+            context = await self._build_context(room_id)
         except RoomNotFoundError:
             return None
+        return await self._due_context(context, lambda: self._build_context(room_id))
 
     def _plan_factory(
         self,
@@ -916,8 +921,9 @@ class LaneExecutionMixin(HelpersMixin):
         """Whether the room's status refuses *record*, stored in place of a
         turn or a response it refuses (RFC §5.1, §8.3): the refusal announced
         as any refused pass's, ``operation = reentry`` (§8.2). Call under the
-        room lock, which ``close_room()`` takes."""
-        room = await self._store.get_room(room_id)
+        room lock, which ``close_room()`` takes, once the room's due timer
+        transitions are applied (§5.1)."""
+        room = await self._room_due(room_id)
         if not _refuses_writes(room):
             return False
         await self._refuse_closed_room(

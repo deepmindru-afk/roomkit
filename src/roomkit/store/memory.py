@@ -19,7 +19,7 @@ from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import (
     ConversationStore,
     address_linked,
-    committed_timers,
+    committed_state,
     deletes_edits,
     edits_target,
     is_marked_deleted,
@@ -615,8 +615,8 @@ class InMemoryStore(ConversationStore):
         room counters under the per-room lock as one critical section, so the
         timeline and the counters can never diverge; a change's *target*
         is written in it, or the whole commit fails when the room no longer
-        holds it. Only an *activity* commit moves ``last_activity_at`` (RFC
-        §5.1)."""
+        holds it. Only an *activity* commit moves ``last_activity_at`` and
+        resumes a PAUSED room (RFC §5.1)."""
         async with self._lock_for(room_id):
             if target is not None:
                 stored = self._events.get(target.id)
@@ -636,7 +636,6 @@ class InMemoryStore(ConversationStore):
                 ] = indexed.id
             room = self._rooms.get(room_id)
             if room is not None:
-                timers = committed_timers(room, activity)
                 self._rooms[room_id] = room.model_copy(
                     update={
                         # "event_count += 1" (RFC §10.1 step 12), not a recount.
@@ -646,7 +645,7 @@ class InMemoryStore(ConversationStore):
                         # same way, or a test passing on one fails on the other.
                         "event_count": room.event_count + 1,
                         "latest_index": index,
-                        "timers": timers,
+                        **committed_state(room, activity),
                     }
                 )
             return indexed

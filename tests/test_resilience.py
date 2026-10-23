@@ -547,16 +547,17 @@ class TestRoomTimers:
         kit = await self._make_kit()
         room = await kit.create_room("r1")
         room.status = RoomStatus.PAUSED
+        room.paused_at = datetime.now(UTC) - timedelta(seconds=120)
         room.timers.closed_after_seconds = 60
-        room.timers.last_activity_at = datetime.now(UTC) - timedelta(seconds=120)
         await kit.store.update_room(room)
 
         result = await kit.check_room_timers("r1")
         assert result.status == RoomStatus.CLOSED
         assert result.closed_at is not None
 
-    async def test_active_room_closes_directly(self) -> None:
-        """Active room can close directly if closed_after exceeds threshold."""
+    async def test_an_active_room_never_closes_without_pausing(self) -> None:
+        """RFC §5.1: the close timer counts from ``paused_at``, so an ACTIVE
+        room with a close timer and no inactivity timer stays ACTIVE."""
         kit = await self._make_kit()
         room = await kit.create_room("r1")
         room.timers.closed_after_seconds = 60
@@ -564,7 +565,7 @@ class TestRoomTimers:
         await kit.store.update_room(room)
 
         result = await kit.check_room_timers("r1")
-        assert result.status == RoomStatus.CLOSED
+        assert result.status == RoomStatus.ACTIVE
 
     async def test_closed_room_stays_closed(self) -> None:
         kit = await self._make_kit()
@@ -608,8 +609,8 @@ class TestRoomTimers:
 
         r1 = await kit.create_room("r1")
         r1.status = RoomStatus.PAUSED
+        r1.paused_at = datetime.now(UTC) - timedelta(seconds=120)
         r1.timers.closed_after_seconds = 60
-        r1.timers.last_activity_at = datetime.now(UTC) - timedelta(seconds=120)
         await kit.store.update_room(r1)
 
         transitioned = await kit.check_all_timers()
@@ -626,12 +627,6 @@ class TestRoomTimers:
         # Persisted, not just returned
         stored = await kit.get_room("r1")
         assert stored.timers.closed_after_seconds == 3600
-
-    async def test_create_room_with_timers_starts_clock(self) -> None:
-        """Omitting last_activity_at starts the idle clock at creation time."""
-        kit = await self._make_kit()
-        room = await kit.create_room("r1", timers=RoomTimers(inactive_after_seconds=300))
-        assert room.timers.last_activity_at is not None
 
     async def test_create_room_with_timers_respects_explicit_activity(self) -> None:
         kit = await self._make_kit()
@@ -661,14 +656,15 @@ class TestRoomTimers:
         result = await kit.check_room_timers("r1")
         assert result.status == RoomStatus.PAUSED
 
-    async def test_set_room_timers_sets_and_starts_clock(self) -> None:
+    async def test_set_room_timers_on_a_room_with_no_activity_records_none(self) -> None:
+        """RFC §5.1: its inactivity counts from its creation, not from the call."""
         kit = await self._make_kit()
         await kit.create_room("r1")
         room = await kit.set_room_timers(
             "r1", RoomTimers(inactive_after_seconds=300, closed_after_seconds=3600)
         )
         assert room.timers.inactive_after_seconds == 300
-        assert room.timers.last_activity_at is not None
+        assert room.timers.last_activity_at is None
 
     async def test_set_room_timers_preserves_existing_activity(self) -> None:
         """Changing thresholds on a live room must not reset the idle clock."""

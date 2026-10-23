@@ -20,10 +20,10 @@ _LONG_AGO = datetime(2026, 1, 1, tzinfo=UTC)
 
 async def _kit() -> RoomKit:
     """A kit with room ``r1``, its channel ``sms1`` bound, whose last
-    activity is long ago."""
+    activity is long ago; no threshold is set, so nothing falls due."""
     kit = RoomKit()
     kit.register_channel(SimpleChannel("sms1"))
-    await kit.create_room(room_id="r1", timers=RoomTimers(inactive_after_seconds=3600))
+    await kit.create_room(room_id="r1", timers=RoomTimers())
     await kit.attach_channel("r1", "sms1")
     room = await kit.get_room("r1")
     timers = room.timers.model_copy(update={"last_activity_at": _LONG_AGO})

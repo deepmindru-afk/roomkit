@@ -351,6 +351,7 @@ class TestLifecycleSystemEventsMeetTheStatusGate:
         await kit.set_room_timers(
             "r1",
             RoomTimers(
+                inactive_after_seconds=1,
                 closed_after_seconds=1,
                 last_activity_at=datetime.now(UTC) - timedelta(seconds=60),
             ),

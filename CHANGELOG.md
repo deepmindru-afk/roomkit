@@ -623,6 +623,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — room timers pause, close and resume as RFC §5.1 says**
+  (RFC §5.1, §8.2, §10.1 steps 6 and 12, §26.1, RMK-930). The timers only
+  ran when the host called `check_room_timers()`, measured both thresholds
+  from `last_activity_at` (so an ACTIVE room closed without pausing), never
+  transitioned a room with no activity, took the check's instant, and
+  nothing resumed a PAUSED room. Now:
+  - `Room.paused_at` (new, null unless PAUSED) records when the room
+    paused, and the close timer counts from it: an ACTIVE room closes only
+    once it has paused. Inactivity counts from `last_activity_at`, or from
+    `created_at` while the room has had none: `create_room(timers=...)` and
+    `set_room_timers()` no longer stamp `last_activity_at` with the call's
+    instant.
+  - A delivered commit (an event the pipeline stores DELIVERED) resumes a
+    PAUSED room in its transaction: ACTIVE, `paused_at` null, no hook, no
+    framework event. What is no activity resumes nothing.
+  - Every locked section that reads the room's status applies the
+    transitions due at its instant first: the inbound gate and
+    `send_event()`, a response's and an injected event's pass, the records
+    stored in place of an answer, `attach_channel()`, `detach_channel()`
+    and the binding setters, `commit_event()`, `update_event()`,
+    `delete_event()`, `close_room()`, `archive_room()`,
+    `start_room_recording()` and a regeneration. A message to a room that
+    fell due is refused as if the timer had run on time: `room_paused`,
+    `room_closed`, then its `room_refused_event`.
+  - A transition takes the instant it fell due, however late it is
+    applied: a check long after both fell due pauses the room at the first
+    instant and closes it at the second, in one write (`paused_at`,
+    `closed_at`). Each emits `room_paused` or `room_closed` (`reason =
+    timer`) once stored; its `ON_ROOM_PAUSED` or `ON_ROOM_CLOSED` hook
+    fires once the room lock is released (`check_room_timers()` waits for
+    it before returning), in the room's context as the transition left it.
+    The hook's and the lifecycle record's `SystemContent.data` are now
+    `{"threshold", "at"}` (`elapsed_seconds` is gone).
+  - Stored format: `PostgresStore.init()` adds the `rooms.paused_at`
+    column when missing, and a room stored PAUSED takes its `updated_at`
+    as the instant it paused; an SQLite file moves to schema version 9,
+    alike. A custom store must round-trip `Room.paused_at` and resume a
+    PAUSED room in an activity `commit_event()`.
+  Migrate: to close a room N seconds after its last activity with no pause
+  between, set `inactive_after_seconds=N, closed_after_seconds=0`; code
+  that read the creation instant from `last_activity_at` reads
+  `created_at` while it is null.
+
 - **BREAKING — a lifecycle record is no activity, and a store's
   `commit_event()` takes `activity`** (RFC §5.1, RMK-930). Every commit
   moved the room's `timers.last_activity_at`, the records RoomKit writes

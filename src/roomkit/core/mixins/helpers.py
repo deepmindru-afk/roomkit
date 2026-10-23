@@ -591,8 +591,11 @@ class HelpersMixin:
         code: str,
         message: str,
         data: dict[str, Any] | None = None,
+        *,
+        context: RoomContext | None = None,
     ) -> None:
-        """Fire an async lifecycle hook with a synthetic system event."""
+        """Fire an async lifecycle hook with a synthetic system event, in
+        *context*, the room as the change left it, read now when not given."""
         event = RoomEvent(
             room_id=room_id,
             type=event_type,
@@ -601,6 +604,9 @@ class HelpersMixin:
             status=EventStatus.DELIVERED,
             visibility=Visibility.INTERNAL,
         )
+        if context is not None:
+            await self._hook_engine.run_async_hooks(room_id, trigger, event, context)
+            return
         try:
             context = await self._build_context(room_id)
         except Exception:

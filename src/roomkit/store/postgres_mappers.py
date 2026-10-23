@@ -36,6 +36,7 @@ def _row_to_room(row: Any) -> Room:
         agent_response_policy=row["agent_response_policy"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        paused_at=row["paused_at"],
         closed_at=row["closed_at"],
     )
 

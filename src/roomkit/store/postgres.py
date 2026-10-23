@@ -29,7 +29,7 @@ from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import (
     ConversationStore,
     address_linked,
-    committed_timers,
+    committed_state,
     deletes_edits,
     is_marked_deleted,
     room_taken,
@@ -690,8 +690,8 @@ class PostgresStore(ConversationStore):
                     "INSERT INTO rooms "
                     "(id, organization_id, status, event_count, latest_index,"
                     " metadata, timers, agent_response_policy,"
-                    " created_at, updated_at, closed_at)"
-                    " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+                    " created_at, updated_at, paused_at, closed_at)"
+                    " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
                     " ON CONFLICT (id) DO NOTHING",
                     room.id,
                     room.organization_id,
@@ -703,6 +703,7 @@ class PostgresStore(ConversationStore):
                     room.agent_response_policy.value,
                     room.created_at,
                     room.updated_at,
+                    room.paused_at,
                     room.closed_at,
                 )
         if created == "INSERT 0 0":
@@ -726,7 +727,7 @@ class PostgresStore(ConversationStore):
             async with self._acquire() as conn:
                 stored = await conn.fetchrow(
                     "UPDATE rooms SET organization_id=$2, status=$3, metadata=$4, timers=$5,"
-                    " agent_response_policy=$6, updated_at=$7, closed_at=$8"
+                    " agent_response_policy=$6, updated_at=$7, closed_at=$8, paused_at=$9"
                     " WHERE id=$1 RETURNING delivered_index, event_count, latest_index",
                     room.id,
                     room.organization_id,
@@ -736,6 +737,7 @@ class PostgresStore(ConversationStore):
                     room.agent_response_policy.value,
                     room.updated_at,
                     room.closed_at,
+                    room.paused_at,
                 )
         if stored is None:
             raise RoomNotFoundError(room.id)
@@ -1320,7 +1322,7 @@ class PostgresStore(ConversationStore):
         even under a crash or without a cross-process room lock. A change's
         *target* is written in the same transaction, which rolls back whole
         when the room no longer holds it. Only an *activity* commit moves
-        ``last_activity_at`` (RFC §5.1).
+        ``last_activity_at`` and resumes a PAUSED room (RFC §5.1).
         """
         with self._query_span("commit_event", "events"):
             async with self._acquire() as conn, conn.transaction():
@@ -1339,9 +1341,10 @@ class PostgresStore(ConversationStore):
                 await _insert_event(conn, indexed)
                 if room_row is not None:
                     room = _row_to_room(room_row)
-                    timers = committed_timers(room, activity)
+                    room = room.model_copy(update=committed_state(room, activity))
                     await conn.execute(
-                        "UPDATE rooms SET event_count = $2, latest_index = $3, timers = $4"
+                        "UPDATE rooms SET event_count = $2, latest_index = $3, timers = $4,"
+                        " status = $5, paused_at = $6, updated_at = $7"
                         " WHERE id = $1",
                         room_id,
                         # RFC §10.1 step 12 spells this "event_count += 1", and
@@ -1356,7 +1359,10 @@ class PostgresStore(ConversationStore):
                         next_idx,
                         # Pass the dict directly — the registered jsonb codec
                         # encodes it; json.dumps() here would double-encode.
-                        timers.model_dump(mode="json"),
+                        room.timers.model_dump(mode="json"),
+                        room.status.value,
+                        room.paused_at,
+                        room.updated_at,
                     )
         return indexed
 

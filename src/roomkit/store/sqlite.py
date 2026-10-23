@@ -49,7 +49,7 @@ from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import (
     ConversationStore,
     address_linked,
-    committed_timers,
+    committed_state,
     deletes_edits,
     is_marked_deleted,
     link_target,
@@ -58,7 +58,7 @@ from roomkit.store.base import (
     without_address,
 )
 
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS rooms(
@@ -498,6 +498,28 @@ def _migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
         raise
 
 
+def _migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
+    """A room records the instant it paused (RFC §5.1), which its close
+    timer counts from. A room stored paused before it takes its last
+    modification, which the pause was."""
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if int(conn.execute("PRAGMA user_version").fetchone()[0]) >= 9:
+            conn.execute("COMMIT")
+            return
+        conn.execute(
+            """UPDATE rooms
+               SET data = json_set(data, '$.paused_at', json_extract(data, '$.updated_at'))
+               WHERE status = 'paused' AND json_extract(data, '$.paused_at') IS NULL"""
+        )
+        conn.execute("PRAGMA user_version=9")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
@@ -506,6 +528,7 @@ _MIGRATIONS = {
     5: _migrate_v5_to_v6,
     6: _migrate_v6_to_v7,
     7: _migrate_v7_to_v8,
+    8: _migrate_v8_to_v9,
 }
 """Each step takes a file from its version to the next."""
 
@@ -1442,8 +1465,8 @@ class SQLiteStore(ConversationStore):
         in one SQLite transaction, so the timeline and the room counters can
         never be observed diverged; a change's *target* is written in it, or
         the whole transaction rolls back when the room no longer holds it
-        (§14.3). Only an *activity* commit moves ``last_activity_at`` (RFC
-        §5.1)."""
+        (§14.3). Only an *activity* commit moves ``last_activity_at`` and
+        resumes a PAUSED room (RFC §5.1)."""
         conn = self._db()
         with _write_transaction(conn):
             if target is not None:
@@ -1461,17 +1484,17 @@ class SQLiteStore(ConversationStore):
             row = conn.execute("SELECT * FROM rooms WHERE id = ?", (room_id,)).fetchone()
             if row is not None:
                 room = self._row_to_room(row)
-                timers = committed_timers(room, activity)
                 room = room.model_copy(
                     update={
                         # The tally, incremented — never a recount (see base).
                         "event_count": room.event_count + 1,
                         "latest_index": indexed.index,
-                        "timers": timers,
+                        **committed_state(room, activity),
                     }
                 )
                 conn.execute(
-                    "UPDATE rooms SET data=? WHERE id=?", (room.model_dump_json(), room_id)
+                    "UPDATE rooms SET status=?, data=? WHERE id=?",
+                    (str(room.status), room.model_dump_json(), room_id),
                 )
         return indexed
 
