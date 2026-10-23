@@ -42,6 +42,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the quiz's live turns and two questions put to everyone, 14/15 right
   (Jev, three calls each). A question put to everyone waits for no one.
 
+- `ConversationStore.unlink_address(identity_id, channel_type, address,
+  organization_id)` (RFC §5.6, §14.1, RMK-930) frees an address, so moving
+  one to another identity is an unlink then a link, now that a link of an
+  address another identity holds is refused. It removes the address from
+  the identity it names, in the organization it names; an address the
+  identity does not hold changes nothing, and an unknown identity or another
+  organization's raises `IdentityNotFoundError`, as `link_address` does. The
+  rooms, bindings and participants that named the address stay as they are:
+  an unlink changes which identity a later message resolves to, never a
+  stored conversation. The in-memory, SQLite and Postgres stores implement
+  it; a custom store that does not raises `NotImplementedError` naming it.
+
 - **Parallel test runs, and only the tests a change reaches (RMK-919).**
   `make test` runs the suite on one worker per core (pytest-xdist, idle
   workers taking queued tests): `make all` takes about a minute instead of
@@ -463,7 +475,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identity of the organization holds raises `AddressLinkedError`, and so does
   `create_identity()` with one, writing nothing: the last link silently took
   the address, re-homing that person's conversations, while the first
-  identity still listed it. An address is never moved silently. Linking to an
+  identity still listed it. An address is never moved silently: moving it is
+  `unlink_address()` from its holder, then a link. Linking to an
   unknown identity, or to an identity of another organization than the call's
   `organization_id` (`None` stands for the identities of no organization),
   raises `IdentityNotFoundError`: the first did nothing, the second linked

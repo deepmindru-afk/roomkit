@@ -44,7 +44,12 @@ from roomkit.models.store_filter import EventFilter, includes_blocked
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
-from roomkit.store.base import ConversationStore, address_linked, link_target
+from roomkit.store.base import (
+    ConversationStore,
+    address_linked,
+    link_target,
+    without_address,
+)
 
 _SCHEMA_VERSION = 8
 
@@ -1693,6 +1698,37 @@ class SQLiteStore(ConversationStore):
                 " identity_id, organization_id) VALUES(?, ?, ?, ?)",
                 (channel_type, address, identity_id, organization_id),
             )
+
+    async def unlink_address(
+        self,
+        identity_id: str,
+        channel_type: str,
+        address: str,
+        organization_id: str | None = None,
+    ) -> None:
+        await self._run(
+            self._x_unlink_address, identity_id, channel_type, address, organization_id or ""
+        )
+
+    def _x_unlink_address(
+        self, identity_id: str, channel_type: str, address: str, organization_id: str
+    ) -> None:
+        conn = self._db()
+        with _write_transaction(conn):
+            identity = link_target(self._x_get_identity(identity_id), identity_id, organization_id)
+            # Its own row only: an address another identity holds stays theirs.
+            conn.execute(
+                "DELETE FROM identity_addresses WHERE channel_type = ? AND address = ?"
+                " AND organization_id = ? AND identity_id = ?",
+                (channel_type, address, organization_id, identity_id),
+            )
+            addresses = without_address(identity.channel_addresses, channel_type, address)
+            if addresses != identity.channel_addresses:
+                identity = identity.model_copy(update={"channel_addresses": addresses})
+                conn.execute(
+                    "UPDATE identities SET data = ? WHERE id = ?",
+                    (identity.model_dump_json(), identity_id),
+                )
 
     # -- Verification operations (RFC §11.7) -------------------------------
 

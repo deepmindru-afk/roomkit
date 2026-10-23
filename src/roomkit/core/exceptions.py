@@ -131,8 +131,9 @@ class AddressLinkedError(RoomKitError):
     """The address belongs to another identity of the organization (RFC §5.6).
 
     An address belongs to one identity per organization and channel type, so
-    a resolution never has to choose. Moving it to another identity is an
-    explicit unlink first, never a silent re-home of someone's conversations.
+    a resolution never has to choose. Moving it to another identity is
+    ``ConversationStore.unlink_address`` from its holder, then a link, never
+    a silent re-home of someone's conversations.
     """
 
 

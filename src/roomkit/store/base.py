@@ -40,6 +40,16 @@ def link_target(
     return identity
 
 
+def without_address(
+    channel_addresses: dict[str, list[str]], channel_type: str, address: str
+) -> dict[str, list[str]]:
+    """*channel_addresses* without *address* under *channel_type*, a type left
+    with no address dropped (``unlink_address``, RFC §5.6)."""
+    kept = [held for held in channel_addresses.get(channel_type, []) if held != address]
+    rest = {key: value for key, value in channel_addresses.items() if key != channel_type}
+    return {**rest, channel_type: kept} if kept else rest
+
+
 def address_linked(channel_type: str) -> AddressLinkedError:
     """The refusal of an address another identity of the organization holds
     (RFC §5.6). The address is left out: the caller passed it."""
@@ -833,8 +843,9 @@ class ConversationStore(ABC):
         organization: a number belongs to one person at one tenant and to
         someone else at another. Within one organization it belongs to one
         identity: an address another identity of the organization holds is
-        refused with :class:`AddressLinkedError`, and moving it is an explicit
-        unlink first. An unknown identity, or one of another organization
+        refused with :class:`AddressLinkedError`, and moving it is an
+        :meth:`unlink_address` from its holder, then a link. An unknown
+        identity, or one of another organization
         (``None`` stands for the identities of no organization), is refused
         with :class:`IdentityNotFoundError`. Linking an address the identity
         holds changes nothing. A refusal writes nothing.
@@ -844,6 +855,31 @@ class ConversationStore(ABC):
         framework resolves a sender's address in.
         """
         ...
+
+    async def unlink_address(
+        self,
+        identity_id: str,
+        channel_type: str,
+        address: str,
+        organization_id: str | None = None,
+    ) -> None:
+        """Remove a channel address from an identity of *organization_id* (RFC §5.6, §14.1).
+
+        The address then resolves to no identity of the organization and can
+        be linked to another: moving an address is an unlink then a link.
+        An address the identity does not hold changes nothing, another
+        identity's included. An unknown identity, or one of another
+        organization, is refused with :class:`IdentityNotFoundError`, as
+        :meth:`link_address` refuses it. An unlink changes which identity a
+        later message resolves to, never a stored conversation: the rooms,
+        bindings and participants that named the address stay as they are.
+
+        Not abstract, so a store written before it keeps working, and
+        refuses it by name.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not unlink identity addresses (RFC §14.1)"
+        )
 
     # Verification operations (RFC §11.7, Level 2). Not abstract: a store
     # written before them keeps working, and refuses them by name.

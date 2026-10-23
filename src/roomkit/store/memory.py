@@ -16,7 +16,12 @@ from roomkit.models.store_filter import EventFilter, includes_blocked, received_
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
-from roomkit.store.base import ConversationStore, address_linked, link_target
+from roomkit.store.base import (
+    ConversationStore,
+    address_linked,
+    link_target,
+    without_address,
+)
 
 
 class InMemoryStore(ConversationStore):
@@ -728,6 +733,23 @@ class InMemoryStore(ConversationStore):
                 update={"channel_addresses": new_addresses}
             )
         self._address_index[key] = identity_id
+
+    async def unlink_address(
+        self,
+        identity_id: str,
+        channel_type: str,
+        address: str,
+        organization_id: str | None = None,
+    ) -> None:
+        identity = link_target(self._identities.get(identity_id), identity_id, organization_id)
+        key = (channel_type, address, organization_id or "")
+        if self._address_index.get(key) == identity_id:
+            del self._address_index[key]
+        addresses = without_address(identity.channel_addresses, channel_type, address)
+        if addresses != identity.channel_addresses:
+            self._identities[identity_id] = identity.model_copy(
+                update={"channel_addresses": addresses}
+            )
 
     # Verification operations (RFC §11.7)
 

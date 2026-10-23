@@ -26,7 +26,7 @@ from roomkit.models.store_filter import EventFilter, includes_blocked
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
-from roomkit.store.base import ConversationStore, address_linked
+from roomkit.store.base import ConversationStore, address_linked, without_address
 from roomkit.store.postgres_mappers import (
     _row_to_binding,
     _row_to_event,
@@ -153,6 +153,25 @@ def _room_filter(params: list[Any], status: str | None, organization_id: str | N
         params.append(organization_id)
         clause += f" AND r.organization_id = ${len(params)}"
     return clause
+
+
+async def _locked_addresses(
+    conn: Any, identity_id: str, organization_id: str | None
+) -> dict[str, list[str]]:
+    """The addresses of the identity an address is linked to or unlinked
+    from, its row locked for the transaction.
+
+    An organization links its own identities only (RFC §5.6), as
+    ``store.base.link_target`` refuses for the other stores: an unknown
+    identity, or one of another organization, is not found.
+    """
+    row = await conn.fetchrow(
+        "SELECT organization_id, channel_addresses FROM identities WHERE id = $1 FOR UPDATE",
+        identity_id,
+    )
+    if row is None or (row["organization_id"] or "") != (organization_id or ""):
+        raise IdentityNotFoundError(f"Identity {identity_id} not found")
+    return _jsonb(row["channel_addresses"])
 
 
 async def _file_address(
@@ -1610,19 +1629,8 @@ class PostgresStore(ConversationStore):
         organization_id: str | None = None,
     ) -> None:
         async with self._acquire() as conn, conn.transaction():
-            row = await conn.fetchrow(
-                "SELECT organization_id, channel_addresses FROM identities"
-                " WHERE id = $1 FOR UPDATE",
-                identity_id,
-            )
-            # An organization links its own identities only (RFC §5.6), as
-            # store.base.link_target refuses for the other stores.
-            if row is None or (row["organization_id"] or "") != (organization_id or ""):
-                raise IdentityNotFoundError(f"Identity {identity_id} not found")
+            ch_addr = await _locked_addresses(conn, identity_id, organization_id)
             await _file_address(conn, channel_type, address, identity_id, organization_id or "")
-            ch_addr = row["channel_addresses"]
-            if isinstance(ch_addr, str):
-                ch_addr = json.loads(ch_addr)
             current = ch_addr.get(channel_type, [])
             if address not in current:
                 ch_addr = {**ch_addr, channel_type: [*current, address]}
@@ -1630,6 +1638,32 @@ class PostgresStore(ConversationStore):
                     "UPDATE identities SET channel_addresses = $2 WHERE id = $1",
                     identity_id,
                     ch_addr,
+                )
+
+    async def unlink_address(
+        self,
+        identity_id: str,
+        channel_type: str,
+        address: str,
+        organization_id: str | None = None,
+    ) -> None:
+        async with self._acquire() as conn, conn.transaction():
+            ch_addr = await _locked_addresses(conn, identity_id, organization_id)
+            # Its own row only: an address another identity holds stays theirs.
+            await conn.execute(
+                "DELETE FROM identity_addresses WHERE channel_type = $1 AND address = $2"
+                " AND organization_id = $3 AND identity_id = $4",
+                channel_type,
+                address,
+                organization_id or "",
+                identity_id,
+            )
+            remaining = without_address(ch_addr, channel_type, address)
+            if remaining != ch_addr:
+                await conn.execute(
+                    "UPDATE identities SET channel_addresses = $2 WHERE id = $1",
+                    identity_id,
+                    remaining,
                 )
 
     # ── Verification operations (RFC §11.7) ──────────────────────

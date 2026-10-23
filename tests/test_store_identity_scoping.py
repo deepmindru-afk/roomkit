@@ -15,7 +15,11 @@ from uuid import uuid4
 import pytest
 
 from roomkit import AddressLinkedError, IdentityNotFoundError
+from roomkit.models.channel import ChannelBinding
+from roomkit.models.enums import ChannelType
 from roomkit.models.identity import Identity
+from roomkit.models.participant import Participant
+from roomkit.models.room import Room
 from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import _SCHEMA_VERSION, SQLiteStore
@@ -178,6 +182,96 @@ class TestOneIdentityPerAddress:
             await contract_store.link_address(f"id-{uuid4().hex}", "sms", address, "acme")
 
         assert await contract_store.resolve_identity("sms", address, "acme") is None
+
+
+class TestUnlinkingAnAddress:
+    """``unlink_address`` frees an address, so moving one is an unlink then a
+    link (RFC §5.6, §14.1); a stored conversation is never re-homed."""
+
+    @staticmethod
+    async def _created(store: ConversationStore, organization_id: str | None) -> Identity:
+        identity = Identity(id=f"id-{uuid4().hex}", organization_id=organization_id)
+        return await store.create_identity(identity)
+
+    @pytest.mark.parametrize("organization_id", ["acme", None])
+    async def test_an_unlinked_address_moves_to_another_identity(
+        self, contract_store: ConversationStore, organization_id: str | None
+    ) -> None:
+        address = f"+1555{uuid4().int % 10**7:07d}"
+        first = await self._created(contract_store, organization_id)
+        second = await self._created(contract_store, organization_id)
+        await contract_store.link_address(first.id, "sms", address, organization_id)
+
+        await contract_store.unlink_address(first.id, "sms", address, organization_id)
+
+        assert await contract_store.resolve_identity("sms", address, organization_id) is None
+        freed = await contract_store.get_identity(first.id)
+        assert freed is not None and address not in freed.channel_addresses.get("sms", [])
+        await contract_store.link_address(second.id, "sms", address, organization_id)
+        resolved = await contract_store.resolve_identity("sms", address, organization_id)
+        assert resolved is not None and resolved.id == second.id
+
+    async def test_an_address_the_identity_does_not_hold_changes_nothing(
+        self, contract_store: ConversationStore
+    ) -> None:
+        address = f"+1555{uuid4().int % 10**7:07d}"
+        holder = await self._created(contract_store, "acme")
+        other = await self._created(contract_store, "acme")
+        await contract_store.link_address(holder.id, "sms", address, "acme")
+
+        await contract_store.unlink_address(other.id, "sms", address, "acme")
+        await contract_store.unlink_address(holder.id, "email", address, "acme")
+
+        resolved = await contract_store.resolve_identity("sms", address, "acme")
+        assert resolved is not None and resolved.id == holder.id
+        kept = await contract_store.get_identity(holder.id)
+        assert kept is not None and kept.channel_addresses == {"sms": [address]}
+
+    @pytest.mark.parametrize(
+        ("owner", "unlinked_for"),
+        [("acme", "globex"), ("acme", None), (None, "acme"), ("acme", "unknown")],
+        ids=["another-organization", "scoped-identity", "unscoped-identity", "unknown"],
+    )
+    async def test_an_unknown_or_another_organizations_identity_is_refused(
+        self, contract_store: ConversationStore, owner: str | None, unlinked_for: str | None
+    ) -> None:
+        address = f"+1555{uuid4().int % 10**7:07d}"
+        identity = await self._created(contract_store, owner)
+        await contract_store.link_address(identity.id, "sms", address, owner)
+        target = f"id-{uuid4().hex}" if unlinked_for == "unknown" else identity.id
+        scope = owner if unlinked_for == "unknown" else unlinked_for
+
+        with pytest.raises(IdentityNotFoundError):
+            await contract_store.unlink_address(target, "sms", address, scope)
+
+        resolved = await contract_store.resolve_identity("sms", address, owner)
+        assert resolved is not None and resolved.id == identity.id
+
+    async def test_the_conversations_that_named_the_address_stay_as_they_are(
+        self, contract_store: ConversationStore
+    ) -> None:
+        address = f"+1555{uuid4().int % 10**7:07d}"
+        identity = await self._created(contract_store, "acme")
+        await contract_store.link_address(identity.id, "sms", address, "acme")
+        room = await contract_store.create_room(Room(id=uuid4().hex, organization_id="acme"))
+        binding = await contract_store.add_binding(
+            ChannelBinding(
+                room_id=room.id,
+                channel_id="sms",
+                channel_type=ChannelType.SMS,
+                participant_id=address,
+            )
+        )
+        member = await contract_store.add_participant(
+            Participant(id=address, room_id=room.id, channel_id="sms", identity_id=identity.id)
+        )
+        try:
+            await contract_store.unlink_address(identity.id, "sms", address, "acme")
+
+            assert await contract_store.get_binding(room.id, "sms") == binding
+            assert await contract_store.get_participant(room.id, address) == member
+        finally:
+            await contract_store.delete_room(room.id)
 
 
 class TestAddressesDeclaredOnTheIdentity:
