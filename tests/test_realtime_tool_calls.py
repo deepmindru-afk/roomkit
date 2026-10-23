@@ -16,6 +16,7 @@ from roomkit import HookExecution, HookTrigger, RoomKit, ToolCallEvent
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel
 from roomkit.models.context import RoomContext
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from tests.channel_tasks import settled
 from tests.conference.test_conference_realtime import until
 
 TOOLS = [
@@ -227,7 +228,7 @@ async def test_a_cancellation_while_the_observers_run_adds_no_second_report() ->
     await provider.simulate_tool_call_cancellation(session, ["c1"])
     release.set()
     # The call's work is done; a second report would have reached the observers.
-    await until(lambda: all(task.done() for task in channel._scheduled_tasks))  # noqa: SLF001
+    await settled(channel)
     for _ in range(10):
         await asyncio.sleep(0)
 

@@ -20,6 +20,7 @@ from roomkit.voice.pipeline import AudioPipelineConfig, MockVADProvider
 from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
 from roomkit.voice.stt.base import STTProvider
 from roomkit.voice.stt.mock import MockSTTProvider
+from tests.channel_tasks import settled
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -161,9 +162,7 @@ async def _speak(channel: VoiceChannel, backend: MockVoiceBackend, session: Any)
     transcription and routing, which the channel runs in tasks of its own."""
     for byte in (b"\x01\x00", b"\x02\x00", b"\x03\x00"):
         await backend.simulate_audio_received(session, AudioFrame(data=byte))
-    async with asyncio.timeout(5):
-        while pending := [t for t in channel._scheduled_tasks if not t.done()]:
-            await asyncio.gather(*pending, return_exceptions=True)
+    await settled(channel)
 
 
 async def _until(predicate: Any) -> None:

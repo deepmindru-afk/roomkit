@@ -469,12 +469,13 @@ class TestDisconnectOutgoing:
         backend._stats_task = None
         backend._registered = False
         backend._uas = types.SimpleNamespace(stop=AsyncMock())
-        bounds = opened_with_cut(monkeypatch, seconds=None)
-        close = asyncio.ensure_future(backend.close())
-        await asyncio.wait_for(closing.wait(), 5)
-        expire(bounds)  # whatever bound the shutdown opened runs out mid media close
-        finished.set()
-        await asyncio.wait_for(close, 5)
+        async with asyncio.timeout(5):  # opened before the capture: never expired
+            bounds = opened_with_cut(monkeypatch, seconds=None)
+            close = asyncio.ensure_future(backend.close())
+            await closing.wait()
+            expire(bounds)  # whatever bound the shutdown opened runs out mid media close
+            finished.set()
+            await close
         assert all(session.state == VoiceSessionState.ENDED for session in sessions)
         assert not backend._session_states
         backend._uas.stop.assert_awaited_once()

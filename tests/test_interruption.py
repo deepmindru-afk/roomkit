@@ -171,6 +171,11 @@ class TestSemanticStrategy:
 
 
 class TestDefaultsAndNewFields:
+    def test_the_rfc_s_defaults(self):
+        """RFC §12.3.13 sets them: CONFIRMED, after 300 ms of sustained speech."""
+        config = InterruptionConfig()
+        assert (config.strategy, config.min_speech_ms) == (InterruptionStrategy.CONFIRMED, 300)
+
     def test_backchannel_detector_on_config(self):
         """BackchannelDetector can be set on the config itself."""
         bc = MockBackchannelDetector(

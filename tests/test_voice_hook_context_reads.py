@@ -44,6 +44,7 @@ from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransp
 from roomkit.voice.stt.base import STTProvider
 from roomkit.voice.stt.mock import MockSTTProvider
 from roomkit.voice.tts.mock import MockTTSProvider
+from tests.channel_tasks import settled
 from tests.conference.lane_audio import drain, say
 
 _INBOUND = frozenset({"_prepare_event_inner", "_run_precommit"})
@@ -427,9 +428,9 @@ async def test_a_sync_hook_whose_context_fails_to_read_drops_the_utterance() -> 
         _register(kit, (HookTrigger.ON_TRANSCRIPTION,), seen)
         await kit.store.delete_room(room_id)
         await act()
-        # Nothing marks an utterance dropped: let through, it would have
-        # reopened its room within a few milliseconds of its transcript.
-        await asyncio.sleep(0.05)
+        # Its transcription and routing, done: let through, it would have
+        # reopened its room by then.
+        await settled(kit.channels["voice-1"])
         assert seen == []
         assert await kit.store.get_room(room_id) is None
     finally:

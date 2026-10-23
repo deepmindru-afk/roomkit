@@ -16,8 +16,10 @@ from roomkit.voice.pipeline.config import AudioFormat, AudioPipelineContract
 from roomkit.voice.pipeline.dtmf.base import DTMFEvent
 from roomkit.voice.pipeline.dtmf.mock import MockDTMFDetector
 from roomkit.voice.pipeline.recorder.base import (
+    RecordingChannelMode,
     RecordingConfig,
     RecordingMode,
+    RecordingTrigger,
 )
 from roomkit.voice.pipeline.recorder.mock import MockAudioRecorder
 from roomkit.voice.pipeline.turn.base import (
@@ -131,6 +133,17 @@ class TestDTMFDetector:
 
 
 class TestAudioRecorder:
+    def test_the_strings_a_recording_is_configured_with(self):
+        """A RecordingConfig takes these strings as well as the members."""
+        assert RecordingMode.INBOUND_ONLY == "inbound_only"
+        assert RecordingMode.OUTBOUND_ONLY == "outbound_only"
+        assert RecordingMode.BOTH == "both"
+        assert RecordingTrigger.ALWAYS == "always"
+        assert RecordingTrigger.SPEECH_ONLY == "speech_only"
+        assert RecordingChannelMode.MIXED == "mixed"
+        assert RecordingChannelMode.SEPARATE == "separate"
+        assert RecordingChannelMode.STEREO == "stereo"
+
     def test_mock_lifecycle(self):
         recorder = MockAudioRecorder()
         session = _session()

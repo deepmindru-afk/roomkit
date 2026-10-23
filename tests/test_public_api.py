@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import re
 from pathlib import Path
 from types import ModuleType
@@ -10,6 +11,7 @@ from types import ModuleType
 import roomkit
 
 _PACKAGE_ROOT = Path(roomkit.__file__).parent
+_EXPORTED = Path(__file__).with_name("public_api_names.json")
 
 
 class TestPublicAPI:
@@ -46,6 +48,28 @@ class TestPublicAPI:
                 unresolved[package] = names
 
         assert unresolved == {}
+
+    def test_no_name_a_package_exported_is_dropped(self) -> None:
+        """Every name a package exported stays exported: an application imports
+        it from there. tests/public_api_names.json lists them; the commit that
+        breaks an import on purpose drops its name there, and a new export
+        needs no entry.
+
+        A package whose optional dependency the environment lacks is left out,
+        as test_every_name_a_package_exports_resolves leaves it out.
+        """
+        dropped: dict[str, list[str]] = {}
+        for package, names in json.loads(_EXPORTED.read_text()).items():
+            try:
+                module = importlib.import_module(package)
+            except ModuleNotFoundError as missing:
+                _raise_unless_optional(missing)
+                continue
+            gone = sorted(set(names) - set(getattr(module, "__all__", ())))
+            if gone:
+                dropped[package] = gone
+
+        assert dropped == {}
 
     def test_channels_importable_from_channels_package(self) -> None:
         """Every channel resolves from ``roomkit.channels``, factories included.
