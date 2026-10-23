@@ -332,6 +332,35 @@ class TestPersistence:
         finally:
             await store.close()
 
+    async def test_a_v9_file_indexes_its_keys_by_room(self, tmp_path) -> None:
+        """Schema 10: a proactive key is looked up within its room, whatever
+        channel committed it (RFC §22.1), through an index by room and key."""
+        path = tmp_path / "v9.db"
+        store = SQLiteStore(path)
+        await store.create_room(Room(id="r1"))
+        await store.close()
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            DROP INDEX idx_idempotency_room_key;
+            DROP INDEX idx_events_room_idempotency;
+            PRAGMA user_version=9;
+            """
+        )
+        conn.close()
+
+        store = SQLiteStore(path)
+        assert await store.get_room("r1") is not None
+        await store.close()
+
+        conn = sqlite3.connect(path)
+        try:
+            names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+            assert {"idx_idempotency_room_key", "idx_events_room_idempotency"} <= names
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
+        finally:
+            conn.close()
+
     async def test_two_connections_allocate_one_monotonic_sequence(self, tmp_path) -> None:
         path = tmp_path / "shared.db"
         first = SQLiteStore(path)

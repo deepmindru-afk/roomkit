@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The lookups this release adds read through indexes (RFC §10.4, §22.1,
+  RMK-930). A proactive delivery's key, looked up within its room whatever
+  channel committed it, read every keyed event of the room: Postgres and
+  SQLite now index `events(room_id, idempotency_key)` where a key is set,
+  and SQLite its `idempotency(room_id, key)` table; Postgres `init()` creates
+  its index, and `participants(identity_id)`, only when missing (a `CREATE
+  INDEX` locks the table even when the index exists), and an SQLite file
+  moves to schema version 10. The binding lookup's recipient branch is a
+  query of its own beside the correspondent's, each read through
+  `bindings(channel_id, participant_id)`: it reads the channel's bindings that
+  name no correspondent, which the kit leaves only where no recipient was
+  given or a binding was written to the store directly. The recipient's key
+  differs per channel, so no expression index serves it.
+
 - A message with no address is checked again under the room lock as any
   sender is (RFC §10.1 step 2, §10.4, RMK-930). The claim skipped step 3's
   re-check for it, so someone heard or reached on the channel between the

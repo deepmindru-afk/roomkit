@@ -60,7 +60,7 @@ from roomkit.store.base import (
     without_address,
 )
 
-_SCHEMA_VERSION = 9
+_SCHEMA_VERSION = 10
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS rooms(
@@ -170,6 +170,9 @@ CREATE TABLE IF NOT EXISTS idempotency(
     key TEXT NOT NULL,
     PRIMARY KEY(room_id, channel_id, key)
 );
+CREATE INDEX IF NOT EXISTS idx_idempotency_room_key ON idempotency(room_id, key);
+CREATE INDEX IF NOT EXISTS idx_events_room_idempotency
+    ON events(room_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts
     USING fts5(text, event_id UNINDEXED, room_id UNINDEXED);
 """
@@ -527,6 +530,30 @@ def _migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
         raise
 
 
+def _migrate_v9_to_v10(conn: sqlite3.Connection) -> None:
+    """A proactive delivery's key is looked up within its room, whatever
+    channel committed it (RFC §22.1): its events and its keys are indexed by
+    room and key."""
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if int(conn.execute("PRAGMA user_version").fetchone()[0]) >= 10:
+            conn.execute("COMMIT")
+            return
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_idempotency_room_key ON idempotency(room_id, key)"
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_events_room_idempotency
+               ON events(room_id, idempotency_key) WHERE idempotency_key IS NOT NULL"""
+        )
+        conn.execute("PRAGMA user_version=10")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
@@ -536,6 +563,7 @@ _MIGRATIONS = {
     6: _migrate_v6_to_v7,
     7: _migrate_v7_to_v8,
     8: _migrate_v8_to_v9,
+    9: _migrate_v9_to_v10,
 }
 """Each step takes a file from its version to the next."""
 
@@ -1094,28 +1122,38 @@ class SQLiteStore(ConversationStore):
         recipient_key: str | None,
     ) -> str | None:
         names = sorted(sender_names(participant_id, identity_id))
-        named = f"b.participant_id IN ({_placeholders(names)})"
+        # Two branches, each read through idx_bindings_channel_participant:
+        # the bindings naming one of the names, and the channel's bindings
+        # naming no one (an OR of both would read every binding of the
+        # channel).
+        where = ["b.channel_id = ?", f"b.participant_id IN ({_placeholders(names)})"]
         params: list[Any] = [channel_id, *names]
+        _filter_rooms(where, params, room_filter)
+        branches = [where]
         if recipient_key is not None:
             # A binding naming no correspondent, not a group, names its
             # recipient (RFC §5.7): its value under the key, a string or a
             # number, read whatever characters the key holds.
-            named = (
-                f"({named} OR (b.participant_id IS NULL"  # nosec B608  # fragments are internal, values parameterised
-                " AND NOT COALESCE(json_extract(b.data, '$.group'), 0)"
-                " AND EXISTS (SELECT 1 FROM json_each(b.data, '$.metadata')"
+            unnamed = [
+                "b.channel_id = ?",
+                "b.participant_id IS NULL",
+                "NOT COALESCE(json_extract(b.data, '$.group'), 0)",
+                "EXISTS (SELECT 1 FROM json_each(b.data, '$.metadata')"
                 " WHERE key = ? AND type IN ('text', 'integer', 'real')"
-                " AND CAST(value AS TEXT) = ?)))"
-            )
-            params += [recipient_key, participant_id]
-        where = ["b.channel_id = ?", named]
-        _filter_rooms(where, params, room_filter)
+                " AND CAST(value AS TEXT) = ?)",
+            ]
+            params += [channel_id, recipient_key, participant_id]
+            _filter_rooms(unnamed, params, room_filter)
+            branches.append(unnamed)
+        found = " UNION ALL ".join(
+            "SELECT r.id, r.created_ts FROM bindings b JOIN rooms r ON r.id = b.room_id"
+            f" WHERE {' AND '.join(branch)}"  # nosec B608  # fragments are internal, values parameterised
+            for branch in branches
+        )
         row = (
             self._db()
             .execute(
-                f"""SELECT r.id FROM bindings b JOIN rooms r ON r.id = b.room_id
-                    WHERE {" AND ".join(where)}
-                    ORDER BY r.created_ts DESC, r.id DESC LIMIT 1""",  # nosec B608  # fragments are internal, values parameterised
+                f"SELECT id FROM ({found}) ORDER BY created_ts DESC, id DESC LIMIT 1",  # nosec B608  # fragments are internal, values parameterised
                 params,
             )
             .fetchone()
@@ -1472,17 +1510,15 @@ class SQLiteStore(ConversationStore):
         return await self._run(self._x_check_idempotency, room_id, channel_id, key)
 
     def _x_check_idempotency(self, room_id: str, channel_id: str | None, key: str) -> bool:
-        # No channel: any channel of the room, a proactive key's scope (RFC §22.1).
-        row = (
-            self._db()
-            .execute(
-                "SELECT 1 FROM idempotency WHERE room_id = ? AND key = ?"
-                " AND (? IS NULL OR channel_id = ?) LIMIT 1",
-                (room_id, key, channel_id, channel_id),
-            )
-            .fetchone()
-        )
-        return row is not None
+        # No channel: any channel of the room, a proactive key's scope (RFC
+        # §22.1), read through idx_idempotency_room_key.
+        if channel_id is None:
+            query = "SELECT 1 FROM idempotency WHERE room_id = ? AND key = ? LIMIT 1"
+            params: tuple[str, ...] = (room_id, key)
+        else:
+            query = "SELECT 1 FROM idempotency WHERE room_id = ? AND channel_id = ? AND key = ?"
+            params = (room_id, channel_id, key)
+        return self._db().execute(query, params).fetchone() is not None
 
     async def get_event_by_idempotency_key(
         self, room_id: str, key: str, *, channel_id: str | None
@@ -1492,15 +1528,23 @@ class SQLiteStore(ConversationStore):
     def _x_get_event_by_idempotency_key(
         self, room_id: str, channel_id: str | None, key: str
     ) -> RoomEvent | None:
-        row = (
-            self._db()
-            .execute(
+        # No channel: any channel of the room, the lowest index first, read
+        # through idx_events_room_idempotency.
+        if channel_id is None:
+            # "+idx": sorting the few rows of the key, not reading the room in
+            # index order for them.
+            query = (
                 "SELECT data FROM events WHERE room_id = ? AND idempotency_key = ?"
-                " AND (? IS NULL OR source_channel_id = ?) ORDER BY idx LIMIT 1",
-                (room_id, key, channel_id, channel_id),
+                " ORDER BY +idx LIMIT 1"
             )
-            .fetchone()
-        )
+            params: tuple[str, ...] = (room_id, key)
+        else:
+            query = (
+                "SELECT data FROM events WHERE room_id = ? AND source_channel_id = ?"
+                " AND idempotency_key = ?"
+            )
+            params = (room_id, channel_id, key)
+        row = self._db().execute(query, params).fetchone()
         return _load_event(row[0]) if row is not None else None
 
     async def get_event_count(self, room_id: str, event_filter: EventFilter | None = None) -> int:

@@ -275,6 +275,16 @@ DROP INDEX IF EXISTS idx_events_idempotency;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency_channel
     ON events(room_id, source_channel_id, idempotency_key)
     WHERE idempotency_key IS NOT NULL;
+-- A proactive delivery's key is looked up within its room, whatever channel
+-- committed it (RFC §22.1). Created only when missing: CREATE INDEX takes a
+-- lock on events even when the index exists.
+DO $$
+BEGIN
+    IF to_regclass('idx_events_room_idempotency') IS NULL THEN
+        CREATE INDEX idx_events_room_idempotency ON events(room_id, idempotency_key)
+            WHERE idempotency_key IS NOT NULL;
+    END IF;
+END $$;
 
 -- Per-room high-water marks make indexes monotonic even when the latest
 -- event is deleted. The UPSERT is an additive backfill for deployments that
@@ -358,7 +368,13 @@ CREATE INDEX IF NOT EXISTS idx_participants_channel
 -- Routing reads the rooms a sender is a participant of (RFC §10.4 step 1).
 CREATE INDEX IF NOT EXISTS idx_participants_id ON participants(id);
 -- Routing names a participant by its identity too (RFC §10.4 step 1).
-CREATE INDEX IF NOT EXISTS idx_participants_identity ON participants(identity_id);
+-- Created only when missing, as idx_events_room_idempotency is.
+DO $$
+BEGIN
+    IF to_regclass('idx_participants_identity') IS NULL THEN
+        CREATE INDEX idx_participants_identity ON participants(identity_id);
+    END IF;
+END $$;
 
 -- identities
 CREATE TABLE IF NOT EXISTS identities (

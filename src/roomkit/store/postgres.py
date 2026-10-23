@@ -985,23 +985,32 @@ class PostgresStore(ConversationStore):
     ) -> str | None:
         # Newest room first, id as tie-breaker, like the other stores. A
         # binding naming no correspondent, not a group, names its recipient
-        # (RFC §5.7): its value under the key, a string or a number.
+        # (RFC §5.7): its value under the key, a string or a number. Two
+        # branches, each read through idx_bindings_channel_participant: the
+        # bindings naming one of the names, and the channel's bindings naming
+        # no one, which the kit leaves only where no recipient was given or a
+        # binding was written to the store directly; an OR of both would
+        # read every binding of the channel.
         names = sorted(sender_names(participant_id, identity_id))
-        named = "b.participant_id = ANY($2::text[])"
         params: list[Any] = [channel_id, names]
+        branches = [
+            "SELECT b.room_id, r.created_at FROM bindings b JOIN rooms r ON r.id = b.room_id"  # nosec B608  # fragments are internal, values parameterised
+            " WHERE b.channel_id = $1 AND b.participant_id = ANY($2::text[])"
+            + _room_filter(params, room_filter)
+        ]
         if recipient_key is not None:
             params += [recipient_key, participant_id]
-            named = (
-                f"({named} OR (b.participant_id IS NULL AND NOT b.is_group"
-                " AND jsonb_typeof(b.metadata -> $3) IN ('string', 'number')"
-                " AND b.metadata ->> $3 = $4))"
+            key, address = len(params) - 1, len(params)
+            branches.append(
+                "SELECT b.room_id, r.created_at FROM bindings b JOIN rooms r ON r.id = b.room_id"  # nosec B608  # fragments are internal, values parameterised
+                " WHERE b.channel_id = $1 AND b.participant_id IS NULL AND NOT b.is_group"
+                f" AND jsonb_typeof(b.metadata -> ${key}) IN ('string', 'number')"
+                f" AND b.metadata ->> ${key} = ${address}" + _room_filter(params, room_filter)
             )
         query = (
-            "SELECT b.room_id FROM bindings b "
-            f"JOIN rooms r ON r.id = b.room_id WHERE b.channel_id = $1 AND {named}"  # nosec B608  # fragments are internal, values parameterised
+            f"SELECT room_id FROM ({' UNION ALL '.join(branches)}) found"  # nosec B608  # fragments are internal, values parameterised
+            ' ORDER BY created_at DESC, room_id COLLATE "C" DESC LIMIT 1'
         )
-        query += _room_filter(params, room_filter)
-        query += ' ORDER BY r.created_at DESC, b.room_id COLLATE "C" DESC LIMIT 1'
         async with self._acquire() as conn:
             row = await conn.fetchrow(query, *params)
         return row["room_id"] if row is not None else None
@@ -1304,15 +1313,19 @@ class PostgresStore(ConversationStore):
         }
 
     async def check_idempotency(self, room_id: str, key: str, *, channel_id: str | None) -> bool:
-        # No channel: any channel of the room, a proactive key's scope (RFC §22.1).
-        async with self._acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT 1 FROM events WHERE room_id = $1 AND idempotency_key = $2"
-                " AND ($3::text IS NULL OR source_channel_id = $3) LIMIT 1",
-                room_id,
-                key,
-                channel_id,
+        # No channel: any channel of the room, a proactive key's scope (RFC
+        # §22.1), read through idx_events_room_idempotency.
+        if channel_id is None:
+            query = "SELECT 1 FROM events WHERE room_id = $1 AND idempotency_key = $2 LIMIT 1"
+            params: tuple[str, ...] = (room_id, key)
+        else:
+            query = (
+                "SELECT 1 FROM events WHERE room_id = $1 AND source_channel_id = $2"
+                " AND idempotency_key = $3"
             )
+            params = (room_id, channel_id, key)
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(query, *params)
         return row is not None
 
     async def get_event_by_idempotency_key(
@@ -1320,14 +1333,21 @@ class PostgresStore(ConversationStore):
     ) -> RoomEvent | None:
         with self._query_span("get_event_by_idempotency_key", "events"):
             async with self._acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT * FROM events WHERE room_id = $1 AND idempotency_key = $2"
-                    " AND ($3::text IS NULL OR source_channel_id = $3)"
-                    ' ORDER BY "index" LIMIT 1',
-                    room_id,
-                    key,
-                    channel_id,
-                )
+                if channel_id is None:
+                    row = await conn.fetchrow(
+                        "SELECT * FROM events WHERE room_id = $1 AND idempotency_key = $2"
+                        ' ORDER BY "index" LIMIT 1',
+                        room_id,
+                        key,
+                    )
+                else:
+                    row = await conn.fetchrow(
+                        "SELECT * FROM events WHERE room_id = $1 AND source_channel_id = $2"
+                        " AND idempotency_key = $3",
+                        room_id,
+                        channel_id,
+                        key,
+                    )
         return _row_to_event(row) if row is not None else None
 
     async def get_event_count(self, room_id: str, event_filter: EventFilter | None = None) -> int:

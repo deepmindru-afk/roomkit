@@ -982,6 +982,27 @@ async def test_binding_policy_migration_preserves_old_rows(store) -> None:
     assert await store.get_binding("r1", "sms") == changed
 
 
+async def test_init_indexes_the_routing_and_key_lookups_once(store) -> None:
+    """A proactive key is looked up within its room (RFC §22.1), a
+    participant by its identity (§10.4): init() creates both indexes when
+    they are missing, and leaves them be when present."""
+    names = ("idx_events_room_idempotency", "idx_participants_identity")
+    async with store._pool.acquire() as conn:
+        for name in names:
+            await conn.execute(f"DROP INDEX {name}")
+    await store.init()
+    await store.init()
+    async with store._pool.acquire() as conn:
+        found = {
+            row["indexname"]
+            for row in await conn.fetch(
+                "SELECT indexname FROM pg_indexes WHERE indexname = ANY($1::text[])",
+                list(names),
+            )
+        }
+    assert found == set(names)
+
+
 async def test_a_store_from_before_group_bindings_upgrades_its_rows(store) -> None:
     """The additive ``is_group`` column (RFC §5.7): an existing binding reads as
     not a group, and a group binding round-trips once the column is there."""
