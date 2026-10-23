@@ -366,12 +366,15 @@ async def test_a_task_that_ran_ends_as_it_stands_whatever_cancels_it(door: str) 
     task = await kit.delegate("p", "worker", "go", on_complete=ending.on_complete)
     await asyncio.wait_for(ending.entered.wait(), 5)
 
-    # Released as the cancel or the close is asked: it resumes once they wait.
+    asked = asyncio.ensure_future(
+        kit.task_runner.cancel(task.id) if door == "cancel" else kit.task_runner.close()
+    )
+    await asyncio.wait({asked}, timeout=0.05)
+    assert not asked.done()  # it waits for the task's end, under way
     ending.release.set()
+    answer = await asyncio.wait_for(asked, 5)
     if door == "cancel":
-        assert await kit.task_runner.cancel(task.id) is False
-    else:
-        await kit.task_runner.close()
+        assert answer is False
 
     assert ending.seen == [TaskStatus.COMPLETED, "done"]
     assert completed == [(TaskStatus.COMPLETED, None)]
@@ -399,11 +402,13 @@ async def test_a_cancel_cut_while_the_worker_unwinds_still_ends_the_task() -> No
     task = await kit.delegate("p", "worker", "go")
     await asyncio.wait_for(started.wait(), 5)
 
-    with pytest.raises(TimeoutError):
-        async with asyncio.timeout(None) as deadline:
-            watcher = asyncio.ensure_future(_times_out_once(unwinding, deadline, unwound))
-            await kit.task_runner.cancel(task.id)
-    await watcher
+    cancelling = asyncio.ensure_future(kit.task_runner.cancel(task.id))
+    await asyncio.wait_for(unwinding.wait(), 5)
+    await asyncio.wait({cancelling}, timeout=0.05)
+    assert not cancelling.done() and task.result is None  # it waits for the unwind
+    cancelling.cancel()  # its caller gives up while the worker unwinds
+    unwound.set()
+    await asyncio.gather(cancelling, return_exceptions=True)
 
     assert (await task.wait(timeout=1)).status == TaskStatus.CANCELLED
     assert completed == [(TaskStatus.CANCELLED, "cancelled")]

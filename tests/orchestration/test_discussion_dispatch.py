@@ -323,10 +323,10 @@ async def test_the_queue_says_who_a_decision_queued() -> None:
     async with asyncio.timeout(5):  # the hooks run on their own: dev's turn ends last
         while not any(c.change == SpeakQueueChange.TURN_ENDED for c in changes):
             await asyncio.sleep(0.01)
+    await kit.close()  # drains the hooks: a QUEUED fired after TURN_ENDED is in
 
     queued = [c for c in changes if c.change == SpeakQueueChange.QUEUED]
     assert [(c.channel_ids, c.event_id) for c in queued] == [(("dev",), result.event.id)]
-    await kit.close()
 
 
 async def test_a_message_waiting_for_a_decision_keeps_its_place() -> None:

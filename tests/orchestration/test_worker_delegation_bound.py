@@ -133,7 +133,8 @@ async def _run(door: str, cut: _Cut, *, bound: float, call_bound: float | None =
         while not (turn.ends and turn.entries and turn.entries[-1][0] in _TERMINAL):
             await asyncio.sleep(0.01)
             turn.entries = await _worker_entries(kit)
-    await kit.close()
+    await kit.close()  # a second terminal entry, were one posted, is in by then
+    turn.entries = await _worker_entries(kit)
     return turn
 
 
@@ -147,7 +148,9 @@ async def test_a_worker_past_its_bound_is_cut_and_the_call_answers_once(
     assert turn.elapsed < _WORK
     assert len(turn.reports) == 1
     assert "Tool call cancelled" not in turn.reports[0]
-    assert turn.entries[-1] == (StatusLevel.FAILED, f"The task timed out after {CUT:g}s.")
+    assert [e for e in turn.entries if e[0] in _TERMINAL] == [
+        (StatusLevel.FAILED, f"The task timed out after {CUT:g}s.")
+    ]
 
 
 @EVERY_DOOR
@@ -155,7 +158,7 @@ async def test_a_delegation_its_call_cut_posts_the_worker_failed(door: str, cut:
     turn = await _run(door, cut, bound=30.0, call_bound=CUT)
 
     assert turn.ends == ["cancelled"]
-    assert turn.entries[-1] == (StatusLevel.FAILED, "cancelled")
+    assert [e for e in turn.entries if e[0] in _TERMINAL] == [(StatusLevel.FAILED, "cancelled")]
 
 
 async def test_a_timeout_the_delegation_raised_itself_is_its_own_failure() -> None:

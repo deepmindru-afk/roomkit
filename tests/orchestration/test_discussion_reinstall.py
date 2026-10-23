@@ -320,7 +320,8 @@ async def test_a_read_begun_before_an_install_here_does_not_undo_it(
     if reading is not None:
         await reading
     else:
-        # Back once the driver, done with what it read, waits again.
+        # Its late read came back: set as the store hands the room over, and
+        # the driver's leave follows with no suspension in between.
         await asyncio.wait_for(store.came_back.wait(), 2.0)
 
     assert isinstance(a.room_strategy("r1"), Discussion)

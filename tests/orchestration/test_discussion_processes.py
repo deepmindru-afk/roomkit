@@ -187,13 +187,20 @@ async def _idle(kit: RoomKit) -> None:
     await _until(idle)
 
 
-async def _turn_over(driver: Any) -> None:
-    """Until the turn *driver* was giving has run to its end, cut or not: an
-    answer it was going to write is written by then."""
+async def _turn_over(cluster: _Cluster, driver: Any, agent: str = "investigator") -> None:
+    """Until the turn *driver* was giving has run to its end, cut or not: its
+    generation returned or was cancelled (a stopped driver forgets its turn at
+    once, the generation may still run), and an answer it was going to write is
+    written by then."""
+
+    async def generated() -> bool:
+        return f"-{agent}" in cluster.log or f"x{agent}" in cluster.log
 
     async def over() -> bool:
         return driver.speaking is None
 
+    await _until(generated)
+    await asyncio.sleep(0.05)  # the write that follows a generation that returned
     await _until(over)
 
 
@@ -654,7 +661,7 @@ async def test_uninstalling_while_a_turn_runs_cuts_it_and_records_nothing(
     )
 
     await _uninstall(kit, locked=locked)
-    await _turn_over(driver)
+    await _turn_over(cluster, driver)
 
     room = await cluster.store.get_room("r1")
     assert room is not None
@@ -747,7 +754,7 @@ async def test_installing_under_the_room_lock_returns_mid_turn() -> None:
     # Over the discussion, the speaking agent left out: its turn is cut.
     async with asyncio.timeout(1.0), a.lock_manager.locked("r1"):
         await a.install_strategy("r1", cluster.strategy(names=("sre", "comms")))
-    await _turn_over(driver)
+    await _turn_over(cluster, driver)
 
     assert await cluster.answers() == []
     stored = await cluster.stored()
@@ -774,19 +781,17 @@ async def test_a_process_that_stops_during_a_turn_records_its_end_and_keeps_the_
     assert await cluster.stored() is not None
 
 
-async def test_a_process_whose_install_another_replaced_is_current_again_once_it_installs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_process_whose_install_another_replaced_is_current_again_once_it_installs() -> (
+    None
+):
     # B's host read comms switched off a moment: it installs without it,
     # then stops. A follows B's agents and gives no turn: the room waits.
-    lease = _shorter_lease(monkeypatch)
     cluster = _Cluster()
     a = await cluster.process(install=True, create=True)
     b = await cluster.process(install=True, names=KEPT)
     assert await b.room_strategy_is_current("r1", Discussion) is True
     assert await a.room_strategy_is_current("r1", Discussion) is False
-    await b.close()
-    await asyncio.sleep(lease + 2 * _driver.POLL_SECONDS)  # past the lease
+    await b.close()  # its close gives the lease up: A may take it at once
     await _say(a, "@investigator are you there?")
     await asyncio.sleep(3 * _driver.POLL_SECONDS)  # A's driver has read it by now
     assert await cluster.answers() == []
@@ -838,7 +843,7 @@ async def test_an_uninstall_elsewhere_is_taken_at_once_even_under_the_lock_mid_t
 
     # A host that still wants the discussion would install it; this one
     # follows the uninstall, and nothing of A's cut turn comes back.
-    await _turn_over(driver)
+    await _turn_over(cluster, driver)
     room = await cluster.store.get_room("r1")
     assert room is not None and room.metadata.get("_speak_queue") is None
     assert await cluster.stored() is None

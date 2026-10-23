@@ -73,7 +73,8 @@ async def _room(
 
 
 def _terminal_entries(kit: RoomKit) -> list[tuple[str, Any, str]]:
-    """The run's terminal entries, posted once its outcome was handed back."""
+    """The run's terminal entries on the status bus: a completed run's once its
+    outcome was handed back, a failed or cancelled one's as it ends."""
     posted: list[tuple[str, Any, str]] = []
     real_post = kit.status_bus.post
 
