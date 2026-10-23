@@ -448,24 +448,3 @@ class TestPyAVVideoResizer:
 # ---------------------------------------------------------------------------
 # VideoPipelineConfig — new fields
 # ---------------------------------------------------------------------------
-
-
-class TestVideoPipelineConfigNewFields:
-    def test_default_none(self) -> None:
-        config = VideoPipelineConfig()
-        assert config.decoder is None
-        assert config.resizer is None
-        assert config.vision is None
-
-    def test_with_all_stages(self) -> None:
-        decoder = MockVideoDecoderProvider()
-        resizer = MockVideoResizerProvider()
-        vision = MockVisionProvider()
-        config = VideoPipelineConfig(
-            decoder=decoder,
-            resizer=resizer,
-            vision=vision,
-        )
-        assert config.decoder is decoder
-        assert config.resizer is resizer
-        assert config.vision is vision

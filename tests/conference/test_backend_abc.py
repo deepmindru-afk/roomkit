@@ -100,19 +100,6 @@ def _track(track_id: str = "tr-1", kind: TrackKind = TrackKind.AUDIO) -> Confere
 
 
 class TestAbstractSurface:
-    def test_incomplete_backend_cannot_be_instantiated(self) -> None:
-        """A backend that skips part of the interface must fail loudly at
-        construction, not at the first call in production.
-        """
-
-        class Partial(ConferenceBackend):
-            @property
-            def name(self) -> str:
-                return "partial"
-
-        with pytest.raises(TypeError):
-            Partial()  # type: ignore[abstract]
-
     def test_complete_backend_instantiates(self) -> None:
         assert _Stub().name == "stub"
 

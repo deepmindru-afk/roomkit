@@ -25,6 +25,7 @@ class TestChannelType:
     def test_members(self) -> None:
         assert ChannelType.SMS == "sms"
         assert ChannelType.AI == "ai"
+        assert ChannelType.VIDEO == "video"
 
     def test_count(self) -> None:
         # Includes MMS, RCS, REALTIME_VOICE, REALTIME_AUDIO_VIDEO, WHATSAPP_PERSONAL,
@@ -138,6 +139,12 @@ class TestHookTrigger:
         assert HookTrigger.ON_DELIVERY_STATUS == "on_delivery_status"
         assert HookTrigger.ON_EVENT_UPDATED == "on_event_updated"
         assert HookTrigger.ON_EVENT_DELETED == "on_event_deleted"
+        assert HookTrigger.ON_VIDEO_SESSION_STARTED == "on_video_session_started"
+        assert HookTrigger.ON_VIDEO_SESSION_ENDED == "on_video_session_ended"
+        assert HookTrigger.ON_VIDEO_TRACK_ADDED == "on_video_track_added"
+        assert HookTrigger.ON_VIDEO_TRACK_REMOVED == "on_video_track_removed"
+        assert HookTrigger.ON_SCREEN_SHARE_STARTED == "on_screen_share_started"
+        assert HookTrigger.ON_SCREEN_SHARE_STOPPED == "on_screen_share_stopped"
 
     def test_count(self) -> None:
         # 82, then the three identity verification triggers (RFC §11.7).

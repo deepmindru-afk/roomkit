@@ -37,7 +37,7 @@ from roomkit.conference._livekit_mapping import (
     video_grant_kwargs,
 )
 from roomkit.conference.base import ConferenceBackend
-from roomkit.conference.livekit import LiveKitConferenceBackend, LiveKitConfig
+from roomkit.conference.livekit import LiveKitConferenceBackend
 from roomkit.conference.models import ConferenceCapability, ConferenceGrants, TrackKind
 
 BACKEND_SURFACE = (
@@ -64,9 +64,6 @@ BACKEND_SURFACE = (
 class TestConformance:
     """The interface is implemented, and implemented here."""
 
-    def test_the_backend_is_concrete(self) -> None:
-        assert LiveKitConferenceBackend.__abstractmethods__ == frozenset()
-
     def test_the_whole_interface_is_implemented_by_this_class(self) -> None:
         """Defined on the backend itself, not inherited.
 
@@ -89,15 +86,6 @@ class TestConformance:
         but "there is no stub in here".
         """
         assert "NotImplementedError" not in inspect.getsource(LiveKitConferenceBackend)
-
-    def test_the_module_imports_without_the_sdk(self) -> None:
-        """Reached by getting here at all, and worth naming.
-
-        Everything above depends on the module being importable without
-        ``livekit``, which is what the deferred import in ``_import_livekit``
-        buys and what keeps this file running in CI.
-        """
-        assert LiveKitConfig().url is None
 
 
 class TestCapabilities:

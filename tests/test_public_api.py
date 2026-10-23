@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import importlib
 import re
+from pathlib import Path
 
 import roomkit
+
+_PACKAGE_ROOT = Path(roomkit.__file__).parent
 
 
 class TestPublicAPI:
@@ -32,18 +36,30 @@ class TestPublicAPI:
         assert roomkit.Room is not None
         assert roomkit.RoomEvent is not None
 
-    def test_subpackage_imports(self) -> None:
-        from roomkit.channels import base
-        from roomkit.core import hooks
-        from roomkit.identity import mock
-        from roomkit.models import enums
-        from roomkit.store import memory
+    def test_every_name_a_subpackage_exports_resolves(self) -> None:
+        """A name in a subpackage's ``__all__`` that does not resolve fails only
+        whoever imports it, so each subpackage's list is read here, once.
 
-        assert enums is not None
-        assert hooks is not None
-        assert base is not None
-        assert memory is not None
-        assert mock is not None
+        A subpackage that needs an optional dependency the environment lacks is
+        left out; a roomkit module that is missing is a failure.
+        """
+        unresolved: dict[str, list[str]] = {}
+        for init in sorted(_PACKAGE_ROOT.rglob("__init__.py")):
+            parts = init.parent.relative_to(_PACKAGE_ROOT).parts
+            if not parts:
+                continue
+            package = ".".join(("roomkit", *parts))
+            try:
+                module = importlib.import_module(package)
+            except ModuleNotFoundError as missing:
+                if (missing.name or "").startswith("roomkit"):
+                    raise
+                continue
+            names = [n for n in getattr(module, "__all__", ()) if not hasattr(module, n)]
+            if names:
+                unresolved[package] = names
+
+        assert unresolved == {}
 
     def test_channels_importable_from_channels_package(self) -> None:
         """Every channel resolves from ``roomkit.channels``, factories included.

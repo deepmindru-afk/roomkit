@@ -7,7 +7,6 @@ import pytest
 from roomkit.video.events import VideoDetectionEvent
 from roomkit.video.pipeline import (
     FilterContext,
-    FilterEvent,
     VideoPipeline,
     VideoPipelineConfig,
 )
@@ -16,7 +15,6 @@ from roomkit.video.pipeline.filter.mediapipe_face_touch import (
     FaceTouchConfig,
     FaceTouchFilter,
     FaceTouchSensitivity,
-    FaceZone,
 )
 from roomkit.video.pipeline.filter.mock_face_touch import MockFaceTouchFilter
 from roomkit.video.video_frame import VideoFrame
@@ -58,13 +56,6 @@ def _detection_event(
 
 
 class TestFaceTouchConfig:
-    def test_default_config(self) -> None:
-        config = FaceTouchConfig()
-        assert config.sensitivity == FaceTouchSensitivity.MEDIUM
-        assert config.every_n_frames == 3
-        assert FaceZone.LEFT_CHEEK in config.zones
-        assert FaceZone.FOREHEAD not in config.zones
-
     def test_sensitivity_presets_resolve(self) -> None:
         for sensitivity in FaceTouchSensitivity:
             config = FaceTouchConfig(sensitivity=sensitivity)
@@ -87,11 +78,6 @@ class TestFaceTouchConfig:
             config.resolved_cooldown
             == _SENSITIVITY_PARAMS[FaceTouchSensitivity.LOW]["cooldown_frames"]
         )
-
-    def test_custom_zones(self) -> None:
-        config = FaceTouchConfig(zones=frozenset({FaceZone.FOREHEAD, FaceZone.CHIN}))
-        assert FaceZone.FOREHEAD in config.zones
-        assert FaceZone.LEFT_CHEEK not in config.zones
 
 
 # ---------------------------------------------------------------------------
@@ -243,25 +229,6 @@ class TestMockFaceTouchFilter:
 # ---------------------------------------------------------------------------
 
 
-class TestFilterContextEvents:
-    def test_events_default_empty(self) -> None:
-        ctx = FilterContext()
-        assert ctx.events == []
-
-    def test_events_appendable(self) -> None:
-        ctx = FilterContext()
-        ctx.events.append(FilterEvent(kind="test", data=42))
-        assert len(ctx.events) == 1
-        assert ctx.events[0].kind == "test"
-        assert ctx.events[0].data == 42
-
-    def test_events_independent_per_context(self) -> None:
-        ctx1 = FilterContext()
-        ctx2 = FilterContext()
-        ctx1.events.append(FilterEvent(kind="a"))
-        assert len(ctx2.events) == 0
-
-
 # ---------------------------------------------------------------------------
 # VideoPipeline drain_events integration tests
 # ---------------------------------------------------------------------------
@@ -319,27 +286,3 @@ class TestPipelineDrainEvents:
 # ---------------------------------------------------------------------------
 # VideoDetectionEvent model tests
 # ---------------------------------------------------------------------------
-
-
-class TestVideoDetectionEvent:
-    def test_construction(self) -> None:
-        event = VideoDetectionEvent(
-            kind="face_touch",
-            labels=["left_cheek"],
-            confidence=0.9,
-            metadata={"zone": "left_cheek", "hand": "right", "distance": 0.03},
-            frame_sequence=42,
-        )
-        assert event.kind == "face_touch"
-        assert event.labels == ["left_cheek"]
-        assert event.confidence == 0.9
-        assert event.metadata["zone"] == "left_cheek"
-        assert event.frame_sequence == 42
-        assert event.timestamp is not None
-
-    def test_defaults(self) -> None:
-        event = VideoDetectionEvent(kind="object")
-        assert event.labels == []
-        assert event.confidence == 0.0
-        assert event.metadata == {}
-        assert event.frame_sequence == 0

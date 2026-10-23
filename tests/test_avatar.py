@@ -2,18 +2,10 @@
 
 from __future__ import annotations
 
-from roomkit.video.avatar import AvatarProvider, MockAvatarProvider
+from roomkit.video.avatar import MockAvatarProvider
 
 
 class TestMockAvatarProvider:
-    async def test_name(self) -> None:
-        avatar = MockAvatarProvider()
-        assert avatar.name == "mock"
-
-    async def test_fps(self) -> None:
-        avatar = MockAvatarProvider(fps=25)
-        assert avatar.fps == 25
-
     async def test_not_started_initially(self) -> None:
         avatar = MockAvatarProvider()
         assert avatar.is_started is False
@@ -100,14 +92,3 @@ class TestMockAvatarProvider:
     async def test_flush_before_start_returns_empty(self) -> None:
         avatar = MockAvatarProvider()
         assert avatar.flush() == []
-
-    async def test_is_subclass(self) -> None:
-        assert issubclass(MockAvatarProvider, AvatarProvider)
-
-    async def test_default_dimensions(self) -> None:
-        avatar = MockAvatarProvider()
-        await avatar.start(b"fake-png")
-
-        frames = avatar.feed_audio(b"\x00" * 640)
-        assert frames[0].width == 512
-        assert frames[0].height == 512

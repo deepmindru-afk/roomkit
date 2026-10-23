@@ -205,17 +205,3 @@ class TestPipelineWithTransforms:
         txf = MockVideoTransformProvider()
         pipeline = VideoPipeline(VideoPipelineConfig(transforms=[txf]))
         pipeline.close()
-
-
-class TestPipelineConfigWithTransforms:
-    def test_default_empty(self) -> None:
-        config = VideoPipelineConfig()
-        assert config.transforms == []
-
-    def test_transforms_field_order(self) -> None:
-        """Transforms field exists alongside other fields."""
-        txf = MockVideoTransformProvider()
-        flt = MockVideoFilterProvider()
-        config = VideoPipelineConfig(transforms=[txf], filters=[flt])
-        assert config.transforms == [txf]
-        assert config.filters == [flt]

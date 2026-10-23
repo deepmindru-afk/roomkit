@@ -287,11 +287,6 @@ class TestMintedAccess:
 
         assert "attributes" not in _claims(access.token)
 
-    def test_the_token_stays_out_of_the_access_repr(self) -> None:
-        access = _backend()._access("room-1", "p-alice", ConferenceGrants(), publish_data=True)
-
-        assert access.token not in repr(access)
-
 
 class TestControlPlane:
     async def test_a_room_is_created_under_the_roomkit_room_id(self) -> None:

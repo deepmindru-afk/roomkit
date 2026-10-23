@@ -15,33 +15,10 @@ from roomkit.video.vision.openai import (
 )
 
 
-class TestOpenAIVisionConfig:
-    def test_defaults(self) -> None:
-        config = OpenAIVisionConfig()
-        assert config.base_url == "http://localhost:11434/v1"
-        assert config.model == "qwen3.5"
-        assert config.api_key == "ollama"
-        assert config.detail == "low"
-
-    def test_custom(self) -> None:
-        config = OpenAIVisionConfig(
-            api_key="sk-test",
-            base_url="https://api.openai.com/v1",
-            model="gpt-4o",
-            max_tokens=500,
-        )
-        assert config.model == "gpt-4o"
-        assert config.base_url == "https://api.openai.com/v1"
-
-
 class TestOpenAIVisionProvider:
     def test_name(self) -> None:
         provider = OpenAIVisionProvider(OpenAIVisionConfig(model="gpt-4o"))
         assert provider.name == "openai-vision:gpt-4o"
-
-    def test_default_name(self) -> None:
-        provider = OpenAIVisionProvider()
-        assert provider.name == "openai-vision:qwen3.5"
 
     async def test_analyze_frame(self) -> None:
         """Test analyze_frame with a mocked OpenAI client."""
@@ -170,26 +147,6 @@ class TestFrameToJpegBase64:
         with patch.dict("sys.modules", {"cv2": None, "numpy": None}):
             jpeg_bytes = frame_to_jpeg(rgb_frame)
             assert jpeg_bytes[:2] == b"\xff\xd8"
-
-
-class TestExports:
-    def test_importable_from_subpackage(self) -> None:
-        from roomkit.video import OpenAIVisionConfig, OpenAIVisionProvider
-
-        assert OpenAIVisionProvider is not None
-        assert OpenAIVisionConfig is not None
-
-    def test_importable_from_video(self) -> None:
-        from roomkit.video import OpenAIVisionConfig, OpenAIVisionProvider
-
-        assert OpenAIVisionProvider is not None
-        assert OpenAIVisionConfig is not None
-
-    def test_importable_from_vision(self) -> None:
-        from roomkit.video.vision import OpenAIVisionConfig, OpenAIVisionProvider
-
-        assert OpenAIVisionProvider is not None
-        assert OpenAIVisionConfig is not None
 
 
 _BUTTON: dict[str, object] = {

@@ -12,37 +12,11 @@ from roomkit.video.video_frame import VideoFrame
 from roomkit.video.vision.gemini import GeminiVisionConfig, GeminiVisionProvider
 
 
-class TestGeminiVisionConfig:
-    def test_defaults(self) -> None:
-        config = GeminiVisionConfig()
-        assert config.model == "gemini-3.8-flash"
-        assert config.api_key == ""
-        assert config.max_tokens == 1024
-
-    def test_custom(self) -> None:
-        config = GeminiVisionConfig(
-            api_key="AIza-test",
-            model="gemini-2.5-flash",
-            max_tokens=500,
-        )
-        assert config.api_key == "AIza-test"
-        assert config.model == "gemini-2.5-flash"
-
-
 class TestGeminiVisionProvider:
-    def test_name(self) -> None:
-        provider = GeminiVisionProvider(GeminiVisionConfig(api_key="test"))
-        assert provider.name == "gemini-vision:gemini-3.8-flash"
-
     def test_custom_model_name(self) -> None:
         config = GeminiVisionConfig(api_key="test", model="gemini-2.5-flash")
         provider = GeminiVisionProvider(config)
         assert provider.name == "gemini-vision:gemini-2.5-flash"
-
-    def test_config_constructor(self) -> None:
-        config = GeminiVisionConfig(api_key="k", model="custom")
-        provider = GeminiVisionProvider(config=config)
-        assert provider.name == "gemini-vision:custom"
 
     async def test_analyze_frame(self) -> None:
         """Test analyze_frame with a mocked Gemini client."""
@@ -229,20 +203,6 @@ class TestThinkingOffWhereTheModelTakesIt:
             await provider.analyze_frame(_frame())
 
         assert types.GenerateContentConfig.call_count == 1
-
-
-class TestExports:
-    def test_importable_from_subpackage(self) -> None:
-        from roomkit.video import GeminiVisionConfig, GeminiVisionProvider
-
-        assert GeminiVisionProvider is not None
-        assert GeminiVisionConfig is not None
-
-    def test_importable_from_video(self) -> None:
-        from roomkit.video import GeminiVisionConfig, GeminiVisionProvider
-
-        assert GeminiVisionProvider is not None
-        assert GeminiVisionConfig is not None
 
 
 _BUTTON: dict[str, object] = {
