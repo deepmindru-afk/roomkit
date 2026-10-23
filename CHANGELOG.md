@@ -417,6 +417,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   person's place); `hush` no longer reads "are you ready to listen?" as a
   request for quiet (7/7, the former 5/7).
 
+- **BREAKING — an address belongs to one identity per organization** (RFC
+  §5.6, §14.1, §17.2, RMK-930). `link_address()` of an address another
+  identity of the organization holds raises `AddressLinkedError`, and so does
+  `create_identity()` with one, writing nothing: the last link silently took
+  the address, re-homing that person's conversations, while the first
+  identity still listed it. An address is never moved silently. Linking to an
+  unknown identity, or to an identity of another organization than the call's
+  `organization_id` (`None` stands for the identities of no organization),
+  raises `IdentityNotFoundError`: the first did nothing, the second linked
+  another tenant's identity. Linking an address the identity holds still
+  changes nothing. The in-memory, SQLite and Postgres stores refuse alike, a
+  custom store must too; no schema changes, the address key was already one
+  per organization.
+
 - **BREAKING — `ParticipantRole.AGENT` is a human agent** (RFC §5, §6.4,
   §19.7.5 rule 2, RMK-911), an advisor or a support representative, as the
   role table says: a participant with that role takes part like a member.

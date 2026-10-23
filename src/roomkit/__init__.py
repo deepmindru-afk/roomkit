@@ -104,6 +104,7 @@ from roomkit.conference import (
 )
 from roomkit.core.delivery import DeliveryStrategy, Immediate, Queued, WaitForIdle
 from roomkit.core.exceptions import (
+    AddressLinkedError,
     ChannelRefusalError,
     ConferenceAlreadyAttachedError,
     ConferenceCapabilityError,
@@ -419,6 +420,7 @@ __all__ = [
     "VerificationRequestStatus",
     "VerificationStatus",
     "IdentityNotFoundError",
+    "AddressLinkedError",
     "SourceAlreadyAttachedError",
     "SourceNotFoundError",
     "VoiceBackendNotConfiguredError",

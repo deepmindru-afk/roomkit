@@ -1207,14 +1207,6 @@ class TestPostgresStore:
 
     # ── Identity operations ─────────────────────────────────────
 
-    async def test_create_identity(self) -> None:
-        store, mock_conn = _make_store_with_pool()
-        identity = _make_identity()
-        result = await store.create_identity(identity)
-        assert result.id == "id-1"
-        # Should have executed: INSERT identities + INSERT identity_addresses
-        assert mock_conn.execute.await_count >= 2
-
     async def test_create_identity_no_addresses(self) -> None:
         store, mock_conn = _make_store_with_pool()
         identity = Identity(id="id-2", channel_addresses={})
@@ -1250,33 +1242,6 @@ class TestPostgresStore:
         mock_conn.fetchrow.return_value = None
         result = await store.resolve_identity("sms", "+0000000000")
         assert result is None
-
-    async def test_link_address_new_address(self) -> None:
-        store, mock_conn = _make_store_with_pool()
-        identity = _make_identity()
-        mock_conn.fetchrow.return_value = _identity_row(identity)
-        await store.link_address("id-1", "email", "user@example.com")
-        # Should have: fetchrow (get identity) + execute (update identities) +
-        # execute (upsert identity_addresses)
-        assert mock_conn.execute.await_count >= 2
-
-    async def test_link_address_existing_address(self) -> None:
-        store, mock_conn = _make_store_with_pool()
-        identity = _make_identity()
-        mock_conn.fetchrow.return_value = _identity_row(identity)
-        # Link an address that already exists in the identity
-        await store.link_address("id-1", "sms", "+1234567890")
-        # Should still upsert the address row, but NOT update identity data
-        # (because the address is already in the list)
-        # 1 execute for the INSERT INTO identity_addresses only
-        assert mock_conn.execute.await_count >= 1
-
-    async def test_link_address_identity_not_found(self) -> None:
-        store, mock_conn = _make_store_with_pool()
-        mock_conn.fetchrow.return_value = None
-        await store.link_address("id-missing", "sms", "+1111111111")
-        # Should return early without executing anything
-        mock_conn.execute.assert_not_awaited()
 
     # ── Task operations ─────────────────────────────────────────
 

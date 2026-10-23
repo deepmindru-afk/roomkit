@@ -16,7 +16,7 @@ from roomkit.models.store_filter import EventFilter, includes_blocked, received_
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
-from roomkit.store.base import ConversationStore
+from roomkit.store.base import ConversationStore, address_linked, link_target
 
 
 class InMemoryStore(ConversationStore):
@@ -668,10 +668,18 @@ class InMemoryStore(ConversationStore):
     # Identity operations
 
     async def create_identity(self, identity: Identity) -> Identity:
+        scope = identity.organization_id or ""
+        keys = [
+            (ch_type, addr, scope)
+            for ch_type, addresses in identity.channel_addresses.items()
+            for addr in addresses
+        ]
+        for key in keys:
+            if self._address_index.get(key, identity.id) != identity.id:
+                raise address_linked(key[0])
         self._identities[identity.id] = identity
-        for ch_type, addresses in identity.channel_addresses.items():
-            for addr in addresses:
-                self._address_index[(ch_type, addr, identity.organization_id or "")] = identity.id
+        for key in keys:
+            self._address_index[key] = identity.id
         return identity
 
     async def get_identity(self, identity_id: str) -> Identity | None:
@@ -694,19 +702,20 @@ class InMemoryStore(ConversationStore):
         address: str,
         organization_id: str | None = None,
     ) -> None:
-        identity = self._identities.get(identity_id)
-        if identity is None:
-            return
+        identity = link_target(self._identities.get(identity_id), identity_id, organization_id)
+        # The empty string stands for "no organization" so the key shape is the
+        # same either way — and so an unscoped registration cannot be found by
+        # a scoped lookup, which is the isolation this key exists for.
+        key = (channel_type, address, organization_id or "")
+        if self._address_index.get(key, identity_id) != identity_id:
+            raise address_linked(channel_type)
         current = identity.channel_addresses.get(channel_type, [])
         if address not in current:
             new_addresses = {**identity.channel_addresses, channel_type: [*current, address]}
             self._identities[identity_id] = identity.model_copy(
                 update={"channel_addresses": new_addresses}
             )
-        # The empty string stands for "no organization" so the key shape is the
-        # same either way — and so an unscoped registration cannot be found by
-        # a scoped lookup, which is the isolation this key exists for.
-        self._address_index[(channel_type, address, organization_id or "")] = identity_id
+        self._address_index[key] = identity_id
 
     # Verification operations (RFC §11.7)
 

@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
-from roomkit.core.exceptions import RoomNotFoundError
+from roomkit.core.exceptions import IdentityNotFoundError, RoomNotFoundError
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import EventStatus, VerificationStatus
 from roomkit.models.event import RoomEvent, ThreadSummary
@@ -26,7 +26,7 @@ from roomkit.models.store_filter import EventFilter, includes_blocked
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
-from roomkit.store.base import ConversationStore
+from roomkit.store.base import ConversationStore, address_linked
 from roomkit.store.postgres_mappers import (
     _row_to_binding,
     _row_to_event,
@@ -139,6 +139,31 @@ async def _observe_event_index(conn: Any, room_id: str, event_index: int) -> Non
         room_id,
         event_index + 1,
     )
+
+
+async def _file_address(
+    conn: Any, channel_type: str, address: str, identity_id: str, organization_id: str
+) -> None:
+    """File *address* under *identity_id*, refusing one another identity of
+    the organization holds (RFC §5.6).
+
+    One statement, so two concurrent links of one address cannot both win:
+    the second waits on the first's row and reads its holder back. The
+    no-op update on a conflict is what makes ``RETURNING`` give that holder.
+    """
+    holder = await conn.fetchval(
+        "INSERT INTO identity_addresses (channel_type, address, identity_id, organization_id)"
+        " VALUES ($1, $2, $3, $4)"
+        " ON CONFLICT (channel_type, address, organization_id)"
+        " DO UPDATE SET identity_id = identity_addresses.identity_id"
+        " RETURNING identity_id",
+        channel_type,
+        address,
+        identity_id,
+        organization_id,
+    )
+    if holder != identity_id:
+        raise address_linked(channel_type)
 
 
 class PostgresSchemaError(RuntimeError):
@@ -1505,18 +1530,10 @@ class PostgresStore(ConversationStore):
             )
             for ch_type, addresses in identity.channel_addresses.items():
                 for addr in addresses:
-                    await conn.execute(
-                        "INSERT INTO identity_addresses"
-                        " (channel_type, address, identity_id, organization_id)"
-                        " VALUES ($1, $2, $3, $4)"
-                        " ON CONFLICT (channel_type, address, organization_id)"
-                        " DO UPDATE SET identity_id = $3",
-                        ch_type,
-                        addr,
-                        identity.id,
-                        # The identity's own organization: an address declared
-                        # on the identity belongs to the tenant that owns it.
-                        identity.organization_id or "",
+                    # The identity's own organization: an address declared on
+                    # the identity belongs to the tenant that owns it.
+                    await _file_address(
+                        conn, ch_type, addr, identity.id, identity.organization_id or ""
                     )
         return identity
 
@@ -1582,11 +1599,15 @@ class PostgresStore(ConversationStore):
     ) -> None:
         async with self._acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                "SELECT * FROM identities WHERE id = $1 FOR UPDATE",
+                "SELECT organization_id, channel_addresses FROM identities"
+                " WHERE id = $1 FOR UPDATE",
                 identity_id,
             )
-            if row is None:
-                return
+            # An organization links its own identities only (RFC §5.6), as
+            # store.base.link_target refuses for the other stores.
+            if row is None or (row["organization_id"] or "") != (organization_id or ""):
+                raise IdentityNotFoundError(f"Identity {identity_id} not found")
+            await _file_address(conn, channel_type, address, identity_id, organization_id or "")
             ch_addr = row["channel_addresses"]
             if isinstance(ch_addr, str):
                 ch_addr = json.loads(ch_addr)
@@ -1598,17 +1619,6 @@ class PostgresStore(ConversationStore):
                     identity_id,
                     ch_addr,
                 )
-            await conn.execute(
-                "INSERT INTO identity_addresses"
-                " (channel_type, address, identity_id, organization_id)"
-                " VALUES ($1, $2, $3, $4)"
-                " ON CONFLICT (channel_type, address, organization_id)"
-                " DO UPDATE SET identity_id = $3",
-                channel_type,
-                address,
-                identity_id,
-                organization_id or "",
-            )
 
     # ── Verification operations (RFC §11.7) ──────────────────────
 

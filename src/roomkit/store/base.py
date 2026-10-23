@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
+from roomkit.core.exceptions import AddressLinkedError, IdentityNotFoundError
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import EventType
 from roomkit.models.event import RoomEvent, ThreadSummary
@@ -22,6 +23,29 @@ from roomkit.models.voice_delivery import VoiceDeliveryRecord
 
 # Page size of the fallback scan over rooms (find_room_id_by_participant).
 _ROOM_PAGE = 100
+
+
+def link_target(
+    identity: Identity | None, identity_id: str, organization_id: str | None
+) -> Identity:
+    """The identity *organization_id* links an address to (RFC §5.6, §14.1).
+
+    An unknown identity, or one of another organization, is refused as not
+    found: an organization links its own identities only, and no
+    organization stands for the identities of none. The empty string and
+    ``None`` both name no organization, as the address key stores them.
+    """
+    if identity is None or (identity.organization_id or "") != (organization_id or ""):
+        raise IdentityNotFoundError(f"Identity {identity_id} not found")
+    return identity
+
+
+def address_linked(channel_type: str) -> AddressLinkedError:
+    """The refusal of an address another identity of the organization holds
+    (RFC §5.6). The address is left out: the caller passed it."""
+    return AddressLinkedError(
+        f"This {channel_type} address is linked to another identity of the organization"
+    )
 
 
 class ConversationStore(ABC):
@@ -731,7 +755,12 @@ class ConversationStore(ABC):
 
     @abstractmethod
     async def create_identity(self, identity: Identity) -> Identity:
-        """Create a new identity record."""
+        """Create a new identity record, its addresses filed under its organization.
+
+        Raises :class:`AddressLinkedError`, writing nothing, when one of its
+        ``channel_addresses`` belongs to another identity of its organization
+        (RFC §5.6).
+        """
         ...
 
     @abstractmethod
@@ -749,7 +778,8 @@ class ConversationStore(ABC):
         organization, not globally: without scoping, a phone number registered
         by one tenant would resolve to that tenant's identity for every other
         tenant too (RFC §17.2). Leave it unset in a single-tenant deployment —
-        those registrations live in their own unscoped space.
+        those registrations live in their own unscoped space, and an unscoped
+        lookup resolves them only, never an organization's.
         """
         ...
 
@@ -761,11 +791,21 @@ class ConversationStore(ABC):
         address: str,
         organization_id: str | None = None,
     ) -> None:
-        """Link a channel address to an identity, within an organization.
+        """Link a channel address to an identity of *organization_id* (RFC §5.6, §14.1).
 
         The same address may be linked to a different identity in each
         organization: a number belongs to one person at one tenant and to
-        someone else at another.
+        someone else at another. Within one organization it belongs to one
+        identity: an address another identity of the organization holds is
+        refused with :class:`AddressLinkedError`, and moving it is an explicit
+        unlink first. An unknown identity, or one of another organization
+        (``None`` stands for the identities of no organization), is refused
+        with :class:`IdentityNotFoundError`. Linking an address the identity
+        holds changes nothing. A refusal writes nothing.
+
+        Addresses compare as stored: link them in their channel's form (E.164
+        on a channel addressed by phone number, RFC §5.7), the form the
+        framework resolves a sender's address in.
         """
         ...
 

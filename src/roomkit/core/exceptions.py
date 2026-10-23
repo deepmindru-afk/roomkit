@@ -127,6 +127,15 @@ class IdentityNotFoundError(RoomKitError):
     """Identity not found."""
 
 
+class AddressLinkedError(RoomKitError):
+    """The address belongs to another identity of the organization (RFC §5.6).
+
+    An address belongs to one identity per organization and channel type, so
+    a resolution never has to choose. Moving it to another identity is an
+    explicit unlink first, never a silent re-home of someone's conversations.
+    """
+
+
 class SourceAlreadyAttachedError(RoomKitError):
     """Source already attached to channel."""
 

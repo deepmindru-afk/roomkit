@@ -44,7 +44,7 @@ from roomkit.models.store_filter import EventFilter, includes_blocked
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
-from roomkit.store.base import ConversationStore
+from roomkit.store.base import ConversationStore, address_linked, link_target
 
 _SCHEMA_VERSION = 8
 
@@ -1559,7 +1559,11 @@ class SQLiteStore(ConversationStore):
 
     def _x_create_identity(self, identity: Identity) -> Identity:
         conn = self._db()
+        scope = identity.organization_id or ""
         with _write_transaction(conn):
+            for channel_type, addresses in identity.channel_addresses.items():
+                for address in addresses:
+                    self._x_refuse_held_address(conn, channel_type, address, scope, identity.id)
             conn.execute(
                 "INSERT OR REPLACE INTO identities(id, data) VALUES(?, ?)",
                 (identity.id, identity.model_dump_json()),
@@ -1574,9 +1578,26 @@ class SQLiteStore(ConversationStore):
                         # Omitting it files the address under the empty
                         # organization, where the owning tenant cannot resolve
                         # it and an unscoped caller can.
-                        (channel_type, address, identity.id, identity.organization_id or ""),
+                        (channel_type, address, identity.id, scope),
                     )
         return identity
+
+    @staticmethod
+    def _x_refuse_held_address(
+        conn: sqlite3.Connection,
+        channel_type: str,
+        address: str,
+        organization_id: str,
+        identity_id: str,
+    ) -> None:
+        """Refuse an address another identity of the organization holds (RFC §5.6)."""
+        row = conn.execute(
+            "SELECT identity_id FROM identity_addresses WHERE channel_type = ?"
+            " AND address = ? AND organization_id = ?",
+            (channel_type, address, organization_id),
+        ).fetchone()
+        if row is not None and row[0] != identity_id:
+            raise address_linked(channel_type)
 
     async def get_identity(self, identity_id: str) -> Identity | None:
         return await self._run(self._x_get_identity, identity_id)
@@ -1625,12 +1646,9 @@ class SQLiteStore(ConversationStore):
         self, identity_id: str, channel_type: str, address: str, organization_id: str
     ) -> None:
         conn = self._db()
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            identity = self._x_get_identity(identity_id)
-            if identity is None:
-                conn.execute("ROLLBACK")
-                return
+        with _write_transaction(conn):
+            identity = link_target(self._x_get_identity(identity_id), identity_id, organization_id)
+            self._x_refuse_held_address(conn, channel_type, address, organization_id, identity_id)
             current = identity.channel_addresses.get(channel_type, [])
             if address not in current:
                 addresses = {**identity.channel_addresses, channel_type: [*current, address]}
@@ -1644,10 +1662,6 @@ class SQLiteStore(ConversationStore):
                 " identity_id, organization_id) VALUES(?, ?, ?, ?)",
                 (channel_type, address, identity_id, organization_id),
             )
-            conn.execute("COMMIT")
-        except BaseException:
-            conn.execute("ROLLBACK")
-            raise
 
     # -- Verification operations (RFC §11.7) -------------------------------
 

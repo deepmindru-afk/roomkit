@@ -7,13 +7,39 @@ tenant — and a second tenant could not register the same number at all.
 
 from __future__ import annotations
 
+import os
 import sqlite3
+from collections.abc import AsyncIterator
+from uuid import uuid4
 
 import pytest
 
+from roomkit import AddressLinkedError, IdentityNotFoundError
 from roomkit.models.identity import Identity
+from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import _SCHEMA_VERSION, SQLiteStore
+
+
+@pytest.fixture(params=["memory", "sqlite", "postgres"])
+async def contract_store(request: pytest.FixtureRequest) -> AsyncIterator[ConversationStore]:
+    store: ConversationStore
+    if request.param == "memory":
+        store = InMemoryStore()
+    elif request.param == "sqlite":
+        store = SQLiteStore(":memory:")
+    else:
+        dsn = os.environ.get("POSTGRES_DSN")
+        if not dsn:
+            pytest.skip("POSTGRES_DSN not set")
+        from roomkit.store.postgres import PostgresStore
+
+        store = PostgresStore(dsn=dsn)
+        await store.init(min_size=1, max_size=2)
+    try:
+        yield store
+    finally:
+        await store.close()
 
 
 async def _two_tenants_one_number(store) -> tuple[Identity, Identity]:  # noqa: ANN001
@@ -70,21 +96,88 @@ class TestSQLite:
         finally:
             await store.close()
 
-    async def test_relinking_within_one_organization_replaces(self, tmp_path) -> None:
-        """Scoping widens the key; it does not turn it into a multimap."""
-        store = SQLiteStore(tmp_path / "relink.db")
-        try:
-            first = Identity(id="first", organization_id="acme")
-            second = Identity(id="second", organization_id="acme")
-            await store.create_identity(first)
-            await store.create_identity(second)
-            await store.link_address(first.id, "sms", "+1555", organization_id="acme")
-            await store.link_address(second.id, "sms", "+1555", organization_id="acme")
 
-            resolved = await store.resolve_identity("sms", "+1555", organization_id="acme")
-            assert resolved is not None and resolved.id == "second"
-        finally:
-            await store.close()
+class TestOneIdentityPerAddress:
+    """An address belongs to one identity per organization and channel type
+    (RFC §5.6, §14.1): a resolution never chooses, and an address moves only
+    by an explicit unlink, never by a silent re-home of someone's rooms."""
+
+    @staticmethod
+    async def _created(store: ConversationStore, organization_id: str | None) -> Identity:
+        identity = Identity(id=f"id-{uuid4().hex}", organization_id=organization_id)
+        return await store.create_identity(identity)
+
+    @pytest.mark.parametrize("organization_id", ["acme", None])
+    async def test_an_address_another_identity_holds_is_refused(
+        self, contract_store: ConversationStore, organization_id: str | None
+    ) -> None:
+        address = f"+1555{uuid4().int % 10**7:07d}"
+        holder = await self._created(contract_store, organization_id)
+        other = await self._created(contract_store, organization_id)
+        await contract_store.link_address(holder.id, "sms", address, organization_id)
+
+        with pytest.raises(AddressLinkedError):
+            await contract_store.link_address(other.id, "sms", address, organization_id)
+
+        resolved = await contract_store.resolve_identity("sms", address, organization_id)
+        assert resolved is not None and resolved.id == holder.id
+        unchanged = await contract_store.get_identity(other.id)
+        assert unchanged is not None and unchanged.channel_addresses == {}
+
+    async def test_an_identity_created_with_an_address_another_holds_is_refused(
+        self, contract_store: ConversationStore
+    ) -> None:
+        address = f"+1555{uuid4().int % 10**7:07d}"
+        holder = await self._created(contract_store, "acme")
+        await contract_store.link_address(holder.id, "sms", address, "acme")
+        newcomer = Identity(
+            id=f"id-{uuid4().hex}", organization_id="acme", channel_addresses={"sms": [address]}
+        )
+
+        with pytest.raises(AddressLinkedError):
+            await contract_store.create_identity(newcomer)
+
+        assert await contract_store.get_identity(newcomer.id) is None
+        resolved = await contract_store.resolve_identity("sms", address, "acme")
+        assert resolved is not None and resolved.id == holder.id
+
+    async def test_linking_an_address_the_identity_holds_changes_nothing(
+        self, contract_store: ConversationStore
+    ) -> None:
+        address = f"+1555{uuid4().int % 10**7:07d}"
+        identity = await self._created(contract_store, "acme")
+        await contract_store.link_address(identity.id, "sms", address, "acme")
+
+        await contract_store.link_address(identity.id, "sms", address, "acme")
+
+        stored = await contract_store.get_identity(identity.id)
+        assert stored is not None and stored.channel_addresses == {"sms": [address]}
+
+    @pytest.mark.parametrize(
+        ("owner", "linked_for"),
+        [("acme", "globex"), ("acme", None), (None, "acme")],
+        ids=["another-organization", "scoped-identity-unscoped-link", "unscoped-identity"],
+    )
+    async def test_another_organizations_identity_is_refused(
+        self, contract_store: ConversationStore, owner: str | None, linked_for: str | None
+    ) -> None:
+        address = f"+1555{uuid4().int % 10**7:07d}"
+        identity = await self._created(contract_store, owner)
+
+        with pytest.raises(IdentityNotFoundError):
+            await contract_store.link_address(identity.id, "sms", address, linked_for)
+
+        assert await contract_store.resolve_identity("sms", address, linked_for) is None
+        stored = await contract_store.get_identity(identity.id)
+        assert stored is not None and stored.channel_addresses == {}
+
+    async def test_an_unknown_identity_is_refused(self, contract_store: ConversationStore) -> None:
+        address = f"+1555{uuid4().int % 10**7:07d}"
+
+        with pytest.raises(IdentityNotFoundError):
+            await contract_store.link_address(f"id-{uuid4().hex}", "sms", address, "acme")
+
+        assert await contract_store.resolve_identity("sms", address, "acme") is None
 
 
 class TestAddressesDeclaredOnTheIdentity:
