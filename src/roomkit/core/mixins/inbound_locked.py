@@ -268,7 +268,7 @@ class InboundLockedMixin(HelpersMixin):
         NOT advance the room counters (latest_index must never point at an
         unstored event, §14.3). The input event is returned unchanged.
         """
-        committed = await self._persist_committed(room_id, event)
+        committed = await self._persist_committed(room_id, event, activity=True)
         return event if committed is None else committed
 
     async def _process_locked(

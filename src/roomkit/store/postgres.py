@@ -29,6 +29,7 @@ from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import (
     ConversationStore,
     address_linked,
+    committed_timers,
     deletes_edits,
     is_marked_deleted,
     room_taken,
@@ -1302,7 +1303,12 @@ class PostgresStore(ConversationStore):
         return indexed
 
     async def commit_event(
-        self, room_id: str, event: RoomEvent, *, target: RoomEvent | None = None
+        self,
+        room_id: str,
+        event: RoomEvent,
+        *,
+        target: RoomEvent | None = None,
+        activity: bool = True,
     ) -> RoomEvent:
         """Atomic commit (RFC §10.1 step 12 / §8.1 / §14.3) in ONE transaction.
 
@@ -1313,7 +1319,8 @@ class PostgresStore(ConversationStore):
         updated together, so the timeline and the counters can never diverge —
         even under a crash or without a cross-process room lock. A change's
         *target* is written in the same transaction, which rolls back whole
-        when the room no longer holds it.
+        when the room no longer holds it. Only an *activity* commit moves
+        ``last_activity_at`` (RFC §5.1).
         """
         with self._query_span("commit_event", "events"):
             async with self._acquire() as conn, conn.transaction():
@@ -1332,7 +1339,7 @@ class PostgresStore(ConversationStore):
                 await _insert_event(conn, indexed)
                 if room_row is not None:
                     room = _row_to_room(room_row)
-                    timers = room.timers.model_copy(update={"last_activity_at": datetime.now(UTC)})
+                    timers = committed_timers(room, activity)
                     await conn.execute(
                         "UPDATE rooms SET event_count = $2, latest_index = $3, timers = $4"
                         " WHERE id = $1",

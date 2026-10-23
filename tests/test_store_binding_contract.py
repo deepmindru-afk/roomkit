@@ -683,9 +683,16 @@ class _DefaultCommit(InMemoryStore):
     defaults, as a custom store inheriting them does."""
 
     async def commit_event(
-        self, room_id: str, event: RoomEvent, *, target: RoomEvent | None = None
+        self,
+        room_id: str,
+        event: RoomEvent,
+        *,
+        target: RoomEvent | None = None,
+        activity: bool = True,
     ) -> RoomEvent:
-        return await ConversationStore.commit_event(self, room_id, event, target=target)
+        return await ConversationStore.commit_event(
+            self, room_id, event, target=target, activity=activity
+        )
 
     async def write_change_target(self, room_id: str, target: RoomEvent) -> None:
         await ConversationStore.write_change_target(self, room_id, target)

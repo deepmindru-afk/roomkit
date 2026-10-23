@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 import pytest
 
@@ -908,9 +909,11 @@ class TestTimeouts:
         from roomkit.store.memory import InMemoryStore
 
         class SlowCommitStore(InMemoryStore):
-            async def commit_event(self, room_id: str, event: RoomEvent) -> RoomEvent:
+            async def commit_event(
+                self, room_id: str, event: RoomEvent, **kwargs: Any
+            ) -> RoomEvent:
                 await asyncio.sleep(0.1)
-                return await super().commit_event(room_id, event)
+                return await super().commit_event(room_id, event, **kwargs)
 
         kit = RoomKit(process_timeout=0.01, store=SlowCommitStore())
         ch = SimpleChannel("sms1")

@@ -623,6 +623,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — a lifecycle record is no activity, and a store's
+  `commit_event()` takes `activity`** (RFC §5.1, RMK-930). Every commit
+  moved the room's `timers.last_activity_at`, the records RoomKit writes
+  for a lifecycle change included (a channel's attach, detach, mute,
+  unmute or update, a participant's change, a timer's transition), so a
+  mute restarted the room's inactivity timer. Those records keep their
+  shape (their lifecycle type or `SYSTEM`, a `SystemContent`, source
+  `system`, visibility `internal`, the next index, counted in
+  `event_count`, never delivered, no hook of their own) and now leave
+  `last_activity_at`. `ConversationStore.commit_event(room_id, event, *,
+  target=None, activity=True)` takes the new keyword: only an activity
+  commit moves `last_activity_at`. The framework passes `activity=False`
+  for what is no activity, so a custom store that overrides
+  `commit_event()` must accept the keyword, or the first lifecycle record
+  raises `TypeError`; the shipped stores and the ABC's default take it.
+
 - **BREAKING — a room transition already done does nothing, and
   `close_room()` refuses an ARCHIVED room** (RFC §5.1, RMK-930).
   `close_room()` read no status: closing a CLOSED room wrote it again with

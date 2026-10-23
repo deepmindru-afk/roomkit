@@ -199,7 +199,8 @@ class GreetingMixin(HelpersMixin):
         event = with_committed_visibility(
             self._make_greeting_event(room_id, agent_channel_id, text), agent_binding, bindings
         )
-        return await self._persist_committed(room_id, event)
+        # An agent's words to the room: its activity (RFC §5.1).
+        return await self._persist_committed(room_id, event, activity=True)
 
     def _set_greeting_gate(self, room_id: str) -> None:
         """Increment the reference-counted gate for *room_id*.

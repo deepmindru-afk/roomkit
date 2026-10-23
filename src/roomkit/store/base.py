@@ -20,7 +20,7 @@ from roomkit.models.enums import EventType
 from roomkit.models.event import DeleteContent, EditContent, RoomEvent, ThreadSummary
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
-from roomkit.models.room import Room
+from roomkit.models.room import Room, RoomTimers
 from roomkit.models.store_filter import EventFilter
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
@@ -91,6 +91,15 @@ def target_gone(target: RoomEvent) -> EventNotFoundError:
     """The refusal of a change whose *target* its room no longer holds
     (``commit_event``, RFC §14.3): the whole commit fails."""
     return EventNotFoundError(f"Event {target.id} is not in room {target.room_id}")
+
+
+def committed_timers(room: Room, activity: bool) -> RoomTimers:
+    """*room*'s timers once a commit is stored (RFC §5.1): an event the
+    pipeline stores DELIVERED is the room's activity and moves
+    ``last_activity_at`` to now; anything else leaves it."""
+    if not activity:
+        return room.timers
+    return room.timers.model_copy(update={"last_activity_at": datetime.now(UTC)})
 
 
 def address_linked(channel_type: str) -> AddressLinkedError:
@@ -661,7 +670,12 @@ class ConversationStore(ABC):
         return await self.add_event(indexed)
 
     async def commit_event(
-        self, room_id: str, event: RoomEvent, *, target: RoomEvent | None = None
+        self,
+        room_id: str,
+        event: RoomEvent,
+        *,
+        target: RoomEvent | None = None,
+        activity: bool = True,
     ) -> RoomEvent:
         """Store *event* and bump the room counters as ONE atomic commit.
 
@@ -670,6 +684,14 @@ class ConversationStore(ABC):
         ``event_count`` / ``latest_index`` / ``timers.last_activity_at`` form a
         **single logical transaction**. An observer MUST never see a stored
         event the room counters do not reflect.
+
+        *activity* says whether the commit is the room's activity (RFC
+        §5.1): an event stored DELIVERED through the pipeline. Only then
+        does ``timers.last_activity_at`` move to the commit's instant. The
+        framework passes ``activity=False`` for what is no activity, a
+        lifecycle record, a record stored BLOCKED and a record committed
+        outside the pipeline, which leave it; a store MUST accept the
+        keyword.
 
         *target* is the target of the DELIVERED edit or delete *event* is, as
         its commit writes it (RFC §10.3): the edited content and
@@ -719,7 +741,6 @@ class ConversationStore(ABC):
             await self._mark_edits_deleted(room_id, target.id)
         room = await self.get_room(room_id)
         if room is not None:
-            timers = room.timers.model_copy(update={"last_activity_at": datetime.now(UTC)})
             await self.update_room(
                 room.model_copy(
                     update={
@@ -728,7 +749,7 @@ class ConversationStore(ABC):
                         # does not silently behave differently after deletions.
                         "event_count": room.event_count + 1,
                         "latest_index": indexed.index,
-                        "timers": timers,
+                        "timers": committed_timers(room, activity),
                     }
                 )
             )

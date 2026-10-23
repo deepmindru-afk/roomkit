@@ -49,6 +49,7 @@ from roomkit.models.voice_delivery import VoiceDeliveryRecord
 from roomkit.store.base import (
     ConversationStore,
     address_linked,
+    committed_timers,
     deletes_edits,
     is_marked_deleted,
     link_target,
@@ -1421,18 +1422,28 @@ class SQLiteStore(ConversationStore):
         return indexed
 
     async def commit_event(
-        self, room_id: str, event: RoomEvent, *, target: RoomEvent | None = None
+        self,
+        room_id: str,
+        event: RoomEvent,
+        *,
+        target: RoomEvent | None = None,
+        activity: bool = True,
     ) -> RoomEvent:
-        return await self._run(self._x_commit_event, room_id, event, target)
+        return await self._run(self._x_commit_event, room_id, event, target, activity)
 
     def _x_commit_event(
-        self, room_id: str, event: RoomEvent, target: RoomEvent | None = None
+        self,
+        room_id: str,
+        event: RoomEvent,
+        target: RoomEvent | None = None,
+        activity: bool = True,
     ) -> RoomEvent:
         """Atomic commit (RFC §10.1 step 12): index, insert and counter bump
         in one SQLite transaction, so the timeline and the room counters can
         never be observed diverged; a change's *target* is written in it, or
         the whole transaction rolls back when the room no longer holds it
-        (§14.3)."""
+        (§14.3). Only an *activity* commit moves ``last_activity_at`` (RFC
+        §5.1)."""
         conn = self._db()
         with _write_transaction(conn):
             if target is not None:
@@ -1450,7 +1461,7 @@ class SQLiteStore(ConversationStore):
             row = conn.execute("SELECT * FROM rooms WHERE id = ?", (room_id,)).fetchone()
             if row is not None:
                 room = self._row_to_room(row)
-                timers = room.timers.model_copy(update={"last_activity_at": datetime.now(UTC)})
+                timers = committed_timers(room, activity)
                 room = room.model_copy(
                     update={
                         # The tally, incremented — never a recount (see base).

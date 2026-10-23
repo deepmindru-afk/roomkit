@@ -293,13 +293,19 @@ class HelpersMixin:
         return InboundResult(blocked=True, reason="room_closed")
 
     async def _persist_committed(
-        self, room_id: str, event: RoomEvent, *, target: RoomEvent | None = None
+        self,
+        room_id: str,
+        event: RoomEvent,
+        *,
+        target: RoomEvent | None = None,
+        activity: bool,
     ) -> RoomEvent | None:
         """Atomically commit an event (index + insert + room counters, RFC
         §10.1 step 12 / §14.3) if the policy allows it, and account its
         index on the room's delivery cursor. *target* is what an edit or a
-        delete writes on its target, in the same transaction
-        (:meth:`_commit`).
+        delete writes on its target, in the same transaction, and
+        *activity* whether the commit is the room's activity (RFC §5.1;
+        :meth:`_commit`).
 
         Returns the committed event, or ``None`` if the policy excluded it.
         """
@@ -308,7 +314,7 @@ class HelpersMixin:
         ):
             await self._write_unstored_change(room_id, target)
             return None
-        committed = await self._commit(room_id, event, target=target)
+        committed = await self._commit(room_id, event, target=target, activity=activity)
         await self._note_committed_index(room_id, committed.index)
         return committed
 
@@ -320,22 +326,32 @@ class HelpersMixin:
         policy: BLOCKED events (part of the timeline, they consume an index —
         RFC §8.3), injected events, child-room traces.
         """
-        committed = await self._commit(room_id, event)
+        committed = await self._commit(room_id, event, activity=True)
         await self._note_committed_index(room_id, committed.index)
         return committed
 
     async def _commit(
-        self, room_id: str, event: RoomEvent, *, target: RoomEvent | None = None
+        self,
+        room_id: str,
+        event: RoomEvent,
+        *,
+        target: RoomEvent | None = None,
+        activity: bool,
     ) -> RoomEvent:
         """Commit *event* (RFC §10.1 step 12) carrying the record of its author.
 
         *target* is the target of the edit or the delete *event* is, as its
         commit writes it: the store writes both in one transaction (§10.3,
         §14.3). It is passed only with a change, so a custom store that does
-        not take it still commits every other event.
+        not take it still commits every other event. *activity* is whether
+        the commit is the room's activity (RFC §5.1), an event the pipeline
+        stores DELIVERED; it is passed only when it is not, the store's
+        default.
         """
         authored = await self._with_author(room_id, event)
-        change = {} if target is None else {"target": target}
+        change: dict[str, Any] = {} if target is None else {"target": target}
+        if not activity:
+            change["activity"] = False
         return await self._store.commit_event(room_id, authored, **change)
 
     async def _write_unstored_change(self, room_id: str, target: RoomEvent | None) -> None:
@@ -676,7 +692,9 @@ class HelpersMixin:
         )
         # Commit atomically (index + room counters, §14.3): a system event is a
         # DELIVERED timeline event and must be reflected in the counters too.
-        await self._persist_committed(room_id, event)
+        # A lifecycle record is no activity (RFC §5.1): a mute does not
+        # restart the room's inactivity timer.
+        await self._persist_committed(room_id, event, activity=False)
 
     def _follow_discussion(self, room: Room) -> None:
         """Join, or leave, the discussion *room* holds as stored (RFC §19.7.5

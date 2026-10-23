@@ -307,7 +307,7 @@ class LaneExecutionMixin(HelpersMixin):
                     cascade.retain()
                     self._enqueue_exec(room_id, plan, cascade, index=None, after_index=anchor)
             return None
-        committed = await self._commit(room_id, event, target=target)
+        committed = await self._commit(room_id, event, target=target, activity=True)
         plan = plan_factory(committed) if plan_factory is not None else None
         if plan is None:
             await self._note_committed_index(room_id, committed.index)
