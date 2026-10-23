@@ -597,7 +597,8 @@ class InboundLockedMixin(HelpersMixin):
         ``needs_lock=False`` lets a hook run off the lock, never lets an
         event skip it. With one, a block stands as decided; otherwise the
         locked hooks see the (possibly modified) event, and the side effects
-        of both phases are collected together.
+        of both phases are collected together. The off-lock hooks' unusable
+        results were reported when met, before the lock (§9.5.1).
         """
         if precheck is None:
             return await self._hook_engine.run_sync_hooks(
@@ -616,7 +617,6 @@ class InboundLockedMixin(HelpersMixin):
         locked.injected_events[:0] = precheck.injected_events
         locked.tasks[:0] = precheck.tasks
         locked.observations[:0] = precheck.observations
-        locked.hook_errors[:0] = precheck.hook_errors
         locked.metadata = {**precheck.metadata, **locked.metadata}
         return locked
 

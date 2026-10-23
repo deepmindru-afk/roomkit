@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writes through `update_event()` (not atomic). A target the room no longer
   holds raises `EventNotFoundError`, nothing written.
 
+- An off-lock hook that fails is reported when it fails, before the room
+  lock (RFC §9.5.1, §8.2, RMK-930). Its `hook_error` framework event was
+  emitted at step 9 with the hooks under the lock, and never when a gate
+  refused the event first (a closed room, a duplicate, a refused edit or
+  delete). It is now emitted as the check ends, before the wait for the
+  room's turn, once, whatever the gates decide; `hook_timeout` already was.
+
 - A room never holds two hooks of one name (RFC §9.1, §10.6.6, RMK-930).
   `kit.enable_room_hook(room_id, name)` took a name a room hook the kit
   registered for the room already held, so a block named one of two hooks

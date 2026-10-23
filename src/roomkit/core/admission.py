@@ -64,17 +64,24 @@ class _Ticket:
 
 
 class RoomAdmission:
-    """Per-room admission tickets and the off-lock check they order."""
+    """Per-room admission tickets and the off-lock check they order.
+
+    *report_errors* announces the hooks of a check that produced no usable
+    result (``hook_error``, RFC §8.2), as soon as the check has run.
+    """
 
     def __init__(
         self,
         hook_engine: HookEngine,
         lock_manager: RoomLockManager,
         build_context: Callable[[str], Awaitable[RoomContext]],
+        report_errors: Callable[[str, RoomEvent, SyncPipelineResult], Awaitable[None]]
+        | None = None,
     ) -> None:
         self._hook_engine = hook_engine
         self._lock_manager = lock_manager
         self._build_context = build_context
+        self._report_errors = report_errors
         self._queues: dict[str, deque[_Ticket]] = {}
 
     def _take(self, room_id: str) -> _Ticket:
@@ -93,6 +100,13 @@ class RoomAdmission:
         queue.remove(ticket)
         if not queue:
             del self._queues[room_id]
+
+    async def _report(self, room_id: str, event: RoomEvent, outcome: SyncPipelineResult) -> None:
+        """Report the check's unusable results now, once: the locked pass
+        that reuses the outcome finds none left to report."""
+        if self._report_errors is not None and outcome.hook_errors:
+            await self._report_errors(room_id, event, outcome)
+        outcome.hook_errors = []
 
     def pending(self, room_id: str) -> int:
         """How many tickets of *room_id* are held (for tests and metrics)."""
@@ -114,7 +128,10 @@ class RoomAdmission:
         Otherwise yields the off-lock outcome once every earlier ticket of the
         room has been released. The caller takes the room lock and commits inside the
         ``async with``; the ticket is released on exit, whatever the path —
-        committed, blocked, refused, failed, timed out or cancelled.
+        committed, blocked, refused, failed, timed out or cancelled. A hook
+        of the check that produced no usable result is reported before the
+        wait, whatever the gates under the lock decide next (RFC §9.5.1); its
+        timeout was reported as it expired.
         """
         if (
             room_id in _checking_rooms.get()
@@ -135,6 +152,7 @@ class RoomAdmission:
                 )
             finally:
                 _checking_rooms.reset(token)
+            await self._report(room_id, event, outcome)
             await ticket.wait_turn()
             yield outcome
         finally:

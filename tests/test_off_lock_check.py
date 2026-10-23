@@ -19,6 +19,7 @@ from roomkit.models.enums import (
     HookTrigger,
 )
 from roomkit.models.event import RoomEvent, TextContent
+from roomkit.models.framework_event import FrameworkEvent
 from roomkit.models.hook import HookResult
 from roomkit.models.store_filter import EventFilter
 from tests.test_framework import AILikeChannel, SimpleChannel
@@ -259,6 +260,37 @@ class TestTicketRelease:
             await task
 
         await self._next_goes_through(kit)
+
+
+class TestItsErrors:
+    """RFC §9.5.1: an off-lock hook that produced no usable result is
+    reported when it is met, before the lock, whatever the gates decide."""
+
+    async def test_are_reported_once_whatever_the_gates_decide(self) -> None:
+        kit = RoomKit()
+        await _room(kit)
+        reported: list[str | None] = []
+
+        @kit.on("hook_error")
+        async def on_error(event: FrameworkEvent) -> None:
+            reported.append(event.event_id)
+
+        async def boom(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            raise RuntimeError("scanner down")
+
+        kit.hook(HookTrigger.BEFORE_BROADCAST, name="pii", needs_lock=False)(boom)
+        message = InboundMessage(
+            channel_id="sms1", sender_id="u1", content=TextContent(body="A"), idempotency_key="k"
+        )
+        try:
+            first = await kit.process_inbound(message, room_id="r1")
+            # The replay is refused at step 7, before the hooks under the lock.
+            replay = await kit.process_inbound(message, room_id="r1")
+            assert first.event is not None and replay.duplicate
+            assert len(reported) == 2
+            assert reported[0] == first.event.id
+        finally:
+            await kit.close()
 
 
 class TestReentrance:

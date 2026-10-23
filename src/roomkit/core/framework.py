@@ -379,7 +379,9 @@ class RoomKit(
         # A failed release never undoes a locked section (RFC §13.5).
         self._lock_manager = ReleaseTolerantLockManager(self._given_lock_manager)
         # Admission tickets for off-lock BEFORE_BROADCAST checks (RFC §9.5.1).
-        self._admission = RoomAdmission(self._hook_engine, self._lock_manager, self._build_context)
+        self._admission = RoomAdmission(
+            self._hook_engine, self._lock_manager, self._build_context, self._announce_hook_errors
+        )
         # A persistent store paired with an in-process lock is unsafe if the
         # store is shared across processes: per-process locks do not coordinate
         # the full inbound pipeline, its idempotency decisions or the room's
