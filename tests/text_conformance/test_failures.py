@@ -11,6 +11,8 @@ never an empty success.
 
 from __future__ import annotations
 
+import functools
+import ssl
 from typing import Any
 
 import httpx
@@ -24,6 +26,15 @@ WIRES = http_wires()
 BY_WIRE = pytest.mark.parametrize("wire", WIRES, ids=[wire.label for wire in WIRES])
 CONTEXT = AIContext(messages=[AIMessage(role="user", content="go")])
 OPENAI_LABELS = {wire.label for wire in openai_wire.wires()}
+_TLS_CONTEXT = functools.cache(ssl.create_default_context)
+
+
+@pytest.fixture(autouse=True)
+def _one_tls_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every request ends at a mock transport: the SDK clients a test builds
+    share one TLS context, rather than each loading the CA store again (most of
+    a test's time, three loads per Gemini client)."""
+    monkeypatch.setattr(ssl, "create_default_context", _TLS_CONTEXT)
 
 
 async def _failure(provider: Any, mode: str) -> ProviderError:

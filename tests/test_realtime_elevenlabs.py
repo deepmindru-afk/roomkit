@@ -17,6 +17,7 @@ from roomkit.providers.elevenlabs.realtime import (
     _AsyncBridgeAudioInterface,
 )
 from roomkit.voice.base import VoiceSession, VoiceSessionState
+from tests.conference.test_conference_realtime import until
 
 
 class _FakeClientTools:
@@ -828,7 +829,8 @@ class TestResponseLifecycle:
         provider._sessions[session.id] = session
 
         await bridge.output(b"\x00")
-        await asyncio.sleep(0.15)
+        await until(lambda: end_cb.await_count > 0)
+        await asyncio.sleep(0.04)  # two idle periods: a second end would be in
 
         end_cb.assert_awaited_once_with(session)
         assert session.id not in provider._responding
@@ -845,13 +847,14 @@ class TestResponseLifecycle:
         await bridge.output(b"\x00")
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         provider._book_tool_call(session, "call-1", future)
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.06)  # three idle periods: an unheld turn would have ended
 
         # The agent resumes speaking on this same turn once it has the result.
         end_cb.assert_not_awaited()
 
         provider._drop_tool_call(session, "call-1", future)
-        await asyncio.sleep(0.1)
+        await until(lambda: end_cb.await_count > 0)
+        await asyncio.sleep(0.04)  # two idle periods: a second end would be in
 
         end_cb.assert_awaited_once_with(session)
 

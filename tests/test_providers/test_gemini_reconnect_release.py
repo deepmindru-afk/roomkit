@@ -13,13 +13,16 @@ from typing import Any
 
 import pytest
 
+from roomkit.providers.gemini import realtime_connection
 from roomkit.providers.gemini.realtime import GeminiLiveProvider, _GeminiSessionState
 from roomkit.voice.base import VoiceSession, VoiceSessionState
+from tests.test_gemini_realtime_failfast import _NoBackOff
 
 
 class FakeLive:
     def __init__(self) -> None:
         self.sent: list[Any] = []
+        self.receiving = asyncio.Event()
 
     async def send_tool_response(self, **kw: Any) -> None:
         self.sent.append(kw)
@@ -28,6 +31,7 @@ class FakeLive:
         pass
 
     async def receive(self):  # noqa: ANN201
+        self.receiving.set()
         await asyncio.Event().wait()
         yield None
 
@@ -41,13 +45,14 @@ async def _run(path: str) -> list[str]:
     provider = GeminiLiveProvider(api_key="dummy")
     log: list[str] = []
     started, release = asyncio.Event(), asyncio.Event()
+    opened = FakeLive()
 
     async def slow_open(live_config: Any) -> tuple[Any, Any]:
         log.append("handshake starts")
         started.set()
         await release.wait()
         log.append("handshake done")
-        return FakeCtx(), FakeLive()
+        return FakeCtx(), opened
 
     provider._open_live_session = slow_open  # type: ignore[method-assign]
     provider.on_tool_call_cancelled(lambda s, ids: log.append(f"abandoned {ids}"))
@@ -94,14 +99,20 @@ async def _run(path: str) -> list[str]:
     except Exception as exc:
         log.append(f"result for c1 during handshake: raised {exc!r}")
     release.set()
-    await asyncio.sleep(0.05)
+    if path == "reconfigure":
+        await asyncio.wait_for(task, 5)  # the reconnect is over
+    else:
+        await asyncio.wait_for(opened.receiving.wait(), 5)  # it reads the new socket
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     return log
 
 
 @pytest.mark.parametrize("path", ["receive loop reconnect", "reconfigure"])
-async def test_a_reconnect_frees_its_calls_before_the_handshake(path: str) -> None:
+async def test_a_reconnect_frees_its_calls_before_the_handshake(
+    path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(realtime_connection, "asyncio", _NoBackOff())
     log = await _run(path)
 
     assert log == [

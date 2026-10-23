@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import httpx
@@ -11,6 +10,7 @@ import pytest
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.event import MediaContent, TextContent
 from roomkit.providers.voicemeup import VoiceMeUpConfig, VoiceMeUpSMSProvider
+from tests.conference.test_conference_realtime import until
 from tests.conftest import make_event, make_media_event
 
 
@@ -470,14 +470,13 @@ class TestMMSAggregation:
             received.append(msg)
 
         provider = _make_provider()
-        provider.configure_mms(timeout_seconds=0.1, on_timeout=on_timeout)
+        provider.configure_mms(timeout_seconds=0.01, on_timeout=on_timeout)
 
         html_payload = self._make_mms_html_payload(text="Where is my image?")
         result = provider.parse_inbound(html_payload, channel_id="sms")
         assert result is None
 
-        # Wait for timeout
-        await asyncio.sleep(0.2)
+        await until(lambda: received)  # the 10 ms wait for the second part ran out
 
         assert len(received) == 1
         assert isinstance(received[0].content, TextContent)

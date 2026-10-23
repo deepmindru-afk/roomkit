@@ -20,6 +20,7 @@ from roomkit.providers.ai.base import AIContext, AIMessage, AITool, ProviderErro
 from roomkit.providers.ai.response_schema import ResponseSchemaError
 from roomkit.providers.llamacpp import LlamaCppAIProvider, LlamaCppConfig
 from roomkit.providers.llamacpp import binary as binary_mod
+from roomkit.providers.llamacpp import server as server_mod
 
 pytest.importorskip("openai")
 httpx = pytest.importorskip("httpx")
@@ -94,6 +95,13 @@ _FAKE_SERVER = textwrap.dedent(
     HTTPServer(("127.0.0.1", port), Handler).serve_forever()
     """
 )
+
+
+@pytest.fixture(autouse=True)
+def _quick_health_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fake server answers as soon as it listens: its health is polled on
+    a test's scale, not every quarter second."""
+    monkeypatch.setattr(server_mod, "_HEALTH_POLL_S", 0.01)
 
 
 @pytest.fixture
@@ -394,9 +402,9 @@ class TestLlamaCppAIProvider:
     ) -> None:
         monkeypatch.setenv("FAKE_HANG", "1")
         ai = LlamaCppAIProvider(
-            LlamaCppConfig(model="m:Q4", binary=str(fake_server), startup_timeout=1)
+            LlamaCppConfig(model="m:Q4", binary=str(fake_server), startup_timeout=0.1)
         )
-        with pytest.raises(ProviderError, match="not ready after 1s"):
+        with pytest.raises(ProviderError, match="not ready after .*raise startup_timeout"):
             await ai.start()
 
         assert not ai._server.running

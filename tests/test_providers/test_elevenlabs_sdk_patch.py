@@ -34,6 +34,14 @@ def _session() -> VoiceSession:
     )
 
 
+async def _drained() -> None:
+    """Until every task the call started has run: the SDK schedules the tool
+    on this loop, the handler waits for the channel, the result goes back."""
+    async with asyncio.timeout(5):
+        while any(t is not asyncio.current_task() and not t.done() for t in asyncio.all_tasks()):
+            await asyncio.sleep(0.001)
+
+
 async def _execute(tools: Any, name: str) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     tools.start()
@@ -87,7 +95,7 @@ async def test_the_sdk_sends_nothing_for_a_cancelled_handler() -> None:
     tools.start()
     try:
         tools.execute_tool("lookup", {"tool_call_id": "t1"}, results.append)
-        await asyncio.sleep(0.1)
+        await _drained()
     finally:
         tools.stop()
 
@@ -128,7 +136,7 @@ def _patched_elevenlabs() -> tuple[ElevenLabsRealtimeProvider, Any, list[Any], l
 async def _wire(patched: Any, handler: Any, call: dict[str, Any]) -> None:
     message = {"type": "client_tool_call", "client_tool_call": call}
     await patched._handle_message_core_async(message, handler)
-    await asyncio.sleep(0.1)
+    await _drained()
 
 
 async def test_elevenlabs_hands_on_a_call_that_named_no_tool() -> None:
@@ -249,7 +257,7 @@ async def test_the_sdks_own_message_handling_goes_through_the_patch() -> None:
     call = {"tool_call_id": "real-4", "tool_name": "lookup", "parameters": {"tool_call_id": "x"}}
 
     await patched._handle_message({"type": "client_tool_call", "client_tool_call": call}, socket)
-    await asyncio.sleep(0.15)
+    await _drained()
 
     assert heard == [("real-4", "lookup", {"tool_call_id": "x"})]
     assert [message.get("tool_call_id") for message in socket.sent] == ["real-4"]

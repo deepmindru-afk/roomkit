@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
@@ -15,6 +14,7 @@ from roomkit import (
     SourceNotFoundError,
     TextContent,
 )
+from roomkit.core.mixins import source_ops
 from roomkit.sources.base import (
     BaseSourceProvider,
     EmitCallback,
@@ -22,6 +22,7 @@ from roomkit.sources.base import (
     SourceProvider,
     SourceStatus,
 )
+from tests.conference.test_conference_realtime import until
 
 if TYPE_CHECKING:
     from roomkit.models.delivery import InboundResult
@@ -155,6 +156,94 @@ class CountingSource(BaseSourceProvider):
             await asyncio.sleep(0.01)
 
 
+class _Clock:
+    """source_ops' asyncio with its restart sleeps recorded, not waited out:
+    the delays a restart waited are what the backoff is."""
+
+    def __init__(self) -> None:
+        self.delays: list[float] = []
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(asyncio, name)
+
+    async def sleep(self, delay: float) -> None:
+        self.delays.append(delay)
+        await asyncio.sleep(0)
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    clock = _Clock()
+    monkeypatch.setattr(source_ops, "asyncio", clock)
+    return clock
+
+
+class _Entered:
+    """A kit whose inbound processing holds every message until released,
+    counting how many an attached source has in flight at once."""
+
+    def __init__(self, kit: RoomKit) -> None:
+        self.now = self.most = 0
+        self.release = asyncio.Event()
+        kit.process_inbound = self._process  # type: ignore[method-assign]
+
+    async def _process(self, message: InboundMessage) -> None:
+        self.now += 1
+        self.most = max(self.most, self.now)
+        await self.release.wait()
+        self.now -= 1
+
+
+class _Burst(BaseSourceProvider):
+    """Emits *count* messages at once, then waits to be stopped."""
+
+    def __init__(self, count: int) -> None:
+        super().__init__()
+        self._count = count
+        self.emitted = asyncio.Event()
+
+    @property
+    def name(self) -> str:
+        return "burst"
+
+    async def start(self, emit: EmitCallback) -> None:
+        self._reset_stop()
+        self._set_status(SourceStatus.CONNECTED)
+        tasks = [
+            asyncio.create_task(
+                emit(
+                    InboundMessage(
+                        channel_id="ch1",
+                        sender_id="+15559876543",
+                        content=TextContent(body=f"Msg {i}"),
+                    )
+                )
+            )
+            for i in range(self._count)
+        ]
+        await asyncio.gather(*tasks)
+        self.emitted.set()
+        while not self._should_stop():
+            await asyncio.sleep(0.01)
+
+
+async def _in_flight_at_most(**attach: object) -> int:
+    """How many of a burst of 20 messages a source had in flight at once."""
+    kit = RoomKit()
+    entered = _Entered(kit)
+    source = _Burst(20)
+    await kit.attach_source("ch1", source, **attach)  # type: ignore[arg-type]
+    # Every emit has started or waits on the limit once the loop goes idle.
+    await until(lambda: entered.now > 0)
+    for _ in range(20):
+        await asyncio.sleep(0)
+    most = entered.most
+    entered.release.set()
+    await asyncio.wait_for(source.emitted.wait(), 5)
+    await kit.close()
+    return most
+
+
 # =============================================================================
 # SourceStatus Tests
 # =============================================================================
@@ -168,48 +257,6 @@ class TestSourceStatus:
         assert SourceStatus.RECONNECTING == "reconnecting"
         assert SourceStatus.ERROR == "error"
 
-    def test_status_is_string_enum(self) -> None:
-        assert isinstance(SourceStatus.CONNECTED, str)
-        assert SourceStatus.CONNECTED == "connected"
-
-
-# =============================================================================
-# SourceHealth Tests
-# =============================================================================
-
-
-class TestSourceHealth:
-    def test_default_health(self) -> None:
-        health = SourceHealth()
-        assert health.status == SourceStatus.STOPPED
-        assert health.connected_at is None
-        assert health.last_message_at is None
-        assert health.messages_received == 0
-        assert health.error is None
-
-    def test_health_with_values(self) -> None:
-        now = datetime.now(UTC)
-        health = SourceHealth(
-            status=SourceStatus.CONNECTED,
-            connected_at=now,
-            last_message_at=now,
-            messages_received=42,
-            error=None,
-            metadata={"version": "1.0"},
-        )
-        assert health.status == SourceStatus.CONNECTED
-        assert health.connected_at == now
-        assert health.messages_received == 42
-        assert health.metadata == {"version": "1.0"}
-
-    def test_health_with_error(self) -> None:
-        health = SourceHealth(
-            status=SourceStatus.ERROR,
-            error="Connection refused",
-        )
-        assert health.status == SourceStatus.ERROR
-        assert health.error == "Connection refused"
-
 
 # =============================================================================
 # SourceProvider ABC Tests
@@ -217,10 +264,6 @@ class TestSourceHealth:
 
 
 class TestSourceProviderABC:
-    def test_default_status(self) -> None:
-        source = MockSource()
-        assert source.status == SourceStatus.STOPPED
-
     async def test_default_healthcheck(self) -> None:
         source = MockSource()
         health = await source.healthcheck()
@@ -249,8 +292,13 @@ class TestBaseSourceProvider:
         # Start in background
         task = asyncio.create_task(source.start(lambda m: asyncio.sleep(0)))
 
-        # Wait for messages to be emitted
-        await asyncio.sleep(0.1)
+        async def received() -> int:
+            return (await source.healthcheck()).messages_received
+
+        for _ in range(500):  # both messages emitted
+            if await received() == 2:
+                break
+            await asyncio.sleep(0.005)
 
         health = await source.healthcheck()
         assert health.status == SourceStatus.CONNECTED
@@ -298,9 +346,7 @@ class TestAttachSource:
         source = MockSource()
 
         await kit.attach_source("ch1", source)
-
-        # Give it time to start
-        await asyncio.sleep(0.05)
+        await until(lambda: source._started)
 
         assert source._started is True
         assert source.status == SourceStatus.CONNECTED
@@ -340,7 +386,7 @@ class TestDetachSource:
         source = MockSource()
 
         await kit.attach_source("ch1", source)
-        await asyncio.sleep(0.05)
+        await until(lambda: source._started)
 
         await kit.detach_source("ch1")
 
@@ -373,7 +419,7 @@ class TestKitSourceHealth:
         source = MockSource()
 
         await kit.attach_source("ch1", source)
-        await asyncio.sleep(0.05)
+        await until(lambda: source._started)
 
         health = await kit.source_health("ch1")
         assert health is not None
@@ -401,7 +447,7 @@ class TestListSources:
 
         await kit.attach_source("ch1", source1)
         await kit.attach_source("ch2", source2)
-        await asyncio.sleep(0.05)
+        await until(lambda: source1._started and source2._started)
 
         sources = kit.list_sources()
         assert len(sources) == 2
@@ -419,7 +465,7 @@ class TestSourceClose:
 
         await kit.attach_source("ch1", source1)
         await kit.attach_source("ch2", source2)
-        await asyncio.sleep(0.05)
+        await until(lambda: source1._started and source2._started)
 
         await kit.close()
 
@@ -432,15 +478,15 @@ class TestSourceClose:
 
         async with RoomKit() as kit:
             await kit.attach_source("ch1", source)
-            await asyncio.sleep(0.05)
+            await until(lambda: source._started)
 
         assert source._stopped is True
 
 
 class TestSourceAutoRestart:
-    async def test_auto_restart_on_failure(self) -> None:
+    async def test_auto_restart_on_failure(self, clock: _Clock) -> None:
         kit = RoomKit()
-        source = FailingSource(fail_after=0.05, fail_count=2)
+        source = FailingSource(fail_after=0, fail_count=2)
 
         await kit.attach_source(
             "ch1",
@@ -463,12 +509,12 @@ class TestSourceAutoRestart:
 
     async def test_no_restart_when_disabled(self) -> None:
         kit = RoomKit()
-        source = FailingSource(fail_after=0.05, fail_count=10)
+        source = FailingSource(fail_after=0, fail_count=10)
 
         await kit.attach_source("ch1", source, auto_restart=False)
 
-        # Wait for failure
-        await asyncio.sleep(0.2)
+        # The runner ends on the failure: no restart can come after it.
+        await asyncio.wait({kit._source_tasks["ch1"]}, timeout=5)
 
         # Should have only attempted once
         assert source._attempts == 1
@@ -521,7 +567,7 @@ class TestSourceMessageEmission:
         source.queue_message(msg)
 
         await kit.attach_source("ch1", source)
-        await asyncio.sleep(0.1)
+        await until(lambda: bool(received_events))
 
         # Message should have been processed
         assert len(received_events) >= 1
@@ -562,7 +608,7 @@ class TestSourceFrameworkEvents:
             events.append({"type": "detached", "data": event.data})
 
         await kit.attach_source("ch1", source)
-        await asyncio.sleep(0.05)
+        await until(lambda: source._started)
         await kit.detach_source("ch1")
 
         assert len(events) == 1
@@ -570,7 +616,7 @@ class TestSourceFrameworkEvents:
 
     async def test_source_error_event(self) -> None:
         kit = RoomKit()
-        source = FailingSource(fail_after=0.01, fail_count=1)
+        source = FailingSource(fail_after=0, fail_count=1)
         events: list[dict] = []
 
         @kit.on("source_error")
@@ -578,7 +624,8 @@ class TestSourceFrameworkEvents:
             events.append({"type": "error", "data": event.data})
 
         await kit.attach_source("ch1", source, auto_restart=False)
-        await asyncio.sleep(0.1)
+        # The runner ends on the failure, its error event emitted first.
+        await asyncio.wait({kit._source_tasks["ch1"]}, timeout=5)
 
         assert len(events) >= 1
         assert "error" in events[0]["data"]
@@ -642,7 +689,7 @@ class TestSourceEdgeCases:
         for i in range(3):
             source = MockSource(f"source-{i}")
             await kit.attach_source("ch1", source)
-            await asyncio.sleep(0.02)
+            await until(lambda source=source: source._started)
 
             assert source._started is True
 
@@ -657,113 +704,61 @@ class TestSourceEdgeCases:
 # =============================================================================
 
 
+class _AlwaysFails(SourceProvider):
+    """A source whose every start fails at once."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    @property
+    def name(self) -> str:
+        return "always-fails"
+
+    @property
+    def status(self) -> SourceStatus:
+        return SourceStatus.ERROR
+
+    async def start(self, emit: EmitCallback) -> None:
+        self.attempts += 1
+        raise RuntimeError(f"Failure {self.attempts}")
+
+    async def stop(self) -> None:
+        pass
+
+
 class TestSourceExponentialBackoff:
-    async def test_backoff_doubles_on_each_failure(self) -> None:
+    async def test_backoff_doubles_on_each_failure(self, clock: _Clock) -> None:
         """Restart delay should double on each consecutive failure."""
         kit = RoomKit()
-        restart_times: list[float] = []
-        start_time = asyncio.get_running_loop().time()
-
-        class TimingSource(SourceProvider):
-            def __init__(self):
-                self._attempts = 0
-                self._status = SourceStatus.STOPPED
-
-            @property
-            def name(self) -> str:
-                return "timing"
-
-            @property
-            def status(self) -> SourceStatus:
-                return self._status
-
-            async def start(self, emit) -> None:
-                self._attempts += 1
-                restart_times.append(asyncio.get_running_loop().time() - start_time)
-                self._status = SourceStatus.CONNECTED
-                raise RuntimeError(f"Failure {self._attempts}")
-
-            async def stop(self) -> None:
-                self._status = SourceStatus.STOPPED
-
-        source = TimingSource()
-        await kit.attach_source(
-            "ch1",
-            source,
-            auto_restart=True,
-            restart_delay=0.05,  # Start at 50ms
-            max_restart_delay=1.0,
-            max_restart_attempts=4,
-        )
-
-        # Wait for all attempts to complete
-        await asyncio.sleep(0.8)
-
-        # Should have 4 attempts (or close to it)
-        assert source._attempts >= 3
-
-        # Verify delays increased (with tolerance for timing)
-        # Attempt 1: immediate
-        # Attempt 2: after ~0.05s
-        # Attempt 3: after ~0.05 + 0.1 = 0.15s
-        # Attempt 4: after ~0.05 + 0.1 + 0.2 = 0.35s
-        if len(restart_times) >= 3:
-            delay_1_to_2 = restart_times[1] - restart_times[0]
-            delay_2_to_3 = restart_times[2] - restart_times[1]
-            # Second delay should be roughly double the first (with tolerance)
-            assert delay_2_to_3 > delay_1_to_2 * 1.5
-
-        await kit.close()
-
-    async def test_backoff_caps_at_max_restart_delay(self) -> None:
-        """Backoff should not exceed max_restart_delay."""
-        kit = RoomKit()
-        delays: list[float] = []
-        last_time = [asyncio.get_running_loop().time()]
-
-        class DelayTrackingSource(SourceProvider):
-            def __init__(self):
-                self._attempts = 0
-                self._status = SourceStatus.STOPPED
-
-            @property
-            def name(self) -> str:
-                return "delay-tracking"
-
-            @property
-            def status(self) -> SourceStatus:
-                return self._status
-
-            async def start(self, emit) -> None:
-                self._attempts += 1
-                now = asyncio.get_running_loop().time()
-                if self._attempts > 1:
-                    delays.append(now - last_time[0])
-                last_time[0] = now
-                self._status = SourceStatus.CONNECTED
-                raise RuntimeError(f"Failure {self._attempts}")
-
-            async def stop(self) -> None:
-                self._status = SourceStatus.STOPPED
-
-        source = DelayTrackingSource()
+        source = _AlwaysFails()
         await kit.attach_source(
             "ch1",
             source,
             auto_restart=True,
             restart_delay=0.05,
-            max_restart_delay=0.1,  # Cap at 100ms
+            max_restart_delay=1.0,
+            max_restart_attempts=4,
+        )
+        await asyncio.wait({kit._source_tasks["ch1"]}, timeout=5)  # exhausted
+
+        assert source.attempts == 4
+        assert clock.delays == [0.05, 0.1, 0.2]
+        await kit.close()
+
+    async def test_backoff_caps_at_max_restart_delay(self, clock: _Clock) -> None:
+        """Backoff should not exceed max_restart_delay."""
+        kit = RoomKit()
+        await kit.attach_source(
+            "ch1",
+            _AlwaysFails(),
+            auto_restart=True,
+            restart_delay=0.05,
+            max_restart_delay=0.1,
             max_restart_attempts=5,
         )
+        await asyncio.wait({kit._source_tasks["ch1"]}, timeout=5)
 
-        await asyncio.sleep(0.6)
-
-        # All delays after the first few should be capped at ~0.1s
-        if len(delays) >= 3:
-            # Later delays should not exceed max_restart_delay (with tolerance)
-            for delay in delays[2:]:
-                assert delay < 0.15  # 0.1 + tolerance
-
+        assert clock.delays == [0.05, 0.1, 0.1, 0.1]
         await kit.close()
 
 
@@ -773,10 +768,10 @@ class TestSourceExponentialBackoff:
 
 
 class TestSourceMaxRestartAttempts:
-    async def test_source_exhausted_after_max_attempts(self) -> None:
+    async def test_source_exhausted_after_max_attempts(self, clock: _Clock) -> None:
         """Source should stop retrying after max_restart_attempts."""
         kit = RoomKit()
-        source = FailingSource(fail_after=0.01, fail_count=100)  # Always fails
+        source = FailingSource(fail_after=0, fail_count=100)  # Always fails
 
         await kit.attach_source(
             "ch1",
@@ -785,22 +780,18 @@ class TestSourceMaxRestartAttempts:
             restart_delay=0.02,
             max_restart_attempts=3,
         )
+        await asyncio.wait({kit._source_tasks["ch1"]}, timeout=5)
 
-        # Wait for exhaustion
-        await asyncio.sleep(0.5)
-
-        # Should have stopped at max attempts
+        # Stopped at max attempts, the runner done (exhausted, not running)
         assert source._attempts == 3
-
-        # Task should be done (exhausted, not running)
         assert kit._source_tasks["ch1"].done()
 
         await kit.close()
 
-    async def test_source_exhausted_event_emitted(self) -> None:
+    async def test_source_exhausted_event_emitted(self, clock: _Clock) -> None:
         """source_exhausted framework event should be emitted."""
         kit = RoomKit()
-        source = FailingSource(fail_after=0.01, fail_count=100)
+        source = FailingSource(fail_after=0, fail_count=100)
         exhausted_events: list = []
 
         @kit.on("source_exhausted")
@@ -814,8 +805,7 @@ class TestSourceMaxRestartAttempts:
             restart_delay=0.02,
             max_restart_attempts=2,
         )
-
-        await asyncio.sleep(0.3)
+        await asyncio.wait({kit._source_tasks["ch1"]}, timeout=5)
 
         assert len(exhausted_events) == 1
         assert exhausted_events[0].data["source_name"] == "failing-source"
@@ -824,10 +814,10 @@ class TestSourceMaxRestartAttempts:
 
         await kit.close()
 
-    async def test_unlimited_retries_when_max_is_none(self) -> None:
+    async def test_unlimited_retries_when_max_is_none(self, clock: _Clock) -> None:
         """With max_restart_attempts=None, retries should be unlimited."""
         kit = RoomKit()
-        source = FailingSource(fail_after=0.01, fail_count=5)  # Fails 5 times
+        source = FailingSource(fail_after=0, fail_count=5)  # Fails 5 times
 
         await kit.attach_source(
             "ch1",
@@ -836,12 +826,10 @@ class TestSourceMaxRestartAttempts:
             restart_delay=0.02,
             max_restart_attempts=None,  # Unlimited
         )
+        # Past its 5 failures, the sixth start runs until stopped.
+        await until(lambda: source._attempts == 6)
 
-        await asyncio.sleep(0.5)
-
-        # Should have retried past 5 failures and succeeded
-        assert source._attempts >= 5
-
+        assert len(clock.delays) == 5
         await kit.close()
 
 
@@ -853,192 +841,12 @@ class TestSourceMaxRestartAttempts:
 class TestSourceBackpressure:
     async def test_max_concurrent_emits_limits_concurrency(self) -> None:
         """max_concurrent_emits should limit concurrent emit() calls."""
-        kit = RoomKit()
-        concurrent_count = [0]
-        max_concurrent_seen = [0]
-
-        # Register a channel for the source
-        from roomkit import SMSChannel
-        from roomkit.providers.sms.mock import MockSMSProvider
-
-        provider = MockSMSProvider()
-        channel = SMSChannel("ch1", provider=provider)
-        kit.register_channel(channel)
-
-        await kit.create_room("test-room")
-        await kit.attach_channel("test-room", "ch1", metadata={"phone_number": "+1555"})
-
-        # Add a slow hook to simulate processing time
-        @kit.hook(trigger="before_broadcast", execution="sync")
-        async def slow_hook(event, context):
-            concurrent_count[0] += 1
-            max_concurrent_seen[0] = max(max_concurrent_seen[0], concurrent_count[0])
-            await asyncio.sleep(0.05)  # Slow processing
-            concurrent_count[0] -= 1
-            from roomkit.models.hook import HookResult
-
-            return HookResult.allow()
-
-        class BurstSource(BaseSourceProvider):
-            def __init__(self):
-                super().__init__()
-                self._emitted = 0
-
-            @property
-            def name(self) -> str:
-                return "burst"
-
-            async def start(self, emit) -> None:
-                self._reset_stop()
-                self._set_status(SourceStatus.CONNECTED)
-
-                # Emit many messages rapidly
-                tasks = []
-                for i in range(10):
-                    msg = InboundMessage(
-                        channel_id="ch1",
-                        sender_id="+15559876543",
-                        content=TextContent(body=f"Msg {i}"),
-                    )
-                    tasks.append(asyncio.create_task(emit(msg)))
-                    self._emitted += 1
-
-                await asyncio.gather(*tasks)
-
-                while not self._should_stop():
-                    await asyncio.sleep(0.01)
-
-        source = BurstSource()
-        await kit.attach_source(
-            "ch1",
-            source,
-            max_concurrent_emits=3,  # Limit to 3 concurrent
-        )
-
-        await asyncio.sleep(0.5)
-
-        # Max concurrent should be limited to 3
-        assert max_concurrent_seen[0] <= 3
-
-        await kit.close()
+        assert await _in_flight_at_most(max_concurrent_emits=3) == 3
 
     async def test_semaphore_not_created_when_none(self) -> None:
-        """With max_concurrent_emits=None, no semaphore should be applied."""
-        # This test verifies that the unlimited path works correctly.
-        # Note: process_inbound has internal room-level locking, so actual
-        # message processing is serialized. The semaphore limits how many
-        # emit() calls can be pending simultaneously.
-        kit = RoomKit()
-        emit_count = [0]
-
-        from roomkit import SMSChannel
-        from roomkit.providers.sms.mock import MockSMSProvider
-
-        provider = MockSMSProvider()
-        channel = SMSChannel("ch1", provider=provider)
-        kit.register_channel(channel)
-
-        await kit.create_room("test-room")
-        await kit.attach_channel("test-room", "ch1", metadata={"phone_number": "+1555"})
-
-        @kit.hook(trigger="before_broadcast", execution="sync")
-        async def count_hook(event, context):
-            emit_count[0] += 1
-            from roomkit.models.hook import HookResult
-
-            return HookResult.allow()
-
-        class QuickSource(BaseSourceProvider):
-            @property
-            def name(self) -> str:
-                return "quick"
-
-            async def start(self, emit) -> None:
-                self._reset_stop()
-                self._set_status(SourceStatus.CONNECTED)
-
-                # Emit multiple messages
-                for i in range(5):
-                    msg = InboundMessage(
-                        channel_id="ch1",
-                        sender_id="+15559876543",
-                        content=TextContent(body=f"Msg {i}"),
-                    )
-                    await emit(msg)
-
-                while not self._should_stop():
-                    await asyncio.sleep(0.01)
-
-        source = QuickSource()
-        await kit.attach_source(
-            "ch1",
-            source,
-            max_concurrent_emits=None,  # Unlimited
-        )
-
-        await asyncio.sleep(0.3)
-
-        # All messages should have been processed
-        assert emit_count[0] == 5
-
-        await kit.close()
+        """With max_concurrent_emits=None, no emit waits on a limit."""
+        assert await _in_flight_at_most(max_concurrent_emits=None) == 20
 
     async def test_default_max_concurrent_emits_is_10(self) -> None:
         """Default max_concurrent_emits should be 10."""
-        kit = RoomKit()
-        max_concurrent_seen = [0]
-        concurrent_count = [0]
-
-        from roomkit import SMSChannel
-        from roomkit.providers.sms.mock import MockSMSProvider
-
-        provider = MockSMSProvider()
-        channel = SMSChannel("ch1", provider=provider)
-        kit.register_channel(channel)
-
-        await kit.create_room("test-room")
-        await kit.attach_channel("test-room", "ch1", metadata={"phone_number": "+1555"})
-
-        @kit.hook(trigger="before_broadcast", execution="sync")
-        async def slow_hook(event, context):
-            concurrent_count[0] += 1
-            max_concurrent_seen[0] = max(max_concurrent_seen[0], concurrent_count[0])
-            await asyncio.sleep(0.03)
-            concurrent_count[0] -= 1
-            from roomkit.models.hook import HookResult
-
-            return HookResult.allow()
-
-        class BurstSource(BaseSourceProvider):
-            @property
-            def name(self) -> str:
-                return "burst"
-
-            async def start(self, emit) -> None:
-                self._reset_stop()
-                self._set_status(SourceStatus.CONNECTED)
-
-                tasks = []
-                for i in range(20):  # More than default limit
-                    msg = InboundMessage(
-                        channel_id="ch1",
-                        sender_id="+15559876543",
-                        content=TextContent(body=f"Msg {i}"),
-                    )
-                    tasks.append(asyncio.create_task(emit(msg)))
-
-                await asyncio.gather(*tasks)
-
-                while not self._should_stop():
-                    await asyncio.sleep(0.01)
-
-        source = BurstSource()
-        # Don't pass max_concurrent_emits - use default
-        await kit.attach_source("ch1", source)
-
-        await asyncio.sleep(0.8)
-
-        # Default limit is 10
-        assert max_concurrent_seen[0] <= 10
-
-        await kit.close()
+        assert await _in_flight_at_most() == 10

@@ -262,7 +262,8 @@ class TestReconfigureCancellation:
         await asyncio.sleep(0)
         old_loop = state.receive_task
         caller.cancel()
-        await asyncio.wait({caller}, timeout=0.05)
+        for _ in range(5):  # a caller its cancellation stopped is done by then
+            await asyncio.sleep(0)
         assert not caller.done()  # the switch finishes first
         release.set()
         await asyncio.wait({caller, old_loop}, timeout=1.0)

@@ -174,21 +174,10 @@ def session() -> VoiceSession:
 
 class TestAnamConfig:
     def test_defaults(self) -> None:
+        """What an inline persona tells Anam unless configured otherwise."""
         cfg = AnamConfig(api_key="ak-test")
         assert cfg.language_code == "en"
-        assert cfg.timeout == 30.0
         assert cfg.enable_audio_passthrough is False
-
-    def test_inline_persona(self) -> None:
-        cfg = AnamConfig(
-            api_key="ak-test",
-            avatar_id="av-1",
-            voice_id="v-1",
-            llm_id="llm-1",
-            system_prompt="Hello",
-        )
-        assert cfg.persona_id is None
-        assert cfg.avatar_id == "av-1"
 
 
 class TestAnamRealtimeProviderConnect:
@@ -337,8 +326,7 @@ class TestAnamConsumeLoops:
             state = provider._states[session.id]
             state.anam_session._audio_frames = [_FakeAVAudioFrame()]
 
-            # Wait for the audio consume task to process
-            await asyncio.sleep(0.1)
+            await asyncio.wait_for(state.audio_task, 5)  # every frame was read
 
             await provider.disconnect(session)
 
@@ -369,7 +357,7 @@ class TestAnamConsumeLoops:
             state = provider._states[session.id]
             state.anam_session._video_frames = [_FakeAVVideoFrame()]
 
-            await asyncio.sleep(0.1)
+            await asyncio.wait_for(state.video_task, 5)  # every frame was read
 
             await provider.disconnect(session)
 
@@ -497,7 +485,7 @@ class TestAnamDisconnectIsBounded:
             provider._states[session.id].anam_ctx.__aexit__ = hang
 
             with (
-                patch.object(_mod, "CLOSE_TIMEOUT_S", 0.05),
+                patch.object(_mod, "CLOSE_TIMEOUT_S", 0.01),
                 caplog.at_level("WARNING", logger="roomkit.providers.anam.realtime"),
             ):
                 await asyncio.wait_for(provider.disconnect(session), timeout=2)

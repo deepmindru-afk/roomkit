@@ -182,7 +182,12 @@ class _Deepgram:
     async def stop(self) -> None:
         for ws in [*self.old_ws, self.ws]:
             ws.finish()
-        await asyncio.sleep(0.05)
+        # Each connection's receive loop ends on its close, and reports what
+        # it abandons.
+        receiving = [
+            t for t in asyncio.all_tasks() if t.get_name().startswith("deepgram_agent_recv")
+        ]
+        await asyncio.wait_for(asyncio.gather(*receiving, return_exceptions=True), timeout=5)
 
 
 class _ElevenLabs:

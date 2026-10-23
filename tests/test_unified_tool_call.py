@@ -31,6 +31,7 @@ from roomkit.tools.external import PolicyExternalToolHandler
 from roomkit.tools.policy import ToolPolicy
 from roomkit.voice.base import VoiceSession
 from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from tests.channel_tasks import settled
 from tests.hook_sides import hook_on_its_side
 from tests.tool_loop_modes import LoopRun, respond
 
@@ -117,6 +118,13 @@ async def kit_with_both(rt_channel: RealtimeVoiceChannel, ai_channel: AIChannel)
     return kit
 
 
+async def _done(kit: RoomKit, channel: RealtimeVoiceChannel) -> None:
+    """Until the call's work the channel scheduled has run and the ASYNC
+    observers it fired have: its result is submitted, its outcome observed."""
+    await settled(channel)
+    await kit.hook_engine.drain_observers()
+
+
 # ---------------------------------------------------------------------------
 # RealtimeVoiceChannel: ON_TOOL_CALL hook fires
 # ---------------------------------------------------------------------------
@@ -142,7 +150,7 @@ class TestRealtimeVoiceToolCallHook:
             return HookResult(action="allow", metadata={"result": '{"temp": 22}'})
 
         await rt_provider.simulate_tool_call(session, "c1", "get_weather", {"city": "NYC"})
-        await asyncio.sleep(0.1)
+        await _done(kit_with_rt, rt_channel)
 
         assert len(rt_provider.tool_results) == 1
         _, call_id, result_str = rt_provider.tool_results[0]
@@ -185,7 +193,7 @@ class TestRealtimeVoiceToolCallHook:
             return HookResult.allow()
 
         await rt_provider.simulate_tool_call(session, "c1", "get_weather", {"city": "NYC"})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         # The model got an answer to its call rather than silence.
         assert len(rt_provider.tool_results) == 1
@@ -229,7 +237,7 @@ class TestRealtimeVoiceToolCallHook:
         session = await ch.start_session(room.id, "u1", "ws")
 
         await rt_provider.simulate_tool_call(session, "c1", "get_weather", {"city": "NYC"})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         spans = telemetry.get_spans(SpanKind.REALTIME_TOOL_CALL)
         assert len(spans) == 1
@@ -267,7 +275,7 @@ class TestRealtimeVoiceToolCallHook:
             return HookResult(action="allow", metadata={"result": '{"overridden": true}'})
 
         await rt_provider.simulate_tool_call(session, "c2", "do_thing", {})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         _, _, result_str = rt_provider.tool_results[0]
         assert json.loads(result_str) == {"overridden": True}
@@ -287,7 +295,7 @@ class TestRealtimeVoiceToolCallHook:
             return HookResult.block("not allowed")
 
         await rt_provider.simulate_tool_call(session, "c3", "dangerous", {})
-        await asyncio.sleep(0.1)
+        await _done(kit_with_rt, rt_channel)
 
         _, _, result_str = rt_provider.tool_results[0]
         result = json.loads(result_str)
@@ -316,7 +324,7 @@ class TestRealtimeVoiceToolCallHook:
             return HookResult.allow()
 
         await rt_provider.simulate_tool_call(session, "c4", "unknown", {})
-        await asyncio.sleep(0.1)
+        await _done(kit_with_rt, rt_channel)
 
         _, _, result_str = rt_provider.tool_results[0]
         result = json.loads(result_str)
@@ -730,7 +738,7 @@ class TestToolAuthorizationH1:
             return HookResult.block("not allowed")
 
         await rt_provider.simulate_tool_call(session, "c9", "dangerous", {})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         # Handler never ran — the side effect was prevented, not merely hidden.
         assert called == []
@@ -785,7 +793,7 @@ class TestToolAuthorizationH1:
             return HookResult.allow()
 
         await rt_provider.simulate_tool_call(session, "c10", "lookup", {"city": "[CITY_1]"})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         assert received == [{"city": "Montreal"}]
         assert observed == [{"city": "Montreal"}]
@@ -825,7 +833,7 @@ class TestToolAuthorizationH1:
             return HookResult(action="allow", metadata={"arguments": {"city": 42}})
 
         await rt_provider.simulate_tool_call(session, "c11", "lookup", {"city": "Paris"})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         handler.assert_not_awaited()
         result = json.loads(rt_provider.tool_results[0][2])
@@ -847,7 +855,7 @@ class TestToolAuthorizationH1:
         session = await ch.start_session("room-1", "u1", "ws")
 
         await rt_provider.simulate_tool_call(session, "c12", "delete_everything", {})
-        await asyncio.sleep(0.1)
+        await settled(ch)
 
         handler.assert_not_awaited()
         result = json.loads(rt_provider.tool_results[0][2])
@@ -907,7 +915,7 @@ class TestRealtimeGateWithoutToolHandler:
         rt_provider: MockRealtimeProvider,
         rt_transport: MockRealtimeTransport,
     ) -> None:
-        kit, _ch, session = await self._hook_only_channel(
+        kit, ch, session = await self._hook_only_channel(
             rt_provider, rt_transport, "rt-hookonly-args", self._lookup_tool()
         )
         served: list[dict[str, Any]] = []
@@ -918,7 +926,7 @@ class TestRealtimeGateWithoutToolHandler:
             return HookResult(action="allow", metadata={"result": "sunny"})
 
         await rt_provider.simulate_tool_call(session, "c1", "lookup", {"city": 42})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         assert served == []
         result = json.loads(rt_provider.tool_results[0][2])
@@ -929,7 +937,7 @@ class TestRealtimeGateWithoutToolHandler:
         rt_provider: MockRealtimeProvider,
         rt_transport: MockRealtimeTransport,
     ) -> None:
-        kit, _ch, session = await self._hook_only_channel(
+        kit, ch, session = await self._hook_only_channel(
             rt_provider, rt_transport, "rt-hookonly-unknown", self._lookup_tool()
         )
         served: list[dict[str, Any]] = []
@@ -942,7 +950,7 @@ class TestRealtimeGateWithoutToolHandler:
         await rt_provider.simulate_tool_call(
             session, "c2", "lookup", {"city": "Paris", "country": "FR"}
         )
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         assert served == []
         result = json.loads(rt_provider.tool_results[0][2])
@@ -953,7 +961,7 @@ class TestRealtimeGateWithoutToolHandler:
         rt_provider: MockRealtimeProvider,
         rt_transport: MockRealtimeTransport,
     ) -> None:
-        kit, _ch, session = await self._hook_only_channel(
+        kit, ch, session = await self._hook_only_channel(
             rt_provider, rt_transport, "rt-hookonly-block", self._lookup_tool()
         )
         served: list[dict[str, Any]] = []
@@ -970,7 +978,7 @@ class TestRealtimeGateWithoutToolHandler:
             return HookResult(action="allow", metadata={"result": "sunny"})
 
         await rt_provider.simulate_tool_call(session, "c3", "lookup", {"city": "Paris"})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         # The tool was never served — the block prevented it, not merely hid it.
         assert served == []
@@ -985,7 +993,7 @@ class TestRealtimeGateWithoutToolHandler:
         rt_provider: MockRealtimeProvider,
         rt_transport: MockRealtimeTransport,
     ) -> None:
-        kit, _ch, session = await self._hook_only_channel(
+        kit, ch, session = await self._hook_only_channel(
             rt_provider, rt_transport, "rt-hookonly-rewrite", self._lookup_tool()
         )
         served: list[dict[str, Any]] = []
@@ -1000,7 +1008,7 @@ class TestRealtimeGateWithoutToolHandler:
             return HookResult(action="allow", metadata={"result": "sunny"})
 
         await rt_provider.simulate_tool_call(session, "c4", "lookup", {"city": "[CITY_1]"})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         assert served == [{"city": "Montreal"}]
 
@@ -1010,7 +1018,7 @@ class TestRealtimeGateWithoutToolHandler:
         rt_transport: MockRealtimeTransport,
     ) -> None:
         """A valid call passes the gate and reaches the serving hook."""
-        kit, _ch, session = await self._hook_only_channel(
+        kit, ch, session = await self._hook_only_channel(
             rt_provider, rt_transport, "rt-hookonly-ok", self._lookup_tool()
         )
         served: list[dict[str, Any]] = []
@@ -1021,7 +1029,7 @@ class TestRealtimeGateWithoutToolHandler:
             return HookResult(action="allow", metadata={"result": "sunny"})
 
         await rt_provider.simulate_tool_call(session, "c5", "lookup", {"city": "Paris"})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         assert served == [{"city": "Paris"}]
         assert rt_provider.tool_results[0][2] == "sunny"
@@ -1032,7 +1040,7 @@ class TestRealtimeGateWithoutToolHandler:
         rt_transport: MockRealtimeTransport,
     ) -> None:
         """Dynamic mode: no declarations means the channel cannot judge a name."""
-        kit, _ch, session = await self._hook_only_channel(
+        kit, ch, session = await self._hook_only_channel(
             rt_provider, rt_transport, "rt-hookonly-dynamic", None
         )
         served: list[str] = []
@@ -1043,7 +1051,7 @@ class TestRealtimeGateWithoutToolHandler:
             return HookResult(action="allow", metadata={"result": "done"})
 
         await rt_provider.simulate_tool_call(session, "c6", "anything_at_all", {"x": 1})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         assert served == ["anything_at_all"]
         assert rt_provider.tool_results[0][2] == "done"
@@ -1087,7 +1095,7 @@ class TestRealtimeGateSharesItsContext:
         kit._store.get_conversation = counting  # type: ignore[method-assign]
 
         await rt_provider.simulate_tool_call(session, "c1", "anything", {})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         assert len(reads) == 1
 
@@ -1136,7 +1144,7 @@ class TestRealtimeGateParityWithTheAIPath:
         session = await ch.start_session(room.id, "u1", "ws")
 
         await rt_provider.simulate_tool_call(session, "c1", "refund", {})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         assert called == []
         result = json.loads(rt_provider.tool_results[0][2])
@@ -1169,7 +1177,7 @@ class TestRealtimeGateParityWithTheAIPath:
             return HookResult.allow()
 
         await rt_provider.simulate_tool_call(session, "c2", "activate_skill", {"name": "billing"})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         assert seen == ["activate_skill"]
 
@@ -1253,7 +1261,7 @@ class TestRealtimeGateParityWithTheAIPath:
         session = await ch.start_session(room.id, "u1", "ws")
 
         await rt_provider.simulate_tool_call(session, "c4", "refund", {"bogus": 1})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         result = json.loads(rt_provider.tool_results[0][2])
         assert result["error"] == (
@@ -1289,7 +1297,7 @@ class TestRealtimeGateParityWithTheAIPath:
             return HookResult.block("nope")
 
         await rt_provider.simulate_tool_call(session, "c3", "anything", {})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         gate_events = [data for kind, data in emitted if kind == "before_tool_use"]
         assert len(gate_events) == 1
@@ -1586,12 +1594,12 @@ class TestRefusedRealtimeToolCallsAreObserved:
         rt_provider: MockRealtimeProvider,
         rt_transport: MockRealtimeTransport,
     ) -> None:
-        _kit, session, observed, served = await self._channel(
+        kit, session, observed, served = await self._channel(
             rt_provider, rt_transport, "rt-refused-args"
         )
 
         await rt_provider.simulate_tool_call(session, "c1", "lookup", {"city": 42})
-        await asyncio.sleep(0.1)
+        await _done(kit, kit.channels["rt-refused-args"])
 
         assert len(observed) == 1
         assert observed[0].is_error is True
@@ -1610,12 +1618,12 @@ class TestRefusedRealtimeToolCallsAreObserved:
         serve the call, not a report on it, so the observers see the failure
         alone, not a first outcome with no result (RFC §9.3).
         """
-        _kit, session, observed, _served = await self._channel(
+        kit, session, observed, _served = await self._channel(
             rt_provider, rt_transport, "rt-refused-unserved"
         )
 
         await rt_provider.simulate_tool_call(session, "c2", "lookup", {"city": "Paris"})
-        await asyncio.sleep(0.1)
+        await _done(kit, kit.channels["rt-refused-unserved"])
 
         assert [e.is_error for e in observed] == [True]
         assert json.loads(observed[0].result) == {"error": "No handler for tool lookup"}
@@ -1648,7 +1656,7 @@ class TestCancelledRealtimeToolCallsAreObserved:
             served.append(event)
             return HookResult.allow()
 
-        return ch, session, observed, served
+        return kit, ch, session, observed, served
 
     async def test_the_handler_is_interrupted_and_no_result_goes_out(
         self,
@@ -1667,7 +1675,7 @@ class TestCancelledRealtimeToolCallsAreObserved:
                 raise
             return "too late"
 
-        ch, session, observed, served = await self._channel(
+        kit, ch, session, observed, served = await self._channel(
             rt_provider, rt_transport, slow, "rt-cancelled"
         )
 
@@ -1679,7 +1687,7 @@ class TestCancelledRealtimeToolCallsAreObserved:
 
         await rt_provider.simulate_tool_call_cancellation(session, ["c1"])
         await asyncio.wait_for(interrupted.wait(), 1)
-        await asyncio.sleep(0.05)
+        await _done(kit, ch)
 
         # Nothing was sent for a call the model will not read.
         assert rt_provider.tool_results == []
@@ -1706,16 +1714,16 @@ class TestCancelledRealtimeToolCallsAreObserved:
         async def quick(name: str, arguments: dict[str, Any]) -> str:
             return "done"
 
-        _ch, session, observed, _served = await self._channel(
+        kit, ch, session, observed, _served = await self._channel(
             rt_provider, rt_transport, quick, "rt-cancelled-late"
         )
         await rt_provider.simulate_tool_call(session, "c1", "lookup", {})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
         assert len(rt_provider.tool_results) == 1
         seen_before = list(observed)
 
         await rt_provider.simulate_tool_call_cancellation(session, ["c1", "never-issued"])
-        await asyncio.sleep(0.05)
+        await _done(kit, ch)
 
         assert observed == seen_before
         assert not any(e.cancelled for e in observed)
@@ -1730,7 +1738,7 @@ class TestCancelledRealtimeToolCallsAreObserved:
         async def quick(name: str, arguments: dict[str, Any]) -> str:
             return "done"
 
-        ch, session, observed, served = await self._channel(
+        kit, ch, session, observed, served = await self._channel(
             rt_provider, rt_transport, quick, "rt-cancelled-reported"
         )
         submit = rt_provider.submit_tool_result
@@ -1744,7 +1752,7 @@ class TestCancelledRealtimeToolCallsAreObserved:
         rt_provider.submit_tool_result = cancel_while_submitting  # type: ignore[method-assign]
 
         await rt_provider.simulate_tool_call(session, "c1", "lookup", {})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         assert [(e.tool_call_id, e.cancelled) for e in observed] == [("c1", False)]
         assert [e.tool_call_id for e in served] == ["c1"]
@@ -1757,19 +1765,22 @@ class TestCancelledRealtimeToolCallsAreObserved:
         rt_provider: MockRealtimeProvider,
         rt_transport: MockRealtimeTransport,
     ) -> None:
+        started = asyncio.Event()
+
         async def slow(name: str, arguments: dict[str, Any]) -> str:
+            started.set()
             await asyncio.sleep(30)
             return "too late"
 
-        ch, session, observed, _served = await self._channel(
+        kit, ch, session, observed, _served = await self._channel(
             rt_provider, rt_transport, slow, "rt-cancelled-ended"
         )
         await rt_provider.simulate_tool_call(session, "c1", "lookup", {})
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(started.wait(), 5)  # c1 in flight
         await ch.end_session(session)
 
         await rt_provider.simulate_tool_call_cancellation(session, ["c1"])
-        await asyncio.sleep(0.05)
+        await _done(kit, ch)
 
         # The session's end interrupted c1 and reported it, once (RFC §12.4);
         # the provider's cancellation that follows adds nothing.
@@ -1895,7 +1906,7 @@ class TestAToolCallReadsTheRoomOnlyForAHook:
         built, announced = self._spy(kit)
 
         await rt_provider.simulate_tool_call(session, "c1", "get_weather", {})
-        await asyncio.sleep(0.1)
+        await _done(kit, ch)
 
         assert built == []
         assert "tool_call" in announced

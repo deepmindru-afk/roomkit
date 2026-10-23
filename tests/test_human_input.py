@@ -17,6 +17,7 @@ from roomkit.providers.ai.base import AIContext, AITool
 from roomkit.tools import ToolCallContext, tool_turn_context
 from roomkit.tools.compose import compose_tool_handlers
 from roomkit.tools.human_input import HumanInputHandler, HumanInputToolHandler
+from tests.conference.test_conference_realtime import until
 from tests.tool_loop_modes import respond
 
 # Declared, so a model's AskUser call reaches the handler and its hook
@@ -60,8 +61,7 @@ async def test_resolve_unblocks_wait() -> None:
     )
 
     async def _resolve_later() -> None:
-        await asyncio.sleep(0.01)
-        handler.resolve(pending.pending_id, "yes")
+        handler.resolve(pending.pending_id, "yes")  # runs once wait() listens
 
     asyncio.create_task(_resolve_later())
     result = await handler.wait(pending.pending_id, timeout=5)
@@ -76,8 +76,7 @@ async def test_reject_raises_runtime_error() -> None:
     )
 
     async def _reject_later() -> None:
-        await asyncio.sleep(0.01)
-        handler.reject(pending.pending_id, "denied by admin")
+        handler.reject(pending.pending_id, "denied by admin")  # runs once wait() listens
 
     asyncio.create_task(_reject_later())
     with pytest.raises(RuntimeError, match="denied by admin"):
@@ -479,7 +478,7 @@ async def test_create_carries_the_actor_to_the_request_and_the_event() -> None:
     pending = await handler.create(
         "ask", {}, room_id="r1", tool_call_id="tc1", channel_id="ch1", actor_id="alice"
     )
-    await asyncio.sleep(0.01)
+    await until(lambda: events)  # the notification runs in its own task
 
     assert pending.actor_id == "alice"
     assert [e.actor_id for e in events] == ["alice"]
@@ -548,14 +547,21 @@ async def test_request_names_the_speaker_through_the_framework(streaming: bool) 
     await kit.attach_channel("ask-room", "ai-ask")
     # Two people on one channel object: a group binding (RFC §10.4).
     await kit.attach_channel("ask-room", "ws-ask", group=True)
-    # Someone has to drain the AI's stream for the tool loop to advance.
-    ws.register_connection("c1", lambda _conn, _ev: None, room_id="ask-room")
+    # Someone has to drain the AI's stream for the tool loop to advance; the
+    # reply it receives ends the turn.
+    thanked: list[Any] = []
 
-    for who in ("alice", "bob"):
+    async def deliver(_conn: str, event: Any) -> None:
+        if getattr(event.content, "body", None) == "Thanks.":
+            thanked.append(event)
+
+    ws.register_connection("c1", deliver, room_id="ask-room")
+
+    for turns, who in enumerate(("alice", "bob"), start=1):
         await kit.process_inbound(
             InboundMessage(channel_id="ws-ask", sender_id=who, content=TextContent(body="hi"))
         )
-        await asyncio.sleep(0.3)
+        await until(lambda turns=turns: len(thanked) == turns)  # its turn ended
 
     assert [e.actor_id for e in seen] == ["alice", "bob"]
     await kit.close()

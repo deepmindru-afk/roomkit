@@ -11,7 +11,6 @@ refused round after round for a value the model cannot send otherwise.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from roomkit import ConferenceRealtimeConfig, RoomKit
@@ -19,7 +18,8 @@ from roomkit.channels.ai import AIChannel
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.voice.realtime.mock import MockRealtimeProvider
-from tests.conference.test_conference_realtime import ROOM, realtime_kit
+from tests.channel_tasks import settled
+from tests.conference.test_conference_realtime import ROOM, realtime_kit, until
 from tests.conftest import make_event
 from tests.test_realtime_tool_recovery import _session
 from tests.tool_loop_modes import respond
@@ -101,10 +101,10 @@ async def test_a_realtime_call_reads_a_quoted_integer() -> None:
         return "sunny"
 
     provider = MockRealtimeProvider()
-    kit, _channel, session = await _session(provider, "rt-quoted", handler=handler)
+    kit, channel, session = await _session(provider, "rt-quoted", handler=handler)
 
     await provider.simulate_tool_call(session, "call-1", "lookup", {"city": "Paris", "limit": "3"})
-    await asyncio.sleep(0.1)
+    await settled(channel)
 
     assert seen == [{"city": "Paris", "limit": 3}]
     await kit.close()
@@ -129,10 +129,7 @@ async def test_a_conference_call_reads_a_quoted_integer() -> None:
     await provider.simulate_tool_call(
         session, "call-1", "move_card", {"card_id": "c1", "position": "0"}
     )
-    for _ in range(50):
-        if seen:
-            break
-        await asyncio.sleep(0.02)
+    await until(lambda: seen)
 
     assert seen == [{"card_id": "c1", "position": 0}]
     await kit.close()

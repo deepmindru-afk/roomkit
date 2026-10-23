@@ -8,12 +8,28 @@ rather than burning 5 back-off retries on a doomed connection.
 
 from __future__ import annotations
 
+import asyncio
+from typing import Any
+
 import pytest
 
 pytest.importorskip("google.genai", reason="google-genai not installed")
 
+from roomkit.providers.gemini import realtime_connection
 from roomkit.providers.gemini.realtime import _GeminiSessionState
 from roomkit.voice.base import VoiceSession, VoiceSessionState
+
+
+class _NoBackOff:
+    """``asyncio`` as the connection module sees it, its back-off before a
+    reconnect (the module's only sleep) waiting for nothing."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(asyncio, name)
+
+    @staticmethod
+    async def sleep(delay: float) -> None:
+        await asyncio.sleep(0)
 
 
 class _FakeAPIError(Exception):
@@ -91,8 +107,11 @@ class TestNonRetryableFastFail:
         assert errors == ["ws_1011"]
         assert session.state == VoiceSessionState.ENDED
 
-    async def test_transient_close_does_not_fastfail(self, provider) -> None:
+    async def test_transient_close_does_not_fastfail(
+        self, provider, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A transient code (1006) goes through the reconnect path, not fast-fail."""
+        monkeypatch.setattr(realtime_connection, "asyncio", _NoBackOff())
         session = _seed_session(provider, code=1006)
         errors: list[str] = []
         provider.on_error(lambda sess, code, msg: errors.append(code))

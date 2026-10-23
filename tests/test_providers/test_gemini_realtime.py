@@ -7,6 +7,7 @@ import contextlib
 import logging
 import sys
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -75,6 +76,15 @@ def _build_fake_genai():
         "google.genai": genai,
         "google.genai.types": types,
     }
+
+
+@pytest.fixture(autouse=True)
+def _sdk_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The provider imports google-genai when it is built, once the fakes
+    :func:`_load_provider` loads it with are gone: its client would be the
+    SDK's own, whose TLS set-up costs about 30 ms. No test reaches it (each
+    replaces the connection it opens), so the fake client stands in."""
+    monkeypatch.setattr("google.genai.Client", _build_fake_genai()["google.genai"].Client)
 
 
 def _load_provider():
@@ -2737,6 +2747,22 @@ class TestServerCancelledToolCalls:
         live.send_tool_response.assert_not_awaited()
 
 
+class _HeldBackOff:
+    """``asyncio`` as the receive loop sees it, its back-off before a
+    reconnect (its module's only sleep) held open until the test ends: what
+    the loop did before the back-off is read while it lasts."""
+
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(asyncio, name)
+
+    async def sleep(self, delay: float) -> None:
+        self.entered.set()
+        await asyncio.Event().wait()
+
+
 class TestReconnectForgetsTheOldSocketsCalls:
     """Call ids are connection-scoped: nothing on the new socket will answer them."""
 
@@ -2798,11 +2824,17 @@ class TestReconnectForgetsTheOldSocketsCalls:
         with pytest.raises(RuntimeError):
             await provider.submit_tool_result(session, "call-1", "{}")
 
-    async def test_the_old_sockets_calls_are_released_before_the_back_off(self):
+    async def test_the_old_sockets_calls_are_released_before_the_back_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The receive loop says so on the drop, not after the handshake."""
         provider, session, state, live = _blocking_call_state()
         told: list[list[str]] = []
         provider.on_tool_call_cancelled(lambda _s, ids: told.append(ids))
+        back_off = _HeldBackOff()
+        # The loop's own globals: the module it was defined in, whichever
+        # copy of the provider imported it.
+        monkeypatch.setitem(provider._receive_loop.__func__.__globals__, "asyncio", back_off)
 
         async def dropped():
             raise RuntimeError("connection dropped")
@@ -2811,7 +2843,7 @@ class TestReconnectForgetsTheOldSocketsCalls:
         live.receive = dropped
         loop_task = asyncio.create_task(provider._receive_loop(session))
         try:
-            await asyncio.sleep(0.1)  # inside the first 0.5 s back-off
+            await asyncio.wait_for(back_off.entered.wait(), timeout=5)
             assert told == [["call-1"]]
             assert not provider._holds_tool_call(session, "call-1")
             assert state.live_session is None  # no reconnect yet

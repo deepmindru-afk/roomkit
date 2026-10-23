@@ -22,7 +22,7 @@ from roomkit.channels._realtime_host_hooks import broadcast_text
 from roomkit.channels._realtime_tool_recovery import recovered_result_text
 from roomkit.models.context import RoomContext
 from roomkit.models.room import Room
-from roomkit.providers.openai import live, live_append
+from roomkit.providers.openai import live, live_append, live_events
 from roomkit.providers.openai.live import (
     HostedReasoning,
     IntegratorReasoning,
@@ -44,6 +44,8 @@ from roomkit.providers.openai.live_events import (
 from roomkit.tasks.handback import result_text
 from roomkit.voice.base import VoiceSession, VoiceSessionState
 from roomkit.voice.realtime.injection import say_line_instruction
+from tests.bounds import CUT, expire, opened_with_cut
+from tests.conference.test_conference_realtime import until
 from tests.conftest import make_event
 from tests.test_proactive_delivery_voice import voice_room
 
@@ -111,18 +113,22 @@ class _HangingCloseWS(_FakeWS):
 class _SilentPeerWS(_FakeWS):
     """A peer that never answers the close handshake, as the API does after
     ``session.closed``: like websockets', ``close()`` returns only when its own
-    ``close_timeout`` expires and the transport is aborted."""
+    ``close_timeout`` expires (``expired``, set by the test) and the transport
+    is aborted."""
 
     def __init__(self) -> None:
         super().__init__()
         self.close_timeout: float | None = 10.0  # websockets' default
         self.close_timeout_at_close: float | None = None
+        self.expired = asyncio.Event()
 
     async def close(self) -> None:
         self.close_timeout_at_close = self.close_timeout
+        await asyncio.sleep(0)  # the close frame goes out
         if self.close_timeout is None:
             await asyncio.Event().wait()
-        await asyncio.sleep(self.close_timeout)
+        if self.close_timeout:
+            await self.expired.wait()
         self.closed = True
 
 
@@ -195,6 +201,29 @@ def _function_call(call_id: str, name: str, arguments: str) -> dict[str, Any]:
             },
         }
     )
+
+
+class _Gap:
+    """``live_events``' asyncio, whose sleeps are the turn gaps: each records
+    its delay and lasts until the test lets the gap pass."""
+
+    def __init__(self) -> None:
+        self.delays: list[float] = []
+        self.passed = asyncio.Event()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(asyncio, name)
+
+    async def sleep(self, delay: float) -> None:
+        self.delays.append(delay)
+        await self.passed.wait()
+
+
+@pytest.fixture
+def gap(monkeypatch: pytest.MonkeyPatch) -> _Gap:
+    gap = _Gap()
+    monkeypatch.setattr(live_events, "asyncio", gap)
+    return gap
 
 
 @pytest.fixture
@@ -392,7 +421,9 @@ class TestAudio:
 
 
 class TestSynthesizedBoundaries:
-    async def test_assistant_turn_opens_and_closes_a_response(self, session: VoiceSession) -> None:
+    async def test_assistant_turn_opens_and_closes_a_response(
+        self, session: VoiceSession, gap: _Gap
+    ) -> None:
         provider = _provider()
         rec = _Recorder(provider)
         ws, _ = await _connect(provider, session)
@@ -405,13 +436,16 @@ class TestSynthesizedBoundaries:
         assert rec.transcripts == [("Hello", "assistant", False), (" world", "assistant", False)]
         assert provider.is_responding(session.id) is True
 
-        await asyncio.sleep(0.12)  # past the 50 ms gap
+        gap.passed.set()  # 50 ms without a delta
+        await until(lambda: rec.responses == ["start", "end"])
 
         assert rec.transcripts[-1] == ("Hello world", "assistant", True)
-        assert rec.responses == ["start", "end"]
         assert provider.is_responding(session.id) is False
+        assert gap.delays[-1] == 0.05  # turn_gap_ms, the quiet that closed it
 
-    async def test_user_turn_opens_and_closes_speech(self, session: VoiceSession) -> None:
+    async def test_user_turn_opens_and_closes_speech(
+        self, session: VoiceSession, gap: _Gap
+    ) -> None:
         provider = _provider()
         rec = _Recorder(provider)
         ws, _ = await _connect(provider, session)
@@ -425,12 +459,15 @@ class TestSynthesizedBoundaries:
             (" flight on time?", "user", False),
         ]
 
-        await asyncio.sleep(0.12)
+        gap.passed.set()
+        await until(lambda: rec.speech == ["start", "end"])
         assert rec.transcripts[-1] == ("Is my flight on time?", "user", True)
-        assert rec.speech == ["start", "end"]
         assert rec.responses == []
+        assert gap.delays[-1] == 0.05
 
-    async def test_speakers_overlap_with_independent_gaps(self, session: VoiceSession) -> None:
+    async def test_speakers_overlap_with_independent_gaps(
+        self, session: VoiceSession, gap: _Gap
+    ) -> None:
         provider = _provider()
         rec = _Recorder(provider)
         ws, _ = await _connect(provider, session)
@@ -441,10 +478,12 @@ class TestSynthesizedBoundaries:
         assert rec.responses == ["start"]
         assert rec.speech == ["start"]
 
-        await asyncio.sleep(0.12)
+        gap.passed.set()
+        await until(lambda: rec.responses == ["start", "end"] and rec.speech == ["start", "end"])
         finals = [t for t in rec.transcripts if t[2]]
         assert ("Let me check", "assistant", True) in finals
         assert ("actually", "user", True) in finals
+        assert gap.delays == [0.05, 0.05]  # one quiet per speaker
 
     async def test_empty_delta_is_ignored(self, session: VoiceSession) -> None:
         provider = _provider()
@@ -933,40 +972,42 @@ class TestLifecycle:
         self, session: VoiceSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Once ``session.closed`` lands, the TCP close is nobody's wall clock."""
-        monkeypatch.setattr(live, "_CLOSE_TIMEOUT", 0.05)
+        bounds = opened_with_cut(monkeypatch)
+        monkeypatch.setattr(live, "_CLOSE_TIMEOUT", CUT)
         provider = _provider(close_timeout_s=1.0)
         ws, _ = await _connect(provider, session, ws=_HangingCloseWS())
 
         task = asyncio.create_task(provider.disconnect(session))
         await _settle()
         ws.push({"type": "session.closed", "reason": "client"})
-
-        started = asyncio.get_running_loop().time()
-        await asyncio.wait_for(task, timeout=1.0)
-        assert asyncio.get_running_loop().time() - started < 0.05
+        await asyncio.wait_for(task, timeout=1.0)  # well within the socket's bound
 
         assert session.state == VoiceSessionState.ENDED
         assert provider._states == {}
         await _settle()
         assert ws.close_entered  # it still closes, just on its own task
-        await asyncio.sleep(0.1)  # and under the same bound, unattended
-        assert provider._deferred_closes == set()
+        expire(bounds)  # and under the same bound, unattended
+        await until(lambda: not provider._deferred_closes)
         assert ws.transport.abort.call_count == 1  # the bound released the transport
 
     async def test_unacknowledged_close_still_waits_for_the_socket(
         self, session: VoiceSession, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """No ``session.closed`` means the close is not acknowledged: wait for it."""
-        monkeypatch.setattr(live, "_CLOSE_TIMEOUT", 0.15)
-        provider = _provider(close_timeout_s=0.05)
+        bounds = opened_with_cut(monkeypatch)
+        monkeypatch.setattr(live, "_CLOSE_TIMEOUT", CUT / 2)  # the socket's bound is twice it
+        provider = _provider(close_timeout_s=CUT)
         ws, _ = await _connect(provider, session, ws=_HangingCloseWS())
 
-        started = asyncio.get_running_loop().time()
-        await asyncio.wait_for(provider.disconnect(session), timeout=1.0)
-        elapsed = asyncio.get_running_loop().time() - started
+        task = asyncio.create_task(provider.disconnect(session))
+        await until(lambda: len(bounds) == 1)  # the ack it never sends
+        expire(bounds)
+        await until(lambda: len(bounds) == 2)  # then the close it never makes
+        assert not task.done()
+        expire(bounds)
+        await asyncio.wait_for(task, timeout=1.0)
 
         assert "session.close" in ws.types()  # the peer was asked, and stayed silent
-        assert elapsed >= 0.2  # the ack it never sent, then the close it never made
         assert provider._deferred_closes == set()
         assert ws.transport.abort.call_count == 1  # then the bound released the transport
         assert session.state == VoiceSessionState.ENDED
@@ -1001,16 +1042,20 @@ class TestLifecycle:
         socket keeps a handshake wait, ``_CLOSE_TIMEOUT`` long, and it is the
         library's own bound, which aborts the transport on expiry. A silent
         peer therefore costs the wait and never keeps the socket."""
-        monkeypatch.setattr(live, "_CLOSE_TIMEOUT", 0.15)
-        provider = _provider(close_timeout_s=0.05)
+        bounds = opened_with_cut(monkeypatch)
+        provider = _provider(close_timeout_s=CUT)
         ws, _ = await _connect(provider, session, ws=_SilentPeerWS())
 
-        started = asyncio.get_running_loop().time()
-        await asyncio.wait_for(provider.disconnect(session), timeout=1.0)
+        task = asyncio.create_task(provider.disconnect(session))
+        await until(lambda: len(bounds) == 1)  # no session.closed comes
+        expire(bounds)
+        await until(lambda: ws.close_timeout_at_close is not None)
 
-        assert ws.close_timeout_at_close == 0.15
+        assert ws.close_timeout_at_close == live._CLOSE_TIMEOUT
+        assert not task.done()  # the disconnect waits for it
+        ws.expired.set()
+        await asyncio.wait_for(task, timeout=1.0)
         assert ws.closed
-        assert asyncio.get_running_loop().time() - started >= 0.15
 
     async def test_close_releases_the_sockets_disconnect_deferred(
         self, session: VoiceSession
@@ -1028,7 +1073,7 @@ class TestLifecycle:
         assert provider._states == {}
 
     async def test_close_timeout_still_disconnects(self, session: VoiceSession) -> None:
-        provider = _provider(close_timeout_s=0.05)
+        provider = _provider()
         ws, _ = await _connect(provider, session)
         await asyncio.wait_for(provider.disconnect(session), timeout=1.0)
         assert ws.closed

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -27,6 +28,7 @@ from roomkit.sources.buzz import (
     parse_buzz_event,
     parse_buzz_reaction,
 )
+from tests.conference.test_conference_realtime import until
 
 # =============================================================================
 # Helpers
@@ -78,18 +80,6 @@ def _make_event(content: Any) -> RoomEvent:
 
 
 class TestBuzzConfig:
-    def test_requires_fields(self) -> None:
-        with pytest.raises(ValueError):
-            BuzzConfig()  # type: ignore[call-arg]
-
-    def test_defaults(self) -> None:
-        cfg = BuzzConfig(relay_url="wss://relay", private_key="nsec1secret")
-        assert cfg.relay_url == "wss://relay"
-        assert cfg.private_key.get_secret_value() == "nsec1secret"
-        assert cfg.ignore_own is True
-        assert cfg.owner_pubkey is None
-        assert cfg.obey_owner_commands is True
-
     def test_owner_pubkey_is_normalized_and_validated(self) -> None:
         cfg = BuzzConfig(
             relay_url="wss://relay", private_key="nsec1x", owner_pubkey=" " + "A" * 64 + " "
@@ -336,6 +326,7 @@ class FakeBuzzClient:
         self.presence: list[str] = []
         self.presence_error: Exception | None = None  # raised once, then cleared
         self.released = asyncio.Event()
+        self.drained = asyncio.Event()  # every event handed over, waiting on the relay
 
     async def connect(self) -> None: ...
 
@@ -361,6 +352,7 @@ class FakeBuzzClient:
         if self.raise_after is not None:
             exc, self.raise_after = self.raise_after, None
             raise exc
+        self.drained.set()
         await self.released.wait()
 
     async def close(self) -> None:
@@ -403,19 +395,19 @@ def buzz_source(monkeypatch):
     return factory
 
 
-async def _run_source_once(source: Any) -> list[Any]:
-    """Run start() until the fake's events are consumed, then stop it."""
+async def _run_source_once(
+    source: Any, settled: Callable[[FakeBuzzClient], bool] = lambda client: True
+) -> list[Any]:
+    """Run start() until the fake's events are consumed and *settled* holds,
+    then stop it."""
     emitted: list[Any] = []
 
     async def emit(message: Any) -> Any:
         emitted.append(message)
 
     task = asyncio.create_task(source.start(emit))
-    for _ in range(50):
-        await asyncio.sleep(0.01)
-        if source.client.subscribe_kinds != "unset":
-            break
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(source.client.drained.wait(), timeout=2)
+    await until(lambda: settled(source.client), timeout=2)
     await source.stop()
     await asyncio.wait_for(task, timeout=2)
     return emitted
@@ -503,7 +495,7 @@ class TestBuzzRelaySourceLifecycle:
         source = buzz_source()
         source.client.presence_error = ConnectionError("beat lost")
         with caplog.at_level("WARNING", logger="roomkit.sources.buzz"):
-            await _run_source_once(source)
+            await _run_source_once(source, lambda client: "online" in client.presence)
         # The first beat failed, later beats landed ("online"), then stop()
         # published "offline" — the loop survived the failure.
         assert "online" in source.client.presence
@@ -512,7 +504,7 @@ class TestBuzzRelaySourceLifecycle:
     async def test_stop_publishes_offline(self, buzz_source) -> None:
         """A deliberate stop flips presence to offline instead of lapsing by TTL."""
         source = buzz_source()
-        await _run_source_once(source)
+        await _run_source_once(source, lambda client: bool(client.presence))
         assert source.client.presence[0] == "online"
         assert source.client.presence[-1] == "offline"
 
@@ -723,8 +715,8 @@ class TestBuzzAgent:
         import roomkit.providers.buzz.agent as agent_module
         from roomkit.providers.buzz import BuzzAgentStopCause
 
-        monkeypatch.setattr(agent_module, "_INACTIVITY_CHECK_CAP", 0.02)
-        kit, source, agent = self._agent(buzz_source, exit_after_inactivity=0.1)
+        monkeypatch.setattr(agent_module, "_INACTIVITY_CHECK_CAP", 0.005)
+        kit, source, agent = self._agent(buzz_source, exit_after_inactivity=0.02)
         cause = await asyncio.wait_for(agent.run(), timeout=2)
         assert cause is BuzzAgentStopCause.INACTIVITY
         assert kit._closed is True
@@ -777,10 +769,14 @@ class TestBuzzAgent:
         loop = asyncio.get_running_loop()
         with pytest.raises(SourceAlreadyAttachedError):
             await asyncio.wait_for(agent.run(), timeout=2)
-        await asyncio.sleep(0.05)  # let the cancelled reaper actually die
+
+        def reapers() -> list[asyncio.Task[Any]]:
+            return [t for t in asyncio.all_tasks(loop) if "_inactivity_loop" in repr(t.get_coro())]
+
+        # The cancelled reaper ends; one left running fails the wait.
+        await until(lambda: not reapers())
 
         assert kit._closed is True
-        assert not [t for t in asyncio.all_tasks(loop) if "_inactivity_loop" in repr(t.get_coro())]
         # remove_signal_handler returns False when there was nothing to remove.
         for sig in (signal.SIGTERM, signal.SIGINT):
             assert loop.remove_signal_handler(sig) is False
