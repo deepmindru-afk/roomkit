@@ -17,6 +17,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A thought that comes back after its event was decided is decided late
+  (RFC §6.4, RMK-914). Past the thinker's wait, or on a final decision (a
+  room that listens), a thought with something to say was dropped until the
+  next event; the policy now decides again on that event with it, and
+  `ON_SPEAK_DECISION` fires with `SpeakDecisionEvent.late`. No turn runs on a
+  late decision: the hooks act on it (raise a hand, deliver an instruction).
+  Every decision also carries `SpeakDecisionEvent.thought`, what the agent
+  had in mind as the policy decided.
+
+- A room that listens lets the agent ask for the floor (RFC §6.4, RMK-914).
+  Asked to only listen, the classifier policy kept the agent silent whatever
+  it had in mind; it now offers ("listening, has something to add") when its
+  thought answers or corrects the turn as surely as the proactivity asks, the
+  speaker has finished, neither postpones it nor asks for quiet, and no
+  question put to someone else waits for them. The room goes on listening.
+
+- A question put to someone else is theirs to answer first (RFC §6.4,
+  RMK-914). The classifier policy asks `waiting`: is a question put to a
+  person other than the agent still waiting for their first try? Unless the
+  thought is urgent, the agent then stays silent (`theirs to answer`), or
+  offers rather than speaks when wondered about. In a quiz, an agent that
+  knew every answer offered as each question was put to a participant; on
+  the quiz's live turns and two questions put to everyone, 14/15 right
+  (Jev, three calls each). A question put to everyone waits for no one.
+
 - **Parallel test runs, and only the tests a change reaches (RMK-919).**
   `make test` runs the suite on one worker per core (pytest-xdist, idle
   workers taking queued tests): `make all` takes about a minute instead of
@@ -103,6 +128,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   executor once it closed (RFC §10.6.7).
 
 ### Fixed
+
+- A thought taken while the agent answers in the room wants to say nothing
+  yet (RFC §6.4, RMK-914). Its context did not hold the answer under way, so
+  the agent wanted to say it again: an application raising a hand on an
+  offer raised it right after the agent's own answer.
 
 - An agent with a thinker no longer goes mute on Claude (RMK-912). The note
   that carries its thought into the turns it speaks offered the model "your
@@ -358,6 +388,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its own task, never before it (RMK-901).
 
 ### Changed
+
+- **BREAKING — `ON_SPEAK_DECISION` is a SYNC trigger: its hooks change the
+  decision the channel acts on** (RFC §6.4, §9.2, RMK-914). A hook could only
+  observe a decision; an application that wanted to act on it in code (raise
+  a hand rather than let the agent offer aloud) could not. The SYNC hooks now
+  run in order before the channel acts: `HookResult.modify` with
+  `dataclasses.replace(event, decision=...)` replaces the decision (only the
+  decision is read), `HookResult.block` leaves the agent silent (`blocked by
+  <hook>`). The trigger is fail-open; a fail-closed hook that fails, or one
+  registered on a room whose hook context cannot be built, leaves the agent
+  silent. ASYNC hooks observe the decision that stands.
+  `examples/raise_hand_on_offer.py` turns an offer into a raised hand.
+  Migration: a hook registered SYNC (the default) that returns `None` now
+  logs an unusable result on every decision and holds the decision up while
+  it runs; register it `execution=HookExecution.ASYNC`, or return
+  `HookResult.allow()`.
+
+- The classifier policy's questions read a turn as people meant it (RMK-914),
+  each measured with Jev on live and written turns, three calls each:
+  `answers` weighs what the agent has in mind against a question still open,
+  asked in the last turn or before it and answered by no one since (8/9, the
+  former 5/9: the others often hesitate a turn before anyone answers);
+  `unfinished` reads how the turn ends, not a hesitation inside it, nor "I do
+  not remember" (17/19, the former 12/19); `directness` reads a turn about the
+  agent said to someone else, or asking someone to explain something to it,
+  as not addressing it (14/14, the former 9/14: the agent answered in that
+  person's place); `hush` no longer reads "are you ready to listen?" as a
+  request for quiet (7/7, the former 5/7).
 
 - **BREAKING — `ParticipantRole.AGENT` is a human agent** (RFC §5, §6.4,
   §19.7.5 rule 2, RMK-911), an advisor or a support representative, as the
