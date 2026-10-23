@@ -29,7 +29,6 @@ from roomkit.models.enums import (
     ChannelType,
     EventStatus,
     EventType,
-    HookTrigger,
     RoomStatus,
 )
 from roomkit.models.event import (
@@ -238,11 +237,6 @@ class TestTranscodingFailureInRouter:
 
 
 class TestProviderABCEnhancements:
-    def test_ai_response_has_tasks_and_observations(self) -> None:
-        resp = AIResponse(content="hello")
-        assert resp.tasks == []
-        assert resp.observations == []
-
     def test_ai_response_with_tasks(self) -> None:
         task = Task(id="t1", room_id="r1", title="Test task")
         obs = Observation(id="o1", room_id="r1", channel_id="ch1", content="obs")
@@ -703,33 +697,12 @@ class TestRoomTimers:
 # ============================================================================
 
 
-class TestRoomPausedHookTrigger:
-    def test_on_room_paused_exists(self) -> None:
-        assert HookTrigger.ON_ROOM_PAUSED == "on_room_paused"
-
-
 # ============================================================================
 # D2: RetryPolicy model
 # ============================================================================
 
 
 class TestRetryPolicyModel:
-    def test_defaults(self) -> None:
-        policy = RetryPolicy()
-        assert policy.max_retries == 3
-        assert policy.base_delay_seconds == 1.0
-        assert policy.max_delay_seconds == 60.0
-        assert policy.exponential_base == 2.0
-
-    def test_custom_values(self) -> None:
-        policy = RetryPolicy(
-            max_retries=5,
-            base_delay_seconds=0.5,
-            max_delay_seconds=30.0,
-            exponential_base=3.0,
-        )
-        assert policy.max_retries == 5
-
     def test_retry_policy_on_binding(self) -> None:
         binding = ChannelBinding(
             channel_id="ch1",

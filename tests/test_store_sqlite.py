@@ -361,13 +361,6 @@ class TestPersistence:
         assert "safe only in a single process" in caplog.text
         await store.close()
 
-    def test_sqlite_store_is_exported_from_package_root(self) -> None:
-        from roomkit import SQLiteSchemaError as RootSQLiteSchemaError
-        from roomkit import SQLiteStore as RootSQLiteStore
-
-        assert RootSQLiteStore is SQLiteStore
-        assert RootSQLiteSchemaError is SQLiteSchemaError
-
 
 class TestFullTextSearch:
     async def test_search_finds_by_content_words(self, store: SQLiteStore) -> None:

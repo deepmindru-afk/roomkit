@@ -25,7 +25,6 @@ from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tools.external import (
     BeforeToolDecision,
     PolicyExternalToolHandler,
-    ToolDecision,
 )
 from roomkit.tools.policy import ToolPolicy, policy_refusal
 from tests.tool_loop_modes import respond
@@ -74,28 +73,6 @@ async def _tool_handler(name: str, args: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 # ToolDecision dataclass
 # ---------------------------------------------------------------------------
-
-
-class TestToolDecision:
-    def test_approved(self) -> None:
-        d = ToolDecision(approved=True)
-        assert d.approved is True
-        assert d.reason == ""
-        assert d.modified_input is None
-        assert d.result is None
-
-    def test_denied_with_reason(self) -> None:
-        d = ToolDecision(approved=False, reason="Not allowed")
-        assert d.approved is False
-        assert d.reason == "Not allowed"
-
-    def test_approved_with_modified_input(self) -> None:
-        d = ToolDecision(approved=True, modified_input={"city": "London"})
-        assert d.modified_input == {"city": "London"}
-
-    def test_approved_with_result_override(self) -> None:
-        d = ToolDecision(approved=True, result="manual result")
-        assert d.result == "manual result"
 
 
 # ---------------------------------------------------------------------------

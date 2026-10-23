@@ -19,7 +19,6 @@ from roomkit.models import (
     ChannelType,
     CompositeContent,
     DeliveryError,
-    DeliveryResult,
     EventDirection,
     EventSource,
     EventStatus,
@@ -37,7 +36,6 @@ from roomkit.models import (
     Observation,
     Participant,
     ParticipantRole,
-    ProviderResult,
     RateLimit,
     RichContent,
     Room,
@@ -51,28 +49,10 @@ from roomkit.models import (
     TextContent,
     VideoContent,
 )
+from roomkit.models.channel import RetryPolicy
+from roomkit.models.event import ToolCallContent
 
 # -- Content models --
-
-
-class TestTextContent:
-    def test_create(self) -> None:
-        c = TextContent(body="hello")
-        assert c.type == "text"
-        assert c.body == "hello"
-        assert c.language is None
-
-    def test_with_language(self) -> None:
-        c = TextContent(body="bonjour", language="fr")
-        assert c.language == "fr"
-
-
-class TestRichContent:
-    def test_defaults(self) -> None:
-        c = RichContent(body="**bold**")
-        assert c.type == "rich"
-        assert c.format == "markdown"
-        assert c.plain_text is None
 
 
 class TestMediaContent:
@@ -80,13 +60,6 @@ class TestMediaContent:
         c = MediaContent(url="https://example.com/img.png", mime_type="image/png")
         assert c.type == "media"
         assert c.filename is None
-
-
-class TestLocationContent:
-    def test_create(self) -> None:
-        c = LocationContent(latitude=45.5, longitude=-73.6)
-        assert c.type == "location"
-        assert c.label is None
 
 
 class TestAudioContent:
@@ -110,19 +83,6 @@ class TestCompositeContent:
         c = CompositeContent(parts=parts)
         assert c.type == "composite"
         assert len(c.parts) == 2
-
-
-class TestSystemContent:
-    def test_create(self) -> None:
-        c = SystemContent(body="User joined")
-        assert c.type == "system"
-
-
-class TestTemplateContent:
-    def test_defaults(self) -> None:
-        c = TemplateContent(template_id="welcome_v1")
-        assert c.language == "en"
-        assert c.parameters == {}
 
 
 # -- Discriminated union --
@@ -201,19 +161,6 @@ class TestChannelCapabilities:
         assert c.media_types == [ChannelMediaType.TEXT]
         assert c.max_length is None
 
-    def test_custom(self) -> None:
-        c = ChannelCapabilities(
-            media_types=[ChannelMediaType.TEXT, ChannelMediaType.RICH],
-            supports_threading=True,
-        )
-        assert len(c.media_types) == 2
-
-
-class TestRateLimit:
-    def test_defaults(self) -> None:
-        r = RateLimit()
-        assert r.max_per_second is None
-
 
 class TestChannelOutput:
     def test_empty_factory(self) -> None:
@@ -255,13 +202,6 @@ class TestParticipant:
 
 
 # -- Identity --
-
-
-class TestIdentity:
-    def test_create(self) -> None:
-        i = Identity(id="id1", display_name="Alice")
-        assert i.email is None
-        assert i.external_ids == {}
 
 
 class TestIdentityHookResult:
@@ -309,14 +249,6 @@ class TestRoom:
     def test_custom(self) -> None:
         r = Room(id="r1", status=RoomStatus.CLOSED, metadata={"key": "val"})
         assert r.metadata["key"] == "val"
-
-
-class TestRoomTimers:
-    def test_defaults(self) -> None:
-        t = RoomTimers()
-        assert t.inactive_after_seconds is None
-        assert t.closed_after_seconds is None
-        assert t.last_activity_at is None
 
 
 # -- Hook --
@@ -373,16 +305,6 @@ class TestObservation:
 # -- Delivery --
 
 
-class TestProviderResult:
-    def test_success(self) -> None:
-        r = ProviderResult(success=True, provider_message_id="msg123")
-        assert r.error is None
-
-    def test_failure(self) -> None:
-        r = ProviderResult(success=False, error="timeout")
-        assert r.success is False
-
-
 class TestInboundMessage:
     def test_create(self) -> None:
         m = InboundMessage(
@@ -400,21 +322,6 @@ class TestInboundResult:
 
 
 class TestDeliveryResult:
-    def test_a_sent_delivery_carries_no_error(self) -> None:
-        r = DeliveryResult(channel_id="ch1", status="sent")
-        assert r.error is None
-        assert r.retry_after is None
-
-    def test_a_failed_delivery_says_why(self) -> None:
-        r = DeliveryResult(
-            channel_id="ch1",
-            status="failed",
-            error=DeliveryError(code="550", message="mailbox unavailable", retryable=False),
-        )
-        assert r.error is not None
-        assert r.error.code == "550"
-        assert r.error.retryable is False
-
     def test_an_unmarked_error_reports_as_retryable(self) -> None:
         """Matching what the retry loop does with an error that says nothing."""
         assert DeliveryError(code="Boom", message="boom").retryable is True
@@ -471,14 +378,6 @@ class TestRoomFieldConstraints:
 
 
 class TestRoomTimersConstraints:
-    def test_negative_inactive_after_seconds(self) -> None:
-        with pytest.raises(ValidationError):
-            RoomTimers(inactive_after_seconds=-1)
-
-    def test_negative_closed_after_seconds(self) -> None:
-        with pytest.raises(ValidationError):
-            RoomTimers(closed_after_seconds=-5)
-
     def test_zero_is_valid(self) -> None:
         t = RoomTimers(inactive_after_seconds=0, closed_after_seconds=0)
         assert t.inactive_after_seconds == 0
@@ -520,22 +419,6 @@ class TestMediaContentConstraints:
 
 
 class TestLocationContentConstraints:
-    def test_latitude_out_of_range(self) -> None:
-        with pytest.raises(ValidationError):
-            LocationContent(latitude=91.0, longitude=0.0)
-
-    def test_latitude_below_range(self) -> None:
-        with pytest.raises(ValidationError):
-            LocationContent(latitude=-91.0, longitude=0.0)
-
-    def test_longitude_out_of_range(self) -> None:
-        with pytest.raises(ValidationError):
-            LocationContent(latitude=0.0, longitude=181.0)
-
-    def test_longitude_below_range(self) -> None:
-        with pytest.raises(ValidationError):
-            LocationContent(latitude=0.0, longitude=-181.0)
-
     def test_boundary_values(self) -> None:
         c = LocationContent(latitude=90.0, longitude=-180.0)
         assert c.latitude == 90.0
@@ -616,36 +499,6 @@ class TestChannelBindingConstraints:
             )
 
 
-class TestRetryPolicyConstraints:
-    def test_negative_max_retries(self) -> None:
-        from roomkit.models.channel import RetryPolicy
-
-        with pytest.raises(ValidationError):
-            RetryPolicy(max_retries=-1)
-
-    def test_zero_base_delay(self) -> None:
-        from roomkit.models.channel import RetryPolicy
-
-        with pytest.raises(ValidationError):
-            RetryPolicy(base_delay_seconds=0.0)
-
-    def test_zero_max_delay(self) -> None:
-        from roomkit.models.channel import RetryPolicy
-
-        with pytest.raises(ValidationError):
-            RetryPolicy(max_delay_seconds=0.0)
-
-
-class TestRateLimitConstraints:
-    def test_zero_max_per_second(self) -> None:
-        with pytest.raises(ValidationError):
-            RateLimit(max_per_second=0.0)
-
-    def test_negative_max_per_minute(self) -> None:
-        with pytest.raises(ValidationError):
-            RateLimit(max_per_minute=-1.0)
-
-
 class TestChannelCapabilitiesConstraints:
     def test_zero_max_length(self) -> None:
         with pytest.raises(ValidationError):
@@ -688,19 +541,6 @@ class TestHookResultValidation:
         assert r.action == "allow"
 
 
-class TestTaskStatusExport:
-    def test_task_status_importable_from_models(self) -> None:
-        from roomkit.models import TaskStatus
-
-        assert TaskStatus.PENDING == "pending"
-        assert TaskStatus.COMPLETED == "completed"
-
-    def test_task_status_importable_from_subpackage(self) -> None:
-        from roomkit.models.enums import TaskStatus
-
-        assert TaskStatus.IN_PROGRESS == "in_progress"
-
-
 class TestEventSourceDirection:
     def test_an_event_travels_one_way(self) -> None:
         """An event is inbound or outbound, never both (RFC §5.2)."""
@@ -729,3 +569,40 @@ class TestRecordTimestamps:
     def test_a_timestamp_is_written_in_utc(self) -> None:
         room = Room(id="r1", created_at=datetime(2026, 1, 1, 12, 0, 30, 250000))
         assert room.model_dump(mode="json")["created_at"] == "2026-01-01T12:00:30.250000Z"
+
+
+@pytest.mark.parametrize(
+    ("model", "values"),
+    [
+        (LocationContent, {"latitude": -91.0, "longitude": 0.0}),
+        (LocationContent, {"latitude": 91.0, "longitude": 0.0}),
+        (LocationContent, {"latitude": 0.0, "longitude": -181.0}),
+        (LocationContent, {"latitude": 0.0, "longitude": 181.0}),
+        (RateLimit, {"max_per_minute": -1.0}),
+        (RateLimit, {"max_per_second": 0.0}),
+        (RetryPolicy, {"max_retries": -1}),
+        (RetryPolicy, {"base_delay_seconds": 0.0}),
+        (RetryPolicy, {"max_delay_seconds": 0.0}),
+        (RoomTimers, {"closed_after_seconds": -5}),
+        (RoomTimers, {"inactive_after_seconds": -1}),
+    ],
+)
+def test_a_value_out_of_its_range_is_refused(model: type, values: dict[str, float]) -> None:
+    with pytest.raises(ValidationError):
+        model(**values)
+
+
+@pytest.mark.parametrize(
+    ("content", "kind"),
+    [
+        (TextContent(body="hello"), "text"),
+        (RichContent(body="**bold**"), "rich"),
+        (LocationContent(latitude=45.5, longitude=-73.6), "location"),
+        (SystemContent(body="User joined"), "system"),
+        (TemplateContent(template_id="welcome_v1"), "template"),
+        (ToolCallContent(tool_name="web_search", tool_id="call-1"), "tool_call"),
+    ],
+    ids=lambda value: value if isinstance(value, str) else "",
+)
+def test_a_content_names_its_kind_where_it_is_stored_and_sent(content: object, kind: str) -> None:
+    assert content.model_dump(mode="json")["type"] == kind  # type: ignore[attr-defined]

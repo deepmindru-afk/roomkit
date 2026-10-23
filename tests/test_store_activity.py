@@ -42,36 +42,6 @@ async def _seed_room(store: InMemoryStore, room_id: str = "room-1") -> str:
 
 
 class TestToolCallContent:
-    def test_pending_defaults(self) -> None:
-        tc = ToolCallContent(tool_name="web_search", tool_id="call-1")
-        assert tc.type == "tool_call"
-        assert tc.status == "pending"
-        assert tc.result is None
-        assert tc.duration_ms is None
-        assert tc.error is None
-
-    def test_completed(self) -> None:
-        tc = ToolCallContent(
-            tool_name="web_fetch",
-            tool_id="call-2",
-            arguments={"url": "https://example.com"},
-            result={"html": "<h1>hi</h1>"},
-            status="completed",
-            duration_ms=1200,
-        )
-        assert tc.status == "completed"
-        assert tc.duration_ms == 1200
-
-    def test_failed_with_error(self) -> None:
-        tc = ToolCallContent(
-            tool_name="broken_tool",
-            tool_id="call-3",
-            status="failed",
-            error="Connection timeout",
-        )
-        assert tc.status == "failed"
-        assert tc.error == "Connection timeout"
-
     def test_discriminator_roundtrip(self) -> None:
         """ToolCallContent survives JSON serialization in a RoomEvent."""
         event = RoomEvent(

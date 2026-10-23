@@ -23,7 +23,6 @@ contract exists"; it does not by itself certify the behaviour behind it.
 from __future__ import annotations
 
 import inspect
-import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -368,10 +367,6 @@ class TestObservability:
 
         await _send(kit)
         assert "event_processed" in events
-
-    def test_structured_named_loggers(self) -> None:
-        """§25.1 / §15.1 — structured logging under the ``roomkit`` hierarchy."""
-        assert logging.getLogger("roomkit.framework").name.startswith("roomkit")
 
 
 # ── §10.1 — Idempotency ─────────────────────────────────────────

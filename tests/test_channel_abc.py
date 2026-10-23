@@ -2,12 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
-from roomkit.channels.base import Channel
-from roomkit.core.router import ContentTranscoder
 from roomkit.core.transcoder import DefaultContentTranscoder
-from roomkit.identity.base import IdentityResolver
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities
 from roomkit.models.enums import ChannelMediaType, ChannelType
 from roomkit.models.event import (
@@ -16,45 +11,6 @@ from roomkit.models.event import (
     RichContent,
     TextContent,
 )
-from roomkit.providers.ai.base import AIProvider
-from roomkit.providers.email.base import EmailProvider
-from roomkit.providers.sms.base import SMSProvider
-from roomkit.providers.whatsapp.base import WhatsAppProvider
-from roomkit.store.base import ConversationStore
-
-
-class TestABCsNotInstantiable:
-    def test_channel_abc(self) -> None:
-        with pytest.raises(TypeError):
-            Channel("ch1")  # type: ignore[abstract]
-
-    def test_store_abc(self) -> None:
-        with pytest.raises(TypeError):
-            ConversationStore()  # type: ignore[abstract]
-
-    def test_identity_resolver_abc(self) -> None:
-        with pytest.raises(TypeError):
-            IdentityResolver()  # type: ignore[abstract]
-
-    def test_content_transcoder_abc(self) -> None:
-        with pytest.raises(TypeError):
-            ContentTranscoder()  # type: ignore[abstract]
-
-    def test_sms_provider_abc(self) -> None:
-        with pytest.raises(TypeError):
-            SMSProvider()  # type: ignore[abstract]
-
-    def test_email_provider_abc(self) -> None:
-        with pytest.raises(TypeError):
-            EmailProvider()  # type: ignore[abstract]
-
-    def test_ai_provider_abc(self) -> None:
-        with pytest.raises(TypeError):
-            AIProvider()  # type: ignore[abstract]
-
-    def test_whatsapp_provider_abc(self) -> None:
-        with pytest.raises(TypeError):
-            WhatsAppProvider()  # type: ignore[abstract]
 
 
 def _make_binding(

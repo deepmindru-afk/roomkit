@@ -25,13 +25,6 @@ class TestPublicAPI:
             roomkit.__version__,
         ), f"unexpected __version__ {roomkit.__version__!r}"
 
-    def test_core_classes_available(self) -> None:
-        assert roomkit.RoomKit is not None
-        assert roomkit.Channel is not None
-        assert roomkit.ModelPricing is not None
-        assert roomkit.Room is not None
-        assert roomkit.RoomEvent is not None
-
     def test_every_name_a_package_exports_resolves(self) -> None:
         """A name in ``__all__`` that does not resolve fails only whoever imports
         it, so the list of roomkit and of each of its subpackages is read here,
@@ -79,11 +72,6 @@ class TestPublicAPI:
             obj = getattr(channels, name, None)
             assert obj is not None, f"roomkit.channels.{name} is missing"
             assert obj is getattr(roomkit, name), f"{name} differs from the top-level export"
-
-    def test_exception_classes(self) -> None:
-        assert issubclass(roomkit.RoomNotFoundError, Exception)
-        assert issubclass(roomkit.ChannelNotFoundError, Exception)
-        assert issubclass(roomkit.ChannelNotRegisteredError, Exception)
 
 
 def _resolves(module: ModuleType, name: str) -> bool:

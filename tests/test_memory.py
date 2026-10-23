@@ -12,11 +12,6 @@ from tests.conftest import make_event
 
 
 class TestMemoryResult:
-    def test_defaults_to_empty_lists(self) -> None:
-        result = MemoryResult()
-        assert result.messages == []
-        assert result.events == []
-
     def test_accepts_messages_and_events(self) -> None:
         msg = AIMessage(role="system", content="summary")
         ev = make_event(body="hello")

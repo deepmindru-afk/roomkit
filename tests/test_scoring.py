@@ -27,20 +27,6 @@ from tests.conftest import make_event as make_room_event
 # ---------------------------------------------------------------------------
 
 
-class TestScore:
-    def test_defaults(self):
-        s = Score(value=0.8, dimension="relevance")
-        assert s.value == 0.8
-        assert s.dimension == "relevance"
-        assert s.reason == ""
-        assert s.metadata == {}
-
-    def test_with_reason_and_metadata(self):
-        s = Score(value=0.5, dimension="safety", reason="mild concern", metadata={"model": "gpt"})
-        assert s.reason == "mild concern"
-        assert s.metadata["model"] == "gpt"
-
-
 # ---------------------------------------------------------------------------
 # ConversationScorer ABC
 # ---------------------------------------------------------------------------

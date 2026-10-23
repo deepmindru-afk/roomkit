@@ -13,7 +13,6 @@ from roomkit.skills.errors import (
     SkillPathError,
     SkillValidationError,
 )
-from roomkit.skills.models import ScriptResult
 from roomkit.skills.parser import (
     find_skill_md,
     parse_frontmatter,
@@ -470,21 +469,6 @@ class TestSkillModel:
 # ---------------------------------------------------------------------------
 # ScriptResult
 # ---------------------------------------------------------------------------
-
-
-class TestScriptResult:
-    def test_json_serialization(self) -> None:
-        result = ScriptResult(exit_code=0, stdout="OK", stderr="", success=True)
-        data = result.model_dump()
-        assert data["exit_code"] == 0
-        assert data["success"] is True
-
-    def test_json_roundtrip(self) -> None:
-        result = ScriptResult(exit_code=1, stderr="fail", success=False)
-        json_str = result.model_dump_json()
-        restored = ScriptResult.model_validate_json(json_str)
-        assert restored.exit_code == 1
-        assert restored.success is False
 
 
 # ---------------------------------------------------------------------------

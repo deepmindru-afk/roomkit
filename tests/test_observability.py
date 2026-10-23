@@ -14,31 +14,6 @@ from roomkit.models.framework_event import FrameworkEvent
 from roomkit.models.hook import HookResult
 
 
-class TestNamedLoggers:
-    def test_framework_logger_exists(self) -> None:
-        logger = logging.getLogger("roomkit.framework")
-        assert logger.name == "roomkit.framework"
-
-    def test_hooks_logger_exists(self) -> None:
-        logger = logging.getLogger("roomkit.hooks")
-        assert logger.name == "roomkit.hooks"
-
-    def test_event_router_logger_exists(self) -> None:
-        logger = logging.getLogger("roomkit.event_router")
-        assert logger.name == "roomkit.event_router"
-
-    def test_channel_loggers_exist(self) -> None:
-        for name in [
-            "roomkit.channels.sms",
-            "roomkit.channels.email",
-            "roomkit.channels.ai",
-            "roomkit.channels.websocket",
-            "roomkit.channels.whatsapp",
-        ]:
-            logger = logging.getLogger(name)
-            assert logger.name == name
-
-
 class TestFrameworkEventEmission:
     async def test_event_processed_emitted(self) -> None:
         """Framework emits event_processed on successful inbound."""

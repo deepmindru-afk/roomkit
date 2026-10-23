@@ -142,12 +142,6 @@ class TestPyroscopeProfiler:
         finally:
             sys.modules.pop("pyroscope", None)
 
-    def test_reimport_from_package(self):
-        """Can be imported from the telemetry package."""
-        from roomkit.telemetry import PyroscopeProfiler as Cls
-
-        assert Cls is PyroscopeProfiler
-
 
 class _CurrentPyroscope:
     """pyroscope-io 1.x: ``configure`` no longer takes ``detect_subprocesses``."""
