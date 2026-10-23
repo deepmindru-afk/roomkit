@@ -7,9 +7,10 @@ import logging
 import pytest
 from pydantic import ValidationError
 
-from roomkit import RoomKit
+from roomkit import RoomKit, VoiceChannel
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel
+from roomkit.channels.voice import TTSPlaybackState
 from roomkit.channels.websocket import WebSocketChannel
 from roomkit.models._visibility import check_channel_id, parse_visibility
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -27,6 +28,7 @@ from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.store_filter import EventFilter
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.voice.backends.mock import MockVoiceBackend
 from tests.test_framework import AILikeChannel, SimpleChannel
 
 
@@ -378,6 +380,30 @@ class TestOnlyTheFrameworkWritesInternal:
             result = await kit.process_inbound(_message("hello", visibility="sms"))
             assert result.event is not None
             assert result.event.visibility == "sms"
+        finally:
+            await kit.close()
+
+    async def test_a_hook_cannot_widen_the_framework_s_own_record(self) -> None:
+        backend = MockVoiceBackend()
+        kit = RoomKit(voice=backend)
+        voice = VoiceChannel("voice", backend=backend)
+        kit.register_channel(voice)
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "voice")
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="widen")
+        async def widen(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            return HookResult.modify(event.model_copy(update={"visibility": "all"}))
+
+        try:
+            session = await kit.connect_voice("r1", "user-1", "voice")
+            # A barge-in's record of what was heard (RFC §6.4).
+            cut = TTSPlaybackState(session.id, "Rain tomorrow.", answer_channel_id="ai")
+            await voice._store_interrupted_utterance(session, cut, "r1")
+            records = [
+                e for e in await kit.store.list_events("r1") if e.metadata.get("interrupted")
+            ]
+            assert [e.visibility for e in records] == ["internal"]
         finally:
             await kit.close()
 
