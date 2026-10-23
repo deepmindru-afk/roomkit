@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 import time as _time
-from collections.abc import Callable
 from typing import Any
 
+from roomkit.channels.addressing import ChannelAddressing, addressing_of
 from roomkit.channels.base import Channel
 from roomkit.core.exceptions import NoRecipientError, ProviderDeliveryError
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
@@ -44,11 +44,9 @@ class TransportChannel(Channel):
         *,
         provider: Any = None,
         capabilities: ChannelCapabilities | None = None,
-        recipient_key: str = "recipient_id",
+        addressing: ChannelAddressing | None = None,
+        country_code: str | None = None,
         defaults: dict[str, Any] | None = None,
-        address_normalizer: Callable[[str], str] | None = None,
-        replies_to_sender: bool = False,
-        reply_metadata_key: str | None = None,
         requires_recipient: bool = True,
     ) -> None:
         """Initialise a transport channel.
@@ -58,47 +56,47 @@ class TransportChannel(Channel):
             channel_type: The channel type (SMS, email, etc.).
             provider: Provider that handles external delivery (e.g. ElasticEmailProvider).
             capabilities: Media and feature capabilities for this channel.
-            recipient_key: Binding metadata key that holds the recipient address.
+            addressing: How the channel's addresses are written, the binding
+                metadata key its recipient is written under, the inbound
+                metadata key its chats come under, and whether replies go to
+                the sender (RFC §5.7). Omitted, the channel takes its type's
+                (:func:`~roomkit.channels.addressing.addressing_of`): an SMS
+                channel compares numbers in E.164 and writes its recipient
+                under ``phone_number``. A recipient that names a conversation
+                (the sender's address, or a chat) names its correspondent: the
+                router admits no one else through the binding (RFC §10.4).
+                On a channel whose replies go to a chat only, a message that
+                does not carry its chat has no address: it records no one,
+                and a room opened for it names neither correspondent nor
+                recipient.
+            country_code: On a channel addressed by phone number, the country
+                code a number written without one takes (``"1"``,
+                ``"+44"``); without it such a number is kept as written.
             defaults: Default kwargs passed to ``provider.send()``.  If a default
                 value is ``None``, the actual value is read from the binding metadata
                 at delivery time.
-            address_normalizer: How this channel writes an address (E.164 for
-                the channels addressed by phone number); unchanged if omitted.
-            replies_to_sender: Whether a reply goes to the address the
-                correspondent writes from (a phone number, an email address),
-                rather than to a chat or a URL. Then the framework records an
-                inbound sender as the binding's recipient, and a binding's
-                recipient names its correspondent: the router admits no one
-                else through it (RFC §10.4).
-            reply_metadata_key: On a channel that replies to a chat or a
-                conversation rather than to the sender, the inbound
-                message's metadata key naming it (``chat_id`` on Telegram):
-                a room opened for a message replies there, and the chat is
-                the message's conversation (:meth:`conversation_address`):
-                its room is found by the chat, not by the sender, and a
-                binding's recipient names its chat as a phone channel's names
-                its correspondent. With *replies_to_sender* too (WhatsApp
-                Personal), a message carrying the key is its chat's (a
-                group), any other its sender's (a private chat); without it,
-                a message that does not carry the key has no address (RFC
-                §5.7): it records no one, and a room opened for it names
-                neither correspondent nor recipient.
             requires_recipient: Whether a delivery needs a recipient in the
                 binding's metadata. A channel whose provider delivers to a
                 destination of its own (a webhook's configured URL) passes
                 ``False``: its provider is called without one (RFC §10.2
-                step 3d).
+                step 3d), and so is a channel whose addressing names no
+                recipient key.
         """
         super().__init__(channel_id)
         self.channel_type = channel_type
         self._provider = provider
         self._capabilities = capabilities or ChannelCapabilities()
-        self._recipient_key = recipient_key
+        self._addressing = addressing or addressing_of(channel_type)
+        self._country_code = country_code
         self._defaults: dict[str, Any] = defaults or {}
-        self._address_normalizer = address_normalizer
-        self._replies_to_sender = replies_to_sender
-        self._reply_metadata_key = reply_metadata_key
-        self._requires_recipient = requires_recipient
+        self._requires_recipient = (
+            requires_recipient and self._addressing.recipient_key is not None
+        )
+
+    @property
+    def addressing(self) -> ChannelAddressing:
+        """The channel's addressing declaration (RFC §5.7)."""
+        return self._addressing
 
     def _propagate_telemetry(self) -> None:
         """Propagate telemetry to transport provider."""
@@ -116,36 +114,34 @@ class TransportChannel(Channel):
         return self._capabilities
 
     def normalize_address(self, address: str) -> str:
-        if self._address_normalizer is None or not address:
+        if not address:
             return address
-        return self._address_normalizer(address)
-
-    @property
-    def _recipient_is_conversation(self) -> bool:
-        """Whether the recipient is a conversation's address: the sender's, or a chat."""
-        return self._replies_to_sender or self._reply_metadata_key is not None
+        return self._addressing.normalize(address, self._country_code)
 
     @property
     def recipient_key(self) -> str | None:
-        return self._recipient_key if self._recipient_is_conversation else None
+        addressing = self._addressing
+        return addressing.recipient_key if addressing.names_conversations else None
 
     def recipient_address(self, binding: ChannelBinding) -> str | None:
-        if not self._recipient_is_conversation:
+        key = self.recipient_key
+        if key is None:
             return None
-        value = binding.metadata.get(self._recipient_key)
+        value = binding.metadata.get(key)
         return self.normalize_address(str(value)) if value else None
 
     def recipient_metadata(self, address: str) -> dict[str, str]:
         """``{recipient_key: address}`` when the recipient is a conversation's address."""
-        if not self._recipient_is_conversation or not address:
+        key = self.recipient_key
+        if key is None or not address:
             return {}
-        return {self._recipient_key: address}
+        return {key: address}
 
     def conversation_address(self, message: InboundMessage) -> str:
         chat = self._chat_of(message)
         if chat:
             return chat
-        if self._reply_metadata_key is not None and not self._replies_to_sender:
+        if self._addressing.chat_key is not None and not self._addressing.replies_to_sender:
             # Replies go to a chat only: a message that does not carry its
             # chat has no address (RFC §5.7). It records no one, and is
             # never routed by its author, whose private chat is another
@@ -158,16 +154,17 @@ class TransportChannel(Channel):
         # carries, then the sender, so a room replies where it is found.
         chat = self._chat_of(message)
         if chat:
-            return {self._recipient_key: chat}
-        if self._replies_to_sender:
+            return self.recipient_metadata(chat)
+        if self._addressing.replies_to_sender:
             return self.recipient_metadata(message.sender_id)
         return {}
 
     def _chat_of(self, message: InboundMessage) -> str:
         """The chat *message* was posted in, when this channel answers chats."""
-        if self._reply_metadata_key is None:
+        key = self._addressing.chat_key
+        if key is None:
             return ""
-        chat = message.metadata.get(self._reply_metadata_key)
+        chat = message.metadata.get(key)
         return str(chat) if chat else ""
 
     async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
@@ -237,7 +234,8 @@ class TransportChannel(Channel):
     ) -> ChannelOutput:
         """Deliver an event to the external recipient via the provider.
 
-        The recipient address is read from ``binding.metadata[recipient_key]``.
+        The recipient address is read from the binding's metadata under the
+        addressing's recipient key.
         Extra kwargs are built from ``defaults``: fixed values are passed as-is,
         ``None`` defaults are resolved from binding metadata at delivery time.
         """
@@ -251,11 +249,12 @@ class TransportChannel(Channel):
 
         telemetry = getattr(self, "_telemetry", None) or NoopTelemetryProvider()
 
-        to = binding.metadata.get(self._recipient_key, "")
+        key = self._addressing.recipient_key
+        to = binding.metadata.get(key, "") if key is not None else ""
         if not to and self._requires_recipient:
             # Nobody to send to: refused here rather than handed to the
             # provider as "", which a lenient one would acknowledge (RFC §10.2 step 3d).
-            raise NoRecipientError(self.channel_id, self._recipient_key)
+            raise NoRecipientError(self.channel_id, key or "")
         kwargs: dict[str, Any] = {}
         for key, value in self._defaults.items():
             kwargs[key] = binding.metadata.get(key, value) if value is None else value

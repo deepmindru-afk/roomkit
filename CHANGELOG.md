@@ -1370,6 +1370,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that relied on a paused room's correspondent getting a fresh room closes
   the room instead.
 
+- **BREAKING — a channel's type decides its addressing, as RFC Appendix A's
+  table gives it** (RFC §5.7, Appendix A, RMK-930). Addressing was decided
+  per factory, so a channel of a type built otherwise compared its
+  addresses as written and wrote its recipient under `recipient_id`: a
+  VOICE channel kept `+1 (555) 000-0001` as typed, and a `TransportChannel`
+  of type SMS or MMS built directly neither wrote numbers in E.164 nor
+  recorded its sender as its recipient. The new
+  `roomkit.channels.addressing` module holds the table:
+  `addressing_of(channel_type)` gives a type's `ChannelAddressing`
+  (`addressing`: `Addressing.PHONE_NUMBER`, `EMAIL_ADDRESS`, `CHAT` or
+  `AS_WRITTEN`; `recipient_key`; `chat_key`; `replies_to_sender`): SMS,
+  MMS, RCS and WhatsApp by phone number under `phone_number`; WhatsApp
+  Personal likewise, its groups under `group_jid`; VOICE by phone number
+  with no recipient; EMAIL by address under `email_address`; Messenger as
+  written under `facebook_user_id`; Telegram and Teams by chat under
+  `telegram_chat_id` and `teams_conversation_id`, their chats under
+  `chat_id` and `conversation_id`; any other type as written, with no
+  keys. The key names are the ones the factories already used. Aligned:
+  VOICE (numbers in E.164, `VoiceChannel.normalize_address`), MMS (by phone
+  number, which only the SMS factory's events named), and every type built
+  through `TransportChannel` directly. Discord, Buzz and the HTTP webhook
+  keep their own declarations (a webhook's `recipient_id` is forwarded to
+  its provider and names no one). `TransportChannel(...)` takes
+  `addressing=` (its type's when omitted) and `country_code=` in place of
+  `recipient_key=`, `reply_metadata_key=`, `replies_to_sender=` and
+  `address_normalizer=`; `TransportChannel.addressing` returns the
+  declaration. Migrate: `TransportChannel(id, ChannelType.TELEGRAM,
+  recipient_key="telegram_chat_id", reply_metadata_key="chat_id")` becomes
+  `TransportChannel(id, ChannelType.TELEGRAM)`, and a custom declaration
+  `addressing=ChannelAddressing(Addressing.CHAT, recipient_key="k",
+  chat_key="c")`; a bare `TransportChannel` of type SMS writes its
+  recipient under `phone_number`, not `recipient_id`.
+
 ### Removed
 
 - **BREAKING — `roomkit.core.visibility.effective_visibility`** (RMK-902). An

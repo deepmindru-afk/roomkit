@@ -26,6 +26,7 @@ from roomkit.channels._voice_stt import VoiceSTTMixin
 from roomkit.channels._voice_tts import VoiceTTSMixin
 from roomkit.channels._voice_turn import VoiceTurnMixin
 from roomkit.channels._voice_unheard import UnheardTurns
+from roomkit.channels.addressing import addressing_of
 from roomkit.channels.base import Channel, FrameworkAwareChannel
 from roomkit.models.channel import ChannelCapabilities
 from roomkit.models.enums import (
@@ -1523,6 +1524,12 @@ class VoiceChannel(
             supported_audio_formats=["wav", "mp3", "ogg", "webm"],
             max_audio_duration_seconds=3600,
         )
+
+    def normalize_address(self, address: str) -> str:
+        # A voice channel is addressed by phone number (RFC §5.7, Appendix A):
+        # a caller's number in E.164, any other id (a session's participant)
+        # as written.
+        return addressing_of(ChannelType.VOICE).normalize(address) if address else address
 
     def update_voice_map(self, entries: dict[str, str]) -> None:
         """Merge entries into the per-agent voice map.

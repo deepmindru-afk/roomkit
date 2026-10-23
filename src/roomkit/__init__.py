@@ -34,6 +34,7 @@ from roomkit.channels.acp_transport import (
     ACPTransport,
     StdioACPTransport,
 )
+from roomkit.channels.addressing import Addressing, ChannelAddressing, addressing_of
 from roomkit.channels.agent import Agent
 from roomkit.channels.ai import AIChannel, EmptyEventDescriber
 from roomkit.channels.av import AudioVideoChannel
@@ -541,6 +542,9 @@ __all__ = [
     "TeamsChannel",
     "TelegramChannel",
     "TransportChannel",
+    "Addressing",
+    "ChannelAddressing",
+    "addressing_of",
     "VideoChannel",
     "VoiceChannel",
     "SimpleAGCProvider",

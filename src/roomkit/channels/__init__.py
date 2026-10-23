@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any
 
-from roomkit.channels._email import normalize_email_address
 from roomkit.channels._note_blocks import add_turn_note as add_turn_note
-from roomkit.channels._phone import normalize_phone_number
 from roomkit.channels._tool_search_constants import TOOL_FIND_TOOLS as TOOL_FIND_TOOLS
 from roomkit.channels._tool_search_constants import TOOL_LIST_TOOLS as TOOL_LIST_TOOLS
 from roomkit.channels._tool_search_constants import (
@@ -16,6 +13,9 @@ from roomkit.channels._tool_search_constants import (
 from roomkit.channels._turn_notes import TURN_NOTES_HEADER as TURN_NOTES_HEADER
 from roomkit.channels._turn_notes import split_turn_notes as split_turn_notes
 from roomkit.channels.acp import ACPChannel as ACPChannel
+from roomkit.channels.addressing import Addressing as Addressing
+from roomkit.channels.addressing import ChannelAddressing as ChannelAddressing
+from roomkit.channels.addressing import addressing_of as addressing_of
 from roomkit.channels.ai import AIChannel as AIChannel
 from roomkit.channels.cli import CLIChannel as CLIChannel
 from roomkit.channels.declared import DeclaredChannel as DeclaredChannel
@@ -182,15 +182,6 @@ RCS_CAPABILITIES = ChannelCapabilities(
 # ---------------------------------------------------------------------------
 
 
-def _phone_normalizer(default_country_code: str | None) -> Callable[[str], str]:
-    """E.164 for a channel addressed by phone number (RFC §10.4)."""
-
-    def normalize(address: str) -> str:
-        return normalize_phone_number(address, default_country_code)
-
-    return normalize
-
-
 def SMSChannel(
     channel_id: str,
     *,
@@ -208,10 +199,8 @@ def SMSChannel(
         ChannelType.SMS,
         provider=provider,
         capabilities=SMS_CAPABILITIES,
-        recipient_key="phone_number",
+        country_code=default_country_code,
         defaults={"from_": from_number},
-        address_normalizer=_phone_normalizer(default_country_code),
-        replies_to_sender=True,
     )
 
 
@@ -231,10 +220,7 @@ def EmailChannel(
         ChannelType.EMAIL,
         provider=provider,
         capabilities=EMAIL_CAPABILITIES,
-        recipient_key="email_address",
         defaults={"from_": from_address, "subject": None},
-        address_normalizer=normalize_email_address,
-        replies_to_sender=True,
     )
 
 
@@ -253,9 +239,7 @@ def WhatsAppChannel(
         ChannelType.WHATSAPP,
         provider=provider,
         capabilities=WHATSAPP_CAPABILITIES,
-        recipient_key="phone_number",
-        address_normalizer=_phone_normalizer(default_country_code),
-        replies_to_sender=True,
+        country_code=default_country_code,
     )
 
 
@@ -276,10 +260,7 @@ def WhatsAppPersonalChannel(
         ChannelType.WHATSAPP_PERSONAL,
         provider=provider,
         capabilities=WHATSAPP_PERSONAL_CAPABILITIES,
-        recipient_key="phone_number",
-        address_normalizer=_phone_normalizer(default_country_code),
-        replies_to_sender=True,
-        reply_metadata_key="group_jid",
+        country_code=default_country_code,
     )
 
 
@@ -294,8 +275,6 @@ def MessengerChannel(
         ChannelType.MESSENGER,
         provider=provider,
         capabilities=MESSENGER_CAPABILITIES,
-        recipient_key="facebook_user_id",
-        replies_to_sender=True,
     )
 
 
@@ -310,8 +289,6 @@ def TelegramChannel(
         ChannelType.TELEGRAM,
         provider=provider,
         capabilities=TELEGRAM_CAPABILITIES,
-        recipient_key="telegram_chat_id",
-        reply_metadata_key="chat_id",
     )
 
 
@@ -326,8 +303,6 @@ def TeamsChannel(
         ChannelType.TEAMS,
         provider=provider,
         capabilities=TEAMS_CAPABILITIES,
-        recipient_key="teams_conversation_id",
-        reply_metadata_key="conversation_id",
     )
 
 
@@ -346,8 +321,9 @@ def DiscordChannel(
         ChannelType.DISCORD,
         provider=provider,
         capabilities=DISCORD_CAPABILITIES,
-        recipient_key="discord_channel_id",
-        reply_metadata_key="channel_id",
+        addressing=ChannelAddressing(
+            Addressing.CHAT, recipient_key="discord_channel_id", chat_key="channel_id"
+        ),
     )
 
 
@@ -366,8 +342,9 @@ def BuzzChannel(
         ChannelType.BUZZ,
         provider=provider,
         capabilities=BUZZ_CAPABILITIES,
-        recipient_key="buzz_channel_id",
-        reply_metadata_key="buzz_channel_id",
+        addressing=ChannelAddressing(
+            Addressing.CHAT, recipient_key="buzz_channel_id", chat_key="buzz_channel_id"
+        ),
     )
 
 
@@ -382,9 +359,10 @@ def HTTPChannel(
         ChannelType.WEBHOOK,
         provider=provider,
         capabilities=HTTP_CAPABILITIES,
-        recipient_key="recipient_id",
-        # The webhook provider posts to its configured URL, whatever the
-        # recipient: a room opened for an inbound message replies there.
+        # A recipient the provider forwards, if the binding names one, which
+        # names no conversation: the provider posts to its configured URL,
+        # and a room opened for an inbound message replies there.
+        addressing=ChannelAddressing(Addressing.AS_WRITTEN, recipient_key="recipient_id"),
         requires_recipient=False,
     )
 
@@ -413,8 +391,6 @@ def RCSChannel(
         ChannelType.RCS,
         provider=provider,
         capabilities=RCS_CAPABILITIES,
-        recipient_key="phone_number",
+        country_code=default_country_code,
         defaults={"fallback": fallback},
-        address_normalizer=_phone_normalizer(default_country_code),
-        replies_to_sender=True,
     )
