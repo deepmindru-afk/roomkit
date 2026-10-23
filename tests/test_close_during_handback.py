@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import Any
 
 import pytest
@@ -149,12 +148,9 @@ async def test_close_cuts_a_hand_back_under_way(door: str) -> None:
     await _DOORS[door](kit, boss, worker)
     await asyncio.wait_for(answering.started.wait(), 5)
 
-    began = time.monotonic()
-    await kit.close()
-    took = time.monotonic() - began
+    await asyncio.wait_for(kit.close(), 5)  # it cuts the answer, never waits it out
 
     assert answering.cancelled
-    assert took < 5
     stored = [
         (event.content.body, event.metadata.get("cancelled"))
         for event in await kit.store.list_events("r")

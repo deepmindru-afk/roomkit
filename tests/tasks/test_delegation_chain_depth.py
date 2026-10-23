@@ -70,8 +70,12 @@ def _answers(events: list[RoomEvent]) -> list[int]:
 
 
 async def _until_blocked(kit: RoomKit, timeout: float = 5.0) -> None:
+    """Until the answer at the limit is refused and the room runs no task nor
+    background work: a delegation past it would be running by then."""
     async with asyncio.timeout(timeout):
         while not any(e.status == EventStatus.BLOCKED for e in await _timeline(kit)):
+            await asyncio.sleep(0.01)
+        while kit._room_tasks.running or kit._background_runs:
             await asyncio.sleep(0.01)
 
 
@@ -85,7 +89,6 @@ async def test_a_delegation_cycle_ends_at_max_chain_depth(streaming: bool) -> No
         timeout=5.0,
     )
     await _until_blocked(kit)
-    await asyncio.sleep(0.1)
 
     events = await _timeline(kit)
     # Each result reaches the agent as an instruction one deeper than the
@@ -112,7 +115,6 @@ async def test_a_delegation_outside_a_tool_call_opens_a_chain() -> None:
     handle = await kit.delegate("r1", "worker", "look it up", notify="front")
     await handle.wait()
     await _until_blocked(kit)
-    await asyncio.sleep(0.1)
 
     events = await _timeline(kit)
     # The first result at 0: the agent answers it at 1, the next result at 2,

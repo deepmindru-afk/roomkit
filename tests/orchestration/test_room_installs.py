@@ -113,7 +113,8 @@ async def test_each_room_s_per_worker_tools_run_with_its_own_install(streaming: 
     )
     await _until(lambda: bool(delegated))
 
-    await asyncio.sleep(0.05)  # the failure is handed back and answered
+    # The failed delegation is the call's result, which the supervisor answers.
+    await _until(lambda: len(sup_model.calls) >= 2)
     assert delegated == [("clinic-B", "worker_b", ["b"])]
     await kit.close()
 

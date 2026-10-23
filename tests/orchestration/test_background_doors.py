@@ -72,6 +72,20 @@ async def _room(
     return kit, provider, sessions
 
 
+def _terminal_entries(kit: RoomKit) -> list[tuple[str, Any, str]]:
+    """The run's terminal entries, posted once its outcome was handed back."""
+    posted: list[tuple[str, Any, str]] = []
+    real_post = kit.status_bus.post
+
+    def post(agent_id: str, action: str, status: Any, **kwargs: Any) -> Any:
+        if agent_id == "orchestration":
+            posted.append((action, status, kwargs.get("detail", "")))
+        return real_post(agent_id, action, status, **kwargs)
+
+    kit.status_bus.post = post  # type: ignore[method-assign]
+    return posted
+
+
 def _told(provider: MockRealtimeProvider) -> list[tuple[str, str]]:
     """Each background outcome injected: the session told, and the intent."""
     return [
@@ -84,17 +98,18 @@ def _told(provider: MockRealtimeProvider) -> list[tuple[str, str]]:
 @BOTH
 async def test_only_the_session_that_called_is_told(door: str) -> None:
     kit, provider, (caller, other) = await _room(door, ("voice",), sessions_per_voice=2)
+    posted = _terminal_entries(kit)
 
     await provider.simulate_tool_call(caller, "c1", DOORS[door][0], {"task": "Write it."})
-    await until(lambda: bool(_told(provider)))
-    await asyncio.sleep(0.05)
+    await until(lambda: bool(posted))  # handed back: every session it tells is told
     await kit.close()
 
     assert _told(provider) == [(caller.id, "system")]
 
 
 def _hold_runs(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], asyncio.Event]:
-    """Runs that wait for *release* before freeing their room."""
+    """Runs that wait for *release* before freeing their room; *started*
+    names each run's room, and again once it freed it."""
     started: list[str] = []
     release = asyncio.Event()
 
@@ -103,6 +118,7 @@ def _hold_runs(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], asyncio.Even
         await release.wait()
         on_done: Callable[..., None] = kwargs["on_done"]
         on_done(success=True) if "supervisor_id" in kwargs else on_done()
+        started.append(f"{kwargs['room_id']} freed")
 
     monkeypatch.setattr(loop_module, "_async_loop_and_deliver", held)
     monkeypatch.setattr(_install_auto, "_async_run_and_deliver", held)
@@ -123,12 +139,12 @@ async def test_one_run_per_room_whichever_voice_channel_asks(
     await provider_b.simulate_tool_call(on_b, "c2", tool, {"task": "Write it again."})
     await until(lambda: len(provider_b.tool_results) == 1)
     release.set()
-    await asyncio.sleep(0.05)
+    await until(lambda: "r freed" in started)
     await kit.close()
 
     assert json.loads(provider_a.tool_results[0][2])["status"] in ("started", "dispatched")
     assert json.loads(provider_b.tool_results[0][2])["status"] == "already_running"
-    assert started == ["r"]
+    assert started == ["r", "r freed"]
 
 
 class _Raising(MockAIProvider):
@@ -167,15 +183,7 @@ async def test_a_run_whose_work_failed_posts_a_failed_terminal_entry(
     build, (action, detail, told) = FAILED_WORK[door]
     monkeypatch.setitem(DOORS, door, (DOORS[door][0], build))
     kit, provider, (session,) = await _room(door, ("voice",))
-    posted: list[tuple[str, Any, str]] = []
-    real_post = kit.status_bus.post
-
-    def post(agent_id: str, action: str, status: Any, **kwargs: Any) -> Any:
-        if agent_id == "orchestration":
-            posted.append((action, status, kwargs.get("detail", "")))
-        return real_post(agent_id, action, status, **kwargs)
-
-    kit.status_bus.post = post  # type: ignore[method-assign]
+    posted = _terminal_entries(kit)
     await provider.simulate_tool_call(session, "c1", DOORS[door][0], {"task": "Write it."})
     await until(lambda: bool(posted))
     await kit.close()

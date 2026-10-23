@@ -105,9 +105,9 @@ async def test_the_agent_cancels_a_running_task_and_is_not_told_twice() -> None:
     task = await room.running_task()
 
     answer = await _cancel(CancelTaskTool(room.kit), task.id)
+    # Its result is set once its end ran, a hand-back included.
     result = await task.wait(timeout=5)
     await until(lambda: bool(room.ended), timeout=5)
-    await asyncio.sleep(0.1)  # a hand-back would be under way by now
     entries = [e for e in await room.kit.status_bus.recent(50) if e.action == "task"]
     await room.kit.close()
 
@@ -134,8 +134,8 @@ async def test_two_cancels_at_once_cancel_the_task_once(second: str) -> None:
     answers = await asyncio.gather(
         _cancel(tool, task.id, channel_id="speaker"), _cancel(tool, task.id, channel_id=second)
     )
+    await task.wait(timeout=5)  # set once its end ran, a hand-back included
     await until(lambda: bool(room.ended), timeout=5)
-    await asyncio.sleep(0.1)  # a hand-back would be under way by now
     await room.kit.close()
 
     assert [a["status"] for a in answers] == ["cancelled", "cancelled"]
@@ -160,8 +160,8 @@ async def test_the_host_and_an_agent_cancelling_at_once_cancel_once(first: str) 
     if first == "agent":
         calls.reverse()
     answers = await asyncio.gather(*calls)
+    await task.wait(timeout=5)  # set once its end ran, a hand-back included
     await until(lambda: bool(room.ended), timeout=5)
-    await asyncio.sleep(0.1)  # a hand-back would be under way by now
     await room.kit.close()
 
     host_said, agent_said = answers if first == "host" else answers[::-1]
@@ -269,8 +269,8 @@ async def test_a_forged_status_line_reaches_no_other_rooms_task() -> None:
     )
     await asyncio.sleep(0)
 
+    # A cancel ends its task before it answers: read right after, it would show.
     answer = await _cancel(CancelTaskTool(room.kit), theirs.id)
-    await asyncio.sleep(0.05)
     still_running = theirs.result is None
     await room.kit.close()
 
@@ -494,8 +494,7 @@ async def test_a_turn_s_cancel_task_is_served_by_the_owner(
         InboundMessage(channel_id="sms", sender_id="u", content=TextContent(body="Cancel it.")),
         room_id="r",
     )
-    result = await task.wait(timeout=5)
-    await asyncio.sleep(0.2)
+    result = await task.wait(timeout=5)  # set once its end ran, a hand-back included
     await room.kit.close()
 
     assert result.status == TaskStatus.CANCELLED

@@ -13,7 +13,6 @@ the channel's default call timeout.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -129,11 +128,10 @@ async def test_a_producer_cut_after_an_output_keeps_it_not_approved() -> None:
     # fires none (RMK-513, RMK-529).
     assert result.error is None
     assert _producer_turn(result)["loop_end_reason"] == "max_rounds"
-    await asyncio.sleep(0.1)
+    await kit.close()  # an ON_ERROR observer still running ends first
     assert errors == []
     state = get_conversation_state(await kit.get_room("r"))
     assert state.context["_loop_stopped"] == "producer_failed"
-    await kit.close()
 
 
 async def test_a_producer_whose_provider_fails_gives_its_error_to_the_caller(

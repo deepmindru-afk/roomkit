@@ -137,7 +137,11 @@ async def test_the_tool_starts_tasks_for_its_own_agent_only() -> None:
     assert "comes back to speaker" in answer["message"]
     # The work runs on speaker's worker (speaker itself), never on helper.
     await _until(lambda: _asked(speaker, 1))
-    await asyncio.sleep(0.1)
+
+    async def ended() -> bool:  # the task ran to its end: helper would be asked by now
+        return not kit._room_tasks.running
+
+    await _until(ended)
 
     def child_rooms(agent: Agent) -> list[str]:
         rooms = [call.room.room.id for call in agent._provider.calls if call.room is not None]

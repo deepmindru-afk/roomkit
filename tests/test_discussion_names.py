@@ -44,6 +44,7 @@ def test_names_in_code_or_quotes_are_not_read() -> None:
     assert read_names(text, AGENTS) == Names(("comms",))
 
 
+@pytest.mark.wallclock
 def test_a_hostile_text_is_read_in_linear_time() -> None:
     """Thousands of unclosed fences and blank lines must not stall the room."""
     hostile = "```\n" * 20_000 + "\n" * 20_000 + "> \n" * 20_000 + "@sre"

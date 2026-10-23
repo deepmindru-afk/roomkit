@@ -40,7 +40,12 @@ class _Loops(MockAIProvider):
         )
 
 
+async def _found(name: str, arguments: dict[str, Any]) -> str:
+    return "found"
+
+
 async def _slow_found(name: str, arguments: dict[str, Any]) -> str:
+    """Outlasts the timeout case's loop bound."""
     await asyncio.sleep(0.05)
     return "found"
 
@@ -63,9 +68,8 @@ def _agent(end: str) -> Agent:
             "tool_loop_timeout_seconds": 0.01,
         },
     }
-    return Agent(
-        "agent", tools=[LOOKUP], tool_handler=_slow_found, tool_search=False, **limits[end]
-    )
+    handler = _slow_found if end == "timeout" else _found
+    return Agent("agent", tools=[LOOKUP], tool_handler=handler, tool_search=False, **limits[end])
 
 
 async def _answer(door: str, agent: Agent) -> InboundResult:

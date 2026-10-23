@@ -20,6 +20,7 @@ from roomkit.providers.ai.base import AIContext, AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.tasks.cache import CompletedTaskCache
 from roomkit.tasks.delegate import DelegateHandler
+from tests.conference.test_conference_realtime import until
 from tests.test_framework import SimpleChannel
 
 LOOKUP = AITool(name="lookup", description="look up", parameters={"type": "object"})
@@ -57,11 +58,18 @@ async def _kit(worker: Agent) -> RoomKit:
     return kit
 
 
+async def _remembered(handler: DelegateHandler) -> None:
+    """Until the handler has kept what its task's end gives the cache, or
+    left it out: its watch on the task has ended."""
+    await until(lambda: not handler._background_tasks)
+
+
 @pytest.mark.parametrize("ending", ["failed", "cancelled"])
 async def test_a_task_that_did_not_complete_is_run_again(ending: str) -> None:
+    provider = _Loops()
     worker = Agent(
         "worker",
-        provider=_Loops(),
+        provider=provider,
         tools=[LOOKUP],
         tool_handler=_found if ending == "failed" else _slow,
         tool_search=False,
@@ -73,9 +81,9 @@ async def test_a_task_that_did_not_complete_is_run_again(ending: str) -> None:
 
     first = await handler.handle("r", "boss", arguments)
     if ending == "cancelled":
-        await asyncio.sleep(0.05)
+        await until(lambda: bool(provider.calls))  # its slow tool runs
         await kit.task_runner.cancel(first["task_id"])
-    await asyncio.sleep(0.3)
+    await _remembered(handler)
     second = await handler.handle("r", "boss", arguments)
     await kit.close()
 
@@ -90,7 +98,7 @@ async def test_a_completed_task_answers_a_repeat_from_the_cache() -> None:
     arguments = {"agent": "worker", "task": "Find it."}
 
     first = await handler.handle("r", "boss", arguments)
-    await asyncio.sleep(0.3)
+    await _remembered(handler)
     second = await handler.handle("r", "boss", arguments)
     await kit.close()
 

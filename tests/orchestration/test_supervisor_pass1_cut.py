@@ -10,7 +10,6 @@ None of these hands the room's transports an empty stream.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -106,7 +105,9 @@ async def _supervised(
     result = await kit.process_inbound(
         InboundMessage(channel_id="ws", sender_id="u", content=TextContent(body="Find it."))
     )
-    await asyncio.sleep(0.1)
+    # Closed, its deliveries and its ASYNC observers have run to their end:
+    # a task delegated would be in *delegated* by then.
+    await kit.close()
     return kit, result, transport, delegated
 
 

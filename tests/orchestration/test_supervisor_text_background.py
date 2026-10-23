@@ -139,30 +139,39 @@ async def test_an_outcome_no_one_hears_posts_its_run_failed(door: str) -> None:
 @EVERY_DOOR
 async def test_a_worker_past_its_bound_is_told_as_not_completed(door: str) -> None:
     boss = _Redispatches(DOORS[door][0], limit=1)
-    kit, posted = await _room(door, boss, _Slow(), task_timeout=0.2)
+    kit, posted = await _room(door, boss, _Slow(), task_timeout=0.02)
 
     await _ask(kit)
     await until(lambda: bool(boss.told))
     await kit.close()
 
-    assert "The task timed out after 0.2s." in boss.told[0]
+    assert "The task timed out after 0.02s." in boss.told[0]
     assert "completed. Share" not in boss.told[0]
     assert [status for _, status, _ in posted] == [StatusLevel.FAILED]
 
 
 async def _team_delegations(
-    *, async_delivery: bool, voice: bool, config_only: bool = False, at_least: int = 0
+    *, async_delivery: bool, voice: bool, config_only: bool = False
 ) -> list[str]:
     """The agents a sequential team's run delegates to, in order; the
     supervisor without a model when *config_only*. A background run is waited
-    for until it delegated *at_least* times: a fixed pause cuts it short on a
-    loaded machine."""
+    for until its terminal entry, posted once it handed back: it delegates
+    nothing after it."""
     kit = RoomKit()
     boss = (
         Agent("boss") if config_only else Agent("boss", provider=MockAIProvider(responses=["ok"]))
     )
     workers = [Agent(w, provider=MockAIProvider(responses=[w])) for w in ("w1", "w2")]
     delegated: list[str] = []
+    ended: list[Any] = []
+    real_post = kit.status_bus.post
+
+    def post(agent_id: str, action: str, status: Any, **kwargs: Any) -> Any:
+        if agent_id == "orchestration":
+            ended.append(status)
+        return real_post(agent_id, action, status, **kwargs)
+
+    kit.status_bus.post = post  # type: ignore[method-assign]
 
     @kit.hook(HookTrigger.ON_TASK_DELEGATED, execution=HookExecution.ASYNC)
     async def _delegated(event: Any, ctx: Any) -> None:
@@ -187,9 +196,9 @@ async def _team_delegations(
         await kit.create_room(room_id="r1", orchestration=strategy)
         with owner_tool_call_in(kit, "boss", "r1"):
             await boss._channel_tool_handler("delegate_workers", {"task": "Do it."})
-    await until(lambda: len(delegated) >= max(at_least, 2 if config_only else 3))
-    await asyncio.sleep(0.05)
-    await kit.close()
+    if async_delivery:
+        await until(lambda: bool(ended))
+    await kit.close()  # the ON_TASK_DELEGATED observers still running end first
     return delegated
 
 
@@ -206,9 +215,7 @@ async def test_a_sequential_team_is_supervised_in_the_background_as_in_its_turn(
     in_turn = await _team_delegations(async_delivery=False, voice=False)
 
     assert in_turn[0] == "boss"
-    in_background = await _team_delegations(
-        async_delivery=async_delivery, voice=voice, at_least=len(in_turn)
-    )
+    in_background = await _team_delegations(async_delivery=async_delivery, voice=voice)
     assert in_background == in_turn
 
 

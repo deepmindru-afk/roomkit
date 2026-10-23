@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -476,8 +475,7 @@ class TestSupervisorShareChannels:
         parsed = json.loads(result)
         assert parsed["status"] == "dispatched"
 
-        # Let the background task complete
-        await asyncio.sleep(0.05)
+        await until(lambda: kit.delegate.called)  # in the background run
 
         _, kwargs = kit.delegate.call_args
         assert kwargs["share_channels"] == ["system", "ws-status"]
@@ -584,10 +582,11 @@ async def _two_pass_room(responses: list[AIResponse], **boss: Any) -> tuple[Room
 
 
 async def _say(kit: RoomKit) -> None:
+    """The person's message; both passes and the delegation between them run
+    within its processing, so their rows and tasks are in when it returns."""
     await kit.process_inbound(
         InboundMessage(channel_id="sms1", sender_id="u", content=TextContent(body="Analyse"))
     )
-    await asyncio.sleep(0.1)
 
 
 async def test_pass_one_hands_on_its_answer_and_stores_its_calls() -> None:
