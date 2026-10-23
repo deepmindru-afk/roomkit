@@ -52,6 +52,7 @@ uv run ruff format src/ tests/   # Format
 uv run ty check src/roomkit/     # Type check (ty)
 uv run bandit -r src/ -c pyproject.toml  # Security scan
 make coverage                    # Coverage (80% minimum)
+uv run python scripts/test_redundancy.py run DIR  # Coverage per test: then `candidates DIR` (pruning candidates per area), `diff BEFORE AFTER` (lines a pruning dropped)
 make check-models                # Verify providers/*/models.py against upstream (run by make release)
 make llms-sync                   # Rebuild llms-full.txt from docs/c7, copy both llms files into roomkit-docs
 make release VERSION=x.y.z      # Release workflow
