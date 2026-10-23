@@ -86,6 +86,12 @@ kit.enable_room_hook("vip-room", "audit")
 kit.disable_room_hook("vip-room", "audit")
 ```
 
+On an executor a name carries one hook per trigger: `room_hook()` called again
+with a name and a trigger it carries replaces the first. The name a room
+enables joins the room's hooks, where a name is unique: `enable_room_hook()`
+raises `ValueError` for a name a room hook the kit registered for that room
+holds, and `add_room_hook()` for a name the room enables.
+
 ## HookResult
 
 Sync hooks (BEFORE_BROADCAST) must return a `HookResult`:
@@ -131,6 +137,11 @@ async def moderate(event, ctx):
 Each injected event is committed after the event that caused it, as a pass
 of its own (RFC §9.4):
 
+- It commits once its cause's locked section has released the room lock, in a
+  section of its own, so another event may commit between them (a message
+  waiting for the lock, an agent's answer to the cause). It still commits
+  before `process_inbound()` or `send_event()` returns, in the order the hooks
+  ran.
 - It runs the `BEFORE_BROADCAST` hooks, the one that injected it included, so
   a hook that blocks or injects on every event must let its own injections
   through. A hook may block it (stored `BLOCKED`), and what its hooks inject
@@ -144,8 +155,12 @@ of its own (RFC §9.4):
 - It takes no source check: it is the hook's, not a channel's.
 - It is delivered to its transport targets only, transcoded like any
   delivery, never to its own source. An agent among the targets is not
-  called: it reads the event in its history at its next turn. To have an
-  agent answer, send the event with `kit.send_event()`.
+  called: it reads the event in its history at its next turn. A realtime
+  voice channel, or a conference with a realtime model, among the targets
+  takes its text into the model's context silently and asks no answer. To
+  have an agent answer, send the event with `kit.send_event()`.
+- Its delivery set fires `AFTER_BROADCAST` like any other event's, an empty
+  one when it is stored only.
 - An injected `INSTRUCTION` is dropped with a warning before any pass: no
   hook runs on it, nothing of it is stored or delivered, and the rest of the
   result stands. Only the application issues instructions; a hook that wants
@@ -153,7 +168,13 @@ of its own (RFC §9.4):
   addressed_to=[agent_id])`.
 
 An identity challenge (`IdentityHookResult.challenge(inject=...)`) is
-committed the same way.
+committed the same way. No other trigger commits injected events: a SYNC hook
+on `BEFORE_DELIVER`, `ON_VERIFICATION_REQUIRED` or any other trigger that
+returns some has them dropped, with a warning naming the hook and the trigger.
+
+A `BEFORE_BROADCAST` modify that writes the visibility `internal`, which only
+the framework writes (the mark of its own records), has the event's
+visibility put back.
 
 ### What happens when a hook fails
 
@@ -185,7 +206,9 @@ oversight. Two levers exist if you need more, and their exact scope matters:
   `BEFORE_BROADCAST` pass only. Other sync-hook passes (`ON_TRANSCRIPTION`,
   `BEFORE_TTS`, the re-entry path) and every async trigger report failures
   in the log, not through `hook_error` — do not build monitoring for those
-  on this event.
+  on this event. An off-lock hook (`needs_lock=False`) that fails is reported
+  as it fails, before the room lock, whatever the gates under the lock then
+  decide (a duplicate, a room closed meanwhile).
 - To make additional triggers fail closed, extend the set the engine reads
   through its instance — RoomKit builds its own `HookEngine`, so there is
   no constructor to subclass into:

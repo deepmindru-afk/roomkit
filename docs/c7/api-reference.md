@@ -102,7 +102,7 @@ RoomKit exports **348 symbols** from `roomkit`. Providers and voice types import
 | `HookExecution` | SYNC or ASYNC |
 | `HookTrigger` | 85 hook triggers — full list in hooks.md |
 | `RoomStatus` | ACTIVE, PAUSED, CLOSED, ARCHIVED |
-| `Visibility` | Scope keywords for an event's `visibility` field: ALL, NONE, TRANSPORT, INTELLIGENCE, INTERNAL |
+| `Visibility` | Scope keywords for an event's `visibility` field: ALL, NONE, TRANSPORT, INTELLIGENCE, INTERNAL (the mark of a record the framework wrote: `attach_channel`, `set_visibility`, `send_event` and `InboundMessage` refuse it, an agent's answer carrying it is stored NONE) |
 
 ### Models
 
