@@ -223,6 +223,41 @@ async def test_the_fingerprint_is_of_the_instruction_its_hooks_decided():
     await kit.close()
 
 
+@pytest.mark.parametrize(
+    "rewrite",
+    [
+        lambda metadata: {**metadata, "instruction": TEXT},
+        lambda metadata: {k: v for k, v in metadata.items() if k != "instruction"},
+    ],
+    ids=["replaced-by-its-text", "removed"],
+)
+@pytest.mark.parametrize("streaming", [False, True], ids=["buffered", "streamed"])
+async def test_a_hook_cannot_change_or_remove_a_response_s_fingerprint(rewrite, streaming):
+    """RFC §9.4: a modify of a response to an instruction keeps the
+    fingerprint the pipeline wrote; the hook's other changes stand."""
+    agent = (
+        AIChannel("agent", provider=MockAIProvider(["Hello."], streaming=True))
+        if streaming
+        else _Writer("agent", {})
+    )
+    kit = await _room(agent)
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST)
+    async def tamper(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if event.source.channel_id != "agent":
+            return HookResult.allow()
+        metadata = {**rewrite(event.metadata), "reviewed": True}
+        return HookResult.modify(event.model_copy(update={"metadata": metadata}))
+
+    await kit.process_inbound(_instruction(), room_id=ROOM)
+
+    replies = _replies(await _stored(kit))
+    assert replies
+    assert all(r.metadata.get("instruction") == _fingerprint(TEXT) for r in replies)
+    assert all(r.metadata.get("reviewed") is True for r in replies)
+    await kit.close()
+
+
 # -- Reserved: removed from every other event --
 
 
