@@ -537,10 +537,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   kept; `kit.create_room()` raises it, the recorders it started stopped. A
   message whose named room another call created meanwhile reads that room
   again as one that exists, for the caller's organization, instead of
-  replacing it. The Buzz huddle watcher reopens its announcements room
-  after a restart. Breaking for code that called `create_room()` on an id
-  it may already hold: read the room first, or catch the error. A custom
-  store must refuse alike.
+  replacing it. After a restart the Buzz huddle watcher reuses its
+  announcements room only when it is the room it opens (no organization, a
+  status that takes events) and otherwise refuses to bridge, naming the
+  room, rather than feed every announcement to a room someone else created
+  under its id. Room ids are global: the refusal is raised whichever
+  organization holds the id, and says only that it is taken, nothing of the
+  room. A host that lets its tenants choose room ids must namespace them or
+  let RoomKit generate them, since a refused id is one another tenant may
+  hold. Breaking for code that called `create_room()` on an id it may
+  already hold: read the room first, or catch the error. A custom store
+  must refuse alike.
 
 - **BREAKING — a hard delete takes the edits and deletes of every event it
   removes, and fires `ON_EVENT_DELETED` per removed event** (RFC §10.3,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -111,14 +112,21 @@ class TestRoomLifecycle:
         assert room.id == "r1"
         assert room.status == RoomStatus.ACTIVE
 
-    async def test_a_room_id_is_created_once(self, kit: RoomKit) -> None:
-        """RFC §14.3: the room an id names is never replaced."""
-        await kit.create_room(room_id="r1", organization_id="acme")
+    async def test_a_room_id_is_created_once(
+        self, kit: RoomKit, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """RFC §14.3: the room an id names is never replaced, and its refusal
+        says the id is taken and nothing of the room, another
+        organization's."""
+        await kit.create_room(room_id="r1", organization_id="acme", metadata={"k": "secret"})
 
-        with pytest.raises(RoomAlreadyExistsError):
+        with caplog.at_level(logging.DEBUG), pytest.raises(RoomAlreadyExistsError) as taken:
             await kit.create_room(room_id="r1", organization_id="globex")
 
         assert (await kit.get_room("r1")).organization_id == "acme"
+        assert taken.value.args == ("Room r1 already exists",)
+        assert vars(taken.value) == {}
+        assert "acme" not in caplog.text and "secret" not in caplog.text
 
     async def test_create_room_auto_id(self, kit: RoomKit) -> None:
         room = await kit.create_room()

@@ -530,7 +530,11 @@ room = await kit.create_room(
 
 A room is created once (RFC §14.3): `create_room()` with an id the store
 already holds raises `RoomAlreadyExistsError` and leaves the room as it was.
-Read the room first (`get_room()`) when the id may exist.
+Read the room first (`get_room()`) when the id may exist. Room ids are global,
+across organizations: the refusal comes whichever organization holds the id,
+and says only that it is taken. A host that lets its tenants choose room ids
+namespaces them (`f"{tenant}:{name}"`) or lets RoomKit generate them, since a
+refused id is one another tenant may hold.
 
 ## Room Lifecycle
 

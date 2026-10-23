@@ -113,7 +113,18 @@ class RoomLifecycleMixin(HelpersMixin):
                 :meth:`check_room_timers` / :meth:`check_all_timers` for
                 evaluating the thresholds.
 
+        Room ids are global, across organizations: a room is created once
+        (RFC §14.3), so an id the store holds is refused whichever
+        organization holds it, and the room it holds is kept. The refusal
+        says the id is taken and nothing of the room. A host that lets its
+        tenants choose room ids namespaces them (``f"{tenant}:{name}"``) or
+        generates them (omit *room_id*): a refused id is one another tenant
+        may hold.
+
         Raises:
+            RoomAlreadyExistsError: The store holds a room under *room_id*;
+                nothing is written, and the recordings started for it are
+                stopped.
             Exception: A recorder's refusal to start (``ValueError`` from a
                 file recorder without encryption at rest, RFC §17.6), raised
                 as the recorder raised it. The recorders start before the room
