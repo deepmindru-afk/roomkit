@@ -61,6 +61,10 @@ logger = logging.getLogger("roomkit.lanes")
 # confuse "I hold the delivery claim" with "I hold the room lock".
 DELIVERY_CLAIM_PREFIX = "__delivery__:"
 
+# How long a closing lane lets its task end the unit it runs, then unwind once
+# cancelled.
+_TASK_GRACE_S = 1.0
+
 
 # Room id whose lane executor the current task belongs to. Lets
 # ``DeliveryCascade.wait()`` refuse to wait on itself: integrator code running
@@ -656,10 +660,10 @@ class RoomDeliveryLane:
         self._wakeup.set()
         task, self._task = self._task, None
         if task is not None and task is not asyncio.current_task():
-            _, pending = await asyncio.wait({task}, timeout=1.0)
+            _, pending = await asyncio.wait({task}, timeout=_TASK_GRACE_S)
             if pending:
                 task.cancel()
-                await asyncio.wait({task}, timeout=1.0)
+                await asyncio.wait({task}, timeout=_TASK_GRACE_S)
         self._abort_pending("kit_closed")
 
     def _drop_entry(self, entry: ExecEntry | CursorEntry, reason: str) -> None:
