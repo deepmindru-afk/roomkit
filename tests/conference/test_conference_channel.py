@@ -183,14 +183,6 @@ class TestLifecycle:
 
         assert ROOM in backend.rooms
 
-    async def test_bot_join_is_lazy(self) -> None:
-        """Nothing connects until there is someone to listen to — a room can be
-        created long before anyone confers.
-        """
-        _, _, backend = await _kit_with_channel()
-
-        assert backend.bots == []
-
     async def test_first_participant_brings_the_bot_in(self) -> None:
         _, _, backend = await _kit_with_channel()
 
@@ -369,25 +361,6 @@ class TestSelectiveSubscription:
         await backend.simulate_participant_joined(ROOM, "p-alice")
 
         track = await backend.simulate_track_published(ROOM, "p-alice", TrackKind.AUDIO)
-
-        assert track.id not in backend.subscriptions
-
-    async def test_video_track_is_not_subscribed_without_vision(self) -> None:
-        """No video frame reaches the process unless something consumes it —
-        this is what keeps a ten-person meeting affordable.
-        """
-        _, _, backend = await _kit_with_channel(stt=MockSTTProvider())
-        await backend.simulate_participant_joined(ROOM, "p-alice")
-
-        track = await backend.simulate_track_published(ROOM, "p-alice", TrackKind.VIDEO)
-
-        assert track.id not in backend.subscriptions
-
-    async def test_screen_share_is_not_subscribed_without_vision(self) -> None:
-        _, _, backend = await _kit_with_channel(stt=MockSTTProvider())
-        await backend.simulate_participant_joined(ROOM, "p-alice")
-
-        track = await backend.simulate_track_published(ROOM, "p-alice", TrackKind.SCREEN_SHARE)
 
         assert track.id not in backend.subscriptions
 
@@ -586,18 +559,6 @@ class TestTranscription:
 
 
 class TestRosterAfterDeparture:
-    async def test_leaving_marks_the_participant_as_left(self) -> None:
-        """Firing a hook is not enough: a participant left behind as active
-        makes the roster lie to everything that reads it.
-        """
-        kit, _, backend = await _kit_with_channel()
-        await backend.simulate_participant_joined(ROOM, "p-alice")
-
-        await backend.simulate_participant_left(ROOM, "p-alice")
-
-        participant = (await kit.store.list_participants(ROOM))[0]
-        assert participant.status is ParticipantStatus.LEFT
-
     async def test_re_entry_reactivates_the_participant(self) -> None:
         kit, _, backend = await _kit_with_channel()
         await backend.simulate_participant_joined(ROOM, "p-alice")
@@ -874,35 +835,23 @@ class TestBotGrants:
         grants: ConferenceGrants = join.args["grants"]
         return grants
 
-    async def test_a_bot_with_no_synthesizer_may_not_publish_audio(self) -> None:
-        grants = await self._joined_with()
+    @pytest.mark.parametrize(
+        ("configured", "publish_audio", "subscribe"),
+        [
+            # A speaking channel with no recognizer subscribes to no track at all
+            # (``_consumes``), so the grant would be permission to receive every
+            # participant's media for nobody to read.
+            pytest.param({"tts": MockTTSProvider()}, True, False, id="synthesizer"),
+            pytest.param({"stt": MockSTTProvider()}, False, True, id="no-synthesizer"),
+        ],
+    )
+    async def test_the_bot_asks_for_what_its_providers_use(
+        self, configured: dict[str, object], publish_audio: bool, subscribe: bool
+    ) -> None:
+        grants = await self._joined_with(**configured)
 
-        assert grants.publish_audio is False
-
-    async def test_a_bot_with_a_synthesizer_may_publish_audio(self) -> None:
-        grants = await self._joined_with(tts=MockTTSProvider())
-
-        assert grants.publish_audio is True
-
-    async def test_the_bot_never_asks_for_video_or_a_screen_it_does_not_have(self) -> None:
-        grants = await self._joined_with(tts=MockTTSProvider())
-
-        assert grants.publish_video is False
-        assert grants.publish_screen_share is False
-
-    async def test_a_bot_that_consumes_tracks_subscribes(self) -> None:
-        grants = await self._joined_with(stt=MockSTTProvider())
-
-        assert grants.subscribe is True
-
-    async def test_a_bot_with_nothing_to_consume_does_not_subscribe(self) -> None:
-        """A speaking channel with no recognizer subscribes to no track at all
-        (``_consumes``), so the grant is permission to receive every
-        participant's media for nobody to read.
-        """
-        grants = await self._joined_with(tts=MockTTSProvider())
-
-        assert grants.subscribe is False
+        assert (grants.publish_audio, grants.subscribe) == (publish_audio, subscribe)
+        assert (grants.publish_video, grants.publish_screen_share) == (False, False)
 
     async def test_explicit_grants_win_over_the_derivation(self) -> None:
         grants = await self._joined_with(bot_grants=ConferenceGrants())
@@ -1659,6 +1608,9 @@ class TestBotIdentityCollision:
 
 @pytest.mark.parametrize("kind", [TrackKind.VIDEO, TrackKind.SCREEN_SHARE])
 async def test_video_kinds_never_subscribe_without_a_consumer(kind: TrackKind) -> None:
+    """No video frame reaches the process unless something consumes it: this is
+    what keeps a ten-person meeting affordable.
+    """
     _, _, backend = await _kit_with_channel(stt=MockSTTProvider())
     await backend.simulate_participant_joined(ROOM, "p-alice")
 

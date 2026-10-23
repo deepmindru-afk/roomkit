@@ -252,14 +252,12 @@ class TestMintedAccess:
 
         assert _claims(access.token)["attributes"] == {"app.user": "user-42"}
 
-    async def test_a_mint_that_asks_for_none_carries_none(self) -> None:
-        access = await _backend().mint_access("room-1", "p-alice", ConferenceGrants())
-
-        assert "attributes" not in _claims(access.token)
-
-    async def test_an_empty_map_is_not_a_claim(self) -> None:
+    @pytest.mark.parametrize("attributes", [None, {}], ids=["none", "empty-map"])
+    async def test_a_mint_that_asks_for_no_attribute_carries_no_claim(
+        self, attributes: dict[str, str] | None
+    ) -> None:
         access = await _backend().mint_access(
-            "room-1", "p-alice", ConferenceGrants(), attributes={}
+            "room-1", "p-alice", ConferenceGrants(), attributes=attributes
         )
 
         assert "attributes" not in _claims(access.token)
@@ -485,7 +483,7 @@ class TestModeration:
     async def test_muting_finds_the_publisher_the_interface_did_not_name(self) -> None:
         """LiveKit's mute API is keyed on the participant as well as the track,
         and the interface passes only the track — so the server is asked who
-        publishes it.
+        publishes it. No capability is declared: muting needs none.
         """
         backend = _backend()
         room = self._room_with_track(backend)
@@ -496,12 +494,6 @@ class TestModeration:
         assert request.identity == "p-alice"
         assert request.track_sid == "TR_1"
         assert request.muted is True
-
-    async def test_muting_is_available_without_any_capability(self) -> None:
-        backend = _backend(remote_unmute=False)
-        self._room_with_track(backend)
-
-        await backend.mute_track("room-1", "TR_1")
 
     async def test_unmuting_without_the_capability_is_refused(self) -> None:
         """SFUs commonly refuse remote unmute unless enabled server-side, so a

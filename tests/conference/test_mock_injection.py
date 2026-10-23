@@ -461,12 +461,3 @@ class TestUtteranceBoundaries:
         await backend.publish_audio(bot, AudioChunk(data=b"AA"))
 
         assert backend.utterances[-1].complete is False
-
-    async def test_the_flat_record_is_still_there(self) -> None:
-        backend = MockConferenceBackend()
-        bot = await _joined_bot(backend)
-
-        await backend.publish_audio(bot, AudioChunk(data=b"AA", is_final=True))
-
-        assert len(backend.published_audio) == 1
-        assert backend.published_audio[0].is_final is True

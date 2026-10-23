@@ -10,6 +10,8 @@ import asyncio
 import math
 from dataclasses import dataclass
 
+import pytest
+
 from roomkit.channels._conference_mixer import (
     _RING_WINDOWS,
     ConferenceMixer,
@@ -65,21 +67,19 @@ class TestMixWindow:
         window = pcm(1234)
         assert mix_window([window]) is window
 
-    def test_two_windows_sum_with_sqrt2_headroom(self) -> None:
-        mixed = mix_window([pcm(1000), pcm(2000)])
-        assert sample_of(mixed) == int(3000 / math.sqrt(2))
-
-    def test_three_windows_sum_with_sqrt3_headroom(self) -> None:
-        mixed = mix_window([pcm(1000), pcm(2000), pcm(3000)])
-        assert sample_of(mixed) == int(6000 / math.sqrt(3))
-
-    def test_a_hot_sum_clamps_to_int16(self) -> None:
-        mixed = mix_window([pcm(30000), pcm(30000), pcm(30000)])
-        assert sample_of(mixed) == 32767
-
-    def test_a_hot_negative_sum_clamps_to_int16(self) -> None:
-        mixed = mix_window([pcm(-30000), pcm(-30000), pcm(-30000)])
-        assert sample_of(mixed) == -32768
+    @pytest.mark.parametrize(
+        ("samples", "mixed"),
+        [
+            pytest.param([1000, 2000], int(3000 / math.sqrt(2)), id="two-sqrt2-headroom"),
+            pytest.param([1000, 2000, 3000], int(6000 / math.sqrt(3)), id="three-sqrt3-headroom"),
+            pytest.param([30000] * 3, 32767, id="hot-sum-clamps"),
+            pytest.param([-30000] * 3, -32768, id="hot-negative-sum-clamps"),
+        ],
+    )
+    def test_windows_sum_with_headroom_and_clamp_to_int16(
+        self, samples: list[int], mixed: int
+    ) -> None:
+        assert sample_of(mix_window([pcm(sample) for sample in samples])) == mixed
 
 
 class TestMixing:

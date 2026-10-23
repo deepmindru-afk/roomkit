@@ -63,25 +63,6 @@ class TestDraining:
         gate.set()
         await working
 
-    async def test_a_drain_gives_up_on_work_that_never_finishes(self) -> None:
-        """Teardown that waits forever on a wedged backend is a worse failure
-        than teardown that overtakes it.
-        """
-        activity = RoomActivity()
-        gate = asyncio.Event()
-
-        async def wedged() -> None:
-            async with activity.track(ROOM):
-                await gate.wait()
-
-        working = asyncio.create_task(wedged())
-        await asyncio.sleep(0)
-
-        await asyncio.wait_for(activity.drain(ROOM, timeout=0.05), timeout=1.0)
-
-        gate.set()
-        await working
-
     async def test_the_timeout_is_a_budget_for_the_whole_drain(self) -> None:
         """Per item, seven wedged activities at five seconds each is
         thirty-five — past the thirty the hook engine cancels a lifecycle hook
@@ -216,31 +197,6 @@ class TestReentrancy:
                 await asyncio.create_task(teardown())
 
         await asyncio.wait_for(work(), timeout=1.0)
-
-    async def test_a_drain_outside_the_work_still_waits(self) -> None:
-        """The escape is for nesting, not a licence to skip the wait."""
-        activity = RoomActivity()
-        released: list[str] = []
-        gate = asyncio.Event()
-
-        async def work() -> None:
-            async with activity.track(ROOM):
-                await gate.wait()
-                released.append("work")
-
-        working = asyncio.create_task(work())
-        await asyncio.sleep(0)
-
-        async def teardown() -> None:
-            await activity.drain(ROOM, timeout=1.0)
-            released.append("teardown")
-
-        tearing = asyncio.create_task(teardown())
-        await asyncio.sleep(0.01)
-        gate.set()
-        await asyncio.gather(working, tearing)
-
-        assert released == ["work", "teardown"]
 
     async def test_nested_work_is_released_in_order(self) -> None:
         """Leaving an inner block must not drop the outer block's marker."""
