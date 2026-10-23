@@ -24,7 +24,7 @@ from roomkit.core.inbound_router import (
     recordable_sender,
     still_the_messages,
 )
-from roomkit.core.locks import collecting_release_failures, failed_release
+from roomkit.core.locks import _has_room_lock, collecting_release_failures, failed_release
 from roomkit.core.mixins.channel_ops import is_channel_detached
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.core.mixins.inbound_identity import _IdentityBlockedError
@@ -138,7 +138,8 @@ class InboundMixin(HelpersMixin):
     _name_held: Any  # see VerificationMixin
     _record_held_cancellation: Any  # see VerificationMixin
     _process_locked: Any  # see InboundHost
-    _run_queued: Any  # see InjectedEventsMixin
+    _hand_off_queued: Any  # see InjectedEventsMixin
+    _finish_queued: Any  # see InjectedEventsMixin
     _consume_streams_when_cascade_completes: Any  # see LaneExecutionMixin
     _finish_cascade: Any  # see LaneExecutionMixin
     create_room: Any  # see InboundHost
@@ -576,6 +577,10 @@ class InboundMixin(HelpersMixin):
         defer_delivery: bool,
     ) -> InboundResult:
         queued = QueuedInjections()
+        # Code under the room lock that processes a message runs what its
+        # hooks inject itself, nested in the section that holds the lock.
+        nested = _has_room_lock(room_id, self._lock_manager)
+        handed = None
         async with AsyncExitStack() as stack:
             try:
                 async with asyncio.timeout_at(deadline):
@@ -600,15 +605,19 @@ class InboundMixin(HelpersMixin):
                 deadline=deadline,
                 precheck=precheck,
             )
+            # Decided: what its hooks injected no longer depends on this
+            # caller (RFC §9.4), and commits once the lock is released.
+            if not nested:
+                handed = self._hand_off_queued(queued, room_id, cascade)
             self._name_held(named, result)
         if result.error is None:
             # The lock's release comes before anything the delivery set
             # meets, so its failure is the earlier error (RFC §13.5).
             result.error = failed_release()
-        # What its hooks injected commits now, each in a section of its own,
-        # once the event's section released the lock (RFC §9.4, §10.1 steps
-        # 10 to 14): another event may commit between them.
-        await self._run_queued(queued, room_id, cascade)
+        # Each in a section of its own, once the event's section released the
+        # lock (RFC §9.4, §10.1 steps 10 to 14): another event may commit
+        # between them. Committed before this call returns.
+        await self._finish_queued(handed, queued, room_id, cascade)
 
         if defer_delivery:
             # Every result that reached this locked region gets a handle — a

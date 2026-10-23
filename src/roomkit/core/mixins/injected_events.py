@@ -23,6 +23,7 @@ the same way, right after it, before the next of its cause's.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +31,7 @@ from roomkit.core._changes import with_target
 from roomkit.core._instructions import without_fingerprint
 from roomkit.core._queued_injections import QueuedInjections
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan
+from roomkit.core.locks import unlocked_context
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.core.mixins.inbound_locked import (
     _Blocked,
@@ -38,6 +40,7 @@ from roomkit.core.mixins.inbound_locked import (
     target_update,
 )
 from roomkit.core.mixins.lane_execution import provisional
+from roomkit.core.task_utils import start_named
 from roomkit.core.visibility import intersect_visibility, narrowed_to_target, visibility_allows
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import (
@@ -146,6 +149,52 @@ class InjectedEventsMixin(HelpersMixin):
         cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
         await self._lane_injected_events(injected_events, room_id, cascade, cause=cause)
         await self._finish_cascade(cascade, room_id)
+
+    def _hand_off_queued(
+        self, queued: QueuedInjections, room_id: str, cascade: DeliveryCascade
+    ) -> asyncio.Task[None] | None:
+        """Hand the passes of what a decided event's hooks injected to a task
+        the kit holds, so that they no longer depend on the caller: they
+        commit whichever way the event ends (RFC §9.4), its caller cancelled
+        or failing after the decision included. ``None`` when nothing was
+        queued.
+
+        Started under the event's lock, in a context that holds none, the
+        task asks for the lock as any later entry and waits for the event's
+        section, and any section ahead of it, to release it: that wait has
+        no bound, as an adopted entry's has none. The kit's close cancels it
+        and waits for its end, with its other background work. A caller that
+        holds the room lock from before its own section (code under the lock
+        injecting directly) runs them itself instead (:meth:`_run_queued`):
+        the task would wait for that caller's own lock.
+        """
+        if not queued.entries:
+            return None
+        task = start_named(
+            self._run_queued(queued, room_id, cascade),
+            name=f"roomkit-injected-events-{room_id}",
+            context=unlocked_context(),
+        )
+        task.add_done_callback(_log_failed_passes)
+        task.add_done_callback(self._pending_hook_tasks.discard)
+        self._pending_hook_tasks.add(task)
+        return task
+
+    async def _finish_queued(
+        self,
+        handed: asyncio.Task[None] | None,
+        queued: QueuedInjections,
+        room_id: str,
+        cascade: DeliveryCascade,
+    ) -> None:
+        """Wait, once the caller's section released the lock, for the
+        passes it handed off (:meth:`_hand_off_queued`), shielded from the
+        caller's cancellation, so they commit before the call returns; or
+        run those it kept, under a lock held from before its section."""
+        if handed is not None:
+            await asyncio.shield(handed)
+            return
+        await self._run_queued(queued, room_id, cascade)
 
     async def _run_queued(
         self, queued: QueuedInjections, room_id: str, cascade: DeliveryCascade
@@ -270,6 +319,14 @@ class InjectedEventsMixin(HelpersMixin):
             ):
                 targets.append(binding)
         return targets
+
+
+def _log_failed_passes(task: asyncio.Task[None]) -> None:
+    """Log the injected passes a handed-off task failed to commit: its
+    caller, cancelled meanwhile, may never read the failure."""
+    if task.cancelled() or (error := task.exception()) is None:
+        return
+    logger.error("A hook's injected events failed to commit", exc_info=error)
 
 
 def _injected_plan(

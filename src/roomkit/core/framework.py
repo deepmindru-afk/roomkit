@@ -60,6 +60,7 @@ from roomkit.core.locks import (
     InMemoryLockManager,
     ReleaseTolerantLockManager,
     RoomLockManager,
+    _has_room_lock,
 )
 from roomkit.core.mixins import (
     BackgroundMixin,
@@ -1150,7 +1151,12 @@ class RoomKit(
     ) -> RoomEvent:
         """:meth:`send_event` for the framework's own records too, whose
         *visibility* may be ``internal`` (an interruption record, RFC §6.4,
-        §7.3)."""
+        §7.3).
+
+        The framework's door for the records it writes itself, never the
+        integrator's: integrator code calls :meth:`send_event`, which refuses
+        ``internal`` before anything is read (RFC §7.3).
+        """
         from roomkit.telemetry.base import SpanKind
         from roomkit.telemetry.context import get_current_span, reset_span, set_current_span
 
@@ -1233,6 +1239,10 @@ class RoomKit(
             # spend the same pre-commit budget as the locked gates (§13.6).
             deadline = asyncio.get_running_loop().time() + self._process_timeout
             queued = QueuedInjections()
+            # Code under the room lock that injects directly runs what its
+            # event's hooks inject itself, nested in the section it holds.
+            nested = _has_room_lock(room_id, self._lock_manager)
+            handed = None
             async with contextlib.AsyncExitStack() as stack:
                 try:
                     async with asyncio.timeout_at(deadline):
@@ -1255,10 +1265,15 @@ class RoomKit(
                         precheck=precheck,
                         deadline=deadline,
                     )
+                    # Decided: what its hooks injected no longer depends on
+                    # this caller (RFC §9.4).
+                    if not nested:
+                        handed = self._hand_off_queued(queued, room_id, cascade)
             # What its hooks injected commits once its section released the
-            # lock, each in a section of its own (RFC §9.4). Under a caller
-            # that holds the room lock, the section it nests in still does.
-            await self._run_queued(queued, room_id, cascade)
+            # lock, each in a section of its own (RFC §9.4), before this call
+            # returns. Under a caller that holds the room lock, the section it
+            # nests in still does.
+            await self._finish_queued(handed, queued, room_id, cascade)
             _raise_unless_committed(result, room_id)
             if isinstance(result.event, RoomEvent):
                 event = result.event

@@ -43,6 +43,16 @@ def _has_room_lock(room_id: str, manager: RoomLockManager | None = None) -> bool
     )
 
 
+def unlocked_context() -> contextvars.Context:
+    """A copy of the current context that holds no room lock: a task started
+    in it from under a lock asks for the lock as any later caller does, and
+    waits for its holder, never entering as the holder's reentrant child."""
+    context = contextvars.copy_context()
+    context.run(_held_rooms.set, frozenset())
+    context.run(_held_leases.set, ())
+    return context
+
+
 @contextmanager
 def _mark_room_locked(manager: RoomLockManager, room_id: str) -> Generator[None, None, None]:
     lease = _LockLease(manager, room_id)

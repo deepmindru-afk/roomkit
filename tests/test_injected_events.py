@@ -96,7 +96,7 @@ async def _notices(kit: RoomKit, body: str = "notice") -> list[RoomEvent]:
 
 
 class _WatchedLocks(InMemoryLockManager):
-    """Room locks that tell when a second caller asks for one."""
+    """Room locks that tell how many callers asked for one."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -105,16 +105,59 @@ class _WatchedLocks(InMemoryLockManager):
     def watch(self) -> None:
         """Count the callers asking for a lock from now on."""
         self.asked = 0
-        self.second_asks = asyncio.Event()
+        self._reached: dict[int, asyncio.Event] = {}
+
+    def reached(self, count: int) -> asyncio.Event:
+        """Set once *count* callers have asked for a lock since :meth:`watch`."""
+        event = self._reached.setdefault(count, asyncio.Event())
+        if self.asked >= count:
+            event.set()
+        return event
 
     @asynccontextmanager
     async def locked(self, room_id: str) -> AsyncGenerator[None, None]:
         if not _has_room_lock(room_id, self):
             self.asked += 1
-            if self.asked == 2:
-                self.second_asks.set()
+            for count, event in self._reached.items():
+                if self.asked >= count:
+                    event.set()
         async with super().locked(room_id):
             yield
+
+
+class _HeldHello:
+    """A room with no agent whose hook holds hello's section until ``go``,
+    then injects a notice to ``ws``, blocking hello when *block*; ``noticed``
+    is set once the notice's delivery set has run."""
+
+    def __init__(self, *, block: bool) -> None:
+        self.locks = _WatchedLocks()
+        self.kit = RoomKit(lock_manager=self.locks)
+        self.in_section, self.go, self.noticed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        notice = InjectedEvent(event=_notice(), target_channel_ids=["ws"])
+
+        @self.kit.hook(HookTrigger.BEFORE_BROADCAST, name="slow_notifier")
+        async def slow_notifier(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if _body(event) != "hello":
+                return HookResult.allow()
+            self.in_section.set()
+            await self.go.wait()
+            if block:
+                return HookResult.block("held", injected=[notice])
+            return HookResult.allow(injected=[notice])
+
+        @self.kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="seen")
+        async def seen(event: RoomEvent, ctx: RoomContext) -> None:
+            if _body(event) == "notice":
+                self.noticed.set()
+
+    async def open(self) -> RoomKit:
+        await self.kit.create_room(room_id="r1")
+        for channel in (SimpleChannel("sms"), SimpleChannel("ws")):
+            self.kit.register_channel(channel)
+            await self.kit.attach_channel("r1", channel.channel_id)
+        self.locks.watch()
+        return self.kit
 
 
 class TestItsPass:
@@ -123,36 +166,68 @@ class TestItsPass:
         """RFC §9.4, §10.1 steps 10 to 14: it commits in a section of its
         own once its cause's has released the room lock, so an event
         waiting for the lock meanwhile commits between them."""
-        locks = _WatchedLocks()
-        kit = RoomKit(lock_manager=locks)
-        await kit.create_room(room_id="r1")
-        for channel in (SimpleChannel("sms"), SimpleChannel("ws")):
-            kit.register_channel(channel)
-            await kit.attach_channel("r1", channel.channel_id)
-        in_section, go = asyncio.Event(), asyncio.Event()
-        notice = InjectedEvent(event=_notice(), target_channel_ids=["ws"])
-
-        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="slow_notifier")
-        async def slow_notifier(event: RoomEvent, ctx: RoomContext) -> HookResult:
-            if _body(event) != "hello":
-                return HookResult.allow()
-            in_section.set()
-            await go.wait()
-            if block:
-                return HookResult.block("held", injected=[notice])
-            return HookResult.allow(injected=[notice])
-
+        room = _HeldHello(block=block)
+        kit = await room.open()
         try:
-            locks.watch()
             cause = asyncio.create_task(_hello(kit))
-            await in_section.wait()
+            await room.in_section.wait()
             # A direct injection asks for the lock at step 6 alone.
             later = asyncio.create_task(kit.send_event("r1", "sms", TextContent(body="later")))
-            await locks.second_asks.wait()
-            go.set()
+            await room.locks.reached(2).wait()
+            room.go.set()
             await asyncio.gather(cause, later)
             stored = [_body(e) for e in await _stored(kit) if e.type == EventType.MESSAGE]
             assert stored == ["hello", "later", "notice"]
+        finally:
+            await kit.close()
+
+    async def test_is_committed_when_its_caller_is_cancelled_waiting_for_the_lock(
+        self,
+    ) -> None:
+        """RFC §9.4: committed whichever way its cause ended, the caller
+        that disconnects while another holds the lock included."""
+        room = _HeldHello(block=True)
+        kit = await room.open()
+        release = asyncio.Event()
+
+        async def hold() -> None:
+            async with room.locks.locked("r1"):
+                await release.wait()
+
+        try:
+            cause = asyncio.create_task(_hello(kit))
+            await room.in_section.wait()
+            holder = asyncio.create_task(hold())
+            await room.locks.reached(2).wait()
+            room.go.set()
+            # The notice's pass asks for the lock, behind the holder.
+            await room.locks.reached(3).wait()
+            cause.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await cause
+            release.set()
+            await holder
+            await asyncio.wait_for(room.noticed.wait(), 1)
+            assert [e.status for e in await _notices(kit)] == [EventStatus.DELIVERED]
+        finally:
+            await kit.close()
+
+    async def test_is_committed_when_a_later_step_of_its_caller_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        room = _HeldHello(block=True)
+        kit = await room.open()
+        room.go.set()
+
+        def fails(*args: object) -> None:
+            raise RuntimeError("after the decision")
+
+        monkeypatch.setattr(kit, "_name_held", fails)
+        try:
+            with pytest.raises(RuntimeError, match="after the decision"):
+                await _hello(kit)
+            await asyncio.wait_for(room.noticed.wait(), 1)
+            assert [e.status for e in await _notices(kit)] == [EventStatus.DELIVERED]
         finally:
             await kit.close()
 

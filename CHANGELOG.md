@@ -632,8 +632,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each in a pass and a section of its own: another event may commit
   between a cause and what its hooks injected (an event waiting for the
   lock, an agent's answer to the cause), as it may between a trigger and
-  its response. They still commit before `process_inbound()` and
-  `send_event()` return, in the order their hooks ran, the events an
+  its response. Once the cause is decided they no longer depend on its
+  caller: a task the kit holds runs them, so a caller cancelled while
+  another holds the lock, or failing after the decision, loses none (the
+  kit's close cancels that task with its other background work). They
+  still commit before `process_inbound()` and `send_event()` return, the
+  caller waiting for them, in the order their hooks ran, the events an
   injected pass's own hooks inject right after it; the reentry budget, the
   chain depth, the visibility and the targets are unchanged. A direct
   `send_event()` from code holding the lock still commits ahead of the

@@ -632,10 +632,12 @@ class LaneSink:
             return None
         if isinstance(decision, _Blocked):
             # A row commits without the room lock: what its hooks injected
-            # runs its passes now, each taking the lock (RFC §9.5.1).
+            # runs its passes now, each taking the lock (RFC §9.5.1), and
+            # whatever becomes of the stream's reader (RFC §9.4).
             queued = QueuedInjections()
             await self._kit._store_blocked(room_id, decision, queued)
-            await self._kit._run_queued(queued, room_id, self._cascade)
+            handed = self._kit._hand_off_queued(queued, room_id, self._cascade)
+            await self._kit._finish_queued(handed, queued, room_id, self._cascade)
             logger.info(
                 "Streamed %s blocked (room %s): %s",
                 event.type.value,
