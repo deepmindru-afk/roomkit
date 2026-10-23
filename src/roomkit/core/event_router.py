@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from roomkit.channels.base import Channel
+from roomkit.core._changes import for_channels
 from roomkit.core._failure_log import log_failure
 from roomkit.core._instructions import response_metadata
 from roomkit.core._turn_runners import TurnRunner
@@ -508,7 +509,10 @@ class EventRouter:
 
         event = plan.event
         source_binding = plan.source_binding
-        context = plan.context
+        # What every target is handed of the room's history: a deleted event
+        # with its content withheld (RFC §10.3); the plan's own context, which
+        # the hooks receive after delivery, stays whole.
+        context = for_channels(plan.context)
         exclude_delivery = plan.exclude_delivery
 
         telemetry = self._telemetry or NoopTelemetryProvider()

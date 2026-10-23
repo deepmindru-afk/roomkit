@@ -15,6 +15,7 @@ from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
 from roomkit._text import named_blocks, quoted
+from roomkit.core._changes import is_deleted
 from roomkit.models.enums import ChannelType, Visibility
 from roomkit.models.event import TextContent
 from roomkit.speaking.base import CutReply
@@ -67,7 +68,8 @@ def cut_records(context: RoomContext, channel_id: str) -> dict[str | None, RoomE
     voices = {b.channel_id for b in context.bindings if b.channel_type == ChannelType.VOICE}
     records: dict[str | None, RoomEvent] = {}
     for event in context.recent_events:
-        if _is_cut_record(event, channel_id, voices):
+        # A deleted record quotes what was withheld (RFC §10.3).
+        if _is_cut_record(event, channel_id, voices) and not is_deleted(event):
             records[event.metadata.get("answer_responds_to")] = event
     return records
 
@@ -95,6 +97,11 @@ def cut_answers(
     for event in events:
         if event.source.channel_id == channel_id and event.responds_to in records:
             last[event.responds_to] = event.id
+    # A deleted answer's record would quote the words its delete withheld.
+    deleted = {event.id for event in events if is_deleted(event)}
+    last = {
+        responds_to: event_id for responds_to, event_id in last.items() if event_id not in deleted
+    }
     return {event_id: records[responds_to] for responds_to, event_id in last.items()}
 
 
@@ -177,7 +184,7 @@ def cut_reply(
     for event in recent:
         if event.source.channel_id == channel_id:
             latest = event
-    if latest is None:
+    if latest is None or is_deleted(latest):
         return None
     record = records.get(latest.responds_to)
     if record is None or record.created_at < latest.created_at:

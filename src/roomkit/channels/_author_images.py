@@ -38,6 +38,7 @@ from roomkit._media import (
     vision_image_type,
 )
 from roomkit._text import quoted
+from roomkit.core._changes import is_deleted
 from roomkit.models.enums import EventType
 from roomkit.models.event import (
     CompositeContent,
@@ -89,9 +90,10 @@ _MAX_ROOMS = 100  # FIFO cap across rooms a shared channel serves
 def with_attached_media(event: RoomEvent, reader: AttachedMedia | None) -> RoomEvent:
     """*event* as an AI channel reads it (RFC §6.4): its content, then the media
     the application's *reader* names for it, as the parts of one composite.
-    The event itself when the reader names none or fails, and an instruction,
-    the application's own direction, as it is."""
-    if reader is None or event.type == EventType.INSTRUCTION:
+    The event itself when the reader names none or fails, an instruction,
+    the application's own direction, as it is, and a deleted event with its
+    content withheld, its media with it (§10.3)."""
+    if reader is None or event.type == EventType.INSTRUCTION or is_deleted(event):
         return event
     try:
         attached = [media for media in reader(event) if isinstance(media, MediaContent)]

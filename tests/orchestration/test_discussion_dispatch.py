@@ -20,8 +20,8 @@ from roomkit.classifiers.base import ClassifierError
 from roomkit.classifiers.mock import MockClassifier
 from roomkit.core.locks import InMemoryLockManager
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import EventType, HookExecution, HookTrigger
-from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.enums import DeleteType, EventType, HookExecution, HookTrigger
+from roomkit.models.event import DeleteContent, EventSource, RoomEvent, TextContent
 from roomkit.orchestration.strategies.discussion import (
     ClassifierDispatchPolicy,
     Discussion,
@@ -50,6 +50,7 @@ from tests.orchestration.test_strategy_discussion import (
     _texts,
     _timeline,
 )
+from tests.test_edit_delete_authorization import _SystemTransport
 from tests.test_framework import SimpleChannel
 
 AGENTS = ("investigator", "dev", "sre")
@@ -455,6 +456,33 @@ async def test_the_recent_conversation_holds_what_a_candidate_may_read() -> None
     assert "so?" not in said
     by_agent = next(e for e in turn.recent if e.source.channel_id == "investigator")
     assert turn.speakers[by_agent.id] == "@investigator"
+    await kit.close()
+
+
+async def test_the_recent_conversation_withholds_what_a_delete_removed() -> None:
+    """RFC §7.5 rule 8, §10.3: a policy may hand the conversation to a
+    classifier outside; a deleted message keeps its place with its text
+    withheld."""
+    policy = MockDispatchPolicy([[]])
+    kit = RoomKit()
+    await _room(kit, _team(), dispatch=policy, everyone=["sre"])
+    kit.register_channel(_SystemTransport("sys"))
+    await kit.attach_channel("r1", "sys")
+    first = (await _say(kit, "@investigator the code is 4417")).event
+    assert first is not None
+    await _settle(kit)
+    await kit.send_event(
+        "r1",
+        "sys",
+        DeleteContent(target_event_id=first.id, delete_type=DeleteType.SYSTEM),
+        event_type=EventType.DELETE,
+    )
+
+    await _say(kit, "so?")
+    await _settle(kit)
+
+    [kept] = [e for e in policy.turns[-1].recent if e.id == first.id]
+    assert kept.content == TextContent(body="")
     await kit.close()
 
 

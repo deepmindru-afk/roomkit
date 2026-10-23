@@ -258,6 +258,20 @@ class TestNotSeen:
         assert _images(context) == []
         assert instruction.id not in asked
 
+    async def test_a_deleted_message_s_media_stays_withheld(self) -> None:
+        """A deleted message is read with its content withheld (RFC §7.5 rule
+        8, §10.3), the media its application keeps beside it included."""
+        host = _Host()
+        photo = _message("here is my lamp", "photo-1")
+        deleted = photo.model_copy(update={"metadata": {**photo.metadata, "deleted": True}})
+
+        context = await _turn(
+            _channel(host=host), _event(TextContent(body="what colour is it?")), [deleted]
+        )
+
+        assert _images(context) == []
+        assert host.asked == []
+
 
 class TestMemory:
     async def test_the_memory_reads_the_events_as_the_model_does(self) -> None:

@@ -18,11 +18,12 @@ from roomkit.channels._tool_usage import ToolUsageMemory
 from roomkit.channels.ai import AIChannel
 from roomkit.core.framework import RoomKit
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory
-from roomkit.models.event import TextContent
+from roomkit.models.enums import ChannelCategory, ChannelType, EventStatus, EventType
+from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.skills.registry import SkillRegistry
+from roomkit.turns._wiring import remembered_calls
 from tests.test_framework import SimpleChannel
 
 LOOKUP = AITool(
@@ -185,3 +186,34 @@ async def test_two_turns_at_once_reusing_a_call_id_rebuild_each_call(streaming: 
         ("rome", "result:rome"),
     ]
     await kit.close()
+
+
+@pytest.mark.parametrize(("deleted", "held"), [("start", "secret-q"), ("end", "secret")])
+def test_a_deleted_row_rebuilds_nothing_of_what_it_held(deleted: str, held: str) -> None:
+    """A tool row a delete removed is withheld from the channel's rebuilt
+    memory as from its history (RFC §7.5 rule 8, §10.3)."""
+    source = EventSource(channel_id="ai1", channel_type=ChannelType.AI)
+    call = ToolCallContent(tool_name="lookup", tool_id="l1", arguments={"q": "secret-q"})
+    rows = [
+        RoomEvent(
+            room_id="r1",
+            type=kind,
+            source=source,
+            content=content,
+            status=EventStatus.DELIVERED,
+            correlation_id="turn-1",
+            metadata={"deleted": True} if deleted == name else {},
+        )
+        for name, kind, content in [
+            ("start", EventType.TOOL_CALL_START, call),
+            (
+                "end",
+                EventType.TOOL_CALL_END,
+                call.model_copy(update={"result": "secret-result", "outcome": "served"}),
+            ),
+        ]
+    ]
+
+    remembered = remembered_calls(rows)
+
+    assert held not in str(remembered)

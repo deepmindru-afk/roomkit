@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from roomkit.channels._speaker import turn_labels
+from roomkit.core._changes import withheld
 from roomkit.models.enums import EventStatus, EventType, HookTrigger
 from roomkit.models.event import is_tool_call_record
 
@@ -131,9 +132,10 @@ class Dispatcher:
         candidate may read (a policy may hand them to a classifier outside),
         who said each, and the candidates' identity."""
         room = self._room
+        # What a delete removed stays withheld (RFC §7.5 rule 8, §10.3).
         recent = tuple(
             e
-            for e in context.recent_events
+            for e in withheld(context.recent_events)
             if e.index < event.index
             and e.type == EventType.MESSAGE
             and e.status != EventStatus.BLOCKED

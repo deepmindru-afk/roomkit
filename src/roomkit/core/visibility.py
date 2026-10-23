@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
+from roomkit.core._changes import withheld
 from roomkit.models._visibility import KEYWORDS
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
@@ -178,12 +179,17 @@ def visible_events(context: RoomContext, channel_id: str) -> list[RoomEvent]:
     rebuild in the first place; a caller reconstructing history by itself owes
     that check. READ_ONLY and muted channels do read, and keep the history they
     were handed; their own refused turns are the one thing they lose, as above.
+
+    An event an accepted DELETE removed stays, its content withheld
+    (:func:`~roomkit.core._changes.withheld`, RFC §10.3): the delete that
+    follows names an event the reader holds, and nothing of what was said
+    reaches it, nor of an edit of it.
     """
     reader = next((b for b in context.bindings if b.channel_id == channel_id), None)
     if reader is None:
         return []
     return [
         e
-        for e in received_events(context.recent_events)
+        for e in withheld(received_events(context.recent_events))
         if e.source.channel_id == channel_id or visibility_allows(e.visibility, reader)
     ]

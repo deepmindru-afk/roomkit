@@ -9,6 +9,7 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._runtime_record import RUNTIME_RECORD
+from roomkit.core._changes import for_channels
 from roomkit.core._delivery_keys import DeliveryKeys, NamedDelivery
 from roomkit.core._instructions import FINGERPRINT, names_an_agent
 from roomkit.core.exceptions import ChannelNotRegisteredError, RoomNotFoundError
@@ -472,7 +473,8 @@ class InboundMixin(HelpersMixin):
         # (one the integrator detached, RFC §7.5 rule 7) parses its message
         # seeing no event; its commit gate stores it ``source_unbound``.
         parse_context = (
-            context
+            # A deleted event's content is withheld from it (RFC §10.3).
+            for_channels(context)
             if context.get_binding(message.channel_id) is not None
             else context.model_copy(update={"recent_events": []})
         )

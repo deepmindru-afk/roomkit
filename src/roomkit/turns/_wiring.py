@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.channels.acp import ACPChannel
 from roomkit.channels.ai import AIChannel
+from roomkit.core._changes import withheld
 from roomkit.core.hooks import SyncPipelineResult
 from roomkit.models.enums import ChannelCategory, EventType, HookTrigger
 from roomkit.models.pending_input import PendingInputEvent
@@ -90,7 +91,8 @@ def remembered_calls(events: list[RoomEvent]) -> list[dict[str, Any]]:
     # of a room may run at once.
     requested: dict[tuple[str | None, str], dict[str, Any]] = {}
     calls: list[dict[str, Any]] = []
-    for ev in events:
+    # A deleted row is withheld, as from any history (RFC §7.5 rule 8, §10.3).
+    for ev in withheld(events):
         content = ev.content
         call = (ev.correlation_id, getattr(content, "tool_id", ""))
         if ev.type == EventType.TOOL_CALL_START:

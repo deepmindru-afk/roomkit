@@ -23,6 +23,7 @@ from roomkit.models.event import (
     EditContent,
     EventContent,
     RoomEvent,
+    TextContent,
 )
 
 if TYPE_CHECKING:
@@ -209,3 +210,60 @@ def with_target(context: RoomContext, target: RoomEvent | None) -> RoomContext:
         return context
     events = [target if e.id == target.id else e for e in context.recent_events]
     return context.model_copy(update={"recent_events": events})
+
+
+def withheld(events: list[RoomEvent]) -> list[RoomEvent]:
+    """*events* as a history a channel is handed holds them (RFC §7.5 rule
+    8, §10.3): a soft-deleted event, and an edit of one, which holds a
+    version of its text, stay with their content withheld.
+
+    Deleted is what the event's mark says, or what an accepted DELETE among
+    *events* names: a history read before the mark was written, or holding
+    an edit whose target it does not hold, withholds it alike. The event
+    keeps its id, index, type, source with the provider's message id,
+    thread, metadata and ``channel_data``; its stored record keeps its
+    content, and so do the histories hooks read.
+    """
+    deleted = {event.id for event in events if is_deleted(event)}
+    deleted.update(
+        change.target_event_id
+        for event in events
+        if event.status == EventStatus.DELIVERED
+        and isinstance(change := change_of(event), DeleteContent)
+    )
+    if not deleted:
+        return events
+    return [
+        _without_content(event)
+        if event.id in deleted
+        or (isinstance(event.content, EditContent) and event.content.target_event_id in deleted)
+        else event
+        for event in events
+    ]
+
+
+def for_channels(context: RoomContext) -> RoomContext:
+    """*context* as a channel is handed it (RFC §10.3): its history
+    :func:`withheld`. The same object when nothing in it was deleted; the
+    context hooks receive stays whole."""
+    events = withheld(context.recent_events)
+    if events is context.recent_events:
+        return context
+    return context.model_copy(update={"recent_events": events})
+
+
+def _without_content(event: RoomEvent) -> RoomEvent:
+    """*event* with what was said withheld: an empty text in its place, or
+    in an edit's new content, and none of the provider's original payload,
+    which holds the text. An empty text rather than a placeholder, whose
+    words a model would read as the sender's; the mark says what
+    happened."""
+    empty = TextContent(body="")
+    content = event.content
+    kept = (
+        content.model_copy(update={"new_content": empty})
+        if isinstance(content, EditContent)
+        else empty
+    )
+    source = event.source.model_copy(update={"raw_payload": {}})
+    return event.model_copy(update={"content": kept, "source": source})

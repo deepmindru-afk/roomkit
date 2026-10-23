@@ -77,6 +77,22 @@ class _SystemTransport(_Transport):
     channel_type = ChannelType.SYSTEM
 
 
+class _Parsing(_Transport):
+    """A transport that records the history it parses each message with."""
+
+    def __init__(self, channel_id: str) -> None:
+        super().__init__(channel_id)
+        self.parsed_with: list[RoomContext] = []
+
+    @property
+    def recent_events_window(self) -> int:
+        return 10
+
+    async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
+        self.parsed_with.append(context)
+        return await super().handle_inbound(message, context)
+
+
 class _Editable(_Transport):
     """A transport that applies edits and deletes natively, and records what
     it is handed."""
@@ -836,4 +852,40 @@ class TestTheTargetReadAgain:
         stored = await kit._store.get_event(original.id)
         assert stored is not None
         assert (stored.content, stored.metadata) == (TextContent(body="v1"), {"deleted": True})
+        await kit.close()
+
+
+class TestWhatAChannelIsHandedOfADeletedEvent:
+    """RFC §10.3: a soft-deleted event's content is withheld from every
+    history a channel is handed, the one it parses a message with and the
+    one a broadcast delivers with; the stored record keeps it."""
+
+    async def test_a_delete_is_delivered_with_its_target_withheld(self) -> None:
+        kit = await _setup()
+        peer = await _with_peer(kit)
+        original = await _post(kit, "v1", sender_id="alice")
+
+        await _delete(kit, original, sender_id="alice", delete_type=DeleteType.SENDER)
+
+        [delete] = _changes_handed(peer)
+        context = peer.contexts[peer.delivered.index(delete)]
+        [target] = [e for e in context.recent_events if e.id == original.id]
+        assert (target.content, target.metadata) == (TextContent(body=""), {"deleted": True})
+        stored = await kit._store.get_event(original.id)
+        assert stored is not None and stored.content == TextContent(body="v1")
+        await kit.close()
+
+    async def test_a_message_is_parsed_with_the_deleted_event_withheld(self) -> None:
+        kit = RoomKit()
+        parser = _Parsing("src")
+        kit.register_channel(parser)
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "src", group=True)
+        original = await _post(kit, "v1", sender_id="alice")
+        await _delete(kit, original, sender_id="alice", delete_type=DeleteType.SENDER)
+
+        await _post(kit, "next", sender_id="alice")
+
+        [held] = [e for e in parser.parsed_with[-1].recent_events if e.id == original.id]
+        assert held.content == TextContent(body="")
         await kit.close()

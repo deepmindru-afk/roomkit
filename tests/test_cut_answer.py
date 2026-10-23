@@ -280,6 +280,28 @@ async def test_an_answer_heard_whole_is_not_marked() -> None:
     assert all(CUT_NOTE not in str(m.content) for m in provider.calls[0].messages)
 
 
+async def test_a_deleted_answer_s_cut_quotes_nothing_of_it() -> None:
+    """A deleted answer's words stay withheld (RFC §7.5 rule 8, §10.3): its
+    cut record quotes them, so neither the context nor the speak turn
+    reads the record of a deleted answer, nor a deleted record."""
+    provider = MockAIProvider(["Sure."])
+    channel = AIChannel("ai1", provider=provider)
+    question = _event("What's the weather tomorrow?", at=0)
+    answer = _event(
+        FORECAST, channel="ai1", at=1, responds_to=question.id, metadata={"deleted": True}
+    )
+    record = _cut(question.id, at=3)
+    thanks = _event("Ok great, thanks.", at=4)
+    context = _context(question, answer, record, thanks)
+
+    await respond(channel, thanks, _AI, context)
+
+    assert all("Tomorrow" not in str(m.content) for m in provider.calls[0].messages)
+    assert _speak_turn(thanks, context, "ai1").cut is None
+    gone = record.model_copy(update={"metadata": {**record.metadata, "deleted": True}})
+    assert cut_records(_context(gone), "ai1") == {}
+
+
 def test_the_speak_turn_carries_the_cut() -> None:
     question = _event("What's the weather tomorrow?", at=0)
     answer = _event(FORECAST, channel="ai1", at=1, responds_to=question.id)

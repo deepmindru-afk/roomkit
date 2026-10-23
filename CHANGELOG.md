@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- No history a channel is handed carries a soft-deleted event's content
+  (RFC §7.5 rule 8, §10.3, RMK-929, RMK-930). A DELETE marked its target
+  `metadata.deleted`, and the agents went on reading the text in their
+  context, memory summaries, ACP catch-up, delegation and discussion
+  briefings. The event stays in every channel's history with its id,
+  index, type, source (its provider message id kept), thread, metadata and
+  `channel_data`, so the delete that follows names an event the reader
+  holds, but with an empty text in place of what was said and no
+  `source.raw_payload`; an edit of a deleted event has its new content
+  withheld alike. It holds for `visible_events()`, for the context a
+  channel parses a message with and the one a broadcast delivers with,
+  for a discussion's dispatch turn, a rebuilt tool memory, an answer's cut
+  record and the media an application keeps beside a message
+  (`attached_media`). The stored record keeps its content, and so do the
+  contexts hooks receive.
+
 - An edit or a delete has its target read and validated again once a hook
   ran under the room lock (RFC §10.1 step 9a, RMK-930). A delete committed
   during an edit's hooks (a hook's `send_event()`, which commits ahead of

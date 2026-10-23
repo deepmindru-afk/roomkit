@@ -23,10 +23,19 @@ from roomkit.models.enums import (
     ChannelCategory,
     ChannelType,
     EventStatus,
+    EventType,
+    HookExecution,
     HookTrigger,
     Visibility,
 )
-from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.event import (
+    DeleteContent,
+    EditContent,
+    EventSource,
+    MediaContent,
+    RoomEvent,
+    TextContent,
+)
 from roomkit.models.hook import HookResult
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
@@ -397,3 +406,156 @@ class TestVisibleEvents:
         assert [str(e.content.body) for e in visible_events(ctx, "reader")] == ["mine"]
         ghost = self._context(_event("ghost", "mine, refused", status=EventStatus.BLOCKED))
         assert visible_events(ghost, "ghost") == []
+
+
+def _last_prompt(provider: MockAIProvider) -> str:
+    """What the model was shown on its latest turn, flattened."""
+    return " ".join(str(m.content) for m in provider.calls[-1].messages)
+
+
+async def _say(kit: RoomKit, channel: str, sender: str, body: str) -> RoomEvent:
+    result = await kit.process_inbound(
+        InboundMessage(
+            channel_id=channel,
+            sender_id=sender,
+            content=TextContent(body=body),
+            raw_payload={"text": body},
+        )
+    )
+    assert result.event is not None
+    return result.event
+
+
+async def _change(kit: RoomKit, content: EditContent | DeleteContent) -> None:
+    kind = EventType.EDIT if isinstance(content, EditContent) else EventType.DELETE
+    result = await kit.process_inbound(
+        InboundMessage(channel_id="ws1", sender_id="u1", event_type=kind, content=content)
+    )
+    assert result.blocked is False
+
+
+class TestDeletedContentStaysDeleted:
+    """RFC §7.5 rule 8, §10.3: a soft-deleted event stays in every history a
+    channel is handed, its content withheld; its stored record keeps it."""
+
+    async def test_an_agent_s_turn_after_a_delete_does_not_read_the_deleted_text(
+        self,
+    ) -> None:
+        kit, provider = await _room()
+        said = await _say(kit, "ws1", "u1", MARKER)
+        await _change(kit, DeleteContent(target_event_id=said.id))
+
+        await _say(kit, "ws2", "u2", "hello")
+
+        assert MARKER not in _last_prompt(provider)
+        stored = await kit.store.get_event(said.id)
+        assert stored is not None and stored.content == TextContent(body=MARKER)
+        assert stored.source.raw_payload == {"text": MARKER}
+        await kit.close()
+
+    async def test_the_deleted_event_keeps_its_place_in_the_history(self) -> None:
+        kit, _provider = await _room()
+        said = await _say(kit, "ws1", "u1", MARKER)
+        await _change(kit, DeleteContent(target_event_id=said.id))
+
+        history = visible_events(await kit._build_context("r1"), "ai1")
+
+        held = next(e for e in history if e.id == said.id)
+        assert (held.index, held.content, held.source.raw_payload) == (
+            said.index,
+            TextContent(body=""),
+            {},
+        )
+        assert held.metadata.get("deleted") is True
+        timeline = await kit.store.list_events("r1")
+        assert [e.content for e in timeline if e.type == EventType.DELETE] == [
+            DeleteContent(target_event_id=said.id)
+        ]
+        await kit.close()
+
+    async def test_hooks_still_read_what_was_deleted(self) -> None:
+        """The hooks are the host's, which owns the record (RFC §10.3)."""
+        kit, _provider = await _room()
+        seen: list[RoomContext] = []
+
+        @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC)
+        async def audit(event: RoomEvent, ctx: RoomContext) -> None:
+            seen.append(ctx)
+
+        said = await _say(kit, "ws1", "u1", MARKER)
+        await _change(kit, DeleteContent(target_event_id=said.id))
+        await _say(kit, "ws2", "u2", "hello")
+
+        held = [e for e in seen[-1].recent_events if e.id == said.id]
+        assert [e.content for e in held] == [TextContent(body=MARKER)]
+        await kit.close()
+
+    async def test_an_edit_s_new_content_is_still_read(self) -> None:
+        kit, provider = await _room()
+        said = await _say(kit, "ws1", "u1", "draft")
+        await _change(
+            kit,
+            EditContent(target_event_id=said.id, new_content=TextContent(body=MARKER)),
+        )
+
+        await _say(kit, "ws2", "u2", "hello")
+
+        assert MARKER in _last_prompt(provider)
+        await kit.close()
+
+    async def test_an_edit_of_a_deleted_event_has_its_new_content_withheld(self) -> None:
+        kit, provider = await _room()
+        said = await _say(kit, "ws1", "u1", "draft")
+        await _change(
+            kit,
+            EditContent(target_event_id=said.id, new_content=TextContent(body=MARKER)),
+        )
+        await _change(kit, DeleteContent(target_event_id=said.id))
+
+        await _say(kit, "ws2", "u2", "hello")
+
+        assert MARKER not in _last_prompt(provider)
+        await kit.close()
+
+
+class TestWithheldContent:
+    def _context(self, *events: RoomEvent) -> RoomContext:
+        return RoomContext(
+            room=Room(id="r1"), bindings=[_binding("reader")], recent_events=list(events)
+        )
+
+    def test_a_delete_in_the_history_withholds_its_target_and_its_edits(self) -> None:
+        """A history read before the target was marked (or past an edit whose
+        target it no longer holds) still withholds what the delete removed."""
+        target = _event("ws1", MARKER)
+        edit = _event("ws1", "").model_copy(
+            update={
+                "type": EventType.EDIT,
+                "content": EditContent(
+                    target_event_id=target.id,
+                    new_content=MediaContent(url="https://x.test/a.png", mime_type="image/png"),
+                ),
+            }
+        )
+        delete = _event("ws1", "").model_copy(
+            update={"type": EventType.DELETE, "content": DeleteContent(target_event_id=target.id)}
+        )
+
+        held = visible_events(self._context(target, edit, delete), "reader")
+
+        assert [e.id for e in held] == [target.id, edit.id, delete.id]
+        assert held[0].content == TextContent(body="")
+        assert held[1].content == EditContent(
+            target_event_id=target.id, new_content=TextContent(body="")
+        )
+        assert held[2].content == delete.content
+
+    def test_a_refused_delete_withholds_nothing(self) -> None:
+        target = _event("ws1", MARKER)
+        delete = _event("ws1", "", status=EventStatus.BLOCKED).model_copy(
+            update={"type": EventType.DELETE, "content": DeleteContent(target_event_id=target.id)}
+        )
+
+        held = visible_events(self._context(target, delete), "reader")
+
+        assert [e.content for e in held] == [target.content]
