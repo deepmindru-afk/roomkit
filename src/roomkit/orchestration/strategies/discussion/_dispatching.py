@@ -19,7 +19,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from roomkit.channels._speaker import turn_labels
-from roomkit.core._changes import withheld
+from roomkit.core._changes import withdrawn, withheld
 from roomkit.models.enums import EventStatus, EventType, HookTrigger
 from roomkit.models.event import is_tool_call_record
 
@@ -81,7 +81,8 @@ class Dispatcher:
         if not candidates:
             return None
         event = await room.kit.store.get_event(pending.event_id)
-        if event is None or event.room_id != room.room_id:
+        # A message deleted while it waited is not handed to the policy.
+        if event is None or event.room_id != room.room_id or withdrawn(event):
             return None
         context = await room.kit._build_context(room.room_id, reads_history=True)
         asked = [a for a in pending.asked if a in candidates]

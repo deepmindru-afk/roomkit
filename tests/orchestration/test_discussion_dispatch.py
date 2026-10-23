@@ -486,6 +486,36 @@ async def test_the_recent_conversation_withholds_what_a_delete_removed() -> None
     await kit.close()
 
 
+async def test_a_message_deleted_before_its_decision_is_not_decided() -> None:
+    """A policy may hand the message to a classifier outside (RFC §10.3): one
+    deleted while it waits for its decision is not handed, nor answered."""
+    policy = _Held([["sre"], ["dev"]])
+    team = _team()
+    kit = RoomKit()
+    await _room(kit, team, dispatch=policy)
+    kit.register_channel(_SystemTransport("sys"))
+    await kit.attach_channel("r1", "sys")
+    await _say(kit, "the error rate is climbing")
+    await asyncio.wait_for(policy.deciding.wait(), 5)
+    waiting = (await _say(kit, "the code is 4417")).event
+    assert waiting is not None
+
+    await kit.send_event(
+        "r1",
+        "sys",
+        DeleteContent(target_event_id=waiting.id, delete_type=DeleteType.SYSTEM),
+        event_type=EventType.DELETE,
+    )
+    policy.release.set()
+    await _settle(kit)
+
+    assert [turn.event.id for turn in policy.turns] != [] and all(
+        turn.event.id != waiting.id for turn in policy.turns
+    )
+    assert all("4417" not in str(call.messages) for p in team.values() for call in p.calls)
+    await kit.close()
+
+
 async def test_a_done_discussion_decides_nothing() -> None:
     policy = MockDispatchPolicy([["sre"]])
     over = {"now": False}

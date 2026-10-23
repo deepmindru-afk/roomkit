@@ -21,12 +21,13 @@ from roomkit.models.enums import (
     Access,
     ChannelCategory,
     ChannelType,
+    DeleteType,
     EventType,
     HookExecution,
     HookTrigger,
     ParticipantRole,
 )
-from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.event import DeleteContent, EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.participant import Participant
 from roomkit.orchestration.strategies.discussion import (
@@ -38,6 +39,7 @@ from roomkit.orchestration.strategies.discussion import (
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
 from tests.orchestration.test_strategy_discussion import _provider, _settle, _timeline
+from tests.test_edit_delete_authorization import _SystemTransport
 from tests.test_framework import SimpleChannel
 
 
@@ -261,6 +263,41 @@ async def test_the_last_turn_given_ends_the_discussion_at_once() -> None:
     assert (refused.blocked, refused.reason) == (True, "discussion_over")
     release.set()
     await _settle(kit)
+    await kit.close()
+
+
+async def test_a_message_deleted_while_queued_gives_no_turn() -> None:
+    """RFC §10.3: a message deleted while a turn waits to answer it is no
+    longer said: the turn is not given, and no agent reads its text."""
+    release = asyncio.Event()
+
+    class _Held(MockAIProvider):
+        async def generate(self, context: Any) -> AIResponse:
+            await release.wait()
+            return await super().generate(context)
+
+    b = _provider("b here")
+    kit = RoomKit()
+    await _room(kit, {"a": _Held(ai_responses=[AIResponse(content="a")]), "b": b})
+    kit.register_channel(_SystemTransport("sys"))
+    await kit.attach_channel("r1", "sys")
+    await _say(kit, "@a go")
+    async with asyncio.timeout(5):
+        while _queue(kit).speaking != "a":
+            await asyncio.sleep(0.01)
+    queued = (await _say(kit, "@b the code is 4417")).event
+    assert _queue(kit).queue == ("b",)
+
+    await kit.send_event(
+        "r1",
+        "sys",
+        DeleteContent(target_event_id=queued.id, delete_type=DeleteType.SYSTEM),
+        event_type=EventType.DELETE,
+    )
+    release.set()
+    await _settle(kit)
+
+    assert b.calls == []
     await kit.close()
 
 

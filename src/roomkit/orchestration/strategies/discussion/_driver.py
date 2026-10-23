@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from roomkit._media import content_text
 from roomkit._text import quoted
 from roomkit.channels._discussion_turn import issue_mark, retire_mark
+from roomkit.core._changes import withdrawn
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT, chain_depth_exceeded, unanswered
 from roomkit.core.locks import _has_room_lock
 from roomkit.core.task_utils import hold_task
@@ -342,7 +343,10 @@ class TurnDriver:
         if ask is None:
             return None
         event = await room.kit.store.get_event(ask.event_id)
-        return event if event is not None and event.room_id == room.room_id else None
+        # A message deleted while the turn waited is gone too (RFC §10.3).
+        if event is None or event.room_id != room.room_id or withdrawn(event):
+            return None
+        return event
 
     def _notes(self, entry: Entry, answered: RoomEvent, context: RoomContext) -> str:
         room = self._room

@@ -104,6 +104,14 @@ def is_deleted(event: RoomEvent) -> bool:
     return event.metadata.get("deleted") is True
 
 
+def withdrawn(event: RoomEvent) -> bool:
+    """Whether *event* is no message a turn may answer or replay (RFC
+    §10.3): deleted by an accepted DELETE, or itself an edit or a delete,
+    which only step 8a may apply. Its text is not handed to an agent as the
+    event it answers."""
+    return is_deleted(event) or concerns_change(event)
+
+
 def target_refusal(target: RoomEvent | None, room_id: str) -> str | None:
     """Why *target* is no target a change of *room_id* may change (RFC §10.3
     rule 2), ``None`` when it is one: it is an event of the room, not

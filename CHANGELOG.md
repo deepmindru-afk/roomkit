@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A discussion does not answer a message deleted while it waits (RFC
+  §10.3, RMK-930): a turn queued for it, or the dispatch policy's decision
+  on it, took the message from the store as it was and handed its text to
+  the agent, or to the policy, which may pass it to a classifier outside.
+  A deleted message, and an edit or a delete row, is now gone there as a
+  message of another room is: the turn is not given, nothing is decided.
+
 - No history a channel is handed carries a soft-deleted event's content
   (RFC §7.5 rule 8, §10.3, RMK-929, RMK-930). A DELETE marked its target
   `metadata.deleted`, and the agents went on reading the text in their
