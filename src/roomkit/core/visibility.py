@@ -80,6 +80,23 @@ def with_committed_visibility(
     return event.model_copy(update={"visibility": stamped})
 
 
+def narrowed_to_target(
+    event: RoomEvent, target: RoomEvent | None, bindings: Iterable[ChannelBinding]
+) -> RoomEvent:
+    """*event*, an accepted edit or delete of *target*, with its visibility
+    narrowed to its target's (RFC §10.3 state update 4): a correction of a
+    message one channel alone saw reaches no other. A list is matched
+    against the categories of the room's *bindings*; *event* as it is with
+    no target."""
+    if target is None:
+        return event
+    categories = {binding.channel_id: binding.category for binding in bindings}
+    visibility = intersect_visibility(event.visibility, target.visibility, categories.get)
+    if visibility == event.visibility:
+        return event
+    return event.model_copy(update={"visibility": visibility})
+
+
 def normal_visibility(visibility: str) -> str:
     """*visibility* in the normal form (RFC §7.3), leniently: a value
     stored before the grammar was enforced (an unsorted list, an empty item)

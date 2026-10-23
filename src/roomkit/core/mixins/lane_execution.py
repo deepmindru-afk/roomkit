@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from roomkit.core._changes import with_target
 from roomkit.core._failure_log import needs_reporting
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT, BroadcastResult, reply_turn_entry
 from roomkit.core.exceptions import RoomNotFoundError, error_type_name
@@ -27,7 +28,7 @@ from roomkit.core.mixins.helpers import (
 )
 from roomkit.core.mixins.inbound_locked import _Blocked, _Ready, mutation_plan, target_update
 from roomkit.core.task_utils import await_unless_cut, start_named
-from roomkit.core.visibility import with_committed_visibility
+from roomkit.core.visibility import narrowed_to_target, with_committed_visibility
 from roomkit.models.delivery import DeliveryError, DeliveryResult
 from roomkit.models.enums import ChannelCategory, EventStatus, EventType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent
@@ -1053,15 +1054,17 @@ class LaneExecutionMixin(HelpersMixin):
         """The plan builder of a response its gates accepted, called on the
         committed event: its delivery set, scoped as its trigger asked, with
         its hooks' tasks and observations for after delivery, and the
-        mutation trigger of an edit or a delete (RFC §10.3). A detached
-        source has no delivery set: its plan, if any, fires the trigger."""
+        mutation trigger of an edit or a delete (RFC §10.3), delivered with
+        the target it changed. A detached source has no delivery set: its
+        plan, if any, fires the trigger."""
         binding = ready.source_binding
+        context = with_target(ready.context, mutation_hook[1] if mutation_hook else None)
         if binding is None:
-            return lambda committed: mutation_plan(committed, ready.context, mutation_hook)
+            return lambda committed: mutation_plan(committed, context, mutation_hook)
         router = self._get_router()
 
         def factory(committed: RoomEvent) -> DeliveryPlan:
-            child = router.plan(committed, binding, ready.context)
+            child = router.plan(committed, binding, context)
             child.response_visibility = response_visibility
             child.hook_tasks = list(ready.sync_result.tasks)
             child.hook_observations = list(ready.sync_result.observations)
@@ -1084,6 +1087,7 @@ class LaneExecutionMixin(HelpersMixin):
         # An edit's or a delete's target, written in the response's own
         # commit (RFC §10.3, §14.3).
         target, mutation_hook = target_update(reentry, ready.edit_delete_target)
+        reentry = narrowed_to_target(reentry, target, context.bindings)
 
         # Commit the response BEFORE delivering any events its hook
         # injected: the response causes the injection, so it takes the

@@ -84,14 +84,20 @@ class _Editable(_Transport):
     def __init__(self, channel_id: str) -> None:
         super().__init__(channel_id)
         self.delivered: list[RoomEvent] = []
+        self.contexts: list[RoomContext] = []
 
     def capabilities(self) -> ChannelCapabilities:
         return ChannelCapabilities(supports_edit=True, supports_delete=True)
+
+    @property
+    def recent_events_window(self) -> int:
+        return 10
 
     async def deliver(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:
         self.delivered.append(event)
+        self.contexts.append(context)
         return ChannelOutput.empty()
 
 
@@ -730,4 +736,75 @@ class TestEveryPassValidates:
 
         assert refused.value.reason == "not_original_author"
         assert not [e for e in await kit._store.list_events("r1") if e.type == EventType.DELETE]
+        await kit.close()
+
+
+async def _advisor_room() -> tuple[RoomKit, _Editable, _Editable, RoomEvent]:
+    """A room where alice wrote a message only the advisor's channel saw."""
+    kit = await _setup()
+    advisor, customer = _Editable("advisor"), _Editable("customer")
+    for peer in (advisor, customer):
+        kit.register_channel(peer)
+        await kit.attach_channel("r1", peer.channel_id)
+    await _post(kit, "hello", sender_id="alice")
+    aside = await kit.send_event(
+        "r1",
+        "src",
+        TextContent(body="for the advisor"),
+        participant_id="alice",
+        visibility="advisor",
+    )
+    return kit, advisor, customer, aside
+
+
+class TestWhomAChangeReaches:
+    """RFC §10.3 state updates 4 and 5: an accepted change reaches no one
+    who could not see its target, and is delivered with its target as its
+    commit left it."""
+
+    async def test_a_correction_of_an_aside_never_reaches_the_customer(self) -> None:
+        kit, advisor, customer, aside = await _advisor_room()
+
+        result = await _edit(kit, aside, sender_id="alice", edit_source="sender")
+
+        assert result.event is not None and result.event.visibility == "advisor"
+        assert [e.id for e in _changes_handed(advisor)] == [result.event.id]
+        assert _changes_handed(customer) == []
+        await kit.close()
+
+    async def test_an_injected_change_reaches_its_targets_that_saw_the_target(self) -> None:
+        kit, advisor, customer, aside = await _advisor_room()
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST)
+        async def janitor(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if not _said(event, "clean up"):
+                return HookResult.allow()
+            source = EventSource(channel_id="janitor", channel_type=ChannelType.SYSTEM)
+            delete = DeleteContent(target_event_id=aside.id, delete_type=DeleteType.SYSTEM)
+            injected = InjectedEvent(
+                event=_change("r1", source, delete), target_channel_ids=["advisor", "customer"]
+            )
+            return HookResult.allow([injected])
+
+        await _post(kit, "clean up", sender_id="alice")
+
+        [handed] = _changes_handed(advisor)
+        assert handed.visibility == "advisor"
+        assert _changes_handed(customer) == []
+        await kit.close()
+
+    async def test_a_change_is_delivered_with_its_target_as_committed(self) -> None:
+        kit = await _setup()
+        peer = await _with_peer(kit)
+        original = await _post(kit, "v1", sender_id="alice")
+
+        await _edit(kit, original, sender_id="alice", edit_source="sender")
+
+        [edit] = _changes_handed(peer)
+        context = peer.contexts[peer.delivered.index(edit)]
+        [target] = [e for e in context.recent_events if e.id == original.id]
+        assert (target.content, target.metadata) == (
+            TextContent(body="rewritten"),
+            {"edited": True},
+        )
         await kit.close()

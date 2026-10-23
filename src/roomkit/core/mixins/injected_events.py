@@ -21,12 +21,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from roomkit.core._changes import with_target
 from roomkit.core._instructions import without_fingerprint
 from roomkit.core.lanes import DeliveryCascade, DeliveryPlan
 from roomkit.core.mixins.helpers import HelpersMixin
 from roomkit.core.mixins.inbound_locked import _Blocked, _Ready, mutation_plan, target_update
 from roomkit.core.mixins.lane_execution import provisional
-from roomkit.core.visibility import intersect_visibility, visibility_allows
+from roomkit.core.visibility import intersect_visibility, narrowed_to_target, visibility_allows
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import (
     Access,
@@ -178,8 +179,7 @@ class InjectedEventsMixin(HelpersMixin):
         """Commit an injected event its hooks let through and lane its
         delivery, under the lock its pass holds; then its hooks' side
         effects and the events they injected in turn."""
-        context = ready.context
-        categories = {binding.channel_id: binding.category for binding in context.bindings}
+        categories = {binding.channel_id: binding.category for binding in ready.context.bindings}
         event = ready.event.model_copy(
             update={
                 "status": EventStatus.DELIVERED,
@@ -187,13 +187,16 @@ class InjectedEventsMixin(HelpersMixin):
                 "visibility": intersect_visibility(ready.event.visibility, scope, categories.get),
             }
         )
-        targets = await self._injected_targets(room_id, event, injected)
         # An edit's or a delete's target, written in the event's own commit
-        # (RFC §10.3, §14.3).
+        # (RFC §10.3, §14.3): the change reaches those of its targets that
+        # saw the target, with the target as changed.
         target, mutation_hook = target_update(event, ready.edit_delete_target)
+        event = narrowed_to_target(event, target, ready.context.bindings)
+        context = with_target(ready.context, target)
+        targets = await self._injected_targets(room_id, event, injected)
 
         def factory(committed: RoomEvent) -> DeliveryPlan | None:
-            return _injected_plan(committed, ready, targets, mutation_hook)
+            return _injected_plan(committed, ready, context, targets, mutation_hook)
 
         stored = await self._commit_to_lane(
             room_id, event, cascade, factory, policy_aware=False, target=target
@@ -234,15 +237,16 @@ class InjectedEventsMixin(HelpersMixin):
 def _injected_plan(
     committed: RoomEvent,
     ready: _Ready,
+    context: RoomContext,
     targets: list[ChannelBinding],
     mutation_hook: tuple[HookTrigger, RoomEvent] | None,
 ) -> DeliveryPlan | None:
-    """The delivery plan of an injected event: its transport targets, no
-    reentry, no ``AFTER_BROADCAST``, and the mutation trigger of an edit or
-    a delete (RFC §10.3); ``None`` when it is stored only and changes
-    nothing."""
+    """The delivery plan of an injected event, under *context*: its
+    transport targets, no reentry, no ``AFTER_BROADCAST``, and the mutation
+    trigger of an edit or a delete (RFC §10.3); ``None`` when it is stored
+    only and changes nothing."""
     if not targets:
-        return mutation_plan(committed, ready.context, mutation_hook, injected=True)
+        return mutation_plan(committed, context, mutation_hook, injected=True)
     # An unbound source (a hook's own, as "system") transcodes as a channel
     # of its type with default capabilities.
     source_binding = ready.source_binding or ChannelBinding(
@@ -253,7 +257,7 @@ def _injected_plan(
     return DeliveryPlan(
         event=committed,
         source_binding=source_binding,
-        context=ready.context,
+        context=context,
         targets=targets,
         injected=True,
         mutation_hook=mutation_hook,

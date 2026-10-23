@@ -24,6 +24,7 @@ from roomkit.core._changes import (
     change_of,
     concerns_change,
     target_refusal,
+    with_target,
 )
 from roomkit.core.hooks import kept_identity
 from roomkit.core.lanes import DeliveryPlan
@@ -33,7 +34,7 @@ from roomkit.core.mixins.helpers import (
     HelpersMixin,
     _source_block_reason,
 )
-from roomkit.core.visibility import with_committed_visibility
+from roomkit.core.visibility import narrowed_to_target, with_committed_visibility
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundResult
 from roomkit.models.enums import (
@@ -605,15 +606,17 @@ class InboundLockedMixin(HelpersMixin):
         (§13.6 MUST NOT), and the edit/delete target mutation must not be
         separable from the commit that records it (§10.3).
         """
-        event = ready.event
-        context = ready.context
         source_binding = ready.source_binding
         sync_result = ready.sync_result
 
         # The edit/delete target as the commit writes it, now that the event
         # is authorized and hook-allowed (RFC §10.3 — mutation must not
-        # precede the block decision), in the event's own transaction.
-        target, mutation_hook = target_update(event, ready.edit_delete_target)
+        # precede the block decision), in the event's own transaction; the
+        # change reaches those who saw its target, with the target as
+        # changed.
+        target, mutation_hook = target_update(ready.event, ready.edit_delete_target)
+        event = narrowed_to_target(ready.event, target, ready.context.bindings)
+        context = with_target(ready.context, target)
 
         # Commit point (RFC §10.1 step 12): persist DELIVERED and bump the
         # room counters atomically, PLAN the broadcast against binding state

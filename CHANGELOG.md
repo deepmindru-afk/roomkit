@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An accepted edit or delete reaches no one who could not see its target
+  (RFC §10.3 state updates 4 and 5, RMK-930): its visibility, narrowed by its
+  source binding's, is narrowed again to its target's, and an injected
+  change reaches those of its targets that could see the target. A
+  correction of a message only an advisor saw reached the customer. The
+  change is also delivered with its target as its commit left it: the
+  history handed with an edit held the target's old content, and with a
+  delete the target not yet marked deleted.
+
 - A hook's modify keeps what step 8a checked of an edit or a delete (RFC
   §9.4, §10.3, RMK-930): its target, and now its `edit_source` or
   `delete_type` and its kind of content. A hook could turn a sender's edit

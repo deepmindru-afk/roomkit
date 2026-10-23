@@ -27,6 +27,7 @@ from roomkit.models.event import (
 
 if TYPE_CHECKING:
     from roomkit.core._authors import People
+    from roomkit.models.context import RoomContext
 
 type Change = EditContent | DeleteContent
 
@@ -193,3 +194,14 @@ def applied(change: Change, target: RoomEvent) -> tuple[RoomEvent, HookTrigger]:
         return edited, HookTrigger.ON_EVENT_UPDATED
     deleted = target.model_copy(update={"metadata": {**target.metadata, "deleted": True}})
     return deleted, HookTrigger.ON_EVENT_DELETED
+
+
+def with_target(context: RoomContext, target: RoomEvent | None) -> RoomContext:
+    """*context* holding *target* as its change's commit left it, in place of
+    the copy its history read before (RFC §10.3 state update 5): a change is
+    delivered with the target it changed. A target outside the history is
+    not added."""
+    if target is None or not any(e.id == target.id for e in context.recent_events):
+        return context
+    events = [target if e.id == target.id else e for e in context.recent_events]
+    return context.model_copy(update={"recent_events": events})
