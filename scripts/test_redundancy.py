@@ -120,8 +120,8 @@ def area_of(test_file: str, root: Path = REPO_ROOT) -> str:
     for area, (_, directories) in AREAS.items():
         if any(test_file.startswith(directory + "/") for directory in directories):
             return area
-    if test_file.count("/") > 1:
-        return CORE
+    if test_file.count("/") > 1 or not (root / test_file).is_file():
+        return CORE  # a root file deleted since the run has no imports left to read
     named: Counter[str] = Counter()
     for module in IMPORT.findall((root / test_file).read_text(encoding="utf-8")):
         if module != "roomkit" and not _within(module, SHARED):
@@ -201,7 +201,11 @@ def _node_id(classname: str, name: str, root: Path) -> str:
         test_file = "/".join(parts[:cut]) + ".py"
         if (root / test_file).is_file():
             return "::".join([test_file, *parts[cut:], name])
-    return f"{classname}::{name}"
+    # A file deleted since the run: its module is the last part named like one.
+    cut = max(
+        (i + 1 for i, part in enumerate(parts) if part.startswith("test_")), default=len(parts)
+    )
+    return "::".join(["/".join(parts[:cut]) + ".py", *parts[cut:], name])
 
 
 def by_function(reached: dict[str, set[Line]]) -> dict[str, set[Line]]:

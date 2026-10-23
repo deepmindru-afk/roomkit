@@ -129,6 +129,28 @@ def test_diff_refuses_runs_of_two_libraries(tmp_path: Path) -> None:
     assert script.diff(before, after, root) == 2
 
 
+def test_a_run_names_the_tests_of_a_file_deleted_since(tmp_path: Path) -> None:
+    """Candidates are read from a run made before the pruning that deleted a file."""
+    script = _load_script()
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite><testcase classname="tests.orchestration.test_gone.TestX"'
+        ' name="test_y"/><testcase classname="tests.test_gone_too" name="test_z"/>'
+        "</testsuite></testsuites>"
+    )
+
+    outcomes = sorted(script.read_junit(junit, tmp_path))
+
+    assert outcomes == [
+        "tests/orchestration/test_gone.py::TestX::test_y",
+        "tests/test_gone_too.py::test_z",
+    ]
+    assert [script.area_of(t.split("::")[0], tmp_path) for t in outcomes] == [
+        "orchestration",
+        "core",
+    ]
+
+
 def test_candidates_are_test_functions_with_their_phases_merged(tmp_path: Path) -> None:
     script = _load_script()
     (tmp_path / "run").mkdir()
