@@ -20,7 +20,14 @@ from roomkit.models.enums import (
     HookTrigger,
     Visibility,
 )
-from roomkit.models.event import DeleteContent, EditContent, EventContent, RoomEvent
+from roomkit.models.event import (
+    MAX_COMPOSITE_DEPTH,
+    DeleteContent,
+    EditContent,
+    EventContent,
+    RoomEvent,
+    holds_too_deep,
+)
 from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.task import Observation, Task
 
@@ -314,6 +321,15 @@ def _usable_payload(current: Any, payload: Any) -> bool:
     """Whether a MODIFY's *payload* can replace *current* (RFC §9.3): one is
     carried, of the type the trigger passed in."""
     return payload is not None and isinstance(payload, type(current))
+
+
+def _holds_too_deep(hook_result: HookResult) -> bool:
+    """Whether *hook_result* carries content past five composite levels, in
+    its replacement or in an event it injects (RFC §5.3)."""
+    payload = hook_result.event
+    if isinstance(payload, RoomEvent) and holds_too_deep(payload.content):
+        return True
+    return any(holds_too_deep(injected.event.content) for injected in hook_result.injected_events)
 
 
 def _committed_injections(
@@ -954,6 +970,32 @@ class HookEngine:
             result.event = fold(latest, hook_result.metadata or {})
         return False
 
+    def _refuse_too_deep(
+        self,
+        result: SyncPipelineResult,
+        hook: HookRegistration,
+        trigger: HookTrigger,
+        room_id: str,
+        span_id: str | None,
+    ) -> bool:
+        """Take *hook*'s result holding a sixth composite level as the
+        unusable result it is (RFC §5.3, §9.3): such content is refused where
+        it is built, so nothing of the result is applied or collected, and
+        its error is reported. Returns whether the pipeline was closed."""
+        logger.error(
+            "Sync hook %s returned content nested over %d composite levels",
+            hook.name,
+            MAX_COMPOSITE_DEPTH,
+            extra={"room_id": room_id},
+        )
+        error = f"content nested over {MAX_COMPOSITE_DEPTH} composite levels"
+        result.hook_errors.append({"hook": hook.name, "error": error})
+        if span_id is not None and self._telemetry is not None:
+            self._telemetry.end_span(span_id, status="error", error_message=error)
+        return self._close(
+            result, hook, trigger, "hook_invalid_result", f"hook {hook.name} returned {error}"
+        )
+
     def _fails_closed(self, hook: HookRegistration, trigger: HookTrigger) -> bool:
         """Whether an unusable outcome of *hook* blocks (RFC §9.3)."""
         return hook.fail_closed or trigger in self.FAIL_CLOSED_TRIGGERS
@@ -1144,6 +1186,11 @@ class HookEngine:
                     f"hook {hook.name} returned {type(hook_result).__name__} "
                     "instead of HookResult",
                 ):
+                    return result
+                continue
+
+            if _holds_too_deep(hook_result):
+                if self._refuse_too_deep(result, hook, trigger, room_id, span_id):
                     return result
                 continue
 

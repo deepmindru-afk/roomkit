@@ -111,7 +111,7 @@ from roomkit.models.enums import (
     HookTrigger,
     Visibility,
 )
-from roomkit.models.event import EventSource, RoomEvent
+from roomkit.models.event import EventSource, RoomEvent, refuse_too_deep
 from roomkit.models.store_filter import EventFilter, PersistencePolicy
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import VerificationPolicy
@@ -1178,6 +1178,8 @@ class RoomKit(
         from roomkit.telemetry.base import SpanKind
         from roomkit.telemetry.context import get_current_span, reset_span, set_current_span
 
+        # A sixth composite level is refused before anything is read (RFC §5.3).
+        refuse_too_deep(content)
         # The visibility grammar (RFC §7.3): an invalid scope is refused.
         visibility = parse_visibility(visibility)
         if response_visibility is not None:

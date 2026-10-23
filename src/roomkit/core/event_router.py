@@ -50,6 +50,7 @@ from roomkit.models.event import (
     VideoContent,
     is_interruption_marker,
     is_tool_call_record,
+    refuse_too_deep,
     with_pipeline_id,
 )
 from roomkit.models.response_metadata import TurnEntries, turn_summary
@@ -853,7 +854,24 @@ class EventRouter:
         context: RoomContext,
     ) -> ChannelOutput:
         """*channel*'s ``on_event``, an intelligence channel's as a turn
-        through the turn backend (RFC §10.6.1)."""
+        through the turn backend (RFC §10.6.1).
+
+        Raises:
+            ValueError: a response it returned holds more than five composite
+                levels (RFC §5.3): the reaction failed, nothing of it kept.
+        """
+        output = await self._reaction(channel, event, binding, context)
+        for response in output.response_events:
+            refuse_too_deep(response.content)
+        return output
+
+    async def _reaction(
+        self,
+        channel: Channel,
+        event: RoomEvent,
+        binding: ChannelBinding,
+        context: RoomContext,
+    ) -> ChannelOutput:
         if binding.category != ChannelCategory.INTELLIGENCE:
             return await channel.on_event(event, binding, context)
         room_id = context.room.id if context.room else event.room_id

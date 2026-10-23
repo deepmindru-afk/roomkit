@@ -129,25 +129,42 @@ class CompositeContent(BaseModel):
     def _validate_parts(self) -> CompositeContent:
         if not self.parts:
             raise ValueError("CompositeContent must have at least one part")
-        depth = self._nesting_depth(self)
-        if depth > 5:
-            raise ValueError(f"CompositeContent nesting depth {depth} exceeds maximum of 5")
+        refuse_too_deep(self)
         return self
 
-    @staticmethod
-    def _nesting_depth(content: object, current: int = 1) -> int:
-        """Recursively compute nesting depth of CompositeContent."""
-        if isinstance(content, EditContent):
-            # An edit's new content stands in the edit's place (RFC §5.3).
-            return CompositeContent._nesting_depth(content.new_content, current)
-        if not isinstance(content, CompositeContent):
-            return 0
-        max_child = 0
-        for part in content.parts:
-            child_depth = CompositeContent._nesting_depth(part, current + 1)
-            if child_depth > max_child:
-                max_child = child_depth
-        return 1 + max_child
+
+MAX_COMPOSITE_DEPTH = 5
+"""The composite levels an event's content may hold (RFC §5.3)."""
+
+
+def holds_too_deep(content: object, level: int = 0) -> bool:
+    """Whether *content*, standing at composite *level*, holds a level past
+    :data:`MAX_COMPOSITE_DEPTH` (RFC §5.3): the outermost composite is level
+    1, a composite among the parts of a level-n one is level n + 1, and a
+    part that is not a composite adds none. An edit's new content stands in
+    the edit's place. The walk stops at the first level past the limit."""
+    if isinstance(content, EditContent):
+        return holds_too_deep(content.new_content, level)
+    if not isinstance(content, CompositeContent):
+        return False
+    if level >= MAX_COMPOSITE_DEPTH:
+        return True
+    return any(holds_too_deep(part, level + 1) for part in content.parts)
+
+
+def refuse_too_deep(content: object) -> None:
+    """Refuse *content* holding a sixth composite level where it is built
+    (RFC §5.3): ``model_copy(update=...)`` skips the models' validators, so
+    each boundary where content enters the kit asks again.
+
+    Raises:
+        ValueError: *content* holds more than :data:`MAX_COMPOSITE_DEPTH`
+            composite levels.
+    """
+    if holds_too_deep(content):
+        raise ValueError(
+            f"CompositeContent nesting depth exceeds the maximum of {MAX_COMPOSITE_DEPTH} levels"
+        )
 
 
 class SystemContent(BaseModel):

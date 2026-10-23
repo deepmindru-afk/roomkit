@@ -42,7 +42,7 @@ from roomkit.models.enums import (
     HookTrigger,
     Visibility,
 )
-from roomkit.models.event import with_pipeline_id
+from roomkit.models.event import refuse_too_deep, with_pipeline_id
 from roomkit.models.response_metadata import merge_caller_record
 
 if TYPE_CHECKING:
@@ -203,6 +203,10 @@ class InboundMixin(HelpersMixin):
         """
         from roomkit.telemetry.base import SpanKind
         from roomkit.telemetry.context import get_current_span, reset_span, set_current_span
+
+        # A sixth composite level is refused where it is built (RFC §5.3):
+        # the message fails before anything is read or written.
+        refuse_too_deep(message.content)
 
         # Inbound rate limiting — drop excess messages before any processing
         if (
@@ -487,6 +491,8 @@ class InboundMixin(HelpersMixin):
             else context.model_copy(update={"recent_events": []})
         )
         event = await channel.handle_inbound(message, parse_context)
+        # The event its channel built is refused as the message is (RFC §5.3).
+        refuse_too_deep(event.content)
 
         event = _apply_message_fields(event, message)
         event = with_pipeline_id(event)

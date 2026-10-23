@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A sixth composite level is refused where it is built, at every boundary
+  (RFC §5.3, RMK-930). The `CompositeContent` validator counted the levels,
+  but `model_copy(update=...)` skips validators, so a hook's modify, a
+  hook's injected event, a channel's parse or a channel's response could
+  assemble a sixth level and have it committed. Now `process_inbound()`
+  raises `ValueError` for a message holding one before anything is read
+  (no room is routed or created) and for the event its channel parses,
+  nothing stored; a hook result carrying one, as its replacement or as an
+  injected event, is an unusable result (`hook_error`, the hook's
+  `fail_closed` applies), nothing of it applied; a channel's response
+  holding one fails its reaction, reported as that target's failed
+  delivery; `send_event()`, `commit_event()` and `update_event()` raise
+  `ValueError` before anything is read. An edit's new content counts its
+  levels in the edit's place. The new `roomkit.models.event.holds_too_deep()`
+  and `refuse_too_deep()` are the one count, the validator's included.
+
 - The lookups this release adds read through indexes (RFC §10.4, §22.1,
   RMK-930). A proactive delivery's key, looked up within its room whatever
   channel committed it, read every keyed event of the room: Postgres and

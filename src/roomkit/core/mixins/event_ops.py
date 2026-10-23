@@ -8,7 +8,7 @@ from roomkit.core._publication_keys import refuse_reserved
 from roomkit.core.exceptions import RoomClosedError
 from roomkit.core.mixins.helpers import HelpersMixin, _refuses_writes
 from roomkit.models.enums import HookTrigger
-from roomkit.models.event import EventContent, EventSource, RoomEvent
+from roomkit.models.event import EventContent, EventSource, RoomEvent, refuse_too_deep
 
 if TYPE_CHECKING:
     from roomkit.core.hooks import HookEngine
@@ -73,9 +73,10 @@ class EventOpsMixin(HelpersMixin):
         re-enters, scoped to *organization_id* (RFC §17.2).
 
         Raises:
-            ValueError: *event* names another room, or carries an
+            ValueError: *event* names another room, carries an
                 ``idempotency_key`` in the framework's publication namespace
-                (``roomkit:publication:``); nothing is read or written.
+                (``roomkit:publication:``), or holds more than five composite
+                levels (RFC §5.3); nothing is read or written.
             RoomNotFoundError: the room is missing, or another organization's.
             RoomClosedError: the room's status refuses new events (RFC §5.1);
                 nothing is written.
@@ -87,6 +88,8 @@ class EventOpsMixin(HelpersMixin):
         # A publication's key is the delivery path's alone (RFC §22.1): a
         # record carrying one would stand in for the publication.
         refuse_reserved(event.idempotency_key)
+        # No event holding a sixth composite level is committed (RFC §5.3).
+        refuse_too_deep(event.content)
         async with self._lock_manager.locked(room_id):
             room = await self.get_room(room_id, organization_id=organization_id)
             room = await self._room_timers.apply_due(room)
@@ -118,7 +121,12 @@ class EventOpsMixin(HelpersMixin):
         hook fires). An update that changes nothing, no field or the values
         the event holds, writes nothing, fires nothing and returns the event
         as stored (RFC §10.3).
+
+        Raises:
+            ValueError: *content* holds more than five composite levels (RFC
+                §5.3); nothing is read or written.
         """
+        refuse_too_deep(content)
         async with self._lock_manager.locked(room_id):
             # At any status, once the room's due timer transitions are
             # applied (RFC §10.3, §5.1).
