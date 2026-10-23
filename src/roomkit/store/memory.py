@@ -395,6 +395,8 @@ class InMemoryStore(ConversationStore):
         channel_id: str,
         room_filter: RoomFilter | None = None,
         limit: int = 2,
+        *,
+        group: bool | None = None,
     ) -> list[str]:
         # Ordered by the room's creation time, oldest first, with the id as
         # tie-breaker: dict insertion order would be an accident of how the
@@ -403,7 +405,8 @@ class InMemoryStore(ConversationStore):
         room_filter = room_filter or RoomFilter()
         matched: list[tuple[float, str]] = []
         for room_id, bindings in self._bindings.items():
-            if channel_id not in bindings:
+            binding = bindings.get(channel_id)
+            if binding is None or (group is not None and binding.group is not group):
                 continue
             room = self._rooms.get(room_id)
             if room is None or not room_filter.admits(room):

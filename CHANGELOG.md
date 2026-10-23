@@ -1325,6 +1325,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `channel_of=kit.get_channel` (or none, reading no recipient); a custom
   store's `find_room_id_by_binding()` takes the keyword.
 
+- **BREAKING — a paused conversation keeps its sender's messages** (RFC
+  §10.4, §5.1, RMK-930). The default router read ACTIVE rooms only, so a
+  room its timer paused for inactivity lost its correspondent: their next
+  message opened a room of its own, and the paused one closed later with
+  the conversation split in two. Step 1 now finds the newest ACTIVE or
+  PAUSED room whose binding of the channel names the sender, else where a
+  participant who is the sender was reached through it, the newest room
+  winning whatever its status; the message's delivered commit resumes it.
+  Step 3 reads the ACTIVE rooms and the PAUSED rooms whose binding of the
+  channel is `group`, "exactly one" counting both; any other PAUSED room
+  is no one's to be admitted into, and CLOSED and ARCHIVED rooms are never
+  read. A delivery status that names no room finds the ACTIVE or PAUSED
+  room whose binding names its recipient, else the one ACTIVE room as
+  before, and resumes nothing. `find_room_ids_by_channel()` takes
+  `group=` (`True`, `False`, or `None` for both). Migrate: a custom store
+  that overrides `find_room_ids_by_channel()` takes the keyword; a host
+  that relied on a paused room's correspondent getting a fresh room closes
+  the room instead.
+
 ### Removed
 
 - **BREAKING — `roomkit.core.visibility.effective_visibility`** (RMK-902). An

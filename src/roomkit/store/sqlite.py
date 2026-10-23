@@ -1171,15 +1171,22 @@ class SQLiteStore(ConversationStore):
         channel_id: str,
         room_filter: RoomFilter | None = None,
         limit: int = 2,
+        *,
+        group: bool | None = None,
     ) -> list[str]:
-        return await self._run(self._x_find_room_ids_by_channel, channel_id, room_filter, limit)
+        return await self._run(
+            self._x_find_room_ids_by_channel, channel_id, room_filter, limit, group
+        )
 
     def _x_find_room_ids_by_channel(
-        self, channel_id: str, room_filter: RoomFilter | None, limit: int
+        self, channel_id: str, room_filter: RoomFilter | None, limit: int, group: bool | None
     ) -> list[str]:
         where = ["b.channel_id = ?"]
         params: list[Any] = [channel_id]
         _filter_rooms(where, params, room_filter)
+        if group is not None:
+            where.append("COALESCE(json_extract(b.data, '$.group'), 0) = ?")
+            params.append(int(group))
         params.append(limit)
         rows = self._db().execute(
             f"""SELECT r.id FROM bindings b JOIN rooms r ON r.id = b.room_id

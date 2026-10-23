@@ -684,6 +684,98 @@ class TestEitherNameFindsTheNewestRoom:
         assert await shop.room_of(BOB) != "stored"
 
 
+class TestAPausedConversation:
+    """RFC §10.4: a PAUSED room is the sender's conversation as an ACTIVE one
+    is (step 1); step 3 reads the ACTIVE rooms and the PAUSED rooms whose
+    binding of the channel is ``group``; the next delivered message resumes
+    the room (§5.1)."""
+
+    @pytest.mark.parametrize("named_by", ["binding", "member"])
+    async def test_the_senders_paused_room_takes_their_message_and_resumes(
+        self, store: ConversationStore, named_by: str
+    ) -> None:
+        shop = _Shop(store)
+        await shop.open_room_for(CAROL)
+        if named_by == "binding":
+            room = await shop.open_room_for(ALICE)
+        else:
+            room = await shop.open_free_room("alices")
+            await shop.kit.add_member(room, "sms", ALICE)
+        await _set_status(store, room, RoomStatus.PAUSED)
+
+        assert await shop.room_of(ALICE) == room
+        stored = await store.get_room(room)
+        assert stored is not None and stored.status == RoomStatus.ACTIVE
+
+    async def test_the_newest_room_wins_whatever_its_status(
+        self, store: ConversationStore
+    ) -> None:
+        shop = _Shop(store)
+        await shop.kit.create_room(room_id="older")
+        await shop.kit.attach_channel("older", "sms", participant_id=ALICE)
+        await shop.kit.create_room(room_id="newer")
+        await shop.kit.attach_channel("newer", "sms", participant_id=ALICE)
+        await _set_status(store, "newer", RoomStatus.PAUSED)
+
+        assert await shop.room_of(ALICE) == "newer"
+
+    async def test_a_paused_group_room_is_the_one_room_step_three_reads(
+        self, store: ConversationStore
+    ) -> None:
+        shop = _Shop(store)
+        await shop.kit.create_room(room_id="team")
+        await shop.kit.attach_channel("team", "sms", group=True)
+        await _set_status(store, "team", RoomStatus.PAUSED)
+
+        assert await shop.room_of(BOB) == "team"
+
+    @pytest.mark.parametrize(("group", "admitted"), [(False, True), (True, False)])
+    async def test_a_paused_room_counts_among_the_channels_rooms_when_group_only(
+        self, store: ConversationStore, group: bool, admitted: bool
+    ) -> None:
+        """A PAUSED room that is not ``group`` is no one's to be admitted
+        into and does not count; a PAUSED group room does, beside the one
+        ACTIVE room, and two rooms leave step 3 no answer."""
+        shop = _Shop(store)
+        free = await shop.open_free_room()
+        await shop.kit.create_room(room_id="paused")
+        await shop.kit.attach_channel("paused", "sms", group=group)
+        await _set_status(store, "paused", RoomStatus.PAUSED)
+
+        landed = await shop.room_of(BOB)
+
+        assert (landed == free) is admitted
+        assert landed != "paused"
+
+    async def test_a_delivery_status_reaches_the_paused_room_of_its_recipient(
+        self, store: ConversationStore
+    ) -> None:
+        """A status is no activity: it resumes nothing (RFC §5.1)."""
+        shop = _Shop(store)
+        await shop.open_room_for(CAROL)
+        room = await shop.open_room_for(ALICE)
+        await _set_status(store, room, RoomStatus.PAUSED)
+        seen: list[str] = []
+
+        @shop.kit.hook(HookTrigger.ON_DELIVERY_STATUS)
+        async def record(status: Any, ctx: Any) -> None:
+            seen.append(ctx.room.id)
+
+        await shop.kit.process_delivery_status(
+            DeliveryStatus(
+                provider="mock",
+                message_id="m",
+                status="delivered",
+                channel_id="sms",
+                recipient=ALICE,
+            )
+        )
+
+        assert seen == [room]
+        stored = await store.get_room(room)
+        assert stored is not None and stored.status == RoomStatus.PAUSED
+
+
 class TestTheFrameworksOwnSender:
     async def test_a_room_it_opens_names_no_correspondent(self, store: ConversationStore) -> None:
         shop = _Shop(store)

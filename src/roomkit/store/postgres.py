@@ -1034,6 +1034,8 @@ class PostgresStore(ConversationStore):
         channel_id: str,
         room_filter: RoomFilter | None = None,
         limit: int = 2,
+        *,
+        group: bool | None = None,
     ) -> list[str]:
         # ORDER BY is not decoration here: without it the planner picks the row
         # and the same stored state can route two different ways, in the same
@@ -1045,6 +1047,9 @@ class PostgresStore(ConversationStore):
             " WHERE b.channel_id = $1"
         )
         query += _room_filter(params, room_filter)
+        if group is not None:
+            params.append(group)
+            query += f" AND b.is_group = ${len(params)}"
         params.append(limit)
         query += f' ORDER BY r.created_at, b.room_id COLLATE "C" LIMIT ${len(params)}'
         async with self._acquire() as conn:

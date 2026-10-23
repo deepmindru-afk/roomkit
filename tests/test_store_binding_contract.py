@@ -455,6 +455,53 @@ async def test_a_binding_naming_no_one_names_its_recipient(
             await store.delete_room(room_id)
 
 
+@pytest.mark.parametrize("fallback", [False, True])
+async def test_the_rooms_of_a_channel_by_status_and_group(
+    contract_store: ConversationStore, fallback: bool
+) -> None:
+    """RFC §10.4 step 3 reads the ACTIVE rooms and the PAUSED rooms whose
+    binding of the channel is ``group``: every store keeps a room by its
+    status and by whether its binding of the channel is a group."""
+    store = _StoreWithoutTheRoutingLookups() if fallback else contract_store
+    if fallback and not isinstance(contract_store, InMemoryStore):
+        pytest.skip("the fallback runs over the in-memory store")
+    channel, tag = f"sms-{uuid4().hex}", uuid4().hex
+    t0 = datetime(2026, 10, 8, 12, tzinfo=UTC)
+    rooms = [
+        (f"a-{tag}", RoomStatus.ACTIVE, False),
+        (f"b-{tag}", RoomStatus.PAUSED, True),
+        (f"c-{tag}", RoomStatus.PAUSED, False),
+        (f"d-{tag}", RoomStatus.ACTIVE, True),
+    ]
+    for offset, (room_id, status, group) in enumerate(rooms):
+        await store.create_room(
+            Room(id=room_id, status=status, created_at=t0 + timedelta(seconds=offset))
+        )
+        await store.add_binding(
+            ChannelBinding(
+                room_id=room_id, channel_id=channel, channel_type=ChannelType.SMS, group=group
+            )
+        )
+    paused = RoomFilter(statuses=[RoomStatus.PAUSED])
+    try:
+        assert await store.find_room_ids_by_channel(channel, paused, 10, group=True) == [
+            f"b-{tag}"
+        ]
+        assert await store.find_room_ids_by_channel(channel, paused, 10, group=False) == [
+            f"c-{tag}"
+        ]
+        assert await store.find_room_ids_by_channel(channel, None, 10, group=True) == [
+            f"b-{tag}",
+            f"d-{tag}",
+        ]
+        assert await store.find_room_ids_by_channel(
+            channel, RoomFilter(statuses=[RoomStatus.ACTIVE, RoomStatus.PAUSED]), 3
+        ) == [f"a-{tag}", f"b-{tag}", f"c-{tag}"]
+    finally:
+        for room_id, *_ in rooms:
+            await store.delete_room(room_id)
+
+
 async def test_step_three_gives_the_same_answer_in_every_store(
     contract_store: ConversationStore,
 ) -> None:

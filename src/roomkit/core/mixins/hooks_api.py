@@ -336,12 +336,14 @@ class HooksApiMixin(HelpersMixin):
     async def _room_of_status(self, status: DeliveryStatus, channel_id: str) -> str | None:
         """The room a delivery status belongs to, or ``None`` (RFC §10.4).
 
-        The room whose binding of the channel names the status's recipient,
-        else the one active room bound to the channel, unless its binding
-        names another correspondent. Never one of several:
-        on a number shared by many correspondents, the oldest room is
-        another customer's, and the status (its recipient's number among it)
-        would be dispatched with that room's context.
+        The newest ACTIVE or PAUSED room whose binding of the channel names
+        the status's recipient, as step 1 finds a sender's, else the one
+        ACTIVE room bound to the channel, unless its binding names another
+        correspondent. Never one of several: on a number shared by many
+        correspondents, the oldest room is another customer's, and the
+        status (its recipient's number among it) would be dispatched with
+        that room's context. A status is no activity, and resumes no room
+        (§5.1).
         """
         active = RoomFilter(statuses=[RoomStatus.ACTIVE])
         channel = self._channels.get(channel_id)
@@ -356,7 +358,7 @@ class HooksApiMixin(HelpersMixin):
                 channel_id,
                 recipient,
                 None,
-                active,
+                RoomFilter(statuses=[RoomStatus.ACTIVE, RoomStatus.PAUSED]),
                 recipient_key=channel.recipient_key if channel is not None else None,
             )
             if room_id is not None:

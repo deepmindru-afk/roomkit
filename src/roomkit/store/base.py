@@ -459,9 +459,13 @@ class ConversationStore(ABC):
         channel_id: str,
         room_filter: RoomFilter | None = None,
         limit: int = 2,
+        *,
+        group: bool | None = None,
     ) -> list[str]:
         """Room IDs bound to *channel_id* among the rooms *room_filter* reads,
-        oldest first: by creation time, the room id breaking a tie.
+        oldest first: by creation time, the room id breaking a tie. *group*
+        keeps the rooms whose binding of the channel is declared ``group``
+        (``True``) or is not (``False``); ``None`` keeps both.
 
         Routing must be able to tell "exactly one room" from "several", because
         picking one of several delivers a message into a conversation it does
@@ -475,22 +479,23 @@ class ConversationStore(ABC):
         stored state has to give the same answer whatever the backend.
 
         This is not abstract, so a store that does not override it keeps
-        working: with a filter naming one status at most and no organization
-        it falls back to the single lookup and therefore cannot report
-        ambiguity, otherwise to a scan of the rooms the filter reads.
+        working: with a filter naming one status at most, no organization and
+        no *group* it falls back to the single lookup and therefore cannot
+        report ambiguity, otherwise to a scan of the rooms the filter reads.
         Override it.
         """
         room_filter = room_filter or RoomFilter()
         statuses = room_filter.statuses
-        if room_filter.organization_id is None and (statuses is None or len(statuses) == 1):
+        single = statuses is None or len(statuses) == 1
+        if room_filter.organization_id is None and group is None and single:
             status = None if statuses is None else statuses[0].value
             room_id = await self.find_room_id_by_channel(channel_id, status=status)
             return [room_id] if room_id is not None else []
-        matched = [
-            _recency(room)
-            for room in await self._rooms_read_by(room_filter)
-            if await self.get_binding(room.id, channel_id) is not None
-        ]
+        matched: list[tuple[float, str]] = []
+        for room in await self._rooms_read_by(room_filter):
+            binding = await self.get_binding(room.id, channel_id)
+            if binding is not None and (group is None or binding.group is group):
+                matched.append(_recency(room))
         return [room_id for _created_at, room_id in sorted(matched)[:limit]]
 
     async def find_room_id_by_binding(

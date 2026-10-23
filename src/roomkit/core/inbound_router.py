@@ -30,6 +30,10 @@ _HISTORY_PAGE = 200
 # a routed message's.
 _REFUSING = frozenset({RoomStatus.CLOSED, RoomStatus.ARCHIVED})
 
+# The statuses of the rooms step 1 reads (RFC §10.4): a conversation paused
+# for inactivity is the sender's as an active one is.
+_OPEN = (RoomStatus.ACTIVE, RoomStatus.PAUSED)
+
 
 class InboundRoomRouter(ABC):
     """Route an inbound message to a room (or ``None`` for auto-create)."""
@@ -117,17 +121,14 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
                 return room_id
 
         # Step 3: a channel dedicated to one conversation. Only when the
-        # channel is bound to exactly one active room — a channel shared across
-        # rooms (delegation, a room re-created after its predecessor closed, a
-        # number shared by many correspondents) makes this ambiguous, and the
-        # framework creating a fresh room is the safe answer — and only when
-        # that room is open to this sender: on a shared number, the one room
-        # bound to it is the first correspondent's conversation.
-        candidates = await self._store.find_room_ids_by_channel(
-            channel_id,
-            RoomFilter(statuses=[RoomStatus.ACTIVE], organization_id=organization_id),
-            limit=2,
-        )
+        # channel is bound to exactly one room step 3 reads — a channel shared
+        # across rooms (delegation, a room re-created after its predecessor
+        # closed, a number shared by many correspondents) makes this
+        # ambiguous, and the framework creating a fresh room is the safe
+        # answer — and only when that room is open to this sender: on a
+        # shared number, the one room bound to it is the first
+        # correspondent's conversation.
+        candidates = await self._step_three_rooms(channel_id, organization_id)
         if len(candidates) == 1:
             if await self._admits(candidates[0], channel_id, participant_id or None, own):
                 return candidates[0]
@@ -137,14 +138,35 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
             # several rooms bound to the channel is the ordinary state, and
             # every new correspondent passes through here.
             logger.debug(
-                "Channel %s is bound to %d active rooms — refusing to guess which one "
-                "this message belongs to. Pass room_id explicitly, or install a custom "
-                "InboundRoomRouter.",
+                "Channel %s is bound to %d active or paused group rooms — refusing to guess "
+                "which one this message belongs to. Pass room_id explicitly, or install a "
+                "custom InboundRoomRouter.",
                 channel_id,
                 len(candidates),
             )
 
         return None
+
+    async def _step_three_rooms(self, channel_id: str, organization_id: str | None) -> list[str]:
+        """Up to two rooms bound to *channel_id* that step 3 reads (RFC
+        §10.4): the ACTIVE rooms, and the PAUSED rooms whose binding of the
+        channel is ``group``, a group's conversation being the channel's.
+        Any other PAUSED room is no one's to be admitted into, and does not
+        count."""
+        active = await self._store.find_room_ids_by_channel(
+            channel_id,
+            RoomFilter(statuses=[RoomStatus.ACTIVE], organization_id=organization_id),
+            limit=2,
+        )
+        if len(active) > 1:
+            return active
+        paused_groups = await self._store.find_room_ids_by_channel(
+            channel_id,
+            RoomFilter(statuses=[RoomStatus.PAUSED], organization_id=organization_id),
+            limit=2,
+            group=True,
+        )
+        return [*active, *paused_groups][:2]
 
     async def _senders_room(
         self,
@@ -153,9 +175,11 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         identity_id: str | None,
         organization_id: str | None,
     ) -> str | None:
-        """The newest active room of *organization_id* that is *sender*'s own
-        (RFC §10.4 step 1); *identity_id* is the identity the framework
-        resolved the address to.
+        """The newest ACTIVE or PAUSED room of *organization_id* that is
+        *sender*'s own (RFC §10.4 step 1), whatever its status: a room its
+        timer paused for inactivity is the sender's conversation as an
+        ACTIVE one is, and the message's delivered commit resumes it (§5.1).
+        *identity_id* is the identity the framework resolved the address to.
 
         First the room whose binding of this very channel names the sender,
         as its correspondent or, naming none, as its recipient (RFC §5.7): a
@@ -171,7 +195,7 @@ class DefaultInboundRoomRouter(InboundRoomRouter):
         room either name finds wins: an older room found by the address does
         not hide a newer one found by the identity.
         """
-        step_one = RoomFilter(statuses=[RoomStatus.ACTIVE], organization_id=organization_id)
+        step_one = RoomFilter(statuses=list(_OPEN), organization_id=organization_id)
         channel = self._channel_of(channel_id) if self._channel_of is not None else None
         room_id = await self._store.find_room_id_by_binding(
             channel_id,
