@@ -27,6 +27,7 @@ from roomkit.core._changes import CHANGE_REFUSALS
 from roomkit.core._instructions import names_an_agent, without_fingerprint
 from roomkit.core._kit_turn_hooks import KitTurnHooks
 from roomkit.core._kit_wiring import KitEvents, KitWiringEnv
+from roomkit.core._publication_keys import is_reserved
 from roomkit.core._queued_injections import QueuedInjections
 from roomkit.core._timer_transitions import TimerTransitions
 from roomkit.core._turn_host import KitHost
@@ -1200,6 +1201,11 @@ class RoomKit(
                 metadata[STANDALONE] = True
         elif standalone:
             raise ValueError("standalone applies to an INSTRUCTION only")
+        if is_reserved(idempotency_key):
+            raise ValueError(
+                "The idempotency_key namespace roomkit:publication: is the framework's: "
+                "it keys deliver()'s publications (RFC §22.1)"
+            )
 
         await self._ensure_status_bus_subscribed()
         await self.get_room(room_id, organization_id=organization_id)

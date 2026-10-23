@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 from roomkit.channels.base import hosts_realtime_model
+from roomkit.core._publication_keys import publication_key, publishing
 from roomkit.core._voice_delivery import active_sessions as _active_sessions
 from roomkit.core._voice_delivery import deliver_to_realtime_voice, replay_explicit_session
 from roomkit.core.exceptions import error_type_name
@@ -71,9 +72,10 @@ async def replay_publication(ctx: DeliveryContext) -> DeliveryOutcome | None:
         return None
     assert ctx.idempotency_key is not None
     store = ctx.kit.store
-    original = await store.get_event_by_idempotency_key(
-        ctx.room_id, ctx.idempotency_key, channel_id=None
-    )
+    # Its own namespace: a sender's message keyed alike is not this
+    # publication, and never stands in for it.
+    stored = publication_key(ctx.idempotency_key)
+    original = await store.get_event_by_idempotency_key(ctx.room_id, stored, channel_id=None)
     if original is not None:
         blocked = original.status == EventStatus.BLOCKED
         replay = InboundResult(
@@ -83,7 +85,7 @@ async def replay_publication(ctx: DeliveryContext) -> DeliveryOutcome | None:
             reason=original.blocked_by if blocked else None,
         )
         return _text_outcome(replay)
-    if await store.check_idempotency(ctx.room_id, ctx.idempotency_key, channel_id=None):
+    if await store.check_idempotency(ctx.room_id, stored, channel_id=None):
         return _text_outcome(InboundResult(blocked=True, reason="duplicate", duplicate=True))
     return None
 
@@ -176,9 +178,11 @@ async def deliver_to_channel(ctx: DeliveryContext, channel_id: str) -> DeliveryO
             return unavailable("channel_unavailable", [channel_id])
         result: InboundResult | None = None
         if not _rides_the_model(ctx, channel):
-            result = await ctx.kit.process_inbound(
-                _publication(ctx, channel_id), room_id=ctx.room_id, defer_delivery=True
-            )
+            message = _publication(ctx, channel_id)
+            with publishing(message.idempotency_key):
+                result = await ctx.kit.process_inbound(
+                    message, room_id=ctx.room_id, defer_delivery=True
+                )
     if result is None:
         # An injection, not a publication: its identity is the voice
         # reservation's, and the provider is not called under the room lock.
@@ -196,7 +200,8 @@ async def deliver_to_channel(ctx: DeliveryContext, channel_id: str) -> DeliveryO
 
 def _publication(ctx: DeliveryContext, channel_id: str) -> InboundMessage:
     """The message that publishes *ctx* into its room through *channel_id*,
-    from the framework's own sender."""
+    from the framework's own sender, its key in the publication namespace."""
+    key = ctx.idempotency_key
     return InboundMessage(
         channel_id=channel_id,
         sender_id=SYSTEM_SENDER_ID,
@@ -204,7 +209,7 @@ def _publication(ctx: DeliveryContext, channel_id: str) -> InboundMessage:
         content=TextContent(body=ctx.content),
         metadata=ctx.metadata or {},
         addressed_to=ctx.addressed_to,
-        idempotency_key=ctx.idempotency_key,
+        idempotency_key=publication_key(key) if key and not ctx.instruction else key,
         chain_depth=ctx.chain_depth,
     )
 

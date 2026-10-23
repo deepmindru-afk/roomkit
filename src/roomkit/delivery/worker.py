@@ -6,6 +6,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from roomkit.core._publication_keys import application_key
 from roomkit.core.delivery import DeliveryContext, DeliveryStrategy
 from roomkit.delivery.base import DeliveryItem
 from roomkit.delivery.serialization import deserialize_strategy
@@ -99,7 +100,7 @@ async def fire_delivery_hooks(
         status=status,
         extra_meta=extra,
         addressed_to=published.addressed_to if published is not None else item.addressed_to,
-        idempotency_key=published.idempotency_key
+        idempotency_key=application_key(published.idempotency_key)
         if published is not None
         else item.idempotency_key,
         instruction=item.instruction,

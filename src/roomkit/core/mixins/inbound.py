@@ -12,6 +12,7 @@ from roomkit.channels._runtime_record import RUNTIME_RECORD
 from roomkit.core._changes import for_channels
 from roomkit.core._delivery_keys import DeliveryKeys, NamedDelivery
 from roomkit.core._instructions import FINGERPRINT, names_an_agent
+from roomkit.core._publication_keys import admitted_key
 from roomkit.core._queued_injections import QueuedInjections
 from roomkit.core.exceptions import (
     ChannelNotRegisteredError,
@@ -1163,6 +1164,11 @@ def _apply_message_fields(event: RoomEvent, message: InboundMessage) -> RoomEven
     # content. The locked pipeline owns deduplication for every transport.
     if message.idempotency_key is not None and event.idempotency_key is None:
         event = event.model_copy(update={"idempotency_key": message.idempotency_key})
+    # A key in the framework's publication namespace is the delivery path's
+    # alone (RFC §22.1): dropped from any other message, whoever wrote it.
+    admitted = admitted_key(event.idempotency_key)
+    if admitted != event.idempotency_key:
+        event = event.model_copy(update={"idempotency_key": admitted})
 
     # The chain the message continues (RFC §8.3, §23.3): a transport parses
     # a person's words, which open one, so only the caller sets it.

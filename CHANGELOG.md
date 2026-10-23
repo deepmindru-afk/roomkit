@@ -1443,6 +1443,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   awaited `outcome.inbound.delivery.wait()` on a duplicate checks
   `outcome.duplicate` first.
 
+- **BREAKING — a publication's key is stored in a namespace of the
+  framework's own, which no message can enter** (RFC §22.1, RMK-930). Looked
+  up within the room, a proactive key matched any event of the room carrying
+  it: on a channel whose client chooses its key (a WebSocket, a webhook), a
+  sender who keyed a message like a coming notification made that
+  notification a replay, never published, its caller handed the sender's
+  event as the original outcome. A keyed `deliver()` now stores its
+  publication under `roomkit:publication:<key>`, and the lookup within the
+  room reads that key only. Only the delivery path writes the namespace: the
+  pipeline drops a key in it from any other message, whoever wrote it (the
+  sender, the channel's parser), and `send_event()` raises `ValueError` for
+  one. The key is part of the committed event, so the lookup, the transport's
+  resolution and the commit stay one locked section, and the stores'
+  per-channel uniqueness (`room_id, source.channel_id, idempotency_key`)
+  never sets a publication against a message keyed alike. `AFTER_DELIVER`
+  still reports the application's key. Migrate: code that reads a
+  publication's stored `idempotency_key` reads `roomkit:publication:<key>`;
+  a publication stored before the upgrade keeps its bare key and is not
+  told from a sender's message, so a replay across the upgrade publishes
+  once more; an inbound key starting with `roomkit:publication:` is no key.
+
 ### Removed
 
 - **BREAKING — `roomkit.core.visibility.effective_visibility`** (RMK-902). An

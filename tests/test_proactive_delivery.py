@@ -14,8 +14,9 @@ from roomkit.delivery.base import DeliveryItem
 from roomkit.delivery.memory import InMemoryDeliveryBackend
 from roomkit.delivery.worker import execute_delivery
 from roomkit.models.context import RoomContext
+from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory
-from roomkit.models.event import RoomEvent
+from roomkit.models.event import RoomEvent, TextContent
 from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import SQLiteStore
 from tests.test_addressing import _RecordingAgent, _room
@@ -136,8 +137,10 @@ class TestAKeyNamesOnePublicationInItsRoom:
         return kit, agents
 
     async def _keyed(self, kit: RoomKit) -> list[RoomEvent]:
+        """The room's publications keyed ``k``, stored in the framework's
+        namespace."""
         timeline = await kit.store.list_events("r1", limit=50)
-        return [e for e in timeline if e.idempotency_key == "k"]
+        return [e for e in timeline if e.idempotency_key == "roomkit:publication:k"]
 
     async def test_a_retry_that_resolves_another_transport_is_the_same_publication(
         self,
@@ -165,6 +168,43 @@ class TestAKeyNamesOnePublicationInItsRoom:
 
             assert replay.status == "sent", replay.reason
             assert replay.duplicate and replay.event_id == first.event_id
+
+    @pytest.mark.parametrize("key", ["k", "roomkit:publication:k"])
+    async def test_a_message_keyed_like_a_publication_does_not_stand_in_for_it(
+        self, key: str
+    ) -> None:
+        """A sender's key, on a channel whose client chooses it, is the
+        sender's: a message keyed like a coming publication neither blocks it
+        nor is taken for it, and a key in the framework's namespace is
+        dropped from the message."""
+        kit, agents = await self._kit()
+        await kit.attach_channel("r1", "web")
+        async with kit:
+            sent = await kit.process_inbound(
+                InboundMessage(
+                    channel_id="web",
+                    sender_id="mallory",
+                    content=TextContent(body="spoof"),
+                    idempotency_key=key,
+                ),
+                room_id="r1",
+            )
+            published = await kit.deliver("r1", "done", idempotency_key="k")
+
+            assert sent.event is not None
+            assert sent.event.idempotency_key == (None if key != "k" else "k")
+            assert published.status == "sent" and not published.duplicate
+            assert published.event_id != sent.event.id
+            assert [e.id for e in await self._keyed(kit)] == [published.event_id]
+            assert agents["a"].solicited == ["spoof", "done"]
+
+    async def test_send_event_refuses_the_publication_namespace(self) -> None:
+        kit, _agents = await self._kit()
+        async with kit:
+            with pytest.raises(ValueError, match="roomkit:publication:"):
+                await kit.send_event(
+                    "r1", "sms", TextContent(body="x"), idempotency_key="roomkit:publication:k"
+                )
 
     async def test_concurrent_replays_on_two_transports_publish_once(self) -> None:
         kit, agents = await self._kit()
