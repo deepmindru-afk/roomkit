@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
-from roomkit.core.exceptions import AddressLinkedError, IdentityNotFoundError
+from roomkit.core.exceptions import AddressLinkedError, EventNotFoundError, IdentityNotFoundError
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import EventType
 from roomkit.models.event import RoomEvent, ThreadSummary
@@ -48,6 +48,12 @@ def without_address(
     kept = [held for held in channel_addresses.get(channel_type, []) if held != address]
     rest = {key: value for key, value in channel_addresses.items() if key != channel_type}
     return {**rest, channel_type: kept} if kept else rest
+
+
+def target_gone(target: RoomEvent) -> EventNotFoundError:
+    """The refusal of a change whose *target* its room no longer holds
+    (``commit_event``, RFC §14.3): the whole commit fails."""
+    return EventNotFoundError(f"Event {target.id} is not in room {target.room_id}")
 
 
 def address_linked(channel_type: str) -> AddressLinkedError:
@@ -587,7 +593,9 @@ class ConversationStore(ABC):
         indexed = event.model_copy(update={"index": count})
         return await self.add_event(indexed)
 
-    async def commit_event(self, room_id: str, event: RoomEvent) -> RoomEvent:
+    async def commit_event(
+        self, room_id: str, event: RoomEvent, *, target: RoomEvent | None = None
+    ) -> RoomEvent:
         """Store *event* and bump the room counters as ONE atomic commit.
 
         The commit point of RFC §10.1 (step 12) / §14.3: (re)assigning the
@@ -595,6 +603,16 @@ class ConversationStore(ABC):
         ``event_count`` / ``latest_index`` / ``timers.last_activity_at`` form a
         **single logical transaction**. An observer MUST never see a stored
         event the room counters do not reflect.
+
+        *target* is the target of the DELIVERED edit or delete *event* is, as
+        its commit writes it (RFC §10.3): the edited content and
+        ``metadata.edited``, or ``metadata.deleted``. It is written in the
+        same transaction, replacing the stored row, and a target *room_id*
+        no longer holds fails the whole commit with
+        :class:`~roomkit.core.exceptions.EventNotFoundError`, nothing
+        written (§14.3). The framework passes it only with a change, so a
+        store that does not accept the keyword still commits every other
+        event.
 
         The converse does not hold, and that is deliberate. ``event_count`` is
         the running tally RFC §10.1 step 12 describes — ``event_count += 1``,
@@ -620,7 +638,13 @@ class ConversationStore(ABC):
         store whose ``update_room`` keeps the stored counters (as the shipped
         stores do) MUST override it too.
         """
+        if target is not None:
+            stored = await self.get_event(target.id)
+            if stored is None or stored.room_id != room_id:
+                raise target_gone(target)
         indexed = await self.add_event_auto_index(room_id, event)
+        if target is not None:
+            await self.update_event(target)
         room = await self.get_room(room_id)
         if room is not None:
             timers = room.timers.model_copy(update={"last_activity_at": datetime.now(UTC)})

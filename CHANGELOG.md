@@ -433,6 +433,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — an edit or a delete commits with its target, in one
+  transaction** (RFC §10.3, §14.3, RMK-930). The pipeline wrote the edited
+  content (or `metadata.deleted`) on the target with `update_event()`, then
+  committed the EDIT or DELETE: a commit that failed in between left the
+  target changed with no row saying so. `ConversationStore.commit_event()`
+  takes a keyword-only `target`, the target as the change writes it, and
+  the in-memory, SQLite and Postgres stores write it in the commit's own
+  transaction; a target the room no longer holds, or another room's, fails
+  the whole commit with the new `EventNotFoundError`, nothing written. The
+  framework passes `target` only with a change, so a custom store that
+  overrides `commit_event` must accept it before an edit or a delete
+  commits. An edit or a delete the persistence policy keeps out of the
+  timeline still writes its target, alone. No schema changes.
+
 - **BREAKING — `ON_SPEAK_DECISION` is a SYNC trigger: its hooks change the
   decision the channel acts on** (RFC §6.4, §9.2, RMK-914). A hook could only
   observe a decision; an application that wanted to act on it in code (raise

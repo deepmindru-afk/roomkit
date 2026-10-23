@@ -292,18 +292,23 @@ class HelpersMixin:
         )
         return InboundResult(blocked=True, reason="room_closed")
 
-    async def _persist_committed(self, room_id: str, event: RoomEvent) -> RoomEvent | None:
+    async def _persist_committed(
+        self, room_id: str, event: RoomEvent, *, target: RoomEvent | None = None
+    ) -> RoomEvent | None:
         """Atomically commit an event (index + insert + room counters, RFC
         §10.1 step 12 / §14.3) if the policy allows it, and account its
-        index on the room's delivery cursor.
+        index on the room's delivery cursor. *target* is what an edit or a
+        delete writes on its target, in the same transaction
+        (:meth:`_commit`).
 
         Returns the committed event, or ``None`` if the policy excluded it.
         """
         if self._persistence_policy is not None and not self._persistence_policy.should_persist(
             event.type
         ):
+            await self._write_unstored_change(target)
             return None
-        committed = await self._commit(room_id, event)
+        committed = await self._commit(room_id, event, target=target)
         await self._note_committed_index(room_id, committed.index)
         return committed
 
@@ -319,9 +324,27 @@ class HelpersMixin:
         await self._note_committed_index(room_id, committed.index)
         return committed
 
-    async def _commit(self, room_id: str, event: RoomEvent) -> RoomEvent:
-        """Commit *event* (RFC §10.1 step 12) carrying the record of its author."""
-        return await self._store.commit_event(room_id, await self._with_author(room_id, event))
+    async def _commit(
+        self, room_id: str, event: RoomEvent, *, target: RoomEvent | None = None
+    ) -> RoomEvent:
+        """Commit *event* (RFC §10.1 step 12) carrying the record of its author.
+
+        *target* is the target of the edit or the delete *event* is, as its
+        commit writes it: the store writes both in one transaction (§10.3,
+        §14.3). It is passed only with a change, so a custom store that does
+        not take it still commits every other event.
+        """
+        authored = await self._with_author(room_id, event)
+        if target is None:
+            return await self._store.commit_event(room_id, authored)
+        return await self._store.commit_event(room_id, authored, target=target)
+
+    async def _write_unstored_change(self, target: RoomEvent | None) -> None:
+        """Write *target* as the edit or the delete the persistence policy
+        keeps out of the timeline changed it: with no row of its own to
+        commit, the change is its target's update alone."""
+        if target is not None:
+            await self._store.update_event(target)
 
     async def _with_author(self, room_id: str, event: RoomEvent) -> RoomEvent:
         """*event* carrying the record of its author, under the room lock,

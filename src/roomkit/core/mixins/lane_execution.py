@@ -231,6 +231,7 @@ class LaneExecutionMixin(HelpersMixin):
         plan_factory: Callable[[RoomEvent], DeliveryPlan | None] | None,
         *,
         policy_aware: bool = True,
+        target: RoomEvent | None = None,
     ) -> RoomEvent | None:
         """Commit an event and enqueue its delivery plan in one gate.
 
@@ -240,6 +241,9 @@ class LaneExecutionMixin(HelpersMixin):
         policy excludes is delivered but not stored: its plan joins the lane
         index-less, anchored behind the room's ``latest_index``, and moves no
         cursor (RFC §14.3 — an unstored event consumes no index).
+
+        *target* is what an edit or a delete writes on its target, committed
+        in the event's own transaction (RFC §10.3, §14.3).
 
         Runs under the room lock (planning reads binding state consistent
         with the committed timeline, RFC §10.1 step 12).
@@ -261,6 +265,7 @@ class LaneExecutionMixin(HelpersMixin):
             and self._persistence_policy is not None
             and not self._persistence_policy.should_persist(event.type)
         ):
+            await self._write_unstored_change(target)
             if plan_factory is not None:
                 if event.type != EventType.INSTRUCTION:
                     # Delivered unstored, still a turn its readers name.
@@ -272,7 +277,7 @@ class LaneExecutionMixin(HelpersMixin):
                     cascade.retain()
                     self._enqueue_exec(room_id, plan, cascade, index=None, after_index=anchor)
             return None
-        committed = await self._commit(room_id, event)
+        committed = await self._commit(room_id, event, target=target)
         plan = plan_factory(committed) if plan_factory is not None else None
         if plan is None:
             await self._note_committed_index(room_id, committed.index)

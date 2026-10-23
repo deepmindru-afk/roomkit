@@ -77,6 +77,16 @@ class RoomNotFoundError(RoomKitError):
     """Room does not exist."""
 
 
+class EventNotFoundError(RoomKitError):
+    """An event a write names is not in its room (RFC §14.3).
+
+    Raised by a store's ``commit_event`` when the target of the edit or the
+    delete it commits is gone, or another room's: the change, its target's
+    update and the room's counters are one transaction, which then fails
+    whole, nothing written.
+    """
+
+
 class RoomClosedError(RoomKitError):
     """Room's status refuses new events (RFC §5.1).
 

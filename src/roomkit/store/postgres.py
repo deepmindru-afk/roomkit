@@ -26,7 +26,7 @@ from roomkit.models.store_filter import EventFilter, includes_blocked
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import Verification, VerificationRequest
 from roomkit.models.voice_delivery import VoiceDeliveryRecord
-from roomkit.store.base import ConversationStore, address_linked, without_address
+from roomkit.store.base import ConversationStore, address_linked, target_gone, without_address
 from roomkit.store.postgres_mappers import (
     _row_to_binding,
     _row_to_event,
@@ -114,6 +114,33 @@ async def _insert_event(conn: Any, event: RoomEvent) -> None:
         event.created_at,
         event.responds_to,
     )
+
+
+async def _update_event_row(conn: Any, event: RoomEvent, *, room_id: str | None = None) -> bool:
+    """Rewrite *event*'s stored row on *conn*, in *room_id* when one is
+    named; whether a row was written. Shared by ``update_event`` and the
+    target a change's commit writes (RFC §14.3)."""
+    status = await conn.execute(
+        "UPDATE events SET content=$2, status=$3, visibility=$4,"
+        " metadata=$5, idempotency_key=$6, blocked_by=$7,"
+        " source_channel_id=$8, source_channel_type=$9,"
+        " source_participant_id=$10, source_provider=$11, source_extra=$12"
+        " WHERE id=$1 AND ($13::text IS NULL OR room_id = $13)",
+        event.id,
+        event.content.model_dump(mode="json"),
+        event.status.value,
+        event.visibility,
+        event.metadata,
+        event.idempotency_key,
+        event.blocked_by,
+        event.source.channel_id,
+        event.source.channel_type.value,
+        event.source.participant_id,
+        event.source.provider,
+        _source_extra(event.source),
+        room_id,
+    )
+    return status != "UPDATE 0"
 
 
 async def _reserve_event_index(conn: Any, room_id: str) -> int:
@@ -970,25 +997,7 @@ class PostgresStore(ConversationStore):
     async def update_event(self, event: RoomEvent) -> RoomEvent:
         with self._query_span("update_event", "events"):
             async with self._acquire() as conn:
-                await conn.execute(
-                    "UPDATE events SET content=$2, status=$3, visibility=$4,"
-                    " metadata=$5, idempotency_key=$6, blocked_by=$7,"
-                    " source_channel_id=$8, source_channel_type=$9,"
-                    " source_participant_id=$10, source_provider=$11, source_extra=$12"
-                    " WHERE id=$1",
-                    event.id,
-                    event.content.model_dump(mode="json"),
-                    event.status.value,
-                    event.visibility,
-                    event.metadata,
-                    event.idempotency_key,
-                    event.blocked_by,
-                    event.source.channel_id,
-                    event.source.channel_type.value,
-                    event.source.participant_id,
-                    event.source.provider,
-                    _source_extra(event.source),
-                )
+                await _update_event_row(conn, event)
         return event
 
     async def delete_event(
@@ -1241,7 +1250,9 @@ class PostgresStore(ConversationStore):
                 await _insert_event(conn, indexed)
         return indexed
 
-    async def commit_event(self, room_id: str, event: RoomEvent) -> RoomEvent:
+    async def commit_event(
+        self, room_id: str, event: RoomEvent, *, target: RoomEvent | None = None
+    ) -> RoomEvent:
         """Atomic commit (RFC §10.1 step 12 / §8.1 / §14.3) in ONE transaction.
 
         ``SELECT ... FOR UPDATE`` on the room row serializes counter updates
@@ -1249,7 +1260,9 @@ class PostgresStore(ConversationStore):
         per-room high-water mark reserves the index, then the event and counters
         (``event_count`` / ``latest_index`` / ``timers.last_activity_at``)
         updated together, so the timeline and the counters can never diverge —
-        even under a crash or without a cross-process room lock.
+        even under a crash or without a cross-process room lock. A change's
+        *target* is written in the same transaction, which rolls back whole
+        when the room no longer holds it.
         """
         with self._query_span("commit_event", "events"):
             async with self._acquire() as conn, conn.transaction():
@@ -1257,6 +1270,10 @@ class PostgresStore(ConversationStore):
                     "SELECT * FROM rooms WHERE id = $1 FOR UPDATE",
                     room_id,
                 )
+                if target is not None and not await _update_event_row(
+                    conn, target, room_id=room_id
+                ):
+                    raise target_gone(target)
                 next_idx = await _reserve_event_index(conn, room_id)
                 indexed = event.model_copy(update={"index": next_idx})
                 await _insert_event(conn, indexed)

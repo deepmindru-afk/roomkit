@@ -20,6 +20,7 @@ from roomkit.store.base import (
     ConversationStore,
     address_linked,
     link_target,
+    target_gone,
     without_address,
 )
 
@@ -567,11 +568,20 @@ class InMemoryStore(ConversationStore):
                 ] = indexed.id
             return indexed
 
-    async def commit_event(self, room_id: str, event: RoomEvent) -> RoomEvent:
+    async def commit_event(
+        self, room_id: str, event: RoomEvent, *, target: RoomEvent | None = None
+    ) -> RoomEvent:
         """Atomic commit (RFC §10.1 step 12 / §14.3): index, store, and bump the
         room counters under the per-room lock as one critical section, so the
-        timeline and the counters can never diverge."""
+        timeline and the counters can never diverge; a change's *target*
+        is written in it, or the whole commit fails when the room no longer
+        holds it."""
         async with self._lock_for(room_id):
+            if target is not None:
+                stored = self._events.get(target.id)
+                if stored is None or stored.room_id != room_id:
+                    raise target_gone(target)
+                self._events[target.id] = target.model_copy(deep=True)
             events = self._room_events.setdefault(room_id, [])
             index = self._reserve_event_index(room_id)
             indexed = event.model_copy(update={"index": index}, deep=True)

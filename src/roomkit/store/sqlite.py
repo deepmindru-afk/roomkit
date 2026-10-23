@@ -48,6 +48,7 @@ from roomkit.store.base import (
     ConversationStore,
     address_linked,
     link_target,
+    target_gone,
     without_address,
 )
 
@@ -1349,15 +1350,28 @@ class SQLiteStore(ConversationStore):
             self._write_event_row(conn, indexed)
         return indexed
 
-    async def commit_event(self, room_id: str, event: RoomEvent) -> RoomEvent:
-        return await self._run(self._x_commit_event, room_id, event)
+    async def commit_event(
+        self, room_id: str, event: RoomEvent, *, target: RoomEvent | None = None
+    ) -> RoomEvent:
+        return await self._run(self._x_commit_event, room_id, event, target)
 
-    def _x_commit_event(self, room_id: str, event: RoomEvent) -> RoomEvent:
+    def _x_commit_event(
+        self, room_id: str, event: RoomEvent, target: RoomEvent | None = None
+    ) -> RoomEvent:
         """Atomic commit (RFC §10.1 step 12): index, insert and counter bump
         in one SQLite transaction, so the timeline and the room counters can
-        never be observed diverged."""
+        never be observed diverged; a change's *target* is written in it, or
+        the whole transaction rolls back when the room no longer holds it
+        (§14.3)."""
         conn = self._db()
         with _write_transaction(conn):
+            if target is not None:
+                held = conn.execute(
+                    "SELECT 1 FROM events WHERE id = ? AND room_id = ?", (target.id, room_id)
+                ).fetchone()
+                if held is None:
+                    raise target_gone(target)
+                self._write_event_row(conn, target, replace=True)
             index = self._reserve_event_index(conn, room_id)
             indexed = event.model_copy(update={"index": index})
             self._write_event_row(conn, indexed)

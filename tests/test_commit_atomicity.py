@@ -10,6 +10,8 @@ event, or a ``latest_index`` pointing at an event that was never stored.
 
 from __future__ import annotations
 
+import pytest
+
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.websocket import WebSocketChannel
 from roomkit.core.framework import RoomKit
@@ -24,10 +26,11 @@ from roomkit.models.enums import (
     HookExecution,
     HookTrigger,
 )
-from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.event import EditContent, EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.store_filter import EventFilter, PersistencePolicy
 from roomkit.providers.ai.mock import MockAIProvider
+from tests.test_edit_delete_authorization import _Transport
 from tests.test_framework import SimpleChannel
 
 
@@ -222,4 +225,46 @@ async def test_streaming_segments_committed_delivered_and_consistent() -> None:
     ]
     assert ai_messages, "the streamed AI message must be persisted"
     assert all(e.status is EventStatus.DELIVERED for e in ai_messages)
+    await kit.close()
+
+
+async def test_an_edit_whose_commit_fails_leaves_its_target_as_it_was(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RFC §10.3 state update 3, §14.3: an edit and its target's update are one
+    transaction, so a commit that fails leaves neither. The target was written
+    ahead of the commit: a failed commit left it edited with no EDIT row."""
+    kit = RoomKit()
+    kit.register_channel(_Transport("src"))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "src")
+    original = (
+        await kit.process_inbound(
+            InboundMessage(channel_id="src", sender_id="alice", content=TextContent(body="v1"))
+        )
+    ).event
+    assert original is not None
+
+    async def store_down(room_id: str, event: RoomEvent, **kwargs: object) -> RoomEvent:
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(kit.store, "commit_event", store_down)
+    with pytest.raises(RuntimeError, match="store down"):
+        await kit.process_inbound(
+            InboundMessage(
+                channel_id="src",
+                sender_id="alice",
+                event_type=EventType.EDIT,
+                content=EditContent(
+                    target_event_id=original.id,
+                    new_content=TextContent(body="v2"),
+                    edit_source="sender",
+                ),
+            )
+        )
+
+    stored = await kit.store.get_event(original.id)
+    assert stored is not None
+    assert stored.content == TextContent(body="v1")
+    assert "edited" not in stored.metadata
     await kit.close()

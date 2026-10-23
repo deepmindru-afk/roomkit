@@ -16,6 +16,7 @@ from dataclasses import KW_ONLY, dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._authors import People, source_of
+from roomkit.core._changes import applied
 from roomkit.core.hooks import kept_identity
 from roomkit.core.mixins.helpers import (
     _RECENT_EVENTS_LIMIT,
@@ -674,11 +675,10 @@ class InboundLockedMixin(HelpersMixin):
         source_binding = ready.source_binding
         sync_result = ready.sync_result
 
-        # Apply edit/delete target mutation now that the event is authorized and
-        # hook-allowed (RFC §10.3 — mutation must not precede the block decision).
-        mutation_hook: tuple[HookTrigger, RoomEvent] | None = None
-        if ready.edit_delete_target is not None:
-            mutation_hook = await self._apply_edit_delete_state(event, ready.edit_delete_target)
+        # The edit/delete target as the commit writes it, now that the event
+        # is authorized and hook-allowed (RFC §10.3 — mutation must not
+        # precede the block decision), in the event's own transaction.
+        target, mutation_hook = _target_update(event, ready.edit_delete_target)
 
         # Commit point (RFC §10.1 step 12): persist DELIVERED and bump the
         # room counters atomically, PLAN the broadcast against binding state
@@ -740,7 +740,9 @@ class InboundLockedMixin(HelpersMixin):
             return plan
 
         event = event.model_copy(update={"status": EventStatus.DELIVERED})
-        committed = await self._commit_to_lane(room_id, event, cascade, plan_factory)
+        committed = await self._commit_to_lane(
+            room_id, event, cascade, plan_factory, target=target
+        )
         # A persistence-policy-excluded event is delivered but not persisted;
         # it keeps its provisional identity (RFC §14.3 — no index consumed).
         event = event if committed is None else committed
@@ -830,35 +832,16 @@ class InboundLockedMixin(HelpersMixin):
         for trigger, ev, ctx in pending:
             await self._hook_engine.run_async_hooks(room_id, trigger, ev, ctx)
 
-    async def _apply_edit_delete_state(
-        self, event: RoomEvent, target_event: RoomEvent
-    ) -> tuple[HookTrigger, RoomEvent] | None:
-        """Apply RFC §10.3 state updates to an edit/delete target event.
 
-        Invoked only after the edit/delete event has passed authorization
-        *and* been allowed by BEFORE_BROADCAST hooks, so a blocked
-        edit/delete never mutates the target. Uses the final (post-modify)
-        event content so a ``modify`` hook on the edit is honored.
-
-        Returns the (mutation trigger, updated target) pair the caller must
-        fire once the room lock is released — ON_EVENT_UPDATED for an edit,
-        ON_EVENT_DELETED for a (soft) delete — or ``None`` when the content
-        was not an edit/delete payload.
-        """
-        content = event.content
-        if isinstance(content, EditContent):
-            updated = target_event.model_copy(
-                update={
-                    "content": content.new_content,
-                    "metadata": {**target_event.metadata, "edited": True},
-                }
-            )
-            await self._store.update_event(updated)
-            return (HookTrigger.ON_EVENT_UPDATED, updated)
-        if isinstance(content, DeleteContent):
-            updated = target_event.model_copy(
-                update={"metadata": {**target_event.metadata, "deleted": True}}
-            )
-            await self._store.update_event(updated)
-            return (HookTrigger.ON_EVENT_DELETED, updated)
-        return None
+def _target_update(
+    event: RoomEvent, target: RoomEvent | None
+) -> tuple[RoomEvent | None, tuple[HookTrigger, RoomEvent] | None]:
+    """What *event*'s commit writes on its edit or delete *target*, and the
+    mutation trigger it fires once the lock is released (RFC §10.3); nothing
+    without a target. The event as the hooks left it: a ``modify`` hook on
+    the edit is honoured."""
+    content = event.content
+    if target is None or not isinstance(content, EditContent | DeleteContent):
+        return None, None
+    updated, trigger = applied(content, target)
+    return updated, (trigger, updated)

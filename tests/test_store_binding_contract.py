@@ -1,4 +1,5 @@
-"""Binding serialization contract shared by all conversation stores."""
+"""Binding serialization contract shared by all conversation stores, and the
+timeline rules every store keeps alike."""
 
 from __future__ import annotations
 
@@ -9,9 +10,11 @@ from uuid import uuid4
 
 import pytest
 
+from roomkit.core.exceptions import EventNotFoundError
 from roomkit.core.inbound_router import DefaultInboundRoomRouter
 from roomkit.models.channel import ChannelBinding, RateLimit, RetryPolicy
 from roomkit.models.enums import ChannelType, EventStatus, EventType, RoomStatus
+from roomkit.models.event import EditContent, RoomEvent, TextContent
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
@@ -522,3 +525,51 @@ async def test_the_default_router_reads_the_organizations_rooms_only(
     finally:
         for room in rooms:
             await store.delete_room(room.id)
+
+
+def _edit_of(target: RoomEvent, body: str) -> tuple[RoomEvent, RoomEvent]:
+    """A DELIVERED edit of *target*, and *target* as its commit writes it."""
+    new = TextContent(body=body)
+    edit = make_event(room_id=target.room_id, status=EventStatus.DELIVERED).model_copy(
+        update={
+            "type": EventType.EDIT,
+            "content": EditContent(target_event_id=target.id, new_content=new),
+        }
+    )
+    edited = target.model_copy(update={"content": new, "metadata": {"edited": True}})
+    return edit, edited
+
+
+async def test_a_change_commits_with_its_target_or_not_at_all(
+    contract_store: ConversationStore,
+) -> None:
+    """RFC §14.3: a DELIVERED edit, the room's counters and its target's
+    update are one transaction, and a target the room no longer holds, or
+    another room's, fails the whole commit."""
+    room = await contract_store.create_room(Room(id=uuid4().hex))
+    other = await contract_store.create_room(Room(id=uuid4().hex))
+    try:
+        target = await contract_store.commit_event(room.id, make_event(room_id=room.id))
+        edit, edited = _edit_of(target, "v2")
+
+        committed = await contract_store.commit_event(room.id, edit, target=edited)
+
+        stored = await contract_store.get_event(target.id)
+        assert stored is not None
+        assert (stored.content, stored.metadata) == (TextContent(body="v2"), {"edited": True})
+        assert await contract_store.get_event(committed.id) is not None
+
+        foreign = await contract_store.commit_event(other.id, make_event(room_id=other.id))
+        for gone in (make_event(room_id=room.id), foreign.model_copy(update={"room_id": room.id})):
+            orphan, orphan_target = _edit_of(gone, "v3")
+            with pytest.raises(EventNotFoundError):
+                await contract_store.commit_event(room.id, orphan, target=orphan_target)
+            assert await contract_store.get_event(orphan.id) is None
+        kept = await contract_store.get_event(foreign.id)
+        assert kept is not None and kept.content == foreign.content
+        after = await contract_store.get_room(room.id)
+        assert after is not None
+        assert (after.event_count, after.latest_index) == (2, committed.index)
+    finally:
+        await contract_store.delete_room(room.id)
+        await contract_store.delete_room(other.id)
