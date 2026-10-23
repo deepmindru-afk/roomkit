@@ -285,6 +285,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that set a verification on its own responses, or a reader that relied on
   it: such a response is now stored with `verification=None`.
 
+- `LlamaCppAIProvider`'s start timeout names the budget it was given
+  (RMK-922). The message rounded `startup_timeout` to the second, so a
+  budget under one second read "not ready after 0s"; it now prints the
+  configured value ("not ready after 0.1s", "not ready after 120s").
+
 ### Added
 
 - A thought that comes back after its event was decided is decided late
