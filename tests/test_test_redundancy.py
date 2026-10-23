@@ -1,8 +1,8 @@
 """The pruning tool of RMK-920 (``scripts/test_redundancy.py``).
 
-Every pruning batch is accepted on ``diff`` naming no dropped line, so a
-``diff`` that read nothing would pass any deletion; and the candidates are
-read per test function, so a parametrized test is one candidate, not several.
+Every pruning batch is accepted on ``diff`` naming no line a deleted test took
+away, so a ``diff`` that read nothing would pass any deletion; and candidates
+are read per test function, so a parametrized test is one candidate.
 """
 
 from __future__ import annotations
@@ -36,16 +36,28 @@ def _run(directory: Path, checkout: str, reached: dict[str, list[int]]) -> Path:
     return directory
 
 
-def test_diff_names_each_line_the_second_run_lost(
+def test_diff_fails_on_a_line_only_a_deleted_test_reached(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """And tells it from a line a race let a remaining test miss this time."""
     script = _load_script()
-    before = _run(tmp_path / "before", "/one", {"tests/test_a.py::test_x|run": [1, 2, 3, 7]})
-    after = _run(tmp_path / "after", "/two", {"tests/test_a.py::test_x|run": [1, 7]})
+    before = _run(
+        tmp_path / "before",
+        "/one",
+        {"tests/test_a.py::test_kept|run": [1, 5], "tests/test_a.py::test_gone|run": [1, 2, 3]},
+    )
+    after = _run(tmp_path / "after", "/two", {"tests/test_a.py::test_kept|run": [1]})
 
     assert script.diff(before, after) == 1
-    assert "src/roomkit/core.py: 2-3" in capsys.readouterr().out
-    assert script.diff(before, before) == 0
+    gone, missed = capsys.readouterr().out.split("-- 1 lines not reached")
+    assert "src/roomkit/core.py: 2-3" in gone
+    assert "src/roomkit/core.py: 5" in missed
+    again = _run(
+        tmp_path / "again",
+        "/two",
+        {"tests/test_a.py::test_kept|run": [1], "tests/test_a.py::test_gone|run": [1, 2, 3]},
+    )
+    assert script.diff(before, again) == 0
 
 
 def test_candidates_are_test_functions_with_their_phases_merged(tmp_path: Path) -> None:

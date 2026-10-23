@@ -21,7 +21,12 @@ lines often check different things (a minimum and a maximum, two clock cases).
 ``files`` prints an area's test files, to time the area alone.
 
 ``diff`` prints the library lines the first run covered and the second did not,
-and exits 1 when there is one, so a pruning batch names each line it dropped.
+in two lists: the lines a test that reached them took away with it (gone from
+the second run), and the lines tests that still ran did not reach this time (a
+race decides some paths: a run-to-run difference, not a pruning's doing). It
+exits 1 when the first list is not empty, so a pruning batch names each line
+it dropped. A line the first run reached outside any test (at import) counts
+as taken away: only a test can have imported its module.
 Both runs must measure the same library source: a moved line reads as dropped.
 
 An area is a set of roomkit packages and the test directories that mirror them.
@@ -264,14 +269,47 @@ def files(area: str, root: Path = REPO_ROOT) -> list[str]:
 
 
 def diff(before: Path, after: Path) -> int:
-    """Print the lines ``before`` covered and ``after`` did not; 1 if there is one."""
-    dropped: dict[str, list[int]] = defaultdict(list)
-    for source, number in covered_lines(before / COVERAGE) - covered_lines(after / COVERAGE):
-        dropped[source].append(number)
-    for source in sorted(dropped):
-        print(f"{source}: {_ranges(sorted(dropped[source]))}")
-    print(f"{sum(len(n) for n in dropped.values())} lines dropped")
-    return 1 if dropped else 0
+    """Print the lines ``after`` no longer covers, by cause; 1 if a test took one away."""
+    dropped = covered_lines(before / COVERAGE) - covered_lines(after / COVERAGE)
+    owners = reached_by(before / COVERAGE, dropped)
+    still_run = tests_of(after / COVERAGE)
+    lost = {line for line in dropped if not owners[line] or not owners[line] <= still_run}
+    print_lines("taken away with a test that is gone", lost)
+    print_lines("not reached this time by tests that still ran", dropped - lost)
+    return 1 if lost else 0
+
+
+def reached_by(path: Path, lines: set[Line]) -> dict[Line, set[str]]:
+    """Return the tests of a run that reached each of ``lines``."""
+    data = CoverageData(basename=str(path))
+    data.read()
+    files = {source for source, _ in lines}
+    owners: dict[Line, set[str]] = {line: set() for line in lines}
+    for measured in data.measured_files():
+        source = library_path(measured)
+        if source not in files:
+            continue
+        for number, contexts in data.contexts_by_lineno(measured).items():
+            if (source, number) in owners:
+                owners[source, number] = {PHASE.sub("", c) for c in contexts if c}
+    return owners
+
+
+def tests_of(path: Path) -> set[str]:
+    """Return the tests that reached any library line in a run."""
+    data = CoverageData(basename=str(path))
+    data.read()
+    return {PHASE.sub("", context) for context in data.measured_contexts() if context}
+
+
+def print_lines(title: str, lines: set[Line]) -> None:
+    """Print a titled list of lines, one row per file, numbers as ranges."""
+    by_file: dict[str, list[int]] = defaultdict(list)
+    for source, number in lines:
+        by_file[source].append(number)
+    print(f"-- {len(lines)} lines {title}")
+    for source in sorted(by_file):
+        print(f"   {source}: {_ranges(sorted(by_file[source]))}")
 
 
 def _ranges(numbers: list[int]) -> str:
