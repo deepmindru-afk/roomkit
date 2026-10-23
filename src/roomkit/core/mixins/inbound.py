@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable
 from contextlib import AsyncExitStack
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -363,15 +364,19 @@ class InboundMixin(HelpersMixin):
         organization_id: str | None,
     ) -> InboundResult:
         """RFC §10.1 steps 2-18 for *message*, whose delivery *named* names."""
+        # One deadline from the call's start to its decision (RFC §13.6), as
+        # an absolute instant shared by every wait before the commit rather
+        # than re-applied at each: routing, with the identity it reads, the
+        # router and step 2's waits for the room lock, then the context
+        # build, the parse, the off-lock check and the room lock. A router or
+        # a lock that hangs holds the caller no longer than the bound. A room
+        # step 2 creates is completed whatever the deadline: it is the room's
+        # state, not the event's.
+        deadline = asyncio.get_running_loop().time() + self._process_timeout
         refused = self._refused_instruction(message)
         if refused is not None:
             return refused
 
-        # Route to room (or auto-create). Deliberately outside the pre-commit
-        # window below: routing is RFC §10.1 steps 1-2, the phase
-        # ``process_timeout`` bounds is steps 3-11 — and this is the one part
-        # that can create a room, so a timeout here would leave an orphan
-        # behind for a message that was refused.
         try:
             room_id, room_just_created = await self._route_to_room(
                 message,
@@ -380,17 +385,13 @@ class InboundMixin(HelpersMixin):
                 telemetry,
                 inbound_span_id,
                 organization_id=organization_id,
+                deadline=deadline,
             )
-        except _ClaimTimeoutError as exc:
+        except _RoutingTimeoutError as exc:
+            # Null while the message was routed (RFC §8.2), else the room the
+            # call named or routing gave it.
             return await self._refuse_on_timeout(exc.room_id, channel_id=message.channel_id)
 
-        # One budget for the whole pre-commit phase (RFC §13.6), as an absolute
-        # deadline so it can be shared with the locked region rather than
-        # re-applied there. It covers the wait for the room lock on purpose:
-        # the pile-up this setting exists to stop is one stuck event holding a
-        # room's lock while every later message queues behind it, and a window
-        # that stopped at the lock would leave exactly that unbounded.
-        deadline = asyncio.get_running_loop().time() + self._process_timeout
         try:
             prepared = await self._prepare_event(
                 message, channel, room_id, room_just_created, deadline, telemetry, named
@@ -705,12 +706,14 @@ class InboundMixin(HelpersMixin):
         inbound_span_id: str,
         *,
         organization_id: str | None,
+        deadline: float,
     ) -> tuple[str, bool]:
         """Route inbound message to a room, auto-creating if needed.
 
         ``organization_id`` scopes the room the message lands in (RFC §17.2):
         a room of another organization is not found, a room created here is
-        created under it.
+        created under it. *deadline* is the call's (RFC §13.6): past it,
+        :class:`_RoutingTimeoutError`.
 
         Returns:
             A tuple of (room_id, room_just_created).
@@ -728,11 +731,11 @@ class InboundMixin(HelpersMixin):
         try:
             if room_id is None:
                 room_id, room_just_created = await self._route_and_claim(
-                    message, channel, organization_id
+                    message, channel, organization_id, deadline
                 )
             else:
                 room_id, room_just_created = await self._find_or_open_room(
-                    message, channel, room_id, organization_id
+                    message, channel, room_id, organization_id, deadline=deadline
                 )
             telemetry.end_span(route_span, attributes={"room_id": room_id or ""})
         except Exception as exc:
@@ -755,29 +758,36 @@ class InboundMixin(HelpersMixin):
         room_id: str | None,
         organization_id: str | None,
         identity: Identity | None = None,
+        *,
+        deadline: float,
     ) -> tuple[str, bool]:
         """The room *message* goes to, opened or attached as needed (RFC §10.1 step 2).
 
         The caller's *room_id* when it named one, the router's answer
         otherwise: the router is given the caller's organization and the
         sender's *identity* in it (§10.4), and its answer is held to the
-        rules of an id the caller named. Returns the room id and whether the
-        room was just created.
+        rules of an id the caller named. The router's answer is bounded by
+        the call's *deadline* (RFC §13.6). Returns the room id and whether
+        the room was just created.
         """
         routed = room_id is None
         if room_id is None:
-            room_id = await self._inbound_router.route(
-                channel_id=message.channel_id,
-                channel_type=channel.channel_type,
-                participant_id=_conversation(message, channel),
-                channel_data=message.metadata,
-                organization_id=organization_id,
-                identity=identity,
+            room_id = await _by(
+                deadline,
+                self._inbound_router.route(
+                    channel_id=message.channel_id,
+                    channel_type=channel.channel_type,
+                    participant_id=_conversation(message, channel),
+                    channel_data=message.metadata,
+                    organization_id=organization_id,
+                    identity=identity,
+                ),
+                room_id=None,
             )
         if room_id is None:
             return await self._open_room_for(message, None, organization_id), True
         created = await self._ensure_room_and_binding(
-            message, room_id, organization_id, attach=not routed
+            message, room_id, organization_id, attach=not routed, deadline=deadline
         )
         return room_id, created
 
@@ -788,18 +798,23 @@ class InboundMixin(HelpersMixin):
         organization_id: str | None,
         *,
         attach: bool = True,
+        deadline: float,
     ) -> bool:
         """Create the named room, or attach the channel to it, when either is missing.
 
         A routed room is not attached here (*attach* false): it is attached
         under the lock that checks it is still the message's (``_claim_room``),
-        so a room that is not gets no binding. Returns whether the room was
-        just created.
+        so a room that is not gets no binding. The reads of a room that exists
+        and the wait for its lock are bounded by the call's *deadline* (RFC
+        §13.6); a room created here is completed whatever the deadline.
+        Returns whether the room was just created.
         """
         # Ensure room exists; auto-create if needed (e.g. voice session
         # with a room_id from SIP headers that hasn't been created yet).
-        room_present, binding_present = await self._room_and_binding_present(
-            message, room_id, organization_id, attach=attach
+        room_present, binding_present = await _by(
+            deadline,
+            self._room_and_binding_present(message, room_id, organization_id, attach=attach),
+            room_id=room_id,
         )
         if not room_present:
             try:
@@ -809,21 +824,31 @@ class InboundMixin(HelpersMixin):
                 # Another call created the room meanwhile, and the store
                 # refused to replace it (RFC §10.1 step 2, §14.3): it is read
                 # again as one that exists, for the caller's organization.
-                room = await self._store.get_room(room_id)
-                if room is None or (
-                    organization_id is not None and room.organization_id != organization_id
-                ):
-                    raise RoomNotFoundError(f"Room {room_id} not found") from None
-                binding_present = not attach or await self._store.binding_exists(
-                    room_id, message.channel_id
+                binding_present = await _by(
+                    deadline,
+                    self._created_meanwhile(message, room_id, organization_id, attach=attach),
+                    room_id=room_id,
                 )
         if not binding_present:
             # Room exists but the channel is not attached — unless the
             # integrator detached it (RFC §7.5-7). The unlocked read
             # keeps the common case (already bound) free; the actual
             # decision runs under the room lock in _maybe_auto_attach.
-            await self._maybe_auto_attach(room_id, message.channel_id)
+            await self._maybe_auto_attach(room_id, message.channel_id, deadline)
         return False
+
+    async def _created_meanwhile(
+        self, message: InboundMessage, room_id: str, organization_id: str | None, *, attach: bool
+    ) -> bool:
+        """Whether the room another call created meanwhile binds the message's
+        channel (``True`` when nothing is to be attached), read as a room
+        that exists, for the caller's organization (RFC §10.1 step 2)."""
+        room = await self._store.get_room(room_id)
+        if room is None or (
+            organization_id is not None and room.organization_id != organization_id
+        ):
+            raise RoomNotFoundError(f"Room {room_id} not found") from None
+        return not attach or await self._store.binding_exists(room_id, message.channel_id)
 
     async def _room_and_binding_present(
         self,
@@ -895,7 +920,11 @@ class InboundMixin(HelpersMixin):
         return room.id
 
     async def _route_and_claim(
-        self, message: InboundMessage, channel: Channel, organization_id: str | None
+        self,
+        message: InboundMessage,
+        channel: Channel,
+        organization_id: str | None,
+        deadline: float,
     ) -> tuple[str, bool]:
         """The room the router gives *message*, its binding naming the sender.
 
@@ -906,16 +935,19 @@ class InboundMixin(HelpersMixin):
         message is then routed once more, its identity not read again, and a
         second answer that is not the message's, like no answer, gives it a
         new room: a router is asked twice at most, and a routed message is
-        never refused ``room_closed`` here.
+        never refused ``room_closed`` here. The identity read is bounded by
+        the call's *deadline* (RFC §13.6), as the router is.
         """
         sender = _conversation(message, channel)
-        identity = await self._routing_identity(channel, sender, organization_id)
+        identity = await _by(
+            deadline, self._routing_identity(channel, sender, organization_id), room_id=None
+        )
         own = known_as(sender, identity)
         for _ in range(_ROUTES):
             room_id, created = await self._find_or_open_room(
-                message, channel, None, organization_id, identity
+                message, channel, None, organization_id, identity, deadline=deadline
             )
-            if created or await self._claim_room(room_id, message, channel, own):
+            if created or await self._claim_room(room_id, message, channel, own, deadline):
                 return room_id, created
             logger.debug("Room %s is no longer the routed message's; routing it again", room_id)
         return await self._open_room_for(message, None, organization_id), True
@@ -937,7 +969,12 @@ class InboundMixin(HelpersMixin):
         )
 
     async def _claim_room(
-        self, room_id: str, message: InboundMessage, channel: Channel, own: frozenset[str]
+        self,
+        room_id: str,
+        message: InboundMessage,
+        channel: Channel,
+        own: frozenset[str],
+        deadline: float,
     ) -> bool:
         """Whether *room_id* is still the routed message's, recording the sender on it.
 
@@ -948,18 +985,14 @@ class InboundMixin(HelpersMixin):
         Otherwise a room that does not bind the channel has it attached, and
         a binding that is not a group and names no one records the sender as
         its correspondent: the router then finds them there and admits no
-        one else (§10.4). The wait for the lock is bounded by
-        ``process_timeout``: past it the message is refused (§13.6), never
-        let in unrecorded, which would leave the room open to a concurrent
-        stranger.
+        one else (§10.4). The wait for the lock is bounded by the call's
+        *deadline*, and the section it opens is not (§13.6): past it the
+        message is refused, never let in unrecorded, which would leave the
+        room open to a concurrent stranger.
         """
         channel_id, sender = message.channel_id, _conversation(message, channel)
         async with AsyncExitStack() as stack:
-            try:
-                async with asyncio.timeout(self._process_timeout):
-                    await stack.enter_async_context(self._lock_manager.locked(room_id))
-            except TimeoutError:
-                raise _ClaimTimeoutError(room_id) from None
+            await self._enter_lock_by(stack, room_id, deadline)
             room = await self._store.get_room(room_id)
             if room is None:
                 return False
@@ -1044,7 +1077,7 @@ class InboundMixin(HelpersMixin):
         await self._store.update_binding(binding)
         self._notify_binding_updated(room_id, message.channel_id, binding)
 
-    async def _maybe_auto_attach(self, room_id: str, channel_id: str) -> None:
+    async def _maybe_auto_attach(self, room_id: str, channel_id: str, deadline: float) -> None:
         """Attach *channel_id* to the named room if it was never bound — not
         if it was revoked, and not to a room that refuses events.
 
@@ -1059,8 +1092,12 @@ class InboundMixin(HelpersMixin):
         in-flight message can never be undone by it. The tombstone lives in
         room metadata, so the check holds across restarts and across workers
         sharing the store. attach_channel() re-acquires the lock reentrantly.
+        The wait for the lock is bounded by the call's *deadline*, and the
+        section it opens is not (RFC §13.6): past it the message is refused,
+        never let in unattached.
         """
-        async with self._lock_manager.locked(room_id):
+        async with AsyncExitStack() as stack:
+            await self._enter_lock_by(stack, room_id, deadline)
             room = await self._store.get_room(room_id)
             if room is None:
                 return
@@ -1068,6 +1105,16 @@ class InboundMixin(HelpersMixin):
             if room.status in _REFUSING_STATUSES:
                 return
             await self._attach_unbound(room, channel_id)
+
+    async def _enter_lock_by(self, stack: AsyncExitStack, room_id: str, deadline: float) -> None:
+        """Enter *room_id*'s lock on *stack*, step 2's wait for it bounded by
+        the call's *deadline* (RFC §13.6): past it,
+        :class:`_RoutingTimeoutError` naming the room."""
+        await _by(
+            deadline,
+            stack.enter_async_context(self._lock_manager.locked(room_id)),
+            room_id=room_id,
+        )
 
     async def _fire_text_session_started(
         self,
@@ -1128,12 +1175,27 @@ class InboundMixin(HelpersMixin):
             logger.exception("Error firing ON_SESSION_STARTED for text channel")
 
 
-class _ClaimTimeoutError(Exception):
-    """The room lock a routed message's claim waits for stayed taken (RFC §13.6)."""
+class _RoutingTimeoutError(Exception):
+    """The call's ``process_timeout`` passed during step 2 (RFC §13.6): in
+    the router or the identity read, *room_id* ``None``, or in a read of the
+    room routing gave it or the wait for its lock."""
 
-    def __init__(self, room_id: str) -> None:
+    def __init__(self, room_id: str | None) -> None:
         super().__init__(room_id)
         self.room_id = room_id
+
+
+async def _by[T](deadline: float, work: Awaitable[T], *, room_id: str | None) -> T:
+    """*work* bounded by *deadline*, the call's ``process_timeout`` (RFC
+    §13.6): past it, :class:`_RoutingTimeoutError` naming *room_id*."""
+    timeout = asyncio.timeout_at(deadline)
+    try:
+        async with timeout:
+            return await work
+    except TimeoutError:
+        if not timeout.expired():
+            raise
+        raise _RoutingTimeoutError(room_id) from None
 
 
 def _apply_message_fields(event: RoomEvent, message: InboundMessage) -> RoomEvent:

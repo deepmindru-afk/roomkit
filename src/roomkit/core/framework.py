@@ -1178,6 +1178,10 @@ class RoomKit(
         from roomkit.telemetry.base import SpanKind
         from roomkit.telemetry.context import get_current_span, reset_span, set_current_span
 
+        # One deadline from the call's start to its decision (RFC §13.6,
+        # §10.5): the room's read, the off-lock check, the wait for its turn
+        # and for the room lock, and the locked gates.
+        deadline = asyncio.get_running_loop().time() + self._process_timeout
         # A sixth composite level is refused before anything is read (RFC §5.3).
         refuse_too_deep(content)
         # The visibility grammar (RFC §7.3): an invalid scope is refused.
@@ -1208,8 +1212,7 @@ class RoomKit(
         refuse_reserved(idempotency_key)
 
         await self._ensure_status_bus_subscribed()
-        await self.get_room(room_id, organization_id=organization_id)
-        binding = await self._get_binding(room_id, channel_id)
+        binding = await self._injection_binding(room_id, channel_id, organization_id, deadline)
 
         event_kwargs: dict[str, Any] = dict(
             room_id=room_id,
@@ -1267,7 +1270,6 @@ class RoomKit(
             # needs_lock=False hook applies; its ticket is held until the
             # locked pass has committed. The check and the wait for the turn
             # spend the same pre-commit budget as the locked gates (§13.6).
-            deadline = asyncio.get_running_loop().time() + self._process_timeout
             queued = QueuedInjections()
             # Code under the room lock that injects directly runs what its
             # event's hooks inject itself, nested in the section it holds.
@@ -1327,6 +1329,32 @@ class RoomKit(
             reset_span(token)
 
         return event
+
+    async def _injection_binding(
+        self, room_id: str, channel_id: str, organization_id: str | None, deadline: float
+    ) -> ChannelBinding:
+        """The binding a direct injection's channel holds in its room, read
+        scoped to *organization_id* (RFC §10.5, §17.2) within the call's
+        *deadline* (§13.6), past which it raises once the
+        ``process_timeout`` framework event is emitted.
+
+        Raises:
+            RoomNotFoundError: the room is missing, or another organization's.
+            ChannelNotFoundError: the room does not bind the channel.
+            ProcessTimeoutError: the deadline passed first; nothing written.
+        """
+        timeout = asyncio.timeout_at(deadline)
+        try:
+            async with timeout:
+                await self.get_room(room_id, organization_id=organization_id)
+                return await self._get_binding(room_id, channel_id)
+        except TimeoutError:
+            if not timeout.expired():
+                raise
+            await self._refuse_on_timeout(room_id, channel_id=channel_id)
+            raise ProcessTimeoutError(
+                f"Room {room_id}: process_timeout expired before the event was committed"
+            ) from None
 
     # -- WebSocket lifecycle --
 

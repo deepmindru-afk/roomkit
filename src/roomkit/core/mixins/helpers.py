@@ -227,7 +227,7 @@ class HelpersMixin:
 
     async def _refuse_on_timeout(
         self,
-        room_id: str,
+        room_id: str | None,
         *,
         channel_id: str | None = None,
         event_id: str | None = None,
@@ -236,7 +236,9 @@ class HelpersMixin:
         """Refuse what ``process_timeout`` stopped before its commit point
         (RFC §13.6), with the ``process_timeout`` framework event: an inbound
         event before the room lock (*channel_id*) or under it (*event_id*),
-        or a regeneration still waiting for the lock (``operation``)."""
+        or a regeneration still waiting for the lock (``operation``). Its
+        room is null when the deadline passed while the message was routed
+        (RFC §8.2)."""
         logger.error(
             "Pre-commit of %s timed out after %.1fs",
             operation,

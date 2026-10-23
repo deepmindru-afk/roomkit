@@ -18,6 +18,7 @@ import asyncio
 import pytest
 
 from roomkit import FrameworkEvent, HookTrigger, ProcessTimeoutError, RoomKit
+from roomkit.core.inbound_router import InboundRoomRouter
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.event import RoomEvent, TextContent
@@ -38,6 +39,17 @@ class HangingStore(InMemoryStore):
         if self.armed:
             await asyncio.sleep(3600)
         return await super().list_bindings(room_id)
+
+
+class HangingRoomRead(InMemoryStore):
+    """Healthy until armed, then a read of a room never returns."""
+
+    armed = False
+
+    async def get_room(self, room_id: str):  # noqa: ANN201
+        if self.armed:
+            await asyncio.sleep(3600)
+        return await super().get_room(room_id)
 
 
 class HangingChannel(SimpleChannel):
@@ -160,9 +172,10 @@ class TestDirectInjectionRaisesWhatItCannotReturn:
     the wait for the room lock bounded as on the inbound path (RMK-525, RFC
     §10.5, §13.6)."""
 
-    @pytest.mark.parametrize("where", ["lock", "hook"])
+    @pytest.mark.parametrize("where", ["lock", "hook", "room read"])
     async def test_it_raises_and_writes_nothing(self, where: str) -> None:
-        kit = await _kit(SimpleChannel("sms1"))
+        store = HangingRoomRead()
+        kit = await _kit(SimpleChannel("sms1"), store)
         expired: list[FrameworkEvent] = []
 
         @kit.on("process_timeout")
@@ -183,6 +196,7 @@ class TestDirectInjectionRaisesWhatItCannotReturn:
                 await asyncio.sleep(3600)
 
         before = await kit.store.list_events("r1")
+        store.armed = where == "room read"
         holder = asyncio.create_task(squatter()) if where == "lock" else None
         if holder is not None:
             await asyncio.wait_for(holding.wait(), 5)
@@ -194,9 +208,110 @@ class TestDirectInjectionRaisesWhatItCannotReturn:
         finally:
             if holder is not None:
                 holder.cancel()
+        store.armed = False
         # A write still queued on the room's lock would land before this takes it.
         async with asyncio.timeout(5), kit._lock_manager.locked("r1"):  # noqa: SLF001
             after = await kit.store.list_events("r1")
 
         assert after == before
         assert [event.type for event in expired] == ["process_timeout"]
+
+
+class HangingRouter(InboundRoomRouter):
+    """A router whose lookup never returns."""
+
+    async def route(self, *args: object, **kwargs: object) -> str | None:
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+
+class HangingIdentityStore(InMemoryStore):
+    """A store whose identity read for routing never returns."""
+
+    async def resolve_identity(self, *args: object, **kwargs: object):  # noqa: ANN201
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+
+class SlowRouter(InboundRoomRouter):
+    """A router that answers the one room after *delay* seconds."""
+
+    def __init__(self, delay: float) -> None:
+        self._delay = delay
+
+    async def route(self, *args: object, **kwargs: object) -> str | None:
+        await asyncio.sleep(self._delay)
+        return "r1"
+
+
+def _timeouts(kit: RoomKit) -> list[FrameworkEvent]:
+    expired: list[FrameworkEvent] = []
+
+    @kit.on("process_timeout")
+    async def on_timeout(event: FrameworkEvent) -> None:
+        expired.append(event)
+
+    return expired
+
+
+class TestOneDeadlineFromTheCallsStart:
+    """RFC §13.6: the bound is one deadline from the call's start to its
+    decision, routing included, so a router or a lock that hangs holds the
+    caller no longer than the bound."""
+
+    @pytest.mark.parametrize("hangs", ["the router", "the identity read"])
+    async def test_routing_that_hangs_is_refused_with_no_room(self, hangs: str) -> None:
+        store = HangingIdentityStore() if hangs == "the identity read" else None
+        kit = RoomKit(
+            store=store,
+            process_timeout=SHORT,
+            inbound_router=HangingRouter() if hangs == "the router" else None,
+        )
+        kit.register_channel(SimpleChannel("sms1"))
+        expired = _timeouts(kit)
+
+        result = await _within_budget(kit)
+
+        assert (result.blocked, result.reason) == (True, "process_timeout")
+        assert [(e.room_id, e.channel_id) for e in expired] == [(None, "sms1")]
+        assert await kit.store.list_rooms() == []
+        await kit.close()
+
+    async def test_routing_spends_the_budget_the_rest_of_the_call_has(self) -> None:
+        """A 40 ms router and a 30 ms hook do not fit in a 50 ms budget."""
+        kit = await _kit(SimpleChannel("sms1"), budget=0.05)
+        kit._inbound_router = SlowRouter(0.04)  # noqa: SLF001
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST)
+        async def slow(event, ctx):  # noqa: ANN001, ANN202
+            await asyncio.sleep(0.03)
+
+        result = await _within_budget(kit)
+
+        assert (result.blocked, result.reason) == (True, "process_timeout")
+        await kit.close()
+
+    async def test_step_two_s_attach_is_bounded_on_its_wait_for_the_lock(self) -> None:
+        """Past the wait the message is refused, never let in unattached."""
+        kit = await _kit(SimpleChannel("sms1"))
+        kit.register_channel(SimpleChannel("sms2"))
+        holding = asyncio.Event()
+
+        async def squatter() -> None:
+            async with kit._lock_manager.locked("r1"):  # noqa: SLF001
+                holding.set()
+                await asyncio.sleep(3600)
+
+        holder = asyncio.create_task(squatter())
+        await asyncio.wait_for(holding.wait(), 5)
+        message = InboundMessage(channel_id="sms2", sender_id="u1", content=TextContent(body="hi"))
+        try:
+            result = await asyncio.wait_for(
+                kit.process_inbound(message, room_id="r1"), timeout=5.0
+            )
+        finally:
+            holder.cancel()
+
+        assert (result.blocked, result.reason) == (True, "process_timeout")
+        assert await kit.store.get_binding("r1", "sms2") is None
+        await kit.close()

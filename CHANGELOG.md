@@ -1577,6 +1577,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `send_event()` adds `OUTBOUND`; code that reads an agent's injected event
   as a participant's reads its channel as its author.
 
+- **BREAKING — `process_timeout` is one deadline from the call's start**
+  (RFC §13.6, §10.1 step 2, §10.5, RMK-930). The bound started once the
+  message was routed: the identity read and the router ran unbounded, a
+  routed message's wait for the room lock to record its sender took a full
+  `process_timeout` of its own, and step 2's attach to a room that exists
+  waited for the lock without bound, so a 30 s setting could hold the caller
+  60 s or forever. The deadline is now set as `process_inbound()` starts and
+  bounds every wait before the decision: the identity read, the router, the
+  read of the room it names, step 2's waits for the room lock (the record of
+  a routed sender, the attach of an unbound channel), then the context
+  build, the parse, the off-lock check and the locked gates. Step 2's
+  locked section itself carries none, and a room step 2 creates (its
+  creation, its `ON_ROOM_CREATED` hooks, its attach) is completed whatever
+  the deadline. Past it the message is refused `process_timeout`, never let
+  in unrecorded or unattached; the `process_timeout` framework event's
+  `room_id` is `None` when the deadline passed while the message was routed.
+  `send_event()` reads its room within its deadline too. Migrate: a router
+  or an identity store slower than `process_timeout` raises the setting.
+
 ### Removed
 
 - **BREAKING — `roomkit.core.visibility.effective_visibility`** (RMK-902). An
