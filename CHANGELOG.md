@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writes through `update_event()` (not atomic). A target the room no longer
   holds raises `EventNotFoundError`, nothing written.
 
+- A SYNC hook's injected events on a trigger other than `BEFORE_BROADCAST`
+  are dropped with a warning (RFC §9.4, RMK-930). `BEFORE_DELIVER`,
+  `ON_VERIFICATION_REQUIRED` and every other SYNC trigger commit none, and
+  their results' `injected_events` vanished without a word; the
+  `roomkit.hooks` logger now names the hook and the trigger. Only
+  `BEFORE_BROADCAST` and the identity challenge's `inject` commit them.
+
 - `PostgresStore.init()` on an up-to-date schema takes no ACCESS EXCLUSIVE
   lock on `events` (RMK-930). Its `ALTER TABLE events ADD COLUMN IF NOT
   EXISTS` statements (`addressed_to`, `responds_to`, `delivery_results`)

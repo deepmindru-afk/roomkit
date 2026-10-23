@@ -49,6 +49,8 @@ class HookResult(BaseModel):
     """
     reason: str | None = None
     injected_events: list[InjectedEvent] = Field(default_factory=list)
+    """Events to inject, whatever the action. Committed on ``BEFORE_BROADCAST``
+    only (RFC §9.4): any other trigger drops them with a warning."""
     tasks: list[Task] = Field(default_factory=list)
     observations: list[Observation] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)

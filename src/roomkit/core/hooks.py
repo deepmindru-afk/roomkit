@@ -310,6 +310,25 @@ def _usable_payload(current: Any, payload: Any) -> bool:
     return payload is not None and isinstance(payload, type(current))
 
 
+def _committed_injections(
+    injected: list[InjectedEvent], trigger: HookTrigger, hook: HookRegistration, room_id: str
+) -> list[InjectedEvent]:
+    """The events of *hook*'s result that *trigger* commits (RFC §9.4): all
+    of them on BEFORE_BROADCAST, none on any other SYNC trigger, where they
+    are dropped with a warning, never silently."""
+    if trigger == HookTrigger.BEFORE_BROADCAST or not injected:
+        return injected
+    logger.warning(
+        "Hook %s injected %d event(s) on %s: dropped, since only BEFORE_BROADCAST commits a "
+        "hook's injected events (RFC §9.4); the rest of its result stands",
+        hook.name,
+        len(injected),
+        trigger.value,
+        extra={"room_id": room_id, "hook": hook.name, "trigger": trigger.value},
+    )
+    return []
+
+
 def _named(hook: HookRegistration, scope: Iterable[HookRegistration | str]) -> HookRegistration:
     """*hook* under a name unique within its *scope*, the kit's hooks or one
     room's (RFC §9.1). An explicit name a hook of the scope holds, or one the
@@ -1127,7 +1146,9 @@ class HookEngine:
             # unusable result's injected events are not (§9.3).
             current = result.event if result.event is not None else event
             if hook_result.action != "modify" or _usable_payload(current, hook_result.event):
-                result.injected_events.extend(hook_result.injected_events)
+                result.injected_events.extend(
+                    _committed_injections(hook_result.injected_events, trigger, hook, room_id)
+                )
             result.tasks.extend(hook_result.tasks)
             result.observations.extend(hook_result.observations)
             if hook_result.metadata:

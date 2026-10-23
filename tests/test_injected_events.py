@@ -3,7 +3,10 @@ cascade (RFC §9.4, §8.3, §10.1 step 14)."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
+
+import pytest
 
 from roomkit import RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -342,6 +345,32 @@ class TestAnIdentityChallenge:
         try:
             challenges = await _notices(kit, "Who are you?")
             assert ([e.blocked_by for e in challenges], sms.delivered) == (["no_challenge"], [])
+        finally:
+            await kit.close()
+
+
+class TestAnotherTrigger:
+    """Only BEFORE_BROADCAST and the identity challenge commit injected
+    events; any other SYNC trigger drops them, never silently (RFC §9.4)."""
+
+    async def test_drops_them_with_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        kit, ws, _ = await _room()
+
+        @kit.hook(HookTrigger.BEFORE_DELIVER, name="inject_on_deliver")
+        async def inject(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            notice = InjectedEvent(event=_notice(), target_channel_ids=["ws"])
+            return HookResult.allow(injected=[notice])
+
+        try:
+            with caplog.at_level(logging.WARNING, logger="roomkit.hooks"):
+                await kit.deliver("r1", "your table is ready")
+            assert await _notices(kit) == []
+            assert "notice" not in [_body(e) for e in ws.delivered]
+            assert any(
+                "inject_on_deliver" in r.getMessage() and "before_deliver" in r.getMessage()
+                for r in caplog.records
+                if r.levelno == logging.WARNING
+            )
         finally:
             await kit.close()
 
