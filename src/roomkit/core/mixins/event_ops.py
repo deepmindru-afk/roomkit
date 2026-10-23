@@ -106,7 +106,9 @@ class EventOpsMixin(HelpersMixin):
 
         Fires ON_EVENT_UPDATED with the updated event. Returns the updated
         event, or ``None`` when *event_id* does not exist in *room_id* (no
-        hook fires).
+        hook fires). An update that changes nothing, no field or the values
+        the event holds, writes nothing, fires nothing and returns the event
+        as stored (RFC §10.3).
         """
         async with self._lock_manager.locked(room_id):
             target = await self._store.get_event(event_id)
@@ -119,9 +121,10 @@ class EventOpsMixin(HelpersMixin):
                 update["source"] = source
             if metadata is not None:
                 update["metadata"] = metadata
-            if not update:
+            changed = target.model_copy(update=update)
+            if changed == target:
                 return target
-            updated = await self._store.update_event(target.model_copy(update=update))
+            updated = await self._store.update_event(changed)
         context = await self._build_context(room_id)
         await self._hook_engine.run_async_hooks(
             room_id, HookTrigger.ON_EVENT_UPDATED, updated, context

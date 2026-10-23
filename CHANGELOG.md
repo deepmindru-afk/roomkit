@@ -645,6 +645,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a retried call duplicates nothing. Breaking for a hook that counted
   every `mute()` call rather than every change.
 
+- **BREAKING — a direct `update_event()` that changes nothing writes and
+  fires nothing** (RFC §10.3, RMK-930). Given the content, the source or
+  the metadata the event already holds, it wrote the event again and fired
+  `ON_EVENT_UPDATED`; it now returns the event as stored, as a call naming
+  no field did. Breaking for a hook on `ON_EVENT_UPDATED` that counted
+  calls rather than changes.
+
 - **BREAKING — a hook's injected events commit after their cause has
   released the room lock** (RFC §9.4, §10.1 steps 10 to 14, §13.5,
   RMK-930). Their passes ran inside the cause's locked section, taking the

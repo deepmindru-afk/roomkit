@@ -3,6 +3,8 @@ mutation triggers (ON_EVENT_UPDATED / ON_EVENT_DELETED)."""
 
 from __future__ import annotations
 
+import pytest
+
 from roomkit.channels.base import Channel
 from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -109,16 +111,32 @@ class TestUpdateEventApi:
         assert updated.source.channel_type is ChannelType.SYSTEM
         assert updated.metadata == {"message_type": "task_result"}
 
-    async def test_no_fields_returns_target_without_hook(self) -> None:
+    @pytest.mark.parametrize("fields", [(), ("content",), ("source", "metadata")])
+    async def test_an_update_that_changes_nothing_writes_and_fires_nothing(
+        self, fields: tuple[str, ...], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RFC §10.3: no fields, or the values the event holds, return the
+        event as stored, with no write and no ON_EVENT_UPDATED."""
         kit, _src = await _setup()
         original = await _send(kit, "v1")
+        stored = await kit.store.get_event(original.id)
+        assert stored is not None
         updated_calls = _track(kit, HookTrigger.ON_EVENT_UPDATED)
+        writes: list[RoomEvent] = []
 
-        updated = await kit.update_event("r1", original.id)
+        async def update_event(event: RoomEvent) -> RoomEvent:
+            writes.append(event)
+            return event
 
-        assert updated is not None
-        assert updated.content.body == "v1"
+        monkeypatch.setattr(kit.store, "update_event", update_event)
+
+        same = {name: getattr(stored, name) for name in fields}
+        updated = await kit.update_event("r1", original.id, **same)
+
+        assert updated == stored
+        assert writes == []
         assert updated_calls == []
+        await kit.close()
 
     async def test_unknown_or_foreign_event_returns_none(self) -> None:
         kit, _src = await _setup()
