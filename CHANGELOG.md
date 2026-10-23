@@ -649,6 +649,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaves audio flowing. Breaking for a hook that counted every `mute()`
   call rather than every change.
 
+- An intelligence channel the event solicits that is not registered is
+  reported failed (RFC §8.2, §10.2 step 3, RMK-930). Its binding outlives
+  the channel, and the router skipped it with a warning: the turn the
+  event owed it was never taken and nothing said so. It is now reported
+  `delivery_failed` with the error `channel_not_registered`, counted in
+  `broadcast_partial_failure`, and the result's `delivery_results` names it
+  `failed` (code `channel_not_registered`, not retryable); it ran no turn,
+  so `ON_ERROR` does not fire, and it stays in `unavailable_targets`. An
+  agent the event does not solicit, and a transport, whose client may be
+  connected to another process, are still skipped without a report.
+
 - **BREAKING — a direct `update_event()` that changes nothing writes and
   fires nothing** (RFC §10.3, RMK-930). Given the content, the source or
   the metadata the event already holds, it wrote the event again and fired

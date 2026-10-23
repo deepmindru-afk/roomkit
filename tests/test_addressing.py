@@ -15,9 +15,11 @@ from roomkit import AgentResponsePolicy, ChannelCategory, RoomKit
 from roomkit.core.event_router import _solicits
 from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.models.channel import ChannelOutput
+from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelType, EventType, Visibility
+from roomkit.models.enums import ChannelType, EventType, HookExecution, HookTrigger, Visibility
 from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.framework_event import FrameworkEvent
 from tests.test_framework import SimpleChannel
 
 
@@ -402,6 +404,7 @@ class TestUnsolicitedTargetsCostNothing:
     ) -> None:
         kit, human, agents = await _room("claude-code", "codex")
         kit.unregister_channel("claude-code")
+        failed = _failed_deliveries(kit)
 
         with caplog.at_level(logging.WARNING, logger="roomkit.event_router"):
             await kit.process_inbound(
@@ -414,17 +417,27 @@ class TestUnsolicitedTargetsCostNothing:
             )
 
         assert agents["codex"].solicited == ["review it"]
-        assert "not found in registry" not in caplog.text
+        assert caplog.records == []
+        assert failed == []
         await kit.close()
 
-    async def test_an_unregistered_solicited_agent_still_warns(
+    async def test_an_unregistered_solicited_agent_is_reported_failed(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
+        """RFC §10.2 step 3, §8.2: its turn is not taken, and the event's
+        delivery reports it, ``channel_not_registered``, not retryable; it
+        ran no turn, so ON_ERROR does not fire."""
         kit, human, agents = await _room("claude-code", "codex")
         kit.unregister_channel("claude-code")
+        failed = _failed_deliveries(kit)
+        errors: list[RoomEvent] = []
+
+        @kit.hook(HookTrigger.ON_ERROR, execution=HookExecution.ASYNC)
+        async def on_error(event: RoomEvent, ctx: RoomContext) -> None:
+            errors.append(event)
 
         with caplog.at_level(logging.WARNING, logger="roomkit.event_router"):
-            await kit.process_inbound(
+            result = await kit.process_inbound(
                 InboundMessage(
                     channel_id="human",
                     sender_id="user",
@@ -433,8 +446,30 @@ class TestUnsolicitedTargetsCostNothing:
                 )
             )
 
-        assert "not found in registry" in caplog.text
+        assert [(e.channel_id, e.data["error"]) for e in failed] == [
+            ("claude-code", "channel_not_registered")
+        ]
+        reported = result.delivery_results["claude-code"]
+        assert reported.status == "failed"
+        assert reported.error is not None
+        assert (reported.error.code, reported.error.retryable) == (
+            "channel_not_registered",
+            False,
+        )
+        assert result.unavailable_targets == ["claude-code"]
+        assert errors == []
+        assert "claude-code" in caplog.text
         await kit.close()
+
+
+def _failed_deliveries(kit: RoomKit) -> list[FrameworkEvent]:
+    failed: list[FrameworkEvent] = []
+
+    @kit.on("delivery_failed")
+    async def on_failed(event: FrameworkEvent) -> None:
+        failed.append(event)
+
+    return failed
 
 
 class TestAnAbsentTransportIsSilent:
@@ -453,6 +488,7 @@ class TestAnAbsentTransportIsSilent:
         kit.register_channel(away)
         await kit.attach_channel("room-1", "ws-away")
         kit.unregister_channel("ws-away")
+        failed = _failed_deliveries(kit)
 
         with caplog.at_level(logging.WARNING, logger="roomkit.event_router"):
             result = await kit.process_inbound(
@@ -464,7 +500,8 @@ class TestAnAbsentTransportIsSilent:
             )
 
         assert not result.blocked
-        assert "not found in registry" not in caplog.text
+        assert caplog.records == []
+        assert failed == []
         await kit.close()
 
 

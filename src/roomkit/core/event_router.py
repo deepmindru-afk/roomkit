@@ -108,6 +108,11 @@ def _solicits(
 # The ``blocked_by`` of a response past ``max_chain_depth`` (RFC §8.3).
 CHAIN_DEPTH_LIMIT = "event_chain_depth_limit"
 
+# The error of an intelligence target the event solicits whose channel is
+# not registered (RFC §10.2 step 3, §8.2): its turn is not taken, and the
+# delivery reports it, not retryable.
+CHANNEL_NOT_REGISTERED = "channel_not_registered"
+
 
 def unanswered(trigger: RoomEvent, channel_id: str, channel_type: Any) -> RoomEvent:
     """The record that stands in for an answer a guard kept *channel_id* from giving.
@@ -573,10 +578,20 @@ class EventRouter:
                 )
                 return
             if channel is None:
+                # An agent the event solicits (an unsolicited one returned
+                # above): its turn is owed and never taken, which the
+                # event's delivery reports (RFC §10.2 step 3).
                 logger.warning(
-                    "Channel %s not found in registry, skipping. Available: %s",
+                    "Intelligence channel %s is not registered; its turn is not taken",
                     binding.channel_id,
-                    list(self._channels.keys()),
+                    extra={
+                        "room_id": event.room_id,
+                        "channel_id": binding.channel_id,
+                        "event_id": event.id,
+                    },
+                )
+                target_results.append(
+                    _TargetResult(channel_id=binding.channel_id, error=CHANNEL_NOT_REGISTERED)
                 )
                 return
 

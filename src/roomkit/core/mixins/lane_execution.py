@@ -19,7 +19,12 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from roomkit.core._changes import with_target
 from roomkit.core._failure_log import needs_reporting
 from roomkit.core._queued_injections import QueuedInjections
-from roomkit.core.event_router import CHAIN_DEPTH_LIMIT, BroadcastResult, reply_turn_entry
+from roomkit.core.event_router import (
+    CHAIN_DEPTH_LIMIT,
+    CHANNEL_NOT_REGISTERED,
+    BroadcastResult,
+    reply_turn_entry,
+)
 from roomkit.core.exceptions import RoomNotFoundError, error_type_name
 from roomkit.core.lanes import anchor_index
 from roomkit.core.mixins.helpers import (
@@ -95,16 +100,25 @@ def _delivery_results(result: BroadcastResult) -> dict[str, DeliveryResult]:
             provider_message_id=(
                 provider_result.provider_message_id if provider_result is not None else None
             ),
-            error=DeliveryError(
-                code=str(getattr(exc, "code", None) or error_type_name(exc))
-                if exc is not None
-                else "DeliveryFailed",
-                message=message,
-                retryable=bool(getattr(exc, "retryable", True)),
-            ),
+            error=_delivery_error(message, exc),
             provider_result=provider_result,
         )
     return results
+
+
+def _delivery_error(message: str, exc: Exception | None) -> DeliveryError:
+    """A failed target's error: its exception's code and retryability, or
+    for an agent the event solicits that is not registered, which ran no
+    turn, ``channel_not_registered``, not retryable (RFC §10.2 step 3)."""
+    if exc is None and message == CHANNEL_NOT_REGISTERED:
+        return DeliveryError(code=CHANNEL_NOT_REGISTERED, message=message, retryable=False)
+    return DeliveryError(
+        code=str(getattr(exc, "code", None) or error_type_name(exc))
+        if exc is not None
+        else "DeliveryFailed",
+        message=message,
+        retryable=bool(getattr(exc, "retryable", True)),
+    )
 
 
 def scoped(response: RoomEvent, scope: str | None) -> RoomEvent:
@@ -132,7 +146,9 @@ def _unavailable_targets(plan: DeliveryPlan, result: BroadcastResult) -> list[st
         # A discussion asks its agents later, one turn at a time (RFC
         # §19.7.5): an addressed agent bound to the room is not unavailable.
         return [t for t in plan.event.addressed_to or [] if t not in intelligence]
-    reached = result.outputs.keys() | result.errors.keys()
+    # An agent not registered was not reached: it failed before any turn.
+    failed = {ch for ch, error in result.errors.items() if error != CHANNEL_NOT_REGISTERED}
+    reached = result.outputs.keys() | failed
     return [
         target
         for target in plan.event.addressed_to or []
@@ -861,7 +877,9 @@ class LaneExecutionMixin(HelpersMixin):
                 continue
             error_msg = result.errors.get(binding.channel_id)
             exc = result.errors_exc.get(binding.channel_id)
-            if not error_msg or not needs_reporting(exc):
+            # An agent not registered ran no turn: delivery_failed reports
+            # it, ON_ERROR does not (RFC §10.2 step 3).
+            if not error_msg or error_msg == CHANNEL_NOT_REGISTERED or not needs_reporting(exc):
                 continue
             await self._fire_error_hook(
                 event.room_id,
