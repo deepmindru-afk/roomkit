@@ -37,6 +37,7 @@ from roomkit.orchestration.strategies.discussion._config import DiscussionConfig
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
+from roomkit.tools.context import _current_loop_ctx
 from tests.test_framework import SimpleChannel
 
 AGENTS = ("investigator", "sre", "comms")
@@ -52,16 +53,38 @@ def _fast(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class _Slow(MockAIProvider):
-    """Answers after a while, and logs when it generates, across processes."""
+    """Answers after a while, and logs when it generates, across processes:
+    ``+name`` as it starts, ``-name`` as it answers, ``xname`` once its turn
+    is cut. A ``Cancel`` of its turn, or the cluster's *release*, ends the
+    wait at once, as a streaming provider's next chunk would reach the
+    steering check; the delay only bounds a turn nothing ends."""
 
-    def __init__(self, name: str, log: list[str], delay: float = 0.15) -> None:
+    def __init__(
+        self,
+        name: str,
+        log: list[str],
+        delay: float = 0.02,
+        release: asyncio.Event | None = None,
+    ) -> None:
         super().__init__(ai_responses=[AIResponse(content=f"{name} answers")])
         self.who, self.log, self.delay = name, log, delay
+        self.release = release or asyncio.Event()
 
     async def generate(self, context: Any) -> AIResponse:
         self.log.append(f"+{self.who}")
-        await asyncio.sleep(self.delay)
-        self.log.append(f"-{self.who}")
+        loop = _current_loop_ctx.get()
+        ends = [self.release, *([loop.cancel_event] if loop is not None else [])]
+        waits = [asyncio.ensure_future(end.wait()) for end in ends]
+        try:
+            await asyncio.wait(waits, timeout=self.delay, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            self.log.append(f"x{self.who}")
+            raise
+        finally:
+            for wait in waits:
+                wait.cancel()
+        cut = loop is not None and loop.cancel_event.is_set()
+        self.log.append(f"{'x' if cut else '-'}{self.who}")
         return await super().generate(context)
 
 
@@ -73,11 +96,12 @@ class _Cluster:
         self.locks = InMemoryLockManager()
         self.log: list[str] = []
         self.kits: list[RoomKit] = []
+        self.release = asyncio.Event()
 
     def strategy(
-        self, delay: float = 0.15, names: Sequence[str] = AGENTS, **options: Any
+        self, delay: float = 0.02, names: Sequence[str] = AGENTS, **options: Any
     ) -> Discussion:
-        agents = [AIChannel(n, provider=_Slow(n, self.log, delay)) for n in names]
+        agents = [AIChannel(n, provider=_Slow(n, self.log, delay, self.release)) for n in names]
         return Discussion(agents, **options)
 
     def kit(self) -> RoomKit:
@@ -151,9 +175,38 @@ async def _until(predicate: Any, timeout: float = 5.0) -> None:
             await asyncio.sleep(0.02)
 
 
+async def _idle(kit: RoomKit) -> None:
+    """Until *kit*, the process giving the turns, runs none and has none to
+    give (an agent left queued only listens): a turn the test says nobody
+    gets would have been given by then."""
+
+    async def idle() -> bool:
+        queue = kit.speak_queue("r1")
+        return queue is not None and queue.speaking is None and set(queue.queue) <= queue.listening
+
+    await _until(idle)
+
+
+async def _turn_over(driver: Any) -> None:
+    """Until the turn *driver* was giving has run to its end, cut or not: an
+    answer it was going to write is written by then."""
+
+    async def over() -> bool:
+        return driver.speaking is None
+
+    await _until(over)
+
+
+def _shorter_lease(monkeypatch: pytest.MonkeyPatch) -> float:
+    """A lease that expires in a quarter of a second, for a test that waits it out."""
+    monkeypatch.setattr(_shared, "LEASE_SECONDS", 0.25)
+    monkeypatch.setattr(_shared, "_RENEW_BEFORE", 0.15)
+    return 0.25
+
+
 async def test_a_process_that_did_not_install_it_follows_the_discussion() -> None:
     cluster = _Cluster()
-    await cluster.process(install=True, create=True)
+    a = await cluster.process(install=True, create=True, delay=0.1)
     follower = await cluster.process(install=False)
 
     result = await _say(follower, "checkout is failing, what happened?")
@@ -165,7 +218,7 @@ async def test_a_process_that_did_not_install_it_follows_the_discussion() -> Non
         return len(await cluster.answers()) >= 3
 
     await _until(three)
-    await asyncio.sleep(0.3)
+    await _idle(a)
     assert sorted(await cluster.answers()) == sorted(AGENTS)
     assert cluster.overlap() == 1
     queue = follower.speak_queue("r1")
@@ -175,8 +228,9 @@ async def test_a_process_that_did_not_install_it_follows_the_discussion() -> Non
 
 async def test_two_processes_never_give_two_turns_at_once() -> None:
     cluster = _Cluster()
-    a = await cluster.process(install=True, create=True)
-    b = await cluster.process(install=True)
+    # Turns long enough to overlap, were two processes to give one each.
+    a = await cluster.process(install=True, create=True, delay=0.1)
+    b = await cluster.process(install=True, delay=0.1)
 
     await _say(a, "@investigator what do the logs say?")
     await asyncio.sleep(0.02)
@@ -190,7 +244,10 @@ async def test_two_processes_never_give_two_turns_at_once() -> None:
     await cluster.close()
 
 
-async def test_a_process_that_stopped_hands_the_room_over_once_its_lease_expires() -> None:
+async def test_a_process_that_stopped_hands_the_room_over_once_its_lease_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _shorter_lease(monkeypatch)
     cluster = _Cluster()
     a = await cluster.process(install=True, create=True)
     b = await cluster.process(install=True)
@@ -315,7 +372,7 @@ async def test_a_restarted_process_takes_the_discussion_back() -> None:
     await a.close()  # the process stops: the queue and its configuration stay stored
     b = await cluster.process(install=False)
     await _say(b, "@investigator are you there?")
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(3 * _driver.POLL_SECONDS)  # a driver would have read it by now
     assert await cluster.answers() == []  # followed: no process gives the turns
 
     await b.install_strategy("r1", cluster.strategy())
@@ -390,7 +447,7 @@ async def test_changing_the_agents_keeps_the_queue_and_lets_the_removed_agent_go
 
 async def test_a_process_whose_host_installed_the_old_agents_gives_no_turn() -> None:
     cluster = _Cluster()
-    _, b = await _two_processes_then_a_change(cluster)
+    a, b = await _two_processes_then_a_change(cluster)
     assert not b._discussions["r1"].drives
 
     # B routes by the new configuration: @comms names no agent any more, and
@@ -401,7 +458,7 @@ async def test_a_process_whose_host_installed_the_old_agents_gives_no_turn() -> 
         return len(await cluster.answers()) == 2
 
     await _until(two)
-    await asyncio.sleep(0.3)
+    await _idle(a)
     assert await cluster.answers() == ["investigator", "investigator"]
     assert "+comms" not in cluster.log
     await cluster.close()
@@ -439,8 +496,11 @@ async def test_an_instruction_or_a_result_reaching_a_process_that_gives_no_turn_
     # B cannot give the turn that would take them: it reports the
     # instruction dropped, and leaves the result for its caller to post.
     assert await b._queue_discussion_post("r1", result) is False
-    await asyncio.sleep(0.1)
-    assert (SpeakQueueChange.INSTRUCTION_DROPPED, ("investigator",)) in seen
+
+    async def reported() -> bool:
+        return (SpeakQueueChange.INSTRUCTION_DROPPED, ("investigator",)) in seen
+
+    await _until(reported)
     assert all(change != SpeakQueueChange.QUEUED for change, _ in seen)
     assert b._discussions["r1"].instructions == {}
     await cluster.close()
@@ -470,6 +530,7 @@ async def test_what_a_process_held_when_another_install_replaced_its_own_is_not_
     assert await a._queue_discussion_post("r1", result) is True
     await _say(a, "summarise", addressed_to=["sre"], event_type=EventType.INSTRUCTION)
     await b.install_strategy("r1", cluster.strategy(names=KEPT, delay=1.0))
+    cluster.release.set()  # the slow turn ends behind the install
 
     async def posted() -> list[RoomEvent]:
         events = await cluster.store.list_events("r1", limit=200)
@@ -480,7 +541,7 @@ async def test_what_a_process_held_when_another_install_replaced_its_own_is_not_
         return dropped and bool(await posted())
 
     await _until(handed_back)
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(3 * _driver.POLL_SECONDS)  # a second post or sre's turn would be in
     assert len(await posted()) == 1
     assert a._discussions["r1"].instructions == {}
     assert "+sre" not in cluster.log  # the instruction's turn was given nowhere
@@ -587,19 +648,24 @@ async def test_uninstalling_while_a_turn_runs_cuts_it_and_records_nothing(
     await _say(follower, "@investigator take your time")
     await _turn_started(cluster)
     giving = next(k for k in (a, b) if k._discussions["r1"].driver.speaking == "investigator")
+    driver = giving._discussions["r1"].driver
     kit = {"giving_the_turn": giving, "other_installer": b if giving is a else a}.get(
         who, follower
     )
 
     await _uninstall(kit, locked=locked)
-    await asyncio.sleep(1.3)  # past the turn's delay: its end would be written by now
+    await _turn_over(driver)
 
     room = await cluster.store.get_room("r1")
     assert room is not None
     assert room.metadata.get("_speak_queue") is None
     assert room.metadata.get("_discussion") is None
     assert await cluster.answers() == []  # cut wherever it ran
-    assert a.room_strategy("r1") is None and b.room_strategy("r1") is None
+
+    async def gone_everywhere() -> bool:
+        return a.room_strategy("r1") is None and b.room_strategy("r1") is None
+
+    await _until(gone_everywhere)  # each installer drops it once its driver reads the room
     await cluster.close()
 
 
@@ -653,9 +719,12 @@ async def test_uninstalling_under_the_room_lock_returns_while_the_turn_runs_a_to
     await kit.attach_channel("r1", "ops")
     await _say(kit, "@investigator check")
     await asyncio.wait_for(called.wait(), 5.0)
-    await asyncio.sleep(0.1)
-    events = await kit.store.list_events("r1")
-    assert any(e.source.channel_id == "investigator" for e in events)  # its text stored
+
+    async def text_stored() -> bool:
+        events = await kit.store.list_events("r1")
+        return any(e.source.channel_id == "investigator" for e in events)
+
+    await _until(text_stored)  # the cut turn's text, stored before its call
 
     caplog.set_level(logging.ERROR, logger="roomkit")
     await _uninstall(kit, locked=True)
@@ -673,11 +742,12 @@ async def test_installing_under_the_room_lock_returns_mid_turn() -> None:
         await a.install_strategy("r1", cluster.strategy(delay=1.0))
     await _say(a, "@investigator take your time")
     await _turn_started(cluster)
+    driver = a._discussions["r1"].driver
 
     # Over the discussion, the speaking agent left out: its turn is cut.
     async with asyncio.timeout(1.0), a.lock_manager.locked("r1"):
         await a.install_strategy("r1", cluster.strategy(names=("sre", "comms")))
-    await asyncio.sleep(1.3)
+    await _turn_over(driver)
 
     assert await cluster.answers() == []
     stored = await cluster.stored()
@@ -704,20 +774,21 @@ async def test_a_process_that_stops_during_a_turn_records_its_end_and_keeps_the_
     assert await cluster.stored() is not None
 
 
-async def test_a_process_whose_install_another_replaced_is_current_again_once_it_installs() -> (
-    None
-):
+async def test_a_process_whose_install_another_replaced_is_current_again_once_it_installs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # B's host read comms switched off a moment: it installs without it,
     # then stops. A follows B's agents and gives no turn: the room waits.
+    lease = _shorter_lease(monkeypatch)
     cluster = _Cluster()
     a = await cluster.process(install=True, create=True)
     b = await cluster.process(install=True, names=KEPT)
     assert await b.room_strategy_is_current("r1", Discussion) is True
     assert await a.room_strategy_is_current("r1", Discussion) is False
     await b.close()
-    await asyncio.sleep(0.8)  # past the lease
+    await asyncio.sleep(lease + 2 * _driver.POLL_SECONDS)  # past the lease
     await _say(a, "@investigator are you there?")
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(3 * _driver.POLL_SECONDS)  # A's driver has read it by now
     assert await cluster.answers() == []
 
     # A's host finds it false and installs the agents it holds.
@@ -758,6 +829,7 @@ async def test_an_uninstall_elsewhere_is_taken_at_once_even_under_the_lock_mid_t
     b = await cluster.process(install=True)
     await _say(a, "@investigator take your time")
     await _turn_started(cluster)
+    driver = a._discussions["r1"].driver
     assert await b.uninstall_strategy("r1") is True
 
     async with asyncio.timeout(1.0), a.lock_manager.locked("r1"):
@@ -766,7 +838,7 @@ async def test_an_uninstall_elsewhere_is_taken_at_once_even_under_the_lock_mid_t
 
     # A host that still wants the discussion would install it; this one
     # follows the uninstall, and nothing of A's cut turn comes back.
-    await asyncio.sleep(1.3)
+    await _turn_over(driver)
     room = await cluster.store.get_room("r1")
     assert room is not None and room.metadata.get("_speak_queue") is None
     assert await cluster.stored() is None

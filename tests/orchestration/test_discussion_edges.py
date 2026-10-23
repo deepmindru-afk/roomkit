@@ -33,6 +33,7 @@ from roomkit.orchestration.strategies.discussion import (
     Discussion,
     SpeakQueueChange,
     SpeakQueueEvent,
+    _driver,
 )
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
@@ -112,6 +113,16 @@ def _follow(kit: RoomKit) -> list[tuple[SpeakQueueChange, tuple[str, ...]]]:
     return seen
 
 
+async def _seen(
+    seen: list[tuple[SpeakQueueChange, tuple[str, ...]]],
+    change: tuple[SpeakQueueChange, tuple[str, ...]],
+) -> None:
+    """Wait for *change* to reach the hook :func:`_follow` set, which runs on its own."""
+    async with asyncio.timeout(5):
+        while change not in seen:
+            await asyncio.sleep(0.01)
+
+
 # -- Instructions --
 
 
@@ -137,7 +148,7 @@ async def test_an_instruction_past_the_depth_limit_is_dropped_and_reported() -> 
         kit, "hand back", addressed_to=["a"], event_type=EventType.INSTRUCTION, chain_depth=2
     )
     await _settle(kit)
-    await asyncio.sleep(0.05)
+    await _seen(seen, (SpeakQueueChange.INSTRUCTION_DROPPED, ("a",)))
 
     assert len(a.calls) == 0
     assert (SpeakQueueChange.INSTRUCTION_DROPPED, ("a",)) in seen
@@ -436,16 +447,18 @@ async def test_an_agent_that_only_listens_ignores_a_message_that_does_not_name_i
 async def test_listen_only_on_a_turn_given_but_not_started_cuts_it() -> None:
     a = _provider("a should not be heard")
     kit = RoomKit()
+    held = asyncio.Event()
 
     @kit.hook(HookTrigger.ON_SPEAK_QUEUE, execution=HookExecution.ASYNC)
     async def hold(event: SpeakQueueEvent, context: RoomContext) -> None:
         if event.change == SpeakQueueChange.TURN_GIVEN:
             await kit.listen_only("r1", ["a"])
+            held.set()
 
     await _room(kit, {"a": a})
     await _say(kit, "@a go")
+    await asyncio.wait_for(held.wait(), 5)
     await _settle(kit)
-    await asyncio.sleep(0.05)
 
     assert [e for e in await _timeline(kit) if e.source.channel_id == "a"] == []
     await kit.close()
@@ -706,7 +719,8 @@ async def test_a_store_failure_in_the_discussion_never_loses_the_message() -> No
     await kit.close()
 
 
-async def test_a_failure_reading_the_queue_is_retried() -> None:
+async def test_a_failure_reading_the_queue_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_driver, "_RETRY_MAX", 0.01)  # the retry's wait, on a test's scale
     a = _provider("a")
     kit = RoomKit()
     await _room(kit, {"a": a})
@@ -762,7 +776,7 @@ async def test_a_name_a_binding_hides_the_message_from_queues_nobody() -> None:
 
     await _say(kit, "@a @b hello")
     await _settle(kit)
-    await asyncio.sleep(0.05)
+    await _seen(seen, (SpeakQueueChange.TURN_ENDED, ("a",)))  # after what was queued
 
     assert (len(a.calls), len(b.calls)) == (1, 0)
     assert all("b" not in agents for change, agents in seen if change == SpeakQueueChange.QUEUED)

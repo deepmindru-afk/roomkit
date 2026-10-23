@@ -77,6 +77,20 @@ async def _answers(kit: RoomKit) -> list[str]:
     ]
 
 
+class _Held(MockDispatchPolicy):
+    """Decides once released: ``deciding`` is set when a decision starts, so a
+    test acts while it runs."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.deciding, self.release = asyncio.Event(), asyncio.Event()
+
+    async def decide(self, turn: DispatchTurn) -> DispatchDecision:
+        self.deciding.set()
+        await self.release.wait()
+        return await super().decide(turn)
+
+
 async def test_the_policy_picks_who_takes_an_unaddressed_message() -> None:
     team = _team()
     policy = MockDispatchPolicy([["sre"]])
@@ -236,6 +250,9 @@ async def test_a_policy_past_its_bound_asks_every_candidate() -> None:
     await _room(kit, _team(), dispatch=policy, dispatch_timeout=0.05)
 
     await _say(kit, "anyone?")
+    async with asyncio.timeout(5):  # the bound runs out before the queue moves
+        while not seen:
+            await asyncio.sleep(0.01)
     await _settle(kit)
 
     assert sorted(await _answers(kit)) == sorted(AGENTS)
@@ -303,8 +320,9 @@ async def test_the_queue_says_who_a_decision_queued() -> None:
 
     await _room(kit, _team(), dispatch=MockDispatchPolicy([["dev"]]))
     result = await _say(kit, "deploy?")
-    await _settle(kit)
-    await asyncio.sleep(0.05)
+    async with asyncio.timeout(5):  # the hooks run on their own: dev's turn ends last
+        while not any(c.change == SpeakQueueChange.TURN_ENDED for c in changes):
+            await asyncio.sleep(0.01)
 
     queued = [c for c in changes if c.change == SpeakQueueChange.QUEUED]
     assert [(c.channel_ids, c.event_id) for c in queued] == [(("dev",), result.event.id)]
@@ -313,11 +331,13 @@ async def test_the_queue_says_who_a_decision_queued() -> None:
 
 async def test_a_message_waiting_for_a_decision_keeps_its_place() -> None:
     kit = RoomKit()
-    await _room(kit, _team(), dispatch=MockDispatchPolicy([["sre"]], delay=0.2))
+    policy = _Held([["sre"]])
+    await _room(kit, _team(), dispatch=policy)
 
     await _say(kit, "the error rate is climbing")
-    await asyncio.sleep(0.05)  # the decision runs
+    await asyncio.wait_for(policy.deciding.wait(), 5)
     await _say(kit, "@dev and the deploy?")
+    policy.release.set()
     async with asyncio.timeout(5):
         while len(await _answers(kit)) < 2:
             await asyncio.sleep(0.02)
@@ -330,11 +350,13 @@ async def test_a_message_waiting_for_a_decision_keeps_its_place() -> None:
 async def test_a_pick_merged_with_a_later_message_answers_the_later_one() -> None:
     team = _team()
     kit = RoomKit()
-    await _room(kit, team, dispatch=MockDispatchPolicy([["sre"]], delay=0.2))
+    policy = _Held([["sre"]])
+    await _room(kit, team, dispatch=policy)
 
     await _say(kit, "the error rate is climbing")
-    await asyncio.sleep(0.05)  # the decision runs
+    await asyncio.wait_for(policy.deciding.wait(), 5)
     await _say(kit, "@sre check the deploy")
+    policy.release.set()
     async with asyncio.timeout(5):
         while not team["sre"].calls:
             await asyncio.sleep(0.02)
@@ -351,14 +373,15 @@ async def test_a_decision_another_process_took_first_is_neither_applied_nor_repo
     team = _team()
     kit = RoomKit()
     seen = _decisions(kit)
-    await _room(kit, team, dispatch=MockDispatchPolicy([["sre"]], delay=0.2))
+    policy = _Held([["sre"]])
+    await _room(kit, team, dispatch=policy)
 
     await _say(kit, "anyone?")
-    await asyncio.sleep(0.05)  # the decision runs
+    await asyncio.wait_for(policy.deciding.wait(), 5)
     room = kit._discussions["r1"]
     async with room.editing() as state:  # as a process that took the lease over would
         state.dispatching = []
-    await asyncio.sleep(0.3)
+    policy.release.set()
     await _settle(kit)
 
     assert seen == [] and not team["sre"].calls
@@ -368,10 +391,11 @@ async def test_a_decision_another_process_took_first_is_neither_applied_nor_repo
 async def test_closing_while_deciding_leaves_the_message_waiting() -> None:
     store = InMemoryStore()
     kit = RoomKit(store=store)
-    await _room(kit, _team(), dispatch=MockDispatchPolicy([["sre"]], delay=1.0))
+    policy = _Held([["sre"]])
+    await _room(kit, _team(), dispatch=policy)
 
     result = await _say(kit, "anyone?")
-    await asyncio.sleep(0.05)  # the decision runs
+    await asyncio.wait_for(policy.deciding.wait(), 5)
     await kit.close()
 
     room = await store.get_room("r1")

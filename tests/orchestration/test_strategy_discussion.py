@@ -118,10 +118,12 @@ async def _say(
 
 async def _settle(kit: RoomKit, room_id: str = "r1") -> None:
     """Wait until the discussion runs no turn and its queue stops changing:
-    nothing left it can give (an idle room may keep a stopped turn queued)."""
+    nothing left it can give (an idle room may keep a stopped turn queued).
+    A turn given next shows within a sample or two, the driver being woken,
+    not polled."""
     idle, last = 0, None
     async with asyncio.timeout(5):
-        while idle < 10:
+        while idle < 3:
             await asyncio.sleep(0.01)
             queue = kit.speak_queue(room_id)
             assert queue is not None
