@@ -108,6 +108,22 @@ def committed_state(room: Room, activity: bool) -> dict[str, Any]:
     return state
 
 
+def room_holds(
+    room: Room,
+    status: RoomStatus,
+    paused_at: datetime | None,
+    last_activity_at: datetime | None,
+) -> bool:
+    """Whether *room* is still in *status* with *paused_at* and
+    ``timers.last_activity_at`` *last_activity_at*: the state a timer
+    transition was computed from (:meth:`ConversationStore.update_room_if`)."""
+    return (
+        room.status is status
+        and room.paused_at == paused_at
+        and room.timers.last_activity_at == last_activity_at
+    )
+
+
 def address_linked(channel_type: str) -> AddressLinkedError:
     """The refusal of an address another identity of the organization holds
     (RFC §5.6). The address is left out: the caller passed it."""
@@ -224,6 +240,37 @@ class ConversationStore(ABC):
         it.
         """
         ...
+
+    async def update_room_if(
+        self,
+        room: Room,
+        *,
+        status: RoomStatus,
+        paused_at: datetime | None,
+        last_activity_at: datetime | None,
+    ) -> Room | None:
+        """Write *room* as :meth:`update_room` does, only if the stored room
+        is still in *status* with *paused_at* and ``timers.last_activity_at``
+        *last_activity_at*: a compare-and-set. Returns the room written, or
+        ``None`` with nothing written when the stored room moved.
+
+        A timer transition is written so (RFC §5.1): it is computed from a
+        room read earlier, and a streamed row or a greeting commits without
+        the room lock, so a commit that resumed the room or moved its
+        activity in between must not be overwritten by a stale close or
+        pause.
+
+        The default is **NOT atomic**: it reads the room, compares, then
+        writes through :meth:`update_room`. A store whose commits can run
+        concurrently with it (shared across processes, or committing off the
+        room lock) SHOULD override it with one transaction that holds the
+        room's row from the comparison to the write, as the shipped stores
+        do.
+        """
+        stored = await self.get_room(room.id)
+        if stored is None or not room_holds(stored, status, paused_at, last_activity_at):
+            return None
+        return await self.update_room(room)
 
     async def room_exists(self, room_id: str) -> bool:
         """Whether a room exists, without materialising it.

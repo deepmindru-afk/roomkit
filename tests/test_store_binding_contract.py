@@ -793,3 +793,37 @@ async def test_a_delivered_commit_resumes_a_paused_room_and_no_other_does(
         assert stored.timers.last_activity_at is None
     found = await contract_store.find_rooms(status=str(stored.status))
     assert room.id in {r.id for r in found}
+
+
+async def test_a_room_is_written_if_it_still_holds_what_the_write_was_computed_from(
+    contract_store: ConversationStore,
+) -> None:
+    """RFC §5.1: a timer transition computed from a room read earlier is a
+    compare-and-set on the status, ``paused_at`` and ``last_activity_at``
+    it read; a commit that resumed the room meanwhile refuses it, nothing
+    written."""
+    paused_at = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    room = await contract_store.create_room(
+        Room(id=uuid4().hex, status=RoomStatus.PAUSED, paused_at=paused_at)
+    )
+    closed = room.model_copy(
+        update={"status": RoomStatus.CLOSED, "paused_at": None, "closed_at": paused_at}
+    )
+    expected = {"status": RoomStatus.PAUSED, "paused_at": paused_at, "last_activity_at": None}
+
+    await contract_store.commit_event(room.id, make_event(room_id=room.id, body="hi"))
+    refused = await contract_store.update_room_if(closed, **expected)
+    resumed = await contract_store.get_room(room.id)
+    assert refused is None
+    assert resumed is not None and resumed.status is RoomStatus.ACTIVE
+
+    current = {
+        "status": RoomStatus.ACTIVE,
+        "paused_at": None,
+        "last_activity_at": resumed.timers.last_activity_at,
+    }
+    written = await contract_store.update_room_if(closed, **current)
+    assert written is not None and written.status is RoomStatus.CLOSED
+    stored = await contract_store.get_room(room.id)
+    assert stored is not None
+    assert (stored.status, stored.event_count) == (RoomStatus.CLOSED, 1)

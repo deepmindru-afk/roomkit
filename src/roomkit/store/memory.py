@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from datetime import datetime
 from typing import Any
 
 from roomkit.models.channel import ChannelBinding
-from roomkit.models.enums import VerificationStatus
+from roomkit.models.enums import RoomStatus, VerificationStatus
 from roomkit.models.event import DeleteContent, EditContent, RoomEvent, ThreadSummary
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
@@ -25,6 +26,7 @@ from roomkit.store.base import (
     is_marked_deleted,
     link_target,
     marked_deleted,
+    room_holds,
     room_taken,
     target_gone,
     without_address,
@@ -183,6 +185,22 @@ class InMemoryStore(ConversationStore):
         )
         self._rooms[room.id] = room
         return room
+
+    async def update_room_if(
+        self,
+        room: Room,
+        *,
+        status: RoomStatus,
+        paused_at: datetime | None,
+        last_activity_at: datetime | None,
+    ) -> Room | None:
+        """Atomic compare-and-set: under the per-room lock :meth:`commit_event`
+        takes, so no commit lands between the comparison and the write."""
+        async with self._lock_for(room.id):
+            current = self._rooms.get(room.id)
+            if current is None or not room_holds(current, status, paused_at, last_activity_at):
+                return None
+            return await self.update_room(room)
 
     async def room_exists(self, room_id: str) -> bool:
         return room_id in self._rooms

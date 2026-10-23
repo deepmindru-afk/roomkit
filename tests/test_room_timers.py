@@ -338,7 +338,7 @@ async def test_the_component_applies_a_due_pause_with_what_it_was_given() -> Non
         store=store,
         lock_manager=locks,
         read_room=read_room,
-        store_closed=store.update_room,
+        count_closed=lambda: None,
         stop_recordings=stop,
         write_record=record,
         emit=emit,
@@ -377,4 +377,36 @@ async def test_close_room_on_a_room_its_timer_closes_returns_it_as_stored() -> N
 
     assert closed.status is RoomStatus.CLOSED
     assert closed == await kit.get_room("r1")
+    await kit.close()
+
+
+@pytest.mark.parametrize(
+    "room",
+    [
+        {"timers": RoomTimers(inactive_after_seconds=60, last_activity_at=_ago(3600))},
+        {
+            "status": RoomStatus.PAUSED,
+            "paused_at": _ago(3600),
+            "timers": RoomTimers(closed_after_seconds=60),
+        },
+    ],
+    ids=["pause", "close"],
+)
+async def test_a_commit_landing_before_the_transition_write_is_not_overwritten(
+    room: dict[str, Any],
+) -> None:
+    """A streamed row or a greeting commits without the room lock: one that
+    lands between the read a transition is computed from and its write
+    leaves the room ACTIVE, its activity as the commit wrote it."""
+    kit, heard = await _kit(**room)
+    stale = await kit.get_room("r1")
+    await kit.store.commit_event("r1", make_event(room_id="r1", channel_id="sms1", body="hi"))
+    fresh = await kit.get_room("r1")
+
+    await kit._room_timers.apply_due(stale)
+
+    after = await kit.get_room("r1")
+    assert (after.status, after.paused_at) == (RoomStatus.ACTIVE, None)
+    assert after.timers.last_activity_at == fresh.timers.last_activity_at
+    assert heard.reports == []
     await kit.close()

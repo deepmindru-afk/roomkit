@@ -661,6 +661,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     as the instant it paused; an SQLite file moves to schema version 9,
     alike. A custom store must round-trip `Room.paused_at` and resume a
     PAUSED room in an activity `commit_event()`.
+  - A transition is written with the new
+    `ConversationStore.update_room_if(room, *, status, paused_at,
+    last_activity_at)`, a compare-and-set on the state it was computed
+    from: a streamed row or a greeting, which commit without the room lock,
+    that resumed the room or moved its activity meanwhile is never
+    overwritten by a stale close or pause. The shipped stores do it in one
+    transaction holding the room's row; the ABC's default reads, compares
+    and writes (not atomic), and a custom store committing off the lock or
+    shared across processes should override it.
   Migrate: to close a room N seconds after its last activity with no pause
   between, set `inactive_after_seconds=N, closed_after_seconds=0`; code
   that read the creation instant from `last_activity_at` reads

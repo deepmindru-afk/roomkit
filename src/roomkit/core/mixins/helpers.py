@@ -210,15 +210,20 @@ class HelpersMixin:
     async def _store_refusing_room(self, room: Room) -> Room:
         """Store *room* in a status that refuses writes (CLOSED, ARCHIVED).
 
-        The one writer of such a status: it counts the change, and a stream,
-        which reads the status once and again only when that count moved,
-        refuses its next row (RFC §5.1). A status changed elsewhere (another
-        process, another kit sharing the store, the store directly) is seen
-        by the next response.
+        It counts the change, as a timer's close does
+        (:meth:`_count_room_closed`), and a stream, which reads the status
+        once and again only when that count moved, refuses its next row (RFC
+        §5.1). A status changed elsewhere (another process, another kit
+        sharing the store, the store directly) is seen by the next response.
         """
         stored = await self._store.update_room(room)
-        self._room_close_epoch += 1
+        self._count_room_closed()
         return stored
+
+    def _count_room_closed(self) -> None:
+        """Count a room stored in a status that refuses writes, which a
+        stream reads to know it must read the status again (RFC §5.1)."""
+        self._room_close_epoch += 1
 
     async def _refuse_on_timeout(
         self,

@@ -17,7 +17,7 @@ from typing import Any
 
 from roomkit.core.exceptions import IdentityNotFoundError, RoomNotFoundError
 from roomkit.models.channel import ChannelBinding
-from roomkit.models.enums import EventStatus, VerificationStatus
+from roomkit.models.enums import EventStatus, RoomStatus, VerificationStatus
 from roomkit.models.event import RoomEvent, ThreadSummary
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
@@ -32,6 +32,7 @@ from roomkit.store.base import (
     committed_state,
     deletes_edits,
     is_marked_deleted,
+    room_holds,
     room_taken,
     target_gone,
     without_address,
@@ -161,6 +162,39 @@ async def _mark_edits_deleted(conn: Any, room_id: str, target_id: str) -> None:
         " AND content->>'target_event_id' = $2",
         room_id,
         target_id,
+    )
+
+
+async def _write_room_row(conn: Any, room: Room) -> Room:
+    """Write *room*'s row on *conn*.
+
+    delivered_index, event_count and latest_index are store-managed
+    (advance_delivered_index, commit_event): their columns are not part of
+    this write, so a stale copy cannot rewind them, and the room returned
+    carries the stored values.
+    """
+    stored = await conn.fetchrow(
+        "UPDATE rooms SET organization_id=$2, status=$3, metadata=$4, timers=$5,"
+        " agent_response_policy=$6, updated_at=$7, closed_at=$8, paused_at=$9"
+        " WHERE id=$1 RETURNING delivered_index, event_count, latest_index",
+        room.id,
+        room.organization_id,
+        room.status.value,
+        room.metadata,
+        room.timers.model_dump(mode="json"),
+        room.agent_response_policy.value,
+        room.updated_at,
+        room.closed_at,
+        room.paused_at,
+    )
+    if stored is None:
+        raise RoomNotFoundError(room.id)
+    return room.model_copy(
+        update={
+            "delivered_index": stored["delivered_index"],
+            "event_count": stored["event_count"],
+            "latest_index": stored["latest_index"],
+        }
     )
 
 
@@ -719,35 +753,29 @@ class PostgresStore(ConversationStore):
         return _row_to_room(row)
 
     async def update_room(self, room: Room) -> Room:
-        # delivered_index, event_count and latest_index are store-managed
-        # (advance_delivered_index, commit_event): their columns are not part
-        # of this write, so a stale copy cannot rewind them, and the room
-        # returned carries the stored values.
         with self._query_span("update_room", "rooms"):
             async with self._acquire() as conn:
-                stored = await conn.fetchrow(
-                    "UPDATE rooms SET organization_id=$2, status=$3, metadata=$4, timers=$5,"
-                    " agent_response_policy=$6, updated_at=$7, closed_at=$8, paused_at=$9"
-                    " WHERE id=$1 RETURNING delivered_index, event_count, latest_index",
-                    room.id,
-                    room.organization_id,
-                    room.status.value,
-                    room.metadata,
-                    room.timers.model_dump(mode="json"),
-                    room.agent_response_policy.value,
-                    room.updated_at,
-                    room.closed_at,
-                    room.paused_at,
-                )
-        if stored is None:
-            raise RoomNotFoundError(room.id)
-        return room.model_copy(
-            update={
-                "delivered_index": stored["delivered_index"],
-                "event_count": stored["event_count"],
-                "latest_index": stored["latest_index"],
-            }
-        )
+                return await _write_room_row(conn, room)
+
+    async def update_room_if(
+        self,
+        room: Room,
+        *,
+        status: RoomStatus,
+        paused_at: datetime | None,
+        last_activity_at: datetime | None,
+    ) -> Room | None:
+        """Atomic compare-and-set: the room's row held ``FOR UPDATE`` from the
+        comparison to the write, as :meth:`commit_event` holds it, so no
+        commit of any process lands in between (RFC §5.1)."""
+        with self._query_span("update_room_if", "rooms"):
+            async with self._acquire() as conn, conn.transaction():
+                row = await conn.fetchrow("SELECT * FROM rooms WHERE id = $1 FOR UPDATE", room.id)
+                if row is None or not room_holds(
+                    _row_to_room(row), status, paused_at, last_activity_at
+                ):
+                    return None
+                return await _write_room_row(conn, room)
 
     async def room_exists(self, room_id: str) -> bool:
         """Existence, not the row — routing asks this per message."""

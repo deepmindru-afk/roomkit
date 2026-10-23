@@ -37,7 +37,7 @@ from typing import Any
 
 from roomkit.core._changes import is_deleted
 from roomkit.models.channel import ChannelBinding
-from roomkit.models.enums import EventStatus, VerificationStatus
+from roomkit.models.enums import EventStatus, RoomStatus, VerificationStatus
 from roomkit.models.event import RoomEvent, ThreadSummary
 from roomkit.models.identity import Identity
 from roomkit.models.participant import Participant
@@ -53,6 +53,7 @@ from roomkit.store.base import (
     deletes_edits,
     is_marked_deleted,
     link_target,
+    room_holds,
     room_taken,
     target_gone,
     without_address,
@@ -812,39 +813,73 @@ class SQLiteStore(ConversationStore):
         return await self._run(self._x_update_room, room)
 
     def _x_update_room(self, room: Room) -> Room:
-        # delivered_index, event_count and latest_index are store-managed
-        # (advance_delivered_index, commit_event): the room written carries
-        # the stored ones, so a stale copy cannot rewind them.
         conn = self._db()
         with _write_transaction(conn):
-            stored = conn.execute(
-                "SELECT delivered_index, json_extract(data, '$.event_count'),"
-                " json_extract(data, '$.latest_index') FROM rooms WHERE id=?",
-                (room.id,),
-            ).fetchone()
-            if stored is None:
-                from roomkit.core.framework import RoomNotFoundError
+            return self._write_room_row(conn, room)
 
-                raise RoomNotFoundError(room.id)
-            room = room.model_copy(
-                update={
-                    "delivered_index": stored[0],
-                    "event_count": stored[1],
-                    # A room stored before latest_index was nullable kept 0
-                    # with no event; that 0 names no event (RFC §5.1).
-                    "latest_index": stored[2] if stored[1] else None,
-                }
-            )
-            conn.execute(
-                "UPDATE rooms SET created_ts=?, organization_id=?, status=?, data=? WHERE id=?",
-                (
-                    _ts(room.created_at),
-                    room.organization_id,
-                    str(room.status),
-                    room.model_dump_json(),
-                    room.id,
-                ),
-            )
+    async def update_room_if(
+        self,
+        room: Room,
+        *,
+        status: RoomStatus,
+        paused_at: datetime | None,
+        last_activity_at: datetime | None,
+    ) -> Room | None:
+        return await self._run(self._x_update_room_if, room, status, paused_at, last_activity_at)
+
+    def _x_update_room_if(
+        self,
+        room: Room,
+        status: RoomStatus,
+        paused_at: datetime | None,
+        last_activity_at: datetime | None,
+    ) -> Room | None:
+        """Atomic compare-and-set: the comparison and the write in one
+        immediate transaction, which a commit's waits for (RFC §5.1)."""
+        conn = self._db()
+        with _write_transaction(conn):
+            row = conn.execute("SELECT * FROM rooms WHERE id = ?", (room.id,)).fetchone()
+            if row is None or not room_holds(
+                self._row_to_room(row), status, paused_at, last_activity_at
+            ):
+                return None
+            return self._write_room_row(conn, room)
+
+    def _write_room_row(self, conn: sqlite3.Connection, room: Room) -> Room:
+        """Write *room*'s row inside the caller's transaction.
+
+        delivered_index, event_count and latest_index are store-managed
+        (advance_delivered_index, commit_event): the room written carries
+        the stored ones, so a stale copy cannot rewind them.
+        """
+        stored = conn.execute(
+            "SELECT delivered_index, json_extract(data, '$.event_count'),"
+            " json_extract(data, '$.latest_index') FROM rooms WHERE id=?",
+            (room.id,),
+        ).fetchone()
+        if stored is None:
+            from roomkit.core.framework import RoomNotFoundError
+
+            raise RoomNotFoundError(room.id)
+        room = room.model_copy(
+            update={
+                "delivered_index": stored[0],
+                "event_count": stored[1],
+                # A room stored before latest_index was nullable kept 0
+                # with no event; that 0 names no event (RFC §5.1).
+                "latest_index": stored[2] if stored[1] else None,
+            }
+        )
+        conn.execute(
+            "UPDATE rooms SET created_ts=?, organization_id=?, status=?, data=? WHERE id=?",
+            (
+                _ts(room.created_at),
+                room.organization_id,
+                str(room.status),
+                room.model_dump_json(),
+                room.id,
+            ),
+        )
         return room
 
     async def room_exists(self, room_id: str) -> bool:

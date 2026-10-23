@@ -540,7 +540,7 @@ class RoomKit(
             store=self._store,
             lock_manager=self._lock_manager,
             read_room=self.get_room,
-            store_closed=self._store_refusing_room,
+            count_closed=self._count_room_closed,
             stop_recordings=self._stop_room_recordings,
             write_record=self._emit_system_event,
             emit=self._emit_framework_event,

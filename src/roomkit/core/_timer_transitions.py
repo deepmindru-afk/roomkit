@@ -37,6 +37,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("roomkit.framework")
 
+# Writes a transition tries before it leaves the room to the next section,
+# each one beaten by a commit off the room lock (a streamed row, a greeting).
+_ATTEMPTS = 3
+
 RoomRead = Callable[..., Awaitable["Room"]]
 """A scoped room read: ``(room_id, *, organization_id)``, raising
 ``RoomNotFoundError`` for a room missing or another organization's."""
@@ -67,9 +71,9 @@ class TimerTransitions:
     """Applies a room's due timer transitions (RFC §5.1): the host's check
     and every locked section's.
 
-    *read_room* is the kit's scoped read (``get_room``); *store_closed*
-    writes a room in a status that refuses events, counting the change for
-    the streams that read the status once (RFC §5.1); *stop_recordings*
+    *read_room* is the kit's scoped read (``get_room``); *count_closed*
+    counts a room stored in a status that refuses events, for the streams
+    that read the status once (RFC §5.1); *stop_recordings*
     stops a closing room's recordings; *write_record* writes a lifecycle
     record (``_emit_system_event``); *emit* a framework event; *fire_hook*
     a lifecycle hook in a given context; *build_context* reads a room's
@@ -83,7 +87,7 @@ class TimerTransitions:
         store: ConversationStore,
         lock_manager: RoomLockManager,
         read_room: RoomRead,
-        store_closed: Callable[[Room], Awaitable[Room]],
+        count_closed: Callable[[], None],
         stop_recordings: Callable[[str], Awaitable[Any]],
         write_record: Callable[..., Awaitable[None]],
         emit: Callable[..., Awaitable[None]],
@@ -94,7 +98,7 @@ class TimerTransitions:
         self._store = store
         self._lock_manager = lock_manager
         self._read_room = read_room
-        self._store_closed = store_closed
+        self._count_closed = count_closed
         self._stop_recordings = stop_recordings
         self._write_record = write_record
         self._emit = emit
@@ -139,22 +143,20 @@ class TimerTransitions:
         I/O.
 
         The transitions are written in one write, each at the instant it fell
-        due; a close stops the room's recordings first. Each then has its
-        lifecycle record and its framework event, before anything the
-        section decides next; their hooks fire once the lock is released,
-        from a task the kit holds, which *hooks* collects for a caller that
-        waits for it (:meth:`settle`).
+        due (:meth:`_write_due`); a close then stops the room's recordings.
+        Each then has its lifecycle record and its framework event, before
+        anything the section decides next; their hooks fire once the lock
+        is released, from a task the kit holds, which *hooks* collects for a
+        caller that waits for it (:meth:`settle`).
         """
-        now = datetime.now(UTC)
-        due = due_transitions(room, now)
+        if not due_transitions(room, datetime.now(UTC)):
+            return room
+        room, due = await self._write_due(room)
         if not due:
             return room
-        after = transitioned(room, due, now)
-        if after.status is RoomStatus.CLOSED:
+        if room.status is RoomStatus.CLOSED:
+            self._count_closed()
             await self._stop_recordings(room.id)
-            await self._store_closed(after)
-        else:
-            await self._store.update_room(after)
         for transition in due:
             await self._announce(room.id, transition)
         # Read once the records are written: the room as stored, which the
@@ -164,6 +166,33 @@ class TimerTransitions:
         if hooks is not None:
             hooks.append(task)
         return context.room
+
+    async def _write_due(self, room: Room) -> tuple[Room, list[DueTransition]]:
+        """Write the transitions due on *room*, a compare-and-set on the
+        status, ``paused_at`` and ``last_activity_at`` they were computed
+        from (``update_room_if``): a commit off the room lock (a streamed
+        row, a greeting) that resumed the room or moved its activity in
+        between is never overwritten, and the transitions are those due on
+        the room it left. The room written and its transitions, or the room
+        as last read and none."""
+        for _ in range(_ATTEMPTS):
+            now = datetime.now(UTC)
+            due = due_transitions(room, now)
+            if not due:
+                return room, []
+            written = await self._store.update_room_if(
+                transitioned(room, due, now),
+                status=room.status,
+                paused_at=room.paused_at,
+                last_activity_at=room.timers.last_activity_at,
+            )
+            if written is not None:
+                return written, due
+            fresh = await self._store.get_room(room.id)
+            if fresh is None:
+                return room, []
+            room = fresh
+        return room, []
 
     async def room_due(self, room_id: str, *, organization_id: str | None = None) -> Room | None:
         """The room, read under its lock with its due transitions applied, or
