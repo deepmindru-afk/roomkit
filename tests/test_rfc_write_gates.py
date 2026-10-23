@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from roomkit.channels.base import Channel
 from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelOutput
@@ -99,6 +101,45 @@ class MutingAIChannel(ClosingAIChannel):
         return ChannelOutput(responded=True, response_events=[resp])
 
 
+class AnswersAfterClosing(ClosingAIChannel):
+    """Closes the room, then answers *count* times at once."""
+
+    def __init__(self, channel_id: str, kit: RoomKit, count: int) -> None:
+        super().__init__(channel_id, kit)
+        self._count = count
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        await self._kit.close_room(event.room_id)
+        answers = [
+            RoomEvent(
+                room_id=event.room_id,
+                source=EventSource(channel_id=self.channel_id, channel_type=ChannelType.AI),
+                content=TextContent(body=f"answer {n}"),
+                chain_depth=event.chain_depth + 1,
+            )
+            for n in range(self._count)
+        ]
+        return ChannelOutput(responded=True, response_events=answers)
+
+
+class ClosingTransport(SimpleChannel):
+    """A transport that closes the room as it is told of an event."""
+
+    def __init__(self, channel_id: str, kit: RoomKit) -> None:
+        super().__init__(channel_id)
+        self._kit = kit
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        room = await self._kit.store.get_room(event.room_id)
+        if room is not None and room.status == RoomStatus.ACTIVE:
+            await self._kit.close_room(event.room_id)
+        return ChannelOutput.empty()
+
+
 def _user_msg() -> InboundMessage:
     return InboundMessage(
         channel_id="sms1",
@@ -175,6 +216,45 @@ class TestReentryMeetsTheStatusGate:
             "operation": "reentry",
             "event_type": str(EventType.MESSAGE),
         }
+
+    @pytest.mark.parametrize(
+        ("max_chain_depth", "answers"),
+        [(1, 1), (2, 21)],
+        ids=["an agent not asked at the depth limit", "an answer past the reentry budget"],
+    )
+    async def test_a_record_in_place_of_a_refused_answer_is_refused_alike(
+        self, max_chain_depth: int, answers: int
+    ) -> None:
+        """RFC §5.1, §8.2: the record a closed room would store in place of
+        a turn or an answer it refuses is turned away as a refused pass is,
+        with ``room_refused_event`` and ``operation = reentry``. The room
+        closes during the trigger's delivery: its agent closes it as it
+        answers, or, when the depth limit keeps it from being asked, a
+        transport does."""
+        kit = RoomKit(max_chain_depth=max_chain_depth)
+        kit.register_channel(SimpleChannel("sms1"))
+        kit.register_channel(ClosingTransport("ws1", kit))
+        kit.register_channel(AnswersAfterClosing("ai1", kit, answers))
+        await kit.create_room(room_id="r1")
+        for channel_id in ("sms1", "ws1", "ai1"):
+            await kit.attach_channel("r1", channel_id)
+        refused: list[FrameworkEvent] = []
+
+        @kit.on("room_refused_event")
+        async def on_refused(fe: FrameworkEvent) -> None:
+            refused.append(fe)
+
+        try:
+            await kit.process_inbound(_user_msg())
+
+            events = await kit.store.list_events(
+                "r1", event_filter=EventFilter(include_blocked=True)
+            )
+            assert [e for e in events if e.source.channel_type == ChannelType.AI] == []
+            assert len(refused) == answers
+            assert {fe.data["operation"] for fe in refused} == {"reentry"}
+        finally:
+            await kit.close()
 
 
 class TestNonWritableSourceResponses:

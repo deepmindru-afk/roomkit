@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writes through `update_event()` (not atomic). A target the room no longer
   holds raises `EventNotFoundError`, nothing written.
 
+- A closed room says so when it turns away the record it would store in
+  place of an answer (RFC §5.1, §8.2, RMK-930): the record of an agent not
+  asked at the chain-depth limit, and of an answer past the reentry
+  budget, were skipped silently. Each now emits `room_refused_event` with
+  `operation = reentry`, as a refused pass does, and the status is read
+  under the room lock, which `close_room()` takes: a close landing in
+  between no longer lets the record into the closed room. A discussion's
+  depth stop takes the same gate, which it lacked.
+
 - An off-lock hook that fails is reported when it fails, before the room
   lock (RFC §9.5.1, §8.2, RMK-930). Its `hook_error` framework event was
   emitted at step 9 with the hooks under the lock, and never when a gate

@@ -884,11 +884,26 @@ class LaneExecutionMixin(HelpersMixin):
         Blocked events are still indexed: an agent not asked past the depth
         limit and a muted source's response (§7.5 rule 2) both land here,
         whichever path broadcast the trigger. A room that refuses writes takes
-        neither (§5.1).
+        neither, each refusal announced (§5.1).
         """
-        if result.blocked_events and not await self._room_refuses_writes(room_id):
-            for blocked in result.blocked_events:
-                await self._commit_blocked_response(room_id, blocked)
+        for blocked in result.blocked_events:
+            await self._commit_blocked_response(room_id, blocked)
+
+    async def _refuses_record(self, room_id: str, record: RoomEvent) -> bool:
+        """Whether the room's status refuses *record*, stored in place of a
+        turn or a response it refuses (RFC §5.1, §8.3): the refusal announced
+        as any refused pass's, ``operation = reentry`` (§8.2). Call under the
+        room lock, which ``close_room()`` takes."""
+        room = await self._store.get_room(room_id)
+        if not _refuses_writes(room):
+            return False
+        await self._refuse_closed_room(
+            room_id,
+            status=room.status if room is not None else None,
+            operation="reentry",
+            event=record,
+        )
+        return True
 
     async def _commit_blocked_response(
         self, room_id: str, blocked: RoomEvent, *, max_chain_depth: int | None = None
@@ -899,8 +914,12 @@ class LaneExecutionMixin(HelpersMixin):
         asked past the depth limit, a muted source's response (RFC §8.3,
         §7.5), so each is indexed and announced alike. ``max_chain_depth`` is
         the limit that stopped it when not the kit's (a discussion's, §19.7.5).
+        A room that refuses writes takes none, the refusal announced (§5.1).
         """
-        await self._commit_indexed(room_id, blocked)
+        async with self._lock_manager.locked(room_id):
+            if await self._refuses_record(room_id, blocked):
+                return
+            await self._commit_indexed(room_id, blocked)
         if blocked.blocked_by == CHAIN_DEPTH_LIMIT:
             await self._emit_framework_event(
                 "chain_depth_exceeded",
@@ -972,9 +991,9 @@ class LaneExecutionMixin(HelpersMixin):
             extra={"room_id": room_id},
         )
         async with self._lock_manager.locked(room_id):
-            # Same status gate as every other growth point (RFC §5.1):
-            # a closed room does not take the audit record either.
-            if not await self._room_refuses_writes(room_id):
+            # Same status gate as every other growth point (RFC §5.1): a
+            # closed room does not take the audit record either, and says so.
+            if not await self._refuses_record(room_id, response):
                 await self._commit_indexed(
                     room_id,
                     response.model_copy(
