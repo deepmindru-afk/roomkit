@@ -7,6 +7,7 @@ tenant — and a second tenant could not register the same number at all.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 from collections.abc import AsyncIterator
@@ -272,6 +273,39 @@ class TestUnlinkingAnAddress:
             assert await contract_store.get_participant(room.id, address) == member
         finally:
             await contract_store.delete_room(room.id)
+
+
+async def test_two_concurrent_links_of_one_address_leave_one_winner_on_postgres() -> None:
+    """Two links racing on separate connections: the address table's key and
+    the link's single statement leave one identity holding the address."""
+    dsn = os.environ.get("POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("POSTGRES_DSN not set")
+    from roomkit.store.postgres import PostgresStore
+
+    store = PostgresStore(dsn=dsn)
+    await store.init(min_size=2, max_size=4)
+    try:
+        address = f"+1555{uuid4().int % 10**7:07d}"
+        rivals = [
+            await store.create_identity(Identity(id=f"id-{uuid4().hex}", organization_id="acme"))
+            for _ in range(2)
+        ]
+
+        results = await asyncio.gather(
+            *(store.link_address(r.id, "sms", address, "acme") for r in rivals),
+            return_exceptions=True,
+        )
+
+        refused = [r for r in results if isinstance(r, AddressLinkedError)]
+        assert len(refused) == 1 and results.count(None) == 1, results
+        winner = rivals[results.index(None)]
+        resolved = await store.resolve_identity("sms", address, "acme")
+        assert resolved is not None and resolved.id == winner.id
+        loser = await store.get_identity(rivals[results.index(refused[0])].id)
+        assert loser is not None and loser.channel_addresses == {}
+    finally:
+        await store.close()
 
 
 class TestAddressesDeclaredOnTheIdentity:
