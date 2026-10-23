@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A phone number is written in E.164 as RFC §5.7 gives the rules (RMK-930).
+  The trunk prefix written `(0)` after a country code was kept:
+  `+33 (0)6 12 34 56 78` gave `+330612345678`, another person than
+  `+33612345678`; it is now dropped, after `+` or `00`. Also aligned: any URI
+  scheme is dropped (`callto:`, not only `whatsapp:`, `tel:`, `sms:`, `mms:`,
+  `rcs:`); a number written with `00` and 14 or 15 digits after it is
+  international (it was kept as written); a result whose first digit is `0`
+  (`+06 12…`, `0006…`) or of more than 15 digits once a country code is
+  given is kept as written instead of written as a number no country has;
+  with a country code, six digits or fewer are a short code counted on the
+  digits as written, so `0123456` (seven digits) takes the code. Digits
+  without `+` and no country code declared are still kept as written, and
+  with a code a number that starts with it is international only when
+  longer than 10 digits.
+
 - A file a channel does not take is delivered as its text form (RFC §5.8,
   §6.6, Appendix A, RMK-930). The transcoder read a target's `media_types`
   only: a file whose MIME type its non-empty `supported_media_types` does not

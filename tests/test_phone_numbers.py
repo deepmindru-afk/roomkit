@@ -52,3 +52,59 @@ def test_digits_without_a_country_code_are_left_as_they_are(address: str) -> Non
 )
 def test_anything_else_is_returned_unchanged(address: str) -> None:
     assert normalize_phone_number(address, "1") == address
+
+
+@pytest.mark.parametrize(
+    ("address", "country_code", "expected"),
+    [
+        ("+33 (0)6 12 34 56 78", None, "+33612345678"),
+        ("0033 (0)6 12 34 56 78", None, "+33612345678"),
+        ("tel:+33 (0)6 12 34 56 78", "33", "+33612345678"),
+        ("callto:+15550000001", None, "+15550000001"),
+        ("001234567890123", None, "+1234567890123"),
+        ("00123456789012345", None, "+123456789012345"),
+        ("0123456", "33", "+33123456"),
+    ],
+    ids=[
+        "trunk-mark",
+        "trunk-mark-after-00",
+        "trunk-mark-after-a-scheme",
+        "any-uri-scheme",
+        "00-thirteen-digits",
+        "00-fifteen-digits",
+        "seven-digits-are-no-short-code",
+    ],
+)
+def test_the_rfc_rules_write_a_number(
+    address: str, country_code: str | None, expected: str
+) -> None:
+    """RFC §5.7: a scheme, the separators and the trunk prefix written ``(0)``
+    after a country code are dropped; ``+`` or ``00`` is international; six
+    digits or fewer are a short code."""
+    assert normalize_phone_number(address, country_code) == expected
+
+
+@pytest.mark.parametrize(
+    ("address", "country_code"),
+    [
+        ("+06 12 34 56 78", None),
+        ("000612345678", None),
+        ("+1234567890123456", None),
+        ("0012345678901234567", None),
+        ("612345678901234", "33"),
+        ("123456", "33"),
+    ],
+    ids=[
+        "plus-then-zero",
+        "00-then-zero",
+        "sixteen-digits",
+        "00-then-seventeen-digits",
+        "code-makes-seventeen-digits",
+        "six-digit-short-code",
+    ],
+)
+def test_what_is_no_e164_number_is_kept_as_written(address: str, country_code: str | None) -> None:
+    """RFC §5.7: a result of more than 15 digits, or one whose first digit is
+    ``0``, which no country code is, is kept as written, and so is a short
+    code."""
+    assert normalize_phone_number(address, country_code) == address

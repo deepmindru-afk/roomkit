@@ -18,54 +18,85 @@ import re
 
 __all__ = ["normalize_phone_number"]
 
-_SCHEMES = ("whatsapp:", "tel:", "sms:", "mms:", "rcs:")
+# A URI scheme (``whatsapp:``, ``tel:``, ``sms:``...): letters, then a colon.
+_SCHEME = re.compile(r"^[A-Za-z]+:")
 _SEPARATORS = re.compile(r"[\s\-.()]")
-_PHONE = re.compile(r"\+?\d{3,15}")
-# A national number shorter than this is a short code (an SMS service number),
-# not a subscriber's: it is left as it is rather than given a country code.
-_MIN_NATIONAL_DIGITS = 7
+# The trunk prefix written "(0)" after a country code: "+33 (0)6 12 34 56 78".
+_TRUNK_MARK = "(0)"
+# A number of this many digits or fewer, written without "+" or "00", is a
+# short code (an SMS service number), not a subscriber's: it is left as it is
+# rather than given a country code.
+_MAX_SHORT_CODE_DIGITS = 6
 # With a country code, digits that start with it and are longer than this are
 # the international form without its "+" ("15145550100" for code 1).
 _MAX_NATIONAL_DIGITS = 10
+# The most digits of an E.164 number.
+_MAX_E164_DIGITS = 15
 
 
 def normalize_phone_number(address: str, default_country_code: str | None = None) -> str:
-    """The E.164 form of *address*, or *address* unchanged when it is not a phone number.
+    """The E.164 form of *address*, or *address* unchanged when it is not a
+    phone number (RFC §5.7).
 
-    - A scheme (``whatsapp:``, ``tel:``, ``sms:``, ``mms:``, ``rcs:``) and the
-      separators people type (spaces, dashes, dots, parentheses) are dropped.
-    - ``+15550000001`` and ``0015550000001`` are already international.
-    - Digits without ``+``: with *default_country_code* (``"1"``, ``"+44"``),
-      a number that starts with it and is longer than a national number is
-      international, any other is national (its leading ``0`` trunk prefix
-      dropped) and takes the code. Without it they are left as they are:
-      guessing would merge people, since ``13800138000`` is a national
-      number in China and ``+13800138000`` one in North America. A provider
-      whose senders come international without ``+`` adds it in its parser.
-    - A short code, an email address, a WhatsApp JID or any other id is
-      returned unchanged.
+    - A URI scheme (``whatsapp:``, ``tel:``, ``sms:``), the separators people
+      type (spaces, dashes, dots, parentheses) and the trunk prefix written
+      ``(0)`` after a country code are dropped: ``+33 (0)6 12 34 56 78`` is
+      ``+33612345678``.
+    - ``+15550000001`` and ``0015550000001`` are international.
+    - Digits without ``+`` or ``00``: with *default_country_code* (``"1"``,
+      ``"+44"``), six digits or fewer are a short code, kept as written; a
+      number that starts with the code and is longer than a national number
+      already carries it; any other is national, its trunk prefix ``0`` replaced
+      by the code, or the code put before it. Without a code they are left as
+      they are: guessing would merge people, since ``13800138000`` is a
+      national number in China and ``+13800138000`` one in North America. A
+      provider whose senders come international without ``+`` adds it in its
+      parser.
+    - A result of more than 15 digits, or whose first digit is ``0`` (no
+      country code is), is no E.164 number: *address* is kept as written, and
+      so is an email address, a WhatsApp JID or any other id.
     """
     if not address:
         return address
-    value = address.strip()
-    lowered = value.lower()
-    for scheme in _SCHEMES:
-        if lowered.startswith(scheme):
-            value = value[len(scheme) :]
-            break
-    compact = _SEPARATORS.sub("", value)
-    if not _PHONE.fullmatch(compact):
+    dialled = _dialled(_SCHEME.sub("", address.strip(), count=1).lstrip())
+    if dialled is None:
         return address
+    international, digits = dialled
+    if international:
+        return _e164(digits) or address
+    if not default_country_code or len(digits) <= _MAX_SHORT_CODE_DIGITS:
+        return address
+    code = default_country_code.lstrip("+")
+    if digits.startswith("0"):
+        number = code + digits[1:]
+    elif digits.startswith(code) and len(digits) > _MAX_NATIONAL_DIGITS:
+        number = digits
+    else:
+        number = code + digits
+    return _e164(number) or address
+
+
+def _dialled(value: str) -> tuple[bool, str] | None:
+    """Whether *value* is written international (``+`` or ``00``), and its
+    digits; ``None`` when anything but digits and separators is written."""
+    international = value.startswith("+") or _SEPARATORS.sub("", value).startswith("00")
+    if international:
+        value = value.replace(_TRUNK_MARK, "", 1)
+    compact = _SEPARATORS.sub("", value)
     if compact.startswith("+"):
-        return compact
-    if compact.startswith("00"):
-        return "+" + compact[2:]
-    if default_country_code:
-        code = default_country_code.lstrip("+")
-        if compact.startswith(code) and len(compact) > _MAX_NATIONAL_DIGITS:
-            return "+" + compact
-        national = compact.lstrip("0")
-        if len(national) < _MIN_NATIONAL_DIGITS:
-            return address
-        return f"+{code}{national}"
-    return address
+        digits = compact[1:]
+    elif compact.startswith("00"):
+        digits = compact[2:]
+    else:
+        digits = compact
+    if not digits.isascii() or not digits.isdigit():
+        return None
+    return international, digits
+
+
+def _e164(digits: str) -> str | None:
+    """``+`` and *digits*, or ``None`` when they are no E.164 number: more
+    than 15 digits, or a first digit ``0``, which no country code is."""
+    if not digits or len(digits) > _MAX_E164_DIGITS or digits.startswith("0"):
+        return None
+    return f"+{digits}"
