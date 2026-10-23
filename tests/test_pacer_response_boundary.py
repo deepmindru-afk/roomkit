@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from roomkit.voice.realtime import pacer as pacer_module
 from roomkit.voice.realtime.pacer import OutboundAudioPacer
 
 
@@ -52,7 +53,11 @@ async def test_boundary_ignores_following_silence_but_follows_new_eor(new_respon
 
 
 @pytest.mark.parametrize("stop", [False, True])
-async def test_discarded_boundary_unblocks_with_failure(stop):
+async def test_discarded_boundary_unblocks_with_failure(
+    stop: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Ten seconds of audio queued: the stop cuts the sender past its grace.
+    monkeypatch.setattr(pacer_module, "_STOP_GRACE_S", 0.01)
     pacer = OutboundAudioPacer(AsyncMock(), 8000)
     await pacer.start()
     pacer.push(b"\x00\x20" * 80000)

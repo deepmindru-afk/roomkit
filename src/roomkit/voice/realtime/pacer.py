@@ -34,6 +34,10 @@ logger = logging.getLogger("roomkit.voice.realtime.pacer")
 # Sentinel strings used as control signals on the queue
 _STOP = "STOP"
 
+# How long stop() lets the sender reach the stop signal, behind what it holds,
+# before cancelling it.
+_STOP_GRACE_S = 2.0
+
 
 @dataclass
 class _ResponseEnd:
@@ -221,7 +225,7 @@ class OutboundAudioPacer:
         try:
             # asyncio.wait, not wait_for: a cancellation of the caller must
             # propagate, not read as the sender's own and be swallowed.
-            await asyncio.wait({task}, timeout=2.0)
+            await asyncio.wait({task}, timeout=_STOP_GRACE_S)
         except asyncio.CancelledError:
             # The caller's own: the sender still ends first
             await cancel_and_wait(task, log_errors_to=logger)
