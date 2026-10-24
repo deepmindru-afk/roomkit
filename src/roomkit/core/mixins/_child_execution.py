@@ -534,7 +534,7 @@ async def _buffered_outcome(
     Its trace is kept first: ``response_events`` already hold the tool-call
     events, and all of them persist, not just the final text. An error fails
     the turn, whether the reply answered or not, as on the room path
-    (:func:`_responder_failure`); a turn its cap, deadline or budget cut is
+    (:func:`_responder_failures`); a turn its cap, deadline or budget cut is
     returned with its end, which ends the task only for the delegated agent
     (RFC §6.4, §23.3 step 6).
     """

@@ -7,6 +7,7 @@ import copy
 from datetime import datetime
 from typing import Any
 
+from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import RoomStatus, VerificationStatus
 from roomkit.models.event import DeleteContent, EditContent, RoomEvent, ThreadSummary
@@ -185,8 +186,6 @@ class InMemoryStore(ConversationStore):
 
     async def update_room(self, room: Room) -> Room:
         if room.id not in self._rooms:
-            from roomkit.core.framework import RoomNotFoundError
-
             raise RoomNotFoundError(room.id)
         # delivered_index, event_count and latest_index are store-managed
         # (advance_delivered_index, add_event): a caller's stale copy must

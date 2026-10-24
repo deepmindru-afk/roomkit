@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from roomkit.core._changes import is_deleted
+from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import EventStatus, RoomStatus, VerificationStatus
 from roomkit.models.event import RoomEvent, ThreadSummary
@@ -892,8 +893,6 @@ class SQLiteStore(ConversationStore):
             (room.id,),
         ).fetchone()
         if stored is None:
-            from roomkit.core.framework import RoomNotFoundError
-
             raise RoomNotFoundError(room.id)
         room = room.model_copy(
             update={
