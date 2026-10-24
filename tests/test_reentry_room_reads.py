@@ -19,15 +19,17 @@ import pytest
 
 from roomkit.channels.agent import Agent
 from roomkit.core.framework import RoomKit
+from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory, HookTrigger, RoomStatus
+from roomkit.models.enums import ChannelCategory, EventType, HookTrigger, RoomStatus
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.hook import HookResult
+from roomkit.models.store_filter import PersistencePolicy
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
 from tests.buffered_agent import BufferedAgent
-from tests.test_framework import SimpleChannel
+from tests.test_framework import AILikeChannel, SimpleChannel
 
 # The reads of the commit running, by store method.
 _COMMIT: ContextVar[dict[str, int] | None] = ContextVar("_COMMIT", default=None)
@@ -115,9 +117,10 @@ async def test_each_regenerated_answer_reads_the_room_once_and_no_binding() -> N
 async def test_the_gate_reads_the_room_again_only_once_a_locked_hook_ran(
     needs_lock: bool,
 ) -> None:
-    """RFC §10.1 step 9a: the room and the source's binding are read again
-    once a hook ran under the lock, one read each; an off-lock hook ran
-    before the lock, which the locked section's own reads already follow."""
+    """RFC §10.1 step 9a: the room's context is read again once a hook ran
+    under the lock, its room once and the source's binding with the room's
+    others; an off-lock hook ran before the lock, which the locked section's
+    own reads already follow."""
     kit = RoomKit(store=_CountingStore())
     kit.register_channel(SimpleChannel("sms1"))
     await kit.create_room(room_id="r1")
@@ -131,8 +134,86 @@ async def test_the_gate_reads_the_room_again_only_once_a_locked_hook_ran(
 
     await _say(kit)
 
-    reread = {"get_room": 1, "get_binding": 1} if needs_lock else {}
+    reread = {"get_room": 1} if needs_lock else {}
     assert gates == [reread]
+    await kit.close()
+
+
+class _HistoryAgent(AILikeChannel):
+    """An agent that records the history it is handed each event with, and
+    answers nothing."""
+
+    def __init__(self, channel_id: str) -> None:
+        super().__init__(channel_id)
+        self.histories: list[list[str]] = []
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        self.histories.append([getattr(e.content, "body", "") for e in context.recent_events])
+        return ChannelOutput.empty()
+
+
+def _message(body: str) -> InboundMessage:
+    return InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body=body))
+
+
+@pytest.mark.parametrize("change", ["delete_event", "update_event"])
+async def test_the_event_is_planned_with_the_history_its_locked_hook_left(change: str) -> None:
+    """RFC §10.1 step 9a, §10.3: once a hook ran under the lock, the event
+    is planned with the history as the hook left it. A moderation hook that
+    removes or redacts an earlier message in place commits no entry; the
+    agent is not handed what it removed."""
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms1"))
+    agent = _HistoryAgent("ai")
+    kit.register_channel(agent)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+    secret = await kit.process_inbound(_message("secret"), room_id="r1")
+    assert secret.event is not None
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, name="moderate")
+    async def moderate(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if getattr(event.content, "body", None) == "next":
+            if change == "delete_event":
+                await kit.delete_event("r1", secret.event.id)
+            else:
+                redacted = TextContent(body="[redacted]")
+                await kit.update_event("r1", secret.event.id, content=redacted)
+        return HookResult.allow()
+
+    await kit.process_inbound(_message("next"), room_id="r1")
+
+    left = ["next"] if change == "delete_event" else ["[redacted]", "next"]
+    assert agent.histories[-1][-len(left) :] == left
+    assert "secret" not in agent.histories[-1]
+    await kit.close()
+
+
+async def test_a_channel_its_locked_hook_detached_is_not_delivered_the_event() -> None:
+    """RFC §10.1 step 12: the event's delivery set is planned against the
+    bindings as its hooks left them, a detach whose record the persistence
+    policy does not store included."""
+    kit = RoomKit(persistence_policy=PersistencePolicy(persist_types={EventType.MESSAGE}))
+    kit.register_channel(SimpleChannel("sms1"))
+    ws = SimpleChannel("ws1")
+    kit.register_channel(ws)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel("r1", "ws1")
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, name="cut")
+    async def cut(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if getattr(event.content, "body", None) == "private":
+            await kit.detach_channel("r1", "ws1")
+        return HookResult.allow()
+
+    await kit.process_inbound(_message("private"), room_id="r1")
+
+    assert [b.channel_id for b in await kit.store.list_bindings("r1")] == ["sms1"]
+    assert ws.delivered == []
     await kit.close()
 
 

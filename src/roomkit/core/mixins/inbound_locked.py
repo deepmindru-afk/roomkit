@@ -33,6 +33,7 @@ from roomkit.core._changes import (
 from roomkit.core._queued_injections import QueuedInjections
 from roomkit.core._reentrance import section
 from roomkit.core._room_timers import due_transitions
+from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.core.hooks import kept_identity
 from roomkit.core.lanes import DeliveryPlan
 from roomkit.core.mixins.helpers import (
@@ -729,32 +730,36 @@ class InboundLockedMixin(HelpersMixin):
         streamed row, whose hooks run off the lock and whose stream reads the
         room's status itself (§5.1). With no hook *ran*, it is the answer.
 
-        Once a hook ran under the lock, the room and the source's binding are
-        read again, on one connection: a room a hook closed refuses the event
-        as step 6 does, announced for *operation* (§5.1, §8.2), ``None``; the
-        event takes the room's next index, an entry committed ahead of it
-        during its hooks having taken the one step 8 showed them, and the
-        context is read again then, so what the event's commit plans with and
-        its mutation trigger reads hold that entry (§10.3). A streamed row's
-        hooks read the binding again alone.
+        Once a hook ran under the lock, the room's context is read again, on
+        one connection, whatever the hook did: an entry it committed moves
+        the room's counter, but a message it deleted or redacted in place
+        (``delete_event``, ``update_event``) and a binding it changed with no
+        record stored (a persistence policy that keeps messages only) move
+        none, and the event's commit plans with the history and the bindings
+        as the hook left them (steps 9a and 12, §10.3). A room a hook closed
+        refuses the event as step 6 does, announced for *operation* (§5.1,
+        §8.2), ``None``; the event takes the room's next index, an entry
+        committed ahead of it during its hooks having taken the one step 8
+        showed them, and its mutation trigger reads that entry (§10.3). A
+        streamed row's hooks read the binding again alone.
         """
         source = event.source.channel_id
         if not ran:
             return _AfterHooks(context, context.get_binding(source), None)
         if not under_lock:
             return _AfterHooks(context, await self._store.get_binding(room_id, source), None)
-        async with self._store.connection():
-            room = await self._store.get_room(room_id)
-            binding = await self._store.get_binding(room_id, source)
-        if room is None or room.status in _REFUSING_STATUSES:
-            status = None if room is None else room.status
+        try:
+            context = await self._build_context(room_id)
+        except RoomNotFoundError:
+            await self._refuse_closed_room(room_id, status=None, operation=operation, event=event)
+            return None
+        room = context.room
+        if room.status in _REFUSING_STATUSES:
             await self._refuse_closed_room(
-                room_id, status=status, operation=operation, event=event
+                room_id, status=room.status, operation=operation, event=event
             )
             return None
-        if room.event_count != context.room.event_count:
-            context = await self._build_context(room_id)
-        return _AfterHooks(context, binding, room.event_count)
+        return _AfterHooks(context, context.get_binding(source), room.event_count)
 
     async def _announce_hook_errors(
         self, room_id: str, event: RoomEvent, sync_result: SyncPipelineResult
