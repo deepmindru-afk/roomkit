@@ -1670,7 +1670,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     verb, a streamed reply's reading) is a new arrival, with its ticket and
     its `process_timeout`, answered at its decision when its own delivery
     could only wait behind its caller's, and draws on the budget of the
-    cascade that delivers, as does the cascade it starts;
+    cascade that delivers, as does the cascade it starts, when it comes
+    into the room the set delivers in or a routed message of it opens a
+    new room (the router answering none, or naming a room the store
+    lacks), charged before the room is created; a call into another
+    existing room has a budget of its own;
   - each such call is charged one pass as it starts: past the budget,
     `send_event()` stores the event BLOCKED `reentry_loop_cap`, no hook
     run, with the visibility its pass would have had, and returns that
