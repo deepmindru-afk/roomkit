@@ -36,6 +36,7 @@ from roomkit.models.event import (
     SystemContent,
     TemplateContent,
     TextContent,
+    ToolCallContent,
     VideoContent,
 )
 
@@ -99,12 +100,14 @@ def location_label(content: LocationContent) -> str:
 
 def text_form(content: EventContent) -> str:
     """The text *content* reads as (RFC §6.6), whatever its kind: what
-    :func:`content_text` reads, a location, a template, a system notice, an
-    edit and a delete by their fallback; empty for a tool call, which has
-    none. What an instruction's fingerprint is of (§10.1.1 step 6)."""
-    text = content_text(content)
-    if text is not None:
-        return text
+    :func:`content_text` reads of a text and a media, a location, a template,
+    an edit and a delete by their fallback, a system notice by its body, a
+    tool call as ``[Tool call: <name>]``, and a composite as its parts' text
+    forms in order, one per line, an empty one skipped. What an
+    instruction's fingerprint is of (§10.1.1 step 6), so every
+    implementation of the RFC reads it alike."""
+    if isinstance(content, CompositeContent):
+        return "\n".join(text for part in content.parts if (text := text_form(part)))
     if isinstance(content, LocationContent):
         return location_label(content)
     if isinstance(content, TemplateContent):
@@ -115,7 +118,9 @@ def text_form(content: EventContent) -> str:
         return f"Correction: {text_form(content.new_content)}"
     if isinstance(content, DeleteContent):
         return "[Message deleted]"
-    return ""
+    if isinstance(content, ToolCallContent):
+        return f"[Tool call: {content.tool_name}]"
+    return content_text(content) or ""
 
 
 def content_text(content: EventContent) -> str | None:

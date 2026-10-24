@@ -26,7 +26,9 @@ from roomkit.models.event import (
     MediaContent,
     RichContent,
     RoomEvent,
+    SystemContent,
     TextContent,
+    ToolCallContent,
 )
 from roomkit.models.hook import InjectedEvent
 from roomkit.models.room import RoomTimers
@@ -174,12 +176,40 @@ async def test_every_row_of_a_streamed_answer_records_the_instruction():
             CompositeContent(parts=[TextContent(body="First."), TextContent(body="Then.")]),
             "First.\nThen.",
         ),
+        # Read alike by every implementation of the RFC, so an instruction's
+        # fingerprint is the same whichever computed it.
+        (ToolCallContent(tool_name="lookup", tool_id="call_1"), "[Tool call: lookup]"),
+        (SystemContent(body="Call transferred."), "Call transferred."),
+        (
+            CompositeContent(
+                parts=[TextContent(body="First."), TextContent(body=""), TextContent(body="Then.")]
+            ),
+            "First.\nThen.",
+        ),
+        (
+            CompositeContent(
+                parts=[
+                    SystemContent(body="Call transferred."),
+                    ToolCallContent(tool_name="lookup", tool_id="call_1"),
+                ]
+            ),
+            "Call transferred.\n[Tool call: lookup]",
+        ),
     ],
-    ids=["rich", "media", "composite"],
+    ids=[
+        "rich",
+        "media",
+        "composite",
+        "tool-call",
+        "system",
+        "composite-with-an-empty-part",
+        "composite-of-a-notice-and-a-tool-call",
+    ],
 )
 async def test_the_fingerprint_is_of_the_text_the_instruction_reads_as(content, text):
-    """RFC §6.6: a rich text by its plain text, a media by its label, a
-    composite by its parts; the model reads that same text."""
+    """RFC §6.6: a rich text by its plain text, a media by its label, a tool
+    call by its name, a system notice by its body, a composite by its parts'
+    texts, an empty one skipped; the model reads that same text."""
     text = text or "Introduce yourself."
     provider = MockAIProvider(["Hello."])
     kit = await _room(AIChannel("agent", provider=provider))

@@ -108,10 +108,11 @@ class DefaultContentTranscoder(ContentTranscoder):
                 parts.append(transcoded)
             if not parts:
                 return None
-            # If all parts are text, flatten to single TextContent
+            # All parts text: one text, the composite's text form (RFC §6.6),
+            # an empty part taking no line of its own.
             text_parts = [p for p in parts if isinstance(p, TextContent)]
             if len(text_parts) == len(parts):
-                return TextContent(body="\n".join(p.body for p in text_parts))
+                return TextContent(body="\n".join(p.body for p in text_parts if p.body))
             return CompositeContent(parts=parts)
 
         if isinstance(content, EditContent):
