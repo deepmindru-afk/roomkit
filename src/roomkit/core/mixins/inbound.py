@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable
 from contextlib import AsyncExitStack
+from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -408,7 +409,8 @@ class InboundMixin(HelpersMixin):
         # A routed message the room's delivery work sends that opens a new
         # room is that work's: charged on its budget before the room is
         # created (RFC §9.5.1, gap G-070).
-        opening = self._room_work.opening_budget() if room_id is None else None
+        budget = self._room_work.opening_budget() if room_id is None else None
+        opening = _Opening(budget) if budget is not None else None
         try:
             room_id, room_just_created = await self._route_to_room(
                 message,
@@ -429,7 +431,7 @@ class InboundMixin(HelpersMixin):
 
         if room_just_created and opening is not None:
             # Charged as the room was opened: its cascade draws on the same.
-            entry = Entry(Placement.ARRIVAL, opening, False)
+            entry = Entry(Placement.ARRIVAL, opening.budget, False)
         else:
             entry = self._room_work.entry(room_id)
         if entry.charged and not entry.budget.take():
@@ -762,7 +764,7 @@ class InboundMixin(HelpersMixin):
         *,
         organization_id: str | None,
         deadline: float,
-        opening: ReentryBudget | None = None,
+        opening: _Opening | None = None,
     ) -> tuple[str, bool]:
         """Route inbound message to a room, auto-creating if needed.
 
@@ -818,7 +820,7 @@ class InboundMixin(HelpersMixin):
         identity: Identity | None = None,
         *,
         deadline: float,
-        opening: ReentryBudget | None = None,
+        opening: _Opening | None = None,
     ) -> tuple[str, bool]:
         """The room *message* goes to, opened or attached as needed (RFC §10.1 step 2).
 
@@ -847,7 +849,12 @@ class InboundMixin(HelpersMixin):
             _charge_opening(opening)
             return await self._open_room_for(message, None, organization_id), True
         created = await self._ensure_room_and_binding(
-            message, room_id, organization_id, attach=not routed, deadline=deadline
+            message,
+            room_id,
+            organization_id,
+            attach=not routed,
+            deadline=deadline,
+            opening=opening,
         )
         return room_id, created
 
@@ -859,6 +866,7 @@ class InboundMixin(HelpersMixin):
         *,
         attach: bool = True,
         deadline: float,
+        opening: _Opening | None = None,
     ) -> bool:
         """Create the named room, or attach the channel to it, when either is missing.
 
@@ -866,8 +874,10 @@ class InboundMixin(HelpersMixin):
         under the lock that checks it is still the message's (``_claim_room``),
         so a room that is not gets no binding. The reads of a room that exists
         and the wait for its lock are bounded by the call's *deadline* (RFC
-        §13.6); a room created here is completed whatever the deadline.
-        Returns whether the room was just created.
+        §13.6); a room created here is completed whatever the deadline, once
+        *opening*, the budget a routed message of the room's work opens a
+        room on, is charged (:meth:`_Opening.charge`). Returns whether the
+        room was just created.
         """
         # Ensure room exists; auto-create if needed (e.g. voice session
         # with a room_id from SIP headers that hasn't been created yet).
@@ -877,6 +887,9 @@ class InboundMixin(HelpersMixin):
             room_id=room_id,
         )
         if not room_present:
+            # A router may answer an id the store lacks: the room it opens
+            # is charged as one routing answered none (gap G-070).
+            _charge_opening(opening)
             try:
                 await self._open_room_for(message, room_id, organization_id)
                 return True
@@ -989,7 +1002,7 @@ class InboundMixin(HelpersMixin):
         channel: Channel,
         organization_id: str | None,
         deadline: float,
-        opening: ReentryBudget | None = None,
+        opening: _Opening | None = None,
     ) -> tuple[str, bool]:
         """The room the router gives *message*, its binding naming the sender.
 
@@ -1257,15 +1270,32 @@ class _PastTheCapError(Exception):
     nothing written."""
 
 
-def _charge_opening(opening: ReentryBudget | None) -> None:
-    """Charge *opening*, the budget a routed message opening a new room
-    draws on, one pass before the room is created.
+@dataclass(slots=True)
+class _Opening:
+    """The budget a routed message of the room's delivery work draws on when
+    it opens a new room (RFC §9.5.1, gap G-070), charged once whichever
+    branch of routing creates the room."""
 
-    Raises:
-        _PastTheCapError: the budget is spent.
-    """
-    if opening is not None and not opening.take():
-        raise _PastTheCapError
+    budget: ReentryBudget
+    charged: bool = False
+
+    def charge(self) -> None:
+        """Take one pass before the room is created; nothing the second time.
+
+        Raises:
+            _PastTheCapError: the budget is spent.
+        """
+        if self.charged:
+            return
+        if not self.budget.take():
+            raise _PastTheCapError
+        self.charged = True
+
+
+def _charge_opening(opening: _Opening | None) -> None:
+    """Charge *opening*, if any, before a room is created for the message."""
+    if opening is not None:
+        opening.charge()
 
 
 class _RoutingTimeoutError(Exception):

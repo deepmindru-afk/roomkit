@@ -163,11 +163,15 @@ class TestACallFromADelivery:
         finally:
             await kit.close()
 
-    async def test_a_transport_opening_a_room_on_every_delivery_stops_at_the_cap(self) -> None:
+    @pytest.mark.parametrize("router", ["no-room", "a-room-id-the-store-lacks"])
+    async def test_a_transport_opening_a_room_on_every_delivery_stops_at_the_cap(
+        self, router: str
+    ) -> None:
         """A message the room's work routes into a new room is that work's:
-        it draws on the budget of the cascade that delivers, so a transport
-        whose every delivery opens a room stops at the cap."""
-        kit = RoomKit(max_chain_depth=1, inbound_router=_NoRoom())
+        it draws on the budget of the cascade that delivers, whichever way
+        routing opens the room (no answer, or an id the store lacks), so a
+        transport whose every delivery opens a room stops at the cap."""
+        kit = RoomKit(max_chain_depth=1, inbound_router=_OPENING_ROUTERS[router]())
         opening = _Opening("opener", kit)
         kit.register_channel(opening)
 
@@ -206,6 +210,23 @@ class _NoRoom(InboundRoomRouter):
 
     async def route(self, channel_id: str, channel_type: Any, **kwargs: Any) -> str | None:
         return None
+
+
+class _FreshRoom(InboundRoomRouter):
+    """Answers a room id the store does not hold for every message."""
+
+    def __init__(self) -> None:
+        self._rooms = 0
+
+    async def route(self, channel_id: str, channel_type: Any, **kwargs: Any) -> str | None:
+        self._rooms += 1
+        return f"fresh-{self._rooms}"
+
+
+_OPENING_ROUTERS: dict[str, Callable[[], InboundRoomRouter]] = {
+    "no-room": _NoRoom,
+    "a-room-id-the-store-lacks": _FreshRoom,
+}
 
 
 class _Opening(SimpleChannel):
