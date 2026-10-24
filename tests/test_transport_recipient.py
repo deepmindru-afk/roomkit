@@ -300,6 +300,31 @@ async def test_a_chat_channel_replies_to_the_chat_the_message_came_from(chat_id:
     await kit.close()
 
 
+@pytest.mark.parametrize("held", [7, "7"], ids=["integer", "string"])
+async def test_a_room_the_host_opened_for_a_chat_id_is_the_chat_s(held: int | str) -> None:
+    """RFC §5.7: a recipient is a string that is not blank, or an integer (a
+    chat id), and an integer is the address its digits write: a binding the
+    host attached with the chat id 7, written either way, names the chat
+    "7", whose message lands in its room and is answered there."""
+    telegram = MockTelegramProvider()
+    kit = _kit_with_agent(TelegramChannel("tg", provider=telegram))
+    await kit.create_room(room_id="chat-room")
+    await kit.attach_channel("chat-room", "ai")
+    await kit.attach_channel("chat-room", "tg", metadata={"telegram_chat_id": held})
+    message = InboundMessage(
+        channel_id="tg", sender_id="7", content=TextContent(body="Hi"), metadata={"chat_id": "7"}
+    )
+
+    result = await kit.process_inbound(message)
+
+    assert result.event is not None and result.event.room_id == "chat-room"
+    binding = await kit.store.get_binding("chat-room", "tg")
+    assert binding is not None and binding.participant_id == "7"
+    await _eventually(lambda: telegram.sent)
+    assert [str(m["to"]) for m in telegram.sent] == ["7"]
+    await kit.close()
+
+
 async def test_a_room_opened_for_a_webhook_message_replies_to_the_webhook() -> None:
     """The webhook provider posts to its configured URL: no recipient is needed
     (RFC §10.2 step 3d), so the room replies as it did before the refusal."""

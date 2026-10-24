@@ -416,7 +416,8 @@ async def test_a_binding_naming_no_one_names_its_recipient(
     correspondent names its recipient, a string or an integer under the key
     the caller passes; a group binding, and one naming a correspondent,
     do not name their recipient, and an empty or blank string, or a float,
-    is none."""
+    is none. An integer is the address its digits write: ``4242`` and
+    ``"4242"`` name the same one."""
     store = _StoreWithoutTheLookup() if fallback else contract_store
     if fallback and not isinstance(contract_store, InMemoryStore):
         pytest.skip("the fallback runs over the in-memory store")
@@ -432,6 +433,7 @@ async def test_a_binding_naming_no_one_names_its_recipient(
         (f"g-{tag}", {"chat": "  "}, None, False),
         (f"h-{tag}", {"chat": 4243.0}, None, False),
         (f"i-{tag}", {"chat": 2.5}, None, False),
+        (f"j-{tag}", {"chat": "4242"}, None, False),
     ]
     for offset, (room_id, metadata, named, group) in enumerate(stored):
         await store.create_room(Room(id=room_id, created_at=t0 + timedelta(seconds=offset)))
@@ -452,7 +454,7 @@ async def test_a_binding_naming_no_one_names_its_recipient(
     try:
         assert await found("alice") == f"a-{tag}"
         assert await found("alice", None) is None
-        assert await found("4242") == f"b-{tag}"
+        assert await found("4242") == f"j-{tag}"
         assert await found("bob") is None
         assert await found("carol") is None
         assert await found("dave") == f"d-{tag}"
@@ -462,6 +464,8 @@ async def test_a_binding_naming_no_one_names_its_recipient(
         assert await found("4243.0") is None
         assert await found("4243") is None
         assert await found("2.5") is None
+        await store.delete_room(f"j-{tag}")
+        assert await found("4242") == f"b-{tag}"
     finally:
         for room_id, *_ in stored:
             await store.delete_room(room_id)
