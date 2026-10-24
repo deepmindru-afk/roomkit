@@ -140,33 +140,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (its `connected_via` repair, which updates no row there) and on
   `schema_version`, neither of which a reader or a writer waits on.
 
-- **BREAKING — `DeliveryHandle.wait()` from an off-lock hook's body returns
-  at once** (RFC §9.5.1, §10.1 step 18, RMK-943). A `BEFORE_BROADCAST` hook
-  registered with `needs_lock=False` that sent into its room with
-  `defer_delivery=True` (a call adopted beside the hook's event) and waited
-  on the handle waited for that delivery, which waits behind the hook's
-  body. While the body runs, the wait now returns the result it has,
-  unwaited, with no `delivery_results`, and raises nothing, as it already
-  did under the room lock and in the room's lane; the delivery follows in
-  lane order. `DeliveryHandle.cancel()` there raises `RuntimeError`, as under
-  the lock: its drain could only wait for its caller. A task the body starts
-  waits as any caller does.
-
-- **BREAKING — `DeliveryHandle.wait()` from an event's admission work
-  returns at once** (RFC §9.5.1, §10.1 step 18, RMK-943). The admission work
-  of an event is the body of a `BEFORE_BROADCAST` hook registered with
-  `needs_lock=False`, a handler its check's `hook_error` or `hook_timeout`
-  report awaits, and the message's parse (a channel's `handle_inbound()`). A
-  call it made into the room with `defer_delivery=True` is adopted beside
-  the event, and a wait on its handle waited for a delivery that waits
-  behind that work. While the work runs, the wait now returns the result it
-  has, unwaited, with no `delivery_results`, and raises nothing, as it
-  already did under the room lock and in the room's lane; the delivery
-  follows in lane order. `DeliveryHandle.cancel()` there raises
-  `RuntimeError`, as under the lock: its drain could only wait for its
-  caller. A task the work starts waits as any caller does.
-
-
 - **BREAKING — a reply's parent is rooted on every path that commits an
   event** (RFC §10.1 step 8, §10.3, §10.5, RMK-943). Only an inbound message
   and `send_event()` replaced a `parent_event_id` naming a reply by that
@@ -191,8 +164,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `parent_event_id` to find the message it answers reads `responds_to`,
   which an agent's answer carries and which an injected event or a record
   can be given.
-
-### Fixed
 
 - Work the kit holds, started late in its `close()` or after it, is cut as
   the close cuts the rest (RFC §19.7.3, §23.3, RMK-943). A delegation's
