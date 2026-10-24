@@ -294,6 +294,42 @@ async def test_handle_wait_short_circuits_under_room_lock() -> None:
     await kit.close()
 
 
+async def test_handle_wait_from_an_off_lock_hook_body_returns_at_once() -> None:
+    """An off-lock hook's body sends into its room, the call adopted beside
+    the hook's event, and waits on that call's delivery: the wait returns at
+    once with what the result has, unwaited, as under the lock (RFC §9.5.1
+    Reentrance, §10.1 step 18). A task the body starts, waiting while the
+    body still runs, waits for the delivery as any caller does."""
+    provider = _GatedAIProvider()
+    kit = await _make_kit(AIChannel("ai1", provider=provider))
+    outcome: dict[str, Any] = {}
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, needs_lock=False, name="check")
+    async def check(event: Any, ctx: RoomContext) -> HookResult:
+        if event.content.body != "hello":
+            return HookResult.allow()
+        side = await kit.process_inbound(_message("side"), room_id="r1", defer_delivery=True)
+        assert side.delivery is not None
+        try:
+            # Generation still gated: a real wait would last until the timeout.
+            await asyncio.wait_for(side.delivery.wait(), timeout=1.0)
+            outcome["body"] = "returned"
+        except TimeoutError:
+            outcome["body"] = "waited"
+        outcome["task"] = asyncio.create_task(side.delivery.wait())
+        await asyncio.sleep(0)  # the task's wait starts while the body runs
+        return HookResult.allow()
+
+    await kit.process_inbound(_message(), room_id="r1", defer_delivery=True)
+    assert outcome["body"] == "returned"
+    assert not outcome["task"].done()
+
+    provider.gate.set()
+    waited = await asyncio.wait_for(outcome["task"], timeout=5.0)
+    assert "sms2" in waited.delivery_results
+    await kit.close()
+
+
 # -- Trace shape: the deferred tail stays in the inbound span's tree --
 
 

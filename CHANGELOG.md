@@ -140,6 +140,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (its `connected_via` repair, which updates no row there) and on
   `schema_version`, neither of which a reader or a writer waits on.
 
+- **BREAKING — `DeliveryHandle.wait()` from an off-lock hook's body returns
+  at once** (RFC §9.5.1, §10.1 step 18, RMK-943). A `BEFORE_BROADCAST` hook
+  registered with `needs_lock=False` that sent into its room with
+  `defer_delivery=True` (a call adopted beside the hook's event) and waited
+  on the handle waited for that delivery, which waits behind the hook's
+  body. While the body runs, the wait now returns the result it has,
+  unwaited, with no `delivery_results`, and raises nothing, as it already
+  did under the room lock and in the room's lane; the delivery follows in
+  lane order. `DeliveryHandle.cancel()` there raises `RuntimeError`, as under
+  the lock: its drain could only wait for its caller. A task the body starts
+  waits as any caller does.
+
 ### Fixed
 
 - Work the kit holds, started late in its `close()` or after it, is cut as
