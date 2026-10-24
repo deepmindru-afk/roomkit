@@ -9,8 +9,10 @@ from typing import Any
 import pytest
 
 from roomkit import (
+    HookExecution,
     HookTrigger,
     InboundMessage,
+    ReentryLoopCapError,
     RoomKit,
     TextContent,
     VerificationPolicy,
@@ -38,12 +40,15 @@ def _cheap_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(verification_mixin, "_SCRYPT_N", 2**4)
 
 
-def _kit(**policy: Any) -> tuple[RoomKit, MockAIProvider, MockSMSProvider]:
+def _kit(
+    max_chain_depth: int = 5, **policy: Any
+) -> tuple[RoomKit, MockAIProvider, MockSMSProvider]:
     ai = MockAIProvider(responses=["answer"] * 20)
     sms = MockSMSProvider()
     kit = RoomKit(
         identity_resolver=MockIdentityResolver(mapping={ALICE: Identity(id="id-alice")}),
         verification_policy=VerificationPolicy(**policy),
+        max_chain_depth=max_chain_depth,
     )
     kit.register_channel(SMSChannel("sms", provider=sms))
     kit.register_channel(AIChannel("ai", provider=ai))
@@ -96,6 +101,38 @@ async def test_a_held_question_is_answered_once_verified() -> None:
     assert len(ai.calls) == 1
     assert "Did my transfer go through?" in _prompts(ai)[0]
     assert any(m["to"] == ALICE for m in sms.sent)
+    await kit.close()
+
+
+async def test_a_hook_updating_a_released_message_again_stops_at_the_cap() -> None:
+    """The release's ON_EVENT_UPDATED hooks run on the budget of the work
+    the release is made in, one of its own from outside (RFC §9.5.1,
+    §10.3): a hook that updates the released message on every update draws
+    one hook call each, and its eleventh run is refused at the cap of 10
+    (depth limit 1). Run on no budget, its first update would start one of
+    its own, and the twelfth run would be refused."""
+    kit, _, _ = _kit(max_chain_depth=1)
+    asked = await _text(kit, "Did my transfer go through?")
+    room_id = asked.event.room_id
+    request, secret = await kit.request_verification(
+        "id-alice", room_id=room_id, channel_id="sms", window_start=asked.event.created_at
+    )
+    runs: list[None] = []
+    refused: list[ReentryLoopCapError] = []
+
+    @kit.hook(HookTrigger.ON_EVENT_UPDATED, execution=HookExecution.ASYNC, name="again")
+    async def again(event: Any, ctx: Any) -> None:
+        runs.append(None)
+        if len(runs) > 40:
+            return
+        try:
+            await kit.update_event(room_id, event.id, metadata={"n": len(runs)})
+        except ReentryLoopCapError as error:
+            refused.append(error)
+
+    await kit.complete_verification(request.id, secret)
+
+    assert (len(runs), len(refused)) == (11, 1)
     await kit.close()
 
 
