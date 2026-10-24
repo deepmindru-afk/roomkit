@@ -38,9 +38,10 @@ from roomkit.core.mixins.inbound_locked import (
     _Blocked,
     _Ready,
     _Refused,
+    committed_in,
     target_update,
 )
-from roomkit.core.mixins.lane_execution import committed_in, provisional
+from roomkit.core.mixins.lane_execution import provisional
 from roomkit.core.task_utils import start_named
 from roomkit.core.visibility import intersect_visibility, narrowed_to_target, visibility_allows
 from roomkit.models.channel import ChannelBinding

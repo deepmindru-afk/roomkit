@@ -803,8 +803,9 @@ class InboundLockedMixin(HelpersMixin):
             cascade.unavailable_targets = list(committed.addressed_to or [])
             if source_binding is None:
                 # No source binding: no broadcast, but the RFC §10.3 mutation
-                # trigger must still fire once the commit is visible.
-                return mutation_plan(committed, context, mutation_hook)
+                # trigger must still fire once the commit is visible, with
+                # the change in its history.
+                return mutation_plan(committed, committed_in(context, committed), mutation_hook)
             # Refresh context locally by appending the committed event, so
             # the delivery set (and the AI's on_event) sees the trigger. An
             # instruction is not part of the room's history (RFC §10.1.1):
@@ -929,6 +930,16 @@ class InboundLockedMixin(HelpersMixin):
         """
         for trigger, ev, ctx in pending:
             await self._hook_engine.run_async_hooks(room_id, trigger, ev, ctx)
+
+
+def committed_in(context: RoomContext, committed: RoomEvent) -> RoomContext:
+    """*context* with *committed* as its newest event, in place of a copy
+    its pass's hooks read: the room as the event's commit left it, at its
+    committed index and as its hooks left it, which its delivery set and a
+    change's mutation trigger read (RFC §10.3, §9.2)."""
+    history = [event for event in context.recent_events if event.id != committed.id]
+    recent = [*history[-(_RECENT_EVENTS_LIMIT - 1) :], committed]
+    return context.model_copy(update={"recent_events": recent})
 
 
 def mutation_plan(

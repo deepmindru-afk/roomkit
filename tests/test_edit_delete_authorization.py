@@ -912,10 +912,24 @@ async def _change_from(kit: RoomKit, origin: str, kind: str) -> None:
     await _post(kit, "go", sender_id="alice")
 
 
+def _redacted(event: RoomEvent) -> HookResult:
+    """A modify of a change that says another thing: an edit's new content
+    redacted, a delete's reason; any other event allowed."""
+    content = event.content
+    if isinstance(content, EditContent):
+        redacted = content.model_copy(update={"new_content": TextContent(body="REDACTED")})
+    elif isinstance(content, DeleteContent):
+        redacted = content.model_copy(update={"reason": "REDACTED"})
+    else:
+        return HookResult.allow()
+    return HookResult.modify(event.model_copy(update={"content": redacted}))
+
+
 class TestTheMutationTriggers:
     """RFC §10.3 Mutation triggers: ON_EVENT_UPDATED and ON_EVENT_DELETED
     read the room as the change's commit left it, whatever its origin: the
-    target as rewritten, and the change itself as the newest event."""
+    target as rewritten, and the change itself as the newest event, at its
+    committed index and as its hooks left it."""
 
     @pytest.mark.parametrize("kind", ["edit", "delete"])
     @pytest.mark.parametrize("origin", ["inbound", "response", "injected"])
@@ -925,6 +939,10 @@ class TestTheMutationTriggers:
         kit = await _setup()
         trigger = HookTrigger.ON_EVENT_UPDATED if kind == "edit" else HookTrigger.ON_EVENT_DELETED
         contexts: list[RoomContext] = []
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="redact")
+        async def redact(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            return _redacted(event)
 
         @kit.hook(trigger, execution=HookExecution.ASYNC)
         async def track(event: RoomEvent, ctx: RoomContext) -> None:
@@ -939,6 +957,7 @@ class TestTheMutationTriggers:
         ]
         assert isinstance(change.content, EditContent | DeleteContent)
         target = await kit._store.get_event(change.content.target_event_id)
+        assert "REDACTED" in change.content.model_dump_json()
         [context] = contexts
         assert context.recent_events[-1] == change
         assert [e for e in context.recent_events if e.id == change.content.target_event_id] == [
