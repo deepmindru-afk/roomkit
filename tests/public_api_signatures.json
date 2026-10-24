@@ -1836,7 +1836,7 @@
     "mute_output": ["async def", "room_id", "channel_id", "*", "organization_id=None"],
     "on": ["def", "event_type"],
     "on_delivery_status": ["def", "fn"],
-    "post": ["async def", "room_id", "content", "*", "participant_id=None", "addressed_to=()", "metadata=None", "channel_id=None", "organization_id=None", "idempotency_key=None"],
+    "post": ["async def", "room_id", "content", "*", "participant_id=None", "addressed_to=()", "metadata=None", "channel_id=None", "organization_id=None", "idempotency_key=None", "chain_depth=0"],
     "process_delivery_status": ["async def", "status", "*", "organization_id=None"],
     "process_inbound": ["async def", "message", "*", "room_id=None", "defer_delivery=False", "organization_id=None"],
     "process_webhook": ["async def", "meta", "channel_id", "organization_id=None"],

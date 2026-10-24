@@ -394,6 +394,7 @@ _REFUSALS: dict[str, tuple[Callable[[RoomKit], Awaitable[None]], dict[str, Any],
         {"idempotency_key": "roomkit:publication:k"},
         ValueError,
     ),
+    "a negative chain depth": (_nothing, {"chain_depth": -1}, ValueError),
 }
 
 

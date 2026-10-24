@@ -41,6 +41,7 @@ async def post(
     channel_id: str | None,
     organization_id: str | None,
     idempotency_key: str | None,
+    chain_depth: int,
 ) -> RoomEvent:
     """Inject *content* from the host channel, attaching it first to a room
     that never bound it, within one ``process_timeout`` from the call's start
@@ -51,6 +52,8 @@ async def post(
     # can write anything.
     refuse_too_deep(body)
     refuse_reserved(idempotency_key)
+    if chain_depth < 0:
+        raise ValueError(f"chain_depth is a depth in a chain, never negative: {chain_depth}")
     host_id = _host_channel_id(kit, channel_id)
     # A room that binds the channel is never written to here: this read
     # decides nothing the locked section would decide otherwise, and spares
@@ -70,6 +73,7 @@ async def post(
         metadata=metadata,
         idempotency_key=idempotency_key,
         organization_id=organization_id,
+        chain_depth=chain_depth,
         deadline=deadline,
     )
 

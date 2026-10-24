@@ -815,6 +815,56 @@ class TestACallFromAnAsyncHook:
         finally:
             await kit.close()
 
+    async def test_a_task_the_hook_starts_continues_the_chain_it_names(self) -> None:
+        """A task the hook starts begins at depth 0 unless it names the chain
+        it continues: posting one deeper than the answer that fired the
+        hook, the round trips end at ``max_chain_depth`` (4 here), the agent
+        not asked about the second post (RFC §8.3, §10.5)."""
+        kit = await _room(RoomKit(max_chain_depth=4))
+        kit.register_channel(AILikeChannel("ai", response="Answer."))
+        await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+        ended = asyncio.Event()
+        failures: list[Exception] = []
+        tasks: set[asyncio.Task[None]] = set()
+
+        async def follow_up(answer: RoomEvent) -> None:
+            try:
+                await kit.post(
+                    "r1", "Try again.", addressed_to=["ai"], chain_depth=answer.chain_depth + 1
+                )
+            except Exception as error:
+                failures.append(error)
+                ended.set()
+
+        @kit.on("chain_depth_exceeded")
+        async def limited(event: object) -> None:
+            ended.set()
+
+        @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="judge")
+        async def judge(event: RoomEvent, ctx: RoomContext) -> None:
+            if event.source.channel_id == "ai" and event.blocked_by is None:
+                task = asyncio.create_task(follow_up(event))
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message()), 5)
+            await asyncio.wait_for(ended.wait(), 5)
+            await asyncio.wait_for(_settled(kit), 5)
+            assert failures == []
+            assert [
+                (e.source.channel_id, e.chain_depth, e.blocked_by) for e in await _messages(kit)
+            ] == [
+                ("sms", 0, None),
+                ("ai", 1, None),
+                ("host", 2, None),
+                ("ai", 3, None),
+                ("host", 4, None),
+                ("ai", 5, "event_chain_depth_limit"),
+            ]
+        finally:
+            await kit.close()
+
 
 async def _send_edit(kit: RoomKit, event: RoomEvent, n: int) -> RoomEvent:
     """Its sender's edit of *event* in room ``r1``."""

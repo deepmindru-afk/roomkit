@@ -1269,6 +1269,7 @@ class RoomKit(
         channel_id: str | None = None,
         organization_id: str | None = None,
         idempotency_key: str | None = None,
+        chain_depth: int = 0,
     ) -> RoomEvent:
         """Write to a room's people in the host's own name (RFC §10.5).
 
@@ -1300,6 +1301,13 @@ class RoomKit(
                 replay: the post returns the event it committed, sends
                 nothing again and, from the room's own work, draws no pass
                 (RFC §13.4, §9.5.1). A blank key is no key.
+            chain_depth: The chain the post continues (RFC §8.3), as
+                :meth:`send_event`'s; 0 opens one. Work that follows an
+                agent's answer once the answer's own work is over, such as a
+                task a hook starts, posts one deeper than the answer, so its
+                round trips with the agent end at ``max_chain_depth``. Made
+                while a turn runs, the post is at least as deep as the turn's
+                response.
 
         A room that never bound the host channel is given it on its first
         post, an ordinary attachment, decided in one section under the room
@@ -1325,7 +1333,8 @@ class RoomKit(
             ValueError: *channel_id* names a channel that is not of type
                 ``HOST``, ``"host"`` is taken by another channel, or an
                 argument :meth:`send_event` refuses (a key in the framework's
-                namespace, content past five composite levels).
+                namespace, content past five composite levels, a negative
+                *chain_depth*).
         """
         return await _host_post.post(
             self,
@@ -1337,6 +1346,7 @@ class RoomKit(
             channel_id=channel_id,
             organization_id=organization_id,
             idempotency_key=idempotency_key,
+            chain_depth=chain_depth,
         )
 
     async def _send_event(
