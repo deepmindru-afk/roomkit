@@ -20,6 +20,7 @@ class _Closable(Protocol):
 
 class _HoldsRuns(Protocol):
     _background_runs: set[asyncio.Task[None]]
+    _closed: bool
 
 
 # How long a channel's close waits for the work it cancelled (its calls, its
@@ -49,18 +50,34 @@ def hold_task(
 ) -> asyncio.Task[None]:
     """Run *work* as a task *kit* holds until it ends, so its ``close()``
     cancels it with the other background work and waits for its end (RFC
-    §19.7.3, §23.3). *eager* starts it at once (:func:`start_named`), for
-    work whose end runs in its own cancellation handler: a close then never
-    finds it unstarted, its end never run. An exception it ends on is
-    logged, unless its caller *awaited* it and receives it. *context*, when
-    given, is the one it runs in instead of a copy of the caller's."""
+    §19.7.3, §23.3). Held once the kit's close began, or after it, it is cut
+    at once, as that close cuts the runs it finds: it runs its first step,
+    then its end, never its work, and is never left running past the close.
+    *eager* starts it at once (:func:`start_named`). An exception it ends on
+    is logged, unless its caller *awaited* it and receives it. *context*,
+    when given, is the one it runs in instead of a copy of the caller's."""
     task = start_named(work, context=context, eager=eager)
     runs = kit._background_runs
     runs.add(task)
     task.add_done_callback(runs.discard)
     if not awaited:
         task.add_done_callback(log_task_exception)
+    if kit._closed:
+        cut_once_started(task)
     return task
+
+
+def cut_once_started(task: asyncio.Task[Any]) -> None:
+    """Cancel *task* once it has run its first step. Cancelled before it, a
+    coroutine never runs its body, its own end included: the cancellation
+    handler that posts a run's terminal entry, the ``finally`` that runs a
+    task's completion. A task not started yet has its first step scheduled
+    already, so a cancellation scheduled now comes right after it."""
+    work = task.get_coro()
+    if inspect.iscoroutine(work) and inspect.getcoroutinestate(work) == inspect.CORO_CREATED:
+        asyncio.get_running_loop().call_soon(task.cancel)
+    else:
+        task.cancel()
 
 
 def start_named[T](
@@ -183,7 +200,9 @@ async def _finish_cleanup(coro: Coroutine[Any, Any, object]) -> None:
 
 
 async def cancel_and_wait(
-    *tasks: asyncio.Future[Any] | None, log_errors_to: logging.Logger | None = None
+    *tasks: asyncio.Future[Any] | None,
+    log_errors_to: logging.Logger | None = None,
+    once_started: bool = False,
 ) -> None:
     """Cancel *tasks* and wait until each has ended, without eating the caller's cancellation.
 
@@ -196,7 +215,9 @@ async def cancel_and_wait(
     the caller's cancellation is raised once they have.
 
     ``None`` entries and the current task are skipped: a task tearing itself
-    down cannot wait for its own end. A task's own exception is raised, as
+    down cannot wait for its own end. *once_started* cancels a task not
+    started yet after its first step (:func:`cut_once_started`), so its own
+    end runs. A task's own exception is raised, as
     awaiting it would, unless *log_errors_to* is given: it is then logged
     there, at debug, and the teardown goes on. A cancelled caller gets its
     cancellation, never a task's exception.
@@ -208,7 +229,10 @@ async def cancel_and_wait(
     current = asyncio.current_task()
     pending = [t for t in dict.fromkeys(tasks) if t is not None and t is not current]
     for task in pending:
-        task.cancel()
+        if once_started and isinstance(task, asyncio.Task):
+            cut_once_started(task)
+        else:
+            task.cancel()
     cancelled: asyncio.CancelledError | None = None
     while any(not t.done() for t in pending):
         try:

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import pytest
@@ -397,6 +397,56 @@ async def test_a_background_run_started_while_the_kit_drains_ends_with_its_close
     await kit.close()
 
     assert [run.done() for run in runs] == [True]
+
+
+class _HoldsAsItCloses(SimpleChannel):
+    """A channel whose close starts work the kit holds (a hand-back its
+    session's end starts)."""
+
+    def __init__(self, channel_id: str, hold: Callable[[], None]) -> None:
+        super().__init__(channel_id)
+        self._hold = hold
+
+    async def close(self) -> None:
+        self._hold()
+        await super().close()
+
+
+@pytest.mark.parametrize(
+    "when", ["before-its-first-step", "as-a-channel-closes", "after-the-close"]
+)
+async def test_a_run_held_around_the_close_is_cut_with_its_end_run(when: str) -> None:
+    """Work the kit holds (a strategy's background run, a hand-back, a
+    greeting's turn) started however late in the kit's close, or after it,
+    is cut as close cuts the runs it holds: once it started, so its own end
+    runs (a run's terminal entry, a task's completion), and never left
+    running past close() (RFC §19.7.3, §23.3)."""
+    kit = RoomKit()
+    steps: list[str] = []
+    runs: list[asyncio.Task[None]] = []
+
+    async def work() -> None:
+        steps.append("started")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            steps.append("ended")
+            raise
+
+    def hold() -> None:
+        runs.append(hold_task(kit, work()))
+
+    if when == "as-a-channel-closes":
+        kit.register_channel(_HoldsAsItCloses("sms", hold))
+    if when == "before-its-first-step":
+        hold()
+    await kit.close()
+    if when == "after-the-close":
+        hold()
+        await asyncio.wait(runs, timeout=1.0)
+
+    assert [run.cancelled() for run in runs] == [True]
+    assert steps == ["started", "ended"]
 
 
 async def test_a_caller_waiting_for_its_injected_events_returns_when_the_close_cuts_them() -> None:

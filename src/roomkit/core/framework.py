@@ -795,12 +795,14 @@ class RoomKit(
         """Cancel the background work the kit holds and wait for its ends:
         a strategy's run frees its room and posts its terminal entry,
         cancelled; an inline delegation ends cancelled, its completion run;
-        a delegation's hand-back under way is cut (RFC §23.3). The runs this
-        close runs under are spared: waiting for them would wait for itself."""
+        a delegation's hand-back under way is cut (RFC §23.3). A run not
+        started yet is cut once started, its end run all the same. The runs
+        this close runs under are spared: waiting for them would wait for
+        itself."""
         spared = set(held_runs())
         runs = set(self._background_runs) - spared
         while runs:
-            await cancel_and_wait(*runs, log_errors_to=logger)
+            await cancel_and_wait(*runs, log_errors_to=logger, once_started=True)
             # A run's end may start another: it is cancelled in turn.
             runs = {run for run in self._background_runs if not run.done()} - spared
 
@@ -917,6 +919,11 @@ class RoomKit(
         if self._voice:
             await self._voice.close()
         await self._realtime.close()
+        # What the channels' closes started (a run held on the closing kit,
+        # cut as it started; a decided write) ends before the store is
+        # released, as what the drains started did.
+        await self._cancel_background_runs()
+        await wait_for_held(self._decided_writes, until=writes_deadline)
         # Every channel is closed and its media released. Only now wait for
         # the operations the store or the lock manager already has — they are
         # bracketed by resource leases, and this wait is what lets a channel's

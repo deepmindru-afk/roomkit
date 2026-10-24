@@ -140,6 +140,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (its `connected_via` repair, which updates no row there) and on
   `schema_version`, neither of which a reader or a writer waits on.
 
+### Fixed
+
+- Work the kit holds, started late in its `close()` or after it, is cut as
+  the close cuts the rest (RFC §19.7.3, §23.3, RMK-943). A strategy's
+  background run, a delegation's hand-back, a handoff greeting's turn or a
+  discussion's post started while a channel closed, or once the kit had
+  closed, ran on past `close()`, against a released store. One held just
+  before the close and cut before its first step never ran its end: a
+  background run posted no terminal entry and never freed its room. Each is
+  now cut once it has started, its end run (a run's terminal entry, a task's
+  completion), and `close()` waits for it before it releases the store.
+
 ## [0.108.0] — 2026-10-24
 
 ### Added
