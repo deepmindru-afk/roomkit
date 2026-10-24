@@ -37,8 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key. A `send_event()` of the room's own work (a hook, a parse, a
   delivery) with a key its channel holds is a replay read before its
   cascade's reentry budget: it returns what the key committed and draws no
-  pass, past the cap too, where it raised; only a new event is stored
-  `BLOCKED` past the cap. A message past the cap stays refused first thing,
+  pass, past the cap too, where 0.108.0 stored a `BLOCKED` record under
+  the taken key; only a new event is stored `BLOCKED` past the cap. A message past the cap stays refused first thing,
   its key unread. An event under an id the store holds keeps the
   database's own error, `asyncpg.UniqueViolationError` or
   `sqlite3.IntegrityError`, the key held with it or not.
