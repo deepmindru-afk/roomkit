@@ -1193,11 +1193,13 @@ class LaneExecutionMixin(HelpersMixin):
         binding = ready.source_binding
         context = with_target(ready.context, mutation_hook[1] if mutation_hook else None)
         if binding is None:
-            return lambda committed: mutation_plan(committed, context, mutation_hook)
+            return lambda committed: mutation_plan(
+                committed, committed_in(context, committed), mutation_hook
+            )
         router = self._get_router()
 
         def factory(committed: RoomEvent) -> DeliveryPlan:
-            child = router.plan(committed, binding, context)
+            child = router.plan(committed, binding, committed_in(context, committed))
             child.response_visibility = narrower_scope(
                 response_visibility, committed.response_visibility, context.bindings
             )
@@ -1260,6 +1262,16 @@ def provisional(event: RoomEvent, context: RoomContext) -> tuple[RoomEvent, Room
     return event, context.model_copy(
         update={"recent_events": [*context.recent_events[-(_RECENT_EVENTS_LIMIT - 1) :], event]}
     )
+
+
+def committed_in(context: RoomContext, committed: RoomEvent) -> RoomContext:
+    """*context* with *committed* as its newest event, in place of the copy
+    its pass's hooks read (:func:`provisional`): the room as the event's
+    commit left it, which its delivery set and a change's mutation trigger
+    read (RFC §10.3), as on the inbound path."""
+    history = [event for event in context.recent_events if event.id != committed.id]
+    recent = [*history[-(_RECENT_EVENTS_LIMIT - 1) :], committed]
+    return context.model_copy(update={"recent_events": recent})
 
 
 def record_buffered_reply(

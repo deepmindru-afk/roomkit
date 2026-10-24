@@ -40,7 +40,7 @@ from roomkit.core.mixins.inbound_locked import (
     _Refused,
     target_update,
 )
-from roomkit.core.mixins.lane_execution import provisional
+from roomkit.core.mixins.lane_execution import committed_in, provisional
 from roomkit.core.task_utils import start_named
 from roomkit.core.visibility import intersect_visibility, narrowed_to_target, visibility_allows
 from roomkit.models.channel import ChannelBinding
@@ -303,7 +303,8 @@ class InjectedEventsMixin(HelpersMixin):
         targets = await self._injected_targets(room_id, event, injected)
 
         def factory(committed: RoomEvent) -> DeliveryPlan:
-            return _injected_plan(committed, ready, context, targets, mutation_hook)
+            planned = committed_in(context, committed)
+            return _injected_plan(committed, ready, planned, targets, mutation_hook)
 
         stored = await self._commit_to_lane(
             room_id, event, cascade, factory, policy_aware=False, target=target

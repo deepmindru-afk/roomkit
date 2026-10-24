@@ -858,6 +858,95 @@ class TestWhomAChangeReaches:
         await kit.close()
 
 
+def _change_of(kind: str, target: RoomEvent, authority: str) -> EditContent | DeleteContent:
+    """An edit or a delete of *target* made with *authority*, the sender's or
+    the system's."""
+    if kind == "edit":
+        return EditContent(
+            target_event_id=target.id, new_content=TextContent(body="final"), edit_source=authority
+        )
+    return DeleteContent(target_event_id=target.id, delete_type=DeleteType(authority))
+
+
+async def _change_from(kit: RoomKit, origin: str, kind: str) -> None:
+    """Change a message of the room by *origin*: its author's inbound
+    message, an agent's response changing its own, or a hook's injected
+    system change."""
+    if origin == "response":
+
+        def answer(event: RoomEvent, ctx: RoomContext) -> list[RoomEvent]:
+            source = EventSource(channel_id="agent", channel_type=ChannelType.AI)
+            if _said(event, "hi"):
+                return [RoomEvent(room_id="r1", source=source, content=TextContent(body="draft"))]
+            if _said(event, "go"):
+                draft = next(e for e in ctx.recent_events if e.source.channel_id == "agent")
+                return [_change("r1", source, _change_of(kind, draft, "sender"))]
+            return []
+
+        kit.register_channel(_Agent("agent", answer))
+        await kit.attach_channel("r1", "agent", category=ChannelCategory.INTELLIGENCE)
+        await _post(kit, "hi", sender_id="alice")
+        await _post(kit, "go", sender_id="alice")
+        return
+    original = await _post(kit, "v1", sender_id="alice")
+    if origin == "inbound":
+        change = _change_of(kind, original, "sender")
+        await kit.process_inbound(
+            InboundMessage(
+                channel_id="src",
+                sender_id="alice",
+                event_type=EventType.EDIT if kind == "edit" else EventType.DELETE,
+                content=change,
+            )
+        )
+        return
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST)
+    async def janitor(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if not _said(event, "go"):
+            return HookResult.allow()
+        source = EventSource(channel_id="janitor", channel_type=ChannelType.SYSTEM)
+        injected = _change("r1", source, _change_of(kind, original, "system"))
+        return HookResult.allow([InjectedEvent(event=injected)])
+
+    await _post(kit, "go", sender_id="alice")
+
+
+class TestTheMutationTriggers:
+    """RFC §10.3 Mutation triggers: ON_EVENT_UPDATED and ON_EVENT_DELETED
+    read the room as the change's commit left it, whatever its origin: the
+    target as rewritten, and the change itself as the newest event."""
+
+    @pytest.mark.parametrize("kind", ["edit", "delete"])
+    @pytest.mark.parametrize("origin", ["inbound", "response", "injected"])
+    async def test_a_trigger_reads_the_room_as_the_change_left_it(
+        self, origin: str, kind: str
+    ) -> None:
+        kit = await _setup()
+        trigger = HookTrigger.ON_EVENT_UPDATED if kind == "edit" else HookTrigger.ON_EVENT_DELETED
+        contexts: list[RoomContext] = []
+
+        @kit.hook(trigger, execution=HookExecution.ASYNC)
+        async def track(event: RoomEvent, ctx: RoomContext) -> None:
+            contexts.append(ctx)
+
+        await _change_from(kit, origin, kind)
+
+        [change] = [
+            e
+            for e in await kit._store.list_events("r1")
+            if e.type in (EventType.EDIT, EventType.DELETE)
+        ]
+        assert isinstance(change.content, EditContent | DeleteContent)
+        target = await kit._store.get_event(change.content.target_event_id)
+        [context] = contexts
+        assert context.recent_events[-1] == change
+        assert [e for e in context.recent_events if e.id == change.content.target_event_id] == [
+            target
+        ]
+        await kit.close()
+
+
 class TestTheTargetReadAgain:
     """RFC §10.1 step 9a: once a hook ran under the lock, an edit or a
     delete has its target read and validated again."""
