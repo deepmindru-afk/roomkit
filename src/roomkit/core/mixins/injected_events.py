@@ -256,14 +256,15 @@ class InjectedEventsMixin(HelpersMixin):
         room_context = await self._open_pass(room_id, event)
         if room_context is None:
             return
+        # Its thread parent, the hook's, rooted (RFC §10.1 step 8), as its
+        # own hooks read it, in their context too.
+        event = await self._with_thread_root(room_id, event)
         event = event.model_copy(update={"visibility": _targets_scope(injected, room_context)})
         event, context = provisional(event, room_context)
         if not cascade.consume_reentry_budget():
             # Past the budget it is not a pass: its hooks never run (§8.3).
             await self._store_past_reentry_cap(room_id, event, channels=False)
             return
-        # Its thread parent, the hook's, rooted (RFC §10.1 step 8).
-        event = await self._with_thread_root(room_id, event)
         # An edit or a delete it carries is the hook's, a SYSTEM change
         # only (RFC §10.3 rule 6); a refused one is logged, nothing stored.
         check = await self._check_change(room_id, event, by_hook=True)

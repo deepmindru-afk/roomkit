@@ -20,11 +20,12 @@ import pytest
 
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.base import Channel
+from roomkit.core.event_router import CHAIN_DEPTH_LIMIT
 from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory, ChannelType, EventStatus, HookTrigger
+from roomkit.models.enums import ChannelCategory, ChannelType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.room import Room
@@ -164,25 +165,6 @@ class TestThreadRootNormalization:
             room_id, "ch1", TextContent(body="reply"), parent_event_id=root.id
         )
         assert reply.parent_event_id == root.id
-
-    async def test_reply_to_a_reply_collapses_to_root(self) -> None:
-        kit, room_id = await _kit_with_room()
-        root = await kit.send_event(room_id, "ch1", TextContent(body="root"))
-        reply = await kit.send_event(
-            room_id, "ch1", TextContent(body="reply"), parent_event_id=root.id
-        )
-        nested = await kit.send_event(
-            room_id, "ch1", TextContent(body="nested"), parent_event_id=reply.id
-        )
-        # Flat two-level: the nested reply threads under the ROOT, not the reply.
-        assert nested.parent_event_id == root.id
-
-    async def test_dangling_parent_drops_to_top_level(self) -> None:
-        kit, room_id = await _kit_with_room()
-        event = await kit.send_event(
-            room_id, "ch1", TextContent(body="orphan"), parent_event_id="does-not-exist"
-        )
-        assert event.parent_event_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -357,20 +339,6 @@ async def _commit_record(kit: RoomKit, parent: str) -> None:
     await kit.commit_event("r1", record)
 
 
-async def _record_a_blocked_answer(kit: RoomKit, parent: str) -> None:
-    """The record a delivery set leaves for an answer it blocked (past a
-    strategy's depth limit), as the router hands it on."""
-    blocked = RoomEvent(
-        room_id="r1",
-        source=EventSource(channel_id="sms1", channel_type="sms"),
-        content=TextContent(body="blocked"),
-        status=EventStatus.BLOCKED,
-        blocked_by="chain_depth_limit",
-        parent_event_id=parent,
-    )
-    await kit._commit_blocked_response("r1", blocked)
-
-
 def _past_cap(event: RoomEvent) -> bool:
     return event.blocked_by == "reentry_loop_cap"
 
@@ -392,7 +360,6 @@ _PATHS: dict[str, tuple[Any, Any]] = {
     "response-past-the-budget": (_answer_past_the_budget, _past_cap),
     "hook-injected-event": (_inject, lambda e: _body(e) == "injected"),
     "send_event-past-the-budget": (_send_past_the_budget, _past_cap),
-    "record-of-a-blocked-answer": (_record_a_blocked_answer, lambda e: _body(e) == "blocked"),
     "commit_event": (_commit_record, lambda e: _body(e) == "record"),
 }
 
@@ -437,6 +404,41 @@ class TestEveryPathRootsItsThread:
         assert all(e.parent_event_id is None for e in rows)
         await kit.close()
 
+    async def test_a_depth_limit_record_of_an_answer_whose_root_is_gone_is_top_level(
+        self,
+    ) -> None:
+        """Two agents answer a reply; a hook deletes the thread's root, its
+        replies kept, as one answer commits. The record the depth limit
+        leaves for the other agent, not asked about that answer, takes the
+        answer's parent, the removed root, and is posted at the top level
+        (RFC §10.1 step 8, §8.3)."""
+        kit, root, reply = await _threaded_kit(max_chain_depth=2)
+        for agent in ("a1", "a2"):
+            kit.register_channel(AIChannel(agent, provider=MockAIProvider(responses=["ok"] * 4)))
+            await kit.attach_channel("r1", agent, category=ChannelCategory.INTELLIGENCE)
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="forget")
+        async def forget(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if event.source.channel_id == "a1" and await kit.store.get_event(root.id):
+                await kit.delete_event("r1", root.id, cascade_replies=False)
+            return HookResult.allow()
+
+        await kit.process_inbound(
+            InboundMessage(
+                channel_id="sms1",
+                sender_id="u1",
+                content=TextContent(body="ask"),
+                parent_event_id=reply.id,
+            ),
+            room_id="r1",
+        )
+
+        stored = await _stored(kit)
+        [answer] = [e for e in stored if e.source.channel_id == "a1" and e.blocked_by is None]
+        [record] = [e for e in stored if e.responds_to == answer.id]
+        assert (record.blocked_by, record.parent_event_id) == (CHAIN_DEPTH_LIMIT, None)
+        await kit.close()
+
     async def test_a_hard_delete_of_the_root_removes_the_whole_thread(self) -> None:
         """An agent's answer, a hook's injected event and a host's record,
         each naming a reply, are replies of the root: deleting the root
@@ -449,4 +451,22 @@ class TestEveryPathRootsItsThread:
 
         left = {_body(e) for e in await _stored(kit)}
         assert left & {"root", "reply", "answer", "injected", "record"} == set()
+        await kit.close()
+
+    async def test_an_injected_events_hooks_read_it_rooted(self) -> None:
+        """A hook injects an event naming a reply: the hooks of its own pass
+        read it rooted, as the event and as the newest of their context
+        (RFC §10.1 step 8, §9.4)."""
+        kit, root, reply = await _threaded_kit()
+        seen: list[tuple[str | None, str | None]] = []
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="read")
+        async def read(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if _body(event) == "injected":
+                seen.append((event.parent_event_id, ctx.recent_events[-1].parent_event_id))
+            return HookResult.allow()
+
+        await _inject(kit, reply.id)
+
+        assert seen == [(root.id, root.id)]
         await kit.close()

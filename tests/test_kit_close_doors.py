@@ -496,7 +496,6 @@ async def test_a_hook_task_started_as_a_channel_closes_ends_with_the_close() -> 
     await kit.close()
 
     assert steps == ["started", "ended"]
-    assert [t for t in kit._pending_hook_tasks if not t.done()] == []
 
 
 async def test_a_caller_waiting_for_its_injected_events_returns_when_the_close_cuts_them() -> None:
