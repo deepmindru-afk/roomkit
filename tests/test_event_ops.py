@@ -3,7 +3,9 @@ mutation triggers (ON_EVENT_UPDATED / ON_EVENT_DELETED)."""
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -21,7 +23,8 @@ from roomkit.models.event import (
     TextContent,
 )
 from roomkit.models.hook import HookResult
-from roomkit.models.room import RoomTimers
+from roomkit.models.room import Room, RoomTimers
+from roomkit.store.memory import InMemoryStore
 from tests.conftest import make_event
 
 
@@ -309,3 +312,71 @@ class TestInboundMutationTriggers:
         )
 
         assert updated_calls == []
+
+
+class _ReadsFailAfterAChange(InMemoryStore):
+    """A store that cannot read a room once it stored a change, as one that
+    lost its connection right after the write would."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reads_fail = False
+
+    async def update_event(self, event: RoomEvent) -> RoomEvent:
+        stored = await super().update_event(event)
+        self.reads_fail = True
+        return stored
+
+    async def delete_event(self, room_id: str, event_id: str, **kw: Any) -> list[RoomEvent]:
+        removed = await super().delete_event(room_id, event_id, **kw)
+        self.reads_fail = True
+        return removed
+
+    async def get_room(self, room_id: str) -> Room | None:
+        if self.reads_fail:
+            raise ConnectionError("the store went away")
+        return await super().get_room(room_id)
+
+
+class TestAChangeWhoseRoomCannotBeReadAfter:
+    @pytest.mark.parametrize("operation", ["update", "delete"])
+    async def test_stands_and_fires_its_trigger(
+        self, operation: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The room cannot be read once the change's lock is released: the
+        call returns as the change stands, the failure is logged, and the
+        trigger fires with the room as the change left it (RFC §10.3,
+        §13.6)."""
+        store = _ReadsFailAfterAChange()
+        kit = RoomKit(store=store)
+        kit.register_channel(RecordingTransport("src"))
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "src")
+        original = await _send(kit, "v1")
+        fired: list[tuple[str, list[str]]] = []
+
+        @kit.hook(HookTrigger.ON_EVENT_UPDATED, execution=HookExecution.ASYNC, name="updated")
+        @kit.hook(HookTrigger.ON_EVENT_DELETED, execution=HookExecution.ASYNC, name="deleted")
+        async def observe(event: RoomEvent, ctx: RoomContext) -> None:
+            fired.append((ctx.room.id, [_text(e) for e in ctx.recent_events]))
+
+        with caplog.at_level(logging.WARNING):
+            if operation == "update":
+                result: Any = await kit.update_event(
+                    "r1", original.id, content=TextContent(body="v2")
+                )
+                assert result is not None and _text(result) == "v2"
+            else:
+                assert await kit.delete_event("r1", original.id) == [original.id]
+
+        texts = ["v2"] if operation == "update" else []
+        assert [(room, [t for t in seen if t in ("v1", "v2")]) for room, seen in fired] == [
+            ("r1", texts)
+        ]
+        assert any("could not be read" in r.getMessage() for r in caplog.records)
+        store.reads_fail = False
+        await kit.close()
+
+
+def _text(event: RoomEvent) -> str:
+    return getattr(event.content, "body", "")

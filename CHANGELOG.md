@@ -210,6 +210,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its own counted from the channels' end, and again until nothing is left,
   since one's end may start another.
 
+- A direct `update_event()` or `delete_event()` no longer fails once its
+  change is stored (RFC §10.3, §13.6, RMK-943). The room is read again once
+  the call has released the room lock, for the context of `ON_EVENT_UPDATED`
+  or `ON_EVENT_DELETED`; a read that failed there (a store connection lost
+  right after the write) raised from the call, which reported a stored
+  change as failed. The failure is now logged as a warning, the call
+  returns as the change stands, and the triggers fire with the context the
+  call held under the lock, as the change left it.
+
 - A record nobody receives reaches the room's delivery lane when its caller
   is cancelled while it commits (RFC §13.5, §13.6, RMK-943): step 2's attach
   in a room that exists, a `commit_event()` record, a lifecycle record the

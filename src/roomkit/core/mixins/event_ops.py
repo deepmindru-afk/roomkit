@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._publication_keys import refuse_reserved
@@ -10,9 +11,12 @@ from roomkit.core.mixins.helpers import HelpersMixin, _refuses_writes
 from roomkit.models.enums import HookTrigger
 from roomkit.models.event import EventContent, EventSource, RoomEvent, refuse_too_deep
 
+logger = logging.getLogger("roomkit.framework")
+
 if TYPE_CHECKING:
     from roomkit.core.hooks import HookEngine
     from roomkit.core.locks import RoomLockManager
+    from roomkit.models.context import RoomContext
     from roomkit.models.room import Room
     from roomkit.store.base import ConversationStore
 
@@ -158,8 +162,12 @@ class EventOpsMixin(HelpersMixin):
             changed = target.model_copy(update=update)
             if changed == target:
                 return target
+            held = await self._build_context(room_id)
             updated = await self._store.update_event(changed)
-        context = await self._build_context(room_id)
+        recent = [updated if e.id == updated.id else e for e in held.recent_events]
+        context = await self._context_after_change(
+            room_id, held.model_copy(update={"recent_events": recent})
+        )
         await self._hook_engine.run_async_hooks(
             room_id, HookTrigger.ON_EVENT_UPDATED, updated, context
         )
@@ -191,16 +199,38 @@ class EventOpsMixin(HelpersMixin):
             target = await self._store.get_event(event_id)
             if target is None or target.room_id != room_id:
                 return []
+            held = await self._build_context(room_id)
             removed = await self._store.delete_event(
                 room_id, event_id, cascade_replies=cascade_replies
             )
         if removed:
-            context = await self._build_context(room_id)
+            gone = {event.id for event in removed}
+            recent = [e for e in held.recent_events if e.id not in gone]
+            context = await self._context_after_change(
+                room_id, held.model_copy(update={"recent_events": recent})
+            )
             for event in removed:
                 await self._hook_engine.run_async_hooks(
                     room_id, HookTrigger.ON_EVENT_DELETED, event, context
                 )
         return [event.id for event in removed]
+
+    async def _context_after_change(self, room_id: str, held: RoomContext) -> RoomContext:
+        """The room's context for a direct change's triggers, read once the
+        room lock is released (RFC §10.3); *held*, the context the call held
+        under the lock as the change left it, when that read fails: the change
+        is stored and stands (§13.6), and the failure is logged."""
+        try:
+            return await self._build_context(room_id)
+        except Exception:
+            logger.warning(
+                "Room %s could not be read once the change's lock was released; its "
+                "triggers fire with the room as the change left it",
+                room_id,
+                exc_info=True,
+                extra={"room_id": room_id},
+            )
+            return held
 
     async def _room_in_scope(self, room_id: str, organization_id: str | None) -> Room | None:
         """The room, its due timer transitions applied (RFC §5.1), or ``None``
