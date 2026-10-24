@@ -34,9 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing written, a change's target included, and the key stays its first
   event's. `kit.commit_event()` raises it too: a record is never a replay
   (RFC §10.5), where the in-memory store committed a second record under the
-  key. An event under an id the store holds keeps the database's own
-  error, `asyncpg.UniqueViolationError` or `sqlite3.IntegrityError`, the key
-  held with it or not.
+  key. `send_event()` past its cascade's reentry budget with a key its
+  channel holds returns what the key committed, as a replay within the
+  budget does: a replay is no new pass, and only a new event is stored
+  `BLOCKED` past the cap. An event under an id the store holds keeps the
+  database's own error, `asyncpg.UniqueViolationError` or
+  `sqlite3.IntegrityError`, the key held with it or not.
   The ABC's default `commit_event()`, which a custom store inherits, looks
   the key up within its channel (`get_event_by_idempotency_key()`) before
   it writes, and refuses alike.
@@ -76,13 +79,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the delivery to that binding is refused `no_recipient`, attach and routing
   read no correspondent in it, the record of a routed sender writes the
   sender's address over it, and `find_room_id_by_binding()` finds no room by
-  it in any store. An integer stays the address its digits write: `12345`
-  and `"12345"` name one conversation, at attach, in routing and in every
-  store's lookup. One rule reads it, `written_recipient()` in
-  `roomkit.channels.addressing`, which the stores' lookup now reads too.
-  Postgres keeps a number as the exact value it equals, so a float written
-  in exponent form with no fraction (`1e16`) is stored, and read back, as
-  the integer it equals.
+  it, in every store but for one range on Postgres: `jsonb` keeps a number
+  as the exact value it equals, and a float of magnitude 1e16 or more, which
+  JSON writes in exponent form (`1e+16`), is read back there as the integer
+  it equals, and is then that integer, a recipient. An integer stays the
+  address its digits write: `12345` and `"12345"` name one conversation, at
+  attach, in routing and in every store's lookup. One rule reads it,
+  `written_recipient()` in `roomkit.channels.addressing`, which the stores'
+  lookup now reads too.
   Migrate: a binding persisted with a float under its channel's recipient
   key is refused `no_recipient` from this release until it holds an `int`
   (a chat id) or a string (a phone number in E.164, an email address).
@@ -95,6 +99,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each with `store.update_binding(b.model_copy(update={"metadata":
   {**b.metadata, key: int(value)}}))`, or with the string the channel writes
   (`"+15550000001"` for a phone number).
+
+- **BREAKING — a reply's parent is rooted on every path that commits an
+  event** (RFC §10.1 step 8, §10.3, §10.5, RMK-943). Only an inbound message
+  and `send_event()` replaced a `parent_event_id` naming a reply by that
+  reply's thread root, and dropped one naming no event of the room. An
+  agent's response, an event a hook injects, a streamed row (which takes its
+  trigger's parent), a `kit.commit_event()` record and the BLOCKED records
+  that stand in for them (past the reentry budget, an answer a delivery set
+  blocked) stored the parent as given, so a hard delete of the root
+  (`delete_event()`, one level of replies) left an answer to a reply in
+  place. Each path now roots the parent as the inbound path does, before
+  the event's hooks where it has some; `commit_event()` stores everything
+  else as given. A reply always names its thread's root, and deleting the
+  root removes the whole thread. Rooting also reads the root it lands on: a
+  reply naming a reply whose root a hard delete removed
+  (`cascade_replies=False` kept the reply) named the removed root, and is
+  now posted at the top level, as one naming no event of the room is.
+  Migrate: a `commit_event()` whose parent the room does not hold (yet)
+  loses it, logged as a warning: an import that commits a reply before its
+  root, or a reference to another room's event, commits the root first or
+  keeps the reference in its metadata. An answer, an injected event or a
+  record that named a reply now names its thread's root: code that read its
+  `parent_event_id` to find the message it answers reads `responds_to`,
+  which an agent's answer carries and which an injected event or a record
+  can be given.
 
 ### Fixed
 
@@ -139,31 +168,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   On an up-to-date schema the boot takes ROW EXCLUSIVE on `participants`
   (its `connected_via` repair, which updates no row there) and on
   `schema_version`, neither of which a reader or a writer waits on.
-
-- **BREAKING — a reply's parent is rooted on every path that commits an
-  event** (RFC §10.1 step 8, §10.3, §10.5, RMK-943). Only an inbound message
-  and `send_event()` replaced a `parent_event_id` naming a reply by that
-  reply's thread root, and dropped one naming no event of the room. An
-  agent's response, an event a hook injects, a streamed row (which takes its
-  trigger's parent), a `kit.commit_event()` record and the BLOCKED records
-  that stand in for them (past the reentry budget, an answer a delivery set
-  blocked) stored the parent as given, so a hard delete of the root
-  (`delete_event()`, one level of replies) left an answer to a reply in
-  place. Each path now roots the parent as the inbound path does, before
-  the event's hooks where it has some; `commit_event()` stores everything
-  else as given. A reply always names its thread's root, and deleting the
-  root removes the whole thread. Rooting also reads the root it lands on: a
-  reply naming a reply whose root a hard delete removed
-  (`cascade_replies=False` kept the reply) named the removed root, and is
-  now posted at the top level, as one naming no event of the room is.
-  Migrate: a `commit_event()` whose parent the room does not hold (yet)
-  loses it, logged as a warning: an import that commits a reply before its
-  root, or a reference to another room's event, commits the root first or
-  keeps the reference in its metadata. An answer, an injected event or a
-  record that named a reply now names its thread's root: code that read its
-  `parent_event_id` to find the message it answers reads `responds_to`,
-  which an agent's answer carries and which an injected event or a record
-  can be given.
 
 - Work the kit holds, started late in its `close()` or after it, is cut as
   the close cuts the rest (RFC §19.7.3, §23.3, RMK-943). A delegation's

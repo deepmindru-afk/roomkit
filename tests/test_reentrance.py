@@ -92,6 +92,33 @@ class TestAnInjectionMadeFromTheRoomsOwnWork:
         finally:
             await kit.close()
 
+    async def test_a_replay_past_the_cap_returns_its_original(self) -> None:
+        """A hook sends with the same idempotency key every time, past its
+        cascade's budget: a replay is no new pass, so the call past the cap
+        returns the event the key committed, as every replay before it did,
+        nothing stored and nothing raised (RFC §13.4, §8.3)."""
+        kit = await _room(RoomKit(max_chain_depth=1))
+        sent: list[RoomEvent] = []
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="send")
+        async def send(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if _body(event) == "hi":
+                for n in range(BUDGET + 2):
+                    sent.append(
+                        await kit.send_event(
+                            "r1", "sms", TextContent(body=f"sent {n}"), idempotency_key="k"
+                        )
+                    )
+            return HookResult.allow()
+
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message()), 5)
+            assert len(sent) == BUDGET + 2
+            assert {e.id for e in sent} == {sent[0].id}
+            assert [_body(e) for e in await _messages(kit)] == ["sent 0", "hi"]
+        finally:
+            await kit.close()
+
 
 class _Parser(SimpleChannel):
     """A transport whose parse sends a message into its room every time."""

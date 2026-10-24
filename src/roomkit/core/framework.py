@@ -1453,7 +1453,9 @@ class RoomKit(
         the visibility its pass would have committed it with, no hook run
         (RFC §8.3, §7.3): the committed event the call returns. It waits for
         the room lock alone; an instruction, never stored, is returned
-        uncommitted.
+        uncommitted. A replay of a key its channel holds is no new pass: it
+        returns what the key committed, as a replay within the budget does
+        (RFC §13.4).
 
         Raises:
             RoomClosedError: the room's status refuses events (RFC §5.1);
@@ -1480,8 +1482,30 @@ class RoomKit(
                     event=record,
                 )
                 raise RoomClosedError(f"Room {room_id} does not accept new events")
+            replayed = await self._replay_of_key(room_id, event)
+            if replayed is not None:
+                return replayed
             record = await self._with_thread_root(room_id, record)
             return await self._commit_indexed(room_id, await self._scoped_record(record))
+
+    async def _replay_of_key(self, room_id: str, event: RoomEvent) -> RoomEvent | None:
+        """What *event*'s source channel committed in the room with its
+        idempotency key, which a replay returns rather than store anything
+        (RFC §13.4), read under the room lock the caller holds: ``None`` for
+        a key not taken; *event* itself when the store holds the key but
+        cannot read its event back, as the pipeline's replay returns it."""
+        key, channel_id = event.idempotency_key, event.source.channel_id
+        if not key or not await self._store.check_idempotency(room_id, key, channel_id=channel_id):
+            return None
+        original = await self._store.get_event_by_idempotency_key(
+            room_id, key, channel_id=channel_id
+        )
+        logger.info(
+            "Duplicate event %s past the reentry budget: replayed",
+            key,
+            extra={"room_id": room_id, "idempotency_key": key},
+        )
+        return original if original is not None else event
 
     async def _injection_binding(
         self, room_id: str, channel_id: str, organization_id: str | None, deadline: float
