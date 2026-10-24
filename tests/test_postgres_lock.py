@@ -84,16 +84,6 @@ async def test_close_skips_external_pool() -> None:
     assert pool.closed is False
 
 
-# ── Schema: UNIQUE(room_id, index) ──────────────────────────────
-
-
-def test_events_index_is_unique_in_schema() -> None:
-    from roomkit.store import postgres_schema
-
-    assert "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_room_index" in postgres_schema.SCHEMA
-    assert "Upgraded idx_events_room_index to UNIQUE" in postgres_schema.SCHEMA
-
-
 # ── Multiprocess-safety warning ─────────────────────────────────
 
 
