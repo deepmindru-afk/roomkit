@@ -43,6 +43,7 @@ from roomkit.core.mixins.helpers import (
     _RefusedOperation,
     _source_block_reason,
 )
+from roomkit.core.task_utils import run_to_its_end
 from roomkit.core.visibility import (
     answer_scope,
     intersect_visibility,
@@ -471,6 +472,22 @@ class InboundLockedMixin(HelpersMixin):
         # --- past this line nothing is cancellable by ``process_timeout`` ---
         if isinstance(decision, InboundResult):
             return decision
+        # Nor by the caller (RFC §13.6): a cancellation waits, under the lock,
+        # for the writes to end, then is raised.
+        return await run_to_its_end(
+            self._write_decision(decision, room_id, cascade, queued), held=self._decided_writes
+        )
+
+    async def _write_decision(
+        self,
+        decision: _Blocked | _Ready,
+        room_id: str,
+        cascade: DeliveryCascade,
+        queued: QueuedInjections,
+    ) -> InboundResult:
+        """Every durable write of a decided event: its BLOCKED record or its
+        commit, enqueued on the room's lane, and what its hooks injected
+        queued on *queued*."""
         if isinstance(decision, _Blocked):
             blocked_event = await self._store_blocked(room_id, decision, queued)
             return InboundResult(event=blocked_event, blocked=True, reason=decision.reason)

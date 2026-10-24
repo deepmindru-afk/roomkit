@@ -91,6 +91,49 @@ def start_named[T](
     return task
 
 
+async def run_to_its_end[T](work: Coroutine[Any, Any, T], *, held: set[asyncio.Task[Any]]) -> T:
+    """Run *work* to its end whatever becomes of its caller, and return what
+    it returns: the writes past a call's decision (RFC §13.6, A caller that
+    stops waiting).
+
+    A cancellation of the caller, a timeout around it included, waits for
+    the work's end and is raised then, so that a room lock the caller holds
+    is released only once the writes are all done; a second one waits too.
+    The work runs in a copy of the caller's context, its lock's lease and its
+    frames included, as a task started at once and named in
+    :func:`held_runs` (a ``close()`` called from under it spares it). Until
+    it ends it is in *held*, which the kit's close waits for and never
+    cancels. Its exception is raised, as awaiting it would; to a cancelled
+    caller its cancellation is, and the exception is logged.
+    """
+    task = start_named(work, eager=True)
+    if task.done():
+        return task.result()
+    held.add(task)
+    task.add_done_callback(held.discard)
+    cancelled: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError as exc:
+            # The caller's own: the writes finish first.
+            cancelled = cancelled or exc
+    if cancelled is None:
+        return task.result()
+    if not task.cancelled() and (error := task.exception()) is not None:
+        logger.error("Writes a cancelled caller left failed: %s", error, exc_info=error)
+    raise cancelled
+
+
+async def wait_for_held(held: set[asyncio.Task[Any]]) -> None:
+    """Wait, never cutting them, for the tasks in *held* (:func:`run_to_its_end`)
+    still running, those started meanwhile included, but the ones the caller
+    runs under: waiting for them would wait for itself."""
+    spared = {*held_runs(), asyncio.current_task()}
+    while pending := {task for task in held if not task.done()} - spared:
+        await asyncio.wait(pending)
+
+
 def close_unstarted(*works: object) -> None:
     """Close each of *works* that is a coroutine never started: what was to
     await it ended first (a task cancelled before its first step, a start

@@ -94,7 +94,7 @@ from roomkit.core.mixins import (
     VoiceOpsMixin,
 )
 from roomkit.core.mixins.helpers import _refuses_writes
-from roomkit.core.task_utils import cancel_and_wait, held_runs
+from roomkit.core.task_utils import cancel_and_wait, held_runs, wait_for_held
 from roomkit.core.transcoder import DefaultContentTranscoder
 from roomkit.identity.base import IdentityResolver
 from roomkit.models._visibility import parse_given_visibility, parse_visibility
@@ -506,6 +506,10 @@ class RoomKit(
         # so close() cuts it: the strategies' runs and the delegations'
         # hand-backs under way (RFC §19.7.3, §19.7.4, §23.3).
         self._background_runs: set[asyncio.Task[None]] = set()
+        # The writes past a call's decision, run to their end whatever becomes
+        # of its caller (core.task_utils.run_to_its_end, RFC §13.6): close()
+        # waits for them, never cuts them.
+        self._decided_writes: set[asyncio.Task[Any]] = set()
         # The ``cancel_task`` cancels under way, by task: the channels whose
         # calls asked are not handed the cancellation back (RFC §23.4).
         self._task_cancels: dict[str, TaskCancel] = {}
@@ -859,6 +863,9 @@ class RoomKit(
         await self._stop_discussions()
         await self._cancel_background_runs()
         await self._task_runner.close()
+        # The writes past a decision whose caller left end before anything
+        # they enqueue or start is drained or cut (RFC §13.6).
+        await wait_for_held(self._decided_writes)
         await self._cancel_pending_tasks()
         # Stop all event sources
         for channel_id in list(self._sources.keys()):
@@ -1370,12 +1377,21 @@ class RoomKit(
             # No pre-lock context is carried: the off-lock check, when one
             # ran, built its own, and the locked pass rebuilds one under the
             # lock.
-            result = await self._process_locked(
-                event, room_id, None, cascade, queued=queued, precheck=precheck, deadline=deadline
-            )
-            # Decided: what its hooks injected no longer depends on this
-            # caller (RFC §9.4).
-            return result, self._hand_off_decided(entry, queued, room_id, cascade)
+            try:
+                result = await self._process_locked(
+                    event,
+                    room_id,
+                    None,
+                    cascade,
+                    queued=queued,
+                    precheck=precheck,
+                    deadline=deadline,
+                )
+            finally:
+                # Decided, or its caller gone: what its hooks injected no
+                # longer depends on this caller (RFC §9.4, §13.6).
+                handed = self._hand_off_decided(entry, queued, room_id, cascade)
+            return result, handed
 
     async def _store_entry_past_cap(self, room_id: str, event: RoomEvent) -> RoomEvent:
         """Store a direct injection the room's work made past the reentry

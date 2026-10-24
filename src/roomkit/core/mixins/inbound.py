@@ -714,20 +714,24 @@ class InboundMixin(HelpersMixin):
                     await stack.enter_async_context(self._lock_manager.locked(room_id))
             except TimeoutError:
                 return await self._refuse_on_timeout(room_id, channel_id=message.channel_id)
-            result: InboundResult = await self._process_locked(
-                event,
-                room_id,
-                context,
-                cascade,
-                queued=queued,
-                resolved_identity=resolved_identity,
-                pending_id_result=pending_id_result,
-                deadline=deadline,
-                precheck=precheck,
-            )
-            # Decided: what its hooks injected no longer depends on this
-            # caller (RFC §9.4), and commits once the lock is released.
-            handed = self._hand_off_decided(entry, queued, room_id, cascade)
+            try:
+                result: InboundResult = await self._process_locked(
+                    event,
+                    room_id,
+                    context,
+                    cascade,
+                    queued=queued,
+                    resolved_identity=resolved_identity,
+                    pending_id_result=pending_id_result,
+                    deadline=deadline,
+                    precheck=precheck,
+                )
+            finally:
+                # Decided, or its caller gone: what its hooks injected, and
+                # what the hooks of a call nested in its section injected, no
+                # longer depends on this caller (RFC §9.4, §13.6), and commits
+                # once the lock is released.
+                handed = self._hand_off_decided(entry, queued, room_id, cascade)
             self._name_held(named, result)
         if result.error is None:
             # The lock's release comes before anything the delivery set

@@ -172,6 +172,7 @@ class HelpersMixin:
     _identity_hooks: dict[HookTrigger, list[IdentityHookRegistration]]
     _pending_traces: dict[str, list[object]]  # room_id -> [ProtocolTrace, ...]
     _pending_hook_tasks: set[asyncio.Task[Any]]
+    _decided_writes: set[asyncio.Task[Any]]  # writes past a decision — set by RoomKit.__init__
     _persistence_policy: Any  # PersistencePolicy | None — set by RoomKit.__init__
     _resource_lease: Any  # RoomKit._resource_lease — the close()-ordering hold on the store
     _ensure_status_bus_subscribed: Any  # RoomKit's — the StatusBus listened to from now on
