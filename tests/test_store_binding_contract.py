@@ -887,6 +887,43 @@ class _DefaultCommit(InMemoryStore):
         await ConversationStore.write_change_target(self, room_id, target)
 
 
+class _KeyBlindWrites(InMemoryStore):
+    """A custom store whose writes know nothing of keys, and which commits
+    through the ABC's defaults; it answers a key's lookup."""
+
+    commit_event = ConversationStore.commit_event
+    add_event_auto_index = ConversationStore.add_event_auto_index
+
+    def _refuse_taken_key(self, room_id: str, event: RoomEvent) -> None:
+        return None
+
+
+async def test_the_default_commit_refuses_a_key_its_channel_holds() -> None:
+    """RFC §14.3: the ABC's default ``commit_event`` looks the key up within
+    its channel before it writes: another event under it raises
+    ``IdempotencyKeyTakenError``, nothing written, a change's target
+    included."""
+    store = _KeyBlindWrites()
+    room = await store.create_room(Room(id=uuid4().hex))
+    first = await store.commit_event(
+        room.id, make_event(room_id=room.id, channel_id="sms", idempotency_key="k")
+    )
+    target = await store.commit_event(room.id, make_event(room_id=room.id, channel_id="sms"))
+    edit, edited = _edit_of(target, "changed")
+    edit = edit.model_copy(update={"source": first.source, "idempotency_key": "k"})
+
+    with pytest.raises(IdempotencyKeyTakenError):
+        await store.commit_event(room.id, edit, target=edited)
+
+    assert await store.get_event(edit.id) is None
+    kept = await store.get_event(target.id)
+    assert kept is not None and kept.content == target.content
+    other = await store.commit_event(
+        room.id, make_event(room_id=room.id, channel_id="web", idempotency_key="k")
+    )
+    assert other.source.channel_id == "web"
+
+
 class _WritesTheRowAsGiven(InMemoryStore):
     """A custom store whose ``update_event`` writes the row as given, and
     records delivery results through the ABC's default."""

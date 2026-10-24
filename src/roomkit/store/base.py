@@ -900,13 +900,15 @@ class ConversationStore(ABC):
         provisional value the caller assigned before hooks ran, if the store
         serialized a concurrent writer.
 
-        The default implementation is **NOT atomic** — it indexes, inserts,
-        then updates the room in separate steps. Persistent backends that may be
+        The default implementation is **NOT atomic** — it looks the key up
+        (:meth:`get_event_by_idempotency_key`), indexes, inserts, then updates
+        the room in separate steps. Persistent backends that may be
         shared across processes MUST override this with a single storage
         transaction. It writes the counters through :meth:`update_room`, so a
         store whose ``update_room`` keeps the stored counters (as the shipped
         stores do) MUST override it too.
         """
+        await self._refuse_a_taken_key(room_id, event)
         if target is not None:
             stored = await self.get_event(target.id)
             if stored is None or stored.room_id != room_id:
@@ -931,6 +933,18 @@ class ConversationStore(ABC):
                 )
             )
         return indexed
+
+    async def _refuse_a_taken_key(self, room_id: str, event: RoomEvent) -> None:
+        """Refuse *event* when its source channel holds its key in *room_id*
+        for another event (RFC §13.4, §14.3), read through the store's own
+        lookup before the default commit writes anything."""
+        if not event.idempotency_key:
+            return
+        held = await self.get_event_by_idempotency_key(
+            room_id, event.idempotency_key, channel_id=event.source.channel_id
+        )
+        if held is not None and held.id != event.id:
+            raise key_taken(event)
 
     async def write_change_target(self, room_id: str, target: RoomEvent) -> None:
         """Write *target* as the edit or the delete the persistence policy

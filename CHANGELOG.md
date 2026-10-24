@@ -37,8 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key. An event under an id the store holds keeps the database's own
   error, `asyncpg.UniqueViolationError` or `sqlite3.IntegrityError`, the key
   held with it or not.
+  The ABC's default `commit_event()`, which a custom store inherits, looks
+  the key up within its channel (`get_event_by_idempotency_key()`) before
+  it writes, and refuses alike.
   Migrate: a direct caller that caught the driver's error for a taken key
-  catches `IdempotencyKeyTakenError`; a custom store raises it alike.
+  catches `IdempotencyKeyTakenError`; a custom store that overrides
+  `commit_event()` raises it alike.
 
 - **BREAKING — only `record_delivery_results()` writes an event's
   `delivery_results`** (RFC §10.3, §14.3, RMK-942). A rewrite of a stored
