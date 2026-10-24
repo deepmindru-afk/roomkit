@@ -173,6 +173,10 @@ class _Injecting(AILikeChannel):
 
 
 class TestACallFromATurn:
+    @pytest.mark.in_process(
+        "the agent calls the kit it holds, whose context an in-memory turn shares with "
+        "the owner; across Redis it goes through its TurnHost"
+    )
     async def test_an_agent_injecting_at_each_turn_stops_at_the_chain_depth_limit(self) -> None:
         """A call made within a turn is at least as deep as the turn's
         response (RFC §8.3, §10.6): with a budget of 30, only the depth limit
