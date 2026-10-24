@@ -1,12 +1,13 @@
 """A call into a room from the room's own work (RFC §9.5.1 Reentrance, §8.3,
-§10.5, §10.1 step 18).
+§10.5, §10.1 steps 16 and 18).
 
 Made under the room lock, from an off-lock hook's body or from a message's
 parse, a call is adopted by the event whose work made it and draws on that
-event's reentry budget; made from a turn or a delivery, it is a new arrival
-that draws on the budget of the cascade that delivers, at least as deep as
-the turn's response. Each loop a host can write by calling into its room on
-every event therefore stops, at the reentry cap or the chain-depth limit.
+event's reentry budget; made from a turn, a delivery or an ASYNC hook's body
+the cascade fires once an event's delivery set has run, it is a new arrival
+that draws on the budget of that cascade, at least as deep as the turn's
+response. Each loop a host can write by calling into its room on every event
+therefore stops, at the reentry cap or the chain-depth limit.
 """
 
 from __future__ import annotations
