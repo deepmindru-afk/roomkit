@@ -1166,28 +1166,40 @@ class InboundMixin(HelpersMixin):
         one else (§10.4). The wait for the lock is bounded by the call's
         *deadline*, and the section it opens is not (§13.6): past it the
         message is refused, never let in unrecorded, which would leave the
-        room open to a concurrent stranger.
+        room open to a concurrent stranger. Nor is it cut by its caller:
+        once the lock is held, the section runs to its end whatever becomes
+        of the caller, as a room step 2 opens does (:meth:`_open_room_for`).
         """
-        channel_id, sender = message.channel_id, _conversation(message, channel)
         async with AsyncExitStack() as stack:
             await self._enter_lock_by(stack, room_id, deadline)
-            room = await self._store.get_room(room_id)
-            if room is None:
-                return False
-            # RFC §5.1, §10.1 step 2: the room's due timers apply first, so a
-            # room due to close is no longer the message's.
-            room = await self._room_timers.apply_due(room)
-            binding = await self._store.get_binding(room_id, channel_id)
-            recipient = channel.recipient_address(binding) if binding is not None else None
-            if not await still_the_messages(
-                self._store, room, channel_id, binding, sender, own, recipient
-            ):
-                return False
-            if binding is None:
-                binding = await self._attach_unbound(room, channel_id)
-            if binding is not None and recordable_sender(sender):
-                await self._record_sender(room_id, binding, message, channel)
-            return True
+            return await run_to_its_end(
+                self._claim_locked(room_id, message, channel, own),
+                held=self._decided_writes,
+                name=f"roomkit-decided-write-{room_id}",
+            )
+
+    async def _claim_locked(
+        self, room_id: str, message: InboundMessage, channel: Channel, own: frozenset[str]
+    ) -> bool:
+        """:meth:`_claim_room`'s section, under the room lock its caller holds."""
+        channel_id, sender = message.channel_id, _conversation(message, channel)
+        room = await self._store.get_room(room_id)
+        if room is None:
+            return False
+        # RFC §5.1, §10.1 step 2: the room's due timers apply first, so a
+        # room due to close is no longer the message's.
+        room = await self._room_timers.apply_due(room)
+        binding = await self._store.get_binding(room_id, channel_id)
+        recipient = channel.recipient_address(binding) if binding is not None else None
+        if not await still_the_messages(
+            self._store, room, channel_id, binding, sender, own, recipient
+        ):
+            return False
+        if binding is None:
+            binding = await self._attach_unbound(room, channel_id)
+        if binding is not None and recordable_sender(sender):
+            await self._record_sender(room_id, binding, message, channel)
+        return True
 
     async def _attach_unbound(
         self,
@@ -1272,17 +1284,28 @@ class InboundMixin(HelpersMixin):
         sharing the store. attach_channel() re-acquires the lock reentrantly.
         The wait for the lock is bounded by the call's *deadline*, and the
         section it opens is not (RFC §13.6): past it the message is refused,
-        never let in unattached.
+        never let in unattached. Nor is the section cut by its caller: it
+        runs to its end, the attach's record and its ON_CHANNEL_ATTACHED
+        hooks included, as a room step 2 opens does.
         """
         async with AsyncExitStack() as stack:
             await self._enter_lock_by(stack, room_id, deadline)
-            room = await self._store.get_room(room_id)
-            if room is None:
-                return
-            room = await self._room_timers.apply_due(room)
-            if room.status in _REFUSING_STATUSES:
-                return
-            await self._attach_unbound(room, channel_id)
+            await run_to_its_end(
+                self._auto_attach_locked(room_id, channel_id),
+                held=self._decided_writes,
+                name=f"roomkit-decided-write-{room_id}",
+            )
+
+    async def _auto_attach_locked(self, room_id: str, channel_id: str) -> None:
+        """:meth:`_maybe_auto_attach`'s section, under the room lock its
+        caller holds."""
+        room = await self._store.get_room(room_id)
+        if room is None:
+            return
+        room = await self._room_timers.apply_due(room)
+        if room.status in _REFUSING_STATUSES:
+            return
+        await self._attach_unbound(room, channel_id)
 
     async def _enter_lock_by(self, stack: AsyncExitStack, room_id: str, deadline: float) -> None:
         """Enter *room_id*'s lock on *stack*, step 2's wait for it bounded by

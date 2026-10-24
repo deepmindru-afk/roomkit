@@ -17,11 +17,13 @@ import pytest
 
 from roomkit import FrameworkEvent, RoomKit
 from roomkit.core import framework
+from roomkit.core.inbound_router import InboundRoomRouter
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import HookTrigger
+from roomkit.models.enums import ChannelType, HookTrigger
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult, InjectedEvent
+from roomkit.models.identity import Identity
 from roomkit.models.room import Room
 from roomkit.store.memory import InMemoryStore
 from tests.test_framework import SimpleChannel
@@ -47,7 +49,9 @@ class _SlowAnswer(InMemoryStore):
 
     async def commit_event(self, room_id: str, event: RoomEvent, **kw: Any) -> RoomEvent:
         committed = await super().commit_event(room_id, event, **kw)
-        if self.held is not None and _body(event) == self.held:
+        # Held by its text, a record by its code, a BLOCKED one by its block.
+        names = (_body(event), getattr(event.content, "code", None), event.blocked_by)
+        if self.held is not None and self.held in names:
             self.held = None
             self.written.set()
             await self.answer.wait()
@@ -105,6 +109,147 @@ class TestACommitInFlight:
             assert [_body(e) for e in ws.delivered] == [*first, "notice", "second"]
         finally:
             await kit.close()
+
+
+class _FixedRouter(InboundRoomRouter):
+    """Routes every message into room r1."""
+
+    async def route(
+        self,
+        channel_id: str,
+        channel_type: ChannelType,
+        participant_id: str | None = None,
+        channel_data: dict[str, Any] | None = None,
+        *,
+        organization_id: str | None = None,
+        identity: Identity | None = None,
+    ) -> str | None:
+        return "r1"
+
+
+async def _attach_in_a_named_room(kit: RoomKit) -> None:
+    await kit.process_inbound(_msg("first"), room_id="r1")
+
+
+async def _attach_in_a_routed_room(kit: RoomKit) -> None:
+    await kit.process_inbound(_msg("first", "+15550000001"))
+
+
+async def _commit_a_record(kit: RoomKit) -> None:
+    await kit.attach_channel("r1", "sms1")
+    record = RoomEvent(
+        room_id="r1",
+        source=EventSource(channel_id="sms1", channel_type="sms"),
+        content=TextContent(body="record"),
+    )
+    await kit.commit_event("r1", record)
+
+
+async def _mute(kit: RoomKit) -> None:
+    await kit.attach_channel("r1", "sms1")
+    await kit.mute("r1", "ws1")
+
+
+async def _send_past_the_budget(kit: RoomKit) -> None:
+    """A locked hook sends into its room on every event until its cascade's
+    reentry budget is spent: the call past it is stored BLOCKED."""
+    await kit.attach_channel("r1", "sms1")
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, name="echo")
+    async def echo(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if _body(event) == "first":
+            for n in range(kit._max_chain_depth * 10 + 1):
+                await kit.send_event("r1", "sms1", TextContent(body=f"echo {n}"))
+        return HookResult.allow()
+
+    await kit.process_inbound(_msg("first"), room_id="r1")
+
+
+class TestAnIndexedRecordInFlight:
+    @pytest.mark.parametrize(
+        ("held", "start"),
+        [
+            ("channel_attached", _attach_in_a_named_room),
+            ("channel_attached", _attach_in_a_routed_room),
+            ("record", _commit_a_record),
+            ("channel_muted", _mute),
+            ("reentry_loop_cap", _send_past_the_budget),
+        ],
+        ids=["step-2-attach", "step-2-routed-claim", "commit_event", "mute", "past-the-budget"],
+    )
+    async def test_reaches_the_lane_when_its_caller_leaves(self, held: str, start: Any) -> None:
+        """A record nobody receives (step 2's attach in a room that exists, a
+        host's record, a lifecycle record, a call past its budget) is
+        committed and its caller cancelled before the commit returned: its
+        index still reaches the room's lane, and the room's next message
+        waits for no gap (RFC §13.5, §13.6). A routed message's sender is
+        recorded on the binding its step 2 attached (§10.1 step 2)."""
+        store = _SlowAnswer()
+        kit = RoomKit(store=store, inbound_router=_FixedRouter(), delivery_gap_timeout=0.2)
+        ws = SimpleChannel("ws1")
+        kit.register_channel(SimpleChannel("sms1"))
+        kit.register_channel(ws)
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "ws1")
+        skipped: list[FrameworkEvent] = []
+        kit.on("delivery_skipped")(_collect(skipped))
+
+        store.held = held
+        try:
+            caller = asyncio.create_task(start(kit))
+            await _cancelled_while(caller, store.written)
+            store.answer.set()
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+            await asyncio.wait_for(kit.process_inbound(_msg("next"), room_id="r1"), 1)
+
+            assert skipped == []
+            assert _body(ws.delivered[-1]) == "next"
+            binding = await kit.store.get_binding("r1", "sms1")
+            assert binding is not None
+            if start is _attach_in_a_routed_room:
+                assert binding.participant_id == "+15550000001"
+        finally:
+            await kit.close()
+
+
+class TestStepTwosAttachInARoomThatExists:
+    @pytest.mark.parametrize(
+        "start", [_attach_in_a_named_room, _attach_in_a_routed_room], ids=["named", "routed"]
+    )
+    async def test_runs_its_hooks_to_their_end_when_its_caller_leaves(self, start: Any) -> None:
+        """Step 2 attaches the message's channel to a room that exists, and
+        the caller is cancelled while an ON_CHANNEL_ATTACHED hook provisions
+        the binding: the hook runs to its end, as a room step 2 opens does
+        (RFC §13.6, §10.1 step 2)."""
+        kit = RoomKit(inbound_router=_FixedRouter())
+        kit.register_channel(SimpleChannel("sms1"))
+        await kit.create_room(room_id="r1")
+        entered, release = asyncio.Event(), asyncio.Event()
+        provisioned: list[str] = []
+
+        @kit.hook(HookTrigger.ON_CHANNEL_ATTACHED, name="provision")
+        async def provision(event: RoomEvent, ctx: RoomContext) -> None:
+            entered.set()
+            await release.wait()
+            provisioned.append(event.room_id)
+
+        try:
+            caller = asyncio.create_task(start(kit))
+            await _cancelled_while(caller, entered)
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+            assert provisioned == ["r1"]
+        finally:
+            await kit.close()
+
+
+def _collect(into: list[FrameworkEvent]) -> Any:
+    async def collect(event: FrameworkEvent) -> None:
+        into.append(event)
+
+    return collect
 
 
 class TestARoomStepTwoOpens:

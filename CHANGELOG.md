@@ -152,6 +152,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now cut once it has started, its end run (a run's terminal entry, a task's
   completion), and `close()` waits for it before it releases the store.
 
+- A record nobody receives reaches the room's delivery lane when its caller
+  is cancelled while it commits (RFC §13.5, §13.6, RMK-943): step 2's attach
+  in a room that exists, a `commit_event()` record, a lifecycle record the
+  public API writes (`attach_channel()`, `mute()`...) and the record of a
+  call past its reentry budget. The commit and the note of its index on the
+  lane were two steps: cancelled between them, the caller left an index the
+  lane never reached, so the room's next message waited
+  `delivery_gap_timeout` (30 s by default) and `delivery_skipped` declared
+  the record lost. Both now run as one unit the caller's cancellation waits
+  for, as the writes past a decision do. Step 2's attach in a room that
+  exists also runs to its end once it holds the room lock, whatever becomes
+  of the caller, as a room step 2 opens does: a routed message's sender is
+  recorded on the binding its attach made, and the attach's
+  `ON_CHANNEL_ATTACHED` hooks are not cut.
+
 ## [0.108.0] — 2026-10-24
 
 ### Added

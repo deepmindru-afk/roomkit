@@ -31,6 +31,7 @@ from roomkit.core._authors import own_record_id, reached, with_author
 from roomkit.core._participant_channels import channels_reached, warn_cross_channel
 from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.core.hooks import SyncPipelineResult
+from roomkit.core.task_utils import run_to_its_end
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundResult
 from roomkit.models.enums import (
@@ -324,9 +325,7 @@ class HelpersMixin:
         ):
             await self._write_unstored_change(room_id, target)
             return None
-        committed = await self._commit(room_id, event, target=target, activity=activity)
-        await self._note_committed_index(room_id, committed.index)
-        return committed
+        return await self._commit_noted(room_id, event, target=target, activity=activity)
 
     async def _commit_indexed(self, room_id: str, event: RoomEvent) -> RoomEvent:
         """Commit an event unconditionally (policy-exempt) and account its
@@ -338,7 +337,28 @@ class HelpersMixin:
         outside the pipeline (``commit_event``, §10.5), child-room traces.
         None is the room's activity (§5.1): ``last_activity_at`` stays.
         """
-        committed = await self._commit(room_id, event, activity=False)
+        return await self._commit_noted(room_id, event, activity=False)
+
+    async def _commit_noted(
+        self, room_id: str, event: RoomEvent, *, target: RoomEvent | None = None, activity: bool
+    ) -> RoomEvent:
+        """Commit *event* and account its index on the delivery cursor, as one
+        unit its caller's cancellation cannot cut (RFC §13.5, §13.6): a
+        caller cancelled between the two would leave an index the lane never
+        reaches, and the room's next event waiting ``delivery_gap_timeout``
+        for it. A cancellation waits for both, under the lock the caller
+        holds, then is raised; the kit's close waits for them on its budget."""
+        return await run_to_its_end(
+            self._commit_and_note(room_id, event, target=target, activity=activity),
+            held=self._decided_writes,
+            name=f"roomkit-decided-write-{room_id}",
+        )
+
+    async def _commit_and_note(
+        self, room_id: str, event: RoomEvent, *, target: RoomEvent | None, activity: bool
+    ) -> RoomEvent:
+        """:meth:`_commit_noted`'s commit, then its index's note."""
+        committed = await self._commit(room_id, event, target=target, activity=activity)
         await self._note_committed_index(room_id, committed.index)
         return committed
 
