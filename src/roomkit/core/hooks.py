@@ -11,6 +11,8 @@ from typing import Any, ClassVar, Protocol, cast
 
 from roomkit.core._changes import holds_change
 from roomkit.core._instructions import kept_metadata
+from roomkit.core.locks import unlocked_context
+from roomkit.core.task_utils import held_runs, start_named
 from roomkit.core.visibility import answer_scope, narrower_scope
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
@@ -1384,12 +1386,19 @@ class HookEngine:
         it up (RFC §9): a slow observer of BEFORE_TTS delays no synthesis,
         one of ON_TOOL_CALL no tool loop. A hook that must have run before the
         operation goes on is a SYNC one.
+
+        Started in a context that holds no room lock: an observer of a
+        locked section's chain calls into the room as a new arrival, which
+        waits for the section, never as the lock's holder beside it (RFC
+        §9.5.1). Named in :func:`held_runs`, so a ``close()`` it runs spares
+        it rather than wait for itself.
         """
         if not hooks:
             return
-        task = asyncio.get_running_loop().create_task(
+        task = start_named(
             self._run_async_hooks_list(hooks, room_id, trigger, event, context),
             name=f"roomkit-observers-{trigger}",
+            context=unlocked_context(),
         )
         self._observers.add(task)
         task.add_done_callback(self._observers.discard)
@@ -1398,15 +1407,20 @@ class HookEngine:
         """Wait for the observers still running, this engine's and its turn side's.
 
         Each hook is bounded by its own timeout; an observer that fires
-        another trigger is waited for too.
+        another trigger is waited for too. The observers the caller runs
+        under are spared: waiting for them would wait for itself.
         """
         engines = [self]
         if self.turn_side is not None and self.turn_side.engine is not self:
             engines.append(self.turn_side.engine)
+        spared = set(held_runs())
         # Only the tasks still running: a done one leaves the set on its done
         # callback, which awaiting it again would never let run.
         while running := [
-            task for engine in engines for task in engine._observers if not task.done()
+            task
+            for engine in engines
+            for task in engine._observers
+            if not task.done() and task not in spared
         ]:
             await asyncio.gather(*running, return_exceptions=True)
 

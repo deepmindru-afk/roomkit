@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 import pytest
@@ -10,9 +11,13 @@ import pytest
 from roomkit import RoomKit
 from roomkit.core.hooks import HookEngine, HookRegistration
 from roomkit.models.context import RoomContext
+from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import HookExecution, HookTrigger
+from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.hook import HookResult
 from roomkit.models.room import Room
+from roomkit.store.memory import InMemoryStore
+from tests.test_framework import SimpleChannel
 
 
 def _ctx() -> RoomContext:
@@ -126,3 +131,76 @@ class TestClose:
         await asyncio.wait_for(closing, 5)
         assert finished.is_set()
         assert not kit.hook_engine._observers
+
+    async def test_close_called_from_an_observer_returns(self) -> None:
+        """An observer that ends the session (``kit.close()`` on "bye"): the
+        close it runs does not wait for the observer it runs under."""
+        kit = RoomKit()
+        room = await kit.create_room()
+        closed = asyncio.Event()
+
+        @kit.hook(HookTrigger.BEFORE_TTS, execution=HookExecution.ASYNC, timeout=5.0)
+        async def quit_on_bye(text: str, ctx: RoomContext) -> None:
+            await kit.close()
+            closed.set()
+
+        await kit.hook_engine.run_sync_hooks(
+            room.id, HookTrigger.BEFORE_TTS, "bye", _ctx(), skip_event_filter=True
+        )
+        await asyncio.wait_for(closed.wait(), 1)
+
+
+class _SectionReadsAgain(InMemoryStore):
+    """The locked section's read once its hooks ran waits a moment for the
+    observer's call, as a slow round trip would let it run meanwhile."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.armed = False
+        self.observer_done = asyncio.Event()
+
+    async def get_room(self, room_id: str) -> Room | None:
+        if self.armed:
+            self.armed = False
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self.observer_done.wait(), 0.05)
+        return await super().get_room(room_id)
+
+
+class TestTheRoomLock:
+    async def test_an_observer_s_call_into_the_room_waits_for_the_section(self) -> None:
+        """An ASYNC BEFORE_BROADCAST observer starts while its event's locked
+        section still runs: its call into the room is a new arrival, which
+        waits for the lock and commits after the event (RFC §9, §9.5.1)."""
+        store = _SectionReadsAgain()
+        kit = RoomKit(store=store)
+        for channel_id in ("sms1", "sms2"):
+            kit.register_channel(SimpleChannel(channel_id))
+        await kit.create_room(room_id="r1")
+        for channel_id in ("sms1", "sms2"):
+            await kit.attach_channel("r1", channel_id)
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="gate")
+        async def gate(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            store.armed = event.source.channel_id == "sms1"
+            return HookResult.allow()
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, execution=HookExecution.ASYNC, name="react")
+        async def react(event: RoomEvent, ctx: RoomContext) -> None:
+            if event.source.channel_id == "sms1":
+                await kit.send_event("r1", "sms2", TextContent(body="reaction"))
+                store.observer_done.set()
+
+        try:
+            await kit.process_inbound(
+                InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="hi")),
+                room_id="r1",
+            )
+            await kit.hook_engine.drain_observers()
+            events = await kit.store.list_events("r1")
+            assert [e.content.body for e in events if isinstance(e.content, TextContent)][-2:] == [
+                "hi",
+                "reaction",
+            ]
+        finally:
+            await kit.close()
