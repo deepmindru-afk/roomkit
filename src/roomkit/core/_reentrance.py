@@ -17,7 +17,8 @@ The execution context of a call tells it, for the room it names:
 - elsewhere: a new arrival with a budget of its own.
 
 A call the room's work made is charged one pass as it starts. A call made
-within a turn is at least as deep as the turn's response (§8.3, §10.6).
+within a turn, or by work the turn began, is at least as deep as the turn's
+response (§8.3, §10.6).
 
 A frame stands for its work only while that work runs: a task the work
 spawns inherits the frame and finds it inactive once the work is over, as a
@@ -112,6 +113,12 @@ _frames: contextvars.ContextVar[tuple[_Frame, ...]] = contextvars.ContextVar(
     "_roomkit_room_work_frames", default=()
 )
 # The response depth of the deepest turn the context runs within (RFC §8.3).
+# Unlike a frame it is never made inert: a task the turn spawns keeps it once
+# the turn is over, since that task is the turn's work, which reaches the room
+# after the turn at the turn's depth (RFC §10.6.5, as a delegated result does,
+# §23.3). Made inert, an agent answering through background work at each turn
+# would send at depth 0 and never meet the limit; its budget, a frame's, is
+# its own then.
 _turn_depth: contextvars.ContextVar[int] = contextvars.ContextVar(
     "_roomkit_turn_response_depth", default=0
 )
@@ -151,7 +158,8 @@ def delivering(room_id: str, budget: ReentryBudget) -> AbstractContextManager[No
 @contextmanager
 def within_turn(response_depth: int) -> Generator[None, None, None]:
     """A turn whose response is *response_depth* deep: what the context calls
-    into a room is at least that deep (RFC §8.3, §10.6)."""
+    into a room is at least that deep (RFC §8.3, §10.6), the work it spawns
+    included, after the turn too (see ``_turn_depth``)."""
     token = _turn_depth.set(max(response_depth, _turn_depth.get()))
     try:
         yield

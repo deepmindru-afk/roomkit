@@ -193,6 +193,52 @@ class TestACallFromATurn:
         finally:
             await kit.close()
 
+    @pytest.mark.in_process(
+        "the agent's task calls the kit it holds, whose context an in-memory turn shares "
+        "with the owner; across Redis it goes through its TurnHost"
+    )
+    async def test_work_a_turn_began_keeps_its_depth_once_the_turn_is_over(self) -> None:
+        """A task a turn spawns and that sends after the turn ended is the
+        turn's work, at its response's depth (RFC §8.3, §10.6.5): with the
+        depth of a call from outside, an agent that answers through
+        background work at each turn would never meet the limit."""
+        kit = await _room(RoomKit())
+        agent = _Deferring("ai", kit)
+        kit.register_channel(agent)
+        await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message()), 5)
+            agent.turn_over.set()
+            sent = await asyncio.wait_for(agent.sent, 5)
+            assert sent.chain_depth == 1
+        finally:
+            await kit.close()
+
+
+class _Deferring(AILikeChannel):
+    """An agent whose turn on the first message starts a task that sends into
+    the room once the turn is over."""
+
+    def __init__(self, channel_id: str, kit: RoomKit) -> None:
+        super().__init__(channel_id)
+        self._kit = kit
+        self.turn_over = asyncio.Event()
+        self.sent: asyncio.Future[RoomEvent] = asyncio.get_running_loop().create_future()
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        if _body(event) == "hi":
+            task = asyncio.create_task(self._later())
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+        return ChannelOutput.empty()
+
+    async def _later(self) -> None:
+        await self.turn_over.wait()
+        self.sent.set_result(await self._kit.send_event("r1", "sms", TextContent(body="later")))
+
 
 async def _settled(kit: RoomKit) -> None:
     """Wait until the room's lane has run everything queued."""
