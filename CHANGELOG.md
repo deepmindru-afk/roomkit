@@ -1294,6 +1294,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streaming delay by default (RMK-888; `TURNS=default STREAMING_DELAY_MS=480`
   gives the service's defaults), and drops emoji before Voxtral Speech.
 
+- The `sherpa-onnx` extra needs sherpa-onnx 1.12.30 or later
+  (`sherpa-onnx>=1.12.30`, `sherpa-onnx-core>=1.12.30`), where it admitted
+  1.12.26. Moonshine STT (`SherpaOnnxSTTConfig(mode="moonshine")`) calls
+  `OfflineRecognizer.from_moonshine_v2`, first in 1.12.28, and
+  `SherpaOnnxSTTConfig.stream_language` calls `OnlineStream.set_option`, first
+  in 1.12.30: on 1.12.26 to 1.12.29 both raise `AttributeError`.
+
 ### Removed
 
 - **BREAKING — `roomkit.core.visibility.effective_visibility`** (RMK-902). An
