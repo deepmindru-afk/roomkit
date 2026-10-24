@@ -747,7 +747,8 @@ async def test_a_hard_delete_takes_every_removed_event_s_changes(
     """RFC §10.3, §14.1: a hard delete removes its event, its thread replies
     unless told not to, and the edits and deletes of every event it removes
     (an edit holds its target's corrected text), and returns them as stored:
-    the root, its replies, then the changes, in index order."""
+    the root, its replies, then the changes, in index order. A change of one
+    of those changes is no change of an event it removes, and stays."""
     room = await contract_store.create_room(Room(id=uuid4().hex))
     try:
         store = contract_store
@@ -758,6 +759,9 @@ async def test_a_hard_delete_takes_every_removed_event_s_changes(
         other = await store.commit_event(room.id, make_event(room_id=room.id, body="other"))
         edit, edited = _edit_of(root, "corrected")
         edit = await store.commit_event(room.id, edit, target=edited)
+        # A change of a change, as a store may hold one (none the pipeline
+        # accepts, RFC §10.3 rule 2): committed alone, no target written.
+        edit_of_edit = await store.commit_event(room.id, _edit_of(edit, "again")[0])
         unsaid = await store.commit_event(room.id, _delete_of(reply))
         kept_edit, kept_edited = _edit_of(other, "other, corrected")
         kept_edit = await store.commit_event(room.id, kept_edit, target=kept_edited)
@@ -769,7 +773,8 @@ async def test_a_hard_delete_takes_every_removed_event_s_changes(
         assert [e.id for e in removed] == [e.id for e in expected]
         assert removed[0] == as_stored
         left = {e.id for e in await store.list_events(room.id)}
-        assert left == {other.id, kept_edit.id} | (set() if cascade else {reply.id, unsaid.id})
+        kept = {other.id, kept_edit.id, edit_of_edit.id}
+        assert left == kept | (set() if cascade else {reply.id, unsaid.id})
         assert await store.delete_event(room.id, root.id) == []
         assert await store.delete_event(uuid4().hex, other.id) == []
     finally:

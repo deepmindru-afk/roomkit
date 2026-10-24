@@ -294,6 +294,102 @@ async def test_handle_wait_short_circuits_under_room_lock() -> None:
     await kit.close()
 
 
+class _Delivered(SimpleChannel):
+    """A transport that records the bodies it is delivered, and whose
+    delivery of ``side`` sends ``echo`` into its room when *echoes*."""
+
+    def __init__(self, channel_id: str, kit: RoomKit, *, echoes: bool = False) -> None:
+        super().__init__(channel_id)
+        self.kit, self.echoes = kit, echoes
+        self.echoed: list[Any] = []
+        self.echo_returned = asyncio.Event()
+
+    async def deliver(self, event: Any, binding: ChannelBinding, context: RoomContext) -> Any:
+        if self.echoes and event.content == TextContent(body="side"):
+            self.echoed.append(await self.kit.process_inbound(_message("echo"), room_id="r1"))
+            self.echo_returned.set()
+        return await super().deliver(event, binding, context)
+
+
+class _AdoptingParse(SimpleChannel):
+    """A transport whose parse of ``hello`` runs *work* first."""
+
+    work: Any = None
+
+    async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> Any:
+        if message.content == TextContent(body="hello") and self.work is not None:
+            await self.work()
+        return await super().handle_inbound(message, context)
+
+
+async def _admission_kit(
+    work: str, *, echoes: bool = False, process_timeout: float = 30.0
+) -> tuple[RoomKit, _Delivered, dict[str, Any]]:
+    """A room whose ``hello`` has admission work (an off-lock hook's body,
+    or its parse) that sends ``side`` into the room, deferred, and waits on
+    its handle; what the wait returned lands in the dict."""
+    kit = RoomKit(process_timeout=process_timeout)
+    source = _AdoptingParse("sms1")
+    target = _Delivered("ws", kit, echoes=echoes)
+    for channel in (source, target):
+        kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    await kit.attach_channel("r1", "ws")
+    waited: dict[str, Any] = {}
+
+    async def adopt_and_wait() -> None:
+        side = await kit.process_inbound(_message("side"), room_id="r1", defer_delivery=True)
+        assert side.delivery is not None
+        waited["result"] = await side.delivery.wait()
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, needs_lock=False, name="check")
+    async def check(event: Any, ctx: RoomContext) -> HookResult:
+        if work == "off-lock-hook-body" and event.content == TextContent(body="hello"):
+            await adopt_and_wait()
+        return HookResult.allow()
+
+    if work == "parse":
+        source.work = adopt_and_wait
+    return kit, target, waited
+
+
+@pytest.mark.parametrize("work", ["off-lock-hook-body", "parse"])
+async def test_a_wait_from_admission_work_returns_with_its_delivery_results(work: str) -> None:
+    """An event's admission work (an off-lock hook's body, its parse) sends
+    into its room, the call adopted beside the event, and waits on its
+    handle: that delivery runs during the work, ahead of the event, and the
+    wait returns with its ``delivery_results`` (RFC §9.5.1)."""
+    kit, target, waited = await _admission_kit(work)
+    try:
+        await asyncio.wait_for(kit.process_inbound(_message(), room_id="r1"), 5)
+        assert sorted(waited["result"].delivery_results) == ["ws"]
+        assert [e.content.body for e in target.delivered] == ["side", "hello"]
+    finally:
+        await kit.close()
+
+
+async def test_a_wait_whose_delivery_needs_the_events_ticket_ends_at_process_timeout() -> None:
+    """The adopted call's delivery sends into the room as a new arrival,
+    which takes a ticket behind the event whose off-lock hook waits on that
+    delivery: the wait ends with the event's admission, at its
+    ``process_timeout``, the event refused and nothing of it stored (RFC
+    §9.5.1, §13.6). The call adopted beside it stays committed."""
+    kit, target, waited = await _admission_kit(
+        "off-lock-hook-body", echoes=True, process_timeout=0.05
+    )
+    try:
+        result = await asyncio.wait_for(kit.process_inbound(_message(), room_id="r1"), 5)
+        await asyncio.wait_for(target.echo_returned.wait(), 5)
+        assert (result.blocked, result.reason, result.event) == (True, "process_timeout", None)
+        assert "result" not in waited
+        events = await kit.store.list_events("r1")
+        bodies = [e.content.body for e in events if e.type == EventType.MESSAGE]
+        assert "side" in bodies and "hello" not in bodies
+    finally:
+        await kit.close()
+
+
 # -- Trace shape: the deferred tail stays in the inbound span's tree --
 
 
