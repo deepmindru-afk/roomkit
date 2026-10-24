@@ -17,15 +17,16 @@ The execution context of a call tells it, for the room it names:
 - elsewhere: a new arrival with a budget of its own.
 
 A call the room's work made is charged one pass as it starts. A call made
-into a room within one of its turns, the turn's tool calls included, is at
-least as deep as the turn's response (§8.3, §10.6); a call into another room
-is at the depth it names.
+while a turn or a tool call runs, into whatever room, is at least as deep as
+the turn's response or the call's (§8.3, §10.6); only the budget is the
+room's.
 
 A frame stands for its work only while that work runs: a task the work
 spawns inherits the frame and finds it inactive once the work is over, as a
 room lock's lease is (:mod:`roomkit.core.locks`). A turn's depth floor is a
-frame too: work a turn or a delivery began starts fresh once that work is
-over, at depth 0 and on a budget of its own.
+frame too, and a tool call's ends with the call: work a turn or a delivery
+began starts fresh once that work is over, at depth 0 and on a budget of its
+own.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from typing import TYPE_CHECKING
 
 from roomkit.core.exceptions import ReentrantCallError
 from roomkit.core.locks import _has_room_lock
+from roomkit.tools.context import _live_turn_chain_depth
 
 if TYPE_CHECKING:
     from roomkit.core._queued_injections import QueuedInjections
@@ -118,13 +120,12 @@ _frames: contextvars.ContextVar[tuple[_Frame, ...]] = contextvars.ContextVar(
 
 @dataclass(eq=False, slots=True)
 class _Turn:
-    room_id: str
     response_depth: int
     active: bool = True
 
 
 # The turns the context runs within (RFC §8.3), each the floor of a call into
-# its room while it runs. Made inert once the turn is over, as a frame is: a
+# any room while it runs. Made inert once the turn is over, as a frame is: a
 # task the turn spawned that calls after it is work of its own, at depth 0
 # (the maintainer's decision, RMK-930), and a result delivered later on the
 # turn's behalf names its depth itself (a delegation's, §23.3).
@@ -165,12 +166,11 @@ def delivering(room_id: str, budget: ReentryBudget) -> AbstractContextManager[No
 
 
 @contextmanager
-def within_turn(room_id: str, response_depth: int) -> Generator[None, None, None]:
-    """A turn of *room_id* whose response is *response_depth* deep, or a tool
-    call the owner serves for it: what the context calls into that room
-    while it runs is at least that deep (RFC §8.3, §10.6), the work it
-    spawns included until the turn is over."""
-    turn = _Turn(room_id, response_depth)
+def within_turn(response_depth: int) -> Generator[None, None, None]:
+    """A turn whose response is *response_depth* deep: what the context calls
+    into a room while it runs is at least that deep (RFC §8.3, §10.6), the
+    work it spawns included until the turn is over."""
+    turn = _Turn(response_depth)
     token = _turns.set((*_turns.get(), turn))
     try:
         yield
@@ -180,14 +180,14 @@ def within_turn(room_id: str, response_depth: int) -> Generator[None, None, None
         _turns.reset(token)
 
 
-def chain_floor(room_id: str) -> int:
-    """The least chain depth of a call into *room_id* made in this context:
-    the response depth of the deepest of the room's turns it runs within
-    that still runs; 0 outside them, and for a call into another room."""
-    return max(
-        (t.response_depth for t in _turns.get() if t.active and t.room_id == room_id),
-        default=0,
-    )
+def chain_floor() -> int:
+    """The least chain depth of a call made in this context, into whatever
+    room: the response depth of the deepest turn it runs within that still
+    runs, or of the tool call it runs in while that runs (realtime and
+    conference calls, a call the owner serves, a tool handler); 0 outside
+    them and once they are over."""
+    turns = (turn.response_depth for turn in _turns.get() if turn.active)
+    return max(max(turns, default=0), _live_turn_chain_depth())
 
 
 class RoomWork:

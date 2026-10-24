@@ -387,6 +387,7 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
                 await shielded(self._report_unreported_calls(loop_ctx))
             finally:
                 loop_ctx.ended.set()
+                loop_ctx.running = False
                 _current_loop_ctx.set(enclosing_ctx)
 
     async def _end_raised_turn(self, turn: _StreamTurnState, exc: BaseException) -> None:

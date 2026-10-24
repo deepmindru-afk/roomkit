@@ -250,6 +250,10 @@ class _ToolLoopContext:
     cancellable: set[asyncio.Task[Any]] = field(default_factory=set)
     # Set once the turn ended and the calls it cut were reported.
     ended: asyncio.Event = field(default_factory=asyncio.Event)
+    # Whether the turn or the tool call this context was installed for still
+    # runs: a call into a room made within it is at least as deep as its
+    # response (RFC §8.3), a task it spawned that outlives it is not.
+    running: bool = True
     loop_id: str = ""
     # The turn the loop serves, as the turn backend names it: what the room
     # owner's steering addresses (RFC §10.6.8). ``None`` outside a turn.
@@ -522,6 +526,19 @@ def _current_turn_chain_depth() -> int:
     return ctx.chain_depth if ctx is not None else 0
 
 
+def _live_turn_chain_depth() -> int:
+    """The chain depth of the response the current turn or tool call produces
+    while it runs; 0 outside one, and once it is over (RFC §8.3).
+
+    What a call into a room made within it is at least as deep as. Unlike
+    :func:`_current_turn_chain_depth`, which a result delivered later on the
+    turn's behalf reads, it is gone for a task the turn spawned once the turn
+    ended. Internal: the kit's entry points read it.
+    """
+    ctx = _current_loop_ctx.get()
+    return ctx.chain_depth if ctx is not None and ctx.running else 0
+
+
 def turn_report_claim(call_id: str, channel_id: str) -> Callable[[], bool] | None:
     """The claim on call *call_id*'s one report in *channel_id*'s turn running
     now, or ``None`` when no such turn announced it (RFC §9.3)."""
@@ -613,6 +630,9 @@ def _installed(
     try:
         yield
     finally:
+        # Copies the call's tasks hold share the context: over, it no longer
+        # runs (see _live_turn_chain_depth).
+        loop_ctx.running = False
         _current_loop_ctx.reset(loop_token)
         _current_tool_call.reset(call_token)
 

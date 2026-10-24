@@ -646,6 +646,7 @@ class AIChannel(
                 ai_context, event, purpose="thought"
             )
         finally:
+            loop_ctx.running = False
             _current_loop_ctx.reset(token)
         return None if blocked else ai_context
 
@@ -697,10 +698,13 @@ class AIChannel(
         if not ingested and discussion_turn(event) is None:
             await self._ingest_event(event, context)
 
-        token = _current_loop_ctx.set(self._turn_loop_ctx(event, context))
+        loop_ctx = self._turn_loop_ctx(event, context)
+        token = _current_loop_ctx.set(loop_ctx)
         try:
             return await self._start_streaming_tool_response(event, binding, context, notes=notes)
         finally:
+            # The stream, read later, runs a loop context of its own.
+            loop_ctx.running = False
             _current_loop_ctx.reset(token)
 
     async def on_room_event(self, room_id: str, event: RoomEvent) -> None:

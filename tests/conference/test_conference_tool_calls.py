@@ -76,6 +76,34 @@ async def test_the_handler_runs_in_the_calls_context_at_its_answers_depth() -> N
     await kit.close()
 
 
+async def test_what_the_handler_sends_into_the_room_is_as_deep_as_its_call() -> None:
+    """RFC §8.3: a call into a room made while a tool call runs is at least
+    as deep as the call, so a handler that sends on every call meets the
+    chain-depth limit."""
+    sent: list[Any] = []
+    kit_of: list[RoomKit] = []
+
+    async def handler(room_id: str, name: str, arguments: dict[str, Any]) -> str:
+        sent.append(await kit_of[0].send_event(ROOM, "src", TextContent(body="from the tool")))
+        return "done"
+
+    provider = MockRealtimeProvider()
+    kit, channel, _, _ = await realtime_kit(
+        provider=provider,
+        config=ConferenceRealtimeConfig(provider=provider, tools=[LOOKUP], tool_handler=handler),
+    )
+    kit_of.append(kit)
+    session = await channel._realtime.ensure_session(ROOM)
+    assert session is not None
+    await kit.send_event(ROOM, "src", TextContent(body="agent says"), chain_depth=2)
+
+    await provider.simulate_tool_call(session, "c1", "lookup", {})
+    await until(lambda: bool(provider.tool_results))
+
+    assert [event.chain_depth for event in sent] == [3]
+    await kit.close()
+
+
 async def test_a_second_call_under_an_id_in_flight_sends_nothing() -> None:
     handler = _Handler()
     kit, _, provider, session, observed = await _conference(handler)

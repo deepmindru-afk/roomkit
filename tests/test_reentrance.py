@@ -218,9 +218,10 @@ class TestACallFromATurn:
         "the agent calls the kit it holds, whose context an in-memory turn shares with "
         "the owner; across Redis it goes through its TurnHost"
     )
-    async def test_a_call_into_another_room_during_the_turn_is_its_own(self) -> None:
+    async def test_a_call_into_another_room_during_the_turn_has_its_own_budget(self) -> None:
         """A turn's call into another room is none of this room's work: a
-        budget of its own for each call, at the depth it names. The agent is
+        budget of its own for each call; it is still at least as deep as the
+        turn's response, as any call made while the turn runs. The agent is
         asked below the depth limit of 2, with a budget of 20 per cascade."""
         kit = await _room(RoomKit(max_chain_depth=2))
         await kit.create_room(room_id="r2")
@@ -230,7 +231,7 @@ class TestACallFromATurn:
         await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
         try:
             await asyncio.wait_for(kit.process_inbound(_message(), room_id="r1"), 5)
-            assert [(e.chain_depth, e.blocked_by) for e in agent.sent] == [(0, None)] * (
+            assert [(e.chain_depth, e.blocked_by) for e in agent.sent] == [(1, None)] * (
                 2 * BUDGET + 1
             )
         finally:

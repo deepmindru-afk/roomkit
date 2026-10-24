@@ -1263,7 +1263,7 @@ def _past_the_cap(room_id: str, message: InboundMessage) -> InboundResult:
 def _at_least_as_deep(event: RoomEvent) -> RoomEvent:
     """*event* at least as deep as the turn the call runs within (RFC §8.3):
     a message a turn sends continues its chain."""
-    floor = chain_floor(event.room_id)
+    floor = chain_floor()
     if event.chain_depth >= floor:
         return event
     return event.model_copy(update={"chain_depth": floor})
