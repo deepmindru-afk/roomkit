@@ -84,8 +84,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it as a party's message and broadcasts it to its transports. `post()`
   registers the host channel under `"host"` on first use (`ValueError` when
   another type holds the id), solicits no agent unless `addressed_to` names
-  one, signs with `participant_id` and keeps `metadata`. The speaker's name
-  is shown only for a participant connected via the host channel.
+  one, signs with `participant_id` and keeps `metadata`. The speaker is a
+  participant the host channel reaches, by their id or their identity's,
+  as a turn's sender is read (RMK-954): `kit.add_member(room_id, "host",
+  participant_id)` makes a member one, and any other id (nobody's, a member
+  reached through SMS only, an agent channel's) raises
+  `ParticipantNotFoundError` before anything is written, the first post's
+  attach included. `chain_depth=` names the chain the post continues, as
+  `send_event()`'s does (RMK-954).
   `idempotency_key=` makes a replay return the event its key committed,
   texting nothing again, read before the reentry budget from the room's own
   work; a blank key is no key. A room that never bound the host channel gets
@@ -94,8 +100,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before or concurrently, keeps its settings. One `process_timeout` bounds
   the whole call, the wait for that lock included (`ProcessTimeoutError`),
   and once the lock is held the attach runs to its end, a cancelled
-  caller's included. A room the host channel was detached from is refused
-  with `ChannelNotFoundError`, a closed or archived room with
+  caller's included, and stays when the deadline passes during it, the
+  message then not written. A room the host channel was detached from is
+  refused with `ChannelNotFoundError`, a closed or archived room with
   `RoomClosedError`, and an argument `send_event()` refuses before the
   attach, each with nothing written. A host channel attached as
   `INTELLIGENCE` raises `ValueError` before anything is written, and
@@ -126,6 +133,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   extra. The attribute `roomkit.tools.fence` is now the function `fence`,
   not the submodule: `from roomkit.tools.fence import named_blocks` still
   works. None of these is a public import path, so none is BREAKING.
+
+- **BREAKING — an ASYNC hook that writes into its room after every event
+  stops at the reentry cap** (RFC §8.3, §9.5.1, §10.1 step 16, RMK-954). An
+  `AFTER_BROADCAST` hook, and a change's `ON_EVENT_UPDATED` or
+  `ON_EVENT_DELETED` hook, runs once the event's delivery set has run, and
+  each call it made into its room was a new arrival with a budget of its
+  own: a hook that posted after every event, its own posts included, looped
+  without bound (2,000 posts in 3.9 s; with an agent answering each post,
+  1,000 model calls). While the hook's body runs, a call it makes into its
+  room now draws one pass on the reentry budget of the cascade that fired
+  it, as a delivery's call does, and so does a message it sends that opens
+  a room. Past `10 × max_chain_depth` passes, `send_event()` and `post()`
+  store the event `BLOCKED` with `reentry_loop_cap`, no hook run, and return
+  it, and `process_inbound()` returns `blocked=True,
+  reason="reentry_loop_cap"`. A task the hook starts that calls once the
+  body has returned is work of its own: depth 0 and a budget of its own. A
+  hook that posts once per event, a notice or a receipt, draws one pass of
+  that event's cascade and is unaffected.
+  Who meets it: a hook whose calls into its room, with the answers and hooks
+  those calls set off, run more than `10 × max_chain_depth` passes (50 by
+  default) for one message, a judge that posts back to the agent after each
+  of its answers for instance: past the cap, its post is stored `BLOCKED`
+  and the agent is not asked again.
+  Migrate: run the work in a task the hook starts, which begins fresh, and
+  pass the chain it continues, `kit.post(..., chain_depth=answer.chain_depth
+  + 1)` or `send_event(..., chain_depth=...)`, so its round trips with the
+  agent end at `max_chain_depth`.
 
 - **BREAKING — a key its channel holds refuses another event in every store,
   with `IdempotencyKeyTakenError`** (RFC §13.4, §14.3, RMK-942). An

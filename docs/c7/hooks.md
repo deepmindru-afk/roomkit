@@ -225,13 +225,16 @@ A channel's `handle_inbound()` stands in its message's admission order the
 same way: what it sends into its room is adopted beside the message, on its
 budget, and a message it routes back into that room raises
 `ReentrantCallError`. A call from a delivery set's work (a transport's
-`deliver()`, an agent's turn, a tool handler) is a new arrival with its own
-ticket and `process_timeout`, but it draws on the budget of the cascade that
-delivers, and a call made while a turn or a tool call runs (a realtime or a
-conference call included), by it or a task it spawned, into whatever room, is
-at least as deep as the turn's response or the call's, so a transport or an
-agent that sends into its room every time it is reached stops at the cap or at
-`max_chain_depth`. That depth holds where the owner runs the turn's code (an
+`deliver()`, an agent's turn, a tool handler), or from the body of an ASYNC
+hook the cascade fires once an event's delivery set has run (`AFTER_BROADCAST`,
+a change's `ON_EVENT_UPDATED` or `ON_EVENT_DELETED`), is a new arrival with its
+own ticket and `process_timeout`, but it draws on the budget of the cascade
+that delivers while that work runs, and a call made while a turn or a tool
+call runs (a realtime or a conference call included), by it or a task it
+spawned, into whatever room, is at least as deep as the turn's response or the
+call's, so a transport, an agent or an ASYNC hook that sends into its room
+every time it is reached stops at the cap or at `max_chain_depth`. That depth
+holds where the owner runs the turn's code (an
 in-memory turn calling the kit it holds, a tool handler, a `TurnHost` verb);
 with a Redis turn backend a turn reaches the room through its `TurnHost`. A
 call of such work that creates a room, routed or named (the router answering
@@ -239,8 +242,8 @@ none or naming a room the store lacks, `process_inbound(..., room_id=...)`
 naming one), is that work's own and draws on the same budget, charged once
 before the room is created, so a delivery that opens a room each time stops at
 the cap. A call into another existing room has a budget of its own,
-and work a turn, a tool call or a delivery began starts fresh once that work
-is over: depth 0 and a budget of its own.
+and work a turn, a tool call, a delivery or an ASYNC hook's body began starts
+fresh once that work is over: depth 0 and a budget of its own.
 
 ```python
 @kit.hook(HookTrigger.BEFORE_BROADCAST)
@@ -250,6 +253,30 @@ async def acknowledge(event, ctx):
     # Nested: committed ahead of the event, within this event's budget.
     await kit.send_event(event.room_id, "receipts", TextContent(body="Received."))
     return HookResult.allow()
+```
+
+An ASYNC hook that posts after every event, its own posts included, stops at
+the cap (`10 × max_chain_depth` passes, 50 by default), each post one pass; a
+notice posted once per event draws one pass of that event's budget, however
+many events come. Work that follows an agent's answer outside the answer's
+cascade runs in a task the hook starts, which begins fresh. It passes the
+chain it continues, `chain_depth` on `post()` or `send_event()`, so that its
+round trips with the agent end at `max_chain_depth`:
+
+```python
+background: set[asyncio.Task] = set()
+
+@kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC)
+async def ask_again(event, ctx):
+    if event.source.channel_id != "assistant":
+        return
+    # Fresh once this body returns: chain_depth keeps it in the answer's chain.
+    task = asyncio.create_task(kit.post(
+        event.room_id, "Check your answer.", addressed_to=["assistant"],
+        chain_depth=event.chain_depth + 1,
+    ))
+    background.add(task)
+    task.add_done_callback(background.discard)
 ```
 
 The visibility `internal` marks a record the framework wrote, and only the

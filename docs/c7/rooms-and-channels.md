@@ -183,16 +183,23 @@ await kit.post(room_id, "Refund issued.", idempotency_key=webhook_delivery_id)
 - It solicits no agent unless `addressed_to` names one. To let the room's
   routing decide, use `send_event()` from the host channel instead.
 - `participant_id` names who speaks: once two people take part, an agent
-  reads the turn as `Acme Support: "..."`. The name is shown only for a
-  participant connected via the host channel the post comes from (their
-  `channel_id`, or `connected_via`, names it): an id names its participant
-  only on the channels they are reached through:
+  reads the turn as `Acme Support: "..."`. The speaker is a participant the
+  host channel the post comes from reaches (their `channel_id`, or
+  `connected_via`, names it), by their id or their identity's: an id names
+  its participant only on the channels they are reached through. Add a
+  member on the host channel with its id, `"host"` for the kit's own:
 
   ```python
-  await kit.store.add_participant(Participant(
-      id="desk", room_id=room_id, channel_id="host", display_name="Acme Support",
-  ))
+  await kit.add_member(room_id, "host", "desk", display_name="Acme Support")
   ```
+
+  Any other id (nobody's, a member reached through SMS only, an agent
+  channel's) raises `ParticipantNotFoundError` before anything is written.
+  `send_event()` takes any id, and shows a name only on its channel.
+- `chain_depth` names the chain the post continues, as `send_event()`'s
+  does: 0, the default, opens one. Work that follows an agent's answer from a
+  task (a hook's, say) passes the answer's depth plus one, so its round trips
+  with the agent end at `max_chain_depth`.
 - `metadata` says where it comes from (a workflow, its step, a job).
 - `idempotency_key`: a key the host channel holds in the room is a replay. The
   post returns the event the key committed and texts nothing again, and from
@@ -212,7 +219,8 @@ await kit.post(room_id, "Refund issued.", idempotency_key=webhook_delivery_id)
   `RoomClosedError`; nothing is written. `attach_channel()` grants it again.
   One `process_timeout` bounds the whole call, the wait for the room lock
   included (`ProcessTimeoutError`); once the lock is held, the attach runs to
-  its end even if the caller is cancelled.
+  its end even if the caller is cancelled, and stays when the deadline passes
+  during it, the message then not written.
 - A host channel is attached as a transport only: `category=INTELLIGENCE`
   raises `ValueError`. `process_inbound()` on it raises `ValueError` before
   anything is read: it receives no external payload.
