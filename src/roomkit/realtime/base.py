@@ -27,6 +27,7 @@ class EphemeralEventType(StrEnum):
     THINKING_START = "thinking_start"
     THINKING_DELTA = "thinking_delta"
     THINKING_END = "thinking_end"
+    TEXT_DELTA = "text_delta"
     CUSTOM = "custom"
 
 

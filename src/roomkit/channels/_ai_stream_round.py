@@ -8,7 +8,11 @@ from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from roomkit.channels._ai_coalescers import _ThinkingCoalescer, _ToolCallDeltaCoalescer
+from roomkit.channels._ai_coalescers import (
+    _TextCoalescer,
+    _ThinkingCoalescer,
+    _ToolCallDeltaCoalescer,
+)
 from roomkit.channels._ai_resilience import _StreamRetryBoundary
 from roomkit.channels._ai_stream_external_tools import _ExternalStreamTools
 from roomkit.models.streaming import StreamDelta, ThinkingDeltaMarker, ToolCallEndMarker
@@ -129,6 +133,7 @@ class _StreamRound:
     publish_thinking: Callable[[EphemeralEventType, str, str, int], Awaitable[None]]
     close_thinking: _ThinkingWindowCloser
     record_usage: Callable[[dict[str, Any]], None]
+    text_coalescer: _TextCoalescer | None = None
     prefix: str = ""
     external_tools: _ExternalStreamTools | None = None
     state: _StreamRoundState = field(default_factory=_StreamRoundState, init=False)
@@ -172,12 +177,24 @@ class _StreamRound:
         self.state.transcript.add_text(event.text)
         released = list(self._dedup.add(event.text))
         self.state.reported.extend(released)
+        await self._publish_text(released)
         return released
+
+    async def _publish_text(self, texts: list[str]) -> None:
+        if self.text_coalescer is None or not self.room_id:
+            return
+        for text in texts:
+            await self.text_coalescer.add(text)
+
+    async def _flush_text(self) -> None:
+        if self.text_coalescer is not None and self.room_id:
+            await self.text_coalescer.flush()
 
     async def close(self) -> None:
         """Close only opened windows, including when another close is cancelled."""
         try:
             await self._end_thinking()
+            await self._flush_text()
         finally:
             if self.room_id:
                 await self._composition.close()
@@ -223,11 +240,13 @@ class _StreamRound:
                         yield text
                 elif isinstance(event, StreamToolCallDelta):
                     await self._end_thinking()
+                    await self._flush_text()
                     if self.room_id:
                         await self._composition.add(
                             event.index, event.id, event.name, len(event.arguments_delta)
                         )
                 elif isinstance(event, StreamToolCall):
+                    await self._flush_text()
                     async with aclosing(self._take_call(event)) as deltas:
                         async for delta in deltas:
                             yield delta
@@ -237,8 +256,10 @@ class _StreamRound:
                     if event.usage:
                         self.record_usage(event.usage)
 
-            for text in self._dedup.finish():
-                state.reported.append(text)
+            finished = list(self._dedup.finish())
+            state.reported.extend(finished)
+            await self._publish_text(finished)
+            for text in finished:
                 yield text
             await self.close()
         finally:

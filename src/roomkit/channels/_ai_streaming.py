@@ -11,7 +11,11 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
-from roomkit.channels._ai_coalescers import _ThinkingCoalescer, _ToolCallDeltaCoalescer
+from roomkit.channels._ai_coalescers import (
+    _TextCoalescer,
+    _ThinkingCoalescer,
+    _ToolCallDeltaCoalescer,
+)
 from roomkit.channels._ai_loop_rules import (
     AIToolLoopRulesMixin,
     _ToolLoopState,
@@ -192,6 +196,8 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
     _max_empty_retries: int
     _thinking_coalesce_ms: float
     _thinking_coalesce_chars: int
+    _text_coalesce_ms: float
+    _text_coalesce_chars: int
     _active_loops: dict[str, _ToolLoopContext]
     _after_response_hook: AfterResponseCallback | None
     _before_generation_hook: BeforeGenerationHook | None
@@ -675,6 +681,13 @@ class AIStreamingMixin(AIToolLoopRulesMixin):
             room_id=turn.room_id,
             cancel_event=turn.loop_ctx.cancel_event,
             thinking_coalescer=self._new_thinking_coalescer(turn.room_id, index),
+            text_coalescer=_TextCoalescer(
+                self._publish_text_event,
+                turn.room_id,
+                index,
+                flush_ms=self._text_coalesce_ms,
+                flush_chars=self._text_coalesce_chars,
+            ),
             new_composition=partial(self._new_tool_call_coalescer, turn.room_id, index),
             publish_thinking=self._publish_thinking_event,
             close_thinking=self._close_thinking_window,

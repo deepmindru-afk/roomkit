@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An agent's answer text, published live as `TEXT_DELTA`** (RFC §6.4,
+  RMK-951). The live pipe reaches only a room's streaming transports, and a
+  delegated turn's text, collected for its result, reached no one until the
+  turn ended, while its tool calls were already published live in the child
+  room. `AIChannel` now publishes its answer's text as `TEXT_DELTA`
+  ephemerals (`text`, `round`, `channel_id`) in the room it speaks in, child
+  rooms included, coalesced on the new `text_coalesce_ms` (80) and
+  `text_coalesce_chars` (256), flushed before a round's tool-call events.
+  Like every turn ephemeral, it reaches no one the answer would not reach
+  (RFC §8.4). A 400-token answer takes 13 publishes; the cost is within 0.3 %
+  of a turn.
+
 - **A test catches a public signature change that can break a caller.**
   `tests/public_api_signatures.json` holds the signatures of the classes and
   functions the packages export (913 objects, 4 677 members): parameters and

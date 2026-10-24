@@ -134,6 +134,10 @@ class _AIChannelContract:
         self, event_type: EphemeralEventType, room_id: str | None, thinking: str, round_idx: int
     ) -> None: ...
 
+    async def _publish_text_event(
+        self, room_id: str | None, text: str, round_idx: int
+    ) -> None: ...
+
     @property
     def _telemetry_provider(self) -> TelemetryProvider: ...
 

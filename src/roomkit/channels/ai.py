@@ -211,6 +211,8 @@ class AIChannel(
         thinker: Thinker | None = None,
         think_wait: float = 1.5,
         server_instructions: Mapping[str, str | None] | None = None,
+        text_coalesce_ms: float = 80.0,
+        text_coalesce_chars: int = 256,
     ) -> None:
         super().__init__(channel_id)
         # Whether the agent speaks on an event (RFC §6.4): none, it answers every one.
@@ -245,6 +247,10 @@ class AIChannel(
         # while staying visibly real-time. 0 ms disables (publish every delta).
         self._thinking_coalesce_ms = thinking_coalesce_ms
         self._thinking_coalesce_chars = thinking_coalesce_chars
+        # The answer's text as it is written, the same way: one TEXT_DELTA per
+        # window, for an observer that is not a transport (RFC §6.4).
+        self._text_coalesce_ms = text_coalesce_ms
+        self._text_coalesce_chars = text_coalesce_chars
         self._retry_policy = retry_policy
         self._fallback_provider = fallback_provider
         self._script_executor = script_executor

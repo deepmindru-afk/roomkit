@@ -111,6 +111,50 @@ class _ThinkingCoalescer:
             )
 
 
+_TextPublisher = Callable[[str | None, str, int], Awaitable[None]]
+"""``(room_id, text, round_idx)``: the channel's answer-text publish."""
+
+
+class _TextCoalescer:
+    """Batches the answer's text deltas into one ``TEXT_DELTA`` publish per window.
+
+    The same window as the thinking coalescer: the answer is produced token
+    by token too, and an observer appends deltas, so a coalesced delta reads
+    as many small ones. It flushes before a tool call's events and at the end
+    of the round, so an observer reads text and calls in the order they came.
+    """
+
+    def __init__(
+        self,
+        publish: _TextPublisher,
+        room_id: str | None,
+        round_idx: int,
+        *,
+        flush_ms: float,
+        flush_chars: int,
+    ) -> None:
+        self._publish = publish
+        self._room_id = room_id
+        self._round_idx = round_idx
+        self._window = _Window(flush_ms=flush_ms, flush_chars=flush_chars)
+        self._pending: list[str] = []
+
+    async def add(self, delta: str) -> None:
+        """Buffer a delta; publish the batch once the window is exceeded."""
+        self._pending.append(delta)
+        if self._window.add(len(delta)):
+            await self.flush()
+
+    async def flush(self) -> None:
+        """Publish whatever is buffered, then reset the window."""
+        if not self._pending:
+            return
+        text = "".join(self._pending)
+        self._pending.clear()
+        self._window.reset()
+        await self._publish(self._room_id, text, self._round_idx)
+
+
 class _ToolCallDeltaCoalescer:
     """Batches tool-call argument fragments into one ``TOOL_CALL_DELTA`` per window.
 

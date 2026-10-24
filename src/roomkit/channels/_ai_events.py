@@ -128,6 +128,25 @@ class AIEventsMixin(_AIChannelContract):
         except Exception:
             logger.debug("Failed to publish thinking event", exc_info=True)
 
+    async def _publish_text_event(self, room_id: str | None, text: str, round_idx: int) -> None:
+        """Publish a ``TEXT_DELTA`` of the answer being written. Best-effort."""
+        if not room_id or self._realtime is None:
+            return
+        data: dict[str, Any] = {"text": text, "round": round_idx, "channel_id": self.channel_id}
+        try:
+            await self._realtime.publish_to_room(
+                room_id,
+                EphemeralEvent(
+                    room_id=room_id,
+                    type=EphemeralEventType.TEXT_DELTA,
+                    user_id=self.channel_id,
+                    channel_id=self.channel_id,
+                    data=data,
+                ),
+            )
+        except Exception:
+            logger.debug("Failed to publish text event", exc_info=True)
+
 
 def _composing_calls(calls: list[Any]) -> list[dict[str, Any]]:
     """A TOOL_CALL_DELTA's calls: each one's name and running argument size.
