@@ -971,10 +971,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CREATE INDEX` locks the table even when the index exists), and SQLite one
   on the participant's identity: its participant lookup reads through
   `participants(id)` and that index (about 0.08 ms against 18 ms for a scan of
-  20,000 participants). Postgres `init()` looks its index names up in its own
-  schema (`current_schema()`), not through `search_path`: with two
-  deployments in one database, one no longer skips its own indexes because
-  the other has them, nor drops the other's unique idempotency index.
+  20,000 participants). Postgres `init()` looks the index names this release
+  adds up in its own schema (`current_schema()`), not through `search_path`:
+  with two deployments in one database, one no longer skips those indexes
+  because the other has them, nor drops the other's unique idempotency index.
+  The guards of earlier releases still resolve their names through
+  `search_path` (RMK-942).
   Migrate: `find_room_id_by_binding(ch, pid, status="active")` becomes
   `find_room_id_by_binding(ch, pid, None,
   RoomFilter(statuses=[RoomStatus.ACTIVE]))`, and
@@ -1488,7 +1490,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is created, its hooks run and the message's channel attached. The caller's
   cancellation waits for them (under the room lock, for an event's) and is
   raised once they are done, and `kit.close()` waits for these writes, never
-  cutting them, before it drains the lanes.
+  cutting them, before it drains the lanes: 5 s at most in all, since they
+  may run an integrator's handler (a `kit.on()` one, an `ON_ROOM_CREATED`
+  hook), after which it logs the ones still running
+  (`roomkit-decided-write-<room>`) and goes on, leaving them to end on their
+  own.
 
 - A redelivered message the room blocked is answered blocked (RFC §13.4,
   RMK-902): `blocked=True`, the record stored `BLOCKED` as its event, the
