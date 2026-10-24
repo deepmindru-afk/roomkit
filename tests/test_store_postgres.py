@@ -986,16 +986,22 @@ async def test_init_creates_each_index_it_lacks_and_leaves_the_others_be(store) 
     """init() creates every index of its schema that is missing, as it
     defines it (a unique one unique, a partial one partial, the thread
     index composite), and finds an index present as it is."""
-    indexes = "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = current_schema()"
+    from roomkit.store.postgres_schema import V1_TABLES
+
+    tables = [*V1_TABLES, "verifications", "verification_requests", "voice_deliveries"]
+    indexes = (
+        "SELECT indexname, indexdef FROM pg_indexes"
+        " WHERE schemaname = current_schema() AND tablename = ANY($1::text[])"
+    )
     async with store._pool.acquire() as conn:
-        before = {row["indexname"]: row["indexdef"] for row in await conn.fetch(indexes)}
+        before = {row["indexname"]: row["indexdef"] for row in await conn.fetch(indexes, tables)}
         for name in before:
             if name.startswith("idx_"):
                 await conn.execute(f'DROP INDEX "{name}"')
     await store.init()
     await store.init()
     async with store._pool.acquire() as conn:
-        after = {row["indexname"]: row["indexdef"] for row in await conn.fetch(indexes)}
+        after = {row["indexname"]: row["indexdef"] for row in await conn.fetch(indexes, tables)}
     assert after == before
     assert "(parent_event_id, index) WHERE" in after["idx_events_parent_index"]
 
