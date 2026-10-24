@@ -8,7 +8,10 @@ import re
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 import roomkit
+from tests.api_signatures import breaks_since_snapshot, call_breaks, object_breaks
 
 _PACKAGE_ROOT = Path(roomkit.__file__).parent
 _EXPORTED = Path(__file__).with_name("public_api_names.json")
@@ -71,6 +74,15 @@ class TestPublicAPI:
 
         assert dropped == {}
 
+    def test_no_signature_change_breaks_a_caller(self) -> None:
+        """A call that worked on a public class or function still works:
+        tests/public_api_signatures.json holds their signatures, read as
+        tests/api_signatures.py says. The commit that breaks a call on purpose
+        runs `make api-snapshot` and carries its BREAKING entry; an addition
+        needs no entry.
+        """
+        assert breaks_since_snapshot() == []
+
     def test_channels_importable_from_channels_package(self) -> None:
         """Every channel resolves from ``roomkit.channels``, factories included.
 
@@ -112,3 +124,85 @@ def _resolves(module: ModuleType, name: str) -> bool:
 def _raise_unless_optional(missing: ModuleNotFoundError) -> None:
     if (missing.name or "").startswith("roomkit"):
         raise missing
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "named"),
+    [
+        (["a", "b=1"], ["a", "b=1", "*", "c=None"], None),
+        (["a"], ["a", "b=None"], None),
+        (["a"], ["a=None"], None),
+        (["*", "a"], ["a"], None),
+        (["a", "/"], ["b", "/"], None),
+        (["a"], ["a", "**kwargs"], None),
+        (["a", "b=1"], ["a"], "'b'"),
+        (["a"], ["b"], "'a'"),
+        (["a=200"], ["a=50"], "'a'"),
+        (["a=None"], ["a"], "'a'"),
+        (["a"], ["a", "b"], "'b'"),
+        (["a"], ["a", "*", "b"], "'b'"),
+        (["a", "b=None"], ["a", "*", "b=None"], "'b'"),
+        (["a", "b=None"], ["a", "c=None", "b=None"], "'b'"),
+        (["a"], ["a", "/"], "'a'"),
+        (["*", "a=None"], [], "'a'"),
+        (["a", "**kwargs"], ["a"], "**kwargs"),
+        (["*args"], [], "*args"),
+    ],
+    ids=[
+        "keyword added with a default",
+        "positional appended with a default",
+        "required gains a default",
+        "keyword-only becomes positional",
+        "positional-only renamed",
+        "kwargs added",
+        "removed",
+        "renamed",
+        "default changed",
+        "default dropped",
+        "required added",
+        "required keyword-only added",
+        "made keyword-only",
+        "inserted before another",
+        "made positional-only",
+        "keyword-only removed",
+        "kwargs removed",
+        "args removed",
+    ],
+)
+def test_a_signature_change_breaks_only_a_call_that_worked(
+    old: list[str], new: list[str], named: str | None
+) -> None:
+    """Each parameter is matched by its position when a caller can pass it by
+    position, by its name otherwise; an addition no caller can notice passes."""
+    found = call_breaks(old, new)
+    if named is None:
+        assert found == []
+    else:
+        assert len(found) == 1 and named in found[0], found
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "broken"),
+    [
+        ({"run": ["def", "x"]}, {"run": ["def", "x"], "stop": ["def"]}, False),
+        ({"A": ["member", "'a'"]}, {"A": ["member", "'a'"], "B": ["member", "'b'"]}, False),
+        ({"run": ["def", "x"]}, {}, True),
+        ({"run": ["def", "x"]}, {"run": ["async def", "x"]}, True),
+        ({"size": ["property"]}, {"size": ["def"]}, True),
+        ({"A": ["member", "'a'"]}, {"A": ["member", "'b'"]}, True),
+        ({"run": ["def", "x"]}, None, True),
+    ],
+    ids=[
+        "method added",
+        "enum member added",
+        "method removed",
+        "method made async",
+        "property made a method",
+        "enum value changed",
+        "no longer exported",
+    ],
+)
+def test_a_member_change_breaks_a_caller(
+    old: dict[str, list[str]], new: dict[str, list[str]] | None, broken: bool
+) -> None:
+    assert bool(object_breaks("roomkit.X", old, new)) is broken

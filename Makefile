@@ -1,4 +1,4 @@
-.PHONY: audit install lint format typecheck security test test-changed coverage stress llms-full check-models update-llamacpp all clean docs docs-serve llms-sync llms-check deploy deploy-status release
+.PHONY: audit install lint format typecheck security test test-changed api-snapshot coverage stress llms-full check-models update-llamacpp all clean docs docs-serve llms-sync llms-check deploy deploy-status release
 
 install:
 	uv sync --extra dev
@@ -51,6 +51,12 @@ test:
 # `make all` and CI run.
 test-changed:
 	uv run pytest $(PARALLEL) --testmon --testmon-forceselect
+
+# Rewrite tests/public_api_signatures.json from the code. A public signature
+# change that can break a caller fails test_public_api.py until this runs: the
+# commit that breaks on purpose runs it and carries its BREAKING entry.
+api-snapshot:
+	uv run python -m tests.api_signatures
 
 coverage:
 	uv run pytest $(PARALLEL) --cov=roomkit --cov-report=term-missing

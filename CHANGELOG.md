@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A test catches a public signature change that can break a caller.**
+  `tests/public_api_signatures.json` holds the signatures of the classes and
+  functions the packages export (913 objects, 4 677 members): parameters and
+  their defaults, sync or async, properties, enum values. `test_public_api.py`
+  fails on a name, member or parameter removed or renamed, a parameter made
+  required or moved, a default changed, a method made async or an enum value
+  changed; an addition passes and needs no entry. The commit that breaks a
+  signature on purpose runs `make api-snapshot` and carries its BREAKING
+  entry. Type annotations, and what a call does, are not compared.
+
 ## [0.108.0] — 2026-10-24
 
 ### Added
