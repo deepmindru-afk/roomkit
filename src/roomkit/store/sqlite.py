@@ -115,6 +115,8 @@ CREATE TABLE IF NOT EXISTS participants(
     PRIMARY KEY(room_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_participants_id ON participants(id);
+CREATE INDEX IF NOT EXISTS idx_participants_identity
+    ON participants(json_extract(data, '$.identity_id'));
 CREATE TABLE IF NOT EXISTS identities(
     id TEXT PRIMARY KEY,
     data TEXT NOT NULL
@@ -559,7 +561,8 @@ def _migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
     """A soft-deleted message's text is withheld (RFC §10.3): no search
     finds it. A file from before kept it in the full-text index, which the
     delete's rewrite of the message filled again: its rows leave the index,
-    the records keep their text."""
+    the records keep their text. A sender's participant lookup names it by
+    its identity too (RFC §10.4 step 1), through an index on the identity."""
     try:
         conn.execute("BEGIN IMMEDIATE")
         if int(conn.execute("PRAGMA user_version").fetchone()[0]) >= 11:
@@ -569,6 +572,10 @@ def _migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
             """DELETE FROM events_fts WHERE event_id IN (
                    SELECT id FROM events
                    WHERE json_type(data, '$.metadata.deleted') = 'true')"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_participants_identity
+               ON participants(json_extract(data, '$.identity_id'))"""
         )
         conn.execute("PRAGMA user_version=11")
         conn.execute("COMMIT")
@@ -1205,22 +1212,30 @@ class SQLiteStore(ConversationStore):
         identity_id: str | None,
         room_filter: RoomFilter | None,
     ) -> str | None:
-        # Named by its id (indexed) or its identity, and reached through the
-        # channel whatever its status (RFC §5.5, §10.4 step 1).
+        # Named by its id or its identity, and reached through the channel
+        # whatever its status (RFC §5.5, §10.4 step 1). Two branches, one
+        # read through idx_participants_id and one through
+        # idx_participants_identity: an OR of both reads every participant.
         names = sorted(sender_names(participant_id, identity_id))
-        where = [
-            f"(p.id IN ({_placeholders(names)})"
-            f" OR json_extract(p.data, '$.identity_id') IN ({_placeholders(names)}))",
-            "EXISTS (SELECT 1 FROM json_each(p.data, '$.connected_via') WHERE value = ?)",
-        ]
-        params: list[Any] = [*names, *names, channel_id]
-        _filter_rooms(where, params, room_filter)
+        params: list[Any] = []
+        branches: list[list[str]] = []
+        for named in ("p.id", "json_extract(p.data, '$.identity_id')"):
+            where = [
+                f"{named} IN ({_placeholders(names)})",
+                "EXISTS (SELECT 1 FROM json_each(p.data, '$.connected_via') WHERE value = ?)",
+            ]
+            params += [*names, channel_id]
+            _filter_rooms(where, params, room_filter)
+            branches.append(where)
+        found = " UNION ALL ".join(
+            "SELECT r.id, r.created_ts FROM participants p JOIN rooms r ON r.id = p.room_id"
+            f" WHERE {' AND '.join(branch)}"  # nosec B608  # fragments are internal, values parameterised
+            for branch in branches
+        )
         row = (
             self._db()
             .execute(
-                f"""SELECT r.id FROM participants p JOIN rooms r ON r.id = p.room_id
-                    WHERE {" AND ".join(where)}
-                    ORDER BY r.created_ts DESC, r.id DESC LIMIT 1""",  # nosec B608  # fragments are internal, values parameterised
+                f"SELECT id FROM ({found}) ORDER BY created_ts DESC, id DESC LIMIT 1",  # nosec B608  # fragments are internal, values parameterised
                 params,
             )
             .fetchone()

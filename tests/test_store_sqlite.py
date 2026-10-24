@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import sqlite3
 
 import pytest
@@ -19,7 +20,9 @@ from roomkit.core.mixins.verification import HELD_KEY
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import ChannelType, EventStatus, EventType, RoomStatus
 from roomkit.models.event import DeleteContent
+from roomkit.models.participant import Participant
 from roomkit.models.room import Room
+from roomkit.models.store_filter import RoomFilter
 from roomkit.store.sqlite import _SCHEMA_VERSION, SQLiteSchemaError, SQLiteStore
 from tests.conftest import make_event
 from tests.test_store_memory import (
@@ -361,6 +364,28 @@ class TestPersistence:
         finally:
             conn.close()
 
+    async def test_a_v10_file_indexes_its_participants_by_identity(self, tmp_path) -> None:
+        """Schema 11: a sender's participant lookup names it by its identity
+        through an index (RFC §10.4 step 1), on an upgraded file too."""
+        path = tmp_path / "v10.db"
+        store = SQLiteStore(path)
+        await store.create_room(Room(id="r1"))
+        await store.close()
+        conn = sqlite3.connect(path)
+        conn.executescript("DROP INDEX idx_participants_identity; PRAGMA user_version=10;")
+        conn.close()
+
+        store = SQLiteStore(path)
+        assert await store.get_room("r1") is not None
+        await store.close()
+
+        conn = sqlite3.connect(path)
+        try:
+            names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+            assert "idx_participants_identity" in names
+        finally:
+            conn.close()
+
     async def test_a_v0107_file_no_longer_finds_its_soft_deleted_messages(self, tmp_path) -> None:
         """v0.107.0 (schema 6) indexed a soft-deleted message's text again
         when its delete marked it: the upgrade drops it from the index (RFC
@@ -525,3 +550,42 @@ class TestFullTextSearch:
 
         assert await store.search_events("wording") == []
         assert [e.id for e in await store.search_events("phrasing")] == [event.id]
+
+
+class TestRoutingPlans:
+    @pytest.mark.parametrize("identity_id", [None, "idn-1"], ids=["address", "identity"])
+    async def test_the_participant_lookup_reads_through_indexes(
+        self, store: SQLiteStore, tmp_path, identity_id: str | None
+    ) -> None:
+        """A sender's participant lookup (RFC §10.4 step 1) reads the rows
+        naming it, by id or by identity, through indexes: the default router
+        asks it of every new sender, and a scan of the table grows with every
+        participant the file holds."""
+        await store.create_room(Room(id="r1"))
+        await store.add_participant(
+            Participant(id="+1555", room_id="r1", channel_id="sms", identity_id="idn-1")
+        )
+        statements: list[str] = []
+        await store._run(lambda: store._db().set_trace_callback(statements.append))
+
+        found = await store.find_room_id_by_participant(
+            "sms", "+1555", identity_id, RoomFilter(statuses=[RoomStatus.ACTIVE])
+        )
+
+        await store._run(lambda: store._db().set_trace_callback(None))
+        assert found == "r1"
+        conn = sqlite3.connect(tmp_path / "test.db")
+        try:
+            plans = [
+                row[3]
+                for statement in statements
+                for row in conn.execute(f"EXPLAIN QUERY PLAN {statement}")
+            ]
+        finally:
+            conn.close()
+        # Each table is searched through an index: the json_each over a row's
+        # channels and the union's own rows are the only scans.
+        scans = [
+            plan for plan in plans if re.match(r"SCAN (TABLE )?(p|r|participants|rooms)\b", plan)
+        ]
+        assert plans and scans == [], plans
