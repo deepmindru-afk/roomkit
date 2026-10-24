@@ -76,14 +76,14 @@ def names_by_recipient(binding: ChannelBinding, address: str, recipient_key: str
     and not ``group``, is its recipient's conversation.
 
     The recipient is the value under *recipient_key*, the channel's, a
-    string or a number (a chat id), compared as stored: the framework writes
-    a recipient in its channel's form (§5.7)."""
+    string that is not blank or a number (a chat id), compared as stored:
+    the framework writes a recipient in its channel's form (§5.7)."""
     if recipient_key is None or binding.participant_id is not None or binding.group:
         return False
     value = binding.metadata.get(recipient_key)
     if isinstance(value, bool) or not isinstance(value, str | int | float):
         return False
-    return str(value) == address
+    return str(value) == address and bool(address.strip())
 
 
 def _recency(room: Room) -> tuple[float, str]:

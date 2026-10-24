@@ -985,12 +985,13 @@ class PostgresStore(ConversationStore):
     ) -> str | None:
         # Newest room first, id as tie-breaker, like the other stores. A
         # binding naming no correspondent, not a group, names its recipient
-        # (RFC §5.7): its value under the key, a string or a number. Two
-        # branches, each read through idx_bindings_channel_participant: the
-        # bindings naming one of the names, and the channel's bindings naming
-        # no one, which the kit leaves only where no recipient was given or a
-        # binding was written to the store directly; an OR of both would
-        # read every binding of the channel.
+        # (RFC §5.7): its value under the key, a string that is not blank or
+        # a number. Two branches, each read through
+        # idx_bindings_channel_participant: the bindings naming one of the
+        # names, and the channel's bindings naming no one, which the kit
+        # leaves only where no recipient was given or a binding was written
+        # to the store directly; an OR of both would read every binding of
+        # the channel.
         names = sorted(sender_names(participant_id, identity_id))
         params: list[Any] = [channel_id, names]
         branches = [
@@ -998,7 +999,8 @@ class PostgresStore(ConversationStore):
             " WHERE b.channel_id = $1 AND b.participant_id = ANY($2::text[])"
             + _room_filter(params, room_filter)
         ]
-        if recipient_key is not None:
+        # The value is compared to the address: a blank address finds none.
+        if recipient_key is not None and participant_id.strip():
             params += [recipient_key, participant_id]
             key, address = len(params) - 1, len(params)
             branches.append(

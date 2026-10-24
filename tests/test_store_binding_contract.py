@@ -413,7 +413,7 @@ async def test_a_binding_naming_no_one_names_its_recipient(
     """RFC §5.7, §10.4 step 1: a binding stored with a recipient and no
     correspondent names its recipient, a string or a number under the key
     the caller passes; a group binding, and one naming a correspondent,
-    do not name their recipient."""
+    do not name their recipient, and an empty or blank string is none."""
     store = _StoreWithoutTheLookup() if fallback else contract_store
     if fallback and not isinstance(contract_store, InMemoryStore):
         pytest.skip("the fallback runs over the in-memory store")
@@ -425,6 +425,8 @@ async def test_a_binding_naming_no_one_names_its_recipient(
         (f"c-{tag}", {"chat": "bob"}, None, True),
         (f"d-{tag}", {"chat": "carol"}, "dave", False),
         (f"e-{tag}", {"other": "erin"}, None, False),
+        (f"f-{tag}", {"chat": ""}, None, False),
+        (f"g-{tag}", {"chat": "  "}, None, False),
     ]
     for offset, (room_id, metadata, named, group) in enumerate(stored):
         await store.create_room(Room(id=room_id, created_at=t0 + timedelta(seconds=offset)))
@@ -450,6 +452,8 @@ async def test_a_binding_naming_no_one_names_its_recipient(
         assert await found("carol") is None
         assert await found("dave") == f"d-{tag}"
         assert await found("erin") is None
+        assert await found("") is None
+        assert await found("  ") is None
     finally:
         for room_id, *_ in stored:
             await store.delete_room(room_id)

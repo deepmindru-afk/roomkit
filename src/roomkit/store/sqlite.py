@@ -1160,10 +1160,12 @@ class SQLiteStore(ConversationStore):
         params: list[Any] = [channel_id, *names]
         _filter_rooms(where, params, room_filter)
         branches = [where]
-        if recipient_key is not None:
+        if recipient_key is not None and participant_id.strip():
             # A binding naming no correspondent, not a group, names its
-            # recipient (RFC §5.7): its value under the key, a string or a
-            # number, read whatever characters the key holds.
+            # recipient (RFC §5.7): its value under the key, a string that
+            # is not blank or a number, read whatever characters the key
+            # holds. The value is compared to the address, so a blank
+            # address finds none.
             unnamed = [
                 "b.channel_id = ?",
                 "b.participant_id IS NULL",
