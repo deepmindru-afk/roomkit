@@ -223,8 +223,9 @@ class DeliveryHandle:
         ``TimeoutError`` means cleanup is STILL running: retain the resources
         it uses and await this handle before disposing them. Cancellation of
         this call is propagated only after cleanup (or its timeout). Calling
-        from the room's lane, under its lock or from the body of an off-lock
-        hook of one of its events raises ``RuntimeError``: the drain could
+        from the room's lane, under its lock or from the admission work of one
+        of its events (an off-lock hook's body, a handler its check's report
+        awaits, the message's parse) raises ``RuntimeError``: the drain could
         only wait for its caller.
         A completed handle is returned unchanged.
         """
@@ -243,9 +244,10 @@ class DeliveryHandle:
 
         Called from a context that must not wait on this room's delivery —
         the room's own lane executor (a tool handler), under the room lock
-        (a sync hook), or the body of an off-lock hook of one of the room's
-        events while it runs (whose call into the room was adopted beside
-        that event), where the lane cannot progress past the caller — it
+        (a sync hook), or the admission work of one of the room's events
+        while it runs (an off-lock hook's body, a handler its check's report
+        awaits, the message's parse, whose call into the room was adopted
+        beside that event), where the lane cannot progress past the caller — it
         returns the result immediately, unwaited and un-backfilled, and
         raises nothing: the same short-circuit the waiting path's step 18
         applies, with delivery following in lane order. A task such a

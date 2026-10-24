@@ -152,6 +152,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the lock: its drain could only wait for its caller. A task the body starts
   waits as any caller does.
 
+- **BREAKING — `DeliveryHandle.wait()` from an event's admission work
+  returns at once** (RFC §9.5.1, §10.1 step 18, RMK-943). The admission work
+  of an event is the body of a `BEFORE_BROADCAST` hook registered with
+  `needs_lock=False`, a handler its check's `hook_error` or `hook_timeout`
+  report awaits, and the message's parse (a channel's `handle_inbound()`). A
+  call it made into the room with `defer_delivery=True` is adopted beside
+  the event, and a wait on its handle waited for a delivery that waits
+  behind that work. While the work runs, the wait now returns the result it
+  has, unwaited, with no `delivery_results`, and raises nothing, as it
+  already did under the room lock and in the room's lane; the delivery
+  follows in lane order. `DeliveryHandle.cancel()` there raises
+  `RuntimeError`, as under the lock: its drain could only wait for its
+  caller. A task the work starts waits as any caller does.
+
 - **BREAKING — a reply's parent is rooted on every path that commits an
   event** (RFC §10.1 step 8, §10.3, §10.5, RMK-943). Only an inbound message
   and `send_event()` replaced a `parent_event_id` naming a reply by that
