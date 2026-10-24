@@ -23,8 +23,14 @@ from roomkit.core.inbound_router import InboundRoomRouter
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage, InboundResult
-from roomkit.models.enums import ChannelCategory, ChannelType, EventType, HookTrigger
-from roomkit.models.event import RoomEvent, TextContent
+from roomkit.models.enums import (
+    ChannelCategory,
+    ChannelType,
+    EventType,
+    HookExecution,
+    HookTrigger,
+)
+from roomkit.models.event import EditContent, RoomEvent, TextContent
 from roomkit.models.hook import HookResult
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
@@ -689,6 +695,131 @@ class _Elsewhere(AILikeChannel):
 async def _settled(kit: RoomKit) -> None:
     """Wait until the room's lane has run everything queued."""
     await kit._lanes.lane("r1").drain()  # noqa: SLF001
+
+
+class TestACallFromAnAsyncHook:
+    """RFC §10.1 step 16, §10.3, §9.5.1: while the body of an ASYNC hook its
+    cascade fires runs (``AFTER_BROADCAST`` once an event's delivery set has
+    run, a change's mutation trigger), a call it makes into the room is a
+    new arrival that draws on that cascade's budget, as a delivery's does; a
+    task it starts calls as work of its own once the body has returned.
+
+    Each looping hook stops itself well past the cap, so that a loop the cap
+    does not stop fails at once rather than run forever."""
+
+    async def test_a_hook_posting_after_every_event_stops_at_the_cap(self) -> None:
+        """No agent in the room: the hook's own post fires it again."""
+        kit = await _room(RoomKit(max_chain_depth=1))
+        posted: list[RoomEvent] = []
+
+        @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="notice")
+        async def notice(event: RoomEvent, ctx: RoomContext) -> None:
+            if event.type is EventType.MESSAGE and len(posted) <= 2 * BUDGET:
+                posted.append(await kit.post("r1", f"Noted {len(posted)}."))
+
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message()), 5)
+            await asyncio.wait_for(_settled(kit), 5)
+            assert [e.blocked_by for e in posted] == [None] * BUDGET + ["reentry_loop_cap"]
+        finally:
+            await kit.close()
+
+    async def test_a_hook_posting_to_the_agent_after_each_answer_stops_at_the_cap(
+        self,
+    ) -> None:
+        """The agent's answer fires the hook, whose post the agent answers:
+        each round trip draws on the budget of the cascade the first message
+        opened, its post and the answer's reentry: ten round trips of the
+        budget of 20 passes, the eleventh answer capped. The agent is asked
+        below the depth limit of 2."""
+        kit = await _room(RoomKit(max_chain_depth=2))
+        kit.register_channel(AILikeChannel("ai", response="Answer."))
+        await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+        posted: list[RoomEvent] = []
+
+        @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="judge")
+        async def judge(event: RoomEvent, ctx: RoomContext) -> None:
+            if event.source.channel_id == "ai" and len(posted) <= 4 * BUDGET:
+                posted.append(await kit.post("r1", "Try again.", addressed_to=["ai"]))
+
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message()), 5)
+            await asyncio.wait_for(_settled(kit), 5)
+            events = await _messages(kit)
+            answers = [e for e in events if e.source.channel_id == "ai" and e.blocked_by is None]
+            assert (len(posted), len(answers)) == (10, 10)
+            assert [(e.source.channel_id, e.blocked_by) for e in _capped(events)] == [
+                ("ai", "reentry_loop_cap")
+            ]
+        finally:
+            await kit.close()
+
+    async def test_a_mutation_hook_editing_its_event_again_stops_at_the_cap(self) -> None:
+        """A change's ``ON_EVENT_UPDATED`` is its cascade's work too: a hook
+        that edits the event again each time it is edited stops at the cap."""
+        kit = await _room(RoomKit(max_chain_depth=1))
+        edits: list[RoomEvent] = []
+
+        @kit.hook(HookTrigger.ON_EVENT_UPDATED, execution=HookExecution.ASYNC, name="reword")
+        async def reword(event: RoomEvent, ctx: RoomContext) -> None:
+            if len(edits) <= 2 * BUDGET:
+                edits.append(await _send_edit(kit, event, len(edits)))
+
+        try:
+            first = await kit.send_event("r1", "sms", TextContent(body="v"), participant_id="u")
+            await asyncio.wait_for(_send_edit(kit, first, 0), 5)
+            await asyncio.wait_for(_settled(kit), 5)
+            assert [e.blocked_by for e in edits] == [None] * BUDGET + ["reentry_loop_cap"]
+        finally:
+            await kit.close()
+
+    async def test_a_hook_posting_once_per_message_posts_for_every_message(self) -> None:
+        """A notice, one post for each message, draws one pass of that
+        message's cascade: more messages than a budget holds passes each get
+        theirs."""
+        kit = await _room(RoomKit(max_chain_depth=1))
+        posted: list[RoomEvent] = []
+
+        @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="receipt")
+        async def receipt(event: RoomEvent, ctx: RoomContext) -> None:
+            if event.source.channel_id == "sms":
+                posted.append(await kit.post("r1", "Received."))
+
+        try:
+            for n in range(BUDGET + 1):
+                await asyncio.wait_for(kit.process_inbound(_message(f"message {n}")), 5)
+            await asyncio.wait_for(_settled(kit), 5)
+            assert [e.blocked_by for e in posted] == [None] * (BUDGET + 1)
+        finally:
+            await kit.close()
+
+    async def test_a_task_the_hook_starts_calls_as_work_of_its_own(self) -> None:
+        """Once the hook's body has returned, a task it started sends at
+        depth 0 with a budget of its own for each call, as a call from
+        outside the room's work (RFC §9.5.1, as for a turn's task)."""
+        kit = await _room(RoomKit(max_chain_depth=1))
+        sends = 2 * BUDGET + 1
+        later = _Later(kit, "r1", "sms", sends)
+
+        @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="start")
+        async def start(event: RoomEvent, ctx: RoomContext) -> None:
+            if _body(event) == "hi":
+                later.start()
+
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message()), 5)
+            await asyncio.wait_for(_settled(kit), 5)
+            later.over.set()
+            sent = await asyncio.wait_for(later.sent, 5)
+            assert [(e.chain_depth, e.blocked_by) for e in sent] == [(0, None)] * sends
+        finally:
+            await kit.close()
+
+
+async def _send_edit(kit: RoomKit, event: RoomEvent, n: int) -> RoomEvent:
+    """Its sender's edit of *event* in room ``r1``."""
+    edit = EditContent(target_event_id=event.id, new_content=TextContent(body=f"v{n}"))
+    return await kit.send_event("r1", "sms", edit, EventType.EDIT, participant_id="u")
 
 
 class TestARoutedMessageBackIntoItsRoom:

@@ -806,8 +806,8 @@ class LaneExecutionMixin(HelpersMixin):
 
         if plan.mutation_hook is not None:
             trigger, target = plan.mutation_hook
-            await self._hook_engine.run_async_hooks(
-                room_id, trigger, target, plan.mutation_context or context
+            await self._run_after_delivery(
+                room_id, cascade, trigger, target, plan.mutation_context or context
             )
 
         if plan.injected:
@@ -818,8 +818,8 @@ class LaneExecutionMixin(HelpersMixin):
                 room_id, result.tasks, result.observations, event, context
             )
             if plan.fire_after_broadcast:
-                await self._hook_engine.run_async_hooks(
-                    room_id, HookTrigger.AFTER_BROADCAST, event, context
+                await self._run_after_delivery(
+                    room_id, cascade, HookTrigger.AFTER_BROADCAST, event, context
                 )
             return
 
@@ -853,12 +853,29 @@ class LaneExecutionMixin(HelpersMixin):
                 context,
             )
         if plan.fire_after_broadcast and not plan.rerun:
-            await self._hook_engine.run_async_hooks(
-                room_id, HookTrigger.AFTER_BROADCAST, event, context
+            await self._run_after_delivery(
+                room_id, cascade, HookTrigger.AFTER_BROADCAST, event, context
             )
 
         if plan.emit_processed:
             await self._emit_framework_event("event_processed", room_id=room_id, event_id=event.id)
+
+    async def _run_after_delivery(
+        self,
+        room_id: str,
+        cascade: DeliveryCascade,
+        trigger: HookTrigger,
+        payload: RoomEvent,
+        context: RoomContext,
+    ) -> None:
+        """Run *trigger*'s ASYNC hooks once an event's delivery set has run
+        (RFC §10.1 step 16, §10.3), each body as *cascade*'s delivery work:
+        what it sends into the room while it runs draws on the cascade's
+        budget, so a hook that posts after every event stops at the cap
+        (§9.5.1); a task it starts calls as work of its own."""
+        await self._hook_engine.run_async_hooks(
+            room_id, trigger, payload, context, budget=cascade.budget
+        )
 
     async def _report_root_pass(
         self, plan: DeliveryPlan, result: BroadcastResult, cascade: DeliveryCascade

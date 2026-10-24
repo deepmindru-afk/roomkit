@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import logging
 from collections.abc import Callable, Coroutine, Iterable
@@ -11,6 +12,7 @@ from typing import Any, ClassVar, Protocol, cast
 
 from roomkit.core._changes import holds_change
 from roomkit.core._instructions import kept_metadata
+from roomkit.core._reentrance import ReentryBudget, after_delivery
 from roomkit.core.locks import unlocked_context
 from roomkit.core.task_utils import held_runs, start_named
 from roomkit.core.visibility import answer_scope, narrower_scope
@@ -409,6 +411,23 @@ def _named(hook: HookRegistration, scope: Iterable[HookRegistration | str]) -> H
     while name in taken or name in RESERVED_HOOK_NAMES:
         name, rank = f"{base}#{rank}", rank + 1
     return replace(hook, name=name)
+
+
+async def _run_body(
+    hook: HookRegistration,
+    event: RoomEvent | Any,
+    context: RoomContext,
+    room_id: str,
+    budget: ReentryBudget | None,
+) -> None:
+    """*hook*'s body within its timeout. On *budget*, the budget of the
+    cascade that fired it once an event's delivery set has run, it is that
+    cascade's delivery work until it returns: what it sends into the room
+    draws on the budget, and a task it starts that calls afterwards has a
+    budget of its own (RFC §9.5.1, §10.1 step 16)."""
+    frame = contextlib.nullcontext() if budget is None else after_delivery(room_id, budget)
+    with frame:
+        await asyncio.wait_for(hook.fn(event, context), timeout=hook.timeout)
 
 
 class HookEngine:
@@ -1292,6 +1311,7 @@ class HookEngine:
         skip_event_filter: bool = False,
         name_prefix: str | None = None,
         exclude_name_prefix: str | None = None,
+        budget: ReentryBudget | None = None,
     ) -> None:
         """Run async hooks concurrently. Errors are logged, never raised.
 
@@ -1312,6 +1332,10 @@ class HookEngine:
                 Use this for voice hooks where event is not a RoomEvent.
             name_prefix: Only run hooks whose name starts with this prefix.
             exclude_name_prefix: Skip hooks whose name starts with this prefix.
+            budget: The reentry budget of the cascade that fires *trigger*
+                once an event's delivery set has run (``AFTER_BROADCAST``, a
+                change's mutation trigger): what each hook's body sends into
+                the room draws on it while the body runs (RFC §9.5.1).
         """
         if (engine := self._turn_engine(trigger)) is not None:
             await engine.run_async_hooks(
@@ -1322,6 +1346,7 @@ class HookEngine:
                 skip_event_filter=skip_event_filter,
                 name_prefix=name_prefix,
                 exclude_name_prefix=exclude_name_prefix,
+                budget=budget,
             )
             return
         filter_event = None if skip_event_filter else event
@@ -1333,7 +1358,7 @@ class HookEngine:
         if not hooks:
             return
 
-        await self._run_async_hooks_list(hooks, room_id, trigger, event, context)
+        await self._run_async_hooks_list(hooks, room_id, trigger, event, context, budget=budget)
 
     async def run_observers(
         self,
@@ -1436,8 +1461,12 @@ class HookEngine:
         trigger: HookTrigger,
         event: RoomEvent | Any,
         context: RoomContext,
+        *,
+        budget: ReentryBudget | None = None,
     ) -> None:
-        """Run a list of hooks concurrently. Errors are logged, never raised."""
+        """Run a list of hooks concurrently. Errors are logged, never raised.
+
+        Each body runs on *budget* when given (:func:`_run_body`)."""
         if not hooks:
             return
 
@@ -1461,10 +1490,7 @@ class HookEngine:
                     },
                 )
             try:
-                await asyncio.wait_for(
-                    hook.fn(event, context),
-                    timeout=hook.timeout,
-                )
+                await _run_body(hook, event, context, room_id, budget)
                 if span_id is not None:
                     self._telemetry.end_span(span_id)
             except TimeoutError:

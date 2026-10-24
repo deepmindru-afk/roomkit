@@ -1,5 +1,5 @@
 """What a call into a room is to the room's own work (RFC §9.5.1 Reentrance,
-§8.3, §10.5, §10.1 step 18).
+§8.3, §10.5, §10.1 steps 16 and 18).
 
 The execution context of a call tells it, for the room it names:
 
@@ -10,13 +10,15 @@ The execution context of a call tells it, for the room it names:
 - in the room's admission order (an off-lock hook's body, a message's parse):
   it is adopted *beside* the event that work is for, takes no ticket and
   draws on that event's budget;
-- in the room's delivery work (a delivery set's deliveries and turns): it is a
-  new *arrival*, with its ticket and its ``process_timeout``, drawing on the
+- in the room's delivery work (a delivery set's deliveries and turns, and the
+  body of an ASYNC hook the cascade fires once an event's delivery set has
+  run, ``AFTER_BROADCAST`` or a change's mutation trigger): it is a new
+  *arrival*, with its ticket and its ``process_timeout``, drawing on the
   budget of the cascade that delivers, so a transport whose delivery calls
-  into its room on every event stops at the cap; and so does a message it
-  sends that creates a room, routed or named, that work's own
-  (``opening_budget``), while a call into another existing room has a budget
-  of its own;
+  into its room on every event stops at the cap, and so does a hook that
+  posts after every event; and so does a message it sends that creates a
+  room, routed or named, that work's own (``opening_budget``), while a call
+  into another existing room has a budget of its own;
 - elsewhere: a new arrival with a budget of its own.
 
 A call the room's work made is charged one pass as it starts. A call made
@@ -27,9 +29,9 @@ room's.
 A frame stands for its work only while that work runs: a task the work
 spawns inherits the frame and finds it inactive once the work is over, as a
 room lock's lease is (:mod:`roomkit.core.locks`). A turn's depth floor is a
-frame too, and a tool call's ends with the call: work a turn or a delivery
-began starts fresh once that work is over, at depth 0 and on a budget of its
-own.
+frame too, and a tool call's ends with the call: work a turn, a delivery or
+a hook's body began starts fresh once that work is over, at depth 0 and on a
+budget of its own.
 """
 
 from __future__ import annotations
@@ -165,6 +167,15 @@ def admission_order(room_id: str, budget: ReentryBudget) -> AbstractContextManag
 def delivering(room_id: str, budget: ReentryBudget) -> AbstractContextManager[None]:
     """The deliveries and turns of a delivery set of *room_id*, run for the
     cascade drawing on *budget*."""
+    return _framed(_Frame(_Kind.DELIVERING, room_id, budget))
+
+
+def after_delivery(room_id: str, budget: ReentryBudget) -> AbstractContextManager[None]:
+    """The body of one ASYNC hook a cascade of *room_id* drawing on *budget*
+    fires once an event's delivery set has run: its ``AFTER_BROADCAST``
+    hooks (RFC §10.1 step 16) and a change's mutation trigger (§10.3). It is
+    the cascade's delivery work while it runs; a task it starts that calls
+    once the body has returned is work of its own."""
     return _framed(_Frame(_Kind.DELIVERING, room_id, budget))
 
 
