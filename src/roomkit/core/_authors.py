@@ -76,10 +76,14 @@ class People:
         through the channel, else one of the identity's records reached
         through it (the channel the identity pipeline resolved them on).
         An id that names nobody on the channel names nobody at all."""
-        pid = event.source.participant_id
+        return self.named_on(event.source.participant_id, event.source.channel_id)
+
+    def named_on(self, pid: str | None, channel: str) -> Participant | None:
+        """The record *pid* names on *channel*, as :meth:`named` reads an
+        event's sender: a ``post()``'s speaker is read before its event
+        exists (RFC §10.5)."""
         if not pid:
             return None
-        channel = event.source.channel_id
         record = self._by_id.get(pid)
         if record is not None and reached(record, channel):
             return record

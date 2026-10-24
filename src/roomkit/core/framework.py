@@ -1283,11 +1283,14 @@ class RoomKit(
         Args:
             room_id: The room to write to.
             content: The text, or any event content.
-            participant_id: Who speaks, a participant of the room. Readers,
-                agents included, are shown their name when the participant is
-                connected via the host channel the post comes from (its
-                ``channel_id`` or ``connected_via`` names it): an id names its
-                participant only on the channels they are reached through.
+            participant_id: Who speaks: a participant of the room the host
+                channel the post comes from reaches (its ``channel_id`` or
+                ``connected_via`` names it), by their id or their identity's,
+                as a turn's sender is read; readers, agents included, are
+                shown their name. An id names its participant only on the
+                channels they are reached through: any other is refused,
+                nothing written. ``add_member(room_id, "host", ...)`` makes a
+                member one, ``"host"`` the host channel's id.
             addressed_to: The agents asked to answer. None by default: the
                 host's message solicits no agent unless it names one.
             metadata: Where the message comes from (a workflow, its step, a
@@ -1324,6 +1327,8 @@ class RoomKit(
         Raises:
             ChannelNotRegisteredError: *channel_id* names no registered channel.
             ChannelNotFoundError: the host channel was detached from the room.
+            ParticipantNotFoundError: *participant_id* names nobody the host
+                channel reaches (RFC §10.5, §5.5).
             ProcessTimeoutError: ``process_timeout`` passed before the commit,
                 the first post's wait for the room lock included; nothing
                 written.

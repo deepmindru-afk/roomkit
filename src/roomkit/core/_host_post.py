@@ -13,10 +13,12 @@ from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels.host import HOST_CHANNEL_ID, HostChannel
+from roomkit.core._authors import People
 from roomkit.core._publication_keys import refuse_reserved
 from roomkit.core.exceptions import (
     ChannelNotFoundError,
     ChannelNotRegisteredError,
+    ParticipantNotFoundError,
     RoomClosedError,
     RoomNotFoundError,
 )
@@ -55,6 +57,13 @@ async def post(
     if chain_depth < 0:
         raise ValueError(f"chain_depth is a depth in a chain, never negative: {chain_depth}")
     host_id = _host_channel_id(kit, channel_id)
+    if participant_id:
+        await kit._by_deadline(
+            _refuse_unreached_speaker(kit, room_id, host_id, participant_id, organization_id),
+            room_id,
+            host_id,
+            deadline,
+        )
     # A room that binds the channel is never written to here: this read
     # decides nothing the locked section would decide otherwise, and spares
     # each later post the lock.
@@ -76,6 +85,30 @@ async def post(
         chain_depth=chain_depth,
         deadline=deadline,
     )
+
+
+async def _refuse_unreached_speaker(
+    kit: RoomKit, room_id: str, host_id: str, participant_id: str, organization_id: str | None
+) -> None:
+    """Refuse a speaker *host_id* does not reach, before anything is written
+    (RFC §10.5, §5.5): *participant_id* names a participant of the room, by
+    their id or their identity's, whose ``connected_via`` holds the host
+    channel, as :class:`People` reads a turn's sender. The room is read
+    scoped first, so that another organization's room is not found whoever
+    the id names.
+
+    Raises:
+        RoomNotFoundError: the room is missing, or another organization's.
+        ParticipantNotFoundError: the id names nobody on the host channel.
+    """
+    await kit.get_room(room_id, organization_id=organization_id)
+    people = People(await kit.store.list_participants(room_id))
+    if people.named_on(participant_id, host_id) is None:
+        raise ParticipantNotFoundError(
+            f"post() speaks as a participant of room {room_id} reached through the host "
+            f"channel {host_id!r}, and {participant_id!r} names none: add them with "
+            f"kit.add_member({room_id!r}, {host_id!r}, {participant_id!r})"
+        )
 
 
 async def _attach_on_first_post(

@@ -25,6 +25,7 @@ from roomkit import (
     HostChannel,
     InboundMessage,
     Participant,
+    ParticipantNotFoundError,
     Pipeline,
     ProcessTimeoutError,
     RoomClosedError,
@@ -164,17 +165,9 @@ async def test_post_texts_the_correspondent_and_solicits_no_agent(kit, organizat
     assert set(binding.capabilities.media_types) == set(ChannelMediaType)
 
 
-@pytest.mark.parametrize(
-    ("connected_via", "read_as"),
-    [("desk-host", 'Acme Support: "Tell'), ("sms", '@desk-host: "Tell')],
-    ids=["via the host channel", "via another channel"],
-)
-async def test_post_addressed_to_an_agent_is_answered_and_names_a_speaker_of_its_channel(
-    kit, connected_via, read_as
-):
-    """The speaker's name is shown only for a participant connected via the
-    host channel the post comes from (RFC §10.5, §10.1 step 12): an id names
-    its participant only on the channels they are reached through."""
+async def test_post_addressed_to_an_agent_is_answered_and_names_its_speaker(kit):
+    """The speaker, a participant connected via the host channel the post
+    comes from, is shown by name (RFC §10.5, §10.1 step 12)."""
     ai = MockAIProvider(["It left the warehouse today."])
     sms = await _sms_room(kit, agent=ai)
     host = _CountingHost("desk-host")
@@ -184,7 +177,7 @@ async def test_post_addressed_to_an_agent_is_answered_and_names_a_speaker_of_its
         Participant(id=CUSTOMER, room_id="r", channel_id="sms", display_name="Marie")
     )
     await kit.store.add_participant(
-        Participant(id="desk", room_id="r", channel_id=connected_via, display_name="Acme Support")
+        Participant(id="desk", room_id="r", channel_id="desk-host", display_name="Acme Support")
     )
 
     await kit.post(
@@ -196,7 +189,7 @@ async def test_post_addressed_to_an_agent_is_answered_and_names_a_speaker_of_its
     )
 
     asked = [m.content for m in ai.calls[0].messages if m.role == "user"]
-    assert asked[-1].startswith(read_as)
+    assert asked[-1].startswith('Acme Support: "Tell')
     assert _texted(sms)[-1] == (CUSTOMER, "It left the warehouse today.")
     assert host.delivered == 0
 
@@ -371,6 +364,15 @@ async def _nothing(kit: RoomKit) -> None:
     return None
 
 
+async def _customer_on_sms(kit: RoomKit) -> None:
+    await kit.add_member("r", "sms", CUSTOMER, display_name="Marie")
+
+
+async def _an_agent(kit: RoomKit) -> None:
+    kit.register_channel(Agent("assistant", provider=MockAIProvider(["unused"])))
+    await kit.attach_channel("r", "assistant", category=ChannelCategory.INTELLIGENCE)
+
+
 _REFUSALS: dict[str, tuple[Callable[[RoomKit], Awaitable[None]], dict[str, Any], type]] = {
     "a channel of another type": (_nothing, {"channel_id": "sms"}, ValueError),
     "an unregistered channel": (_nothing, {"channel_id": "ghost"}, ChannelNotRegisteredError),
@@ -395,6 +397,24 @@ _REFUSALS: dict[str, tuple[Callable[[RoomKit], Awaitable[None]], dict[str, Any],
         ValueError,
     ),
     "a negative chain depth": (_nothing, {"chain_depth": -1}, ValueError),
+    # The speaker is a participant the host channel reaches (RFC §10.5, §5.5).
+    "an unknown speaker": (_nothing, {"participant_id": "ghost"}, ParticipantNotFoundError),
+    "a speaker reached through SMS only": (
+        _customer_on_sms,
+        {"participant_id": CUSTOMER},
+        ParticipantNotFoundError,
+    ),
+    "an agent's channel id as the speaker": (
+        _an_agent,
+        {"participant_id": "assistant"},
+        ParticipantNotFoundError,
+    ),
+    # Scoped first: another organization's room is not found, whoever the id names.
+    "an unknown speaker in another organization's room": (
+        _nothing,
+        {"participant_id": "ghost", "organization_id": "other"},
+        RoomNotFoundError,
+    ),
 }
 
 
@@ -413,6 +433,38 @@ async def test_a_refused_post_writes_nothing(kit, setup, arguments, error):
 
     assert await _written(kit) == before
     assert sms.sent == texted
+
+
+async def _desk_on_host(kit: RoomKit) -> None:
+    await kit.add_member("r", "host", "desk", identity_id="id-desk", display_name="Acme Support")
+
+
+async def _customer_on_host_too(kit: RoomKit) -> None:
+    await _customer_on_sms(kit)
+    await kit.add_member("r", "host", CUSTOMER)
+
+
+_SPEAKERS: dict[str, tuple[Callable[[RoomKit], Awaitable[None]], str | None]] = {
+    "a member added on the host channel": (_desk_on_host, "desk"),
+    "their identity": (_desk_on_host, "id-desk"),
+    "an SMS member added on the host channel too": (_customer_on_host_too, CUSTOMER),
+    "nobody": (_nothing, None),
+}
+
+
+@pytest.mark.parametrize(("setup", "speaker"), list(_SPEAKERS.values()), ids=list(_SPEAKERS))
+async def test_a_post_speaks_as_a_participant_its_host_channel_reaches(kit, setup, speaker):
+    """``participant_id`` names a participant the host channel reaches, by
+    their id or their identity's, as a turn's sender is read (RFC §10.5,
+    §5.5), or names nobody: the post is sent, its source the id it was
+    given. ``add_member()`` on the host channel's id makes a member one."""
+    sms = await _sms_room(kit, agent=None)
+    await setup(kit)
+
+    event = await kit.post("r", "Your order shipped.", participant_id=speaker)
+
+    assert event.source.participant_id == speaker
+    assert _texted(sms) == [(CUSTOMER, "Your order shipped.")]
 
 
 @pytest.mark.parametrize("room_id", ["r", None], ids=["named room", "routed"])

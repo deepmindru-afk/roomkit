@@ -12,8 +12,9 @@ agent, in front of the customer, to confirm the address: it names the agent.
 What post() saves you: the host channel (a transport of type HOST) is
 registered and attached on first use, the post solicits no agent unless it
 names one, and a post replayed with its idempotency key texts nothing again
-(RFC §10.5). "Acme Support" is connected via the host channel: a speaker's
-name is shown only on the channels they are reached through.
+(RFC §10.5). "Acme Support" is a member added on the host channel: a post
+speaks as a participant the host channel reaches, and one naming anybody
+else (Marie, reached through SMS) is refused with nothing sent.
 
 No credentials: the SMS provider is RoomKit's mock, which prints what would
 have been sent, and the agent is a mock AI.
@@ -35,7 +36,7 @@ from roomkit import (
     Agent,
     ChannelCategory,
     InboundMessage,
-    Participant,
+    ParticipantNotFoundError,
     RoomEvent,
     RoomKit,
     SMSChannel,
@@ -71,15 +72,9 @@ async def main() -> None:
     await kit.create_room(room_id="order-1042")
     await kit.attach_channel("order-1042", "sms", metadata={"phone_number": CUSTOMER})
     await kit.attach_channel("order-1042", "assistant", category=ChannelCategory.INTELLIGENCE)
-    for participant_id, channel_id, name in (
-        (CUSTOMER, "sms", "Marie"),
-        ("desk", "host", "Acme Support"),
-    ):
-        await kit.store.add_participant(
-            Participant(
-                id=participant_id, room_id="order-1042", channel_id=channel_id, display_name=name
-            )
-        )
+    await kit.add_member("order-1042", "sms", CUSTOMER, display_name="Marie")
+    # The backend's desk speaks through the host channel, whose id is "host".
+    await kit.add_member("order-1042", "host", "desk", display_name="Acme Support")
 
     try:
         # 1. The backend's notice: texted to Marie, no agent answers it. The
@@ -106,6 +101,12 @@ async def main() -> None:
         )
         notice = next(m.content for m in ai.calls[-1].messages if "shipped" in str(m.content))
         logger.info("the agent read the notice as: %s", notice)
+
+        # A post speaks for someone the host channel reaches: not for Marie.
+        try:
+            await kit.post("order-1042", "I cancel my order.", participant_id=CUSTOMER)
+        except ParticipantNotFoundError as refused:
+            logger.info("refused, nothing sent: %s", refused)
 
         # 3. The backend asks the agent, in front of Marie, to act: it names it.
         # (Work for an agent alone, kept from Marie, is a kit.delegate().)
