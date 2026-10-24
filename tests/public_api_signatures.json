@@ -969,9 +969,41 @@
   "roomkit.HandoffResult": {
     "__init__": ["def", "*", "accepted=True", "new_agent_id=None", "new_phase=None", "message=''", "reason=''"]
   },
+  "roomkit.HookEngine": {
+    "FAIL_CLOSED_TRIGGERS": ["property"],
+    "__init__": ["def", "*", "turns=False"],
+    "add_owner_room_hook": ["def", "room_id", "hook"],
+    "add_room_hook": ["def", "room_id", "hook"],
+    "define_room_hook": ["def", "hook"],
+    "defined_room_hooks": ["def"],
+    "defines_room_hooks": ["def", "names"],
+    "drain_observers": ["async def"],
+    "fail_closed_hook": ["def", "room_id", "trigger", "event=None"],
+    "has_hooks": ["def", "trigger=None"],
+    "has_hooks_for": ["def", "room_id", "trigger", "event"],
+    "has_off_lock_hooks": ["def", "room_id", "event"],
+    "has_router_hook": ["def", "room_id"],
+    "has_sync_hooks": ["def", "room_id", "trigger", "event", "*", "needs_lock=None"],
+    "holds": ["def", "hook"],
+    "register": ["def", "hook"],
+    "remove_global_hook": ["def", "name"],
+    "remove_hook": ["def", "hook", "room_id=None"],
+    "remove_room_hook": ["def", "room_id", "name"],
+    "replace_room_hook": ["def", "room_id", "hook"],
+    "room_hook_names": ["def", "room_id"],
+    "run_async_hooks": ["async def", "room_id", "trigger", "event", "context", "*", "skip_event_filter=False", "name_prefix=None", "exclude_name_prefix=None"],
+    "run_observers": ["async def", "room_id", "trigger", "event", "context", "*", "skip_event_filter=False"],
+    "run_sync_hooks": ["async def", "room_id", "trigger", "event", "context", "*", "skip_event_filter=False", "needs_lock=None", "fold=None", "fire_observers=True"],
+    "running_observers": ["def"],
+    "undefine_room_hook": ["def", "name"],
+    "use_room_hooks": ["def", "room_id", "names"]
+  },
   "roomkit.HookExecution": {
     "ASYNC": ["member", "'async'"],
     "SYNC": ["member", "'sync'"]
+  },
+  "roomkit.HookRegistration": {
+    "__init__": ["def", "trigger", "execution", "fn", "priority=0", "name=''", "timeout=30.0", "channel_types=None", "channel_ids=None", "directions=None", "event_types=None", "fail_closed=False", "needs_lock=True"]
   },
   "roomkit.HookResult": {
     "__init__": ["def", "*", "action", "event=None", "reason=None", "injected_events=<factory>", "tasks=<factory>", "observations=<factory>", "metadata=<factory>"],
@@ -5065,6 +5097,15 @@
   "roomkit.sources.parse_discord_message": {
     "__call__": ["def", "message", "channel_id", "*", "bot_user_id=None", "ignore_bots=True"]
   },
+  "roomkit.speaking.addressed": {
+    "__call__": ["def", "directness", "request", "*", "alone=False"]
+  },
+  "roomkit.speaking.compose": {
+    "__call__": ["def", "judgments", "*", "alone=False", "proactivity=0.5", "urgent=False"]
+  },
+  "roomkit.speaking.judgments_of": {
+    "__call__": ["def", "answers"]
+  },
   "roomkit.split_turn_notes": {
     "__call__": ["def", "text"]
   },
@@ -5199,6 +5240,9 @@
   },
   "roomkit.tasks.post_task_progress": {
     "__call__": ["async def", "kit", "detail"]
+  },
+  "roomkit.tasks.room_tasks": {
+    "__call__": ["def", "entries"]
   },
   "roomkit.tasks.setup_delegation": {
     "__call__": ["def", "channel", "handler", "*", "tool=None"]

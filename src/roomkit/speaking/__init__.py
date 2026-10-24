@@ -10,7 +10,7 @@ from roomkit.speaking.base import (
     SpeakPolicy,
     SpeakTurn,
 )
-from roomkit.speaking.classifier import ClassifierSpeakPolicy
+from roomkit.speaking.classifier import ClassifierSpeakPolicy, addressed, compose, judgments_of
 from roomkit.speaking.mock import MockSpeakPolicy, MockThinker
 from roomkit.speaking.thinker import LLMThinker, Thinker
 from roomkit.speaking.thought import Thought, ThoughtEvent
@@ -31,4 +31,7 @@ __all__ = [
     "Thinker",
     "Thought",
     "ThoughtEvent",
+    "addressed",
+    "compose",
+    "judgments_of",
 ]

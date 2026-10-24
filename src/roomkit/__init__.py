@@ -157,7 +157,7 @@ from roomkit.core.framework import (
     VoiceBackendNotConfiguredError,
     VoiceNotConfiguredError,
 )
-from roomkit.core.hooks import TURN_TRIGGERS
+from roomkit.core.hooks import TURN_TRIGGERS, HookEngine, HookRegistration
 from roomkit.core.inbound_router import DefaultInboundRoomRouter, InboundRoomRouter
 from roomkit.core.locks import InMemoryLockManager, RoomLockManager
 from roomkit.core.visibility import visibility_allows, visible_events
@@ -484,6 +484,9 @@ __all__ = [
     "InMemoryDeliveryBackend",
     "Queued",
     "WaitForIdle",
+    # Hooks (kit.hook_engine, add_room_hook())
+    "HookEngine",
+    "HookRegistration",
     # Turn execution (RFC §10.6)
     "TURN_TRIGGERS",
     "ChannelCall",

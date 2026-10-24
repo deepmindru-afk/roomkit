@@ -59,13 +59,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `build_handoff_tool`, `RCSDeliveryResult`, the Buzz and Discord parsers
   from `roomkit.sources`, the Meta, Azure MAI, Voxtral, Azure Speech and
   Fish Audio errors from `roomkit.voice.stt` / `roomkit.voice.tts`,
-  `MockVoiceCall`, `TwilioWebSocketBackend` and `AuthCallback`.
+  `MockVoiceCall`, `TwilioWebSocketBackend` and `AuthCallback`; and
+  `HookEngine` (what `kit.hook_engine` is) and `HookRegistration` (what
+  `add_room_hook()` returns) from `roomkit`, `room_tasks` from
+  `roomkit.tasks`, and `compose`, `addressed` and `judgments_of`, the
+  building blocks of a custom speak policy, from `roomkit.speaking`.
   `roomkit.channels` gets an `__all__` listing the channels and factories it
   already held. A name whose module `import roomkit` did not load is
   exported lazily, and imported for type checkers: `import roomkit` loads no
-  new module, and a missing extra raises on first use. Every module path that imported keeps
-  importing; the `roomkit.voice.get_*()` lookups keep working and are
-  internal. A star import resolves every name `__all__` lists:
+  new module, and a missing extra raises on first use. Every module path
+  that imported keeps importing; the `roomkit.voice.get_*()` lookups keep
+  working and are internal. A star import resolves every name `__all__`
+  lists:
   `from roomkit.voice.tts import *`, `roomkit.voice.realtime` and
   `roomkit.video.avatar` now need the extras of the providers they list
   (httpx, fastapi, numpy), as `from roomkit.voice import *` already did.

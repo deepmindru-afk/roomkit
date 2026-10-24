@@ -125,7 +125,9 @@
     "HandoffHandler",
     "HandoffRequest",
     "HandoffResult",
+    "HookEngine",
     "HookExecution",
+    "HookRegistration",
     "HookResult",
     "HookTrigger",
     "HostChannel",
@@ -1155,7 +1157,10 @@
     "SpeakTurn",
     "Thinker",
     "Thought",
-    "ThoughtEvent"
+    "ThoughtEvent",
+    "addressed",
+    "compose",
+    "judgments_of"
   ],
   "roomkit.store": [
     "ConversationStore",
@@ -1185,6 +1190,7 @@
     "TaskStatusTool",
     "build_delegate_tool",
     "post_task_progress",
+    "room_tasks",
     "setup_delegation",
     "setup_realtime_delegation"
   ],

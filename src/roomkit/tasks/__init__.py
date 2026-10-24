@@ -18,6 +18,7 @@ from roomkit.tasks.status import (
     CancelTaskTool,
     TaskStatusTool,
     post_task_progress,
+    room_tasks,
 )
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "TaskStatusTool",
     "build_delegate_tool",
     "post_task_progress",
+    "room_tasks",
     "setup_delegation",
     "setup_realtime_delegation",
 ]
