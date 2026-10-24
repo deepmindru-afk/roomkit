@@ -271,7 +271,18 @@ CREATE INDEX IF NOT EXISTS idx_events_room_responds_to
 -- An idempotency key is unique per room and per source channel (RFC §13.4):
 -- the per-room index gives way to one that names the channel. Keys unique
 -- per room are unique per room and channel, so the new index always builds.
-DROP INDEX IF EXISTS idx_events_idempotency;
+-- The index names below are looked up in the schema this session writes to,
+-- as the columns above are: through search_path, a namesake of another
+-- schema's deployment would be dropped, or taken for ours.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_indexes
+        WHERE schemaname = current_schema() AND indexname = 'idx_events_idempotency'
+    ) THEN
+        EXECUTE format('DROP INDEX %I.%I', current_schema(), 'idx_events_idempotency');
+    END IF;
+END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency_channel
     ON events(room_id, source_channel_id, idempotency_key)
     WHERE idempotency_key IS NOT NULL;
@@ -280,7 +291,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency_channel
 -- lock on events even when the index exists.
 DO $$
 BEGIN
-    IF to_regclass('idx_events_room_idempotency') IS NULL THEN
+    IF to_regclass(format('%I.%I', current_schema(), 'idx_events_room_idempotency')) IS NULL THEN
         CREATE INDEX idx_events_room_idempotency ON events(room_id, idempotency_key)
             WHERE idempotency_key IS NOT NULL;
     END IF;
@@ -371,7 +382,7 @@ CREATE INDEX IF NOT EXISTS idx_participants_id ON participants(id);
 -- Created only when missing, as idx_events_room_idempotency is.
 DO $$
 BEGIN
-    IF to_regclass('idx_participants_identity') IS NULL THEN
+    IF to_regclass(format('%I.%I', current_schema(), 'idx_participants_identity')) IS NULL THEN
         CREATE INDEX idx_participants_identity ON participants(identity_id);
     END IF;
 END $$;

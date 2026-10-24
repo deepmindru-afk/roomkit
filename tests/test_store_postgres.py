@@ -1123,3 +1123,50 @@ async def test_a_second_init_waits_on_no_reader_of_the_events(store) -> None:
     finally:
         await again.close()
         await reader.close()
+
+
+async def test_init_in_a_second_schema_keeps_each_schema_its_own_indexes(store) -> None:
+    """Two deployments in one database, one per schema: ``init()`` with a
+    ``search_path`` of ``tenant, <first schema>`` creates the tenant's
+    indexes although the first schema holds namesakes, and drops none of the
+    first deployment's, its v0.107.0 idempotency index included."""
+    import asyncpg
+
+    from roomkit.store.postgres import PostgresStore
+
+    tenant = f"tenant_{os.getpid()}"
+    async with store._pool.acquire() as conn:
+        home = await conn.fetchval("SELECT current_schema()")
+        await conn.execute(
+            "CREATE UNIQUE INDEX idx_events_idempotency ON events(room_id, idempotency_key)"
+            " WHERE idempotency_key IS NOT NULL"
+        )
+        await conn.execute(f'CREATE SCHEMA "{tenant}"')
+    pool = await asyncpg.create_pool(
+        POSTGRES_DSN, min_size=1, max_size=1, server_settings={"search_path": f"{tenant},{home}"}
+    )
+    try:
+        await PostgresStore(pool=pool).init()
+        async with store._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT schemaname, indexname FROM pg_indexes"
+                " WHERE schemaname = ANY($1::text[]) AND indexname = ANY($2::text[])",
+                [home, tenant],
+                [
+                    "idx_events_idempotency",
+                    "idx_events_room_idempotency",
+                    "idx_participants_identity",
+                ],
+            )
+    finally:
+        await pool.close()
+        async with store._pool.acquire() as conn:
+            await conn.execute(f'DROP SCHEMA "{tenant}" CASCADE')
+            await conn.execute("DROP INDEX IF EXISTS idx_events_idempotency")
+    assert {(row["schemaname"], row["indexname"]) for row in rows} == {
+        (home, "idx_events_idempotency"),
+        (home, "idx_events_room_idempotency"),
+        (home, "idx_participants_identity"),
+        (tenant, "idx_events_room_idempotency"),
+        (tenant, "idx_participants_identity"),
+    }
