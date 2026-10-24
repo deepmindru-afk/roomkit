@@ -7,373 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- A room a `BEFORE_BROADCAST` hook closed refuses the event as a closed room
-  does (RFC §10.1 step 9a, RMK-930). A hook that called `close_room()` let
-  the message it ran for be stored DELIVERED and its agent asked, an
-  instruction be delivered, and an agent's response or an injected event be
-  stored in the closed room. Once a hook ran under the room lock the room is
-  read again, and one that no longer accepts events refuses the event
-  `room_closed`, as step 6 does: nothing of it stored, what its hooks
-  returned dropped (their injected events included), and
-  `room_refused_event` emitted (`operation` `inbound`, or `reentry` for a
-  response and an injected event). `send_event()` raises `RoomClosedError`
-  alike.
-
-- An instruction's result reports the room's next index once its hooks ran
-  (RFC §10.1 step 9a, §10.1.1 step 5, RMK-930), allowed or blocked. What a
-  hook committed during them (a `send_event()`) took the index the hooks
-  were shown, and the instruction's result still reported it: in a room of
-  four events, both read 4. The room read again after the hooks gives the
-  event its next index, 5 here; a stored event took its own at its commit
-  already.
-
-- A message that names its room, sent by that room's own work, is refused
-  past the work's reentry budget as it starts (RFC §10.1 step 1, §9.5.1,
-  RMK-930), before anything else: `blocked=True,
-  reason="reentry_loop_cap"`, nothing created or stored. It was charged after
-  its channel's lookup and step 2's attach: past the budget, a call through
-  an unregistered channel raised `ChannelNotRegisteredError`, and one through
-  a channel the room did not bind left that channel attached. A routed
-  message, and one naming a room the store lacks, are still charged once
-  step 2 knows their room.
-
-- A routed message of the room's own work is charged once on its reentry
-  budget, wherever routing places it (RFC §8.3, §9.5.1, RMK-930). Charged
-  for creating a room another call created first, it read that room as
-  existing, and when it was routed again into the room its work delivers
-  in, it was charged a second time there: with one pass left, it was
-  refused `reentry_loop_cap`.
-
-- An edit delivered to a channel that does not edit is one text, the edit's
-  text form (RFC §6.6, RMK-930): `Correction: ` followed by the text form of
-  its new content. A new content that was not a text reached the channel
-  without the prefix, as a new message: a file to a channel that takes
-  files, a composite keeping a file, a rich text to a channel that takes rich
-  text; and one the transcoder could not carry read `[Correction]`. An edit
-  of a photo now reads `Correction: [Media: https://example.com/a.jpg]`.
-
-- `ON_EVENT_UPDATED` and `ON_EVENT_DELETED` read the room as the change's
-  commit left it, whatever pass committed it (RFC §10.3, §9.2, RMK-930). For
-  an agent's response and a hook's injected change, the hook's
-  `recent_events` held the change as its own hooks were shown it, `PENDING`
-  at its provisional index and before their modify: a correction its hook
-  redacted read unredacted there. It now ends with the change as committed,
-  at its index and as its hooks left it, the target as rewritten in its
-  place, as for an inbound change, and whether or not the change has a
-  target to deliver to. Whatever the origin, an entry a hook committed
-  during the change's hooks (a `send_event()`) was missing from that
-  history, and `ctx.room` read the counters from before the change; the
-  history now holds it, and `ctx.room.event_count` and `latest_index` are
-  the change's commit's. The delivery set of a response and of an injected
-  event reads the same history. A pass whose hooks all ran off the lock no
-  longer reads the room and the source's binding again (step 9a).
-
-- A coordinate in a location's text form is written with one decimal at
-  least, the shortest that reads back as the same number, never with an
-  exponent (RFC §6.6, RMK-930): a latitude of 0.00005 read `5e-05` and now
-  reads `0.00005`. Only the text of such tiny coordinates changes: 45 still
-  reads `45.0`, 45.5 `45.5`.
-
-- `update_event()` and `delete_event()` take the organization the caller
-  acts for (RFC §17.2, §10.3, RMK-930). A tenant's host could rewrite or
-  delete an event of another tenant's room, and the call applied that
-  room's due timers. `update_event(room_id, event_id, ...,
-  organization_id=None)` and `delete_event(room_id, event_id, *,
-  cascade_replies=True, organization_id=None)` act on another
-  organization's room as on a missing one (`None`, an empty list): nothing
-  written, its due timers included, no hook. Unset, the call is unscoped,
-  as the kit's other calls.
-
-- A room an `ON_ROOM_CREATED` hook closed is not given the message's
-  channel (RFC §10.1 step 2, RMK-930). The room created for a message got
-  its binding before step 6 refused the message `room_closed`; it is now
-  read under its lock, its due timers applied, and attached only when its
-  status takes events, as a room in hand is. The message is refused
-  `room_closed` there, not routed again.
-
-- The lookups this release adds read through indexes (RFC §10.4, §22.1,
-  RMK-930). A proactive delivery's key, looked up within its room whatever
-  channel committed it, read every keyed event of the room: Postgres and
-  SQLite now index `events(room_id, idempotency_key)` where a key is set,
-  and SQLite its `idempotency(room_id, key)` table; Postgres `init()` creates
-  its index, and `participants(identity_id)`, only when missing (a `CREATE
-  INDEX` locks the table even when the index exists), and an SQLite file
-  moves to schema version 10. The binding lookup's recipient branch is a
-  query of its own beside the correspondent's, each read through
-  `bindings(channel_id, participant_id)`: it reads the channel's bindings that
-  name no correspondent, which the kit leaves only where no recipient was
-  given or a binding was written to the store directly. The recipient's key
-  differs per channel, so no expression index serves it.
-
-- A message with no address is checked again under the room lock as any
-  sender is (RFC §10.1 step 2, §10.4, RMK-930). The claim skipped step 3's
-  re-check for it, so someone heard or reached on the channel between the
-  router's read and the lock no longer kept it out: it landed in that
-  person's conversation. It is now routed once more, as a sender's message
-  is; only the framework's own sender (`system`) is spared the re-check.
-
-- A delivery status is not given the one room of its channel when that
-  room's binding delivers to another number (RFC §5.7, §10.4, RMK-930). The
-  fallback to the one ACTIVE room bound to the channel checked the binding's
-  correspondent only, so a binding naming no correspondent but carrying
-  another person's recipient took the status, as step 3 never lets a sender
-  in. The binding's recipient, in the channel's form, now names its
-  correspondent there too.
-
-- A delivery status is dispatched within the organization the caller acts
-  for (RFC §17.2, RMK-930). `process_webhook(meta, channel_id,
-  organization_id=...)` scoped only an inbound message: a status that named no
-  room was routed among every organization's rooms, so on a channel shared by
-  two tenants one tenant's status reached the other's newer room, its context
-  and its `ON_DELIVERY_STATUS` hooks. `process_delivery_status(status, *,
-  organization_id=None)` takes the organization (unset: unscoped, as the
-  other kit calls); its routing reads that organization's rooms only, a room
-  the status names that is another organization's is not dispatched in, and
-  `process_webhook()` passes its organization to it.
-
-- A phone number is written in E.164 as RFC §5.7 gives the rules (RMK-930).
-  The trunk prefix written `(0)` after a country code was kept:
-  `+33 (0)6 12 34 56 78` gave `+330612345678`, another person than
-  `+33612345678`; it is now dropped, after `+` or `00`. Also aligned: any URI
-  scheme is dropped (`callto:`, not only `whatsapp:`, `tel:`, `sms:`, `mms:`,
-  `rcs:`); a number written with `00` and 14 or 15 digits after it is
-  international (it was kept as written); a result whose first digit is `0`
-  (`+06 12…`, `0006…`) or of more than 15 digits once a country code is
-  given is kept as written instead of written as a number no country has;
-  with a country code, six digits or fewer are a short code counted on the
-  digits as written, so `0123456` (seven digits) takes the code. Digits
-  without `+` and no country code declared are still kept as written, and
-  with a code a number that starts with it is international only when
-  longer than 10 digits.
-
-- Step 2's attach follows RFC §10.1 step 2 (RMK-930). A message naming a
-  room that does not bind its channel attached the channel to a CLOSED or
-  ARCHIVED room, and to one whose close was due, before step 6 refused the
-  message: the room kept a binding no one asked for. The attach now runs
-  under the room lock once the room's due timers are applied, and none is
-  made to a room whose status refuses events; the message is refused
-  `room_closed` with nothing written. A room created for a message had the
-  channel attached after its `ON_ROOM_CREATED` hooks whatever they did,
-  replacing a binding a hook made: the hook's binding is now kept. The
-  routed room's claim applies the room's due timers before it checks the
-  room, so a paused room due to close gives the message a new room rather
-  than a `room_closed` refusal. One rule serves the three attaches: a
-  binding made by then is never replaced, and a detached channel is never
-  attached again.
-
-- A delete the persistence policy keeps out of the timeline still marks
-  its target's edits deleted (RFC §10.3, RMK-930). With no row of its own to
-  commit, the change wrote its target alone through `update_event()`: the
-  target was marked, its edits were not, and an edit a history held without
-  its message showed the deleted text again. The new
-  `ConversationStore.write_change_target(room_id, target)` writes the
-  target and, when it is now deleted, marks every edit of it, in one
-  transaction and with no row of the change; the in-memory, SQLite and
-  Postgres stores do it atomically, and the default a custom store inherits
-  writes through `update_event()` (not atomic). A target the room no longer
-  holds raises `EventNotFoundError`, nothing written.
-
-- A closed room says so when it turns away the record it would store in
-  place of an answer (RFC §5.1, §8.2, RMK-930): the record of an agent not
-  asked at the chain-depth limit, and of an answer past the reentry
-  budget, were skipped silently. Each now emits `room_refused_event` with
-  `operation = reentry`, as a refused pass does, and the status is read
-  under the room lock, which `close_room()` takes: a close landing in
-  between no longer lets the record into the closed room. A discussion's
-  depth stop takes the same gate, which it lacked.
-
-- An off-lock hook that fails is reported when it fails, before the room
-  lock (RFC §9.5.1, §8.2, RMK-930). Its `hook_error` framework event was
-  emitted at step 9 with the hooks under the lock, and never when a gate
-  refused the event first (a closed room, a duplicate, a refused edit or
-  delete). It is now emitted as the check ends, before the wait for the
-  room's turn, once, whatever the gates decide; `hook_timeout` already was.
-
-- A room never holds two hooks of one name (RFC §9.1, §10.6.6, RMK-930).
-  `kit.enable_room_hook(room_id, name)` took a name a room hook the kit
-  registered for the room already held, so a block named one of two hooks
-  as `blocked_by`. The name a room enables joins the room's hooks: enabling
-  a name a room hook of the room holds, and registering a room hook
-  (`add_room_hook`, a strategy's) under a name the room enables, now raise
-  `ValueError`; a hook left unnamed is never given an enabled name.
-  Enabling a name the room enables already, and enabling it in another
-  room, change nothing. On an executor a name still carries one hook per
-  trigger, and `room_hook()` defined again on a trigger replaces the first.
-
-- A SYNC hook's injected events on a trigger other than `BEFORE_BROADCAST`
-  are dropped with a warning (RFC §9.4, RMK-930). `BEFORE_DELIVER`,
-  `ON_VERIFICATION_REQUIRED` and every other SYNC trigger commit none, and
-  their results' `injected_events` vanished without a word; the
-  `roomkit.hooks` logger now names the hook and the trigger. Only
-  `BEFORE_BROADCAST` and the identity challenge's `inject` commit them.
-
-- `PostgresStore.init()` on an up-to-date schema takes no ACCESS EXCLUSIVE
-  lock on `events` (RMK-930). Its `ALTER TABLE events ADD COLUMN IF NOT
-  EXISTS` statements (`addressed_to`, `responds_to`, `delivery_results`)
-  took that lock on every boot, even with the column there, queuing behind
-  any open transaction on the table and holding up every query behind them.
-  Each column is now added only when `information_schema.columns` lacks it.
-
-- `SQLiteStore.search_events()` no longer finds a soft-deleted message's
-  text (RFC §10.3, RMK-930): the commit that marked it `metadata.deleted`
-  indexed its original content again. A deleted message is now left out of
-  the full-text index; its record keeps the text.
-
-- The record of a failed delivery no longer undoes an edit or a delete
-  (RFC §10.3, §14.3, RMK-930). Once a delivery set with a failure in it had
-  run, the framework rewrote the whole event as it stood at its commit to
-  add `delivery_results`: an edit or a delete committed meanwhile was
-  reverted (a deleted message un-deleted, a second delete then accepted).
-  The new `ConversationStore.record_delivery_results(room_id, event_id,
-  results)` writes the results alone, under the room lock; the in-memory,
-  SQLite and Postgres stores write the field in place, and the default a
-  custom store inherits reads the stored event and writes it back. Postgres
-  stored no delivery results at all: its `events` table gains a
-  `delivery_results JSONB NOT NULL DEFAULT '{}'` column, added by
-  `init()` (`ADD COLUMN IF NOT EXISTS`), existing rows reading as none.
-
-- A regeneration and a held message's release re-run the agents on a
-  message still said (RFC §10.3, §11.7.6, RMK-930). `regenerate_target()`
-  picked the newest transport message whether a DELETE had withdrawn it,
-  and the release re-ran the agents on the last held message even when it
-  had been deleted since: the agent was handed the deleted text as the
-  event it answers. Both now skip a deleted message, and an edit or a
-  delete row (a store whose conversation read serves them), which only step
-  8a may apply; the internal re-run of a named event refuses either.
-
-- A discussion does not answer a message deleted while it waits (RFC
-  §10.3, RMK-930): a turn queued for it, or the dispatch policy's decision
-  on it, took the message from the store as it was and handed its text to
-  the agent, or to the policy, which may pass it to a classifier outside.
-  A deleted message, and an edit or a delete row, is now gone there as a
-  message of another room is: the turn is not given, nothing is decided.
-
-- No history a channel is handed carries a soft-deleted event's content
-  (RFC §7.5 rule 8, §10.3, RMK-929, RMK-930). A DELETE marked its target
-  `metadata.deleted`, and the agents went on reading the text in their
-  context, memory summaries, ACP catch-up, delegation and discussion
-  briefings. The event stays in every channel's history with its id,
-  index, type, source (its provider message id kept), thread, metadata and
-  `channel_data`, so the delete that follows names an event the reader
-  holds, but with an empty text in place of what was said and no
-  `source.raw_payload`; an edit of a deleted event has its new content
-  withheld alike. It holds for `visible_events()`, for the context a
-  channel parses a message with and the one a broadcast delivers with,
-  for a discussion's dispatch turn, a rebuilt tool memory, an answer's cut
-  record and the media an application keeps beside a message
-  (`attached_media`). The stored record keeps its content, and so do the
-  contexts hooks receive. Deleted is what a row's `metadata.deleted` says,
-  which an accepted delete's commit writes on its target and, in the same
-  transaction, on every edit of it, so an edit is withheld even where the
-  history no longer holds the message it corrected; a DELETE row alone (one
-  a host's `commit_event()` stored, or a child room's trace) withholds
-  nothing. An edit stored before this release, of a message deleted before
-  it, carries no mark: it is withheld while the history holds its target,
-  and no migration marks it, since a channel's conversation read serves
-  messages only and an edit reaches a history only with its own broadcast
-  or through a custom store that serves every row.
-
-- An edit or a delete has its target read and validated again once a hook
-  ran under the room lock (RFC §10.1 step 9a, RMK-930). A delete committed
-  during an edit's hooks (a hook's `send_event()`, which commits ahead of
-  the edit) was undone by the edit, which wrote the target's old metadata
-  back with its new content; the edit is now refused
-  `target_event_not_found`, and nothing of it, its hooks' injected events
-  included, is stored.
-
-- An accepted edit or delete reaches no one who could not see its target
-  (RFC §10.3 state updates 4 and 5, RMK-930): its visibility, narrowed by its
-  source binding's, is narrowed again to its target's, and an injected
-  change reaches those of its targets that could see the target. A
-  correction of a message only an advisor saw reached the customer. The
-  change is also delivered with its target as its commit left it: the
-  history handed with an edit held the target's old content, and with a
-  delete the target not yet marked deleted.
-
-- A hook's modify keeps what step 8a checked of an edit or a delete (RFC
-  §9.4, §10.3, RMK-930): its target, and now its `edit_source` or
-  `delete_type` and its kind of content. A hook could turn a sender's edit
-  into a system one, a SENDER delete into an ADMIN one, or hide a change
-  the step never checked: a message rewritten as an `EditContent`, an
-  edit's new content made a delete, a composite with a change among its
-  parts. Such a replacement leaves the original's content; an edit's new
-  content and a delete's reason as the hook rewrote them still stand, and
-  an edit rewritten as text still says that text.
-
-- Edit and delete validation (RFC §10.1 step 8a) runs on every pass that
-  commits an event, not only on an inbound message (RFC §10.3, §9.4,
-  RMK-930). An agent's response and a hook's injected event skipped it: an
-  EDIT or a DELETE among them was committed and applied natively by
-  edit-capable channels with no target, author or authority checked, and
-  its target was never updated. Both now take step 8a; an accepted one
-  writes its target in its own commit and fires `ON_EVENT_UPDATED` or
-  `ON_EVENT_DELETED`, so an agent edits its own responses, and no one
-  else's. An injected change is the hook's, whatever source it names, and
-  makes a SYSTEM change only (a SYSTEM delete, an edit whose `edit_source`
-  is `system`): one claiming a sender's or an administrator's authority is
-  refused `not_authorized`. A refused response or injected change is logged
-  at warning level and not stored. `send_event()` of a change step 8a
-  refuses raises the new `ChangeRefusedError` (its `reason` the refusal),
-  where it returned the event uncommitted. Breaking for a caller of
-  `send_event()` that read that event, and for a hook that injected a
-  change in a participant's name.
-
-- Who may edit or delete follows RFC §10.3 rules 3 to 6 (RMK-930). An ADMIN
-  delete is an OWNER's or an AGENT's, neither LEFT nor BANNED, as the
-  participant the sender is on their channel: an OWNER who had left or been
-  banned kept the authority, and an AGENT (since RMK-911 a human advisor)
-  had none. An event that travelled outbound (a channel's own output, an
-  agent's response) is its channel's, whatever participant it names: it
-  neither holds that participant's authority nor authored their messages.
-  A SYSTEM change from a SYSTEM channel needs no author of its own nor of
-  its target, which `identity_required_for_edit` refused; a sender's change
-  and an ADMIN delete from a sender who names no one still need one. A
-  SYSTEM change from any other channel stays `not_authorized`, and an
-  `edit_source` outside `sender`/`system` is still checked as the sender's.
-  Breaking for a host that relied on an AGENT being refused ADMIN deletes,
-  or on a departed owner keeping them.
-
-- An edit or a delete targets an event of its room that is not BLOCKED, not
-  deleted and not itself an edit or a delete (RFC §10.3 rule 2, RMK-930);
-  only existence and the room were checked. A refused message could be
-  edited, a deleted one edited or deleted again, and a change changed. Each
-  is now refused `target_event_not_found`. An edited message may still be
-  edited again, and a retried delete that carries its idempotency key is
-  still answered as the first (§13.4).
-
-- An event is an edit only when its type is EDIT and its content an
-  `EditContent`, a delete only when DELETE and `DeleteContent` (RFC §10.3
-  rule 1, RMK-930). Step 8a ran only when the two agreed, while a channel
-  applies a change natively by its content alone: a MESSAGE carrying an
-  `EditContent`, or a composite with an edit among its parts, reached
-  edit-capable channels with no target, author or authority checked. A type
-  and a content that disagree, and a change held anywhere else (a
-  composite's part, an edit's new content), are now refused
-  `target_event_not_found`, nothing stored.
-
-- A config provider can return `AIChannelTurnConfig.tool_handler` with its
-  tools so a turn executes the same surface it resolved. The handler stays
-  isolated across concurrent rooms and all rounds of the turn; `None` keeps
-  the channel default. Channel-owned tools retain their dispatch and an
-  unoffered tool remains refused.
-
-- The pipeline clears `source.verification` on every response (RFC §8.5,
-  RMK-930): a verification is a received sender's (§11.7), and a response
-  is no message received. A buffered response under its own source kept a
-  verification its channel wrote, so a channel could commit its answer as
-  `verified`; only a response claiming another source was cleared. Its
-  other source fields (participant, provider, ids, raw payload) stay.
-  Streamed rows already carried none. Breaking only for a custom channel
-  that set a verification on its own responses, or a reader that relied on
-  it: such a response is now stored with `verification=None`.
-
-- `LlamaCppAIProvider`'s start timeout names the budget it was given
-  (RMK-922). The message rounded `startup_timeout` to the second, so a
-  budget under one second read "not ready after 0s"; it now prints the
-  configured value ("not ready after 0.1s", "not ready after 120s").
-
 ### Added
 
 - A thought that comes back after its event was decided is decided late
@@ -424,17 +57,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   makes it redundant.
 
 - An `ON_TRANSCRIPTION` hook can match a voice to the room participant it is
-  (RMK-904): `TranscriptionEvent.participant_id`, read for words a speaker
-  was attributed to (a diarizing STT, or `pipeline_speakers=True`). The room
-  message is then that participant's, not the session's participant (the
-  owner of the stream): it reads under their name and rank (their record's
-  name, unless the hook also renamed the voice), and their role applies to
-  it. A turn detector never joins two participants' words into one turn,
-  even under one label. A meeting bridged into one stream writes its people on the
-  roster on the voice channel and matches each voice to its person, so its
-  first turn reads `Alice: "..."`. A voice only named like a participant,
-  without being matched to them, reads as another person (`Alice (2)`), as
-  before: a name proves nothing.
+  (RMK-904): `TranscriptionEvent.participant_id`, read for words a speaker was
+  attributed to (a diarizing STT, or `pipeline_speakers=True`). The room
+  message is then that participant's, not the session's participant (the owner
+  of the stream): it reads under their name and rank (their record's name,
+  unless the hook also renamed the voice), and their role applies to it. A
+  turn detector never joins two participants' words into one turn, even under
+  one label. A meeting bridged into one stream writes its people on the roster
+  on the voice channel and matches each voice to its person, so its first turn
+  reads `Alice: "..."`. A voice only named like a participant, without being
+  matched to them, reads as another person (`Alice (2)`), as before: a name
+  proves nothing. An attribution the hook gives words no speaker was
+  attributed to (a batch STT, or one that does not diarize) is not read: the
+  words stay the session participant's, and the `roomkit.voice` logger says so
+  at debug level.
 
 - Local models by name (RMK-893). `roomkit.local_models` knows the files of
   nine local models (sherpa-onnx STT, TTS, VAD and denoiser, Smart Turn), each
@@ -453,10 +89,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   taken, per synthesis included; `from_local_model(..., voice=...)` sets the
   default voice. A number still reads as a speaker id.
 
-- `roomkit[rnnoise]`: `RNNoiseDenoiserProvider` falls back on the
-  `librnnoise` the `pyrnnoise` wheel ships for Linux, macOS and Windows when
-  the system has none. Only the library is loaded; the package is never
-  imported.
+- `roomkit[rnnoise]` (`pyrnnoise>=0.4.3`, in `roomkit[all]` too):
+  `RNNoiseDenoiserProvider` falls back on the `librnnoise` the `pyrnnoise`
+  wheel ships for Linux, macOS and Windows when the system has none. Only the
+  library is loaded; the package is never imported, and its own dependencies
+  (audiolab, matplotlib) are installed unused.
 
 - `examples/voice_local_offline.py`: a voice agent that runs with no network,
   its models downloaded once by name (zipformer, Kokoro, TEN-VAD, Smart Turn),
@@ -498,34 +135,1228 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backend of your own to keep the owner's live channels on the owner's
   executor once it closed (RFC §10.6.7).
 
+- `AIChannelTurnConfig.tool_handler`: a config provider can return a tool
+  handler with its tools, so a turn executes the same surface it resolved. The
+  handler stays isolated across concurrent rooms and all rounds of the turn;
+  `None` keeps the channel default. Channel-owned tools retain their dispatch
+  and an unoffered tool remains refused. `examples/turn_tool_handler.py` runs
+  it.
+
+### Changed
+
+- **BREAKING — room timers pause, close and resume as RFC §5.1 says**
+  (RFC §5.1, §8.2, §10.1 steps 6 and 12, §26.1, RMK-930). The timers only
+  ran when the host called `check_room_timers()`, measured both thresholds
+  from `last_activity_at` (so an ACTIVE room closed without pausing), never
+  transitioned a room with no activity, took the check's instant, and
+  nothing resumed a PAUSED room. Now:
+  - `Room.paused_at` (new, null unless PAUSED) records when the room
+    paused, and the close timer counts from it: an ACTIVE room closes only
+    once it has paused. Inactivity counts from `last_activity_at`, or from
+    `created_at` while the room has had none: `create_room(timers=...)` and
+    `set_room_timers()` no longer stamp `last_activity_at` with the call's
+    instant.
+  - A delivered commit (an event the pipeline stores DELIVERED) resumes a
+    PAUSED room in its transaction: ACTIVE, `paused_at` null, no hook, no
+    framework event. What is no activity resumes nothing.
+  - Every locked section that reads the room's status applies the
+    transitions due at its instant first: the inbound gate and
+    `send_event()`, a response's and an injected event's pass, the records
+    stored in place of an answer, `attach_channel()`, `detach_channel()`
+    and the binding setters, `commit_event()`, `update_event()`,
+    `delete_event()`, `close_room()`, `archive_room()`,
+    `start_room_recording()` and a regeneration. A message to a room that
+    fell due is refused as if the timer had run on time: `room_paused`,
+    `room_closed`, then its `room_refused_event`.
+  - A transition takes the instant it fell due, however late it is
+    applied: a check long after both fell due pauses the room at the first
+    instant and closes it at the second, in one write (`paused_at`,
+    `closed_at`). Each emits `room_paused` or `room_closed` (`reason =
+    timer`) once stored; its `ON_ROOM_PAUSED` or `ON_ROOM_CLOSED` hook
+    fires once the room lock is released (`check_room_timers()` waits for
+    it before returning), in the room's context as the transition left it.
+    The hook's and the lifecycle record's `SystemContent.data` are now
+    `{"threshold", "at"}` (`elapsed_seconds` is gone).
+  - Stored format: `PostgresStore.init()` adds the `rooms.paused_at`
+    column when missing, and a room stored PAUSED takes its `updated_at`
+    as the instant it paused; an SQLite file moves to schema version 9,
+    alike. A custom store must round-trip `Room.paused_at` and resume a
+    PAUSED room in an activity `commit_event()`.
+  - A transition is written with the new
+    `ConversationStore.update_room_if(room, *, status, paused_at,
+    last_activity_at)`, a compare-and-set on the state it was computed
+    from: a streamed row or a greeting, which commit without the room lock,
+    that resumed the room or moved its activity meanwhile is never
+    overwritten by a stale close or pause. The shipped stores do it in one
+    transaction holding the room's row; the ABC's default reads, compares
+    and writes (not atomic), and a custom store committing off the lock or
+    shared across processes should override it.
+  Migrate: to close a room N seconds after its last activity with no pause
+  between, set `inactive_after_seconds=N, closed_after_seconds=0`; code
+  that read the creation instant from `last_activity_at` reads
+  `created_at` while it is null.
+
+- **BREAKING — a lifecycle record is no activity, and a store's
+  `commit_event()` takes `activity`** (RFC §5.1, RMK-930). Every commit moved
+  the room's `timers.last_activity_at`, the records RoomKit writes for a
+  lifecycle change included (a channel's attach, detach, mute, unmute or
+  update, a participant's change, a timer's transition), so a mute restarted
+  the room's inactivity timer. Those records keep their shape (their lifecycle
+  type or `SYSTEM`, a `SystemContent`, source `system`, visibility `internal`,
+  the next index, counted in `event_count`, never delivered, no hook of their
+  own) and now leave `last_activity_at`.
+  `ConversationStore.commit_event(room_id, event, *, target=None,
+  activity=True)` takes the new keyword: only an activity commit moves
+  `last_activity_at`. The framework passes `activity=False` for what is no
+  activity, so a custom store that overrides `commit_event()` must accept the
+  keyword, or the first lifecycle record raises `TypeError`; the shipped
+  stores and the ABC's default take it.
+  Migrate: a custom store's `commit_event()` takes `activity=` (and `target=`,
+  see "an edit or a delete commits with its target") and moves
+  `last_activity_at` only when `activity` is true.
+
+- **BREAKING — a record stored BLOCKED and a record committed outside the
+  pipeline are no activity** (RFC §5.1, §10.1 step 10, §10.5, RMK-930). A
+  message a hook blocked or a muted source sent, an answer past the
+  chain-depth limit or the reentry budget, a `kit.commit_event()` record and a
+  delegated task's trace each moved the room's `last_activity_at`, so an audit
+  record nobody receives kept an idle room alive. They now leave it. A
+  `commit_event()` record's index is passed by the room's delivery lane at its
+  turn with nothing to run, as before.
+  Migrate: a host that kept an idle room open with `commit_event()` records,
+  or counted on blocked messages doing so, raises `inactive_after_seconds` or
+  sends a delivered event (`send_event()`).
+
+- **BREAKING — a room transition already done does nothing, and `close_room()`
+  refuses an ARCHIVED room** (RFC §5.1, RMK-930). `close_room()` read no
+  status: closing a CLOSED room wrote it again with a new `closed_at` and
+  fired `ON_ROOM_CLOSED` and `room_closed` again, and closing an ARCHIVED room
+  made it CLOSED. Closing a CLOSED room now returns it as stored, writing and
+  firing nothing, as archiving an ARCHIVED room did (which no longer stops its
+  recordings again either); closing an ARCHIVED room raises the new
+  `TransitionRefusedError` (`room_id`, `status`, `transition`), nothing
+  written: no call takes a room out of ARCHIVED.
+  Migrate: code that may close an archived room catches
+  `TransitionRefusedError` or reads `room.status` first; `ON_ROOM_CLOSED`
+  fires once per room, at the close that changes it.
+
+- **BREAKING — a binding change that changes nothing writes and fires
+  nothing** (RFC §7.2, RMK-930). `mute()` on a muted channel wrote the
+  binding, added a `CHANNEL_MUTED` record and fired `ON_CHANNEL_MUTED` again,
+  `unmute()` likewise, and `set_visibility()`, `set_access()`,
+  `update_binding_metadata()`, `mute_output()` and `unmute_output()` wrote the
+  binding (and a `CHANNEL_UPDATED` record) with the values it held. Each now
+  returns the binding as stored, with no write, no record and no hook, so a
+  retried call duplicates nothing. A gate change (`mute()`, `unmute()`,
+  `mute_output()`, `unmute_output()`, `set_access()`) still pushes the binding
+  as stored to the channel (`Channel.update_binding()`), whose cached gate
+  state may have drifted from the store: a repeated mute never leaves audio
+  flowing.
+  Migrate: a hook that counted every `mute()` call counts changes, the only
+  calls that fire it.
+
+- **BREAKING — a direct `update_event()` that changes nothing writes and fires
+  nothing** (RFC §10.3, RMK-930). Given the content, the source or the
+  metadata the event already holds, it wrote the event again and fired
+  `ON_EVENT_UPDATED`; it now returns the event as stored, as a call naming no
+  field did.
+  Migrate: a hook on `ON_EVENT_UPDATED` that counted calls counts changes, the
+  only calls that fire it.
+
+- **BREAKING — an event a hook injects is committed as a pass of its own, once
+  its cause has released the room lock** (RFC §9.4, §10.1 steps 10 to 14,
+  §13.5, RMK-902, RMK-930). It was committed under its cause's lock, right
+  after it, with no hook, with its source binding's scope and the depth and
+  key it came with, so the room's critical section lasted as long as its
+  cause's hooks and theirs. The cause's section now queues it, and it runs
+  once that section has released the lock, in a pass and a locked section of
+  its own: the `BEFORE_BROADCAST` hooks run on it, every one under the lock,
+  and may block it (stored `BLOCKED` with the hook's name); it counts against
+  the cascade's reentry budget (past it, stored `BLOCKED` with
+  `reentry_loop_cap`, its hooks not run); and what its own hooks inject is
+  committed after it the same way. It keeps its cause's chain depth, its
+  visibility names the targets the room binds (`none` when stored only; a hook
+  of its pass may narrow it, never widen it), it carries no idempotency key,
+  and it takes no source check. Another event may commit between a cause and
+  what its hooks injected (an event waiting for the lock, an agent's answer to
+  the cause), as it may between a trigger and its response. Once the cause is
+  decided its injected events no longer depend on its caller: a task the kit
+  holds runs them, so a caller cancelled while another holds the lock, or
+  failing after the decision, loses none (the kit's close cancels that task
+  with its other background work). They still commit before
+  `process_inbound()` and `send_event()` return, the caller waiting for them,
+  in the order their hooks ran, the events an injected pass's own hooks inject
+  right after it. A direct `send_event()` from code holding the lock still
+  commits ahead of the cause, and what its own hooks inject runs once its
+  nested section ends, inside the section it nests in. An identity challenge
+  takes the same pass. See "Injected events" in `docs/c7/hooks.md`.
+  Migrate: a hook that blocks or injects on every event now reads its own
+  injections too: it lets them through (by their source or content), or each
+  one injects again until the budget; code that read an injected event at the
+  index after its cause's finds it by its source or content once
+  `process_inbound()` or `send_event()` returned, or in an `AFTER_BROADCAST`
+  hook; an injected event is read in history by the channels it targets only,
+  so one that other channels must read names them in `target_channel_ids`.
+
+- **BREAKING — an injected event asks no agent** (RFC §9.4, RMK-333, RMK-902):
+  an intelligence channel among its targets is not called and reads the event
+  in its history at its next turn. It ran a whole turn, tools included, whose
+  answer was then discarded. The event is delivered to its transport targets
+  as any delivery is (transcoded for each, `on_event()` for each and
+  `deliver()` for those that send, their tasks and observations collected) and
+  never to its own source; it was delivered untranscoded, and what its targets
+  filed was dropped. `TurnRequest.answers` and the `answers` argument of
+  `EventRouter.react()`, `EventRouter.react_for()`, `TurnClient.run()` and
+  `roomkit.turns.owner.turn_request()` are removed.
+  Migrate: drop `answers=` from those calls, and a turn backend of your own
+  stops reading `TurnRequest.answers`; an application that relied on an agent
+  answering an injected event sends that event with `kit.send_event()`, which
+  asks the agents it reaches.
+
+- **BREAKING — a hook's injected event fires `AFTER_BROADCAST`, and a realtime
+  host takes it silently** (RFC §9.4, RMK-930). Its delivery set, empty when
+  it is stored only, now fires `AFTER_BROADCAST` like any other event's, so an
+  audit hook sees the notices hooks inject. An injected event asks no agent,
+  and a transport hosting a model is one: a realtime voice channel, or a
+  conference with a realtime model, among its targets now takes its text into
+  the model's context silently, where the model answered it.
+  Migrate: an `AFTER_BROADCAST` hook that must skip injected events tells them
+  by the source or the content its hooks give them; an application that relied
+  on a realtime model answering an injected event sends it with `send_event()`
+  instead.
+
+- **BREAKING — only the framework writes the visibility `internal`** (RFC
+  §7.3, §8.5, §9.4, RMK-930). `internal` marks a record the framework
+  wrote (a voice channel's interruption record, which an agent reads as
+  the cut it was), yet every door took it from integrator code. It is now
+  refused with `ValueError`, before anything is read or written, by
+  `attach_channel()`, `set_visibility()`, `send_event()` and
+  `InboundMessage(visibility=...)` (a pydantic `ValidationError`), and so
+  is a message's `response_visibility="internal"`, on `send_event()` and
+  `InboundMessage` alike (its answers were stored `none`); a
+  `BEFORE_BROADCAST` hook's modify that writes it, or that changes it on a
+  framework record that holds it (the interruption record), has the
+  event's visibility put back; and a channel's answer, a row of its
+  stream, or the record stored in place of an answer at the chain-depth
+  limit, carrying it (a channel's own) is committed with `none`, a warning
+  logged; a hook's modify that writes it as `response_visibility` writes
+  `none`. An event stored for no channel takes `none`.
+  `kit.commit_event()`, a record outside the pipeline, still stores the
+  visibility it is given. Migrate: `visibility="internal"` →
+  `visibility="none"`, `response_visibility="internal"` →
+  `response_visibility="none"`.
+
+- **BREAKING — a room is created once** (RFC §14.3, §10.1 step 2, RMK-930).
+  The in-memory and SQLite stores replaced the room held under an id that
+  `create_room()` was given again (`INSERT OR REPLACE`): a second creation
+  re-homed the conversation, its organization, metadata and status, another
+  organization's included, while the Postgres store raised asyncpg's own
+  error. Every store now refuses it with the new `RoomAlreadyExistsError`,
+  nothing written, and the room it holds is kept; `kit.create_room()` raises
+  it, the recorders it started stopped. A message whose named room another
+  call created meanwhile reads that room again as one that exists, for the
+  caller's organization, instead of replacing it. After a restart the Buzz
+  huddle watcher reuses its announcements room only when it is the room it
+  opens (no organization, a status that takes events) and otherwise refuses to
+  bridge, naming the room, rather than feed every announcement to a room
+  someone else created under its id. Room ids are global: the refusal is
+  raised whichever organization holds the id, and says only that it is taken,
+  nothing of the room. A host that lets its tenants choose room ids must
+  namespace them or let RoomKit generate them, since a refused id is one
+  another tenant may hold.
+  Migrate: code that calls `create_room()` on an id it may already hold reads
+  the room first (`get_room()`) or catches `RoomAlreadyExistsError`; a custom
+  store refuses alike.
+
+- **BREAKING — a hard delete takes the edits and deletes of every event it
+  removes, and fires `ON_EVENT_DELETED` per removed event** (RFC §10.3, §14.1,
+  RMK-930). `kit.delete_event()` kept the EDIT rows of the events it removed,
+  and they hold the corrected text a host deleting the message means to
+  remove; whatever `cascade_replies` says, those changes now go with it, in
+  the same transaction, their idempotency keys released. The trigger fired
+  once, with the root; it now fires once per removed event, each with the
+  event as it was stored, so a projection over the timeline sees every row
+  that went. `kit.delete_event()` still returns the removed ids, now the root,
+  its replies, then the changes. `ConversationStore.delete_event()` returns
+  the removed events as stored (`list[RoomEvent]`, in that order) instead of
+  their ids. No schema changes: the stores find a change by its content's
+  target.
+  Migrate: a custom store's `delete_event()` returns the events, and a caller
+  of the store's method reads each one's `.id`; a projection that read the
+  root's `ON_EVENT_DELETED` alone reads one per removed event.
+
+- **BREAKING — an edit or a delete commits with its target, in one
+  transaction** (RFC §10.3, §14.3, RMK-930). The pipeline wrote the edited
+  content (or `metadata.deleted`) on the target with `update_event()`, then
+  committed the EDIT or DELETE: a commit that failed in between left the
+  target changed with no row saying so. `ConversationStore.commit_event()`
+  takes a keyword-only `target`, the target as the change writes it, and the
+  in-memory, SQLite and Postgres stores write it in the commit's own
+  transaction; a target the room no longer holds, or another room's, fails the
+  whole commit with the new `EventNotFoundError`, nothing written. The
+  framework passes `target` only with a change. An edit or a delete the
+  persistence policy keeps out of the timeline still writes its target, alone,
+  through the new `ConversationStore.write_change_target(room_id, target)`:
+  the target and, when it is now deleted, every edit of it marked deleted, in
+  one transaction and with no row of the change. The in-memory, SQLite and
+  Postgres stores do both atomically; the default `write_change_target()` a
+  custom store inherits writes through `update_event()` (not atomic), and a
+  target the room no longer holds raises `EventNotFoundError`, nothing
+  written. No schema changes.
+  Migrate: a custom store that overrides `commit_event()` accepts `target=`
+  and writes it in the commit's transaction, or the first edit or delete
+  raises `TypeError`; one that can write atomically overrides
+  `write_change_target()` too.
+
+- **BREAKING — an agent's response and a hook's injected event take edit and
+  delete validation, and `send_event()` raises `ChangeRefusedError` for a
+  change it refuses** (RFC §10.1 step 8a, §10.3, §9.4, RMK-930). Step 8a ran
+  on an inbound message only: an EDIT or a DELETE among an agent's responses
+  or a hook's injected events was committed and applied natively by
+  edit-capable channels with no target, author or authority checked, and its
+  target was never updated. Both now take step 8a; an accepted one writes its
+  target in its own commit and fires `ON_EVENT_UPDATED` or `ON_EVENT_DELETED`,
+  whose hooks, like the change's delivery set, read the room as that commit
+  left it, as an inbound change's do: the change at its index and as its hooks
+  left it, its target as rewritten in its place. So an agent edits its own
+  responses, and no one else's. An injected change is the hook's, whatever
+  source it names, and makes a SYSTEM change only (a SYSTEM delete, an edit
+  whose `edit_source` is `system`): one claiming a sender's or an
+  administrator's authority is refused `not_authorized`. A refused response or
+  injected change is logged at warning level and not stored. `send_event()` of
+  a change step 8a refuses raises the new `ChangeRefusedError` (its `reason`
+  the refusal), where it returned the event uncommitted.
+  Migrate: a caller of `send_event()` that sends an edit or a delete catches
+  `ChangeRefusedError` and reads its `reason`, where it read the uncommitted
+  event; a hook that injected a change in a participant's name injects a
+  SYSTEM one (`DeleteContent(delete_type=DeleteType.SYSTEM)`,
+  `EditContent(edit_source="system")`).
+
+- **BREAKING — who may edit or delete follows RFC §10.3 rules 3 to 6**
+  (RMK-930). An ADMIN delete is an OWNER's or an AGENT's, neither LEFT nor
+  BANNED, as the participant the sender is on their channel: an OWNER who had
+  left or been banned kept the authority, and an AGENT (since RMK-911 a human
+  advisor) had none. An event that travelled outbound (a channel's own output,
+  an agent's response) is its channel's, whatever participant it names: it
+  neither holds that participant's authority nor authored their messages. A
+  SYSTEM change from a SYSTEM channel needs no author of its own nor of its
+  target, which `identity_required_for_edit` refused; a sender's change and an
+  ADMIN delete from a sender who names no one still need one. A SYSTEM change
+  from any other channel stays `not_authorized`, and an `edit_source` outside
+  `sender`/`system` is still checked as the sender's.
+  Migrate: a host that needs a departed owner's ADMIN deletes adds them back
+  as an active OWNER; one that must refuse an AGENT's ADMIN deletes blocks
+  them in a `BEFORE_BROADCAST` hook.
+
+- **BREAKING — `ON_SPEAK_DECISION` is a SYNC trigger: its hooks change the
+  decision the channel acts on** (RFC §6.4, §9.2, RMK-914). A hook could only
+  observe a decision; an application that wanted to act on it in code (raise a
+  hand rather than let the agent offer aloud) could not. The SYNC hooks now
+  run in order before the channel acts: `HookResult.modify` with
+  `dataclasses.replace(event, decision=...)` replaces the decision (only the
+  decision is read), `HookResult.block` leaves the agent silent (`blocked by
+  <hook>`). The trigger is fail-open; a fail-closed hook that fails, or one
+  registered on a room whose hook context cannot be built, leaves the agent
+  silent. ASYNC hooks observe the decision that stands.
+  `examples/raise_hand_on_offer.py` turns an offer into a raised hand.
+  Migrate: a hook registered SYNC (the default) that returns `None` now logs
+  an unusable result on every decision and holds the decision up while it
+  runs; register it `execution=HookExecution.ASYNC`, or return
+  `HookResult.allow()`.
+
+- **BREAKING — the router is given the organization and the identity** (RFC
+  §10.4, §17.2, RMK-930). `InboundRoomRouter.route()` takes the keyword-only
+  `organization_id` (the one `process_inbound` acts for) and `identity` (the
+  sender's, resolved by the framework once per message within that
+  organization), and `channel_data` now carries the message's metadata. The
+  default router searches the organization's rooms only, every room when the
+  call names none: a sender whose newest room belongs to another tenant got
+  `RoomNotFoundError` and now gets a room of the caller's organization, and an
+  identity linked within an organization routes its addresses, where only
+  unscoped links did. A custom router's answer is held to the rules of a room
+  the caller names: another organization's room raises `RoomNotFoundError`, a
+  missing id is created under it. The store's routing lookups read the
+  organization through their `RoomFilter` (see "the store's routing lookups
+  take the channel, the sender's identity and a `RoomFilter`").
+  `roomkit.core.inbound_router.sender_known_as()` gives way to
+  `known_as(sender, identity)`, in the same module, which reads no store.
+  Migrate: a custom router's `route()` accepts `organization_id=` and
+  `identity=`; `await sender_known_as(store, channel_type, sender)` becomes
+  `known_as(sender, identity)`, with the identity the router is given.
+
+- **BREAKING — an address belongs to one identity per organization** (RFC
+  §5.6, §14.1, §17.2, RMK-930). `link_address()` of an address another
+  identity of the organization holds raises `AddressLinkedError`, and so does
+  `create_identity()` with one, writing nothing: the last link silently took
+  the address, re-homing that person's conversations, while the first identity
+  still listed it. An address is never moved silently: moving it is
+  `unlink_address()` from its holder, then a link. Linking to an unknown
+  identity, or to an identity of another organization than the call's
+  `organization_id` (`None` stands for the identities of no organization),
+  raises `IdentityNotFoundError`: the first did nothing, the second linked
+  another tenant's identity. Linking an address the identity holds still
+  changes nothing. The in-memory, SQLite and Postgres stores refuse alike, a
+  custom store must too; no schema changes, the address key was already one
+  per organization.
+  Migrate: a caller of `link_address()` or `create_identity()` catches
+  `AddressLinkedError`; one that moved an address by linking it again calls
+  `unlink_address()` on its holder first; a custom store refuses alike.
+
+- **BREAKING — the pipeline records which instruction produced a response, and
+  reserves its key** (RFC §5.2, §9.4, §10.1.1 step 6, RMK-930):
+  `metadata["instruction"]` (`{sha256, length}`) is written by the pipeline on
+  every event a channel returns for an instruction, buffered or streamed, its
+  tool rows and a response stored past the reentry budget included, in place
+  of whatever the channel wrote there; a channel could record the
+  instruction's text under it. `AIChannel` and `ACPChannel` no longer write
+  it, so their `ChannelOutput.response_metadata`, and with it
+  `InboundResult.response_metadata`, no longer carry it. The fingerprint is of
+  the text the instruction's content reads as (RFC §6.6): a rich text by its
+  plain text, a media by its label, a system notice by its body, a tool call
+  as `[Tool call: <name>]`, a composite by each part's own text form (a
+  location, a template, a notice and a tool call included), one per line, an
+  empty one skipped. It was of a `TextContent` body only (any other content
+  hashed the empty string) and, on ACP, of the text once its copies of runtime
+  marks were replaced. `AIChannel` reads that same text as the turn's input,
+  where a non-text instruction gave the turn none. The key is reserved: it is
+  removed from every other event, whoever wrote it (a channel's parser,
+  `InboundMessage.metadata`, `send_event(metadata=...)`, a hook's injected
+  event, a channel's reply to a message), and from the instruction itself. A
+  `BEFORE_BROADCAST` modify keeps a response's fingerprint, or its absence,
+  and an instruction's `standalone` word, as it kept the instruction's
+  visibility and address.
+  Migrate: an application that kept its own data under
+  `metadata["instruction"]` moves it under another key; a reader of
+  `InboundResult.response_metadata["instruction"]` reads the response event's
+  `metadata["instruction"]`.
+
+- **BREAKING — an instruction names an agent the kit registers** (RFC §10.1.1
+  step 1, RMK-930): its `addressed_to` must name at least one registered
+  intelligence channel, checked before anything is read. One naming only ids
+  the kit does not register, or transports, is refused with
+  `reason="instruction_unaddressed"` before routing, so no room is created for
+  it, where it was delivered to no agent and reported in
+  `unavailable_targets`; `send_event()` raises `ValueError`. An instruction
+  carrying an idempotency key is refused before routing too. The address's
+  other names ask nobody: an agent the kit registers and the room does not
+  bind is still reported in `unavailable_targets`, and the instruction goes
+  on. An instruction's address is its caller's
+  (`InboundMessage.addressed_to`), never one its channel's parser set. So is
+  its type: an event a channel's parser types `INSTRUCTION` for a message the
+  caller sent as another type takes the message's type, with a warning, and
+  the parser's `standalone` key is dropped; it was processed as an instruction
+  past the checks above. `send_event()` takes an empty `idempotency_key` as
+  none, as `process_inbound()` does, where it raised for an instruction. A
+  `Pipeline` handoff greeting the room refuses (no `to_agent`, or one the kit
+  does not register) logs a warning instead of going quiet.
+  Migrate: an instruction names in `addressed_to` the id of an intelligence
+  channel the kit registers; a caller that read `unavailable_targets` for an
+  instruction naming none reads the refusal (`blocked`,
+  `instruction_unaddressed`; `ValueError` from `send_event()`).
+
+- **BREAKING — a response typed INSTRUCTION does not re-enter** (RFC §8.5,
+  §10.1.1, RMK-930): only the application issues instructions. A channel's
+  response of type `INSTRUCTION` is dropped with a warning, and the channel's
+  other responses re-enter as usual. It was delivered unstored to the room's
+  transports, read by the agents it addressed as the application's
+  instruction, and queued by a discussion as a turn for them, so one agent
+  could direct another in the application's name.
+  Migrate: an agent that wants another to act addresses its answer
+  (`addressed_to`).
+
+- **BREAKING — a hook's injected INSTRUCTION is dropped** (RFC §9.4, §10.1.1,
+  RMK-930): an `InjectedEvent` of type `INSTRUCTION` is dropped with a warning
+  before any pass, so no hook runs on it and nothing of it is stored or
+  delivered; the result's other injected events, tasks and observations stand.
+  It was delivered unstored to its transport targets and, in a discussion,
+  queued as a turn for the agent it addressed.
+  Migrate: a hook that wants an agent directed calls `kit.send_event(...,
+  event_type=EventType.INSTRUCTION, addressed_to=[...])`, which takes the
+  instruction's checks.
+
+- **BREAKING — `ParticipantRole.AGENT` is a human agent** (RFC §5, §6.4,
+  §19.7.5 rule 2, RMK-911), an advisor or a support representative, as the
+  role table says: a participant with that role takes part like a member. The
+  agent's people note names them, a customer's first turn is labelled when one
+  is present, `SpeakTurn.people` counts them, and a discussion treats their
+  messages as a person's. They were left out as if they were an AI. An AI
+  participant the host records in the room takes `ParticipantRole.BOT`; an AI
+  agent takes part through an intelligence channel. A discussion now reads its
+  people as every other reader does: an observer is no person of it either.
+  Migrate: a host that recorded an AI participant as `ParticipantRole.AGENT`
+  records it as `ParticipantRole.BOT`.
+
+- **BREAKING — the pipeline writes who a response comes from** (RFC §8.5,
+  RMK-902, RMK-930): each response a channel returns is committed as its
+  responder's, the responder's channel id and type with direction OUTBOUND, in
+  the trigger's room, at the trigger's chain depth plus one, answering the
+  trigger unless it names the event it answers, with no idempotency key and no
+  `source.verification`. A response claiming another source is committed as
+  its responder's, keeping nothing of the claimed one (participant, provider
+  ids, verification), with a warning: it was write-checked against the claimed
+  channel's binding. A response under its own source keeps its other source
+  fields (participant, provider, ids, raw payload), but no longer a
+  verification its channel wrote: a verification is a received sender's
+  (§11.7), and a channel could commit its answer as `verified`. A streamed
+  answer, the event a streaming target renders it under, and the stand-in for
+  an answer a guard stopped travel OUTBOUND; they read INBOUND.
+  Migrate: a channel that answered under another channel's source sends
+  through that channel with `kit.send_event()`; a reader of a response's
+  claimed participant or provider ids reads the responder's; a channel that
+  set a verification on its own responses drops it, such a response being
+  stored with `verification=None`.
+
+- **BREAKING — an idempotency key is unique per room and per source channel**
+  (RFC §13.4, RMK-902): two channels of one room sending one key for two
+  messages are both processed, where the second was answered as a replay of
+  the first. `ConversationStore.check_idempotency()` and
+  `get_event_by_idempotency_key()` take a keyword-only `channel_id`, and
+  require it: the source channel whose key it is, or `None` for any channel of
+  the room (the lowest index first when several committed the key), which a
+  proactive delivery's key reads (see "a proactive delivery's key names one
+  publication in its room"). At its first start, SQLiteStore (schema 8) scopes
+  the keys it recorded to their event's source channel, and PostgresStore
+  replaces its unique index `idx_events_idempotency` with
+  `idx_events_idempotency_channel`. An older worker recreates the per-room
+  index, so every worker sharing a store must run this version before one of
+  them starts against it.
+  Migrate: `await store.check_idempotency(room_id, key)` raises `TypeError` (a
+  missing keyword-only argument) and becomes `check_idempotency(room_id, key,
+  channel_id=source_channel_id)`, or `channel_id=None` for the room-wide
+  answer it gave; `get_event_by_idempotency_key()` likewise; a custom store
+  accepts the keyword in both, `None` included.
+
+- **BREAKING — a hook's name is unique within its scope** (RFC §9.1, §10.6.6,
+  RMK-902, RMK-930), the kit's hooks or one room's: registering an explicit
+  name a hook of the scope already holds raises `ValueError`, the kit's hooks
+  its own executor runs included, and so does a name the framework writes in
+  `blocked_by` (`source_read_only`, `source_muted`, `source_unbound`,
+  `event_chain_depth_limit`, `reentry_loop_cap`). A name a room enables on the
+  turn executors (`kit.enable_room_hook(room_id, name)`) joins the room's
+  hooks: enabling a name a room hook of the room holds, and registering a room
+  hook (`add_room_hook`, a strategy's) under a name the room enables, raise
+  `ValueError`, where a block named one of two hooks as `blocked_by`; enabling
+  a name the room enables already, or enabling it in another room, changes
+  nothing. A hook given no name takes its function's, made unique and without
+  a leading `_` (`audit`, `audit#2`), so hooks built in a loop keep
+  registering, and is never given an enabled name; `kit.add_room_hook`,
+  `HookEngine.register` and `add_room_hook` return the registration held. On
+  an executor a name still carries one hook per trigger, and `room_hook()`
+  defined again on a trigger replaces the first. The framework's own hooks (a
+  session auditor, a subtitle overlay, a pipeline's handoff greeting, a
+  console, `on_delivery_status` handlers) are named per instance, so two on
+  one kit no longer collide. A strategy installed again in its room replaces
+  its router hook instead of running it twice
+  (`HookEngine.replace_room_hook`).
+  Migrate: a hook registered under a name its scope already holds, or under a
+  reserved one, takes another `name=`; a room hook and a name its room enables
+  for the executors take different names.
+
+- **BREAKING — a BEFORE_BROADCAST replacement keeps which event it is** (RFC
+  §9.4, RMK-902): its id, room, type, source, index, chain depth,
+  `responds_to`, idempotency key, creation time, status, `blocked_by` and
+  `delivery_results` are put back from the event it replaces, and so are the
+  checks already passed on it, the event an EDIT or a DELETE targets and an
+  INSTRUCTION's visibility and address. Its content, address, visibility,
+  thread, correlation id, metadata and `channel_data` may change; an EDIT a
+  hook rewrites as text stays the edit of its event, saying that text, and a
+  thread parent a hook sets is resolved to its root. A hook could commit an
+  event under another source's binding, or into another room. The rewrite of
+  an off-lock hook (`needs_lock=False`) is merged into the event the locked
+  section prepared rather than replacing it, which undid an instruction's
+  forced scope and a reply's thread root.
+  Migrate: a hook that moved an event to another room blocks it and calls
+  `kit.send_event()` there; one that changed its type or its source blocks it
+  and injects the event it meant (`HookResult.block(reason,
+  injected=[InjectedEvent(...)])`).
+
+- **BREAKING — a MODIFY that carries no payload, or one of the wrong type, is
+  an unusable result** (RFC §9.3, RMK-902): it replaces nothing, blocks a
+  fail-closed hook with `hook_invalid_result`, and its injected events are
+  dropped while its tasks and observations are kept. On a fail-open hook a
+  wrong-typed payload reached the next hook as it was. An `ON_TRANSCRIPTION`
+  hook modifies with the trigger's own type: a plain `str` is no longer read
+  as the new text.
+  Migrate: an `ON_TRANSCRIPTION` hook returns
+  `HookResult.modify(dataclasses.replace(event, text=...))`, not a `str`; a
+  MODIFY carries its trigger's own payload type.
+
+- **BREAKING — an event is committed with its own visibility intersected with
+  its source binding's, a record stored BLOCKED included** (RFC §7.3, §8.3,
+  RMK-902, RMK-930), and the stored field is the whole answer, at broadcast
+  and when history is rebuilt. An event's own scope (a sender's, a hook's) can
+  no longer widen what its binding allows, and a binding changed later no
+  longer changes what past events reached. Every path that commits a sender's
+  or an agent's event stamps it, greetings and streamed rows included, and a
+  record stored BLOCKED (a message a hook blocked, a message from a read-only
+  or muted source, the record of an agent not asked at the chain-depth limit,
+  an answer stored past the reentry budget) takes the visibility step 12 would
+  have given its event, from `process_inbound()`, `send_event()`, a response's
+  pass and a discussion's turn alike, where a host's view of the room showed a
+  channel bound with `visibility="ws"` what it never let reach anyone else. A
+  source with no binding keeps its own scope, an event a hook injects names
+  its targets instead (see "an event a hook injects is committed as a pass of
+  its own"), and a record from `commit_event()` keeps the scope it was given.
+  A live stream reaches no transport the agent's binding excludes, and a
+  regenerated turn asks only the agents the message's own scope reaches.
+  `visible_events()` hands a reader with no binding in the room nothing (it
+  handed back its own events). A message held for verification records its
+  committed scope, which its release restores. Each store rewrites once, with
+  that binding's scope, the events it stored `all` under a narrowed binding,
+  and so the held messages' recorded `all` (SQLite schema 7, PostgresStore
+  schema version 3), so their readers stay the same; any other stored value is
+  kept. `list_events(visibility_filter=...)` matches the stamped value, in its
+  normal form.
+  Migrate: a sender or a hook that widened an event past its binding widens
+  the binding instead (`set_visibility()`); a host view or an audit that
+  filtered on the stored `all`, or filtered refused records by their
+  `visibility`, reads the narrower stored value; one that must show a refused
+  record to a channel its binding excluded reads it as the host, with
+  `EventFilter(include_blocked=True)` and no visibility filter.
+
+- **BREAKING — the visibility grammar is enforced** (RFC §7.3, RMK-902). A
+  value is written back in its normal form, its ids sorted and once; an empty
+  value, an empty item, or a keyword inside a list raises `ValueError` from
+  `attach_channel`, `set_visibility`, `send_event` and `InboundMessage`. A
+  channel id a visibility could not name (`all`, `none`, `internal`,
+  `transport`, `intelligence`, one holding a comma, or one with surrounding
+  whitespace) is refused by `register_channel`. A CLI or console line whose
+  visibility factory returns an invalid scope is not sent, and says why.
+  Migrate: a visibility that is empty, holds an empty item or puts a keyword
+  in a list is written as one keyword or a list of ids (`"sms,ws"`); a channel
+  registered under a keyword, or under an id holding a comma or surrounding
+  whitespace, takes another id; code that compares a stored visibility with
+  the value it wrote compares their normal forms.
+
+- **BREAKING — a binding's direction decides delivery, not reception** (RFC
+  §4.2, §10.2, RMK-902). Every receiver gets `on_event()`; only a transport
+  whose direction sends (`OUTBOUND` or `BIDIRECTIONAL`) also gets `deliver()`
+  and live streams, hook-injected deliveries included. An `OUTBOUND` binding
+  was skipped entirely, and an `INBOUND` one was delivered to. Direction never
+  filters an intelligence channel. A binding takes its channel's `direction`
+  unless the attachment names one, and a channel shared into a delegated room
+  keeps its parent binding's.
+  Migrate: a transport bound `INBOUND` that must receive deliveries is bound
+  `BIDIRECTIONAL` or `OUTBOUND` (`attach_channel(...,
+  direction=ChannelDirection.BIDIRECTIONAL)`); a channel bound `OUTBOUND` now
+  gets `on_event()` and the room's deliveries.
+
+- **BREAKING — a source with no binding in the room is refused** (RFC §7.5
+  rules 2 and 7, RMK-902): its event is stored `BLOCKED` with
+  `source_unbound`, and a detached channel parses its message seeing no event.
+  It was committed `DELIVERED` and only not broadcast, so a revoked channel
+  still wrote into the history agents read. A proactive delivery whose channel
+  is detached between the call and the commit answers `blocked` with that
+  reason (one already detached still answers `unavailable`). A source both
+  read-only and muted is refused as `source_read_only`, the lasting cause.
+  Migrate: attach a channel to the room (`attach_channel()`) before it sends
+  there; a host that read such events as delivered reads them `BLOCKED`, with
+  `blocked_by == "source_unbound"`.
+
+- **BREAKING — `Room.latest_index` is `None` while the room has no event**
+  (RFC §5.1, RMK-902). It was 0, which reads as the first event's index. A
+  room stored with 0 and no event reads back as `None`; PostgresStore drops
+  the column's `NOT NULL` and default, and clears the 0 of empty rooms, at its
+  first start. An older version cannot read a room without an index: every
+  worker sharing a store must run this version before one of them starts
+  against it.
+  Migrate: code that reads `room.latest_index` handles `None`, a room with no
+  event; `room.event_count` counts the events.
+
+- **BREAKING — `EventSource.direction` is an `EventDirection`**, INBOUND or
+  OUTBOUND (RFC §5.2, RMK-902): an event never travels both ways, so a
+  `bidirectional` source is refused, a stored one included: a store reading
+  such a row raises pydantic's `ValidationError`, and no migration rewrites
+  it. A `ChannelDirection.INBOUND` or `OUTBOUND` value is still read as the
+  event's. A hook's `directions` filter takes `EventDirection` values (equal
+  to the `ChannelDirection` ones of the same name), and `EventDirection` is
+  exported from `roomkit`.
+  Migrate: RoomKit's own channels never stored a `bidirectional` source, but
+  an event a host or a custom channel built with
+  `ChannelDirection.BIDIRECTIONAL` did: rewrite such rows before the upgrade,
+  as `inbound` for a message received or `outbound` for a channel's own output
+  (SQLite: `UPDATE events SET data = json_set(data, '$.source.direction',
+  'inbound') WHERE json_extract(data, '$.source.direction') =
+  'bidirectional'`; Postgres: `UPDATE events SET source_direction = 'inbound'
+  WHERE source_direction = 'bidirectional'`); a hook's `directions` names
+  `EventDirection.INBOUND` or `OUTBOUND`, a `BIDIRECTIONAL` there matching no
+  event.
+
+- **BREAKING — the pipeline gives every event it commits its id** (RFC §8.1,
+  RMK-902): an inbound event, a buffered response and an event a hook injects
+  (an identity challenge included) are committed under a fresh id, whatever id
+  their channel or hook built them with. A response that names another
+  response of the same output by id (as its `parent_event_id`, or the target
+  of an edit) names an id that is never stored.
+  Migrate: read the committed id from `InboundResult.event` or from the hooks;
+  a provider's own id belongs in `source.provider_message_id`, and a replayed
+  message is caught by its `idempotency_key`.
+
+- **BREAKING — a record's timestamps hold their instant in UTC** (RFC §1.4,
+  RMK-902): one given with an offset is converted, one without an offset is
+  read as UTC, so code comparing a record's timestamp with a naive `datetime`
+  now raises. A turn message's `created_at` follows the same rule. The session
+  audit wrote its `ts` without an offset; it writes UTC, and its transcript
+  still shows local time.
+  Migrate: compare a record's timestamps with aware datetimes
+  (`datetime.now(UTC)`); a host that gave records or filters
+  (`EventFilter(after_time=...)`) naive local times gives aware ones, a naive
+  one reading as UTC.
+
+- **BREAKING — an ASYNC hook on a trigger that runs a SYNC chain no longer
+  holds up the operation it observes** (RFC §9, RMK-903): on BEFORE_TTS,
+  ON_TRANSCRIPTION, ON_TOOL_CALL…, its observers start as background tasks
+  once the chain has run, on the payload the chain left; the operation used to
+  wait for them, up to each hook's timeout. Measured: an ASYNC BEFORE_TTS hook
+  that waited up to 5 s delayed every answer's synthesis by 5.3 s.
+  `RoomKit.close()` waits for the observers still running before the channels
+  close, and `HookEngine.drain_observers()` does so on demand. A realtime
+  delegation that one of its own calls ended (a hang-up) still cuts the call
+  its backend makes next before it runs.
+  Migrate: a hook whose work the operation needs before it goes on (state a
+  later step of the turn reads) is registered SYNC and returns
+  `HookResult.allow()`.
+
+- **BREAKING — a file a channel does not take is delivered as its text form**
+  (RFC §5.8, §6.6, Appendix A, RMK-930). The transcoder read a target's
+  `media_types` only: a file whose MIME type its non-empty
+  `supported_media_types` does not list, or whose known `size_bytes` is over
+  its `max_media_size_bytes`, was sent as is, and the provider's refusal lost
+  the whole message. Such a file now becomes `[Media: {caption or filename or
+  url}]`, alone or as a part of a composite, at the broadcast and in the
+  transcoder alike, and in an edit's new content: an edit to a channel that
+  edits natively is still delivered as an edit, its new content's files as the
+  channel takes them; an empty list takes every type, and a file of unknown
+  size any size. The declarations follow Appendix A: SMS lists `image/jpeg`,
+  `image/png` and `image/gif` (a PDF to an SMS number is now its text form);
+  WhatsApp Personal lists no type (it took images only, and now takes a
+  document again under the new rule); Telegram declares AUDIO and VIDEO, so
+  its provider's `sendAudio` and `sendVideo` are reached rather than a `[Voice
+  message: ...]` text.
+  Migrate: a host whose SMS provider carries documents builds its channel with
+  those types listed, `TransportChannel(id, ChannelType.SMS,
+  capabilities=SMS_CAPABILITIES.model_copy(update={"supported_media_types":
+  [...]}))` (`SMS_CAPABILITIES` from `roomkit.channels`), or an empty list for
+  every type; a Telegram integration that read the `[Voice message: ...]` or
+  `[Video: ...]` text receives the file.
+
+- **BREAKING — a message's response scope narrows every answer its
+  cascade derives from it, and never widens one** (RFC §5.12, §7.3,
+  RMK-930). `response_visibility` replaced the visibility the responding
+  channel gave its answer, so an answer a channel kept to `"sms"` under a
+  message scoped `"sms,ws"` reached `ws` too; and a response's own
+  `response_visibility` was replaced by the cascade's scope, or dropped
+  when the message named none. Each answer, at any depth of the cascade
+  (an answer to an answer, a stream's rows, the record stored in place of
+  an answer), is now what its channel gave it intersected with the scope,
+  a listed channel's category read from the room's bindings; and what
+  answers a response stays within both the cascade's scope and the
+  response's own, `None` restricting nothing; `InboundMessage` and
+  `send_event()` refuse an empty scope (`""`), and one that reaches an
+  event another way (a hook's modify) names nobody. A `BEFORE_BROADCAST`
+  hook may narrow an event's
+  `response_visibility`, never widen or clear it: what it writes is
+  intersected with the original, `None` keeps the original and `internal`
+  reads as `none`; and a response whose visibility its hooks widen is
+  narrowed back within the scope after them, a stream's rows included.
+  The scope binds the message's cascade only: work that leaves it, a
+  background delegation's result handed back with `deliver()` or
+  `send_event()`, a tool's own `send_event()`, a child room's answer to
+  the channels it shares, is a new cascade the scope does not follow.
+  Migrate: a channel that relied on the message's scope to widen its
+  answer gives the answer the visibility it means (`"all"` keeps the
+  scope); a hook that widened or cleared a message's `response_visibility`
+  sets the message's own instead; work that hands an answer back outside
+  the cascade passes its own `response_visibility`.
+
+- **BREAKING — a composite delivered as one text skips its empty parts**
+  (RFC §6.6, RMK-930). A composite whose every part becomes a text for its
+  target was joined part by part, an empty text part giving an empty line;
+  it is now the composite's text form, its parts' texts one per line, an
+  empty one skipped: the text an instruction's fingerprint is of, so a
+  text-only agent reads the instruction its responses record.
+  Migrate: a sender that relied on the empty line writes it in a text
+  part (`"First.\n\nThen."`).
+
+- **BREAKING — a recipient is a string that is not blank, or a number**
+  (RFC §5.7, §10.2 step 3d, RMK-930). A binding's value under its
+  channel's recipient key was a recipient whenever it was truthy: the
+  delivery handed `{"phone_number": true}`, a string of spaces, a list or
+  an object to the provider as `to` (and refused the number `0`), attach
+  and routing read `str(value)` as the binding's correspondent (a binding
+  holding `true` named `"True"`, which kept the first sender out of the
+  room opened for no one), a sender recorded on such a binding kept the
+  value as their recipient, and a delivery status's fallback to the one
+  room read it as another number. Null, a blank string, a boolean, a list
+  and an object are now no recipient: the delivery is refused
+  `no_recipient`, the binding names no correspondent, and the sender
+  routed to it gets their address written as its recipient. A number is
+  one, as before. The chat a message carries under its
+  channel's chat key is read the same way: `true` or a blank string there
+  is no chat, and the message has no address.
+  Migrate: write a recipient as the address string (`"+15550000001"`) or
+  the chat id; a binding holding another value receives nothing until
+  one is written.
+
+- **BREAKING — a chat message that does not carry its chat has no address**
+  (RFC §5.7, RMK-930). On a channel whose replies go to a chat only (Telegram,
+  Teams, Discord, Buzz), such a message was routed and recorded by its author:
+  it landed in the author's private chat, which is another conversation, and a
+  room opened for it named the author as correspondent and recipient, replying
+  in private. It now records no one: it is routed as a message with no
+  address, and the room opened for it names neither correspondent nor
+  recipient, so its deliveries are refused `no_recipient` until the host names
+  one. Its author stays the event's sender. A WhatsApp Personal message
+  without `group_jid` is still its sender's.
+  Migrate: a parser or host building such messages puts the chat under the
+  channel's chat key (`chat_id` on Telegram, `conversation_id` on Teams), or
+  names the room's recipient itself on the binding (`attach_channel(...,
+  metadata={"telegram_chat_id": ...})`).
+
+- **BREAKING — the store's routing lookups take the channel, the sender's
+  identity and a `RoomFilter`** (RFC §10.4 step 1, §14.1, RMK-930). The
+  default router asked for the sender's address first and then their identity,
+  so an older room found by the address hid a newer one found by the identity;
+  and `find_room_id_by_participant()` took no channel, so a newer room where
+  the sender joined through another channel hid the older room they joined
+  through this one, and the message opened a room of its own. The lookups now
+  read:
+  - `find_room_id_by_binding(channel_id, participant_id, identity_id=None,
+    room_filter=None)`: the newest room whose binding of the channel names the
+    address or the identity;
+  - `find_room_id_by_participant(channel_id, participant_id, identity_id=None,
+    room_filter=None)`: the newest room holding a participant reached through
+    the channel (its `connected_via`, whatever its status) whose id or
+    identity is the address or the identity;
+  - `find_room_ids_by_channel(channel_id, room_filter=None, limit=2)`.
+  The new `RoomFilter(statuses=None, organization_id=None)` names the statuses
+  and the organization a lookup reads, `None` reading every one; it replaces
+  the `status` keyword, and the organization travels in it. The newest room is
+  the most recently created, the greatest id breaking a tie, in every store
+  and in the base fallbacks. Postgres gains an index on
+  `participants(identity_id)`, which `init()` creates only when missing (a
+  `CREATE INDEX` locks the table even when the index exists).
+  Migrate: `find_room_id_by_binding(ch, pid, status="active")` becomes
+  `find_room_id_by_binding(ch, pid, None,
+  RoomFilter(statuses=[RoomStatus.ACTIVE]))`, and
+  `RoomFilter(organization_id=org)` keeps a lookup to one organization's
+  rooms; `find_room_ids_by_channel(ch, "active")` raises `AttributeError` and
+  becomes `find_room_ids_by_channel(ch,
+  RoomFilter(statuses=[RoomStatus.ACTIVE]))`;
+  `find_room_id_by_participant(pid, "active")` raises nothing but reads `pid`
+  as the channel and `"active"` as the address, and becomes
+  `find_room_id_by_participant(ch, pid, None,
+  RoomFilter(statuses=[RoomStatus.ACTIVE]))`; a custom store that overrides
+  any of the three takes the new signature.
+
+- **BREAKING — routing step 1 finds a binding through its recipient, and
+  `DefaultInboundRoomRouter` takes `channel_of`** (RFC §5.7, §10.4, RMK-930).
+  A binding stored with a recipient and no correspondent (written to the store
+  by the host, or before bindings named one) is its recipient's conversation,
+  but step 1 searched `participant_id` only: on a number serving other rooms,
+  the recipient's message opened a room of its own.
+  `find_room_id_by_binding()` takes `recipient_key=`, the channel's key (the
+  new `Channel.recipient_key`: `phone_number`, `email_address`,
+  `telegram_chat_id`..., `None` where the recipient names no one), and also
+  finds a binding naming no correspondent, not `group`, whose value under that
+  key, a string or a number, is the address. That branch is a query of its own
+  beside the correspondent's, read through `bindings(channel_id,
+  participant_id)` among the channel's bindings that name no correspondent,
+  which the kit leaves only where no recipient was given or a binding was
+  written to the store directly; the recipient's key differs per channel, so
+  no expression index serves it. A delivery status that names no room reads
+  its recipient the same way, in the channel's form (`+1 (555) 000-0001` finds
+  `+15550000001`). The default router reads a binding's recipient through the
+  kit's channels: `DefaultInboundRoomRouter(store, *, channel_of=None)`
+  replaces `recipient_of=`.
+  Migrate: a router built by hand passes `channel_of=kit.get_channel` (or
+  none, reading no recipient); a custom store's `find_room_id_by_binding()`
+  takes the keyword.
+
+- **BREAKING — a paused conversation keeps its sender's messages** (RFC
+  §10.4, §5.1, RMK-930). The default router read ACTIVE rooms only, so a
+  room its timer paused for inactivity lost its correspondent: their next
+  message opened a room of its own, and the paused one closed later with
+  the conversation split in two. Step 1 now finds the newest ACTIVE or
+  PAUSED room whose binding of the channel names the sender, else where a
+  participant who is the sender was reached through it, the newest room
+  winning whatever its status; the message's delivered commit resumes it.
+  Step 3 reads the ACTIVE rooms and the PAUSED rooms whose binding of the
+  channel is `group`, "exactly one" counting both; any other PAUSED room
+  is no one's to be admitted into, and CLOSED and ARCHIVED rooms are never
+  read. A delivery status that names no room finds the ACTIVE or PAUSED
+  room whose binding names its recipient, else the one ACTIVE room as
+  before, and resumes nothing. `find_room_ids_by_channel()` takes
+  `group=` (`True`, `False`, or `None` for both). Migrate: a custom store
+  that overrides `find_room_ids_by_channel()` takes the keyword; a host
+  that relied on a paused room's correspondent getting a fresh room closes
+  the room instead.
+
+- **BREAKING — a channel's type decides its addressing, as RFC Appendix A's
+  table gives it** (RFC §5.7, Appendix A, RMK-930). Addressing was decided
+  per factory, so a channel of a type built otherwise compared its
+  addresses as written and wrote its recipient under `recipient_id`: a
+  VOICE channel kept `+1 (555) 000-0001` as typed, and a `TransportChannel`
+  of type SMS or MMS built directly neither wrote numbers in E.164 nor
+  recorded its sender as its recipient. The new
+  `roomkit.channels.addressing` module holds the table:
+  `addressing_of(channel_type)` gives a type's `ChannelAddressing`
+  (`addressing`: `Addressing.PHONE_NUMBER`, `EMAIL_ADDRESS`, `CHAT` or
+  `AS_WRITTEN`; `recipient_key`; `chat_key`; `replies_to_sender`): SMS,
+  MMS, RCS and WhatsApp by phone number under `phone_number`; WhatsApp
+  Personal likewise, its groups under `group_jid`; VOICE by phone number
+  with no recipient; EMAIL by address under `email_address`; Messenger as
+  written under `facebook_user_id`; Telegram and Teams by chat under
+  `telegram_chat_id` and `teams_conversation_id`, their chats under
+  `chat_id` and `conversation_id`; any other type as written, with no
+  keys. The key names are the ones the factories already used. Aligned:
+  VOICE (numbers in E.164, `VoiceChannel.normalize_address`), MMS (by phone
+  number, which only the SMS factory's events named), and every type built
+  through `TransportChannel` directly. Discord, Buzz and the HTTP webhook
+  keep their own declarations (a webhook's `recipient_id` is forwarded to
+  its provider and names no one). `TransportChannel(...)` takes
+  `addressing=` (its type's when omitted) and `country_code=` in place of
+  `recipient_key=`, `reply_metadata_key=`, `replies_to_sender=` and
+  `address_normalizer=`; `TransportChannel.addressing` returns the
+  declaration. Migrate: `TransportChannel(id, ChannelType.TELEGRAM,
+  recipient_key="telegram_chat_id", reply_metadata_key="chat_id")` becomes
+  `TransportChannel(id, ChannelType.TELEGRAM)`, and a custom declaration
+  `addressing=ChannelAddressing(Addressing.CHAT, recipient_key="k",
+  chat_key="c")`; a bare `TransportChannel` of type SMS writes its
+  recipient under `phone_number`, not `recipient_id`.
+
+- **BREAKING — a proactive delivery's key names one publication in its room,
+  whatever transport carries it** (RFC §22.1, §13.4, §13.6, §14.3, RMK-930). A
+  keyed `deliver()` looked its key up only once its transport was resolved, in
+  that transport's own records (the room's keys for a text transport, the
+  voice delivery records for a realtime voice host): a retry whose transport
+  had been detached since was refused (`no_transport`, `channel_unavailable`)
+  instead of given its original outcome, and one that resolved a transport of
+  the other kind (a voice host plugged in since the first attempt) published
+  the content again. The key is now looked up within the room, whatever
+  channel committed it, before any transport is resolved, and the lookup, the
+  transport's resolution and the publication's commit run in one section under
+  the room lock, so a concurrent replay waits for the first and finds its key;
+  a match returns the original outcome (`duplicate=True`, the original event,
+  or the blocked record's reason) and publishes nothing. The call waits for
+  that lock within `process_timeout`, as the pipeline does: past it,
+  `deliver()` returns `blocked` with the reason `process_timeout` (the
+  `process_timeout` framework event emitted), nothing published. A replayed
+  publication's `inbound` carries no delivery handle (`inbound.delivery is
+  None`): it has no delivery of its own to follow. An inbound message's key
+  stays scoped to its source channel. Postgres and SQLite index
+  `events(room_id, idempotency_key)` where a key is set, and SQLite its
+  `idempotency(room_id, key)` table, so the lookup reads through an index;
+  Postgres `init()` creates its index only when missing (a `CREATE INDEX`
+  locks the table even when the index exists), and an SQLite file moves to
+  schema version 10.
+  Migrate: a caller that awaited `outcome.inbound.delivery.wait()` on a
+  duplicate checks `outcome.duplicate` first; a custom store answers
+  `channel_id=None` in both key lookups (see "an idempotency key is unique per
+  room and per source channel").
+
+- **BREAKING — a publication's key is stored in a namespace of the framework's
+  own, which no message can enter** (RFC §22.1, RMK-930). Looked up within the
+  room, a proactive key matched any event of the room carrying it: on a
+  channel whose client chooses its key (a WebSocket, a webhook), a sender who
+  keyed a message like a coming notification made that notification a replay,
+  never published, its caller handed the sender's event as the original
+  outcome. A keyed `deliver()` now stores its publication under
+  `roomkit:publication:<key>`, and the lookup within the room reads that key
+  only. Only the delivery path writes the namespace: the pipeline drops a key
+  in it from any other message, whoever wrote it (the sender, the channel's
+  parser), `send_event()` and `commit_event()` raise `ValueError` for one,
+  nothing written, and a delegated turn's trace rows are committed without
+  one. The key is part of the committed event, so the lookup, the transport's
+  resolution and the commit stay one locked section, and the stores'
+  per-channel uniqueness (`room_id, source.channel_id, idempotency_key`) never
+  sets a publication against a message keyed alike. `AFTER_DELIVER` still
+  reports the application's key.
+  Migrate: code that reads a publication's stored `idempotency_key` reads
+  `roomkit:publication:<key>`; a publication stored before the upgrade keeps
+  its bare key and is not told from a sender's message, so a replay across the
+  upgrade publishes once more; an inbound key starting with
+  `roomkit:publication:` is no key.
+
+- **BREAKING — a direct injection's source travels as its channel's
+  category says** (RFC §10.5, RMK-930). `send_event()` stamped every event
+  `INBOUND`, an intelligence channel's included, so an agent's event read
+  as a message coming in: its author was the participant it named, and an
+  agent that edited or deleted its own injected message without naming one
+  was refused `identity_required_for_edit`. The source is now `OUTBOUND`
+  for an intelligence channel, whose event is its own words going out, as
+  its responses are, and `INBOUND` for a transport. Migrate: a hook
+  registered with `directions=[EventDirection.INBOUND]` to see an agent's
+  `send_event()` adds `OUTBOUND`; code that reads an agent's injected event
+  as a participant's reads its channel as its author.
+
+- **BREAKING — `process_timeout` is one deadline from the call's start**
+  (RFC §13.6, §10.1 step 2, §10.5, RMK-930). The bound started once the
+  message was routed: the identity read and the router ran unbounded, a
+  routed message's wait for the room lock to record its sender took a full
+  `process_timeout` of its own, and step 2's attach to a room that exists
+  waited for the lock without bound, so a 30 s setting could hold the caller
+  60 s or forever. The deadline is now set as `process_inbound()` starts and
+  bounds every wait before the decision: the identity read, the router, the
+  read of the room it names, step 2's waits for the room lock (the record of
+  a routed sender, the attach of an unbound channel), then the context
+  build, the parse, the off-lock check and the locked gates. Step 2's
+  locked section itself carries none, and a room step 2 creates (its
+  creation, its `ON_ROOM_CREATED` hooks, its attach) is completed whatever
+  the deadline. Past it the message is refused `process_timeout`, never let
+  in unrecorded or unattached; the `process_timeout` framework event's
+  `room_id` is `None` when the deadline passed while the message was routed.
+  `send_event()` reads its room within its deadline too. Migrate: a router
+  or an identity store slower than `process_timeout` raises the setting.
+
+- **BREAKING — a call into a room from the room's own work is part of that
+  work, and every loop it can make stops** (RFC §9.5.1 Reentrance, §8.3, §9.4,
+  §10.5, RMK-930). Each `send_event()` and `process_inbound()` opened a
+  cascade with a reentry budget of its own, whatever called it, so a locked
+  hook or an off-lock hook that injected on every event, a channel whose parse
+  sent a message into its room for every message, a transport whose
+  `deliver()` sent one on every delivery, and an agent that injected through
+  another channel at each turn (always at depth 0) filled the room without
+  end. Now:
+  - a call into the room made under its lock (a locked hook, code under the
+    lock) is nested in the section holding it and draws on the reentry budget
+    of the cascade whose section that is; one made from an off-lock hook's
+    body, from a `hook_error` handler of that check, or from a channel's
+    `handle_inbound()` is adopted beside the event being processed, takes no
+    admission ticket, runs every hook under the lock and draws on that event's
+    budget;
+  - a call made from a delivery set's deliveries or turns (a transport's
+    `deliver()`, an agent's `on_event()`, a tool handler, a `TurnHost` verb, a
+    streamed reply's reading) is a new arrival, with its ticket and its
+    `process_timeout`, answered at its decision when its own delivery could
+    only wait behind its caller's, and draws on the budget of the cascade that
+    delivers, as does the cascade it starts, when it comes into the room the
+    set delivers in or creates a room, routed or named (the router answering
+    none or naming a room the store lacks, `process_inbound(..., room_id=...)`
+    naming one), charged once before the room is created; a call into another
+    existing room has a budget of its own;
+  - each such call is charged one pass as it starts: past the budget,
+    `send_event()` stores the event BLOCKED `reentry_loop_cap`, no hook run,
+    with the visibility its pass would have had, and returns that record (a
+    room that refuses events raises `RoomClosedError`), and
+    `process_inbound()` returns `InboundResult(blocked=True,
+    reason="reentry_loop_cap")` with no event, before its parse. A message
+    naming its room is charged before anything else, its channel's lookup and
+    step 2's attach included, so past the budget nothing is created, attached
+    or stored; a routed message, and one naming a room the store lacks, is
+    charged once step 2 knows its room, and once only, wherever routing places
+    it (a room another call created first included);
+  - a call made while a turn or a tool call runs (a realtime or a conference
+    call included), by it or a task it spawned, into whatever room, is at
+    least as deep as the turn's response or the call's: `send_event()` and
+    `process_inbound()` raise the event's `chain_depth` to it, so an agent
+    that injects at each turn stops at `max_chain_depth` as its answers do.
+    The floor holds where the owner runs the turn's code: a turn on the
+    in-memory turn backend that calls the kit it holds, and a tool handler or
+    a `TurnHost` verb on any backend. With a Redis turn backend the turn's own
+    code runs on its executor, outside the owner's context, and reaches the
+    room through its `TurnHost`, whose verbs carry the depth while the turn
+    runs. A call into another room has a budget of its own, and work a turn, a
+    tool call or a delivery began starts fresh once that work is over: depth 0
+    and a budget of its own (a result delivered later on the turn's behalf, a
+    delegation's, names the turn's depth itself). So does a `TurnHost` verb
+    made after its turn ended, which crossed as a `room_call` at the turn's
+    response depth, the owner holding it there (0.106.0): its `send_event` is
+    at the depth it names. Migrate: work after the turn that must continue the
+    turn's chain passes `chain_depth` itself;
+  - a message routed (no `room_id`) back into the room whose lock the caller
+    holds, or in whose admission order it stands (an off-lock hook's body, a
+    parse), raises the new `ReentrantCallError` before anything is written:
+    its room known only once routed, it cannot be adopted. A message routed
+    back from a turn or a delivery is a new arrival;
+  - what the hooks of an event injected directly under the lock inject joins
+    the queue of the section holding the lock, committed once that section has
+    released it, after the event being processed (RFC §9.4); it committed
+    inside that section, ahead of it. Under a lock held outside any pass (a
+    host serialising its changes), those passes commit once that lock is
+    released, after the call returns.
+  Migrate: a hook or a channel that sends into its room on purpose, more than
+  `10 × max_chain_depth` times for one event, raises `max_chain_depth`; a hook
+  that routes a message into its own room names the room
+  (`process_inbound(..., room_id=...)`); code that read an agent's injected
+  event at depth 0 reads it at the turn's response depth.
+
+- **BREAKING — a sixth composite level is refused where it is built, at
+  every boundary** (RFC §5.3, RMK-930). The `CompositeContent` validator
+  counted the levels, but `model_copy(update=...)` skips validators, so a
+  hook's modify, a hook's injected event, a channel's parse, a channel's
+  response or a host's own call could assemble a sixth level and have it
+  committed. Now `process_inbound()` raises `ValueError` for a message
+  holding one before anything is read (no room is routed or created) and for
+  the event its channel parses, nothing stored; a hook result carrying one,
+  as its replacement or as an injected event, is an unusable result
+  (`hook_error`, the hook's `fail_closed` applies), nothing of it applied; a
+  channel's response holding one fails its reaction, reported as that
+  target's failed delivery; `send_event()`, `commit_event()` and
+  `update_event()` raise `ValueError` before anything is read. An edit's new
+  content counts its levels in the edit's place. The new
+  `roomkit.models.event.holds_too_deep()` and `refuse_too_deep()` are the
+  one count, the validator's included. Migrate: content assembled with
+  `model_copy()` is checked with `refuse_too_deep()` before it is sent, or
+  flattened to five levels; a webhook handler that answered a malformed
+  message with a blocked result catches `ValueError` from
+  `process_inbound()`.
+
+- The classifier policy's questions read a turn as people meant it (RMK-914),
+  each measured with Jev on live and written turns, three calls each:
+  `answers` weighs what the agent has in mind against a question still open,
+  asked in the last turn or before it and answered by no one since (8/9, the
+  former 5/9: the others often hesitate a turn before anyone answers);
+  `unfinished` reads how the turn ends, not a hesitation inside it, nor "I do
+  not remember" (17/19, the former 12/19); `directness` reads a turn about the
+  agent said to someone else, or asking someone to explain something to it,
+  as not addressing it (14/14, the former 9/14: the agent answered in that
+  person's place); `hush` no longer reads "are you ready to listen?" as a
+  request for quiet (7/7, the former 5/7).
+
+- Who takes part, silent people included (RMK-904). An agent that joins a
+  meeting where one person speaks while others listen read that person's words
+  as an anonymous user's until a second one spoke, and did not know the others
+  were there. Who takes part is now read from the room's roster: its active
+  participants who are neither bots nor observers (an observer reads without
+  taking part; a `ParticipantRole.AGENT`, a human advisor, takes part), nor on
+  the agent's own channel, and whose messages reach the agent (a person
+  reached only through a channel whose visibility withholds it from the agent
+  is not named). When two people or more take part, every turn is labelled
+  from the first (`Alice: "..."`), by every reader of the room alike (the AI
+  channel's conversation, an ACP agent's request, a `<task>` block's asker, a
+  memory summarizer's lines), and the AI channel's turn notes name them, each
+  quoted (`[People taking part besides you, from the runtime: “Alice”, “Bob”.
+  ...]`), so the agent can address someone who has not spoken yet. A
+  `ConferenceChannel` keeps the roster; an integration that bridges a meeting
+  into one stream writes it with `kit.add_member`. A room with one person on
+  its roster, or none, is unchanged. A speak policy's `SpeakTurn.people` is
+  the same list: an observer, and a person whose messages do not reach the
+  agent, are no longer in it, and each person is named as the room's record
+  names them (a nameless one by their channel, `@sms1`, rather than their id;
+  a look-alike name with its rank). See `examples/ai_people_taking_part.py`.
+
+- A turn's scan for a runtime mark's copy split over consecutive user
+  messages reads only the boundaries of a run of unanswered messages it has
+  not seen before (RMK-882): each boundary is read in a window that holds
+  any copy across it, gaps of spacing or markup of any length included, and
+  remembered once found clean, so a run grown at its end or slid at its head
+  out of a memory's window scans its new boundary alone. A run that holds a
+  split copy goes through the whole scan on every turn, as before. Measured
+  on runs of 8 KB messages, one more each turn: about 4 ms per turn for 50
+  messages, growing or slid out of a window of 50 events, instead of 177 ms;
+  one message's own scan takes about 3.5 ms.
+
+- The Redis turn backend guide's prerequisites say redis-py 8.0.0 does not
+  serve a backend on a unix socket (RMK-869): its sync client, which the
+  beat thread uses, fails the first call of each new `unix://` connection and
+  keeps that connection without selecting the URL's database. One beat is
+  lost per connection, the immediate retry after a cut among them, and with
+  a database other than 0 every beat lands in database 0, so the other
+  processes take the process for lost. 8.0.1 and later work, as do 5.0.2 to
+  7.4; the `redis` extra is unchanged.
+
+- RFC §23.4 says what `cancel_task` answers past the record of ended tasks
+  the kit keeps (the latest 1024, all rooms together): a task that ended
+  while the status bus still lists it running reads as no task of the room
+  (RMK-876). The bound stays one for all rooms; RMK-871 and RMK-875 removed
+  the known causes of a line left running after its end.
+
+- The RFC (§10.6, §10.6.8), `TurnLinkError`'s docstring and the Redis turn
+  backend guide name `backend_closed`, the reason a turn still in flight fails
+  with when its owner's turn backend closes (RMK-878). The RFC said
+  `executor_lost` there, which the code never reported: the executor is not
+  lost.
+
+- The in-memory turn backend's `no_executor` refusal of a committed event
+  names the room hooks no executor defines, as the Redis backend's and its own
+  refusal of a turn did (RMK-883).
+
+- An answer a barge-in cut reads, in the AI context, with how far the person
+  heard it (RFC §6.4): `[The person cut you off during this answer, 5.7 s in:
+  they heard it up to “…” and not the rest.]`, where it read "[You were
+  interrupted while saying this: the person may not have heard the end of
+  it.]". The quote is an estimate, ending early rather than late: no TTS word
+  is timed, so the words are taken by their letters at the share of the
+  answer's audio that played, less two words, or at 11 letters a second when
+  that share is unknown. The words are the agent's, which a participant may
+  have led it to say: they are quoted on one line between quotes they cannot
+  close, a long quote keeping its end. While the history holds a cut answer,
+  the turn's notes say how one reads, and that an answer without the mark was
+  heard to its end. Measured on Voxtral audio with four models (Mistral Small
+  and Large, Claude Haiku, GPT-6 Luna), eight answers cut at 40%: "did I cut
+  you off?" was answered yes 156 times in 160 (105 with the old mark), and
+  "pick up where you left off" resumed from where the person stopped hearing
+  119 times in 160 (9). Keeping only the words heard, without a mark, as
+  LiveKit Agents and Pipecat do, let the models answer yes 33 times in 160.
+
+- `examples/voice_voxtral.py` runs Mistral's faster turn preset with a 240 ms
+  streaming delay by default (RMK-888; `TURNS=default STREAMING_DELAY_MS=480`
+  gives the service's defaults), and drops emoji before Voxtral Speech.
+
+### Removed
+
+- **BREAKING — `roomkit.core.visibility.effective_visibility`** (RMK-902). An
+  event's stored `visibility` is now the whole answer (RFC §7.3).
+  Migrate: read it, or `roomkit.core.visibility.committed_visibility()` for an
+  event not yet committed.
+
+- **BREAKING — `DeliveryMode` and `ChannelCapabilities.delivery_mode`**
+  (RMK-902). Nothing read them, and the RFC no longer defines them. Stored
+  capabilities that carry the field still load.
+  Migrate: drop the reads of `delivery_mode` and the imports of
+  `DeliveryMode`.
+
+- **BREAKING — `normalize_phone_number` and `normalize_email_address` from
+  `roomkit.channels`** (RMK-930). The package imported them for its factories,
+  so they could be imported from it, documented nowhere; the factories now
+  take their type's addressing, and the two functions live only in the private
+  `roomkit.channels._phone` and `roomkit.channels._email`.
+  Migrate: `normalize_phone_number(address, "1")` becomes
+  `addressing_of(ChannelType.SMS).normalize(address, "1")`, and
+  `normalize_email_address(address)` becomes
+  `addressing_of(ChannelType.EMAIL).normalize(address)` (`addressing_of` from
+  `roomkit` or `roomkit.channels`; see "a channel's type decides its
+  addressing").
+
+- **BREAKING — `TurnRequest.answers`, and the `answers` argument of
+  `EventRouter.react()`, `EventRouter.react_for()`, `TurnClient.run()` and
+  `roomkit.turns.owner.turn_request()`** (RMK-333): an injected event asks no
+  agent.
+  Migrate: drop the argument; see "an injected event asks no agent".
+
+- **BREAKING — `roomkit.core.inbound_router.sender_known_as()`** (RMK-930).
+  Migrate: `known_as(sender, identity)`, in the same module; see "the router
+  is given the organization and the identity".
+
+- **BREAKING — `DefaultInboundRoomRouter(recipient_of=)`** (RMK-930).
+  Migrate: `channel_of=kit.get_channel`; see "routing step 1 finds a binding
+  through its recipient".
+
+- **BREAKING — `TransportChannel(recipient_key=, reply_metadata_key=,
+  replies_to_sender=, address_normalizer=)`** (RMK-930).
+  Migrate: `addressing=ChannelAddressing(...)` and `country_code=`, or nothing
+  for the type's own declaration; see "a channel's type decides its
+  addressing".
+
+- **BREAKING — the `status` argument of `find_room_id_by_binding()`,
+  `find_room_id_by_participant()` and `find_room_ids_by_channel()`**
+  (RMK-930).
+  Migrate: `room_filter=RoomFilter(statuses=[...])`; see "the store's routing
+  lookups take the channel, the sender's identity and a `RoomFilter`".
+
+- **BREAKING — `elapsed_seconds` in a timer transition's
+  `SystemContent.data`** (RMK-930), on its `ON_ROOM_PAUSED` and
+  `ON_ROOM_CLOSED` hooks and its lifecycle record.
+  Migrate: read `data["threshold"]` and `data["at"]`; see "room timers pause,
+  close and resume as RFC §5.1 says".
+
 ### Fixed
 
 - A thought taken while the agent answers in the room wants to say nothing
   yet (RFC §6.4, RMK-914). Its context did not hold the answer under way, so
   the agent wanted to say it again: an application raising a hand on an
   offer raised it right after the agent's own answer.
-
-- **Security:** a routed message's room is checked again under the room lock,
-  not only its binding (RFC §10.1 step 2, §10.4, RMK-930). Someone heard on
-  the channel, or added on it as a member, between the router's read and the
-  lock no longer lets the sender be recorded on a binding that named no one:
-  the agent's answers to that person would have gone to the sender. The
-  check is the default router's own step 3, whichever router chose the room.
-  A room closed or archived by then, a paused one that is not the sender's
-  conversation (its binding names them, a participant they are was reached
-  through the channel, or the binding is `group`), and a binding naming
-  another correspondent, by its participant or else its recipient, leave
-  the room as it was: the message is routed once more, its identity not read
-  again, and a second answer that is not the message's, like none, gives it
-  a new room. A routed room that does not bind the channel is attached under
-  that lock, after the check, so one that is no longer the message's gets no
-  binding. Before, a room closed meanwhile refused the message
-  `room_closed`, the second answer was kept whatever it was, and a stranger
-  routed to a binding holding only a recipient wrote that recipient on it.
-  A member of the room reached through the channel no longer lands in it
-  when its binding names someone else: the room answers that person's
-  address. A message routed to an existing room now takes its lock once
-  before step 3, whether or not anything is recorded.
 
 - An agent with a thinker no longer goes mute on Claude (RMK-912). The note
   that carries its thought into the turns it speaks offered the model "your
@@ -552,20 +1383,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its length only.
 
 - Work handed to a task of its own leaves nothing unawaited when the task is
-  cancelled before its first step, a close or a teardown right after the
-  work was scheduled (RMK-909): a conference room's publication and its
-  utterance's close, a conference realtime report, a superseded voice turn's
-  marking, the coroutine an `on_video_detection` callback returns, a turn's
-  channel an executor builds, and the `ON_RECORDING_STARTED` subscribers a
-  recording's announcement had not reached. A realtime voice session's start
-  cut or refused before its transport takes the connection closes the
-  coroutine its caller handed it. Each raised `RuntimeWarning: coroutine ...
-  was never awaited`, which fails a host's tests under `-W error`. A
-  conference room's publication cancelled that early no longer stays held
-  either: the room's teardown waited out its budget for it, then logged
-  that it went ahead. And an `on_call_ended` callback of
-  `RealtimeAVBridge` may return a future, as `on_video_detection` may: it
-  raised `TypeError` from the call's end.
+  cancelled before its first step, a close or a teardown right after the work
+  was scheduled (RMK-909): a conference room's publication and its utterance's
+  close, a conference realtime report, a superseded voice turn's marking, the
+  coroutine an `on_video_detection` callback returns, a turn's channel an
+  executor builds, and the `ON_RECORDING_STARTED` subscribers a recording's
+  announcement had not reached. A realtime voice session's start cut or
+  refused before its transport takes the connection closes the coroutine its
+  caller handed it, and an Anam avatar's send and the coroutine a channel's
+  trace callback returns, called where no event loop runs, are closed too.
+  Each raised `RuntimeWarning: coroutine ... was never awaited`, which fails a
+  host's tests under `-W error`. A conference room's publication cancelled
+  that early no longer stays held either: the room's teardown waited out its
+  budget for it, then logged that it went ahead. And an `on_call_ended`
+  callback of `RealtimeAVBridge` may return a future, as `on_video_detection`
+  may: it raised `TypeError` from the call's end.
 
 - Three ends of a delegated task follow RFC §23.3 and §23.4 (RMK-910). A
   delegation that fails reading its room's context, before
@@ -671,9 +1503,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A `process_timeout` that expires while the identity resolver is still
   answering refuses the message (`blocked`, reason `process_timeout`), as
-  elsewhere in the pre-commit phase, instead of raising `UnboundLocalError`
-  from the resolution's telemetry span. A resolver raising an error with an
-  empty message no longer did the same.
+  elsewhere in the pre-commit phase (RMK-899), instead of raising
+  `UnboundLocalError` from the resolution's telemetry span. A resolver raising
+  an error with an empty message no longer did the same.
 
 - A `delivery_key` names its message's delivery from the start of
   `process_inbound`, as documented (RMK-899, RFC §10.1), no longer from its
@@ -722,11 +1554,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decide; a final its partials left so is judged whole ("No" might have been
   "noted": "No." cuts). A real interruption whose first words may open an
   acknowledgement ("Je voudrais…", "I want…") cuts one partial later, 0.06 to
-  0.35 s on Voxtral; "non", "stop", "attends", "wait" still cut at once. For
-  a detector of one's own: `BackchannelContext.is_final` (default `True`)
-  says whether the transcript is a partial, `BackchannelDecision.pending`
-  (default `False`) gives no verdict yet, and `InterruptionHandler.evaluate`
-  takes `speech_final=` (default `True`).
+  0.35 s on Voxtral; "non", "stop", "attends", "wait" still cut at once. For a
+  detector of one's own: `BackchannelContext.is_final` (default `True`) says
+  whether the transcript is a partial, `BackchannelDecision.pending` (default
+  `False`) gives no verdict yet, and `InterruptionHandler.evaluate` takes
+  `speech_final=` (default `True`).
 
 - The first turn of an agent no longer waits about 0.9 s before its model is
   called (RMK-888): an `AIChannel` or `ACPChannel` compiles the patterns that
@@ -738,16 +1570,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that time instead.
 
 - A Voxtral realtime session given up while open (a voice channel closing)
-  closes in 0.2 s rather than 1.1 s: the socket no longer waits for
+  closes in 0.2 s rather than 1.1 s (RMK-888): the socket no longer waits for
   Mistral's late answer to its close frame.
 
 - A live agent's turn after the kit's own executor closed (a host calling
   `kit.turn_executor.close()` while the kit runs) fails with `no_executor`
   (RMK-880). It went to a host executor that declares the channel, whose copy
-  answered without the live agent's state. Both backends read
-  `TurnExecutor.hosts_channel(channel_id)`, new: what an executor declares
-  while it serves, closed or not, for a backend of your own to keep the same
-  rule (RFC §10.6.7).
+  answered without the live agent's state. Both backends read the new
+  `TurnExecutor.hosts_channel()` (see Added), which a backend of your own
+  reads to keep the same rule (RFC §10.6.7).
 
 - A room's `room_attached` and `room_detached` of a channel the kit holds
   live reach only the kit's own executor (RMK-881). They reached every
@@ -780,110 +1611,226 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unrelated moment, a failure under `-W error`): the call's work is begun by
   its own task, never before it (RMK-901).
 
-### Changed
+- A room a `BEFORE_BROADCAST` hook closed refuses the event as a closed room
+  does (RFC §10.1 step 9a, RMK-930). A hook that called `close_room()` let
+  the message it ran for be stored DELIVERED and its agent asked, an
+  instruction be delivered, and an agent's response or an injected event be
+  stored in the closed room. Once a hook ran under the room lock the room is
+  read again, and one that no longer accepts events refuses the event
+  `room_closed`, as step 6 does: nothing of it stored, what its hooks
+  returned dropped (their injected events included), and
+  `room_refused_event` emitted (`operation` `inbound`, or `reentry` for a
+  response and an injected event). `send_event()` raises `RoomClosedError`
+  alike.
 
-- **BREAKING — room timers pause, close and resume as RFC §5.1 says**
-  (RFC §5.1, §8.2, §10.1 steps 6 and 12, §26.1, RMK-930). The timers only
-  ran when the host called `check_room_timers()`, measured both thresholds
-  from `last_activity_at` (so an ACTIVE room closed without pausing), never
-  transitioned a room with no activity, took the check's instant, and
-  nothing resumed a PAUSED room. Now:
-  - `Room.paused_at` (new, null unless PAUSED) records when the room
-    paused, and the close timer counts from it: an ACTIVE room closes only
-    once it has paused. Inactivity counts from `last_activity_at`, or from
-    `created_at` while the room has had none: `create_room(timers=...)` and
-    `set_room_timers()` no longer stamp `last_activity_at` with the call's
-    instant.
-  - A delivered commit (an event the pipeline stores DELIVERED) resumes a
-    PAUSED room in its transaction: ACTIVE, `paused_at` null, no hook, no
-    framework event. What is no activity resumes nothing.
-  - Every locked section that reads the room's status applies the
-    transitions due at its instant first: the inbound gate and
-    `send_event()`, a response's and an injected event's pass, the records
-    stored in place of an answer, `attach_channel()`, `detach_channel()`
-    and the binding setters, `commit_event()`, `update_event()`,
-    `delete_event()`, `close_room()`, `archive_room()`,
-    `start_room_recording()` and a regeneration. A message to a room that
-    fell due is refused as if the timer had run on time: `room_paused`,
-    `room_closed`, then its `room_refused_event`.
-  - A transition takes the instant it fell due, however late it is
-    applied: a check long after both fell due pauses the room at the first
-    instant and closes it at the second, in one write (`paused_at`,
-    `closed_at`). Each emits `room_paused` or `room_closed` (`reason =
-    timer`) once stored; its `ON_ROOM_PAUSED` or `ON_ROOM_CLOSED` hook
-    fires once the room lock is released (`check_room_timers()` waits for
-    it before returning), in the room's context as the transition left it.
-    The hook's and the lifecycle record's `SystemContent.data` are now
-    `{"threshold", "at"}` (`elapsed_seconds` is gone).
-  - Stored format: `PostgresStore.init()` adds the `rooms.paused_at`
-    column when missing, and a room stored PAUSED takes its `updated_at`
-    as the instant it paused; an SQLite file moves to schema version 9,
-    alike. A custom store must round-trip `Room.paused_at` and resume a
-    PAUSED room in an activity `commit_event()`.
-  - A transition is written with the new
-    `ConversationStore.update_room_if(room, *, status, paused_at,
-    last_activity_at)`, a compare-and-set on the state it was computed
-    from: a streamed row or a greeting, which commit without the room lock,
-    that resumed the room or moved its activity meanwhile is never
-    overwritten by a stale close or pause. The shipped stores do it in one
-    transaction holding the room's row; the ABC's default reads, compares
-    and writes (not atomic), and a custom store committing off the lock or
-    shared across processes should override it.
-  Migrate: to close a room N seconds after its last activity with no pause
-  between, set `inactive_after_seconds=N, closed_after_seconds=0`; code
-  that read the creation instant from `last_activity_at` reads
-  `created_at` while it is null.
+- An instruction's result reports the room's next index once its hooks ran
+  (RFC §10.1 step 9a, §10.1.1 step 5, RMK-930), allowed or blocked. What a
+  hook committed during them (a `send_event()`) took the index the hooks
+  were shown, and the instruction's result still reported it: in a room of
+  four events, both read 4. The room read again after the hooks gives the
+  event its next index, 5 here; a stored event took its own at its commit
+  already.
 
-- **BREAKING — a lifecycle record is no activity, and a store's
-  `commit_event()` takes `activity`** (RFC §5.1, RMK-930). Every commit
-  moved the room's `timers.last_activity_at`, the records RoomKit writes
-  for a lifecycle change included (a channel's attach, detach, mute,
-  unmute or update, a participant's change, a timer's transition), so a
-  mute restarted the room's inactivity timer. Those records keep their
-  shape (their lifecycle type or `SYSTEM`, a `SystemContent`, source
-  `system`, visibility `internal`, the next index, counted in
-  `event_count`, never delivered, no hook of their own) and now leave
-  `last_activity_at`. `ConversationStore.commit_event(room_id, event, *,
-  target=None, activity=True)` takes the new keyword: only an activity
-  commit moves `last_activity_at`. The framework passes `activity=False`
-  for what is no activity, so a custom store that overrides
-  `commit_event()` must accept the keyword, or the first lifecycle record
-  raises `TypeError`; the shipped stores and the ABC's default take it.
+- An edit delivered to a channel that does not edit is one text, the edit's
+  text form (RFC §6.6, RMK-930): `Correction: ` followed by the text form of
+  its new content. A new content that was not a text reached the channel
+  without the prefix, as a new message: a file to a channel that takes
+  files, a composite keeping a file, a rich text to a channel that takes rich
+  text; and one the transcoder could not carry read `[Correction]`. An edit
+  of a photo now reads `Correction: [Media: https://example.com/a.jpg]`.
 
-- **BREAKING — a record stored BLOCKED and a record committed outside the
-  pipeline are no activity** (RFC §5.1, §10.1 step 10, §10.5, RMK-930).
-  A message a hook blocked or a muted source sent, an answer past the
-  chain-depth limit or the reentry budget, a `kit.commit_event()` record
-  and a delegated task's trace each moved the room's `last_activity_at`,
-  so an audit record nobody receives kept an idle room alive. They now
-  leave it. A `commit_event()` record's index is passed by the room's
-  delivery lane at its turn with nothing to run, as before.
+- `ON_EVENT_UPDATED` and `ON_EVENT_DELETED` hooks read the room as the
+  change's commit left it (RFC §10.3, §9.2, RMK-930). An entry a hook
+  committed during the change's hooks (a `send_event()`) was missing from
+  their `recent_events`, which end with the change as committed, and
+  `ctx.room` read the counters from before the change; the history now holds
+  it, and `ctx.room.event_count` and `latest_index` are the change's commit's.
 
-- **BREAKING — a room transition already done does nothing, and
-  `close_room()` refuses an ARCHIVED room** (RFC §5.1, RMK-930).
-  `close_room()` read no status: closing a CLOSED room wrote it again with
-  a new `closed_at` and fired `ON_ROOM_CLOSED` and `room_closed` again, and
-  closing an ARCHIVED room made it CLOSED. Closing a CLOSED room now
-  returns it as stored, writing and firing nothing, as archiving an
-  ARCHIVED room did (which no longer stops its recordings again either);
-  closing an ARCHIVED room raises the new `TransitionRefusedError`
-  (`room_id`, `status`, `transition`), nothing written: no call takes a
-  room out of ARCHIVED. Breaking for code that closed an archived room, or
-  that counted on a second close firing its hook again.
+- A coordinate in a location's text form is written with one decimal at
+  least, the shortest that reads back as the same number, never with an
+  exponent (RFC §6.6, RMK-930): a latitude of 0.00005 read `5e-05` and now
+  reads `0.00005`. Only the text of such tiny coordinates changes: 45 still
+  reads `45.0`, 45.5 `45.5`.
 
-- **BREAKING — a binding change that changes nothing writes and fires
-  nothing** (RFC §7.2, RMK-930). `mute()` on a muted channel wrote the
-  binding, added a `CHANNEL_MUTED` record and fired `ON_CHANNEL_MUTED`
-  again, `unmute()` likewise, and `set_visibility()`, `set_access()`,
-  `update_binding_metadata()`, `mute_output()` and `unmute_output()` wrote
-  the binding (and a `CHANNEL_UPDATED` record) with the values it held. Each
-  now returns the binding as stored, with no write, no record and no hook,
-  so a retried call duplicates nothing. A gate change (`mute()`, `unmute()`,
-  `mute_output()`, `unmute_output()`, `set_access()`) still pushes the
-  binding as stored to the channel (`Channel.update_binding()`), whose
-  cached gate state may have drifted from the store: a repeated mute never
-  leaves audio flowing. Breaking for a hook that counted every `mute()`
-  call rather than every change.
+- Step 2's attach follows RFC §10.1 step 2 (RMK-930). A message naming a room
+  that does not bind its channel attached the channel to a CLOSED or ARCHIVED
+  room, and to one whose close was due, before step 6 refused the message: the
+  room kept a binding no one asked for. The attach now runs under the room
+  lock once the room's due timers are applied, and none is made to a room
+  whose status refuses events; the message is refused `room_closed` with
+  nothing written. A room created for a message had the channel attached after
+  its `ON_ROOM_CREATED` hooks whatever they did, replacing a binding a hook
+  made, or binding a room a hook had closed: the hook's binding is now kept,
+  and the created room is read under its lock, its due timers applied, and
+  attached only when its status takes events, as a room in hand is (a room a
+  hook closed refuses the message `room_closed` there, not routed again). The
+  routed room's claim applies the room's due timers before it checks the room,
+  so a paused room due to close gives the message a new room rather than a
+  `room_closed` refusal. One rule serves the three attaches: a binding made by
+  then is never replaced, and a detached channel is never attached again.
+
+- A delivery status is not given the one room of its channel when that
+  room's binding delivers to another number (RFC §5.7, §10.4, RMK-930). The
+  fallback to the one ACTIVE room bound to the channel checked the binding's
+  correspondent only, so a binding naming no correspondent but carrying
+  another person's recipient took the status, as step 3 never lets a sender
+  in. The binding's recipient, in the channel's form, now names its
+  correspondent there too.
+
+- A phone number is written in E.164 as RFC §5.7 gives the rules (RMK-930).
+  The trunk prefix written `(0)` after a country code was kept:
+  `+33 (0)6 12 34 56 78` gave `+330612345678`, another person than
+  `+33612345678`; it is now dropped, after `+` or `00`. Also aligned: any URI
+  scheme is dropped (`callto:`, not only `whatsapp:`, `tel:`, `sms:`, `mms:`,
+  `rcs:`); a number written with `00` and 14 or 15 digits after it is
+  international (it was kept as written); a result whose first digit is `0`
+  (`+06 12…`, `0006…`) or of more than 15 digits once a country code is
+  given is kept as written instead of written as a number no country has;
+  with a country code, six digits or fewer are a short code counted on the
+  digits as written, so `0123456` (seven digits) takes the code. Digits
+  without `+` and no country code declared are still kept as written, and
+  with a code a number that starts with it is international only when
+  longer than 10 digits.
+
+- A closed room says so when it turns away the record it would store in
+  place of an answer (RFC §5.1, §8.2, RMK-930): the record of an agent not
+  asked at the chain-depth limit, and of an answer past the reentry
+  budget, were skipped silently. Each now emits `room_refused_event` with
+  `operation = reentry`, as a refused pass does, and the status is read
+  under the room lock, which `close_room()` takes: a close landing in
+  between no longer lets the record into the closed room. A discussion's
+  depth stop takes the same gate, which it lacked.
+
+- An off-lock hook that fails is reported when it fails, before the room
+  lock (RFC §9.5.1, §8.2, RMK-930). Its `hook_error` framework event was
+  emitted at step 9 with the hooks under the lock, and never when a gate
+  refused the event first (a closed room, a duplicate, a refused edit or
+  delete). It is now emitted as the check ends, before the wait for the
+  room's turn, once, whatever the gates decide; `hook_timeout` already was.
+
+- A SYNC hook's injected events on a trigger other than `BEFORE_BROADCAST`
+  are dropped with a warning (RFC §9.4, RMK-930). `BEFORE_DELIVER`,
+  `ON_VERIFICATION_REQUIRED` and every other SYNC trigger commit none, and
+  their results' `injected_events` vanished without a word; the
+  `roomkit.hooks` logger now names the hook and the trigger. Only
+  `BEFORE_BROADCAST` and the identity challenge's `inject` commit them.
+
+- `PostgresStore.init()` on an up-to-date schema takes no ACCESS EXCLUSIVE
+  lock on `events` (RMK-930). Its `ALTER TABLE events ADD COLUMN IF NOT
+  EXISTS` statements (`addressed_to`, `responds_to`, `delivery_results`)
+  took that lock on every boot, even with the column there, queuing behind
+  any open transaction on the table and holding up every query behind them.
+  Each column is now added only when `information_schema.columns` lacks it.
+
+- `SQLiteStore.search_events()` no longer finds a soft-deleted message's
+  text (RFC §10.3, RMK-930): the commit that marked it `metadata.deleted`
+  indexed its original content again. A deleted message is now left out of
+  the full-text index; its record keeps the text.
+
+- The record of a failed delivery no longer undoes an edit or a delete (RFC
+  §10.3, §14.3, RMK-930). Once a delivery set with a failure in it had run,
+  the framework rewrote the whole event as it stood at its commit to add
+  `delivery_results`: an edit or a delete committed meanwhile was reverted (a
+  deleted message un-deleted, a second delete then accepted). The new
+  `ConversationStore.record_delivery_results(room_id, event_id, results)`
+  writes the results alone, under the room lock; the in-memory, SQLite and
+  Postgres stores write the field in place, and the default a custom store
+  inherits reads the stored event and writes it back. Postgres stored no
+  delivery results at all: its `events` table gains a `delivery_results JSONB
+  NOT NULL DEFAULT '{}'` column, added by `init()` when missing, existing rows
+  reading as none.
+
+- A regeneration and a held message's release re-run the agents on a
+  message still said (RFC §10.3, §11.7.6, RMK-930). `regenerate_target()`
+  picked the newest transport message whether a DELETE had withdrawn it,
+  and the release re-ran the agents on the last held message even when it
+  had been deleted since: the agent was handed the deleted text as the
+  event it answers. Both now skip a deleted message, and an edit or a
+  delete row (a store whose conversation read serves them), which only step
+  8a may apply; the internal re-run of a named event refuses either.
+
+- A discussion does not answer a message deleted while it waits (RFC
+  §10.3, RMK-930): a turn queued for it, or the dispatch policy's decision
+  on it, took the message from the store as it was and handed its text to
+  the agent, or to the policy, which may pass it to a classifier outside.
+  A deleted message, and an edit or a delete row, is now gone there as a
+  message of another room is: the turn is not given, nothing is decided.
+
+- No history a channel is handed carries a soft-deleted event's content (RFC
+  §7.5 rule 8, §10.3, RMK-929, RMK-930). A DELETE marked its target
+  `metadata.deleted`, and the agents went on reading the text in their
+  context, memory summaries, ACP catch-up, delegation and discussion
+  briefings. The event stays in every channel's history with its id, index,
+  type, source (its provider message id kept), thread, metadata and
+  `channel_data`, so the delete that follows names an event the reader holds,
+  but with an empty text in place of what was said and no
+  `source.raw_payload`; an edit of a deleted event has its new content
+  withheld alike. It holds for `visible_events()`, for the context a channel
+  parses a message with and the one a broadcast delivers with, for a
+  discussion's dispatch turn, a rebuilt tool memory, an answer's cut record
+  and the media an application keeps beside a message (`attached_media`). The
+  stored record keeps its content, and so do the contexts hooks receive.
+  Deleted is what a row's `metadata.deleted` says, which an accepted delete
+  writes on its target and, in the same transaction, on every edit of it,
+  whether or not the persistence policy stores the delete (see
+  `write_change_target()` in Changed), so an edit is withheld even where the
+  history no longer holds the message it corrected; a DELETE row alone (one a
+  host's `commit_event()` stored, or a child room's trace) withholds nothing.
+  An edit stored before this release, of a message deleted before it, carries
+  no mark: it is withheld while the history holds its target, and no migration
+  marks it, since a channel's conversation read serves messages only and an
+  edit reaches a history only with its own broadcast or through a custom store
+  that serves every row.
+
+- An edit or a delete has its target read and validated again once a hook
+  ran under the room lock (RFC §10.1 step 9a, RMK-930). A delete committed
+  during an edit's hooks (a hook's `send_event()`, which commits ahead of
+  the edit) was undone by the edit, which wrote the target's old metadata
+  back with its new content; the edit is now refused
+  `target_event_not_found`, and nothing of it, its hooks' injected events
+  included, is stored.
+
+- An accepted edit or delete reaches no one who could not see its target
+  (RFC §10.3 state updates 4 and 5, RMK-930): its visibility, narrowed by its
+  source binding's, is narrowed again to its target's, and an injected
+  change reaches those of its targets that could see the target. A
+  correction of a message only an advisor saw reached the customer. The
+  change is also delivered with its target as its commit left it: the
+  history handed with an edit held the target's old content, and with a
+  delete the target not yet marked deleted.
+
+- A hook's modify keeps what step 8a checked of an edit or a delete (RFC
+  §9.4, §10.3, RMK-930): its target, and now its `edit_source` or
+  `delete_type` and its kind of content. A hook could turn a sender's edit
+  into a system one, a SENDER delete into an ADMIN one, or hide a change
+  the step never checked: a message rewritten as an `EditContent`, an
+  edit's new content made a delete, a composite with a change among its
+  parts. Such a replacement leaves the original's content; an edit's new
+  content and a delete's reason as the hook rewrote them still stand, and
+  an edit rewritten as text still says that text.
+
+- An edit or a delete targets an event of its room that is not BLOCKED, not
+  deleted and not itself an edit or a delete (RFC §10.3 rule 2, RMK-930);
+  only existence and the room were checked. A refused message could be
+  edited, a deleted one edited or deleted again, and a change changed. Each
+  is now refused `target_event_not_found`. An edited message may still be
+  edited again, and a retried delete that carries its idempotency key is
+  still answered as the first (§13.4).
+
+- An event is an edit only when its type is EDIT and its content an
+  `EditContent`, a delete only when DELETE and `DeleteContent` (RFC §10.3
+  rule 1, RMK-930). Step 8a ran only when the two agreed, while a channel
+  applies a change natively by its content alone: a MESSAGE carrying an
+  `EditContent`, or a composite with an edit among its parts, reached
+  edit-capable channels with no target, author or authority checked. A type
+  and a content that disagree, and a change held anywhere else (a
+  composite's part, an edit's new content), are now refused
+  `target_event_not_found`, nothing stored.
+
+- `LlamaCppAIProvider`'s start timeout names the budget it was given
+  (RMK-922). The message rounded `startup_timeout` to the second, so a
+  budget under one second read "not ready after 0s"; it now prints the
+  configured value ("not ready after 0.1s", "not ready after 120s").
 
 - An intelligence channel the event solicits that is not registered is
   reported failed (RFC §8.2, §10.2 step 3, RMK-930). Its binding outlives
@@ -896,943 +1843,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agent the event does not solicit, and a transport, whose client may be
   connected to another process, are still skipped without a report.
 
-- **BREAKING — a direct `update_event()` that changes nothing writes and
-  fires nothing** (RFC §10.3, RMK-930). Given the content, the source or
-  the metadata the event already holds, it wrote the event again and fired
-  `ON_EVENT_UPDATED`; it now returns the event as stored, as a call naming
-  no field did. Breaking for a hook on `ON_EVENT_UPDATED` that counted
-  calls rather than changes.
+### Security
 
-- **BREAKING — a hook's injected events commit after their cause has
-  released the room lock** (RFC §9.4, §10.1 steps 10 to 14, §13.5,
-  RMK-930). Their passes ran inside the cause's locked section, taking the
-  lock again, so each committed right after its cause with nothing between
-  them and the room's critical section lasted as long as their hooks. The
-  section now queues them, and they run once it has released the lock,
-  each in a pass and a section of its own: another event may commit
-  between a cause and what its hooks injected (an event waiting for the
-  lock, an agent's answer to the cause), as it may between a trigger and
-  its response. Once the cause is decided they no longer depend on its
-  caller: a task the kit holds runs them, so a caller cancelled while
-  another holds the lock, or failing after the decision, loses none (the
-  kit's close cancels that task with its other background work). They
-  still commit before `process_inbound()` and `send_event()` return, the
-  caller waiting for them, in the order their hooks ran, the events an
-  injected pass's own hooks inject right after it; the reentry budget, the
-  chain depth, the visibility and the targets are unchanged. A direct
-  `send_event()` from code holding the lock still commits ahead of the
-  cause, and what its own hooks inject runs once its nested section ends,
-  inside the section it nests in. Breaking for code that read an injected
-  event at the index after its cause's.
+- A routed message's room is checked again under the room lock, not only its
+  binding (RFC §10.1 step 2, §10.4, RMK-930). Someone heard on the channel, or
+  added on it as a member, between the router's read and the lock no longer
+  lets the sender be recorded on a binding that named no one: the agent's
+  answers to that person would have gone to the sender. The check is the
+  default router's own step 3, whichever router chose the room, and a message
+  with no address takes it as any sender's does; only the framework's own
+  sender (`system`) is spared it. A room closed or archived by then, a paused
+  one that is not the sender's conversation (its binding names them, a
+  participant they are was reached through the channel, or the binding is
+  `group`), and a binding naming another correspondent, by its participant or
+  else its recipient, leave the room as it was: the message is routed once
+  more, its identity not read again, and a second answer that is not the
+  message's, like none, gives it a new room. A routed room that does not bind
+  the channel is attached under that lock, after the check, so one that is no
+  longer the message's gets no binding. Before, a room closed meanwhile
+  refused the message `room_closed`, the second answer was kept whatever it
+  was, and a stranger routed to a binding holding only a recipient wrote that
+  recipient on it. A member of the room reached through the channel no longer
+  lands in it when its binding names someone else: the room answers that
+  person's address. A message routed to an existing room now takes its lock
+  once before step 3, whether or not anything is recorded.
 
-- **BREAKING — a hook's injected event fires `AFTER_BROADCAST`, and a
-  realtime host takes it silently** (RFC §9.4, RMK-930). Its delivery set,
-  empty when it is stored only, now fires `AFTER_BROADCAST` like any other
-  event's, so an audit hook sees the notices hooks inject. An injected
-  event asks no agent, and a transport hosting a model is one: a realtime
-  voice channel, or a conference with a realtime model, among its targets
-  now takes its text into the model's context silently, where the model
-  answered it. Breaking for a hook on `AFTER_BROADCAST` that assumed it
-  never saw an injected event, and for an application that relied on a
-  realtime model answering one: inject that event with `send_event()`
-  instead.
-
-- **BREAKING — only the framework writes the visibility `internal`** (RFC
-  §7.3, §8.5, §9.4, RMK-930). `internal` marks a record the framework
-  wrote (a voice channel's interruption record, which an agent reads as
-  the cut it was), yet every door took it from integrator code. It is now
-  refused with `ValueError`, before anything is read or written, by
-  `attach_channel()`, `set_visibility()`, `send_event()` and
-  `InboundMessage(visibility=...)` (a pydantic `ValidationError`), and so
-  is a message's `response_visibility="internal"`, on `send_event()` and
-  `InboundMessage` alike (its answers were stored `none`); a
-  `BEFORE_BROADCAST` hook's modify that writes it, or that changes it on a
-  framework record that holds it (the interruption record), has the
-  event's visibility put back; and a channel's answer, a row of its
-  stream, or the record stored in place of an answer at the chain-depth
-  limit, carrying it (a channel's own) is committed with `none`, a warning
-  logged; a hook's modify that writes it as `response_visibility` writes
-  `none`. An event stored for no channel takes `none`.
-  `kit.commit_event()`, a record outside the pipeline, still stores the
-  visibility it is given. Migrate: `visibility="internal"` →
-  `visibility="none"`, `response_visibility="internal"` →
-  `response_visibility="none"`.
-
-- **BREAKING — a room is created once** (RFC §14.3, §10.1 step 2,
-  RMK-930). The in-memory and SQLite stores replaced the room held under an
-  id that `create_room()` was given again (`INSERT OR REPLACE`): a second
-  creation re-homed the conversation, its organization, metadata and
-  status, another organization's included, while the Postgres store raised
-  asyncpg's own error. Every store now refuses it with the new
-  `RoomAlreadyExistsError`, nothing written, and the room it holds is
-  kept; `kit.create_room()` raises it, the recorders it started stopped. A
-  message whose named room another call created meanwhile reads that room
-  again as one that exists, for the caller's organization, instead of
-  replacing it. After a restart the Buzz huddle watcher reuses its
-  announcements room only when it is the room it opens (no organization, a
-  status that takes events) and otherwise refuses to bridge, naming the
-  room, rather than feed every announcement to a room someone else created
-  under its id. Room ids are global: the refusal is raised whichever
-  organization holds the id, and says only that it is taken, nothing of the
-  room. A host that lets its tenants choose room ids must namespace them or
-  let RoomKit generate them, since a refused id is one another tenant may
-  hold. Breaking for code that called `create_room()` on an id it may
-  already hold: read the room first, or catch the error. A custom store
-  must refuse alike.
-
-- **BREAKING — a hard delete takes the edits and deletes of every event it
-  removes, and fires `ON_EVENT_DELETED` per removed event** (RFC §10.3,
-  §14.1, RMK-930). `kit.delete_event()` kept the EDIT rows of the events it
-  removed, and they hold the corrected text a host deleting the message
-  means to remove; whatever `cascade_replies` says, those changes now go
-  with it, in the same transaction, their idempotency keys released. The
-  trigger fired once, with the root; it now fires once per removed event,
-  each with the event as it was stored, so a projection over the timeline
-  sees every row that went. `kit.delete_event()` still returns the removed
-  ids, now the root, its replies, then the changes.
-  `ConversationStore.delete_event()` returns the removed events as stored
-  (`list[RoomEvent]`, in that order) instead of their ids: a custom store
-  must return them, and a caller of the store's method reads `.id`. No
-  schema changes: the stores find a change by its content's target.
-
-- **BREAKING — an edit or a delete commits with its target, in one
-  transaction** (RFC §10.3, §14.3, RMK-930). The pipeline wrote the edited
-  content (or `metadata.deleted`) on the target with `update_event()`, then
-  committed the EDIT or DELETE: a commit that failed in between left the
-  target changed with no row saying so. `ConversationStore.commit_event()`
-  takes a keyword-only `target`, the target as the change writes it, and
-  the in-memory, SQLite and Postgres stores write it in the commit's own
-  transaction; a target the room no longer holds, or another room's, fails
-  the whole commit with the new `EventNotFoundError`, nothing written. The
-  framework passes `target` only with a change, so a custom store that
-  overrides `commit_event` must accept it before an edit or a delete
-  commits. An edit or a delete the persistence policy keeps out of the
-  timeline still writes its target, alone. No schema changes.
-
-- **BREAKING — `ON_SPEAK_DECISION` is a SYNC trigger: its hooks change the
-  decision the channel acts on** (RFC §6.4, §9.2, RMK-914). A hook could only
-  observe a decision; an application that wanted to act on it in code (raise
-  a hand rather than let the agent offer aloud) could not. The SYNC hooks now
-  run in order before the channel acts: `HookResult.modify` with
-  `dataclasses.replace(event, decision=...)` replaces the decision (only the
-  decision is read), `HookResult.block` leaves the agent silent (`blocked by
-  <hook>`). The trigger is fail-open; a fail-closed hook that fails, or one
-  registered on a room whose hook context cannot be built, leaves the agent
-  silent. ASYNC hooks observe the decision that stands.
-  `examples/raise_hand_on_offer.py` turns an offer into a raised hand.
-  Migration: a hook registered SYNC (the default) that returns `None` now
-  logs an unusable result on every decision and holds the decision up while
-  it runs; register it `execution=HookExecution.ASYNC`, or return
-  `HookResult.allow()`.
-
-- The classifier policy's questions read a turn as people meant it (RMK-914),
-  each measured with Jev on live and written turns, three calls each:
-  `answers` weighs what the agent has in mind against a question still open,
-  asked in the last turn or before it and answered by no one since (8/9, the
-  former 5/9: the others often hesitate a turn before anyone answers);
-  `unfinished` reads how the turn ends, not a hesitation inside it, nor "I do
-  not remember" (17/19, the former 12/19); `directness` reads a turn about the
-  agent said to someone else, or asking someone to explain something to it,
-  as not addressing it (14/14, the former 9/14: the agent answered in that
-  person's place); `hush` no longer reads "are you ready to listen?" as a
-  request for quiet (7/7, the former 5/7).
-
-- **BREAKING — the router is given the organization and the identity**
-  (RFC §10.4, §17.2, RMK-930). `InboundRoomRouter.route()` takes the
-  keyword-only `organization_id` (the one `process_inbound` acts for) and
-  `identity` (the sender's, resolved by the framework once per message
-  within that organization), and `channel_data` now carries the message's
-  metadata; a custom router overriding `route` must accept both keywords.
-  The default router searches the organization's rooms only, every room
-  when the call names none: a sender whose newest room belongs to another
-  tenant got `RoomNotFoundError` and now gets a room of the caller's
-  organization, and an identity linked within an organization routes its
-  addresses, where only unscoped links did. A custom router's answer is held
-  to the rules of a room the caller names: another organization's room
-  raises `RoomNotFoundError`, a missing id is created under it.
-  `find_room_ids_by_channel()`, `find_room_id_by_binding()` and
-  `find_room_id_by_participant()` take a keyword-only `organization_id`
-  (`None` reads every room), which a custom store overriding them must
-  accept. `roomkit.core.inbound_router.sender_known_as()` gives way to
-  `known_as(sender, identity)`, which reads no store.
-
-- **BREAKING — an address belongs to one identity per organization** (RFC
-  §5.6, §14.1, §17.2, RMK-930). `link_address()` of an address another
-  identity of the organization holds raises `AddressLinkedError`, and so does
-  `create_identity()` with one, writing nothing: the last link silently took
-  the address, re-homing that person's conversations, while the first
-  identity still listed it. An address is never moved silently: moving it is
-  `unlink_address()` from its holder, then a link. Linking to an
-  unknown identity, or to an identity of another organization than the call's
-  `organization_id` (`None` stands for the identities of no organization),
-  raises `IdentityNotFoundError`: the first did nothing, the second linked
-  another tenant's identity. Linking an address the identity holds still
-  changes nothing. The in-memory, SQLite and Postgres stores refuse alike, a
-  custom store must too; no schema changes, the address key was already one
-  per organization.
-
-- **BREAKING — the pipeline records which instruction produced a response,
-  and reserves its key** (RFC §5.2, §9.4, §10.1.1 step 6, RMK-930):
-  `metadata["instruction"]` (`{sha256, length}`) is written by the pipeline
-  on every event a channel returns for an instruction, buffered or streamed,
-  its tool rows and a response stored past the reentry budget included, in
-  place of whatever the channel wrote there; a channel could record the
-  instruction's text under it. `AIChannel` and `ACPChannel` no longer write
-  it, so their `ChannelOutput.response_metadata`, and with it
-  `InboundResult.response_metadata`, no longer carry it. The fingerprint is
-  of the text the instruction's content reads as (RFC §6.6): a rich text by
-  its plain text, a media by its label, a system notice by its body, a tool
-  call as `[Tool call: <name>]`, a composite by each part's own text form
-  (a location, a template, a notice and a tool call included), one per
-  line, an empty one skipped. It was of a `TextContent` body only (any
-  other content hashed the empty string) and, on ACP, of the text once its
-  copies of runtime marks were replaced.
-  `AIChannel` reads that same text as the turn's input, where a non-text
-  instruction gave the turn none. The key is reserved: it is removed from
-  every other event, whoever wrote it (a channel's parser,
-  `InboundMessage.metadata`, `send_event(metadata=...)`, a hook's injected
-  event, a channel's reply to a message), and from the instruction itself.
-  A `BEFORE_BROADCAST` modify keeps a response's fingerprint, or its
-  absence, and an instruction's `standalone` word, as it kept the
-  instruction's visibility and address. An application that kept its own
-  data under `metadata["instruction"]` moves it under another key.
-
-- **BREAKING — an instruction names an agent the kit registers** (RFC
-  §10.1.1 step 1, RMK-930): its `addressed_to` must name at least one
-  registered intelligence channel, checked before anything is read. One
-  naming only ids the kit does not register, or transports, is refused with
-  `reason="instruction_unaddressed"` before routing, so no room is created
-  for it, where it was delivered to no agent and reported in
-  `unavailable_targets`; `send_event()` raises `ValueError`. An instruction
-  carrying an idempotency key is refused before routing too. The address's
-  other names ask nobody: an agent the kit registers and the room does not
-  bind is still reported in `unavailable_targets`, and the instruction goes
-  on. An instruction's address is its caller's (`InboundMessage.addressed_to`),
-  never one its channel's parser set. So is its type: an event a channel's
-  parser types `INSTRUCTION` for a message the caller sent as another type
-  takes the message's type, with a warning, and the parser's `standalone`
-  key is dropped; it was processed as an instruction past the checks above.
-  `send_event()` takes an empty `idempotency_key` as none, as
-  `process_inbound()` does, where it raised for an instruction. A
-  `Pipeline` handoff greeting the room refuses (no `to_agent`, or one the
-  kit does not register) logs a warning instead of going quiet.
-
-- **BREAKING — a response typed INSTRUCTION does not re-enter** (RFC §8.5,
-  §10.1.1, RMK-930): only the application issues instructions. A channel's
-  response of type `INSTRUCTION` is dropped with a warning, and the
-  channel's other responses re-enter as usual. It was delivered unstored to
-  the room's transports, read by the agents it addressed as the
-  application's instruction, and queued by a discussion as a turn for them,
-  so one agent could direct another in the application's name. An agent
-  that wants another to act addresses its answer (`addressed_to`).
-
-- **BREAKING — a hook's injected INSTRUCTION is dropped** (RFC §9.4,
-  §10.1.1, RMK-930): an `InjectedEvent` of type `INSTRUCTION` is dropped
-  with a warning before any pass, so no hook runs on it and nothing of it is
-  stored or delivered; the result's other injected events, tasks and
-  observations stand. It was delivered unstored to its transport targets
-  and, in a discussion, queued as a turn for the agent it addressed. A hook
-  that wants an agent directed calls `kit.send_event(...,
-  event_type=EventType.INSTRUCTION, addressed_to=[...])`, which takes the
-  instruction's checks.
-
-- **BREAKING — `ParticipantRole.AGENT` is a human agent** (RFC §5, §6.4,
-  §19.7.5 rule 2, RMK-911), an advisor or a support representative, as the
-  role table says: a participant with that role takes part like a member.
-  The agent's people note names them, a customer's first turn is labelled
-  when one is present, `SpeakTurn.people` counts them, and a discussion
-  treats their messages as a person's. They were left out as if they were an
-  AI. An AI participant the host records in the room takes
-  `ParticipantRole.BOT`; an AI agent takes part through an intelligence
-  channel. A discussion now reads its people as every other reader does: an
-  observer is no person of it either.
-
-- **Security:** an id names its participant only on a channel the room
-  reached them through (RMK-915, RFC §5.5). The label a transcript gave a
-  sender already followed this rule; what the sender was granted did not.
-  So a sender whose id equalled a participant reached through another
-  channel only got that participant's role and its tool policy override,
-  their administrative authority for an ADMIN delete, their authorship for
-  editing or deleting their messages, the identification that skips
-  identity resolution, and their verification label: a message on `web`
-  carrying the id of an identity verified through SMS was stamped
-  `verified` and released to the agent. All of these now read one lookup
-  (`People.named`). An identity's id names its person on a channel one of
-  their records was reached through (the identity pipeline records the
+- **BREAKING — an id names its participant only on a channel the room reached
+  them through** (RMK-915, RFC §5.5). The label a transcript gave a sender
+  already followed this rule; what the sender was granted did not. So a sender
+  whose id equalled a participant reached through another channel only got
+  that participant's role and its tool policy override, their administrative
+  authority for an ADMIN delete, their authorship for editing or deleting
+  their messages, the identification that skips identity resolution, and their
+  verification label: a message on `web` carrying the id of an identity
+  verified through SMS was stamped `verified` and released to the agent. All
+  of these now read one lookup. An identity's id names its person on a channel
+  one of their records was reached through (the identity pipeline records the
   channel it resolved them on), no longer on any. Three more readings follow
   the rule:
   - `current_tool_actor_id()` is `None` when the sender's id is a
-    participant's reached through other channels only: a handler resolving
-    it would otherwise act for that participant;
+    participant's reached through other channels only: a handler resolving it
+    would otherwise act for that participant;
   - inbound routing (RFC §10.4 step 1) finds a room through a participant
-    record only when that participant joined it through the message's
-    channel: a sender borrowing the id of a room's owner on another channel
-    no longer lands in that room nor claims its binding, which would have
-    sent the room's replies to them;
+    record only when that participant joined it through the message's channel:
+    a sender borrowing the id of a room's owner on another channel no longer
+    lands in that room nor claims its binding, which would have sent the
+    room's replies to them;
   - a pending sender whose id names a record reached through other channels
     only gets a record of its own, one per sender and channel, and writes
     under its id, instead of adopting the other record.
-
-  A host that relied on two transports sharing ids now links the person
+  Migrate: a host that relied on two transports sharing ids links the person
   explicitly, with `add_member` (or `join`, `ensure_participant`) on each
   channel, or through the identity pipeline.
-- Who takes part, silent people included (RMK-904). An agent that joins a
-  meeting where one person speaks while others listen read that person's
-  words as an anonymous user's until a second one spoke, and did not know
-  the others were there. Who takes part is now read from the room's roster:
-  its active participants who are neither agents, bots nor observers (an
-  observer reads without taking part), nor on the agent's own channel, and
-  whose messages reach the agent (a person reached only through a channel
-  whose visibility withholds it from the agent is not named). When two
-  people or more take part, every turn is labelled from the first
-  (`Alice: "..."`), by every reader of the room alike (the AI channel's
-  conversation, an ACP agent's request, a `<task>` block's asker, a memory
-  summarizer's lines), and the AI channel's turn notes name them, each
-  quoted (`[People taking part besides you, from the runtime: “Alice”,
-  “Bob”. ...]`), so the agent can address someone who has not spoken yet.
-  A `ConferenceChannel` keeps the roster; an integration that bridges a
-  meeting into one stream writes it with `kit.add_member`. A room with one
-  person on its roster, or none, is unchanged. A speak policy's
-  `SpeakTurn.people` is the same list: an observer, and a person whose
-  messages do not reach the agent, are no longer in it, and each person is
-  named as the room's record names them (a nameless one by their channel,
-  `@sms1`, rather than their id; a look-alike name with its rank). See
-  `examples/ai_people_taking_part.py`.
 
-- **BREAKING — an event a hook injects is committed as a pass of its own**
-  (RFC §9.4, RMK-902): after the event that caused it, it takes the room
-  lock and runs the `BEFORE_BROADCAST` hooks, every one under the lock, which
-  may block it (stored `BLOCKED` with the hook's name); it counts against the
-  cascade's reentry budget (past it, stored `BLOCKED` with `reentry_loop_cap`,
-  its hooks not run); and what its own hooks inject is committed after it the
-  same way. It keeps its cause's chain depth, its visibility names the
-  targets the room binds (`none` when stored only; a hook of its pass may
-  narrow it, never widen it), it carries no idempotency key, and it takes no
-  source check. It was committed under its cause's lock with no hook, with
-  its source binding's scope and the depth and key it came with. A hook that
-  blocks or injects on every event now reads its own injections too: let
-  them through (by their source or content), or each one injects again until
-  the budget. An identity challenge takes the same pass. See "Injected
-  events" in `docs/c7/hooks.md`.
+- `update_event()` and `delete_event()` take the organization the caller
+  acts for (RFC §17.2, §10.3, RMK-930). A tenant's host could rewrite or
+  delete an event of another tenant's room, and the call applied that
+  room's due timers. `update_event(room_id, event_id, ...,
+  organization_id=None)` and `delete_event(room_id, event_id, *,
+  cascade_replies=True, organization_id=None)` act on another
+  organization's room as on a missing one (`None`, an empty list): nothing
+  written, its due timers included, no hook. Unset, the call is unscoped,
+  as the kit's other calls.
 
-- **BREAKING — an injected event asks no agent** (RFC §9.4, RMK-333): an
-  intelligence channel among its targets is not called and reads the event
-  in its history at its next turn. It ran a whole turn, tools included,
-  whose answer was then discarded. The event is delivered to its transport
-  targets as any delivery is (transcoded for each, `on_event()` for each and
-  `deliver()` for those that send, their tasks and observations collected)
-  and never to its own source; it was delivered untranscoded, and what its
-  targets filed was dropped. `TurnRequest.answers` and the `answers` argument of
-  `EventRouter.react()`, `EventRouter.react_for()` and `TurnClient.run()` are
-  removed.
-
-- **BREAKING — the pipeline writes who a response comes from** (RFC §8.5,
-  RMK-902): each response a channel returns is committed as its responder's,
-  the responder's channel id and type with direction OUTBOUND, in the
-  trigger's room, at the trigger's chain depth plus one, answering the trigger
-  unless it names the event it answers, and with no idempotency key. A
-  response claiming another source is committed as its responder's, keeping
-  nothing of the claimed one (participant, provider ids, verification), with
-  a warning: it was write-checked against the claimed channel's binding. A
-  streamed answer, the event a streaming target renders it under, and the
-  stand-in for an answer a guard stopped travel OUTBOUND; they read INBOUND.
-
-- **BREAKING — an idempotency key is unique per room and per source
-  channel** (RFC §13.4, RMK-902): two channels of one room sending one key for
-  two messages are both processed, where the second was answered as a replay
-  of the first. `ConversationStore.check_idempotency()` and
-  `get_event_by_idempotency_key()` take a keyword-only `channel_id`, which a
-  custom store must accept. At its first start, SQLiteStore (schema 8) scopes
-  the keys it recorded to their event's source channel, and PostgresStore
-  replaces its unique index `idx_events_idempotency` with
-  `idx_events_idempotency_channel`. An older worker recreates the per-room
-  index, so every worker sharing a store must run this version before one of
-  them starts against it.
-
-- **BREAKING — a hook's name is unique within its scope** (RFC §9.1,
-  RMK-902), the kit's hooks or one room's: registering an explicit name a
-  hook of the scope already holds raises `ValueError`, the kit's hooks its
-  own executor runs included, and so does a name the framework writes in
-  `blocked_by` (`source_read_only`, `source_muted`, `source_unbound`,
-  `event_chain_depth_limit`, `reentry_loop_cap`). A hook given no name takes
-  its function's, made unique and without a leading `_` (`audit`,
-  `audit#2`), so hooks built in a loop keep registering; `kit.add_room_hook`,
-  `HookEngine.register` and `add_room_hook` return the registration held.
-  The framework's own hooks (a session auditor, a subtitle overlay, a
-  pipeline's handoff greeting, a console, `on_delivery_status` handlers) are
-  named per instance, so two on one kit no longer collide. A strategy
-  installed again in its room replaces its router hook instead of running it
-  twice (`HookEngine.replace_room_hook`).
-
-- **BREAKING — a BEFORE_BROADCAST replacement keeps which event it is**
-  (RFC §9.4, RMK-902): its id, room, type, source, index, chain depth,
-  `responds_to`, idempotency key, creation time, status, `blocked_by` and
-  `delivery_results` are put back from the event it replaces, and so are the
-  checks already passed on it, the event an EDIT or a DELETE targets and an
-  INSTRUCTION's visibility and address. Its content, address, visibility,
-  thread, correlation id, metadata and `channel_data` may change; an EDIT a
-  hook rewrites as text stays the edit of its event, saying that text, and a
-  thread parent a hook sets is resolved to its root. A hook could commit an
-  event under another source's binding, or into another room. The rewrite of
-  an off-lock hook (`needs_lock=False`) is merged into the event the locked
-  section prepared rather than replacing it, which undid an instruction's
-  forced scope and a reply's thread root.
-
-- **BREAKING — a MODIFY that carries no payload, or one of the wrong type, is
-  an unusable result** (RFC §9.3, RMK-902): it replaces nothing, blocks a
-  fail-closed hook with `hook_invalid_result`, and its injected events are
-  dropped while its tasks and observations are kept. On a fail-open hook a
-  wrong-typed payload reached the next hook as it was. An `ON_TRANSCRIPTION`
-  hook modifies with the trigger's own type: a plain `str` is no longer read
-  as the new text.
-
-- **BREAKING — an event is committed with its own visibility intersected
-  with its source binding's** (RFC §7.3, RMK-902), and the stored field is the
-  whole answer, at broadcast and when history is rebuilt. An event's own
-  scope (a sender's, a hook's) can no longer widen what its binding allows,
-  and a binding changed later no longer changes what past events reached.
-  Every path that commits an agent's or a hook's event stamps it: greetings,
-  streamed rows, hook-injected events; a record from `commit_event()` keeps
-  the scope it was given. A live stream reaches no transport the agent's
-  binding excludes, and a regenerated turn asks only the agents the
-  message's own scope reaches. `visible_events()` hands a reader with no
-  binding in the room nothing (it handed back its own events). A message
-  held for verification records its committed scope, which its release
-  restores. Each store rewrites once the events it stored `all` under a
-  narrowed binding with that binding's scope, and so the held messages'
-  recorded `all` (SQLite schema 7, PostgresStore schema version 3), so their
-  readers stay the same; `list_events(visibility_filter=...)` matches the
-  stamped value, in its normal form.
-
-- **BREAKING — the visibility grammar is enforced** (RFC §7.3, RMK-902). A
-  value is written back in its normal form, its ids sorted and once; an empty
-  value, an empty item, or a keyword inside a list raises `ValueError` from
-  `attach_channel`, `set_visibility`, `send_event` and `InboundMessage`. A
-  channel id a visibility could not name (`all`, `none`, `internal`,
-  `transport`, `intelligence`, one holding a comma, or one with surrounding
-  whitespace) is refused by `register_channel`. A CLI or console line whose
-  visibility factory returns an invalid scope is not sent, and says why.
-
-- **BREAKING — a binding's direction decides delivery, not reception**
-  (RFC §4.2, §10.2, RMK-902). Every receiver gets `on_event()`; only a
-  transport whose direction sends (`OUTBOUND` or `BIDIRECTIONAL`) also gets
-  `deliver()` and live streams, hook-injected deliveries included. An
-  `OUTBOUND` binding was skipped entirely, and an `INBOUND` one was
-  delivered to. Direction never filters an intelligence channel. A binding
-  takes its channel's `direction` unless the attachment names one, and a
-  channel shared into a delegated room keeps its parent binding's.
-
-- **BREAKING — a source with no binding in the room is refused** (RFC §7.5
-  rules 2 and 7, RMK-902): its event is stored `BLOCKED` with
-  `source_unbound`, and a detached channel parses its message seeing no
-  event. It was committed `DELIVERED` and only not broadcast, so a revoked
-  channel still wrote into the history agents read. A proactive delivery
-  whose channel is detached between the call and the commit answers
-  `blocked` with that reason (one already detached still answers
-  `unavailable`). A source both read-only and muted is refused as
-  `source_read_only`, the lasting cause.
-
-- **BREAKING — `Room.latest_index` is `None` while the room has no event**
-  (RFC §5.1, RMK-902). It was 0, which reads as the first event's index. A
-  room stored with 0 and no event reads back as `None`; PostgresStore drops
-  the column's `NOT NULL` and default, and clears the 0 of empty rooms, at its
-  first start. An older version cannot read a room without an index: every
-  worker sharing a store must run this version before one of them starts
-  against it.
-
-- **BREAKING — `EventSource.direction` is an `EventDirection`**, INBOUND or
-  OUTBOUND (RFC §5.2, RMK-902): an event never travels both ways, so a
-  `bidirectional` source is refused, a stored one included. A
-  `ChannelDirection.INBOUND` or `OUTBOUND` value is still read as the event's.
-  A hook's `directions` filter takes `EventDirection` values, and
-  `EventDirection` is exported from `roomkit`.
-
-- **BREAKING — the pipeline gives every event it commits its id** (RFC §8.1,
-  RMK-902): an inbound event, a buffered response and an event a hook injects
-  (an identity challenge included) are committed under a fresh id, whatever id
-  their channel or hook built them with. Read the committed id from
-  `InboundResult.event` or from the hooks; a provider's own id belongs in
-  `source.provider_message_id`, and a replayed message is caught by its
-  `idempotency_key`. A response that names another response of the same
-  output by id (as its `parent_event_id`, or the target of an edit) names an
-  id that is never stored.
-
-- **BREAKING — a record's timestamps hold their instant in UTC** (RFC §1.4,
-  RMK-902): one given with an offset is converted, one without an offset is
-  read as UTC, so code comparing a record's timestamp with a naive `datetime`
-  now raises. A turn message's `created_at` follows the same rule. The session
-  audit wrote its `ts` without an offset; it writes UTC, and its transcript
-  still shows local time.
-
-- A composite counts the nesting of an edit's new content (RFC §5.3,
-  RMK-902): a composite holding an edit of a five-level composite is six
-  levels deep and refused.
-
-- A turn's scan for a runtime mark's copy split over consecutive user
-  messages reads only the boundaries of a run of unanswered messages it has
-  not seen before (RMK-882): each boundary is read in a window that holds
-  any copy across it, gaps of spacing or markup of any length included, and
-  remembered once found clean, so a run grown at its end or slid at its head
-  out of a memory's window scans its new boundary alone. A run that holds a
-  split copy goes through the whole scan on every turn, as before. Measured
-  on runs of 8 KB messages, one more each turn: about 4 ms per turn for 50
-  messages, growing or slid out of a window of 50 events, instead of 177 ms;
-  one message's own scan takes about 3.5 ms.
-
-- The Redis turn backend guide's prerequisites say redis-py 8.0.0 does not
-  serve a backend on a unix socket (RMK-869): its sync client, which the
-  beat thread uses, fails the first call of each new `unix://` connection and
-  keeps that connection without selecting the URL's database. One beat is
-  lost per connection, the immediate retry after a cut among them, and with
-  a database other than 0 every beat lands in database 0, so the other
-  processes take the process for lost. 8.0.1 and later work, as do 5.0.2 to
-  7.4; the `redis` extra is unchanged.
-
-- An ASYNC hook on a trigger that runs a SYNC chain (BEFORE_TTS,
-  ON_TRANSCRIPTION, ON_TOOL_CALL…) no longer holds up the operation it
-  observes (RFC §9, RMK-903). Its observers start as background tasks once
-  the chain has run, on the payload the chain left; the operation used to
-  wait for them, up to each hook's timeout. Measured: an ASYNC BEFORE_TTS
-  hook that waited up to 5 s delayed every answer's synthesis by 5.3 s.
-  `RoomKit.close()` waits for the observers still running before the
-  channels close, and `HookEngine.drain_observers()` does so on demand.
-  Migration: a hook whose work the operation needs before it goes on (state
-  a later step of the turn reads) is registered SYNC and returns
-  `HookResult.allow()`.
-  A realtime delegation that one of its own calls ended (a hang-up) cuts the
-  call its backend makes next before it runs, so the backend gets no result
-  for it: that held only because the refusal's report waited for its
-  observers.
-
-- RFC §23.4 says what `cancel_task` answers past the record of ended tasks
-  the kit keeps (the latest 1024, all rooms together): a task that ended
-  while the status bus still lists it running reads as no task of the room
-  (RMK-876). The bound stays one for all rooms; RMK-871 and RMK-875 removed
-  the known causes of a line left running after its end.
-
-- The RFC (§10.6, §10.6.8), `TurnLinkError`'s docstring and the Redis turn
-  backend guide name `backend_closed`, the reason a turn still in flight
-  fails with when its owner's turn backend closes (RMK-878). The RFC said
-  `executor_lost` there, which the code never reported: the executor is not
-  lost. A test reads the reason on both backends.
-
-- The in-memory turn backend's `no_executor` refusal of a committed event
-  names the room hooks no executor defines, as the Redis backend's and its
-  own refusal of a turn did (RMK-883): the three messages are built in one
-  place. The test of a turn given up as its owner closes runs across Redis
-  too, and checks that the executor cuts it as `owner_lost`.
-
-- An answer a barge-in cut reads, in the AI context, with how far the person
-  heard it (RFC §6.4): `[The person cut you off during this answer, 5.7 s in:
-  they heard it up to “…” and not the rest.]`, where it read "[You were
-  interrupted while saying this: the person may not have heard the end of
-  it.]". The quote is an estimate, ending early rather than late: no TTS word
-  is timed, so the words are taken by their letters at the share of the
-  answer's audio that played, less two words, or at 11 letters a second when
-  that share is unknown. The words are the agent's, which a participant may
-  have led it to say: they are quoted on one line between quotes they cannot
-  close, a long quote keeping its end. While the history holds a cut answer,
-  the turn's notes say how one reads, and that an answer without the mark was
-  heard to its end. Measured on Voxtral audio with four models (Mistral Small and
-  Large, Claude Haiku, GPT-6 Luna), eight answers cut at 40%: "did I cut you
-  off?" was answered yes 156 times in 160 (105 with the old mark), and "pick
-  up where you left off" resumed from where the person stopped hearing 119
-  times in 160 (9). Keeping only the words heard, without a mark, as LiveKit
-  Agents and Pipecat do, let the models answer yes 33 times in 160.
-
-- `examples/voice_voxtral.py` runs Mistral's faster turn preset with a 240 ms
-  streaming delay by default (`TURNS=default STREAMING_DELAY_MS=480` gives
-  the service's defaults), and drops emoji before Voxtral Speech.
-
-- **BREAKING — a file a channel does not take is delivered as its text
-  form** (RFC §5.8, §6.6, Appendix A, RMK-930). The transcoder read a
-  target's `media_types` only: a file whose MIME type its non-empty `supported_media_types` does not
-  list, or whose known `size_bytes` is over its `max_media_size_bytes`, was
-  sent as is, and the provider's refusal lost the whole message. Such a
-  file now becomes `[Media: {caption or filename or url}]`, alone or as a
-  part of a composite, at the broadcast and in the transcoder alike, and in
-  an edit's new content: an edit to a channel that edits natively is still
-  delivered as an edit, its new content's files as the channel takes them;
-  an empty list takes every type, and a file of unknown size any size. The
-  declarations follow Appendix A: SMS lists `image/jpeg`, `image/png` and
-  `image/gif` (a PDF to an SMS number is now its text form); WhatsApp
-  Personal lists no type (it took images only, and now takes a document
-  again under the new rule); Telegram declares AUDIO and VIDEO, so its
-  provider's `sendAudio` and `sendVideo` are reached rather than a
-  `[Voice message: ...]` text.
-  Migrate: a host whose SMS provider carries documents builds its channel
-  with those types listed, `TransportChannel(id, ChannelType.SMS,
-  capabilities=SMS_CAPABILITIES.model_copy(update={"supported_media_types":
-  [...]}))`, or an empty list for every type; a Telegram integration that
-  read the `[Voice message: ...]` or `[Video: ...]` text receives the file.
-
-- **BREAKING — a message's response scope narrows every answer its
-  cascade derives from it, and never widens one** (RFC §5.12, §7.3,
-  RMK-930). `response_visibility` replaced the visibility the responding
-  channel gave its answer, so an answer a channel kept to `"sms"` under a
-  message scoped `"sms,ws"` reached `ws` too; and a response's own
-  `response_visibility` was replaced by the cascade's scope, or dropped
-  when the message named none. Each answer, at any depth of the cascade
-  (an answer to an answer, a stream's rows, the record stored in place of
-  an answer), is now what its channel gave it intersected with the scope,
-  a listed channel's category read from the room's bindings; and what
-  answers a response stays within both the cascade's scope and the
-  response's own, `None` restricting nothing; `InboundMessage` and
-  `send_event()` refuse an empty scope (`""`), and one that reaches an
-  event another way (a hook's modify) names nobody. A `BEFORE_BROADCAST`
-  hook may narrow an event's
-  `response_visibility`, never widen or clear it: what it writes is
-  intersected with the original, `None` keeps the original and `internal`
-  reads as `none`; and a response whose visibility its hooks widen is
-  narrowed back within the scope after them, a stream's rows included.
-  The scope binds the message's cascade only: work that leaves it, a
-  background delegation's result handed back with `deliver()` or
-  `send_event()`, a tool's own `send_event()`, a child room's answer to
-  the channels it shares, is a new cascade the scope does not follow.
-  Migrate: a channel that relied on the message's scope to widen its
-  answer gives the answer the visibility it means (`"all"` keeps the
-  scope); a hook that widened or cleared a message's `response_visibility`
-  sets the message's own instead; work that hands an answer back outside
-  the cascade passes its own `response_visibility`.
-
-- **BREAKING — a composite delivered as one text skips its empty parts**
-  (RFC §6.6, RMK-930). A composite whose every part becomes a text for its
-  target was joined part by part, an empty text part giving an empty line;
-  it is now the composite's text form, its parts' texts one per line, an
-  empty one skipped: the text an instruction's fingerprint is of, so a
-  text-only agent reads the instruction its responses record.
-  Migrate: a sender that relied on the empty line writes it in a text
-  part (`"First.\n\nThen."`).
-
-- **BREAKING — a recipient is a string that is not blank, or a number**
-  (RFC §5.7, §10.2 step 3d, RMK-930). A binding's value under its
-  channel's recipient key was a recipient whenever it was truthy: the
-  delivery handed `{"phone_number": true}`, a string of spaces, a list or
-  an object to the provider as `to` (and refused the number `0`), attach
-  and routing read `str(value)` as the binding's correspondent (a binding
-  holding `true` named `"True"`, which kept the first sender out of the
-  room opened for no one), a sender recorded on such a binding kept the
-  value as their recipient, and a delivery status's fallback to the one
-  room read it as another number. Null, a blank string, a boolean, a list
-  and an object are now no recipient: the delivery is refused
-  `no_recipient`, the binding names no correspondent, and the sender
-  routed to it gets their address written as its recipient. A number is
-  one, as before. The chat a message carries under its
-  channel's chat key is read the same way: `true` or a blank string there
-  is no chat, and the message has no address.
-  Migrate: write a recipient as the address string (`"+15550000001"`) or
-  the chat id; a binding holding another value receives nothing until
-  one is written.
-
-- **BREAKING — a chat message that does not carry its chat has no
-  address** (RFC §5.7, RMK-930). On a channel whose replies go to a chat
-  only (Telegram, Teams, Discord, Buzz), such a message was routed and recorded by its author: it
-  landed in the author's private chat, which is another conversation, and
-  a room opened for it named the author as correspondent and recipient,
-  replying in private. It now records no one: it is routed as a message
-  with no address, and the room opened for it names neither correspondent
-  nor recipient, so its deliveries are refused `no_recipient` until the
-  host names one. Its author stays the event's sender. A WhatsApp Personal
-  message without `group_jid` is still its sender's.
-  Migrate: a parser or host building such messages puts the chat under the
-  channel's chat key (`chat_id` on Telegram, `conversation_id` on Teams), or
-  names the room's recipient itself on the binding (`attach_channel(...,
-  metadata={"telegram_chat_id": ...})`).
-
-- **BREAKING — the store's routing lookups take the channel, the sender's
-  identity and a `RoomFilter`** (RFC §10.4 step 1, §14.1, RMK-930). The
-  default router asked for the sender's address first and then their
-  identity, so an older room found by the address hid a newer one found by
-  the identity; and `find_room_id_by_participant()` took no channel, so a
-  newer room where the sender joined through another channel hid the older
-  room they joined through this one, and the message opened a room of its
-  own. The lookups now read:
-  - `find_room_id_by_binding(channel_id, participant_id, identity_id=None,
-    room_filter=None)`: the newest room whose binding of the channel names
-    the address or the identity;
-  - `find_room_id_by_participant(channel_id, participant_id,
-    identity_id=None, room_filter=None)`: the newest room holding a
-    participant reached through the channel (its `connected_via`, whatever
-    its status) whose id or identity is the address or the identity;
-  - `find_room_ids_by_channel(channel_id, room_filter=None, limit=2)`.
-  The new `RoomFilter(statuses=None, organization_id=None)` names the
-  statuses and the organization a lookup reads, `None` reading every one;
-  it replaces the `status` and `organization_id` keywords. The newest room
-  is the most recently created, the greatest id breaking a tie, in every
-  store and in the base fallbacks. Postgres gains an index on
-  `participants(identity_id)`, created by `init()`.
-  Migrate: `find_room_id_by_binding(ch, pid, status="active",
-  organization_id=org)` becomes `find_room_id_by_binding(ch, pid, None,
-  RoomFilter(statuses=[RoomStatus.ACTIVE], organization_id=org))`;
-  `find_room_id_by_participant(pid, ...)` takes the channel first; a
-  custom store that overrides any of the three takes the new signature.
-
-- **BREAKING — routing step 1 finds a binding through its recipient, and
-  `DefaultInboundRoomRouter` takes `channel_of`** (RFC §5.7, §10.4,
-  RMK-930). A binding stored with a recipient and no correspondent (written
-  to the store by the host, or before bindings named one) is its
-  recipient's conversation, but step 1 searched `participant_id` only: on a
-  number serving other rooms, the recipient's message opened a room of its
-  own. `find_room_id_by_binding()` takes `recipient_key=`, the channel's key
-  (the new `Channel.recipient_key`: `phone_number`, `email_address`,
-  `telegram_chat_id`..., `None` where the recipient names no one), and also
-  finds a binding naming no correspondent, not `group`, whose value under
-  that key, a string or a number, is the address. A delivery status that
-  names no room reads its recipient the same way, in the channel's form
-  (`+1 (555) 000-0001` finds `+15550000001`). The default router reads a
-  binding's recipient through the kit's channels:
-  `DefaultInboundRoomRouter(store, *, channel_of=None)` replaces
-  `recipient_of=`. Migrate: a router built by hand passes
-  `channel_of=kit.get_channel` (or none, reading no recipient); a custom
-  store's `find_room_id_by_binding()` takes the keyword.
-
-- **BREAKING — a paused conversation keeps its sender's messages** (RFC
-  §10.4, §5.1, RMK-930). The default router read ACTIVE rooms only, so a
-  room its timer paused for inactivity lost its correspondent: their next
-  message opened a room of its own, and the paused one closed later with
-  the conversation split in two. Step 1 now finds the newest ACTIVE or
-  PAUSED room whose binding of the channel names the sender, else where a
-  participant who is the sender was reached through it, the newest room
-  winning whatever its status; the message's delivered commit resumes it.
-  Step 3 reads the ACTIVE rooms and the PAUSED rooms whose binding of the
-  channel is `group`, "exactly one" counting both; any other PAUSED room
-  is no one's to be admitted into, and CLOSED and ARCHIVED rooms are never
-  read. A delivery status that names no room finds the ACTIVE or PAUSED
-  room whose binding names its recipient, else the one ACTIVE room as
-  before, and resumes nothing. `find_room_ids_by_channel()` takes
-  `group=` (`True`, `False`, or `None` for both). Migrate: a custom store
-  that overrides `find_room_ids_by_channel()` takes the keyword; a host
-  that relied on a paused room's correspondent getting a fresh room closes
-  the room instead.
-
-- **BREAKING — a channel's type decides its addressing, as RFC Appendix A's
-  table gives it** (RFC §5.7, Appendix A, RMK-930). Addressing was decided
-  per factory, so a channel of a type built otherwise compared its
-  addresses as written and wrote its recipient under `recipient_id`: a
-  VOICE channel kept `+1 (555) 000-0001` as typed, and a `TransportChannel`
-  of type SMS or MMS built directly neither wrote numbers in E.164 nor
-  recorded its sender as its recipient. The new
-  `roomkit.channels.addressing` module holds the table:
-  `addressing_of(channel_type)` gives a type's `ChannelAddressing`
-  (`addressing`: `Addressing.PHONE_NUMBER`, `EMAIL_ADDRESS`, `CHAT` or
-  `AS_WRITTEN`; `recipient_key`; `chat_key`; `replies_to_sender`): SMS,
-  MMS, RCS and WhatsApp by phone number under `phone_number`; WhatsApp
-  Personal likewise, its groups under `group_jid`; VOICE by phone number
-  with no recipient; EMAIL by address under `email_address`; Messenger as
-  written under `facebook_user_id`; Telegram and Teams by chat under
-  `telegram_chat_id` and `teams_conversation_id`, their chats under
-  `chat_id` and `conversation_id`; any other type as written, with no
-  keys. The key names are the ones the factories already used. Aligned:
-  VOICE (numbers in E.164, `VoiceChannel.normalize_address`), MMS (by phone
-  number, which only the SMS factory's events named), and every type built
-  through `TransportChannel` directly. Discord, Buzz and the HTTP webhook
-  keep their own declarations (a webhook's `recipient_id` is forwarded to
-  its provider and names no one). `TransportChannel(...)` takes
-  `addressing=` (its type's when omitted) and `country_code=` in place of
-  `recipient_key=`, `reply_metadata_key=`, `replies_to_sender=` and
-  `address_normalizer=`; `TransportChannel.addressing` returns the
-  declaration. Migrate: `TransportChannel(id, ChannelType.TELEGRAM,
-  recipient_key="telegram_chat_id", reply_metadata_key="chat_id")` becomes
-  `TransportChannel(id, ChannelType.TELEGRAM)`, and a custom declaration
-  `addressing=ChannelAddressing(Addressing.CHAT, recipient_key="k",
-  chat_key="c")`; a bare `TransportChannel` of type SMS writes its
-  recipient under `phone_number`, not `recipient_id`.
-
-- **BREAKING — a proactive delivery's key names one publication in its
-  room, whatever transport carries it** (RFC §22.1, §13.4, §14.3,
-  RMK-930). A keyed `deliver()` was deduplicated by its transport's
-  channel only: a retry that resolved another transport (one attached, or
-  a voice host plugged in, since the first attempt) published the content
-  again, and two concurrent replays on two transports both published; a
-  retry with its transport detached was refused `no_transport` instead of
-  given its original outcome. The key is now looked up within the room,
-  whatever channel committed it, before any transport is resolved, and the
-  lookup, the transport's resolution and the publication's commit run in
-  one section under the room lock, so a concurrent replay waits for the
-  first and finds its key; a match returns the original outcome
-  (`duplicate=True`, the original event, or the blocked record's reason)
-  and publishes nothing. A replayed publication's `inbound` carries no
-  delivery handle (`inbound.delivery is None`): it has no delivery of its
-  own to follow. `ConversationStore.check_idempotency()` and
-  `get_event_by_idempotency_key()` take `channel_id=None` for any channel
-  of the room (the lowest index first when several committed the key); an
-  inbound message's key stays scoped to its source channel. An application
-  keeps its keys apart from its providers' message ids (a prefix of its
-  own): the lookup within the room does not tell them apart. Migrate: a
-  custom store accepts `channel_id=None` in both methods; a caller that
-  awaited `outcome.inbound.delivery.wait()` on a duplicate checks
-  `outcome.duplicate` first.
-
-- **BREAKING — a publication's key is stored in a namespace of the
-  framework's own, which no message can enter** (RFC §22.1, RMK-930). Looked
-  up within the room, a proactive key matched any event of the room carrying
-  it: on a channel whose client chooses its key (a WebSocket, a webhook), a
-  sender who keyed a message like a coming notification made that
-  notification a replay, never published, its caller handed the sender's
-  event as the original outcome. A keyed `deliver()` now stores its
-  publication under `roomkit:publication:<key>`, and the lookup within the
-  room reads that key only. Only the delivery path writes the namespace: the
-  pipeline drops a key in it from any other message, whoever wrote it (the
-  sender, the channel's parser), `send_event()` and `commit_event()` raise
-  `ValueError` for one, nothing written, and a delegated turn's trace rows
-  are committed without one. The key is part of the committed event, so the lookup, the transport's
-  resolution and the commit stay one locked section, and the stores'
-  per-channel uniqueness (`room_id, source.channel_id, idempotency_key`)
-  never sets a publication against a message keyed alike. `AFTER_DELIVER`
-  still reports the application's key. Migrate: code that reads a
-  publication's stored `idempotency_key` reads `roomkit:publication:<key>`;
-  a publication stored before the upgrade keeps its bare key and is not
-  told from a sender's message, so a replay across the upgrade publishes
-  once more; an inbound key starting with `roomkit:publication:` is no key.
-
-- **BREAKING — a direct injection's source travels as its channel's
-  category says** (RFC §10.5, RMK-930). `send_event()` stamped every event
-  `INBOUND`, an intelligence channel's included, so an agent's event read
-  as a message coming in: its author was the participant it named, and an
-  agent that edited or deleted its own injected message without naming one
-  was refused `identity_required_for_edit`. The source is now `OUTBOUND`
-  for an intelligence channel, whose event is its own words going out, as
-  its responses are, and `INBOUND` for a transport. Migrate: a hook
-  registered with `directions=[EventDirection.INBOUND]` to see an agent's
-  `send_event()` adds `OUTBOUND`; code that reads an agent's injected event
-  as a participant's reads its channel as its author.
-
-- **BREAKING — `process_timeout` is one deadline from the call's start**
-  (RFC §13.6, §10.1 step 2, §10.5, RMK-930). The bound started once the
-  message was routed: the identity read and the router ran unbounded, a
-  routed message's wait for the room lock to record its sender took a full
-  `process_timeout` of its own, and step 2's attach to a room that exists
-  waited for the lock without bound, so a 30 s setting could hold the caller
-  60 s or forever. The deadline is now set as `process_inbound()` starts and
-  bounds every wait before the decision: the identity read, the router, the
-  read of the room it names, step 2's waits for the room lock (the record of
-  a routed sender, the attach of an unbound channel), then the context
-  build, the parse, the off-lock check and the locked gates. Step 2's
-  locked section itself carries none, and a room step 2 creates (its
-  creation, its `ON_ROOM_CREATED` hooks, its attach) is completed whatever
-  the deadline. Past it the message is refused `process_timeout`, never let
-  in unrecorded or unattached; the `process_timeout` framework event's
-  `room_id` is `None` when the deadline passed while the message was routed.
-  `send_event()` reads its room within its deadline too. Migrate: a router
-  or an identity store slower than `process_timeout` raises the setting.
-
-- **BREAKING — a call into a room from the room's own work is part of that
-  work, and every loop it can make stops** (RFC §9.5.1 Reentrance, §8.3,
-  §9.4, §10.5, RMK-930). Each `send_event()` and `process_inbound()`
-  opened a cascade with a reentry budget of its own, whatever called it, so
-  a locked hook or an off-lock hook that injected on every event, a channel
-  whose parse sent a message into its room for every message, a transport
-  whose `deliver()` sent one on every delivery, and an agent that injected
-  through another channel at each turn (always at depth 0) filled the room
-  without end. Now:
-  - a call into the room made under its lock (a locked hook, code under the
-    lock) is nested in the section holding it and draws on the reentry
-    budget of the cascade whose section that is; one made from an off-lock
-    hook's body, from a `hook_error` handler of that check, or from a
-    channel's `handle_inbound()` is adopted beside the event being
-    processed, takes no admission ticket, runs every hook under the lock and
-    draws on that event's budget;
-  - a call made from a delivery set's deliveries or turns (a transport's
-    `deliver()`, an agent's `on_event()`, a tool handler, a `TurnHost`
-    verb, a streamed reply's reading) is a new arrival, with its ticket and
-    its `process_timeout`, answered at its decision when its own delivery
-    could only wait behind its caller's, and draws on the budget of the
-    cascade that delivers, as does the cascade it starts, when it comes
-    into the room the set delivers in or creates a room, routed or named
-    (the router answering none or naming a room the store lacks,
-    `process_inbound(..., room_id=...)` naming one), charged once before
-    the room is created; a call into another existing room has a budget
-    of its own;
-  - each such call is charged one pass as it starts: past the budget,
-    `send_event()` stores the event BLOCKED `reentry_loop_cap`, no hook
-    run, with the visibility its pass would have had, and returns that
-    record (a room that refuses events raises `RoomClosedError`), and
-    `process_inbound()` returns `InboundResult(blocked=True,
-    reason="reentry_loop_cap")` with no event, before its parse;
-  - a call made while a turn or a tool call runs (a realtime or a
-    conference call included), by it or a task it spawned, into whatever
-    room, is at least as deep as the turn's response or the call's:
-    `send_event()` and `process_inbound()` raise the event's `chain_depth`
-    to it, so an agent that injects at each turn stops at `max_chain_depth`
-    as its answers do. The floor holds where the owner
-    runs the turn's code: a turn on the in-memory turn backend that calls
-    the kit it holds, and a tool handler or a `TurnHost` verb on any
-    backend. With a Redis turn backend the turn's own code runs on its
-    executor, outside the owner's context, and reaches the room through
-    its `TurnHost`, whose verbs carry the depth while the turn runs. A
-    call into another room has a budget of its own, and work a turn, a
-    tool call or a delivery began starts fresh once that work is over:
-    depth 0 and a budget of its own (a result delivered later on the
-    turn's behalf, a delegation's, names the turn's depth itself). So does
-    a `TurnHost` verb made after its turn ended, which crossed as a
-    `room_call` at the turn's response depth, the owner holding it there
-    (0.106.0): its `send_event` is at the depth it names. Migrate: work
-    after the turn that must continue the turn's chain passes
-    `chain_depth` itself;
-  - a message routed (no `room_id`) back into the room whose lock the
-    caller holds, or in whose admission order it stands (an off-lock hook's
-    body, a parse), raises the new `ReentrantCallError` before anything is
-    written: its room known only once routed, it cannot be adopted. A
-    message routed back from a turn or a delivery is a new arrival;
-  - what the hooks of an event injected directly under the lock inject
-    joins the queue of the section holding the lock, committed once that
-    section has released it, after the event being processed (RFC §9.4);
-    it committed inside that section, ahead of it. Under a lock held
-    outside any pass (a host serialising its changes), those passes commit
-    once that lock is released, after the call returns.
-  Migrate: a hook or a channel that sends into its room on purpose, more
-  than `10 × max_chain_depth` times for one event, raises
-  `max_chain_depth`; a hook that routes a message into its own room names
-  the room (`process_inbound(..., room_id=...)`); code that read an
-  agent's injected event at depth 0 reads it at the turn's response depth.
-
-- **BREAKING — a record stored BLOCKED sees no more than its event would
-  have** (RFC §7.3, §8.3, RMK-930). Only a delivered event was committed
-  with its own visibility intersected with its source binding's: a message
-  a hook blocked, a message from a read-only or muted source, the record of
-  an agent not asked at the chain-depth limit and an answer stored past the
-  reentry budget kept their own, so a host's view of the room showed a
-  channel bound with `visibility="ws"` what it never let reach anyone else.
-  Each is now stored with the visibility step 12 would have given it, from
-  `process_inbound()`, `send_event()`, a response's pass and a discussion's
-  turn alike; a source with no binding keeps its own, and so does an event
-  a hook injects, which is no channel's. Records stored before keep the
-  visibility they were stored with. Migrate: a host view or an audit that
-  filtered refused records by their `visibility` reads the narrower stored
-  value; one that must show a refused record to a channel its binding
-  excluded reads it as the host, with `EventFilter(include_blocked=True)`
-  and no visibility filter.
-
-- **BREAKING — a sixth composite level is refused where it is built, at
-  every boundary** (RFC §5.3, RMK-930). The `CompositeContent` validator
-  counted the levels, but `model_copy(update=...)` skips validators, so a
-  hook's modify, a hook's injected event, a channel's parse, a channel's
-  response or a host's own call could assemble a sixth level and have it
-  committed. Now `process_inbound()` raises `ValueError` for a message
-  holding one before anything is read (no room is routed or created) and for
-  the event its channel parses, nothing stored; a hook result carrying one,
-  as its replacement or as an injected event, is an unusable result
-  (`hook_error`, the hook's `fail_closed` applies), nothing of it applied; a
-  channel's response holding one fails its reaction, reported as that
-  target's failed delivery; `send_event()`, `commit_event()` and
-  `update_event()` raise `ValueError` before anything is read. An edit's new
-  content counts its levels in the edit's place. The new
-  `roomkit.models.event.holds_too_deep()` and `refuse_too_deep()` are the
-  one count, the validator's included. Migrate: content assembled with
-  `model_copy()` is checked with `refuse_too_deep()` before it is sent, or
-  flattened to five levels; a webhook handler that answered a malformed
-  message with a blocked result catches `ValueError` from
-  `process_inbound()`.
-
-### Removed
-
-- **BREAKING — `roomkit.core.visibility.effective_visibility`** (RMK-902). An
-  event's stored `visibility` is now the whole answer (RFC §7.3); read it, or
-  `committed_visibility()` for an event not yet committed.
-
-- **BREAKING — `DeliveryMode` and `ChannelCapabilities.delivery_mode`**
-  (RMK-902). Nothing read them, and the RFC no longer defines them. Stored
-  capabilities that carry the field still load.
+- A delivery status is dispatched within the organization the caller acts
+  for (RFC §17.2, RMK-930). `process_webhook(meta, channel_id,
+  organization_id=...)` scoped only an inbound message: a status that named no
+  room was routed among every organization's rooms, so on a channel shared by
+  two tenants one tenant's status reached the other's newer room, its context
+  and its `ON_DELIVERY_STATUS` hooks. `process_delivery_status(status, *,
+  organization_id=None)` takes the organization (unset: unscoped, as the
+  other kit calls); its routing reads that organization's rooms only, a room
+  the status names that is another organization's is not dispatched in, and
+  `process_webhook()` passes its organization to it.
 
 ## [0.107.0] — 2026-10-21
 
