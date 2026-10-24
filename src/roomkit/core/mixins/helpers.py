@@ -77,6 +77,16 @@ _RefusedOperation = Literal["inbound", "reentry", "regenerate"]
 """The path a ``room_refused_event`` names in ``data["operation"]`` (RFC §8.2)."""
 
 
+def _warn_top_level(room_id: str, parent_event_id: str) -> None:
+    """Say that an event naming *parent_event_id* is posted at the top level."""
+    logger.warning(
+        "Thread parent %s not found in room %s; posting at top level",
+        parent_event_id,
+        room_id,
+        extra={"room_id": room_id, "parent_event_id": parent_event_id},
+    )
+
+
 def _refuses_writes(room: Room | None) -> bool:
     """Whether *room* refuses new timeline events (RFC §5.1). A missing room
     refuses too: nothing can be appended to a room that is not there."""
@@ -344,20 +354,24 @@ class HelpersMixin:
 
         Flat two-level threading: a reply always points at the thread ROOT.
         If the referenced event is itself a reply, its root is returned so
-        replying-to-a-reply stays in a single thread. A parent that does not
-        exist or belongs to another room drops to ``None`` (top level) with a
-        warning — a stale reference must not lose the sender's message.
+        replying-to-a-reply stays in a single thread. A parent that, once
+        rooted, names no event of the room (none, another room's, a root a
+        hard delete removed while its reply stayed) drops to ``None`` (top
+        level) with a warning — a stale reference must not lose the sender's
+        message (RFC §10.1 step 8).
         """
         parent = await self._store.get_event(parent_event_id)
         if parent is None or parent.room_id != room_id:
-            logger.warning(
-                "Thread parent %s not found in room %s; posting at top level",
-                parent_event_id,
-                room_id,
-                extra={"room_id": room_id, "parent_event_id": parent_event_id},
-            )
+            _warn_top_level(room_id, parent_event_id)
             return None
-        return parent.parent_event_id or parent_event_id
+        root_id = parent.parent_event_id
+        if root_id is None:
+            return parent_event_id
+        root = await self._store.get_event(root_id)
+        if root is None or root.room_id != room_id:
+            _warn_top_level(room_id, root_id)
+            return None
+        return root_id
 
     async def _commit_indexed(self, room_id: str, event: RoomEvent) -> RoomEvent:
         """Commit an event unconditionally (policy-exempt) and account its

@@ -178,7 +178,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   place. Each path now roots the parent as the inbound path does, before
   the event's hooks where it has some; `commit_event()` stores everything
   else as given. A reply always names its thread's root, and deleting the
-  root removes the whole thread.
+  root removes the whole thread. Rooting also reads the root it lands on: a
+  reply naming a reply whose root a hard delete removed
+  (`cascade_replies=False` kept the reply) named the removed root, and is
+  now posted at the top level, as one naming no event of the room is.
 
 ### Fixed
 

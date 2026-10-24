@@ -382,7 +382,12 @@ async def _stored(kit: RoomKit) -> list[RoomEvent]:
     )
 
 
+async def _send(kit: RoomKit, parent: str) -> None:
+    await kit.send_event("r1", "sms1", TextContent(body="answered"), parent_event_id=parent)
+
+
 _PATHS: dict[str, tuple[Any, Any]] = {
+    "send_event": (_send, lambda e: _body(e) == "answered"),
     "response": (_answer, lambda e: _body(e) == "answer"),
     "response-past-the-budget": (_answer_past_the_budget, _past_cap),
     "hook-injected-event": (_inject, lambda e: _body(e) == "injected"),
@@ -394,15 +399,20 @@ _PATHS: dict[str, tuple[Any, Any]] = {
 
 class TestEveryPathRootsItsThread:
     @pytest.mark.parametrize("path", list(_PATHS))
-    @pytest.mark.parametrize("names", ["a-reply", "no-event-of-the-room"])
+    @pytest.mark.parametrize(
+        "names", ["a-reply", "no-event-of-the-room", "a-reply-whose-root-is-gone"]
+    )
     async def test_a_parent_is_rooted(self, path: str, names: str) -> None:
         """Whatever path commits it, its BLOCKED record past the reentry
         budget included, an event naming a reply as its parent names that
-        reply's thread root, and one naming no event of the room is posted at
-        the top level (RFC §10.1 step 8)."""
+        reply's thread root, and one whose parent, once rooted, names no event
+        of the room (none, or a root a hard delete removed and its reply
+        outlived) is posted at the top level (RFC §10.1 step 8)."""
         kit, root, reply = await _threaded_kit(max_chain_depth=2)
+        if names == "a-reply-whose-root-is-gone":
+            await kit.delete_event("r1", root.id, cascade_replies=False)
         commit, stored_by = _PATHS[path]
-        await commit(kit, reply.id if names == "a-reply" else "does-not-exist")
+        await commit(kit, "does-not-exist" if names == "no-event-of-the-room" else reply.id)
 
         [stored] = [e for e in await _stored(kit) if stored_by(e)]
         assert stored.parent_event_id == (root.id if names == "a-reply" else None)
