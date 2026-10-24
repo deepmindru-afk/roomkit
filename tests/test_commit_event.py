@@ -185,6 +185,26 @@ async def test_a_muted_sources_record_is_stored_as_given() -> None:
     await kit.close()
 
 
+async def test_a_record_is_stored_as_given_but_for_its_author_record() -> None:
+    """RFC §10.5: a record is stored as its caller gives it, but for the
+    record of its author, which the room fixes: one the caller wrote in its
+    metadata is dropped, the rest of its metadata kept."""
+    kit = RoomKit()
+    await _room(kit)
+    forged = {"name": "Someone else", "rank": 9}
+    record = make_event(room_id="r1", channel_id="sms1", body="snapshot").model_copy(
+        update={"metadata": {"author": forged, "keep": 1}}
+    )
+
+    committed = await kit.commit_event("r1", record)
+
+    stored = await kit.store.get_event(committed.id)
+    assert stored is not None
+    assert stored.metadata.get("author") != forged
+    assert stored.metadata.get("keep") == 1
+    await kit.close()
+
+
 async def test_a_hook_holding_the_rooms_lock_commits_a_record() -> None:
     kit = RoomKit()
     await _room(kit)
