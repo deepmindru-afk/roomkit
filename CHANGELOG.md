@@ -22,11 +22,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alike.
 
 - An instruction's result reports the room's next index once its hooks ran
-  (RFC §10.1 step 9a, RMK-930). What a hook committed during them (a
-  `send_event()`) took the index the hooks were shown, and the instruction's
-  result still reported it: in a room of four events, both read 4. The room
-  read again after the hooks gives the event its next index, 5 here; a
-  stored event took its own at its commit already.
+  (RFC §10.1 step 9a, §10.1.1 step 5, RMK-930), allowed or blocked. What a
+  hook committed during them (a `send_event()`) took the index the hooks
+  were shown, and the instruction's result still reported it: in a room of
+  four events, both read 4. The room read again after the hooks gives the
+  event its next index, 5 here; a stored event took its own at its commit
+  already.
+
+- A message that names its room, sent by that room's own work, is refused
+  past the work's reentry budget as it starts (RFC §10.1 step 1, §9.5.1,
+  RMK-930), before anything else: `blocked=True,
+  reason="reentry_loop_cap"`, nothing created or stored. It was charged after
+  its channel's lookup and step 2's attach: past the budget, a call through
+  an unregistered channel raised `ChannelNotRegisteredError`, and one through
+  a channel the room did not bind left that channel attached. A routed
+  message, and one naming a room the store lacks, are still charged once
+  step 2 knows their room.
 
 - An edit delivered to a channel that does not edit is one text, the edit's
   text form (RFC §6.6, RMK-930): `Correction: ` followed by the text form of
@@ -37,13 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of a photo now reads `Correction: [Media: https://example.com/a.jpg]`.
 
 - `ON_EVENT_UPDATED` and `ON_EVENT_DELETED` read the room as the change's
-  commit left it, whatever pass committed it (RFC §10.3, RMK-930). For an
-  agent's response and a hook's injected change, the hook's `recent_events`
-  held the change as its own hooks were shown it, `PENDING` at its
-  provisional index and before their modify; it now ends with the committed
-  change, the target as rewritten in its place, as for an inbound change.
-  The delivery set of a response and of an injected event reads the same
-  history.
+  commit left it, whatever pass committed it (RFC §10.3, §9.2, RMK-930). For
+  an agent's response and a hook's injected change, the hook's
+  `recent_events` held the change as its own hooks were shown it, `PENDING`
+  at its provisional index and before their modify: a correction its hook
+  redacted read unredacted there. It now ends with the change as committed,
+  at its index and as its hooks left it, the target as rewritten in its
+  place, as for an inbound change, and whether or not the change has a
+  target to deliver to. The delivery set of a response and of an injected
+  event reads the same history.
 
 - A coordinate in a location's text form is written with one decimal at
   least, the shortest that reads back as the same number, never with an
