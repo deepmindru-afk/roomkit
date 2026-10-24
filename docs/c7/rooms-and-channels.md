@@ -510,8 +510,11 @@ message with and the one a broadcast delivers with all hold it so; the stored
 record and the contexts hooks receive keep the content.
 
 `kit.delete_event(room_id, event_id, cascade_replies=True)` is the host's hard
-delete: it removes the event, its thread replies unless told not to, and the
-edits and deletes of every event it removes (an edit holds the corrected text),
+delete: it removes the event, its thread replies unless told not to (the whole
+thread: every path that commits an event, an agent's answer, a hook's injected
+event and a `commit_event()` record included, roots its `parent_event_id` to
+the thread's root), and the edits and deletes of every event it removes (an
+edit holds the corrected text),
 returns their ids, and fires `ON_EVENT_DELETED` once per removed event.
 `kit.update_event()` rewrites an event's content, source or metadata. Neither
 runs the checks above: the host owns their authorization. Both take
@@ -590,7 +593,10 @@ alone leaves deferred work running. A completed handle is unchanged by cancel.
 The default cleanup budget is five seconds on both paths. `TimeoutError`
 means cleanup is incomplete: keep resources still in use, and for a deferred
 call await its handle later. Repeated cancellation does not interrupt
-finalizers. A handle cannot drain its own room lock or lane (`RuntimeError`).
+finalizers. A handle cannot drain its own room lock or lane, nor the
+admission work of one of its room's events (an off-lock hook's body, a
+`hook_error` handler, a channel's `handle_inbound()`): `RuntimeError`. Its
+`wait()` from those returns at once, unwaited.
 
 Code without the handle names the delivery by a key the caller set on the
 message, `InboundMessage(..., delivery_key="task-42")`, and cancels it from

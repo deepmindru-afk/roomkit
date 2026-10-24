@@ -189,7 +189,12 @@ the event it runs for. The call is part of that event's work (RFC §9.5.1):
   still ahead of the event.
 - Either way it answers at its commit (a `process_inbound()` result carries
   no `delivery_results`): its delivery follows in the room's lane, behind the
-  event's work. It draws on the event's reentry budget, one pass as it starts:
+  event's work. With `defer_delivery=True`, `await result.delivery.wait()`
+  from that work while it runs (the locked hook, the off-lock hook's body,
+  the `hook_error` handler, a channel's `handle_inbound()`) returns at once
+  with the result as it is, unwaited and raising nothing; a task the work
+  starts waits as any caller does. It draws on the event's reentry budget,
+  one pass as it starts:
   a hook that injects on every event stops at the cap. Past it, `send_event()`
   stores the event `BLOCKED` with `reentry_loop_cap`, no hook run, and returns
   that record; `process_inbound()` naming the room returns `blocked=True,
