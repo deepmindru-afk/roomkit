@@ -32,7 +32,7 @@ from roomkit.models.enums import (
     HookExecution,
     HookTrigger,
 )
-from roomkit.models.event import EditContent, RoomEvent, TextContent
+from roomkit.models.event import DeleteContent, EditContent, RoomEvent, TextContent
 from roomkit.models.hook import HookResult
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
@@ -782,22 +782,26 @@ class TestACallFromAnAsyncHook:
         finally:
             await kit.close()
 
-    async def test_a_mutation_hook_editing_its_event_again_stops_at_the_cap(self) -> None:
-        """A change's ``ON_EVENT_UPDATED`` is its cascade's work too: a hook
-        that edits the event again each time it is edited stops at the cap."""
+    @pytest.mark.parametrize("change", ["edit", "delete"])
+    async def test_a_mutation_hook_changing_again_stops_at_the_cap(self, change: str) -> None:
+        """A change's mutation trigger is its cascade's work too: a hook that
+        edits the event again each time it is edited (``ON_EVENT_UPDATED``),
+        or sends a message and deletes it each time one is deleted
+        (``ON_EVENT_DELETED``), stops at the cap of its hook calls."""
         kit = await _room(RoomKit(max_chain_depth=1))
-        edits: list[RoomEvent] = []
+        trigger, again = _CHANGED_AGAIN[change]
+        sent: list[RoomEvent] = []
 
-        @kit.hook(HookTrigger.ON_EVENT_UPDATED, execution=HookExecution.ASYNC, name="reword")
-        async def reword(event: RoomEvent, ctx: RoomContext) -> None:
-            if len(edits) <= 2 * BUDGET:
-                edits.append(await _send_edit(kit, event, len(edits)))
+        @kit.hook(trigger, execution=HookExecution.ASYNC, name="again")
+        async def change_again(event: RoomEvent, ctx: RoomContext) -> None:
+            if len(sent) <= 2 * BUDGET:
+                sent.extend(await again(kit, event, len(sent)))
 
         try:
             first = await kit.send_event("r1", "sms", TextContent(body="v"), participant_id="u")
-            await asyncio.wait_for(_send_edit(kit, first, 0), 5)
+            await asyncio.wait_for(_send_change(kit, _FIRST_CHANGE[change](first)), 5)
             await asyncio.wait_for(_settled(kit), 5)
-            assert [e.blocked_by for e in edits] == [None] * BUDGET + ["reentry_loop_cap"]
+            assert [e.blocked_by for e in sent] == [None] * BUDGET + ["reentry_loop_cap"]
         finally:
             await kit.close()
 
@@ -821,18 +825,28 @@ class TestACallFromAnAsyncHook:
         finally:
             await kit.close()
 
-    async def test_a_task_the_hook_starts_calls_as_work_of_its_own(self) -> None:
-        """Once the hook's body has returned, a task it started sends at
-        depth 0 with a budget of its own for each call, as a call from
-        outside the room's work (RFC §9.5.1, as for a turn's task)."""
+    @pytest.mark.parametrize("ends", ["returns", "raises", "times out"])
+    async def test_a_task_the_hook_starts_calls_as_work_of_its_own(self, ends: str) -> None:
+        """Once the hook's body is over, whether it returned, raised or ran
+        past its timeout, a task it started sends at depth 0 with a budget
+        of its own for each call, as a call from outside the room's work
+        (RFC §9.5.1, as for a turn's task)."""
         kit = await _room(RoomKit(max_chain_depth=1))
         sends = 2 * BUDGET + 1
         later = _Later(kit, "r1", "sms", sends)
+        never = asyncio.Event()
 
-        @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="start")
+        @kit.hook(
+            HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="start", timeout=0.01
+        )
         async def start(event: RoomEvent, ctx: RoomContext) -> None:
-            if _body(event) == "hi":
-                later.start()
+            if _body(event) != "hi":
+                return
+            later.start()
+            if ends == "raises":
+                raise RuntimeError("the hook's body fails")
+            if ends == "times out":
+                await never.wait()
 
         try:
             await asyncio.wait_for(kit.process_inbound(_message()), 5)
@@ -894,10 +908,39 @@ class TestACallFromAnAsyncHook:
             await kit.close()
 
 
-async def _send_edit(kit: RoomKit, event: RoomEvent, n: int) -> RoomEvent:
-    """Its sender's edit of *event* in room ``r1``."""
-    edit = EditContent(target_event_id=event.id, new_content=TextContent(body=f"v{n}"))
-    return await kit.send_event("r1", "sms", edit, EventType.EDIT, participant_id="u")
+async def _send_change(kit: RoomKit, change: EditContent | DeleteContent) -> RoomEvent:
+    """Its sender's edit or delete of an event in room ``r1``."""
+    event_type = EventType.EDIT if isinstance(change, EditContent) else EventType.DELETE
+    return await kit.send_event("r1", "sms", change, event_type, participant_id="u")
+
+
+def _edit(event: RoomEvent, n: int = 0) -> EditContent:
+    return EditContent(target_event_id=event.id, new_content=TextContent(body=f"v{n}"))
+
+
+async def _edit_again(kit: RoomKit, event: RoomEvent, n: int) -> list[RoomEvent]:
+    return [await _send_change(kit, _edit(event, n))]
+
+
+async def _delete_another(kit: RoomKit, event: RoomEvent, n: int) -> list[RoomEvent]:
+    sent = await kit.send_event(
+        "r1", "sms", TextContent(body=f"m{n}"), participant_id="u", addressed_to=[]
+    )
+    if sent.blocked_by is not None:
+        return [sent]
+    return [sent, await _send_change(kit, DeleteContent(target_event_id=sent.id))]
+
+
+type _Again = Callable[[RoomKit, RoomEvent, int], Awaitable[list[RoomEvent]]]
+
+_CHANGED_AGAIN: dict[str, tuple[HookTrigger, _Again]] = {
+    "edit": (HookTrigger.ON_EVENT_UPDATED, _edit_again),
+    "delete": (HookTrigger.ON_EVENT_DELETED, _delete_another),
+}
+_FIRST_CHANGE: dict[str, Callable[[RoomEvent], EditContent | DeleteContent]] = {
+    "edit": _edit,
+    "delete": lambda event: DeleteContent(target_event_id=event.id),
+}
 
 
 class _Streaming(Channel):
