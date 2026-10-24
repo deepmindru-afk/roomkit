@@ -52,9 +52,10 @@ test:
 test-changed:
 	uv run pytest $(PARALLEL) --testmon --testmon-forceselect
 
-# Rewrite tests/public_api_signatures.json from the code. A public signature
-# change that can break a caller fails test_public_api.py until this runs: the
-# commit that breaks on purpose runs it and carries its BREAKING entry.
+# Rewrite tests/public_api_signatures.json and tests/public_api_names.json
+# from the code. A public signature change that can break a caller, or a name
+# dropped from a package's __all__, fails test_public_api.py until this runs:
+# the commit that breaks on purpose runs it and carries its BREAKING entry.
 api-snapshot:
 	uv run python -m tests.api_signatures
 

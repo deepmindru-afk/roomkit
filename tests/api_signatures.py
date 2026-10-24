@@ -17,6 +17,13 @@ enum member's value changed. An addition a caller cannot notice passes and
 needs no entry. The commit that breaks on purpose rewrites the snapshot with
 ``make api-snapshot`` and carries its BREAKING entry.
 
+``tests/public_api_names.json`` holds every name each package exports in its
+``__all__``, constants and re-exports included: ``test_public_api.py`` fails
+on one dropped from its package, which a name the signatures resolve by
+import alone would not show. ``make api-snapshot`` rewrites both files; a
+package whose optional dependency the environment lacks keeps the names the
+file holds.
+
 Annotations are left out: whether a type widens or narrows is not read
 mechanically. What a call does is not here either; a change of meaning under
 the same signature is the conformance scenarios' to catch.
@@ -40,6 +47,7 @@ import pydantic
 import roomkit
 
 SNAPSHOT = Path(__file__).with_name("public_api_signatures.json")
+NAMES = Path(__file__).with_name("public_api_names.json")
 
 _PACKAGE_ROOT = Path(roomkit.__file__).parent
 _P = inspect.Parameter
@@ -197,6 +205,32 @@ def write() -> None:
     SNAPSHOT.write_text("{\n" + ",\n".join(blocks) + "\n}\n", encoding="utf-8")
 
 
+def exported_names() -> dict[str, list[str]]:
+    """Every name each package exports, sorted, by package. A package whose
+    optional dependency the environment lacks keeps the names
+    :data:`NAMES` holds for it."""
+    held = json.loads(NAMES.read_text(encoding="utf-8")) if NAMES.exists() else {}
+    names: dict[str, list[str]] = {}
+    for init in sorted(_PACKAGE_ROOT.rglob("__init__.py")):
+        package = ".".join(("roomkit", *init.parent.relative_to(_PACKAGE_ROOT).parts))
+        try:
+            module = importlib.import_module(package)
+        except ModuleNotFoundError as missing:
+            _raise_unless_optional(missing)
+            if package in held:
+                names[package] = held[package]
+            continue
+        exported = sorted(getattr(module, "__all__", ()))
+        if exported:
+            names[package] = exported
+    return dict(sorted(names.items()))
+
+
+def write_names() -> None:
+    """Rewrite :data:`NAMES` from the code."""
+    NAMES.write_text(json.dumps(exported_names(), indent=2) + "\n", encoding="utf-8")
+
+
 def _default_breaks(p: _Param, q: _Param) -> list[str]:
     if p.default is None:
         return []
@@ -338,3 +372,4 @@ def _raise_unless_optional(missing: ModuleNotFoundError) -> None:
 
 if __name__ == "__main__":
     write()
+    write_names()

@@ -54,9 +54,9 @@ class TestPublicAPI:
 
     def test_no_name_a_package_exported_is_dropped(self) -> None:
         """Every name a package exported stays exported: an application imports
-        it from there. tests/public_api_names.json lists them; the commit that
-        breaks an import on purpose drops its name there, and a new export
-        needs no entry.
+        it from there. tests/public_api_names.json lists them, written by
+        `make api-snapshot` with the signatures; the commit that breaks an
+        import on purpose runs it, and a new export needs no entry until then.
 
         A package whose optional dependency the environment lacks is left out,
         as test_every_name_a_package_exports_resolves leaves it out.
