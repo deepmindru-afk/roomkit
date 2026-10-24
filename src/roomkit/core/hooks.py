@@ -552,11 +552,21 @@ class HookEngine:
         hooks = [*self._global_hooks, *self._room_hooks.get(room_id, [])]
         return any(getattr(h.fn, _ROUTER_MARK, False) for h in hooks)
 
-    def has_sync_hooks(self, room_id: str, trigger: HookTrigger, event: RoomEvent) -> bool:
-        """Whether a SYNC hook of *trigger* applies to *event* in *room_id*."""
+    def has_sync_hooks(
+        self,
+        room_id: str,
+        trigger: HookTrigger,
+        event: RoomEvent,
+        *,
+        needs_lock: bool | None = None,
+    ) -> bool:
+        """Whether a SYNC hook of *trigger* applies to *event* in *room_id*;
+        with *needs_lock*, one that needs the lock (``True``) or not
+        (``False``), as :meth:`run_sync_hooks` selects them (RFC §9.5.1)."""
         if (engine := self._turn_engine(trigger)) is not None:
-            return engine.has_sync_hooks(room_id, trigger, event)
-        return bool(self._get_hooks(room_id, trigger, HookExecution.SYNC, event=event))
+            return engine.has_sync_hooks(room_id, trigger, event, needs_lock=needs_lock)
+        hooks = self._get_hooks(room_id, trigger, HookExecution.SYNC, event=event)
+        return any(needs_lock is None or h.needs_lock == needs_lock for h in hooks)
 
     def has_hooks_for(self, room_id: str, trigger: HookTrigger, event: Any) -> bool:
         """Whether a hook of *trigger* applies to *event* in *room_id*, its

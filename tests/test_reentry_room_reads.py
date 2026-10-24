@@ -15,11 +15,15 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any
 
+import pytest
+
 from roomkit.channels.agent import Agent
 from roomkit.core.framework import RoomKit
+from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory, RoomStatus
-from roomkit.models.event import TextContent
+from roomkit.models.enums import ChannelCategory, HookTrigger, RoomStatus
+from roomkit.models.event import RoomEvent, TextContent
+from roomkit.models.hook import HookResult
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
 from tests.buffered_agent import BufferedAgent
@@ -104,6 +108,31 @@ async def test_each_regenerated_answer_reads_the_room_once_and_no_binding() -> N
     # A regenerated answer re-enters like a first-time one: a pass per row.
     assert len(passes) == 10
     assert all(reads == {"get_room": 1} for reads in passes), passes
+    await kit.close()
+
+
+@pytest.mark.parametrize("needs_lock", [False, True], ids=["off-lock-hook", "locked-hook"])
+async def test_the_gate_reads_the_room_again_only_once_a_locked_hook_ran(
+    needs_lock: bool,
+) -> None:
+    """RFC §10.1 step 9a: the room and the source's binding are read again
+    once a hook ran under the lock, one read each; an off-lock hook ran
+    before the lock, which the locked section's own reads already follow."""
+    kit = RoomKit(store=_CountingStore())
+    kit.register_channel(SimpleChannel("sms1"))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, name="check", needs_lock=needs_lock)
+    async def check(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        return HookResult.allow()
+
+    gates = _count_commits(kit, "_gate_commit")
+
+    await _say(kit)
+
+    reread = {"get_room": 1, "get_binding": 1} if needs_lock else {}
+    assert gates == [reread]
     await kit.close()
 
 

@@ -133,6 +133,41 @@ class _Ready:
     edit_delete_target: RoomEvent | None
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class _AfterHooks:
+    """What the gate reads of the room once an event's hooks ran (RFC §10.1
+    step 9a): the context the event commits with, its source's binding as
+    the hooks left it, and the room's next index, ``None`` when no hook ran
+    under the lock."""
+
+    context: RoomContext
+    binding: ChannelBinding | None
+    index: int | None
+
+
+def _source_gate(ready: _Ready, *, source_check: bool) -> _Blocked | _Ready:
+    """RFC §10.1 step 11 for *ready*, an event its hooks allowed, with its
+    source's binding as the hooks left it: its right to write unless
+    *source_check* is off.
+
+    RFC §7.5 — a source that cannot write (READ_ONLY/NONE or muted) must not
+    inject a DELIVERED event into the timeline. It is stored BLOCKED for
+    audit, its hook side effects still collected (§7.5 rule 3), and stops
+    before broadcast.
+    """
+    if not source_check:
+        return ready
+    # Delivered or stored BLOCKED in its place, the event takes the
+    # visibility step 12 gives it (RFC §7.3).
+    event = with_committed_visibility(ready.event, ready.source_binding, ready.context.bindings)
+    reason = _source_block_reason(ready.source_binding)
+    if reason is not None:
+        return _Blocked.after_hooks(
+            event, ready.context, ready.sync_result, reason=reason, blocked_by=reason
+        )
+    return replace(ready, event=event)
+
+
 def at_index(event: RoomEvent, index: int | None) -> RoomEvent:
     """*event* at *index*, the room's next once its hooks ran (RFC §10.1
     step 9a); *event* itself without one, or already at it. A stored event
@@ -617,26 +652,25 @@ class InboundLockedMixin(HelpersMixin):
         Decides only: a :class:`_Blocked` carries what the hooks decided, for
         :meth:`_store_blocked`; a :class:`_Ready` carries the event as the
         hooks left it, with its source's binding as the hooks left it
-        (:meth:`_source_binding`).
+        (:meth:`_after_hooks`).
         """
-        hooked = self._hook_engine.has_sync_hooks(room_id, HookTrigger.BEFORE_BROADCAST, event)
+        ran = self._hooks_run_here(room_id, event, precheck)
         # Run sync hooks (before_broadcast). After an off-lock check (RFC
         # §9.5.1) its outcome comes first and only the locked hooks run here.
         sync_result = await self._run_before_broadcast(room_id, event, context, precheck)
         await self._announce_hook_errors(room_id, event, sync_result)
-        index: int | None = None
-        if hooked and under_lock:
-            index = await self._index_after_hooks(room_id, event, operation)
-            if index is None:
-                return _Refused("room_closed")
-            event = at_index(event, index)
+        after = await self._after_hooks(
+            room_id, event, context, ran=ran, under_lock=under_lock, operation=operation
+        )
+        if after is None:
+            return _Refused("room_closed")
+        event, context = at_index(event, after.index), after.context
 
         if not sync_result.allowed:
             if source_check:
                 # A channel's record sees no more than its event would have
                 # (RFC §7.3); a hook's injected event keeps its own (§9.4).
-                binding = await self._source_binding(room_id, event, context, hooked=hooked)
-                event = with_committed_visibility(event, binding, context.bindings)
+                event = with_committed_visibility(event, after.binding, context.bindings)
             return _Blocked.after_hooks(
                 event,
                 context,
@@ -650,79 +684,77 @@ class InboundLockedMixin(HelpersMixin):
         if isinstance(sync_result.event, RoomEvent):
             # A modify keeps the index its hooks were shown (RFC §9.4), which
             # gives way to the room's next once they ran (step 9a).
-            event = at_index(await self._rooted(room_id, event, sync_result.event), index)
+            rooted = await self._rooted(room_id, event, sync_result.event)
+            event = at_index(rooted, after.index)
         target = change.target
-        if hooked and target is not None:
+        if ran and target is not None:
             # An injected change (no source check) is the hook's (§9.4).
             change = await self._check_change(room_id, event, by_hook=not source_check)
             if change.refusal is not None:
                 return _Refused(change.refusal)
             target = change.target
-        return await self._source_gate(
+        ready = _Ready(event, after.binding, sync_result, context, target)
+        return _source_gate(ready, source_check=source_check)
+
+    def _hooks_run_here(
+        self, room_id: str, event: RoomEvent, precheck: SyncPipelineResult | None
+    ) -> bool:
+        """Whether a BEFORE_BROADCAST hook runs for *event* in the gate: every
+        one without an off-lock check, the ones that need the lock after it
+        (RFC §9.5.1), none after a check that blocked."""
+        if precheck is not None and not precheck.allowed:
+            return False
+        return self._hook_engine.has_sync_hooks(
             room_id,
-            _Ready(event, None, sync_result, context, target),
-            hooked=hooked,
-            source_check=source_check,
+            HookTrigger.BEFORE_BROADCAST,
+            event,
+            needs_lock=None if precheck is None else True,
         )
 
-    async def _source_gate(
-        self, room_id: str, ready: _Ready, *, hooked: bool, source_check: bool
-    ) -> _Blocked | _Ready:
-        """RFC §10.1 step 11 for *ready*, an event its hooks allowed: its
-        source's binding as the hooks left it, which the broadcast plans
-        with, and its right to write unless *source_check* is off.
+    async def _after_hooks(
+        self,
+        room_id: str,
+        event: RoomEvent,
+        context: RoomContext,
+        *,
+        ran: bool,
+        under_lock: bool,
+        operation: _RefusedOperation,
+    ) -> _AfterHooks | None:
+        """What the gate reads once *event*'s hooks ran (RFC §10.1 step 9a).
 
-        RFC §7.5 — a source that cannot write (READ_ONLY/NONE or muted) must
-        not inject a DELIVERED event into the timeline. It is stored BLOCKED
-        for audit, its hook side effects still collected (§7.5 rule 3), and
-        stops before broadcast.
+        *context* holds the room as it was built: under the lock for an
+        inbound event and a commit pass (steps 6 and 12), where only a hook
+        that ran there changes it since; at the start of its stream for a
+        streamed row, whose hooks run off the lock and whose stream reads the
+        room's status itself (§5.1). With no hook *ran*, it is the answer.
+
+        Once a hook ran under the lock, the room and the source's binding are
+        read again, on one connection: a room a hook closed refuses the event
+        as step 6 does, announced for *operation* (§5.1, §8.2), ``None``; the
+        event takes the room's next index, an entry committed ahead of it
+        during its hooks having taken the one step 8 showed them, and the
+        context is read again then, so what the event's commit plans with and
+        its mutation trigger reads hold that entry (§10.3). A streamed row's
+        hooks read the binding again alone.
         """
-        event, context = ready.event, ready.context
-        source_binding = await self._source_binding(room_id, event, context, hooked=hooked)
-        if not source_check:
-            return replace(ready, source_binding=source_binding)
-        # Delivered or stored BLOCKED in its place, the event takes the
-        # visibility step 12 gives it (RFC §7.3).
-        event = with_committed_visibility(event, source_binding, context.bindings)
-        reason = _source_block_reason(source_binding)
-        if reason is not None:
-            return _Blocked.after_hooks(
-                event, context, ready.sync_result, reason=reason, blocked_by=reason
+        source = event.source.channel_id
+        if not ran:
+            return _AfterHooks(context, context.get_binding(source), None)
+        if not under_lock:
+            return _AfterHooks(context, await self._store.get_binding(room_id, source), None)
+        async with self._store.connection():
+            room = await self._store.get_room(room_id)
+            binding = await self._store.get_binding(room_id, source)
+        if room is None or room.status in _REFUSING_STATUSES:
+            status = None if room is None else room.status
+            await self._refuse_closed_room(
+                room_id, status=status, operation=operation, event=event
             )
-        return replace(ready, event=event, source_binding=source_binding)
-
-    async def _index_after_hooks(
-        self, room_id: str, event: RoomEvent, operation: _RefusedOperation
-    ) -> int | None:
-        """The room's next index once *event*'s hooks ran (RFC §10.1 step
-        9a), read again: an entry committed ahead of it during its hooks took
-        the one step 8 showed them. ``None`` when the room no longer accepts
-        events, a hook having closed it: refused as step 6 refuses it, the
-        refusal announced for *operation* (§5.1, §8.2), and nothing of the
-        event stored."""
-        room = await self._store.get_room(room_id)
-        if room is not None and room.status not in _REFUSING_STATUSES:
-            return room.event_count
-        status = None if room is None else room.status
-        await self._refuse_closed_room(room_id, status=status, operation=operation, event=event)
-        return None
-
-    async def _source_binding(
-        self, room_id: str, event: RoomEvent, context: RoomContext, *, hooked: bool
-    ) -> ChannelBinding | None:
-        """The binding *event*'s source writes with, as its hooks left it.
-
-        *context* holds the bindings as they were when it was built. For an
-        inbound event and a reentry pass it was built under the room lock
-        (RFC §10.1 steps 6 and 12), where only a hook can change one since (a
-        moderation hook muting the source of the message it reads); for a
-        streamed row, at the start of the stream, the snapshot its delivery
-        is planned with. The store is read again only when a BEFORE_BROADCAST
-        hook ran for *event*.
-        """
-        if hooked:
-            return await self._store.get_binding(room_id, event.source.channel_id)
-        return context.get_binding(event.source.channel_id)
+            return None
+        if room.event_count != context.room.event_count:
+            context = await self._build_context(room_id)
+        return _AfterHooks(context, binding, room.event_count)
 
     async def _announce_hook_errors(
         self, room_id: str, event: RoomEvent, sync_result: SyncPipelineResult
