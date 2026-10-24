@@ -12,10 +12,13 @@ every event therefore stops, at the reentry cap or the chain-depth limit.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import pytest
 
-from roomkit import ReentrantCallError, RoomKit
+from roomkit import ConferenceRealtimeConfig, ReentrantCallError, RoomKit
+from roomkit.channels.ai import AIChannel
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage, InboundResult
@@ -23,6 +26,11 @@ from roomkit.models.enums import ChannelCategory, EventType, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.hook import HookResult
 from roomkit.models.store_filter import EventFilter
+from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
+from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.voice.realtime.mock import MockRealtimeProvider
+from tests.conference.test_conference_realtime import ROOM, realtime_kit, until
+from tests.conference.test_conference_tool_calls import LOOKUP
 from tests.test_framework import AILikeChannel, SimpleChannel
 
 # max_chain_depth=1: a reentry budget of 10 passes per cascade.
@@ -193,24 +201,32 @@ class TestACallFromATurn:
         finally:
             await kit.close()
 
-    @pytest.mark.in_process(
-        "the agent's task calls the kit it holds, whose context an in-memory turn shares "
-        "with the owner; across Redis it goes through its TurnHost"
+    @pytest.mark.parametrize(
+        "work",
+        [
+            pytest.param(
+                "agent",
+                marks=pytest.mark.in_process(
+                    "the agent's task calls the kit it holds, whose context an in-memory "
+                    "turn shares with the owner; across Redis it goes through its TurnHost"
+                ),
+            ),
+            "tool-handler",
+            "conference-handler",
+        ],
     )
-    async def test_work_a_turn_began_starts_fresh_once_the_turn_is_over(self) -> None:
-        """A task a turn spawned that sends after the turn ended is work of
-        its own: depth 0 and a budget of its own for each call, as a call
-        from outside the room's work (RFC §8.3, §9.5.1). The agent is asked
-        below the depth limit of 2, with a budget of 20 per cascade."""
-        kit = await _room(RoomKit(max_chain_depth=2))
-        agent = _Deferring("ai", kit, sends=2 * BUDGET + 1)
-        kit.register_channel(agent)
-        await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+    async def test_work_a_turn_began_starts_fresh_once_the_turn_is_over(self, work: str) -> None:
+        """A task a turn, a tool handler or a conference's tool call spawned,
+        sending once that work is over, is work of its own: depth 0 and a
+        budget of its own for each call, as a call from outside the room's
+        work (RFC §8.3, §9.5.1)."""
+        sends = 2 * BUDGET + 1
+        kit, start, later = await _WORK[work](sends)
         try:
-            await asyncio.wait_for(kit.process_inbound(_message()), 5)
-            agent.turn_over.set()
-            sent = await asyncio.wait_for(agent.sent, 5)
-            assert [(e.chain_depth, e.blocked_by) for e in sent] == [(0, None)] * (2 * BUDGET + 1)
+            await asyncio.wait_for(start(), 5)
+            later.over.set()
+            sent = await asyncio.wait_for(later.sent, 5)
+            assert [(e.chain_depth, e.blocked_by) for e in sent] == [(0, None)] * sends
         finally:
             await kit.close()
 
@@ -236,6 +252,125 @@ class TestACallFromATurn:
             )
         finally:
             await kit.close()
+
+
+class _Later:
+    """Work started inside a turn or a tool call: a task that sends *sends*
+    messages into *room_id* through *channel_id* once told the work is
+    over, each addressed to nobody, so that no agent answers it."""
+
+    def __init__(self, kit: RoomKit, room_id: str, channel_id: str, sends: int) -> None:
+        self._kit, self._room_id, self._channel_id, self._sends = kit, room_id, channel_id, sends
+        self.over = asyncio.Event()
+        self.sent: asyncio.Future[list[RoomEvent]] = asyncio.get_running_loop().create_future()
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    def start(self) -> None:
+        if self._tasks or self.sent.done():
+            return
+        task = asyncio.create_task(self._send())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _send(self) -> None:
+        await self.over.wait()
+        sent = [
+            await self._kit.send_event(
+                self._room_id, self._channel_id, TextContent(body=f"later {n}"), addressed_to=[]
+            )
+            for n in range(self._sends)
+        ]
+        self.sent.set_result(sent)
+
+
+type _Work = tuple[RoomKit, Callable[[], Awaitable[Any]], _Later]
+
+
+async def _agent_work(sends: int) -> _Work:
+    """An agent whose turn starts the work. The agent is asked below the
+    depth limit of 2, with a budget of 20 per cascade."""
+    kit = await _room(RoomKit(max_chain_depth=2))
+    later = _Later(kit, "r1", "sms", sends)
+    kit.register_channel(_Starting("ai", later))
+    await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+    return kit, lambda: kit.process_inbound(_message()), later
+
+
+async def _tool_work(sends: int) -> _Work:
+    """An AI channel's tool handler starts the work, during the turn."""
+    kit = await _room(RoomKit(max_chain_depth=2))
+    later = _Later(kit, "r1", "sms", sends)
+
+    async def lookup(name: str, arguments: dict[str, Any]) -> str:
+        later.start()
+        return "ok"
+
+    provider = MockAIProvider(
+        ai_responses=[
+            AIResponse(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[AIToolCall(id="t1", name="lookup", arguments={})],
+            ),
+            AIResponse(content="Done.", finish_reason="stop"),
+        ]
+    )
+    agent = AIChannel(
+        "ai",
+        provider=provider,
+        tool_handler=lookup,
+        tools=[AITool(name="lookup", description="d")],
+    )
+    kit.register_channel(agent)
+    await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+    return kit, lambda: kit.process_inbound(_message()), later
+
+
+async def _conference_work(sends: int) -> _Work:
+    """A conference's tool call starts the work, at the depth 3 of the
+    answer that issued it."""
+    provider = MockRealtimeProvider()
+    holder: list[_Later] = []
+
+    async def handler(room_id: str, name: str, arguments: dict[str, Any]) -> str:
+        holder[0].start()
+        return "done"
+
+    config = ConferenceRealtimeConfig(provider=provider, tools=[LOOKUP], tool_handler=handler)
+    kit, channel, _, _ = await realtime_kit(provider=provider, config=config)
+    later = _Later(kit, ROOM, "src", sends)
+    holder.append(later)
+    session = await channel._realtime.ensure_session(ROOM)  # noqa: SLF001
+    assert session is not None
+
+    async def start() -> None:
+        await kit.send_event(ROOM, "src", TextContent(body="agent says"), chain_depth=2)
+        await provider.simulate_tool_call(session, "c1", "lookup", {})
+        await until(lambda: bool(provider.tool_results))
+
+    return kit, start, later
+
+
+_WORK: dict[str, Callable[[int], Awaitable[_Work]]] = {
+    "agent": _agent_work,
+    "tool-handler": _tool_work,
+    "conference-handler": _conference_work,
+}
+
+
+class _Starting(AILikeChannel):
+    """An agent whose turn on the first message starts *later*."""
+
+    def __init__(self, channel_id: str, later: _Later) -> None:
+        super().__init__(channel_id)
+        self._later = later
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        if _body(event) == "hi":
+            self._later.start()
+        return ChannelOutput.empty()
 
 
 class _Deferring(AILikeChannel):
