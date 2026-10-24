@@ -21,7 +21,7 @@ from roomkit.memory import BudgetAwareMemory, MemoryProvider, MemoryResult, Slid
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory, ChannelType, EventType
+from roomkit.models.enums import ChannelCategory, ChannelType, EventStatus, EventType
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.store_filter import EventFilter
 from roomkit.providers.ai.mock import MockAIProvider
@@ -237,23 +237,26 @@ async def test_a_hook_blocked_instruction_is_not_stored():
     await kit.close()
 
 
-async def test_its_result_takes_the_rooms_next_index_once_its_hooks_ran():
-    """RFC §10.1 step 9a: an entry committed ahead of it during its hooks
-    took the index step 8 showed them; the instruction, never stored,
-    reports the room's next."""
+@pytest.mark.parametrize("blocked", [False, True], ids=["allowed", "blocked"])
+async def test_its_result_takes_the_rooms_next_index_once_its_hooks_ran(blocked: bool):
+    """RFC §10.1 step 9a, §10.1.1 step 5: an entry committed ahead of it
+    during its hooks took the index step 8 showed them; the instruction,
+    never stored, reports the room's next, allowed or blocked."""
     kit, _speaker, _provider = await _kit()
     nested: list[RoomEvent] = []
 
     @kit.hook(HookTrigger.BEFORE_BROADCAST)
     async def aside(event: RoomEvent, ctx: RoomContext) -> HookResult:
-        if event.type == EventType.INSTRUCTION:
-            nested.append(await kit.send_event(ROOM, "voice", TextContent(body="nested")))
-        return HookResult.allow()
+        if event.type != EventType.INSTRUCTION:
+            return HookResult.allow()
+        nested.append(await kit.send_event(ROOM, "voice", TextContent(body="nested")))
+        return HookResult.block("not now") if blocked else HookResult.allow()
 
     result = await kit.process_inbound(_instruction(), room_id=ROOM)
 
-    assert result.event is not None and not result.blocked
-    assert result.event.index == nested[0].index + 1
+    assert result.event is not None and result.blocked is blocked
+    status = EventStatus.BLOCKED if blocked else EventStatus.DELIVERED
+    assert (result.event.status, result.event.index) == (status, nested[0].index + 1)
     await kit.close()
 
 
