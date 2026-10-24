@@ -246,11 +246,20 @@ two footer links, and say so.
 ```bash
 make llms-full                 # rebuilds llms-full.txt from docs/c7/
 git status --porcelain llms-full.txt
+make api-snapshot              # pins the public signatures the cycle added
+git diff --stat tests/public_api_signatures.json
 make docs                      # strict MkDocs build of ../roomkit-docs
 ```
 
 - A dirty `llms-full.txt` means `docs/c7/` drifted — commit the regenerated file
   with the release prep in step 6.
+- A dirty `tests/public_api_signatures.json` pins the names, members and
+  parameters added since the last snapshot: `test_no_signature_change_breaks_a_caller`
+  checks only what the file holds, so an addition stays unguarded until it is
+  written there. Commit it with the release prep in step 6. The test passed before
+  the rewrite, so the diff holds no break; a line it removes is a compatible change
+  (a parameter that gained a default, a keyword-only one made positional). Read
+  it, and raise anything else as a finding.
 - `make docs` builds `../roomkit-docs/mkdocs.yml` from roomkit's own env (its
   `mkdocstrings` directives import the real package). Broken internal links report
   as INFO and do **not** fail `--strict` — grep the output for
@@ -278,7 +287,9 @@ gh run list --workflow CI --branch main --commit "$(git rev-parse HEAD)" --limit
 
 **Fast lane** — only when *both* hold: every pending path is documentation
 (`CHANGELOG.md`, `llms-full.txt`, `llms.txt`, `README.md`, `docs/`, `*.md` under
-`examples/`), **and** HEAD already has a `completed` + `success` CI run. Then:
+`examples/`) or the signature snapshot `tests/public_api_signatures.json` that step
+4 rewrote from HEAD's code, **and** HEAD already has a `completed` + `success` CI
+run. Then:
 
 ```bash
 make lint typecheck security
@@ -308,9 +319,9 @@ only.
 
 ## 6. Push + CI green
 
-Commit the release prep (CHANGELOG promote, regenerated `llms-full.txt`, doc
-fixes) with a `docs(changelog):`-style message, staging **explicit paths**, and
-**push it**.
+Commit the release prep (CHANGELOG promote, regenerated `llms-full.txt` and
+`tests/public_api_signatures.json`, doc fixes) with a `docs(changelog):`-style
+message, staging **explicit paths**, and **push it**.
 
 `release.sh` resolves the CI run for the *exact HEAD sha*:
 
