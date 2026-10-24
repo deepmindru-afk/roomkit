@@ -20,7 +20,6 @@ from roomkit.core._reentrance import (
     REENTRY_LOOP_CAP,
     Entry,
     Placement,
-    ReentryBudget,
     RoomWork,
     admission_order,
     chain_floor,
@@ -263,7 +262,7 @@ class InboundMixin(HelpersMixin):
         # writes nothing, and is traced as any call: a loop the cap cut stays
         # visible.
         charged = self._named_room_work(room_id)
-        if charged is not None and not charged.budget.take():
+        if charged is not None and not charged.draw():
             refused = {"blocked": True, "deferred": defer_delivery}
             telemetry.end_span(open_span(), attributes=refused)
             return _past_the_cap(room_id, message)
@@ -455,8 +454,8 @@ class InboundMixin(HelpersMixin):
         # routed or named, is that work's: charged once on its budget before
         # the room is created (RFC §9.5.1, gap G-070), unless it was charged
         # as it started.
-        budget = self._room_work.opening_budget() if charged is None else None
-        opening = _Opening(budget) if budget is not None else None
+        opener = self._room_work.opening() if charged is None else None
+        opening = _Opening(opener) if opener is not None else None
         try:
             room_id, room_just_created = await self._route_to_room(
                 message,
@@ -518,10 +517,10 @@ class InboundMixin(HelpersMixin):
         if charged is not None:
             return charged
         if room_just_created and opening is not None:
-            return Entry(Placement.ARRIVAL, opening.budget, False)
+            return Entry(Placement.ARRIVAL, opening.entry.budget, False)
         entry = self._room_work.entry(room_id)
         drawn = opening is not None and opening.charged
-        if entry.charged and not drawn and not entry.budget.take():
+        if entry.charged and not drawn and not entry.draw():
             return None
         return entry
 
@@ -1394,22 +1393,23 @@ class _PastTheCapError(Exception):
 
 @dataclass(slots=True)
 class _Opening:
-    """The budget a message of the room's delivery work draws on when it
+    """What a message of the room's delivery work is to that work when it
     creates a room, routed or named (RFC §9.5.1, gap G-070), charged once
     whichever branch creates the room."""
 
-    budget: ReentryBudget
+    entry: Entry
     charged: bool = False
 
     def charge(self) -> None:
-        """Take one pass before the room is created; nothing the second time.
+        """Take one pass, or one hook call for an ASYNC hook's body's
+        message, before the room is created; nothing the second time.
 
         Raises:
             _PastTheCapError: the budget is spent.
         """
         if self.charged:
             return
-        if not self.budget.take():
+        if not self.entry.draw():
             raise _PastTheCapError
         self.charged = True
 

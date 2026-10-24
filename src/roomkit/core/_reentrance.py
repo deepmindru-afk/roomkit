@@ -17,7 +17,7 @@ The execution context of a call tells it, for the room it names:
   budget of the cascade that delivers, so a transport whose delivery calls
   into its room on every event stops at the cap, and so does a hook that
   posts after every event; and so does a message it sends that creates a
-  room, routed or named, that work's own (``opening_budget``), while a call
+  room, routed or named, that work's own (``opening``), while a call
   into another existing room has a budget of its own;
 - elsewhere: a new arrival with a budget of its own.
 
@@ -59,19 +59,30 @@ REENTRY_LOOP_CAP = "reentry_loop_cap"
 class ReentryBudget:
     """The passes a cascade may still run (RFC §8.3): its responses, chained
     streams and injected events, and the entries the room's work adopted or
-    sent into it. Shared by reference between the cascades that draw on
-    it."""
+    sent into it; and, counted apart on a counter of the same size, the
+    calls the bodies of its ASYNC hooks may still make into the room
+    (§9.5.1), so that a hook's notices cost its agents no answer and their
+    answers block no notice. Shared by reference between the cascades that
+    draw on it."""
 
-    __slots__ = ("_left",)
+    __slots__ = ("_hook_calls", "_passes")
 
     def __init__(self, passes: int) -> None:
-        self._left = passes
+        self._passes = passes
+        self._hook_calls = passes
 
     def take(self) -> bool:
-        """Take one pass; ``False`` once the budget is spent."""
-        if self._left <= 0:
+        """Take one pass; ``False`` once the passes are spent."""
+        if self._passes <= 0:
             return False
-        self._left -= 1
+        self._passes -= 1
+        return True
+
+    def take_hook_call(self) -> bool:
+        """Take one call of an ASYNC hook's body; ``False`` once they are spent."""
+        if self._hook_calls <= 0:
+            return False
+        self._hook_calls -= 1
         return True
 
 
@@ -96,11 +107,19 @@ class Entry:
     """Whether the room's work made the call: it draws one pass as it starts."""
     queued: QueuedInjections | None = None
     """Nested in a pass's section: that section's queue of injected events."""
+    hook_body: bool = False
+    """Whether an ASYNC hook's body made the call: it draws one of the
+    budget's hook calls rather than one of its passes."""
 
     @property
     def adopted(self) -> bool:
         """Whether the call takes no ticket and runs every hook under the lock."""
         return self.placement is not Placement.ARRIVAL
+
+    def draw(self) -> bool:
+        """Take what the call draws as it starts, a hook call or a pass;
+        ``False`` once the budget holds none."""
+        return self.budget.take_hook_call() if self.hook_body else self.budget.take()
 
 
 class _Kind(Enum):
@@ -116,6 +135,7 @@ class _Frame:
     budget: ReentryBudget
     queued: QueuedInjections | None = None
     active: bool = True
+    hook_body: bool = False
 
 
 _frames: contextvars.ContextVar[tuple[_Frame, ...]] = contextvars.ContextVar(
@@ -175,8 +195,9 @@ def after_delivery(room_id: str, budget: ReentryBudget) -> AbstractContextManage
     fires once an event's delivery set has run: its ``AFTER_BROADCAST``
     hooks (RFC §10.1 step 16) and a change's mutation trigger (§10.3). It is
     the cascade's delivery work while it runs; a task it starts that calls
-    once the body has returned is work of its own."""
-    return _framed(_Frame(_Kind.DELIVERING, room_id, budget))
+    once the body has returned is work of its own. What it sends into the
+    room draws on the budget's hook calls."""
+    return _framed(_Frame(_Kind.DELIVERING, room_id, budget, hook_body=True))
 
 
 @contextmanager
@@ -231,23 +252,23 @@ class RoomWork:
                 return Entry(Placement.NESTED, self.budget(), False)
             section = _innermost(room_id, locked=True, kind=_Kind.SECTION)
             queued = section.queued if section is not None else None
-            return Entry(Placement.NESTED, frame.budget, True, queued)
+            return Entry(Placement.NESTED, frame.budget, True, queued, frame.hook_body)
         if frame is not None and frame.kind is _Kind.ADMITTED:
             return Entry(Placement.BESIDE, frame.budget, True)
         if frame is not None and frame.kind is _Kind.DELIVERING:
-            return Entry(Placement.ARRIVAL, frame.budget, True)
+            return Entry(Placement.ARRIVAL, frame.budget, True, hook_body=frame.hook_body)
         return Entry(Placement.ARRIVAL, self.budget(), False)
 
-    def opening_budget(self) -> ReentryBudget | None:
-        """The budget a message this context sends draws on when it creates
-        a room, routed or named (RFC §9.5.1, gap G-070): the budget of the
-        cascade whose
-        delivery work, a delivery or a turn, still runs in the innermost
-        such frame, since the room it opens is that work's own; ``None``
-        outside every delivery, for a budget of its own."""
+    def opening(self) -> Entry | None:
+        """What a message this context sends is to the work it opens a room
+        for, routed or named (RFC §9.5.1, gap G-070): an arrival charged on
+        the budget of the cascade whose delivery work (a delivery, a turn,
+        an ASYNC hook's body) still runs in the innermost such frame, since
+        the room it opens is that work's own; ``None`` outside every
+        delivery, for a budget of its own."""
         for frame in reversed(_frames.get()):
             if frame.active and frame.kind is _Kind.DELIVERING:
-                return frame.budget
+                return Entry(Placement.ARRIVAL, frame.budget, True, hook_body=frame.hook_body)
         return None
 
     def refuse_routed(self, room_id: str) -> None:

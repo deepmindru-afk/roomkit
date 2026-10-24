@@ -20,6 +20,7 @@ import pytest
 
 from roomkit import ConferenceRealtimeConfig, ReentrantCallError, RoomKit
 from roomkit.channels.ai import AIChannel
+from roomkit.channels.base import Channel
 from roomkit.core.inbound_router import InboundRoomRouter
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
@@ -35,6 +36,7 @@ from roomkit.models.event import EditContent, RoomEvent, TextContent
 from roomkit.models.hook import HookResult
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
+from roomkit.models.streaming import SegmentBreakMarker
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
@@ -754,9 +756,10 @@ class TestACallFromAnAsyncHook:
     ) -> None:
         """The agent's answer fires the hook, whose post the agent answers:
         each round trip draws on the budget of the cascade the first message
-        opened, its post and the answer's reentry: ten round trips of the
-        budget of 20 passes, the eleventh answer capped. The agent is asked
-        below the depth limit of 2."""
+        opened, its post one of the 20 hook calls and the answer's reentry
+        one of the 20 passes: twenty round trips, the answer to the
+        twentieth post capped. The agent is asked below the depth limit of
+        2."""
         kit = await _room(RoomKit(max_chain_depth=2))
         kit.register_channel(AILikeChannel("ai", response="Answer."))
         await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
@@ -772,7 +775,7 @@ class TestACallFromAnAsyncHook:
             await asyncio.wait_for(_settled(kit), 5)
             events = await _messages(kit)
             answers = [e for e in events if e.source.channel_id == "ai" and e.blocked_by is None]
-            assert (len(posted), len(answers)) == (10, 10)
+            assert (len(posted), len(answers)) == (20, 20)
             assert [(e.source.channel_id, e.blocked_by) for e in _capped(events)] == [
                 ("ai", "reentry_loop_cap")
             ]
@@ -799,9 +802,9 @@ class TestACallFromAnAsyncHook:
             await kit.close()
 
     async def test_a_hook_posting_once_per_message_posts_for_every_message(self) -> None:
-        """A notice, one post for each message, draws one pass of that
-        message's cascade: more messages than a budget holds passes each get
-        theirs."""
+        """A notice, one post for each message, draws one hook call of that
+        message's cascade: more messages than a cascade holds hook calls
+        each get theirs."""
         kit = await _room(RoomKit(max_chain_depth=1))
         posted: list[RoomEvent] = []
 
@@ -895,6 +898,131 @@ async def _send_edit(kit: RoomKit, event: RoomEvent, n: int) -> RoomEvent:
     """Its sender's edit of *event* in room ``r1``."""
     edit = EditContent(target_event_id=event.id, new_content=TextContent(body=f"v{n}"))
     return await kit.send_event("r1", "sms", edit, EventType.EDIT, participant_id="u")
+
+
+class _Streaming(Channel):
+    """An agent whose turn on a person's message streams *rows* segments,
+    each committed as a row of its own."""
+
+    channel_type = ChannelType.AI
+    category = ChannelCategory.INTELLIGENCE
+
+    def __init__(self, channel_id: str, rows: int) -> None:
+        super().__init__(channel_id)
+        self._rows = rows
+
+    async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
+        raise NotImplementedError
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        if event.source.channel_type is not ChannelType.SMS:
+            return ChannelOutput.empty()
+        return ChannelOutput(responded=True, response_stream=self._segments())
+
+    async def _segments(self) -> Any:
+        for n in range(self._rows):
+            yield f"part {n}. "
+            yield SegmentBreakMarker()
+
+    async def deliver(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        return ChannelOutput.empty()
+
+
+class TestTheBudgetOfAHooksCalls:
+    """A cascade counts the calls of its ASYNC hooks' bodies apart from its
+    own passes, on a counter of the same size (``10 × max_chain_depth``): a
+    hook's loop stops at its cap, its notices cost the agents no answer, and
+    the agents' answers block no notice below it (RFC §8.3, §9.5.1)."""
+
+    async def test_a_notice_per_answer_costs_the_agents_no_answer(self) -> None:
+        """Three agents answer one another to the depth limit of 5, 45
+        answers, and a hook posts a notice after each: 45 passes and 45 hook
+        calls, each under its cap of 50, so every answer and every notice
+        lands. On one shared budget, 34 answers landed and 18 notices were
+        blocked."""
+        kit = await _room(RoomKit(max_chain_depth=5))
+        for n in range(3):
+            kit.register_channel(AILikeChannel(f"agent:{n}", response="Answer."))
+            await kit.attach_channel("r1", f"agent:{n}", category=ChannelCategory.INTELLIGENCE)
+        notices = await _notice_per_agent_row(kit)
+
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message()), 5)
+            await asyncio.wait_for(_settled(kit), 5)
+            answers = [e for e in await _messages(kit) if e.source.channel_id.startswith("agent:")]
+            assert [
+                e.blocked_by for e in answers if e.blocked_by != "event_chain_depth_limit"
+            ] == [None] * 45
+            assert [e.blocked_by for e in notices] == [None] * 45
+        finally:
+            await kit.close()
+
+    async def test_a_notice_per_streamed_row_costs_its_answers_nothing(self) -> None:
+        """An agent streams 12 rows, a second agent answers the person and
+        each row, and a hook posts a notice after each agent row: 13 passes
+        for the answers and 25 hook calls, each under its cap of 30, so
+        every row, every answer and every notice lands (depth limit 3). On
+        one shared budget, 38 draws past 30, notices were blocked."""
+        kit = await _room(RoomKit(max_chain_depth=3))
+        kit.register_channel(_Streaming("agent:stream", rows=12))
+        kit.register_channel(AILikeChannel("agent:answers", response="Answer."))
+        for agent in ("agent:stream", "agent:answers"):
+            await kit.attach_channel("r1", agent, category=ChannelCategory.INTELLIGENCE)
+        notices = await _notice_per_agent_row(kit)
+
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message()), 5)
+            await asyncio.wait_for(_settled(kit), 5)
+            rows = [
+                (e.source.channel_id, e.blocked_by)
+                for e in await _messages(kit)
+                if e.source.channel_id.startswith("agent:")
+                and e.blocked_by != "event_chain_depth_limit"
+            ]
+            assert (
+                sorted(rows, key=str)
+                == [("agent:answers", None)] * 13 + [("agent:stream", None)] * 12
+            )
+            assert [e.blocked_by for e in notices] == [None] * 25
+        finally:
+            await kit.close()
+
+    async def test_a_notice_per_row_past_the_hook_cap_is_blocked(self) -> None:
+        """One pass per event on the cascade's hook calls: a streamed turn of
+        22 rows, a notice after each, lands all its rows and 20 notices, the
+        hook cap of 20 (depth limit 2), the last two notices blocked."""
+        kit = await _room(RoomKit(max_chain_depth=2))
+        kit.register_channel(_Streaming("agent:stream", rows=22))
+        await kit.attach_channel("r1", "agent:stream", category=ChannelCategory.INTELLIGENCE)
+        notices = await _notice_per_agent_row(kit)
+
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message()), 5)
+            await asyncio.wait_for(_settled(kit), 5)
+            rows = [e for e in await _messages(kit) if e.source.channel_id == "agent:stream"]
+            assert [e.blocked_by for e in rows] == [None] * 22
+            assert [e.blocked_by for e in notices] == [None] * 20 + ["reentry_loop_cap"] * 2
+        finally:
+            await kit.close()
+
+
+async def _notice_per_agent_row(kit: RoomKit) -> list[RoomEvent]:
+    """A hook that posts a notice, answered by nobody, after each agent row
+    of room ``r1``; the notices it sent."""
+    notices: list[RoomEvent] = []
+
+    @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="notice")
+    async def notice(event: RoomEvent, ctx: RoomContext) -> None:
+        if event.source.channel_id.startswith("agent:") and event.blocked_by is None:
+            notices.append(
+                await kit.send_event("r1", "sms", TextContent(body="Noted."), addressed_to=[])
+            )
+
+    return notices
 
 
 class TestARoutedMessageBackIntoItsRoom:

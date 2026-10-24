@@ -1454,7 +1454,7 @@ class RoomKit(
             )
             if replayed is not None:
                 return replayed
-            if not entry.budget.take():
+            if not entry.draw():
                 # Past the budget of the work that made it, it is not a pass:
                 # its hooks never run (RFC §8.3, §9.5.1).
                 return await self._store_entry_past_cap(room_id, event)
