@@ -30,6 +30,7 @@ from roomkit.store.base import (
     deletes_edits,
     edits_target,
     is_marked_deleted,
+    key_taken,
     link_target,
     marked_deleted,
     names_by_recipient,
@@ -422,6 +423,7 @@ class InMemoryStore(ConversationStore):
         # object it passed must not reach the log. One deep copy per write
         # is what lets every read share the stored object instead of paying
         # a deep copy per event per read.
+        self._refuse_taken_key(event.room_id, event)
         event = event.model_copy(deep=True)
         self._events[event.id] = event
         self._room_events.setdefault(event.room_id, []).append(event.id)
@@ -433,6 +435,16 @@ class InMemoryStore(ConversationStore):
                 (event.source.channel_id, event.idempotency_key)
             ] = event.id
         return event
+
+    def _refuse_taken_key(self, room_id: str, event: RoomEvent) -> None:
+        """Refuse *event* when its source channel's key is held in *room_id*
+        by another event (RFC §13.4, §14.3), before anything is written."""
+        if not event.idempotency_key:
+            return
+        keys = self._idempotency.get(room_id, {})
+        held = keys.get((event.source.channel_id, event.idempotency_key))
+        if held is not None and held != event.id:
+            raise key_taken(event)
 
     async def get_event(self, event_id: str) -> RoomEvent | None:
         # Committed events are immutable (RFC 4, 14.4): reads share the
@@ -655,6 +667,7 @@ class InMemoryStore(ConversationStore):
     async def add_event_auto_index(self, room_id: str, event: RoomEvent) -> RoomEvent:
         """Atomically reserve the room's next monotonic index and append."""
         async with self._lock_for(room_id):
+            self._refuse_taken_key(room_id, event)
             events = self._room_events.setdefault(room_id, [])
             indexed = event.model_copy(
                 update={"index": self._reserve_event_index(room_id)}, deep=True
@@ -682,6 +695,7 @@ class InMemoryStore(ConversationStore):
         holds it. Only an *activity* commit moves ``last_activity_at`` and
         resumes a PAUSED room (RFC §5.1)."""
         async with self._lock_for(room_id):
+            self._refuse_taken_key(room_id, event)
             if target is not None:
                 stored = self._events.get(target.id)
                 if stored is None or stored.room_id != room_id:

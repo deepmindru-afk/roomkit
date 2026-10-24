@@ -4,13 +4,14 @@ timeline rules every store keeps alike."""
 from __future__ import annotations
 
 import os
+import sqlite3
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 
-from roomkit.core.exceptions import EventNotFoundError
+from roomkit.core.exceptions import EventNotFoundError, IdempotencyKeyTakenError
 from roomkit.core.inbound_router import DefaultInboundRoomRouter
 from roomkit.models.channel import ChannelBinding, RateLimit, RetryPolicy
 from roomkit.models.enums import (
@@ -998,5 +999,55 @@ async def test_a_key_is_found_within_its_channel_or_within_the_room(
             await contract_store.get_event_by_idempotency_key(room.id, "other", channel_id=None)
             is None
         )
+    finally:
+        await contract_store.delete_room(room.id)
+
+
+def _refusal_of_a_held_id(store: ConversationStore) -> type[Exception] | None:
+    """The database's own error for an event id it holds, which a caller
+    catches as such; None for the in-memory store, which has none."""
+    if isinstance(store, InMemoryStore):
+        return None
+    if isinstance(store, SQLiteStore):
+        return sqlite3.IntegrityError
+    import asyncpg  # optional: only the Postgres run gets here
+
+    return asyncpg.UniqueViolationError
+
+
+async def test_a_key_its_channel_holds_refuses_another_event(
+    contract_store: ConversationStore,
+) -> None:
+    """RFC §13.4, §14.3: a key is unique per room and per source channel. A
+    direct commit of another event under a key its channel holds in the room
+    raises ``IdempotencyKeyTakenError``, nothing written, a change's target
+    included. A second commit of the event itself is the database's refusal
+    of a held id, as it was: a caller catches the driver's own error."""
+    room = await contract_store.create_room(Room(id=uuid4().hex))
+    try:
+        first = await contract_store.commit_event(
+            room.id, make_event(room_id=room.id, channel_id="sms", idempotency_key="k")
+        )
+        target = await contract_store.commit_event(
+            room.id, make_event(room_id=room.id, channel_id="sms")
+        )
+        edit, edited = _edit_of(target, "changed")
+        edit = edit.model_copy(update={"source": first.source, "idempotency_key": "k"})
+
+        with pytest.raises(IdempotencyKeyTakenError):
+            await contract_store.commit_event(room.id, edit, target=edited)
+
+        assert await contract_store.get_event(edit.id) is None
+        kept = await contract_store.get_event(target.id)
+        assert kept is not None
+        assert (kept.content, kept.metadata) == (target.content, target.metadata)
+        held = await contract_store.get_event_by_idempotency_key(room.id, "k", channel_id="sms")
+        assert held is not None and held.id == first.id
+        after = await contract_store.get_room(room.id)
+        assert after is not None and after.event_count == 2
+        refusal = _refusal_of_a_held_id(contract_store)
+        if refusal is not None:
+            with pytest.raises(refusal):
+                await contract_store.commit_event(room.id, first)
     finally:
         await contract_store.delete_room(room.id)

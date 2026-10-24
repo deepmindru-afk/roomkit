@@ -32,6 +32,7 @@ from roomkit.store.base import (
     committed_state,
     deletes_edits,
     is_marked_deleted,
+    key_taken,
     room_holds,
     room_taken,
     sender_names,
@@ -84,13 +85,38 @@ async def _lend(conn: Any) -> AsyncGenerator[Any, None]:
     yield conn
 
 
+# The unique index of a key per room and source channel (RFC §13.4, §14.3).
+_KEY_INDEX = "idx_events_idempotency_channel"
+
+
+def _refuses_the_key(exc: Exception) -> bool:
+    """Whether *exc* is the database refusing an event's key, which its
+    source channel holds in the room for another event: a unique violation
+    on the key's index. One on ``events_pkey``, an id the store holds, is the
+    driver's own error, which a caller catches as such."""
+    return (
+        getattr(exc, "sqlstate", None) == "23505"
+        and getattr(exc, "constraint_name", None) == _KEY_INDEX
+    )
+
+
 async def _insert_event(conn: Any, event: RoomEvent) -> None:
     """Run the canonical ``events`` INSERT on *conn*.
 
     Shared by :meth:`PostgresStore.add_event`, ``add_event_auto_index`` and
     ``commit_event`` so the column list and parameter order can never drift
-    between the three write paths.
+    between the three write paths. An event under a key its channel holds in
+    the room raises :class:`~roomkit.core.exceptions.IdempotencyKeyTakenError`.
     """
+    try:
+        await _execute_insert(conn, event)
+    except Exception as exc:
+        if _refuses_the_key(exc):
+            raise key_taken(event) from exc
+        raise
+
+
+async def _execute_insert(conn: Any, event: RoomEvent) -> None:
     await conn.execute(
         "INSERT INTO events"
         " (id, room_id, type, content, source_channel_id, source_channel_type,"

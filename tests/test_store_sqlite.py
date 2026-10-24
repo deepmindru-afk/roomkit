@@ -16,6 +16,7 @@ import sqlite3
 import pytest
 
 from roomkit import RoomKit
+from roomkit.core.exceptions import IdempotencyKeyTakenError
 from roomkit.core.mixins.verification import HELD_KEY
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import ChannelType, EventStatus, EventType, RoomStatus
@@ -456,7 +457,7 @@ class TestPersistence:
                 second.commit_event("r1", two),
                 return_exceptions=True,
             )
-            assert sum(isinstance(result, sqlite3.IntegrityError) for result in results) == 1
+            assert sum(isinstance(result, IdempotencyKeyTakenError) for result in results) == 1
             assert len(await first.list_events("r1")) == 1
         finally:
             await first.close()

@@ -12,6 +12,7 @@ from typing import Any
 from roomkit.core.exceptions import (
     AddressLinkedError,
     EventNotFoundError,
+    IdempotencyKeyTakenError,
     IdentityNotFoundError,
     RoomAlreadyExistsError,
 )
@@ -129,6 +130,15 @@ def target_gone(target: RoomEvent) -> EventNotFoundError:
     """The refusal of a change whose *target* its room no longer holds
     (``commit_event``, RFC §14.3): the whole commit fails."""
     return EventNotFoundError(f"Event {target.id} is not in room {target.room_id}")
+
+
+def key_taken(event: RoomEvent) -> IdempotencyKeyTakenError:
+    """The refusal of *event*, whose key its source channel holds in its room
+    for another event (RFC §13.4, §14.3): nothing is written."""
+    return IdempotencyKeyTakenError(
+        f"Idempotency key {event.idempotency_key!r} of channel {event.source.channel_id}"
+        f" is taken in room {event.room_id}"
+    )
 
 
 def committed_state(room: Room, activity: bool) -> dict[str, Any]:
@@ -841,6 +851,15 @@ class ConversationStore(ABC):
         (``metadata.deleted``), in the same transaction: an edit holds a
         version of the deleted text, withheld from a channel's history even
         where the history does not hold the message (:func:`deletes_edits`).
+
+        An idempotency key is unique per room and per source channel (RFC
+        §13.4, §14.3): an *event* whose key its channel holds in the room for
+        another event raises
+        :class:`~roomkit.core.exceptions.IdempotencyKeyTakenError`, nothing
+        written, its target included (:func:`key_taken`). The framework
+        checks the key under the room lock first, so only a direct caller
+        meets it. An event under an id the store holds is refused by the
+        database with its own error, which is not this one.
 
         The converse does not hold, and that is deliberate. ``event_count`` is
         the running tally RFC §10.1 step 12 describes — ``event_count += 1``,

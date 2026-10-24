@@ -19,6 +19,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signature on purpose runs `make api-snapshot` and carries its BREAKING
   entry. Type annotations, and what a call does, are not compared.
 
+### Changed
+
+- **BREAKING — a key its channel holds refuses another event in every store,
+  with `IdempotencyKeyTakenError`** (RFC §13.4, §14.3, RMK-942). An
+  idempotency key is unique per room and per source channel, which the
+  framework checks under the room lock before it commits; a direct caller of
+  a store did not meet one answer. The in-memory store accepted a second
+  event under a key its channel held, wrote it and its change's target, and
+  moved the key to it; SQLite raised `sqlite3.IntegrityError` and Postgres
+  `asyncpg.UniqueViolationError`. `commit_event()`, `add_event()` and
+  `add_event_auto_index()` of every shipped store now raise the new
+  `IdempotencyKeyTakenError` (a `RoomKitError`, exported from `roomkit`),
+  nothing written, a change's target included, and the key stays its first
+  event's. An event under an id the store holds keeps the database's own
+  error, `asyncpg.UniqueViolationError` or `sqlite3.IntegrityError`, the key
+  held with it or not.
+  Migrate: a direct caller that caught the driver's error for a taken key
+  catches `IdempotencyKeyTakenError`; a custom store raises it alike.
+
 ## [0.108.0] — 2026-10-24
 
 ### Added

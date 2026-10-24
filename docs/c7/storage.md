@@ -177,7 +177,12 @@ What every store keeps alike (RFC §10.3, §14.1, §14.3):
   `metadata.deleted` with `kit.update_event()`, marks no edit: an edit the
   history holds without its message stays readable. Delete through the
   pipeline (a DELETE event, `send_event()`) or `kit.delete_event()`, or mark
-  the message's edits too.
+  the message's edits too. An event whose idempotency key its source channel
+  holds in the room for another event raises `IdempotencyKeyTakenError`,
+  nothing written, its target included (RFC §13.4); the framework checks the
+  key under the room lock first, so only a direct caller meets it. An event
+  under an id the store holds is the database's own error
+  (`asyncpg.UniqueViolationError`, `sqlite3.IntegrityError`).
 - `update_room_if(room, *, status, paused_at, last_activity_at)` writes the
   room as `update_room()` does only if the stored room still holds that
   status, `paused_at` and `last_activity_at`, else writes nothing and returns

@@ -97,6 +97,21 @@ class EventNotFoundError(RoomKitError):
     """
 
 
+class IdempotencyKeyTakenError(RoomKitError):
+    """An event was stored under a key its source channel holds in the room
+    for another event (RFC §13.4, §14.3).
+
+    A key is unique per room and per source channel. The framework checks it
+    under the room lock before it commits, so a direct caller of a store's
+    ``commit_event`` (``add_event``, ``add_event_auto_index``) is the one who
+    meets it: every shipped store refuses the event, nothing written, a
+    change's target included, and the key stays its first event's. A second
+    write of an event under an id the store holds is not this error: the
+    database refuses the id with its own (``asyncpg.UniqueViolationError``,
+    ``sqlite3.IntegrityError``).
+    """
+
+
 class ChangeRefusedError(RoomKitError):
     """An edit or a delete was refused at RFC §10.1 step 8a, nothing written.
 
