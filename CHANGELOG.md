@@ -31,6 +31,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signature on purpose runs `make api-snapshot` and carries its BREAKING
   entry. Type annotations, and what a call does, are not compared.
 
+- **One rule says which import paths are public** (RMK-948). A name is
+  public when the `__all__` of `roomkit` or of one of its packages lists it,
+  imported from that package; a module path (`roomkit.voice.stt.deepgram`)
+  is internal and may move, an underscore name is internal everywhere
+  (README, "Public API"; the docs site's Public API page says how a break is
+  announced). 146 names that examples, the docs or applications import were
+  in no `__all__` and are now exported, each from its package, so the API
+  guards pin them: every STT and TTS provider and its config from
+  `roomkit.voice.stt` / `roomkit.voice.tts` (new `__all__` for
+  `roomkit.voice.stt`), the voice and video backends from
+  `roomkit.voice.backends` / `roomkit.video.backends` (new `__all__` for
+  both), the realtime transports from `roomkit.voice.realtime`, the
+  realtime providers of OpenAI, Gemini, xAI and ElevenLabs from their
+  packages, `IdentityResolver` and `MockIdentityResolver` from
+  `roomkit.identity`, `validate_public_url` from `roomkit.providers`, the
+  steering directives, `LoopEndMarker`, `STANDALONE` and `TURNS_KEY` from
+  `roomkit.models`, the status bus and tool-audit families from
+  `roomkit.orchestration`, `PostgresSchemaError` and the Postgres schema
+  (`POSTGRES_SCHEMA`, `POSTGRES_SCHEMA_VERSION`) from `roomkit.store`,
+  `fence` and `turn_report_claim` from `roomkit.tools`, and others.
+  Gemini's transcript types and Qwen3's clone reference are exported under
+  vendor names (`GeminiTranscript`, `GeminiTranscriptWord`,
+  `GeminiTranscriptSegment`, `Qwen3VoiceCloneConfig`). `roomkit.channels`
+  gets an `__all__` listing the channels and factories it already held. A
+  name whose module `import roomkit` did not load is exported lazily, and
+  imported for type checkers: `import roomkit` loads no new module, and a
+  missing extra raises on first use. Every module path that imported keeps
+  importing; the `roomkit.voice.get_*()` lookups keep working and are
+  internal. A star import resolves every name `__all__` lists:
+  `from roomkit.voice.tts import *`, `roomkit.voice.realtime` and
+  `roomkit.video.avatar` now need the extras of the providers they list
+  (httpx, fastapi, numpy), as `from roomkit.voice import *` already did. `tests/test_public_imports.py` fails on an example or a document
+  that imports a roomkit name from anywhere else, and `make docs` runs the
+  same check on the docs site.
+
 - `kit.post()` and `HostChannel`: the host writes to a room's people in its
   own name (RFC §10.5, RMK-947). A notice, a workflow's question, a reminder
   is the application's words, not an agent's: it comes from a transport of
@@ -295,6 +330,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the caller, as a room step 2 opens does: a routed message's sender is
   recorded on the binding its attach made, and the attach's
   `ON_CHANNEL_ATTACHED` hooks are not cut.
+
+- Documented imports that failed now work (RMK-948): 25 distinct imports in
+  the README, AGENTS.md, the Context7 pages and the docs site named a name
+  where it is not, or one that does not exist. `RetryPolicy` and
+  `RateLimit` are imported from `roomkit.models`, not `roomkit`;
+  `AudioFrame`, `AudioChunk`, `TranscriptionResult`, `Identity` and the AI
+  providers from the package that exports them; `DeepgramSTTProvider`,
+  `ElevenLabsTTSProvider`, `TTSProvider`, `STTProvider`,
+  `LocalAudioBackend` and `OpenTelemetryProvider` now resolve where the
+  docs imported them; `SendGridProvider` and
+  `WhatsAppPersonalSourceProvider` replace a `SendGridEmailProvider` and a
+  `NeonizeSource` that never existed, a VoiceMeUp provider's
+  `parse_inbound()` and `configure_mms()` replace two functions that never
+  existed, and the resilience guide no longer passes
+  `RoomKit(rate_limiter=)` or `SMSChannel(rate_limit=)`. The resilience
+  pages and examples show a binding's `RetryPolicy` and `RateLimit` and the
+  `circuit_breaker_opened` / `circuit_breaker_closed` events, not the
+  router's internal breaker and limiter; the Context7 section on a custom
+  content transcoder, an extension point RoomKit does not have, is removed.
 
 ## [0.108.0] — 2026-10-24
 
