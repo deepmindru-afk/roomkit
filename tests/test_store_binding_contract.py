@@ -776,9 +776,8 @@ async def test_a_hard_delete_takes_every_removed_event_s_changes(
         await contract_store.delete_room(room.id)
 
 
-@pytest.mark.parametrize("record", ["store", "default"])
 async def test_only_a_delivery_record_writes_the_results(
-    contract_store: ConversationStore, record: str
+    contract_store: ConversationStore,
 ) -> None:
     """RFC §10.3, §10.5, §14.3: an event is committed with the delivery
     results it brings. Once stored, the record of a delivery set writes its
@@ -786,17 +785,9 @@ async def test_only_a_delivery_record_writes_the_results(
     stood at its commit: an edit or a delete committed since stands. It alone
     writes them: a rewrite of the row (``update_event``, a change's target, a
     target written alone) keeps the results stored, whatever its copy
-    carries. The ABC's default record, which a custom store inherits, writes
-    them through the store's ``update_event`` as the store's own does."""
+    carries."""
     room = await contract_store.create_room(Room(id=uuid4().hex))
-
-    async def record_results(room_id: str, event_id: str, results: dict[str, Any]) -> None:
-        if record == "store":
-            await contract_store.record_delivery_results(room_id, event_id, results)
-        else:
-            await ConversationStore.record_delivery_results(
-                contract_store, room_id, event_id, results
-            )
+    record_results = contract_store.record_delivery_results
 
     try:
         brought = {"sms": {"status": "delivered"}, "web": {"status": "delivered"}}
@@ -894,6 +885,48 @@ class _DefaultCommit(InMemoryStore):
 
     async def write_change_target(self, room_id: str, target: RoomEvent) -> None:
         await ConversationStore.write_change_target(self, room_id, target)
+
+
+class _WritesTheRowAsGiven(InMemoryStore):
+    """A custom store whose ``update_event`` writes the row as given, and
+    records delivery results through the ABC's default."""
+
+    record_delivery_results = ConversationStore.record_delivery_results
+
+    async def update_event(self, event: RoomEvent) -> RoomEvent:
+        self._events[event.id] = event.model_copy(deep=True)
+        return event
+
+
+class _KeepsTheResults(InMemoryStore):
+    """A custom store whose ``update_event`` keeps the stored results, as the
+    contract says, and records them through the ABC's default."""
+
+    record_delivery_results = ConversationStore.record_delivery_results
+
+
+@pytest.mark.parametrize("store_class", [_WritesTheRowAsGiven, _KeepsTheResults])
+async def test_the_default_delivery_record_writes_the_results_or_says_it_cannot(
+    store_class: type[InMemoryStore],
+) -> None:
+    """The ABC's default record writes the results through ``update_event``,
+    which a store writing the row as given lets it do; over one keeping the
+    stored results it raises, nothing written, rather than record nothing."""
+    store = store_class()
+    room = await store.create_room(Room(id=uuid4().hex))
+    event = await store.commit_event(room.id, make_event(room_id=room.id))
+    results = {"sms": {"status": "failed"}}
+
+    if store_class is _KeepsTheResults:
+        with pytest.raises(NotImplementedError, match="override record_delivery_results"):
+            await store.record_delivery_results(room.id, event.id, results)
+        expected: dict[str, Any] = {}
+    else:
+        await store.record_delivery_results(room.id, event.id, results)
+        expected = results
+
+    stored = await store.get_event(event.id)
+    assert stored is not None and stored.delivery_results == expected
 
 
 async def test_the_default_target_write_marks_a_deleted_target_s_edits_too() -> None:

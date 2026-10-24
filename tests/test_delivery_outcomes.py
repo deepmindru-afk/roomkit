@@ -13,6 +13,8 @@ volume on a question nobody asks.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from roomkit import RoomKit, TransportChannel
@@ -22,6 +24,8 @@ from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage, ProviderResult
 from roomkit.models.enums import ChannelType
 from roomkit.models.event import RoomEvent, TextContent
+from roomkit.store.base import ConversationStore
+from roomkit.store.memory import InMemoryStore
 from tests.test_framework import SimpleChannel
 
 
@@ -198,6 +202,32 @@ class TestOnlyAFailingSetIsRemembered:
 
         assert stored.delivery_results["out"]["status"] == "failed"
         assert stored.delivery_results["out"]["error"]["code"] == "550"
+
+    async def test_a_store_that_cannot_record_says_why(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A custom store whose ``update_event`` keeps the stored results, as
+        its contract says, and which inherits the ABC's default record cannot
+        record the failure: the kit logs why rather than record nothing."""
+
+        class KeepsTheResults(InMemoryStore):
+            record_delivery_results = ConversationStore.record_delivery_results
+
+        kit = RoomKit(store=KeepsTheResults())
+        for channel in (SimpleChannel("in"), BrokenChannel("out", _RejectedError("x"))):
+            kit.register_channel(channel)
+        await kit.create_room(room_id="r1")
+        for channel_id in ("in", "out"):
+            await kit.attach_channel("r1", channel_id)
+
+        with caplog.at_level(logging.WARNING, logger="roomkit"):
+            result = await kit.process_inbound(_msg("in"))
+
+        stored = await kit.store.get_event(result.event.id)
+        assert stored.delivery_results == {}
+        [record] = [r for r in caplog.records if "Could not record" in r.getMessage()]
+        assert "override record_delivery_results" in str(record.exc_info[1])
+        await kit.close()
 
     async def test_the_record_keeps_the_successes_too(self) -> None:
         """A list of casualties with no denominator answers half the question."""

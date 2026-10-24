@@ -52,13 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (RFC §10.5): Postgres's insert dropped them, so a record `commit_event()`
   stored with its delivery outcome read back `{}` there.
   The ABC's default `record_delivery_results()`, which a custom store
-  inherits, still writes through `update_event()`: it writes under
-  `records_delivery_results()` (`roomkit.store.base`), true for that write
-  alone, under which every shipped `update_event()` writes the results.
+  inherits, writes through `update_event()`, which works for a store whose
+  `update_event()` writes the row as given; it reads the event back, and
+  over a store whose `update_event()` keeps the results it raises
+  `NotImplementedError` saying so, which the framework logs as a delivery
+  record it could not write, rather than record nothing.
   Migrate: code that set `delivery_results` through `update_event()` calls
-  `record_delivery_results(room_id, event_id, results)`; a custom store keeps
-  the stored results on a rewrite unless `records_delivery_results()` is
-  true.
+  `record_delivery_results(room_id, event_id, results)`; a custom store
+  whose `update_event()` keeps the stored results, as the contract now
+  says, overrides `record_delivery_results()` to write that field alone.
 
 - **BREAKING — a recipient is a string that is not blank, or an integer**
   (RFC §5.7, §10.2 step 3d, §10.4, RMK-942). 0.108.0 took any number, and a

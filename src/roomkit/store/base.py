@@ -6,7 +6,6 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
@@ -31,21 +30,6 @@ from roomkit.models.voice_delivery import VoiceDeliveryRecord
 
 # Page size of the fallback scan over rooms (find_room_id_by_participant).
 _ROOM_PAGE = 100
-
-# Set while the ABC's default record_delivery_results writes through
-# update_event: the one rewrite of a row that writes its delivery results.
-_recording_results: ContextVar[bool] = ContextVar(
-    "roomkit_store_recording_delivery_results", default=False
-)
-
-
-def records_delivery_results() -> bool:
-    """Whether the rewrite under way is the record of a delivery set, which
-    :meth:`ConversationStore.record_delivery_results`'s default writes
-    through ``update_event``: the one rewrite that writes an event's
-    ``delivery_results``. Any other keeps the stored ones (RFC §10.3,
-    §14.3)."""
-    return _recording_results.get()
 
 
 def link_target(
@@ -645,10 +629,7 @@ class ConversationStore(ABC):
         carries: only :meth:`record_delivery_results` writes them (RFC §10.3,
         §14.3), so a copy read before a delivery set was recorded never
         erases its outcome. A change's target that :meth:`commit_event` or
-        :meth:`write_change_target` writes keeps them alike. The one
-        exception is the write of :meth:`record_delivery_results`'s default,
-        which goes through this method: under it,
-        :func:`records_delivery_results` is true and the results are written.
+        :meth:`write_change_target` writes keeps them alike.
         """
         ...
 
@@ -667,19 +648,23 @@ class ConversationStore(ABC):
 
         The default reads the stored event and writes it back with the
         results through :meth:`update_event`, which is safe only under the
-        room lock, where the framework calls it. It writes under
-        :func:`records_delivery_results`, so a store whose ``update_event``
-        keeps the stored results, as the contract says, writes these. A
-        store that can update the field alone SHOULD override it.
+        room lock, where the framework calls it, and works for a store whose
+        ``update_event`` writes the row as given. A store whose
+        ``update_event`` keeps the stored results, as its contract says,
+        overrides this method: the default reads the event back, and when
+        the results were not written it raises :class:`NotImplementedError`
+        saying so, rather than record nothing.
         """
         stored = await self.get_event(event_id)
         if stored is None or stored.room_id != room_id:
             return
-        recording = _recording_results.set(True)
-        try:
-            await self.update_event(stored.model_copy(update={"delivery_results": results}))
-        finally:
-            _recording_results.reset(recording)
+        await self.update_event(stored.model_copy(update={"delivery_results": results}))
+        written = await self.get_event(event_id)
+        if written is None or written.delivery_results != results:
+            raise NotImplementedError(
+                f"{type(self).__name__} keeps delivery_results on update_event: "
+                "override record_delivery_results to write them"
+            )
 
     @abstractmethod
     async def delete_event(

@@ -36,7 +36,6 @@ from roomkit.store.base import (
     marked_deleted,
     names_by_recipient,
     reached_as,
-    records_delivery_results,
     room_holds,
     room_taken,
     sender_names,
@@ -461,11 +460,11 @@ class InMemoryStore(ConversationStore):
 
     def _rewritten(self, event: RoomEvent) -> RoomEvent:
         """*event* as a rewrite of its stored row writes it: the delivery
-        results stored stay, which only a delivery set's record writes (RFC
-        §10.3, §14.3, :func:`records_delivery_results`)."""
+        results stored stay, which only :meth:`record_delivery_results`
+        writes (RFC §10.3, §14.3)."""
         stored = self._events.get(event.id)
         event = event.model_copy(deep=True)
-        if stored is None or records_delivery_results():
+        if stored is None:
             return event
         return event.model_copy(update={"delivery_results": stored.delivery_results})
 
