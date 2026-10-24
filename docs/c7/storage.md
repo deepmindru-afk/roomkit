@@ -80,6 +80,9 @@ of `search_path` that exists). Two deployments may share a database, one
 schema each: `init()`, `migrate()`, `dedupe_event_indices()` and
 `drop_legacy_parent_index()` read, create and drop the tables, columns and
 indexes of their own schema only, never a namesake another schema holds.
+`init()` adds a column a newer release brings only when its table lacks it,
+so a boot on an up-to-date schema runs no `ALTER TABLE` and waits on no open
+transaction.
 
 ### Operations
 

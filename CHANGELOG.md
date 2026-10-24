@@ -92,6 +92,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tenant lacked. Every catalog lookup and every drop now names the session's
   own schema.
 
+- **Postgres `init()` takes no table lock on an up-to-date schema**
+  (RMK-942). It ran `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` on `rooms`,
+  `bindings`, `participants` and `identity_addresses` at every boot, which
+  takes ACCESS EXCLUSIVE even when the column exists: a worker starting
+  while a transaction read one of these tables waited for it, and every
+  query on the table queued behind the boot. 0.108.0 guarded the columns of
+  `events`; every column a release added is now added only when its table,
+  in the session's schema, lacks it.
+
 ## [0.108.0] — 2026-10-24
 
 ### Added

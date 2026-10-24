@@ -64,8 +64,35 @@ V1_TO_V2_DROP = "\n".join(
     for t in V1_TABLES
 )
 
+
+def _column_check(table: str, name: str, definition: str) -> str:
+    """The check adding column *name* to *table* when the table of the
+    schema this session writes to lacks it."""
+    return (
+        "    IF NOT EXISTS (SELECT 1 FROM information_schema.columns"  # nosec B608  # this module's names
+        f" WHERE table_schema = current_schema() AND table_name = '{table}'"
+        f" AND column_name = '{name}') THEN\n"
+        f"        ALTER TABLE {table} ADD COLUMN {name} {definition};\n"
+        "    END IF;\n"
+    )
+
+
+def _add_missing_columns(table: str, columns: dict[str, str]) -> str:
+    """A block adding each of *columns* (name: definition) to *table*, only
+    when the table of the schema this session writes to lacks it. ``ALTER
+    TABLE`` takes ACCESS EXCLUSIVE on the table even when ``IF NOT EXISTS``
+    finds the column, which would queue every boot behind any open
+    transaction on the table, and all the traffic behind it.
+    ``information_schema.columns`` spans every schema the role can see, so
+    the lookup names ``current_schema()``."""
+    checks = (_column_check(table, name, definition) for name, definition in columns.items())
+    return "".join(("DO $$\nBEGIN\n", *checks, "END $$;\n"))
+
+
 # Additive, idempotent schema. Run on every connect. Contains no DROP TABLE.
-SCHEMA = """\
+SCHEMA = "".join(
+    (
+        """\
 -- Every name this batch looks up in the catalogs, or drops, is the one of the
 -- schema this session writes to (current_schema()): two deployments may share
 -- a database, one per schema, and through search_path a namesake of the
@@ -203,9 +230,12 @@ BEGIN
     END IF;
 END $$;
 -- Additive: the default IS the behaviour every existing room ran under, so
--- there is nothing to backfill and re-running is a no-op.
-ALTER TABLE rooms ADD COLUMN IF NOT EXISTS agent_response_policy
-    TEXT NOT NULL DEFAULT 'agent_chain';
+-- there is nothing to backfill.
+""",
+        _add_missing_columns(
+            "rooms", {"agent_response_policy": "TEXT NOT NULL DEFAULT 'agent_chain'"}
+        ),
+        """\
 CREATE INDEX IF NOT EXISTS idx_rooms_org ON rooms(organization_id);
 CREATE INDEX IF NOT EXISTS idx_rooms_status ON rooms(status);
 CREATE INDEX IF NOT EXISTS idx_rooms_updated ON rooms(updated_at DESC);
@@ -247,31 +277,17 @@ CREATE TABLE IF NOT EXISTS events (
 -- backfill: addressing (an existing row is unaddressed, NULL, the behaviour it
 -- was stored under), the event an answer answers (RFC §8.5: no event stored
 -- before it named one), a delivery set's outcome (RFC §10.3, §14.3: an
--- existing row recorded none, '{}'). Each is added only when missing: ALTER
--- TABLE takes ACCESS EXCLUSIVE on events even when IF NOT EXISTS finds the
--- column, which would queue every boot behind any open transaction on the
--- table, and all the traffic behind it. Scoped to current_schema() as above.
-DO $$
-DECLARE
-    wanted RECORD;
-BEGIN
-    FOR wanted IN
-        SELECT * FROM (VALUES
-            ('addressed_to', 'TEXT[]'),
-            ('responds_to', 'TEXT'),
-            ('delivery_results', 'JSONB NOT NULL DEFAULT ''{}''')
-        ) AS columns(name, definition)
-    LOOP
-        IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema = current_schema()
-              AND table_name = 'events'
-              AND column_name = wanted.name
-        ) THEN
-            EXECUTE format('ALTER TABLE events ADD COLUMN %I %s', wanted.name, wanted.definition);
-        END IF;
-    END LOOP;
-END $$;
+-- existing row recorded none, '{}').
+""",
+        _add_missing_columns(
+            "events",
+            {
+                "addressed_to": "TEXT[]",
+                "responds_to": "TEXT",
+                "delivery_results": "JSONB NOT NULL DEFAULT '{}'",
+            },
+        ),
+        """\
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_room_index ON events(room_id, index);
 CREATE INDEX IF NOT EXISTS idx_events_room_created ON events(room_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_room_type ON events(room_id, type);
@@ -357,13 +373,19 @@ CREATE TABLE IF NOT EXISTS bindings (
 );
 CREATE INDEX IF NOT EXISTS idx_bindings_channel_id ON bindings(channel_id);
 
--- Nullable policies preserve defaults for existing deployments. These additive
--- migrations are safe to rerun on startup and retain existing binding rows.
-ALTER TABLE bindings ADD COLUMN IF NOT EXISTS rate_limit JSONB;
-ALTER TABLE bindings ADD COLUMN IF NOT EXISTS retry_policy JSONB;
--- A group binding admits every sender (RFC §10.4); existing rows are not one.
--- Not named "group": a reserved word in SQL.
-ALTER TABLE bindings ADD COLUMN IF NOT EXISTS is_group BOOLEAN NOT NULL DEFAULT FALSE;
+-- Nullable policies preserve defaults for existing deployments, and retain
+-- existing binding rows. A group binding admits every sender (RFC §10.4);
+-- existing rows are not one. Not named "group": a reserved word in SQL.
+""",
+        _add_missing_columns(
+            "bindings",
+            {
+                "rate_limit": "JSONB",
+                "retry_policy": "JSONB",
+                "is_group": "BOOLEAN NOT NULL DEFAULT FALSE",
+            },
+        ),
+        """\
 -- Routing reads the binding of one channel naming one sender (RFC §10.4): on
 -- a number shared by many correspondents every binding has the same channel.
 CREATE INDEX IF NOT EXISTS idx_bindings_channel_participant
@@ -390,7 +412,9 @@ CREATE TABLE IF NOT EXISTS participants (
 -- included and first. The UPDATE is an idempotent data repair for rows created
 -- before the column existed, and for any old writer that stored an empty or
 -- out-of-order list. It never discards a channel already recorded.
-ALTER TABLE participants ADD COLUMN IF NOT EXISTS connected_via TEXT[] NOT NULL DEFAULT '{}';
+""",
+        _add_missing_columns("participants", {"connected_via": "TEXT[] NOT NULL DEFAULT '{}'"}),
+        """\
 UPDATE participants
 SET connected_via = ARRAY[channel_id] || array_remove(connected_via, channel_id)
 WHERE connected_via[1] IS DISTINCT FROM channel_id;
@@ -430,8 +454,11 @@ CREATE TABLE IF NOT EXISTS identity_addresses (
 -- Existing rows carry the empty string, the unscoped tenant, which preserves
 -- what they resolved to before. The key is rebuilt only when it is still the
 -- two-column one, so init() stays idempotent.
-ALTER TABLE identity_addresses
-    ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT '';
+""",
+        _add_missing_columns(
+            "identity_addresses", {"organization_id": "TEXT NOT NULL DEFAULT ''"}
+        ),
+        """\
 
 DO $$
 BEGIN
@@ -548,4 +575,6 @@ BEGIN
         INSERT INTO schema_version (version) VALUES (3);
     END IF;
 END $$;
-"""
+""",
+    )
+)

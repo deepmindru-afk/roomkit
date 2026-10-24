@@ -1106,10 +1106,14 @@ async def test_init_records_when_a_room_stored_paused_before_paused_at_paused(st
     assert active.paused_at is None
 
 
-async def test_a_second_init_waits_on_no_reader_of_the_events(store) -> None:
+@pytest.mark.parametrize(
+    "table", ["events", "rooms", "bindings", "participants", "identity_addresses"]
+)
+async def test_a_second_init_waits_on_no_reader_of_its_tables(store, table: str) -> None:
     """``init()`` on an up-to-date schema adds no column, so it takes no lock
-    that queues behind a reader of ``events`` (an ``ALTER TABLE`` takes
-    ACCESS EXCLUSIVE, which waits for every open transaction on the table)."""
+    that queues behind a reader of a table it once added columns to (an
+    ``ALTER TABLE`` takes ACCESS EXCLUSIVE, even when ``IF NOT EXISTS`` finds
+    the column, and waits for every open transaction on the table)."""
     import asyncpg
 
     from roomkit.store.postgres import PostgresStore
@@ -1118,8 +1122,8 @@ async def test_a_second_init_waits_on_no_reader_of_the_events(store) -> None:
     again = PostgresStore(dsn=POSTGRES_DSN)
     try:
         async with reader.transaction():
-            await reader.execute("SELECT count(*) FROM events")
-            await asyncio.wait_for(again.init(min_size=1, max_size=1), 3)
+            await reader.execute(f"SELECT count(*) FROM {table}")
+            await asyncio.wait_for(again.init(min_size=1, max_size=1), 1)
     finally:
         await again.close()
         await reader.close()
