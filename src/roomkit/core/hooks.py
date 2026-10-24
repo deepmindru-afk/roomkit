@@ -421,10 +421,11 @@ async def _run_body(
     budget: ReentryBudget | None,
 ) -> None:
     """*hook*'s body within its timeout. On *budget*, the budget of the
-    cascade that fired it once an event's delivery set has run, it is that
-    cascade's delivery work until it returns: what it sends into the room
-    draws on the budget, and a task it starts that calls afterwards has a
-    budget of its own (RFC §9.5.1, §10.1 step 16)."""
+    cascade that fired it once an event's delivery set has run, or of the
+    work a direct change was made in, it is that work until it is over:
+    what it sends into the room, and a direct change it makes, draws on the
+    budget's hook calls, and a task it starts that calls afterwards has a
+    budget of its own (RFC §9.5.1, §10.1 step 16, §10.3)."""
     frame = contextlib.nullcontext() if budget is None else after_delivery(room_id, budget)
     with frame:
         await asyncio.wait_for(hook.fn(event, context), timeout=hook.timeout)
@@ -1334,8 +1335,9 @@ class HookEngine:
             exclude_name_prefix: Skip hooks whose name starts with this prefix.
             budget: The reentry budget of the cascade that fires *trigger*
                 once an event's delivery set has run (``AFTER_BROADCAST``, a
-                change's mutation trigger): what each hook's body sends into
-                the room draws on it while the body runs (RFC §9.5.1).
+                change's mutation trigger), or of the work a direct change
+                was made in: what each hook's body sends into the room draws
+                on its hook calls while the body runs (RFC §9.5.1).
         """
         if (engine := self._turn_engine(trigger)) is not None:
             await engine.run_async_hooks(
