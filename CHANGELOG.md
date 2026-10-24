@@ -69,6 +69,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Migrate: a binding that holds a chat id or a number as a float holds it as
   an `int` (`int(value)`) or a string.
 
+### Fixed
+
+- **Postgres reads and drops the names of its own schema only** (RMK-942).
+  0.108.0 scoped its new schema guards to `current_schema()`; the older ones
+  still resolved names through `search_path`, so beside another deployment
+  in the same database (a store in schema `tenant` with
+  `search_path=tenant,public`, one in `public`), the tenant's `init()` was
+  refused as a v1 schema when `public` held a v1 `rooms.data` column, turned
+  `public`'s unique `idx_participants_channel` into a plain index and its
+  plain `idx_events_room_index` into a unique one, logged `public`'s
+  degraded events index as its own, and dropped and rebuilt its own
+  `identity_addresses` key at every boot while `public` held the two-column
+  one. `dedupe_event_indices()` reported `public`'s index,
+  `drop_legacy_parent_index()` dropped `public`'s `idx_events_parent`, and
+  the destructive `migrate()` dropped `public`'s table of every name the v1
+  tenant lacked. Every catalog lookup and every drop now names the session's
+  own schema.
+
 ## [0.108.0] — 2026-10-24
 
 ### Added

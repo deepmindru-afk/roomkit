@@ -58,6 +58,23 @@ from roomkit.store.postgres_schema import (
 
 logger = logging.getLogger("roomkit.store.postgres")
 
+# The definition of an index of the schema this session writes to: through
+# search_path, another deployment's namesake would be read for ours.
+_INDEX_DEF = (
+    "SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1"
+)
+
+
+def _drop_own_index(name: str) -> str:
+    """The statement dropping index *name* (one of this module's) of the
+    schema this session writes to, if it is there, never another schema's
+    namesake."""
+    return (
+        "DO $$ BEGIN EXECUTE format('DROP INDEX IF EXISTS %I.%I', current_schema(),"
+        f" '{name}'); END $$"
+    )
+
+
 # Advisory-lock key serializing schema migrations across processes.
 # Arbitrary constant; "room" in ASCII hex.
 _MIGRATION_LOCK_KEY = 0x726F6F6D
@@ -545,6 +562,14 @@ class PostgresStore(ConversationStore):
         If a v1 (JSONB-blob) schema is detected, ``init()`` refuses to
         touch it and raises :class:`PostgresSchemaError`. Back up your data,
         then run the explicit :meth:`migrate` to move v1 → v2.
+
+        Every table, column and index it looks up, and every index it drops,
+        is the one of the schema the session writes to (``current_schema()``),
+        as are :meth:`migrate`'s drops and the indexes
+        :meth:`dedupe_event_indices` and :meth:`drop_legacy_parent_index`
+        read and drop: two deployments may share a database, one schema
+        each, and through ``search_path`` a namesake of the other's would be
+        read for ours, or dropped.
         """
         if self._pool is None:
             self._pool = await self._asyncpg.create_pool(
@@ -566,9 +591,7 @@ class PostgresStore(ConversationStore):
             # Surface the degraded state in the app's logs: if the events index
             # could not be made UNIQUE (pre-existing duplicate (room_id, index)
             # rows), multi-process index safety is not enforced.
-            idxdef = await conn.fetchval(
-                "SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_events_room_index'"
-            )
+            idxdef = await conn.fetchval(_INDEX_DEF, "idx_events_room_index")
             if isinstance(idxdef, str) and "UNIQUE" not in idxdef:
                 logger.warning(
                     "idx_events_room_index is not UNIQUE — duplicate (room_id, index) "
@@ -629,9 +652,7 @@ class PostgresStore(ConversationStore):
 
     @staticmethod
     async def _events_index_is_unique(conn: Any) -> bool:
-        idxdef = await conn.fetchval(
-            "SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_events_room_index'"
-        )
+        idxdef = await conn.fetchval(_INDEX_DEF, "idx_events_room_index")
         return isinstance(idxdef, str) and "UNIQUE" in idxdef
 
     async def dedupe_event_indices(self, *, dry_run: bool = True) -> dict[str, Any]:
@@ -694,7 +715,7 @@ class PostgresStore(ConversationStore):
                     affected_rooms,
                 )
             if not already_unique:
-                await conn.execute("DROP INDEX IF EXISTS idx_events_room_index")
+                await conn.execute(_drop_own_index("idx_events_room_index"))
                 await conn.execute(
                     "CREATE UNIQUE INDEX idx_events_room_index ON events(room_id, index)"
                 )
@@ -721,14 +742,12 @@ class PostgresStore(ConversationStore):
             ``"dropped"``.
         """
         async with self._acquire() as conn:
-            present = await conn.fetchval(
-                "SELECT 1 FROM pg_indexes WHERE indexname = 'idx_events_parent'"
-            )
+            present = await conn.fetchval(_INDEX_DEF, "idx_events_parent")
             if not present:
                 return {"action": "noop"}
             if dry_run:
                 return {"action": "dry_run"}
-            await conn.execute("DROP INDEX IF EXISTS idx_events_parent")
+            await conn.execute(_drop_own_index("idx_events_parent"))
             return {"action": "dropped"}
 
     async def close(self) -> None:

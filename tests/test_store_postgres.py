@@ -1125,48 +1125,140 @@ async def test_a_second_init_waits_on_no_reader_of_the_events(store) -> None:
         await reader.close()
 
 
-async def test_init_in_a_second_schema_keeps_each_schema_its_own_indexes(store) -> None:
-    """Two deployments in one database, one per schema: ``init()`` with a
-    ``search_path`` of ``tenant, <first schema>`` creates the tenant's
-    indexes although the first schema holds namesakes, and drops none of the
-    first deployment's, its v0.107.0 idempotency index included."""
-    import asyncpg
+# What an older deployment left in its schema: a v1 ``rooms.data`` column,
+# the unique idx_participants_channel, a non-unique idx_events_room_index, the
+# two-column identity key, the single-column parent index and the v0.107.0
+# idempotency index.
+_AN_OLDER_DEPLOYMENT = (
+    "ALTER TABLE rooms ADD COLUMN data JSONB",
+    "DROP INDEX idx_participants_channel",
+    "CREATE UNIQUE INDEX idx_participants_channel ON participants(room_id, channel_id)",
+    "DROP INDEX idx_events_room_index",
+    "CREATE INDEX idx_events_room_index ON events(room_id, index)",
+    "ALTER TABLE identity_addresses DROP CONSTRAINT identity_addresses_pkey,"
+    " ADD PRIMARY KEY (channel_type, address)",
+    "CREATE INDEX idx_events_parent ON events(parent_event_id)",
+    "CREATE UNIQUE INDEX idx_events_idempotency ON events(room_id, idempotency_key)"
+    " WHERE idempotency_key IS NOT NULL",
+)
 
-    from roomkit.store.postgres import PostgresStore
+_GUARDED_INDEXES = [
+    "idx_events_idempotency",
+    "idx_events_room_idempotency",
+    "idx_participants_identity",
+    "idx_participants_channel",
+    "idx_events_room_index",
+    "idx_events_parent",
+]
+
+
+async def _identity_key(conn: Any, schema: str) -> int:
+    return await conn.fetchval(
+        "SELECT i.indexrelid::int FROM pg_index i"
+        " WHERE i.indrelid = to_regclass(format('%I.%I', $1::text, 'identity_addresses'))"
+        " AND i.indisprimary",
+        schema,
+    )
+
+
+@pytest.fixture
+async def second_schema(store) -> Any:
+    """A second deployment's schema in the store's database, and a pool whose
+    ``search_path`` is ``tenant, <the store's schema>``: the store's own
+    deployment shows through it to every name the tenant does not hold."""
+    import asyncpg
 
     tenant = f"tenant_{os.getpid()}"
     async with store._pool.acquire() as conn:
         home = await conn.fetchval("SELECT current_schema()")
-        await conn.execute(
-            "CREATE UNIQUE INDEX idx_events_idempotency ON events(room_id, idempotency_key)"
-            " WHERE idempotency_key IS NOT NULL"
-        )
         await conn.execute(f'CREATE SCHEMA "{tenant}"')
     pool = await asyncpg.create_pool(
         POSTGRES_DSN, min_size=1, max_size=1, server_settings={"search_path": f"{tenant},{home}"}
     )
     try:
-        await PostgresStore(pool=pool).init()
-        async with store._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT schemaname, indexname FROM pg_indexes"
-                " WHERE schemaname = ANY($1::text[]) AND indexname = ANY($2::text[])",
-                [home, tenant],
-                [
-                    "idx_events_idempotency",
-                    "idx_events_room_idempotency",
-                    "idx_participants_identity",
-                ],
-            )
+        yield home, tenant, pool
     finally:
         await pool.close()
         async with store._pool.acquire() as conn:
             await conn.execute(f'DROP SCHEMA "{tenant}" CASCADE')
-            await conn.execute("DROP INDEX IF EXISTS idx_events_idempotency")
-    assert {(row["schemaname"], row["indexname"]) for row in rows} == {
-        (home, "idx_events_idempotency"),
-        (home, "idx_events_room_idempotency"),
-        (home, "idx_participants_identity"),
-        (tenant, "idx_events_room_idempotency"),
-        (tenant, "idx_participants_identity"),
+
+
+async def test_init_in_a_second_schema_keeps_each_schema_its_own_indexes(
+    store, second_schema, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two deployments in one database, one per schema: ``init()`` with a
+    ``search_path`` of ``tenant, <first schema>`` reads and writes the
+    tenant's schema only. The first schema holds what an older deployment
+    left: the tenant is not taken for a v1 schema, creates its own indexes,
+    leaves the first deployment's as they are, logs no degraded index of
+    another schema, and does not rebuild its identity key at each boot; its
+    maintenance calls read and drop its own indexes only."""
+    from roomkit.store.postgres import PostgresStore
+
+    home, tenant, pool = second_schema
+    async with store._pool.acquire() as conn:
+        for statement in _AN_OLDER_DEPLOYMENT:
+            await conn.execute(statement)
+    try:
+        other = PostgresStore(pool=pool)
+        with caplog.at_level("WARNING", logger="roomkit.store.postgres"):
+            await other.init()
+        async with pool.acquire() as conn:
+            key = await _identity_key(conn, tenant)
+        await other.init()
+        async with pool.acquire() as conn:
+            key_again = await _identity_key(conn, tenant)
+        report = await other.dedupe_event_indices()
+        dropped = await other.drop_legacy_parent_index(dry_run=False)
+        async with store._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT schemaname, indexname, indexdef LIKE '%UNIQUE%' AS is_unique"
+                " FROM pg_indexes"
+                " WHERE schemaname = ANY($1::text[]) AND indexname = ANY($2::text[])",
+                [home, tenant],
+                _GUARDED_INDEXES,
+            )
+    finally:
+        async with store._pool.acquire() as conn:
+            await conn.execute("ALTER TABLE rooms DROP COLUMN IF EXISTS data")
+            await conn.execute("DROP INDEX IF EXISTS idx_events_parent")
+        await store.init()
+    assert {(row["schemaname"], row["indexname"], row["is_unique"]) for row in rows} == {
+        (home, "idx_events_idempotency", True),
+        (home, "idx_events_room_idempotency", False),
+        (home, "idx_participants_identity", False),
+        (home, "idx_participants_channel", True),
+        (home, "idx_events_room_index", False),
+        (home, "idx_events_parent", False),
+        (tenant, "idx_events_room_idempotency", False),
+        (tenant, "idx_participants_identity", False),
+        (tenant, "idx_participants_channel", False),
+        (tenant, "idx_events_room_index", True),
     }
+    assert not [r for r in caplog.records if "idx_events_room_index" in r.getMessage()]
+    assert key == key_again
+    assert report["now_unique"] is True
+    assert dropped == {"action": "noop"}
+
+
+async def test_migrate_in_a_second_schema_drops_its_own_tables_only(store, second_schema) -> None:
+    """The destructive v1 → v2 ``migrate()`` drops the tables of the schema
+    its session writes to: a table the v1 tenant lacks is not taken from the
+    other deployment's schema through ``search_path``."""
+    from roomkit.store.postgres import PostgresStore
+
+    home, _tenant, pool = second_schema
+    other = PostgresStore(pool=pool)
+    await other.init()
+    async with pool.acquire() as conn:
+        await conn.execute("ALTER TABLE rooms ADD COLUMN data JSONB")
+        await conn.execute("DROP TABLE read_markers")
+
+    report = await other.migrate(dry_run=False, confirm=True)
+
+    async with store._pool.acquire() as conn:
+        kept = await conn.fetchval(
+            "SELECT to_regclass(format('%I.%I', $1::text, 'read_markers')) IS NOT NULL", home
+        )
+    assert report["action"] == "migrated"
+    assert kept

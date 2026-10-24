@@ -42,21 +42,35 @@ V1_TABLES = [
 ]
 
 # Detects the v1 (JSONB-blob) schema by the presence of the ``data``
-# column on the ``rooms`` table. Returns a single boolean.
+# column on the ``rooms`` table of the schema this session writes to: a
+# namesake in another schema is another deployment's. Returns a single
+# boolean.
 V1_DETECT = """\
 SELECT EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'rooms' AND column_name = 'data'
+    WHERE table_schema = current_schema()
+      AND table_name = 'rooms' AND column_name = 'data'
 )
 """
 
 # DESTRUCTIVE: drops all v1 tables. Applied only by PostgresStore.migrate()
 # with explicit confirmation — never by init(). ``schema_version`` is dropped
-# last so a partial failure still reads as "not yet migrated".
-V1_TO_V2_DROP = "\n".join(f"DROP TABLE IF EXISTS {t} CASCADE;" for t in V1_TABLES)
+# last so a partial failure still reads as "not yet migrated". Each table is
+# the one of the schema this session writes to: through search_path, a table
+# the v1 schema lacks would be another deployment's.
+V1_TO_V2_DROP = "\n".join(
+    "DO $$ BEGIN EXECUTE format('DROP TABLE IF EXISTS %I.%I CASCADE', current_schema(),"
+    f" '{t}'); END $$;"
+    for t in V1_TABLES
+)
 
 # Additive, idempotent schema. Run on every connect. Contains no DROP TABLE.
 SCHEMA = """\
+-- Every name this batch looks up in the catalogs, or drops, is the one of the
+-- schema this session writes to (current_schema()): two deployments may share
+-- a database, one per schema, and through search_path a namesake of the
+-- other's would be read for ours, or dropped.
+--
 -- Migration: idx_participants_channel must NOT be unique.
 -- Multiple participants can share the same channel in group rooms.
 -- Dropping/recreating an INDEX is non-destructive to data.
@@ -64,11 +78,15 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_indexes
-        WHERE indexname = 'idx_participants_channel'
+        WHERE schemaname = current_schema()
+        AND indexname = 'idx_participants_channel'
         AND indexdef LIKE '%UNIQUE%'
     ) THEN
-        DROP INDEX idx_participants_channel;
-        CREATE INDEX idx_participants_channel ON participants(room_id, channel_id);
+        EXECUTE format('DROP INDEX %I.%I', current_schema(), 'idx_participants_channel');
+        EXECUTE format(
+            'CREATE INDEX %I ON %I.%I (room_id, channel_id)',
+            'idx_participants_channel', current_schema(), 'participants'
+        );
         RAISE NOTICE 'Converted idx_participants_channel from UNIQUE to regular index';
     END IF;
 END $$;
@@ -84,12 +102,16 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_indexes
-        WHERE indexname = 'idx_events_room_index'
+        WHERE schemaname = current_schema()
+        AND indexname = 'idx_events_room_index'
         AND indexdef NOT LIKE '%UNIQUE%'
     ) THEN
         BEGIN
-            DROP INDEX idx_events_room_index;
-            CREATE UNIQUE INDEX idx_events_room_index ON events(room_id, index);
+            EXECUTE format('DROP INDEX %I.%I', current_schema(), 'idx_events_room_index');
+            EXECUTE format(
+                'CREATE UNIQUE INDEX %I ON %I.%I (room_id, index)',
+                'idx_events_room_index', current_schema(), 'events'
+            );
             RAISE NOTICE 'Upgraded idx_events_room_index to UNIQUE(room_id, index)';
         EXCEPTION WHEN unique_violation THEN
             RAISE WARNING 'idx_events_room_index NOT upgraded to UNIQUE: duplicate '
@@ -271,9 +293,7 @@ CREATE INDEX IF NOT EXISTS idx_events_room_responds_to
 -- An idempotency key is unique per room and per source channel (RFC §13.4):
 -- the per-room index gives way to one that names the channel. Keys unique
 -- per room are unique per room and channel, so the new index always builds.
--- The index names below are looked up in the schema this session writes to,
--- as the columns above are: through search_path, a namesake of another
--- schema's deployment would be dropped, or taken for ours.
+-- The index names below are looked up in the schema this session writes to.
 DO $$
 BEGIN
     IF EXISTS (
@@ -418,8 +438,7 @@ BEGIN
     IF EXISTS (
         SELECT 1
         FROM pg_index i
-        JOIN pg_class c ON c.oid = i.indrelid
-        WHERE c.relname = 'identity_addresses'
+        WHERE i.indrelid = to_regclass(format('%I.%I', current_schema(), 'identity_addresses'))
           AND i.indisprimary
           AND array_length(i.indkey::int[], 1) = 2
     ) THEN

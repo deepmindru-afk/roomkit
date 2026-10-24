@@ -392,8 +392,11 @@ class TestPostgresStore:
         from roomkit.store import postgres_schema
 
         assert "DROP TABLE" not in postgres_schema.SCHEMA
-        for table in postgres_schema.V1_TABLES:
-            assert f"DROP TABLE IF EXISTS {table} CASCADE" in postgres_schema.V1_TO_V2_DROP
+        drops = postgres_schema.V1_TO_V2_DROP.splitlines()
+        assert len(drops) == len(postgres_schema.V1_TABLES)
+        for table, drop in zip(postgres_schema.V1_TABLES, drops, strict=True):
+            assert "DROP TABLE IF EXISTS %I.%I CASCADE', current_schema()" in drop
+            assert f"'{table}'" in drop
 
     def test_schema_backfills_the_participant_primary_channel(self) -> None:
         """The additive migration repairs pre-connected_via participant rows."""
@@ -465,7 +468,7 @@ class TestPostgresStore:
         report = await store.migrate(dry_run=False, confirm=True)
         assert report["action"] == "migrated"
         executed = [c.args[0] for c in mock_conn.execute.await_args_list]
-        assert any("DROP TABLE IF EXISTS rooms CASCADE" in sql for sql in executed)
+        assert any("DROP TABLE IF EXISTS" in sql and "'rooms'" in sql for sql in executed)
         assert any("CREATE TABLE IF NOT EXISTS rooms" in sql for sql in executed)
 
     async def test_migrate_noop_on_v2(self) -> None:
@@ -1333,7 +1336,8 @@ class TestDropLegacyParentIndex:
         report = await store.drop_legacy_parent_index(dry_run=False)
 
         assert report == {"action": "dropped"}
-        assert _drops(mock_conn) == ["DROP INDEX IF EXISTS idx_events_parent"]
+        [drop] = _drops(mock_conn)
+        assert "'idx_events_parent'" in drop and "current_schema()" in drop
 
     async def test_noop_when_already_absent(self) -> None:
         store, mock_conn = _make_store_with_pool()

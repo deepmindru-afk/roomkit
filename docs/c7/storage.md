@@ -75,6 +75,12 @@ PostgresStore creates 11 tables:
 | `read_markers` | Per-channel read positions |
 | `schema_version` | Schema migration tracking |
 
+The tables live in the session's schema, `current_schema()` (the first schema
+of `search_path` that exists). Two deployments may share a database, one
+schema each: `init()`, `migrate()`, `dedupe_event_indices()` and
+`drop_legacy_parent_index()` read, create and drop the tables, columns and
+indexes of their own schema only, never a namesake another schema holds.
+
 ### Operations
 
 ```python
