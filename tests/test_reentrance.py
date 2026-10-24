@@ -197,33 +197,56 @@ class TestACallFromATurn:
         "the agent's task calls the kit it holds, whose context an in-memory turn shares "
         "with the owner; across Redis it goes through its TurnHost"
     )
-    async def test_work_a_turn_began_keeps_its_depth_once_the_turn_is_over(self) -> None:
-        """A task a turn spawns and that sends after the turn ended is the
-        turn's work, at its response's depth (RFC §8.3, §10.6.5): with the
-        depth of a call from outside, an agent that answers through
-        background work at each turn would never meet the limit."""
-        kit = await _room(RoomKit())
-        agent = _Deferring("ai", kit)
+    async def test_work_a_turn_began_starts_fresh_once_the_turn_is_over(self) -> None:
+        """A task a turn spawned that sends after the turn ended is work of
+        its own: depth 0 and a budget of its own for each call, as a call
+        from outside the room's work (RFC §8.3, §9.5.1). The agent is asked
+        below the depth limit of 2, with a budget of 20 per cascade."""
+        kit = await _room(RoomKit(max_chain_depth=2))
+        agent = _Deferring("ai", kit, sends=2 * BUDGET + 1)
         kit.register_channel(agent)
         await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
         try:
             await asyncio.wait_for(kit.process_inbound(_message()), 5)
             agent.turn_over.set()
             sent = await asyncio.wait_for(agent.sent, 5)
-            assert sent.chain_depth == 1
+            assert [(e.chain_depth, e.blocked_by) for e in sent] == [(0, None)] * (2 * BUDGET + 1)
+        finally:
+            await kit.close()
+
+    @pytest.mark.in_process(
+        "the agent calls the kit it holds, whose context an in-memory turn shares with "
+        "the owner; across Redis it goes through its TurnHost"
+    )
+    async def test_a_call_into_another_room_during_the_turn_is_its_own(self) -> None:
+        """A turn's call into another room is none of this room's work: a
+        budget of its own for each call, at the depth it names. The agent is
+        asked below the depth limit of 2, with a budget of 20 per cascade."""
+        kit = await _room(RoomKit(max_chain_depth=2))
+        await kit.create_room(room_id="r2")
+        await kit.attach_channel("r2", "sms")
+        agent = _Elsewhere("ai", kit, sends=2 * BUDGET + 1)
+        kit.register_channel(agent)
+        await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message(), room_id="r1"), 5)
+            assert [(e.chain_depth, e.blocked_by) for e in agent.sent] == [(0, None)] * (
+                2 * BUDGET + 1
+            )
         finally:
             await kit.close()
 
 
 class _Deferring(AILikeChannel):
-    """An agent whose turn on the first message starts a task that sends into
-    the room once the turn is over."""
+    """An agent whose turn on the first message starts a task that sends
+    *sends* messages into the room once the turn is over."""
 
-    def __init__(self, channel_id: str, kit: RoomKit) -> None:
+    def __init__(self, channel_id: str, kit: RoomKit, *, sends: int = 1) -> None:
         super().__init__(channel_id)
         self._kit = kit
+        self._sends = sends
         self.turn_over = asyncio.Event()
-        self.sent: asyncio.Future[RoomEvent] = asyncio.get_running_loop().create_future()
+        self.sent: asyncio.Future[list[RoomEvent]] = asyncio.get_running_loop().create_future()
         self._tasks: set[asyncio.Task[None]] = set()
 
     async def on_event(
@@ -237,7 +260,32 @@ class _Deferring(AILikeChannel):
 
     async def _later(self) -> None:
         await self.turn_over.wait()
-        self.sent.set_result(await self._kit.send_event("r1", "sms", TextContent(body="later")))
+        sent = [
+            await self._kit.send_event("r1", "sms", TextContent(body=f"later {n}"))
+            for n in range(self._sends)
+        ]
+        self.sent.set_result(sent)
+
+
+class _Elsewhere(AILikeChannel):
+    """An agent whose turn on the first message sends *sends* messages into
+    room ``r2``."""
+
+    def __init__(self, channel_id: str, kit: RoomKit, *, sends: int) -> None:
+        super().__init__(channel_id)
+        self._kit = kit
+        self._sends = sends
+        self.sent: list[RoomEvent] = []
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        if _body(event) == "hi":
+            for n in range(self._sends):
+                self.sent.append(
+                    await self._kit.send_event("r2", "sms", TextContent(body=f"there {n}"))
+                )
+        return ChannelOutput.empty()
 
 
 async def _settled(kit: RoomKit) -> None:

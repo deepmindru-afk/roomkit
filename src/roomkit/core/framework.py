@@ -1266,7 +1266,7 @@ class RoomKit(
             content=content,
             # A call made within a turn is at least as deep as the turn's
             # response (RFC §8.3, §10.6).
-            chain_depth=max(chain_depth, chain_floor()),
+            chain_depth=max(chain_depth, chain_floor(room_id)),
             parent_event_id=parent_event_id,
             status=EventStatus.DELIVERED,
             # The key the pipeline reserves (RFC §5.2) is not the caller's.

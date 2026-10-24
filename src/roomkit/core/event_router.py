@@ -878,7 +878,7 @@ class EventRouter:
         runner = self._runner_of(room_id, binding.channel_id) if self._runner_of else None
         # What the turn sends into a room is at least as deep as its response
         # (RFC §8.3, §10.6): an agent injecting at each turn meets the limit.
-        with within_turn(event.chain_depth + 1):
+        with within_turn(room_id, event.chain_depth + 1):
             if runner is not None:
                 # The strategy takes the turn here, on the owner; each
                 # generation it asks of the agent is a turn of its own.

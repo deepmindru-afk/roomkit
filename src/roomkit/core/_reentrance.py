@@ -17,12 +17,15 @@ The execution context of a call tells it, for the room it names:
 - elsewhere: a new arrival with a budget of its own.
 
 A call the room's work made is charged one pass as it starts. A call made
-within a turn, or by work the turn began, is at least as deep as the turn's
-response (§8.3, §10.6).
+into a room within one of its turns, the turn's tool calls included, is at
+least as deep as the turn's response (§8.3, §10.6); a call into another room
+is at the depth it names.
 
 A frame stands for its work only while that work runs: a task the work
 spawns inherits the frame and finds it inactive once the work is over, as a
-room lock's lease is (:mod:`roomkit.core.locks`).
+room lock's lease is (:mod:`roomkit.core.locks`). A turn's depth floor is a
+frame too: work a turn or a delivery began starts fresh once that work is
+over, at depth 0 and on a budget of its own.
 """
 
 from __future__ import annotations
@@ -36,7 +39,6 @@ from typing import TYPE_CHECKING
 
 from roomkit.core.exceptions import ReentrantCallError
 from roomkit.core.locks import _has_room_lock
-from roomkit.tools.context import _current_turn_chain_depth
 
 if TYPE_CHECKING:
     from roomkit.core._queued_injections import QueuedInjections
@@ -112,15 +114,22 @@ class _Frame:
 _frames: contextvars.ContextVar[tuple[_Frame, ...]] = contextvars.ContextVar(
     "_roomkit_room_work_frames", default=()
 )
-# The response depth of the deepest turn the context runs within (RFC §8.3).
-# Unlike a frame it is never made inert: a task the turn spawns keeps it once
-# the turn is over, since that task is the turn's work, which reaches the room
-# after the turn at the turn's depth (RFC §10.6.5, as a delegated result does,
-# §23.3). Made inert, an agent answering through background work at each turn
-# would send at depth 0 and never meet the limit; its budget, a frame's, is
-# its own then.
-_turn_depth: contextvars.ContextVar[int] = contextvars.ContextVar(
-    "_roomkit_turn_response_depth", default=0
+
+
+@dataclass(eq=False, slots=True)
+class _Turn:
+    room_id: str
+    response_depth: int
+    active: bool = True
+
+
+# The turns the context runs within (RFC §8.3), each the floor of a call into
+# its room while it runs. Made inert once the turn is over, as a frame is: a
+# task the turn spawned that calls after it is work of its own, at depth 0
+# (the maintainer's decision, RMK-930), and a result delivered later on the
+# turn's behalf names its depth itself (a delegation's, §23.3).
+_turns: contextvars.ContextVar[tuple[_Turn, ...]] = contextvars.ContextVar(
+    "_roomkit_turns", default=()
 )
 
 
@@ -156,22 +165,29 @@ def delivering(room_id: str, budget: ReentryBudget) -> AbstractContextManager[No
 
 
 @contextmanager
-def within_turn(response_depth: int) -> Generator[None, None, None]:
-    """A turn whose response is *response_depth* deep: what the context calls
-    into a room is at least that deep (RFC §8.3, §10.6), the work it spawns
-    included, after the turn too (see ``_turn_depth``)."""
-    token = _turn_depth.set(max(response_depth, _turn_depth.get()))
+def within_turn(room_id: str, response_depth: int) -> Generator[None, None, None]:
+    """A turn of *room_id* whose response is *response_depth* deep, or a tool
+    call the owner serves for it: what the context calls into that room
+    while it runs is at least that deep (RFC §8.3, §10.6), the work it
+    spawns included until the turn is over."""
+    turn = _Turn(room_id, response_depth)
+    token = _turns.set((*_turns.get(), turn))
     try:
         yield
     finally:
-        _turn_depth.reset(token)
+        # Copies the turn's tasks hold share it: over, it is inert.
+        turn.active = False
+        _turns.reset(token)
 
 
-def chain_floor() -> int:
-    """The least chain depth of a call made in this context: the response
-    depth of the turn it runs within, its tool calls' included; 0 outside a
-    turn."""
-    return max(_turn_depth.get(), _current_turn_chain_depth())
+def chain_floor(room_id: str) -> int:
+    """The least chain depth of a call into *room_id* made in this context:
+    the response depth of the deepest of the room's turns it runs within
+    that still runs; 0 outside them, and for a call into another room."""
+    return max(
+        (t.response_depth for t in _turns.get() if t.active and t.room_id == room_id),
+        default=0,
+    )
 
 
 class RoomWork:

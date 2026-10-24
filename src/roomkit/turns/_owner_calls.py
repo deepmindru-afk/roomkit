@@ -26,6 +26,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._tool_registry import set_turn_owner_tools
+from roomkit.core._reentrance import within_turn
 from roomkit.core._turn_scope import enter_turn
 from roomkit.core.exceptions import ToolRefusedError, UnservedToolCallError
 from roomkit.tools.context import ToolCallContext, owner_served_call
@@ -192,16 +193,20 @@ class OwnerCalls:
             channel_id=request.channel_id,
         )
         room = request.context.room
-        with owner_served_call(
-            record,
-            room=room if room.id == request.room_id else None,
-            actor_id=context.actor_id,
-            requester=context.requester,
-            # A call made outside the tool loop (a hook fired before it, an
-            # ACP agent's turn) carries depth 0: the turn's work is at least
-            # as deep as its response.
-            chain_depth=max(context.chain_depth, response_depth(request)),
-            allowed_names=context.allowed_names,
+        # A call made outside the tool loop (a hook fired before it, an ACP
+        # agent's turn) carries depth 0: the turn's work is at least as deep
+        # as its response, in its room while the call is served (RFC §8.3).
+        depth = max(context.chain_depth, response_depth(request))
+        with (
+            within_turn(request.room_id, depth),
+            owner_served_call(
+                record,
+                room=room if room.id == request.room_id else None,
+                actor_id=context.actor_id,
+                requester=context.requester,
+                chain_depth=depth,
+                allowed_names=context.allowed_names,
+            ),
         ):
             yield record
 
