@@ -221,7 +221,7 @@ Each of the 12 pipeline stages lives in `voice/pipeline/<stage>/`:
 - Models use Pydantic `BaseModel`
 - Async-first — never use synchronous I/O in async methods
 - Logging via `logging.getLogger("roomkit.xxx")` — no `print()`
-- All public classes exported from `roomkit/__init__.py`
+- **Public API**: a name is public when the `__all__` of `roomkit` or of one of its packages (an `__init__.py`) lists it, imported from that package. A module path (`roomkit.voice.stt.deepgram`) is internal and may move; an underscore name is internal everywhere. Every public name goes in its package's `__all__`, and documents and examples import it from there
 
 ### Testing
 
@@ -298,9 +298,9 @@ vendors. It holds its own ABCs — `providers/ai/base.py`, `providers/sms/base.p
 *those* at once, which is what earns the vendor-first grouping there and only
 there.
 
-**New provider** (messaging or AI): config in `providers/<name>/config.py`, implementation in `providers/<name>/<type>.py`, export from `__init__.py` and `roomkit/__init__.py`, add tests, add example in `examples/`, add to docs.
+**New provider** (messaging or AI): config in `providers/<name>/config.py`, implementation in `providers/<name>/<type>.py`, export from `providers/<name>/__init__.py`, add tests, add example in `examples/`, add to docs.
 
-**New backend for a subsystem ABC** (conference, voice transport, STT, TTS, recorder, store, realtime, identity): implementation beside the ABC it implements — `conference/<name>.py`, `voice/backends/<name>.py`, `voice/stt/<name>.py`, `recorder/<name>.py` — self-contained, with its own config dataclass, exported from the subsystem `__init__.py` and `roomkit/__init__.py`. Optional runtime deps get their own extra in `pyproject.toml`, named for the vendor. Add tests, example and docs as above.
+**New backend for a subsystem ABC** (conference, voice transport, STT, TTS, recorder, store, realtime, identity): implementation beside the ABC it implements — `conference/<name>.py`, `voice/backends/<name>.py`, `voice/stt/<name>.py`, `recorder/<name>.py` — self-contained, with its own config dataclass, exported from the subsystem `__init__.py`. Optional runtime deps get their own extra in `pyproject.toml`, named for the vendor. Add tests, example and docs as above.
 
 **New pipeline stage**: implement ABC in `voice/pipeline/<stage>/`, add mock, export from subdirectory and `voice/pipeline/__init__.py`, add tests, add guide in `../roomkit-docs/docs/guides/`, add example.
 
@@ -313,7 +313,7 @@ there.
 - Run `make all` before committing
 - Add tests for new features
 - Add documentation and a runnable example for new features/providers
-- Export new public classes from `roomkit/__init__.py`
+- List every new public name in its package's `__all__` (Public API, under Code Style)
 - Use `model_copy(update={...})` for Pydantic model updates
 
 ### Ask First

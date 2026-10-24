@@ -529,6 +529,27 @@ src/roomkit/
   telemetry/       Tracing (Console, OpenTelemetry)
 ```
 
+## Public API
+
+A name is public when the `__all__` of `roomkit` or of one of its packages
+(an `__init__.py`) lists it, and you import it from that package:
+
+```python
+from roomkit import RoomKit, TextContent
+from roomkit.voice.stt import DeepgramSTTProvider
+from roomkit.voice.backends import LocalAudioBackend
+```
+
+A module path, such as `roomkit.models.event` or `roomkit.voice.stt.deepgram`,
+is internal even when it holds a public name: it may move or be renamed in any
+release. A name that starts with an underscore is internal everywhere.
+
+A change that breaks a public name, a public signature or a documented
+behaviour is announced by a **BREAKING** entry in [CHANGELOG.md](CHANGELOG.md),
+in the release that ships it. The
+[Public API page](https://www.roomkit.live/docs/public-api/) says what counts
+as a break.
+
 ## AI Assistant Support
 
 RoomKit includes files to help AI coding assistants understand the library:
