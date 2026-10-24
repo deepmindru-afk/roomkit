@@ -389,10 +389,10 @@ ws_caps = ChannelCapabilities(
 | `MediaContent` | MEDIA in media_types, its type listed (or none listed) and its known size within the limit → pass | `TextContent("[Media: {caption or filename or url}]")`, the URL only when a link, else the media type |
 | `AudioContent` | AUDIO in media_types → pass | `TextContent(transcript)` or `"[Voice message: {url}]"`, the URL only when a link, else the media type |
 | `VideoContent` | VIDEO in media_types → pass | `TextContent("[Video: {url}]")`, the URL only when a link, else the media type |
-| `LocationContent` | LOCATION in media_types → pass | `TextContent("[Location: {label} ({lat}, {lon})]")` |
+| `LocationContent` | LOCATION in media_types → pass | `TextContent("[Location: {label} ({lat}, {lon})]")`, each coordinate with one decimal at least and never an exponent (`45.0`, `0.00005`) |
 | `CompositeContent` | Recursive transcode of all parts, none dropped | If all parts become text → flatten to single TextContent, joined by newlines, an empty part skipped |
 | `TemplateContent` | TEMPLATE in media_types → pass | `TextContent(body or "[Template: {id}]")` |
-| `EditContent` | `supports_edit` → pass, a file in `new_content` the target does not take as its text form | Transcode `new_content` + prefix "Correction:" |
+| `EditContent` | `supports_edit` → pass, a file in `new_content` the target does not take as its text form | `TextContent("Correction: {text form of new_content}")`, whatever the target takes of `new_content` |
 | `DeleteContent` | `supports_delete` → pass | `TextContent("[Message deleted]")` |
 
 ### Multichannel Transcoding Example
@@ -481,7 +481,9 @@ writes `new_content` and `metadata.edited=True` on the target, a delete
 `metadata.deleted=True`. The change reaches no one who could not see its target
 (its visibility is narrowed to the target's), it is delivered with the target as
 the commit left it, and `ON_EVENT_UPDATED` / `ON_EVENT_DELETED` fire once the
-lock is released.
+lock is released. Whatever pass committed the change (an inbound message, an
+agent's response, a hook's injected event), their context is the room as the
+commit left it: the target as rewritten, and the change as the newest event.
 
 ```python
 await kit.process_inbound(

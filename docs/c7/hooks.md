@@ -196,6 +196,16 @@ the event it runs for. The call is part of that event's work (RFC §9.5.1):
   `room_id`) raises `ReentrantCallError` before anything is written: its room
   is known only once routed, so it cannot be adopted. Name the room instead.
 
+Once a hook ran under the lock, the room is read again before the event
+commits (RFC §10.1 step 9a). The event takes the room's next index: what the
+hooks committed ahead of it took the one they were shown, so an instruction,
+never stored, reports the index after it. A room a hook closed
+(`kit.close_room()`) refuses the event as a closed room does: `blocked=True,
+reason="room_closed"` (`send_event()` raises `RoomClosedError`), nothing of it
+stored, what its hooks returned dropped, and `room_refused_event` emitted. An
+agent's response and an injected event whose hook closed the room are refused
+the same way (`operation = reentry`).
+
 A channel's `handle_inbound()` stands in its message's admission order the
 same way: what it sends into its room is adopted beside the message, on its
 budget, and a message it routes back into that room raises
