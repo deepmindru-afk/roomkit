@@ -79,6 +79,18 @@ class _SlowAttachHost(HostChannel):
         await self.release.wait()
 
 
+class _OutlastingHost(HostChannel):
+    """A host channel whose attach takes *seconds*, a post's whole
+    ``process_timeout`` in the test that uses it."""
+
+    def __init__(self, *, seconds: float) -> None:
+        super().__init__()
+        self._seconds = seconds
+
+    async def on_room_attached(self, room_id, binding):
+        await asyncio.sleep(self._seconds)
+
+
 @pytest.fixture
 async def kit():
     kit = RoomKit()
@@ -232,39 +244,102 @@ async def test_a_host_binding_the_integrator_sets_keeps_its_settings(store, when
         await kit.close()
 
 
-async def test_a_first_post_waits_for_the_room_lock_within_process_timeout():
-    """The first post's wait for the room lock spends the call's
-    ``process_timeout``, as step 2's attach does (RFC §13.6): past it,
-    ``ProcessTimeoutError`` with its framework event, nothing written."""
-    kit = RoomKit(process_timeout=0.05)
-    timeouts: list[FrameworkEvent] = []
-    held, released = asyncio.Event(), asyncio.Event()
+class _UnansweredBindings(InMemoryStore):
+    """A store whose binding reads, once held, wait until released."""
 
-    @kit.on("process_timeout")
-    async def timed_out(event: FrameworkEvent) -> None:
-        timeouts.append(event)
+    def __init__(self) -> None:
+        super().__init__()
+        self.held = False
+        self.released = asyncio.Event()
+
+    async def get_binding(self, room_id, channel_id):
+        if self.held:
+            await self.released.wait()
+        return await super().get_binding(room_id, channel_id)
+
+
+type _Release = Callable[[], Awaitable[None]]
+
+
+async def _hold_the_room_lock(kit: RoomKit, store: _UnansweredBindings) -> _Release:
+    held, released = asyncio.Event(), asyncio.Event()
 
     async def hold() -> None:
         async with kit._lock_manager.locked("r"):
             held.set()
             await released.wait()
 
+    holder = asyncio.create_task(hold())
+    await held.wait()
+
+    async def release() -> None:
+        released.set()
+        await holder
+
+    return release
+
+
+async def _hold_the_binding_read(kit: RoomKit, store: _UnansweredBindings) -> _Release:
+    store.held = True
+
+    async def release() -> None:
+        store.released.set()
+
+    return release
+
+
+@pytest.mark.parametrize(
+    "hold",
+    [_hold_the_room_lock, _hold_the_binding_read],
+    ids=["the room lock", "the off-lock binding read"],
+)
+async def test_a_first_post_waits_within_process_timeout(hold):
+    """The post's off-lock read of its binding and the first post's wait for
+    the room lock spend the call's ``process_timeout``, as step 2's attach
+    does (RFC §13.6): past it, ``ProcessTimeoutError`` with its framework
+    event, nothing written."""
+    store = _UnansweredBindings()
+    kit = RoomKit(store=store, process_timeout=0.05)
+    timeouts: list[FrameworkEvent] = []
+
+    @kit.on("process_timeout")
+    async def timed_out(event: FrameworkEvent) -> None:
+        timeouts.append(event)
+
     try:
         sms = await _sms_room(kit, agent=None)
         before = await _written(kit)
-        holder = asyncio.create_task(hold())
-        await held.wait()
-
-        with pytest.raises(ProcessTimeoutError):
-            await asyncio.wait_for(kit.post("r", "Notice."), 1)
-
-        released.set()
-        await holder
+        release = await hold(kit, store)
+        try:
+            with pytest.raises(ProcessTimeoutError):
+                await asyncio.wait_for(kit.post("r", "Notice."), 1)
+        finally:
+            await release()
         assert [event.room_id for event in timeouts] == ["r"]
         assert await _written(kit) == before
         assert sms.sent == []
     finally:
-        released.set()
+        await kit.close()
+
+
+async def test_a_first_post_s_attach_spends_the_deadline_its_message_shares():
+    """One ``process_timeout`` from the call's start to its commit (RFC
+    §13.6), not one for the attach and another for the message: an attach
+    that outlasts it runs to its end and stays, with its record, and the
+    post is refused, its message not written."""
+    kit = RoomKit(process_timeout=0.02)
+    try:
+        sms = await _sms_room(kit, agent=None)
+        kit.register_channel(_OutlastingHost(seconds=0.02))
+
+        with pytest.raises(ProcessTimeoutError):
+            await asyncio.wait_for(kit.post("r", "Notice."), 1)
+
+        assert await kit.store.get_binding("r", "host") is not None
+        assert await _host_attachments(kit) == 1
+        assert [e for e in await _events(kit) if e.type == EventType.MESSAGE] == []
+        assert sms.sent == []
+    finally:
         await kit.close()
 
 

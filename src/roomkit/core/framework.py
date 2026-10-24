@@ -1319,7 +1319,8 @@ class RoomKit(
         attached again, and so is a room that refuses events; nothing is
         written either way. One ``process_timeout`` bounds the whole call, the
         wait for that lock included; once the lock is held, the attach runs to
-        its end, a cancelled caller's included (RFC §13.6).
+        its end, a cancelled caller's included, and stays when the deadline
+        passes during it (RFC §13.6).
 
         Returns:
             The committed event, as :meth:`send_event` returns it.
@@ -1329,9 +1330,12 @@ class RoomKit(
             ChannelNotFoundError: the host channel was detached from the room.
             ParticipantNotFoundError: *participant_id* names nobody the host
                 channel reaches (RFC §10.5, §5.5).
-            ProcessTimeoutError: ``process_timeout`` passed before the commit,
-                the first post's wait for the room lock included; nothing
-                written.
+            ProcessTimeoutError: ``process_timeout`` passed before the commit.
+                Nothing is written when it passed before a first post's attach
+                held the room lock. Once the lock is held, the attach runs to
+                its end and stays, its binding and its ``CHANNEL_ATTACHED``
+                record, even when the deadline passes during it: only the
+                message is not written.
             RoomClosedError: the room's status refuses new events (RFC §5.1).
             RoomNotFoundError: the room does not exist, or is another
                 organization's.
