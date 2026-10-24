@@ -866,34 +866,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every type; a Telegram integration that read the `[Voice message: ...]` or
   `[Video: ...]` text receives the file.
 
-- **BREAKING — a message's response scope narrows every answer its
-  cascade derives from it, and never widens one** (RFC §5.12, §7.3,
-  RMK-930). `response_visibility` replaced the visibility the responding
-  channel gave its answer, so an answer a channel kept to `"sms"` under a
-  message scoped `"sms,ws"` reached `ws` too; and a response's own
-  `response_visibility` was replaced by the cascade's scope, or dropped
-  when the message named none. Each answer, at any depth of the cascade
-  (an answer to an answer, a stream's rows, the record stored in place of
-  an answer), is now what its channel gave it intersected with the scope,
-  a listed channel's category read from the room's bindings; and what
-  answers a response stays within both the cascade's scope and the
-  response's own, `None` restricting nothing; `InboundMessage` and
-  `send_event()` refuse an empty scope (`""`), and one that reaches an
-  event another way (a hook's modify) names nobody. A `BEFORE_BROADCAST`
-  hook may narrow an event's
-  `response_visibility`, never widen or clear it: what it writes is
-  intersected with the original, `None` keeps the original and `internal`
-  reads as `none`; and a response whose visibility its hooks widen is
-  narrowed back within the scope after them, a stream's rows included.
-  The scope binds the message's cascade only: work that leaves it, a
-  background delegation's result handed back with `deliver()` or
-  `send_event()`, a tool's own `send_event()`, a child room's answer to
-  the channels it shares, is a new cascade the scope does not follow.
-  Migrate: a channel that relied on the message's scope to widen its
-  answer gives the answer the visibility it means (`"all"` keeps the
-  scope); a hook that widened or cleared a message's `response_visibility`
-  sets the message's own instead; work that hands an answer back outside
-  the cascade passes its own `response_visibility`.
+- **BREAKING — a message's response scope narrows every answer its cascade
+  derives from it, and never widens one** (RFC §5.12, §7.3, RMK-930).
+  `response_visibility` replaced the visibility the responding channel gave
+  its answer, so an answer a channel kept to `"sms"` under a message scoped
+  `"sms,ws"` reached `ws` too; and a response's own `response_visibility` was
+  replaced by the cascade's scope, or dropped when the message named none.
+  Each answer, at any depth of the cascade (an answer to an answer, a stream's
+  rows, the record stored in place of an answer), is now what its channel gave
+  it intersected with the scope, a listed channel's category read from the
+  room's bindings; and what answers a response stays within both the cascade's
+  scope and the response's own, `None` restricting nothing; `InboundMessage`
+  and `send_event()` refuse an empty scope (`""`), and one that reaches an
+  event another way (a hook's modify) names nobody. A `BEFORE_BROADCAST` hook
+  may narrow an event's `response_visibility`, never widen or clear it: what
+  it writes is intersected with the original, and `None` keeps the original;
+  and a response whose visibility its hooks widen is narrowed back within the
+  scope after them, a stream's rows included. The scope binds the message's
+  cascade only: work that leaves it, a background delegation's result handed
+  back with `deliver()` or `send_event()`, a tool's own `send_event()`, a
+  child room's answer to the channels it shares, is a new cascade the scope
+  does not follow.
+  Migrate: a channel that relied on the message's scope to widen its answer
+  gives the answer the visibility it means (`"all"` keeps the scope); a hook
+  that widened or cleared a message's `response_visibility` sets the message's
+  own instead; work that hands an answer back outside the cascade passes its
+  own `response_visibility`.
 
 - **BREAKING — a composite delivered as one text skips its empty parts**
   (RFC §6.6, RMK-930). A composite whose every part becomes a text for its
@@ -1093,11 +1091,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in it from any other message, whoever wrote it (the sender, the channel's
   parser), `send_event()` and `commit_event()` raise `ValueError` for one,
   nothing written, and a delegated turn's trace rows are committed without
-  one. The key is part of the committed event, so the lookup, the transport's
-  resolution and the commit stay one locked section, and the stores'
-  per-channel uniqueness (`room_id, source.channel_id, idempotency_key`) never
-  sets a publication against a message keyed alike. `AFTER_DELIVER` still
-  reports the application's key.
+  one. The stored key is the publication's alone, so the stores' per-channel
+  uniqueness (`room_id, source.channel_id, idempotency_key`) never sets a
+  publication against a message keyed alike. `AFTER_DELIVER` still reports the
+  application's key.
   Migrate: code that reads a publication's stored `idempotency_key` reads
   `roomkit:publication:<key>`; a publication stored before the upgrade keeps
   its bare key and is not told from a sender's message, so a replay across the
