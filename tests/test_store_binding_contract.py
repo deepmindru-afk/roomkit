@@ -14,6 +14,7 @@ import pytest
 
 from roomkit import InboundMessage, RoomKit
 from roomkit.channels import SMSChannel
+from roomkit.channels.addressing import written_recipient
 from roomkit.core.exceptions import EventNotFoundError, IdempotencyKeyTakenError
 from roomkit.core.inbound_router import DefaultInboundRoomRouter
 from roomkit.models.channel import ChannelBinding, RateLimit, RetryPolicy
@@ -409,6 +410,42 @@ async def test_a_binding_names_its_sender_for_its_own_channel_only(
     finally:
         for room, _channel_id, _sender in rooms:
             await store.delete_room(room.id)
+
+
+async def test_a_whole_float_reads_back_as_its_store_s_json_holds_it(
+    contract_store: ConversationStore, request: pytest.FixtureRequest
+) -> None:
+    """RFC §5.7: a float under a binding's recipient key is no recipient,
+    and is found by no lookup; a store whose JSON form cannot tell a whole
+    float from an integer reads it back as that integer, a recipient then:
+    Postgres's ``jsonb`` does for one of magnitude 1e16 or more, which JSON
+    writes in exponent form (``1e+16``)."""
+    key = "telegram_chat_id"
+    on_postgres = request.node.callspec.params["contract_store"] == "postgres"
+    room = await contract_store.create_room(Room(id=uuid4().hex))
+    try:
+        for value in (1e16, 15550000001.0):
+            await contract_store.add_binding(
+                ChannelBinding(
+                    room_id=room.id,
+                    channel_id="tg",
+                    channel_type="telegram",
+                    metadata={key: value},
+                )
+            )
+            back = await contract_store.get_binding(room.id, "tg")
+            assert back is not None
+            as_integer = on_postgres and value >= 1e16
+            held = back.metadata[key]
+            assert (type(held), held) == ((int, 10**16) if as_integer else (float, value))
+            assert written_recipient(back.metadata, key) == (10**16 if as_integer else None)
+            found = await contract_store.find_room_id_by_binding(
+                "tg", str(int(value)), recipient_key=key
+            )
+            assert (found == room.id) is as_integer
+            await contract_store.remove_binding(room.id, "tg")
+    finally:
+        await contract_store.delete_room(room.id)
 
 
 @pytest.mark.parametrize("fallback", [False, True])
