@@ -31,6 +31,8 @@ from roomkit.models.store_filter import EventFilter
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
+from roomkit.telemetry.base import SpanKind
+from roomkit.telemetry.mock import MockTelemetryProvider
 from roomkit.voice.realtime.mock import MockRealtimeProvider
 from tests.conference.test_conference_realtime import ROOM, realtime_kit, until
 from tests.conference.test_conference_tool_calls import LOOKUP
@@ -180,7 +182,8 @@ class TestACallFromADelivery:
         """RFC §10.1 step 1, §9.5.1 Past the cap: a message that names its
         room is refused as it starts, before its channel is looked up or
         attached: nothing created or stored."""
-        kit = RoomKit(max_chain_depth=1)
+        telemetry = MockTelemetryProvider()
+        kit = RoomKit(max_chain_depth=1, telemetry=telemetry)
         then = InboundMessage(channel_id=channel_id, sender_id="u", content=TextContent(body="x"))
         looping = _Looping("loop", kit, then=then)
         await _room(kit, looping)
@@ -197,6 +200,13 @@ class TestACallFromADelivery:
             )
             assert await kit.store.get_binding("r1", channel_id) is None
             assert len(await _messages(kit)) == 1 + BUDGET
+            # Still traced: a loop the cap cut is visible.
+            [span] = [
+                span
+                for span in telemetry.get_spans(SpanKind.INBOUND_PIPELINE)
+                if span.name == "framework.inbound" and span.channel_id == channel_id
+            ]
+            assert (span.room_id, span.attributes["blocked"]) == ("r1", True)
         finally:
             await kit.close()
 

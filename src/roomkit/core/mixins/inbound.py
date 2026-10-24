@@ -240,13 +240,29 @@ class InboundMixin(HelpersMixin):
         # A sixth composite level is refused where it is built (RFC §5.3):
         # the message fails before anything is read or written.
         refuse_too_deep(message.content)
+        telemetry = self._telemetry
+
+        def open_span() -> str:
+            """The call's ``framework.inbound`` span, opened."""
+            return telemetry.start_span(
+                SpanKind.INBOUND_PIPELINE,
+                "framework.inbound",
+                parent_id=get_current_span(),
+                channel_id=message.channel_id,
+                room_id=room_id,
+                attributes={"sender_id": message.sender_id or ""},
+            )
 
         # RFC §10.1 step 1, §9.5.1 Past the cap: a message that names its
         # room, sent by that room's work, draws on its budget as it starts,
         # before anything else; a routed one, and one naming a room of no
-        # work, are charged at step 2 once their room is known.
+        # work, are charged at step 2 once their room is known. The refusal
+        # writes nothing, and is traced as any call: a loop the cap cut stays
+        # visible.
         charged = self._named_room_work(room_id)
         if charged is not None and not charged.budget.take():
+            refused = {"blocked": True, "deferred": defer_delivery}
+            telemetry.end_span(open_span(), attributes=refused)
             return _past_the_cap(room_id, message)
 
         # Inbound rate limiting — drop excess messages before any processing
@@ -269,15 +285,7 @@ class InboundMixin(HelpersMixin):
         if sender != message.sender_id:
             message = message.model_copy(update={"sender_id": sender})
 
-        telemetry = self._telemetry
-        inbound_span_id = telemetry.start_span(
-            SpanKind.INBOUND_PIPELINE,
-            "framework.inbound",
-            parent_id=get_current_span(),
-            channel_id=message.channel_id,
-            room_id=room_id,
-            attributes={"sender_id": message.sender_id or ""},
-        )
+        inbound_span_id = open_span()
         # Propagate backend-specific context for robust parent linking
         token = set_current_span(
             inbound_span_id, telemetry_ctx=telemetry.get_span_context(inbound_span_id)
