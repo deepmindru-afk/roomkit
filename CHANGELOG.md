@@ -42,7 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sqlite3.IntegrityError`, the key held with it or not.
   The ABC's default `commit_event()`, which a custom store inherits, looks
   the key up within its channel (`get_event_by_idempotency_key()`) before
-  it writes, and refuses alike.
+  it writes, and refuses alike; a lookup that finds no event (the ABC's own
+  default finds none) gives way to `check_idempotency()`, which every store
+  implements.
   Migrate: a direct caller that caught the driver's error for a taken key
   catches `IdempotencyKeyTakenError`; a custom store that overrides
   `commit_event()` raises it alike.
@@ -58,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replaces the map in each. An event is committed with the results it brings
   (RFC §10.5): Postgres's insert dropped them, so a record `commit_event()`
   stored with its delivery outcome read back `{}` there.
+  The ABC's defaults for a change's target, `commit_event(target=)` and
+  `write_change_target()`, keep the stored results too, over a store whose
+  `update_event()` writes the row as given.
   The ABC's default `record_delivery_results()`, which a custom store
   inherits, writes through `update_event()`, which works for a store whose
   `update_event()` writes the row as given; it reads the event back, and

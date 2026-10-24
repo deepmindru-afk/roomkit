@@ -180,6 +180,17 @@ def address_linked(channel_type: str) -> AddressLinkedError:
     )
 
 
+def _with_recorded_results(target: RoomEvent, stored: RoomEvent) -> RoomEvent:
+    """*target*, a change's target as its commit writes it, carrying the
+    delivery results *stored*, the row as it stands, holds: only the record
+    of a delivery set writes them (RFC §10.3, §14.3), and a copy read before
+    the record would erase it over a store whose ``update_event`` writes the
+    row as given."""
+    if target.delivery_results == stored.delivery_results:
+        return target
+    return target.model_copy(update={"delivery_results": stored.delivery_results})
+
+
 class ConversationStore(ABC):
     """Persistent storage for rooms, events, bindings, and participants.
 
@@ -909,13 +920,14 @@ class ConversationStore(ABC):
         stores do) MUST override it too.
         """
         await self._refuse_a_taken_key(room_id, event)
+        stored = None
         if target is not None:
             stored = await self.get_event(target.id)
             if stored is None or stored.room_id != room_id:
                 raise target_gone(target)
         indexed = await self.add_event_auto_index(room_id, event)
-        if target is not None:
-            await self.update_event(target)
+        if target is not None and stored is not None:
+            await self.update_event(_with_recorded_results(target, stored))
         if target is not None and deletes_edits(event, target):
             await self._mark_edits_deleted(room_id, target.id)
         room = await self.get_room(room_id)
@@ -937,13 +949,22 @@ class ConversationStore(ABC):
     async def _refuse_a_taken_key(self, room_id: str, event: RoomEvent) -> None:
         """Refuse *event* when its source channel holds its key in *room_id*
         for another event (RFC §13.4, §14.3), read through the store's own
-        lookup before the default commit writes anything."""
-        if not event.idempotency_key:
+        lookup before the default commit writes anything. A store whose
+        lookup finds no event (the default's, which finds none) is asked
+        :meth:`check_idempotency`, which every store implements: the key held
+        by an event other than *event*, which the store does not hold, is
+        refused alike."""
+        key, channel_id = event.idempotency_key, event.source.channel_id
+        if not key:
             return
-        held = await self.get_event_by_idempotency_key(
-            room_id, event.idempotency_key, channel_id=event.source.channel_id
-        )
-        if held is not None and held.id != event.id:
+        held = await self.get_event_by_idempotency_key(room_id, key, channel_id=channel_id)
+        if held is not None:
+            if held.id != event.id:
+                raise key_taken(event)
+            return
+        if await self.check_idempotency(room_id, key, channel_id=channel_id) and (
+            await self.get_event(event.id) is None
+        ):
             raise key_taken(event)
 
     async def write_change_target(self, room_id: str, target: RoomEvent) -> None:
@@ -963,7 +984,7 @@ class ConversationStore(ABC):
         stored = await self.get_event(target.id)
         if stored is None or stored.room_id != room_id:
             raise target_gone(target)
-        await self.update_event(target)
+        await self.update_event(_with_recorded_results(target, stored))
         if is_marked_deleted(target):
             await self._mark_edits_deleted(room_id, target.id)
 
