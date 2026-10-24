@@ -10,6 +10,7 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.channels._runtime_record import RUNTIME_RECORD
+from roomkit.channels.addressing import written_recipient
 from roomkit.core._changes import for_channels
 from roomkit.core._delivery_keys import DeliveryKeys, NamedDelivery
 from roomkit.core._instructions import FINGERPRINT, names_an_agent
@@ -1113,7 +1114,7 @@ class InboundMixin(HelpersMixin):
             missing = {
                 key: value
                 for key, value in channel.reply_metadata(message).items()
-                if not binding.metadata.get(key)
+                if written_recipient(binding.metadata, key) is None
             }
             update["metadata"] = {**binding.metadata, **missing}
         if not update:
@@ -1389,4 +1390,6 @@ def _lacks_recipient(binding: ChannelBinding, message: InboundMessage, channel: 
     """Whether *binding* names *message*'s conversation but has no reply address for it."""
     if binding.participant_id != _conversation(message, channel):
         return False
-    return any(not binding.metadata.get(key) for key in channel.reply_metadata(message))
+    return any(
+        written_recipient(binding.metadata, key) is None for key in channel.reply_metadata(message)
+    )

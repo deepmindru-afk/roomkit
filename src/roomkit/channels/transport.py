@@ -6,7 +6,7 @@ import logging
 import time as _time
 from typing import Any
 
-from roomkit.channels.addressing import ChannelAddressing, addressing_of
+from roomkit.channels.addressing import ChannelAddressing, addressing_of, written_recipient
 from roomkit.channels.base import Channel
 from roomkit.core.exceptions import NoRecipientError, ProviderDeliveryError
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
@@ -127,8 +127,8 @@ class TransportChannel(Channel):
         key = self.recipient_key
         if key is None:
             return None
-        value = binding.metadata.get(key)
-        return self.normalize_address(str(value)) if value else None
+        value = written_recipient(binding.metadata, key)
+        return None if value is None else self.normalize_address(str(value))
 
     def recipient_metadata(self, address: str) -> dict[str, str]:
         """``{recipient_key: address}`` when the recipient is a conversation's address."""
@@ -164,8 +164,8 @@ class TransportChannel(Channel):
         key = self._addressing.chat_key
         if key is None:
             return ""
-        chat = message.metadata.get(key)
-        return str(chat) if chat else ""
+        chat = written_recipient(message.metadata, key)
+        return "" if chat is None else str(chat)
 
     async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
         """Convert an inbound message into a room event."""
@@ -250,11 +250,14 @@ class TransportChannel(Channel):
         telemetry = getattr(self, "_telemetry", None) or NoopTelemetryProvider()
 
         key = self._addressing.recipient_key
-        to = binding.metadata.get(key, "") if key is not None else ""
-        if not to and self._requires_recipient:
+        recipient = written_recipient(binding.metadata, key) if key is not None else None
+        if recipient is None and self._requires_recipient:
             # Nobody to send to: refused here rather than handed to the
-            # provider as "", which a lenient one would acknowledge (RFC §10.2 step 3d).
+            # provider as "" or as a value no one is reached at (`true`, a
+            # blank string), which a lenient one would acknowledge (RFC §5.7,
+            # §10.2 step 3d).
             raise NoRecipientError(self.channel_id, key or "")
+        to = "" if recipient is None else recipient
         kwargs: dict[str, Any] = {}
         for key, value in self._defaults.items():
             kwargs[key] = binding.metadata.get(key, value) if value is None else value

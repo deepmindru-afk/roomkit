@@ -366,8 +366,18 @@ async def test_no_recipient_is_logged_as_a_refusal_without_traceback(
     await kit.close()
 
 
-async def test_no_recipient_is_refused_before_any_send_and_spares_the_breaker() -> None:
-    """Six refusals in one room; another room on the same channel still delivers."""
+@pytest.mark.parametrize(
+    "nobody",
+    [{}, {"phone_number": True}, {"phone_number": "  "}, {"phone_number": {"number": ALICE}}],
+    ids=["nothing", "true", "blank", "object"],
+)
+async def test_no_recipient_is_refused_before_any_send_and_spares_the_breaker(
+    nobody: dict[str, Any],
+) -> None:
+    """Six refusals in one room; another room on the same channel still
+    delivers. A recipient is a string that is not blank, or a number (RFC
+    §5.7): any other value under the key is none, never handed to the
+    provider."""
     sms = MockSMSProvider()
     kit = RoomKit()
     kit.register_channel(SMSChannel("sms", provider=sms))
@@ -378,7 +388,7 @@ async def test_no_recipient_is_refused_before_any_send_and_spares_the_breaker() 
     async def on_failed(event: FrameworkEvent) -> None:
         failed.append(event)
 
-    for room_id, metadata in (("nobody", {}), ("alice", {"phone_number": ALICE})):
+    for room_id, metadata in (("nobody", nobody), ("alice", {"phone_number": ALICE})):
         await kit.create_room(room_id=room_id)
         await kit.attach_channel(room_id, "bank")
         await kit.attach_channel(room_id, "sms", metadata=metadata)

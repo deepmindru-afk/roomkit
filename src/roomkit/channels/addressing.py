@@ -12,8 +12,10 @@ them unless it declares its own.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 from roomkit.channels._email import normalize_email_address
 from roomkit.channels._phone import normalize_phone_number
@@ -126,3 +128,20 @@ def addressing_of(channel_type: ChannelType) -> ChannelAddressing:
     ``chat_id`` and ``conversation_id``; any other type as written, with no
     recipient and no chat key."""
     return _BY_TYPE.get(channel_type, _AS_WRITTEN)
+
+
+def written_recipient(metadata: Mapping[str, Any], key: str) -> str | int | float | None:
+    """The recipient *metadata* holds under *key*, as written (RFC §5.7, §10.2
+    step 3d): a string that is not blank, or a number (a chat id). Null, a
+    blank string, a boolean, a list and an object are none: a delivery to a
+    binding holding one is refused ``no_recipient``, and routing reads no
+    correspondent in it. The same rule reads the chat a message carries under
+    its channel's chat key."""
+    value = metadata.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        return value if value.strip() else None
+    if isinstance(value, int | float):
+        return value
+    return None

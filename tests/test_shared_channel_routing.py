@@ -84,10 +84,10 @@ class _Shop:
             await self.kit.add_member(room_id, "sms", member)
         return room_id
 
-    async def open_free_room(self, room_id: str = "free") -> str:
+    async def open_free_room(self, room_id: str = "free", metadata: dict | None = None) -> str:
         """A room bound to the number with no correspondent or recipient yet."""
         await self.kit.create_room(room_id=room_id)
-        await self.kit.attach_channel(room_id, "sms")
+        await self.kit.attach_channel(room_id, "sms", metadata=metadata or {})
         return room_id
 
     async def text(self, sender: str, body: str, room_id: str | None = None) -> InboundResult:
@@ -223,17 +223,26 @@ class TestARoomTheHostOpened:
         assert await shop.room_of(ALICE) == room
         assert shop.sent_to(BOB) and shop.sent_to(ALICE)
 
+    @pytest.mark.parametrize(
+        "held",
+        [None, True, "  ", {"number": BOB}, [BOB]],
+        ids=["nothing", "true", "blank", "object", "list"],
+    )
     async def test_a_room_opened_for_no_one_keeps_its_first_sender(
-        self, store: ConversationStore
+        self, store: ConversationStore, held: object
     ) -> None:
+        """A value under the recipient key that is no recipient (RFC §5.7: a
+        string that is not blank, or a number) names no one: the first
+        sender is the room's, and their address its recipient."""
         shop = _Shop(store)
-        room = await shop.open_free_room()
+        room = await shop.open_free_room(metadata=None if held is None else {"phone_number": held})
 
         assert await shop.room_of(ALICE) == room
         assert await shop.room_of(BOB) != room
         # Two rooms are bound to the number now; alice is found by her binding.
         assert await shop.room_of(ALICE) == room
         assert await shop.named_on(room) == ALICE
+        assert len(shop.sent_to(ALICE)) == 2
 
     async def test_two_first_messages_arriving_together_land_apart(
         self, store: ConversationStore
@@ -577,12 +586,19 @@ class TestADeliveryStatus:
 
         assert seen == ["acme-alice"]
 
+    @pytest.mark.parametrize(
+        ("held", "taken"),
+        [(ALICE, False), (True, True), ("  ", True), ({"number": ALICE}, True), ([ALICE], True)],
+        ids=["another-number", "true", "blank", "object", "list"],
+    )
     async def test_the_one_room_delivering_to_another_number_is_not_the_status(
-        self, store: ConversationStore
+        self, store: ConversationStore, held: object, taken: bool
     ) -> None:
         """The fallback of the one ACTIVE room reads its binding's recipient as
         step 3 does: Bob's room is closed, Alice's, delivering to her number
-        and naming no correspondent, is not Bob's."""
+        and naming no correspondent, is not Bob's. A value that is no
+        recipient (RFC §5.7: a string that is not blank, or a number)
+        delivers to no one: the room takes Bob's status."""
         shop = _Shop(store)
         bob_room = await shop.room_of(BOB)
         await shop.kit.close_room(bob_room)
@@ -592,7 +608,7 @@ class TestADeliveryStatus:
                 room_id="alice",
                 channel_id="sms",
                 channel_type="sms",
-                metadata={"phone_number": ALICE},
+                metadata={"phone_number": held},
             )
         )
         seen: list[str] = []
@@ -607,7 +623,7 @@ class TestADeliveryStatus:
             )
         )
 
-        assert seen == []
+        assert seen == (["alice"] if taken else [])
 
 
 class TestTheClaimFailsClosed:
