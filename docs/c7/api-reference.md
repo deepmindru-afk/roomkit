@@ -256,6 +256,7 @@ RoomKit exports **348 symbols** from `roomkit`. Providers and voice types import
 | `RoomAlreadyExistsError` | A room created under an id the store holds (RFC §14.3) |
 | `RoomClosedError` | Room's status refuses new events (RFC §5.1) |
 | `ReentrantCallError` | A message routed back into the room whose lock the caller holds, or from an off-lock hook's body or a parse; nothing written (RFC §9.5.1) |
+| `ReentryLoopCapError` | A direct `update_event()`, `delete_event()` or `regenerate_response()` an ASYNC hook's body made past the cascade's hook calls; nothing written (RFC §9.5.1, §10.3) |
 | `TransitionRefusedError` | A lifecycle transition from a status it does not leave, such as `close_room()` on an ARCHIVED room; nothing written (RFC §5.1) |
 | `ChangeRefusedError` | `send_event()` of an edit or a delete step 8a refused; `reason` says why (RFC §10.3) |
 | `EventNotFoundError` | A store's `commit_event()` of a change whose target the room no longer holds (RFC §14.3) |
@@ -352,7 +353,7 @@ kit = RoomKit(
 |--------|-------------|
 | `process_inbound(message, room_id?, defer_delivery=False, organization_id=None)` | Process an inbound message; deferred results are backfilled by `DeliveryHandle.wait()` |
 | `cancel_delivery(key, *, reason="caller_cancelled", organization_id=None)` | Stop the turns of the deliveries in flight of the messages sent with `delivery_key=key`, from the start of `process_inbound`, and a message held for verification until its release is answered (of the organization's rooms when given); the messages are still delivered; returns how many it cancelled |
-| `regenerate_response(room_id, *, trigger_id=None)` | Re-run the intelligence channel on the newest accepted transport message; `InboundResult(blocked=True, reason="room_closed")` on a closed or archived room; with `trigger_id`, `reason="trigger_moved"` when the selection under the lock is no longer that event |
+| `regenerate_response(room_id, *, trigger_id=None)` | Re-run the intelligence channel on the newest accepted transport message; `InboundResult(blocked=True, reason="room_closed")` on a closed or archived room; with `trigger_id`, `reason="trigger_moved"` when the selection under the lock is no longer that event; from an ASYNC hook's body, one of the cascade's hook calls (`ReentryLoopCapError` past them) |
 | `regenerate_target(room_id)` | The event `regenerate_response` would replay, or `None`; raises `RoomClosedError` when the room refuses events |
 
 ### Hooks

@@ -229,13 +229,15 @@ budget, and a message it routes back into that room raises
 hook the cascade fires once an event's delivery set has run (`AFTER_BROADCAST`,
 a change's `ON_EVENT_UPDATED` or `ON_EVENT_DELETED`), is a new arrival with its
 own ticket and `process_timeout`, but it draws on the budget of the cascade
-that delivers while that work runs, and a call made while a turn or a tool
-call runs (a realtime or a conference call included), by it or a task it
-spawned, into whatever room, is at least as deep as the turn's response or the
-call's, so a transport, an agent or an ASYNC hook that sends into its room
-every time it is reached stops at the cap or at `max_chain_depth`. That depth
-holds where the owner runs the turn's code (an
-in-memory turn calling the kit it holds, a tool handler, a `TurnHost` verb);
+that delivers while that work runs (a hook's body on the cascade's hook
+calls, a counter of the same size kept apart from its passes), and a call
+made while a turn or a tool call runs (a realtime or a conference call
+included), by it or a task it spawned, into whatever room, is at least as
+deep as the turn's response or the call's, so a transport, an agent or an
+ASYNC hook that sends into its room every time it is reached stops at the cap
+or at `max_chain_depth`. That depth holds where the owner runs the turn's
+code (an in-memory turn calling the kit it holds, a tool handler, a
+`TurnHost` verb);
 with a Redis turn backend a turn reaches the room through its `TurnHost`. A
 call of such work that creates a room, routed or named (the router answering
 none or naming a room the store lacks, `process_inbound(..., room_id=...)`
@@ -255,13 +257,32 @@ async def acknowledge(event, ctx):
     return HookResult.allow()
 ```
 
-An ASYNC hook that posts after every event, its own posts included, stops at
-the cap (`10 × max_chain_depth` passes, 50 by default), each post one pass; a
-notice posted once per event draws one pass of that event's budget, however
-many events come. Work that follows an agent's answer outside the answer's
-cascade runs in a task the hook starts, which begins fresh. It passes the
-chain it continues, `chain_depth` on `post()` or `send_event()`, so that its
-round trips with the agent end at `max_chain_depth`:
+A cascade counts the calls of its ASYNC hooks' bodies apart from its own
+passes (its answers, chained streams and injected events), on a counter of the
+same size, `10 × max_chain_depth` (50 by default):
+
+- A hook that posts after every event, its own posts included, stops at the
+  cap: each post draws one hook call, and past the cap it is stored `BLOCKED`
+  with `reentry_loop_cap`.
+- A notice posted once per event draws one hook call per event of that
+  event's cascade: it costs the agents no answer, and their answers block no
+  notice. Only past 50 events of one cascade (a streamed turn of more rows
+  than that, a notice per row) is a notice blocked.
+- A direct `kit.update_event()`, `kit.delete_event()` or
+  `kit.regenerate_response()` made from the body draws one hook call too, and
+  past the cap raises `ReentryLoopCapError`, nothing written; the engine logs
+  what a body raises. The change's own hooks (`ON_EVENT_UPDATED`,
+  `ON_EVENT_DELETED`, a regeneration's answers) run on the budget of the work
+  it was made in, one of their own when it came from outside the room's work,
+  so a hook that edits, deletes or regenerates on every change stops there.
+- A task the body starts and does not await begins fresh once the body has
+  returned: depth 0 and a budget of its own. A task the body awaits, or
+  gathers, stays on the budget while the body runs.
+
+Work that follows an agent's answer outside the answer's cascade runs in such
+a task. It passes the chain it continues, `chain_depth` on `post()` or
+`send_event()`, so that its round trips with the agent end at
+`max_chain_depth`:
 
 ```python
 background: set[asyncio.Task] = set()

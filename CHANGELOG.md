@@ -161,6 +161,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   + 1)` or `send_event(..., chain_depth=...)`, so its round trips with the
   agent end at `max_chain_depth`.
 
+- **BREAKING — what an ASYNC hook sends into its room, and the
+  `update_event()`, `delete_event()` and `regenerate_response()` it makes
+  there, stop at the reentry cap of the cascade that fired it** (RFC §8.3,
+  §9.5.1, §10.1 step 16, §10.3, RMK-954). An `AFTER_BROADCAST` hook, and a
+  change's `ON_EVENT_UPDATED` or `ON_EVENT_DELETED` hook, runs once the
+  event's delivery set has run, and each call it made into its room was a
+  new arrival with a budget of its own: a hook that posted after every
+  event, its own posts included, looped without bound (2,000 posts in
+  3.9 s; with an agent answering each post, 1,000 model calls), and so did
+  one that updated, deleted or regenerated on every change (stopped at 200
+  runs by the probe).
+  Each cascade now keeps two counters of `10 × max_chain_depth`: its own
+  passes (its answers, chained streams and injected events) and, apart, the
+  calls of its ASYNC hooks' bodies. While a hook's body runs, a call it
+  makes into its room, or a message it sends that opens a room, draws one
+  hook call: past the cap, `send_event()` and `post()` store the event
+  `BLOCKED` with `reentry_loop_cap`, no hook run, and return it, and
+  `process_inbound()` returns `blocked=True, reason="reentry_loop_cap"`. A
+  direct `update_event()`, `delete_event()` or `regenerate_response()` made
+  from a hook's body draws one hook call too, and past the cap raises the
+  new `ReentryLoopCapError` (exported from `roomkit`), nothing written. A
+  direct change's own hooks run on the budget of the work it is made in,
+  one of their own from outside it. A task the body starts and does not
+  await, calling once the body has returned, is work of its own: depth 0
+  and a budget of its own. A notice costs the agents no answer and their
+  answers block no notice: a hook that posts once per event draws one hook
+  call per event, on the cascade's hook counter, and a notice is blocked
+  only past `10 × max_chain_depth` events of one cascade.
+  Who meets it: a hook whose calls into its room, or whose direct changes,
+  take more than `10 × max_chain_depth` hook calls (50 by default) in one
+  cascade: a judge that posts back to the agent after each of its answers,
+  a hook that edits, deletes or regenerates on every change, or a notice
+  per row of a streamed turn of more than 50 rows. Past the cap its post is
+  stored `BLOCKED`, and a direct change raises `ReentryLoopCapError`, which
+  the hook engine logs.
+  Migrate: run the work in a task the body starts and does not await (a
+  task it awaits or gathers stays on the budget while the body runs),
+  which begins fresh, and pass the chain it continues, `kit.post(...,
+  chain_depth=answer.chain_depth + 1)` or `send_event(...,
+  chain_depth=...)`, so its round trips with the agent end at
+  `max_chain_depth`.
+
 - **BREAKING — a key its channel holds refuses another event in every store,
   with `IdempotencyKeyTakenError`** (RFC §13.4, §14.3, RMK-942). An
   idempotency key is unique per room and per source channel, which the
