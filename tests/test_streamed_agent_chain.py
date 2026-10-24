@@ -207,10 +207,10 @@ async def test_a_regenerated_answer_is_answered_by_the_other_agent(streaming: bo
     await kit.close()
 
 
-async def test_the_answer_scope_binds_the_message_s_answers_alone(streaming: bool) -> None:
-    """A message's response scope binds the answers to it, a segment's
-    included; what an agent answers to an answer answers no message, and
-    keeps what its channel gave it (RFC §5.12)."""
+async def test_the_answer_scope_holds_along_a_streamed_chain(streaming: bool) -> None:
+    """A message's response scope binds every answer its cascade derives
+    from it, what an agent answers to another's answer or segment included
+    (RFC §5.12): nothing derived from it leaves the perimeter it asked for."""
     pa = MockAIProvider(streaming=streaming, ai_responses=_answers("A"))
     pb = MockAIProvider(streaming=streaming, ai_responses=_answers("B"))
     kit = RoomKit(max_chain_depth=3)
@@ -229,15 +229,15 @@ async def test_the_answer_scope_binds_the_message_s_answers_alone(streaming: boo
     )
 
     answers = [e for e in await _agent_rows(kit, "a", "b") if e.status == EventStatus.DELIVERED]
-    assert {(e.chain_depth, e.visibility) for e in answers} == {(1, "a,b,sms1"), (2, "all")}
-    reached = {e.chain_depth for e in outsider.delivered if e.source.channel_id in ("a", "b")}
-    assert reached == {2}
+    assert {e.chain_depth for e in answers} == {1, 2}
+    assert {e.visibility for e in answers} == {"a,b,sms1"}
+    assert [e for e in outsider.delivered if e.source.channel_id in ("a", "b")] == []
     await kit.close()
 
 
-async def test_the_answer_scope_binds_a_regenerated_answer_alone(streaming: bool) -> None:
-    """A regenerated answer, buffered or streamed, keeps its trigger's scope;
-    what the other agent answers to it keeps its own (RFC §5.12)."""
+async def test_the_answer_scope_holds_along_a_regenerated_chain(streaming: bool) -> None:
+    """A regenerated answer, buffered or streamed, keeps its trigger's scope,
+    and so does what the other agent answers to it."""
     pa = MockAIProvider(streaming=streaming, ai_responses=_answers("A"))
     pb = MockAIProvider(streaming=streaming, ai_responses=_answers("B"))
     kit = RoomKit(max_chain_depth=3)
@@ -259,13 +259,9 @@ async def test_the_answer_scope_binds_a_regenerated_answer_alone(streaming: bool
 
     new = [e for e in await _agent_rows(kit, "a", "b") if e.id not in before]
     delivered = [e for e in new if e.status == EventStatus.DELIVERED]
-    assert {(e.chain_depth, e.visibility) for e in delivered} == {(1, "a,b,sms1"), (2, "all")}
-    reached = {
-        e.chain_depth
-        for e in outsider.delivered
-        if e.source.channel_id in ("a", "b") and e.id not in before
-    }
-    assert reached == {2}
+    assert {e.chain_depth for e in delivered} == {1, 2}
+    assert {e.visibility for e in delivered} == {"a,b,sms1"}
+    assert [e for e in outsider.delivered if e.source.channel_id in ("a", "b")] == []
     await kit.close()
 
 

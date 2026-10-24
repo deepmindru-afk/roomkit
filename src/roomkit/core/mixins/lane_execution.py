@@ -126,20 +126,25 @@ def _delivery_error(message: str, exc: Exception | None) -> DeliveryError:
 def scoped(
     response: RoomEvent, scope: str | None, bindings: Iterable[ChannelBinding]
 ) -> RoomEvent:
-    """*response*, a direct response to an event, within where that event's
-    answers may go, *scope*, if it names any (RFC §5.12, §7.3): the
+    """*response* within *scope*, where the answers of the message its
+    cascade derives from may go, if it names any (RFC §5.12, §7.3): the
     visibility its channel gave it intersected with *scope*, never wider, a
     listed channel's category read from the room's *bindings* as the plan
-    read them. Only the event's own responses are scoped: what answers a
-    response answers no message, and keeps what its channel gave it.
+    read them.
+
+    The scope rides the response as its ``response_visibility`` too,
+    intersected with any the channel gave it, so whatever answers the
+    response, buffered or streamed, at any depth, stays within the
+    perimeter the message asked for.
     """
     if not scope:
         return response
     categories = {binding.channel_id: binding.category for binding in bindings}
     visibility = intersect_visibility(response.visibility, scope, categories.get)
-    if visibility == response.visibility:
-        return response
-    return response.model_copy(update={"visibility": visibility})
+    carried = intersect_visibility(
+        response.response_visibility or Visibility.ALL, scope, categories.get
+    )
+    return response.model_copy(update={"visibility": visibility, "response_visibility": carried})
 
 
 def _unavailable_targets(plan: DeliveryPlan, result: BroadcastResult) -> list[str]:
@@ -1002,28 +1007,37 @@ class LaneExecutionMixin(HelpersMixin):
         """
         if plan.injected or not result.reentry_events:
             return
-        responses = [
-            scoped(response, plan.response_visibility, plan.context.bindings)
-            for response in result.reentry_events
-        ]
-        await self._commit_responses(room_id, responses, cascade)
+        await self._commit_responses(
+            room_id,
+            result.reentry_events,
+            plan.response_visibility,
+            cascade,
+            plan.context.bindings,
+        )
 
     async def _commit_responses(
-        self, room_id: str, responses: list[RoomEvent], cascade: DeliveryCascade
+        self,
+        room_id: str,
+        responses: list[RoomEvent],
+        response_visibility: str | None,
+        cascade: DeliveryCascade,
+        bindings: Iterable[ChannelBinding] = (),
     ) -> None:
-        """Give each buffered response, scoped as its trigger asked
-        (:func:`scoped`), its own commit pass, within the cascade's reentry
-        budget (RFC §10.1 step 14, §8.3).
+        """Give each buffered response its own commit pass, within the
+        cascade's reentry budget (RFC §10.1 step 14, §8.3), within
+        *response_visibility*, the scope of the message the cascade derives
+        from (:func:`scoped`, a list read against the room's *bindings*),
+        which scopes what answers it too.
 
         The one way a buffered response reaches the timeline, whichever pass
         produced it: a trigger's delivery set or a regeneration.
         """
         for response in responses:
-            reentry = without_framework_mark(response)
+            reentry = without_framework_mark(scoped(response, response_visibility, bindings))
             if not cascade.consume_reentry_budget():
                 await self._store_past_reentry_cap(room_id, reentry)
                 continue
-            await self._run_reentry_pass(room_id, reentry, cascade)
+            await self._run_reentry_pass(room_id, reentry, response_visibility, cascade)
 
     async def _store_past_reentry_cap(
         self, room_id: str, response: RoomEvent, *, channels: bool = True
@@ -1104,7 +1118,11 @@ class LaneExecutionMixin(HelpersMixin):
         return context
 
     async def _run_reentry_pass(
-        self, room_id: str, reentry: RoomEvent, cascade: DeliveryCascade
+        self,
+        room_id: str,
+        reentry: RoomEvent,
+        response_visibility: str | None,
+        cascade: DeliveryCascade,
     ) -> None:
         """One response event's own commit pass, under a fresh room lock;
         then the passes of what its hooks injected, once it released the
@@ -1112,13 +1130,14 @@ class LaneExecutionMixin(HelpersMixin):
         queued = QueuedInjections()
         async with self._lock_manager.locked(room_id):
             with section(room_id, cascade.budget, queued):
-                await self._reentry_section(room_id, reentry, cascade, queued)
+                await self._reentry_section(room_id, reentry, response_visibility, cascade, queued)
         await self._run_queued(queued, room_id, cascade)
 
     async def _reentry_section(
         self,
         room_id: str,
         reentry: RoomEvent,
+        response_visibility: str | None,
         cascade: DeliveryCascade,
         queued: QueuedInjections,
     ) -> None:
@@ -1148,21 +1167,22 @@ class LaneExecutionMixin(HelpersMixin):
         if isinstance(decision, _Blocked):
             await self._store_blocked(room_id, decision, queued)
             return
-        await self._commit_reentry(room_id, decision, cascade, queued)
+        await self._commit_reentry(room_id, decision, response_visibility, cascade, queued)
 
     def _reentry_plan_factory(
         self,
         ready: _Ready,
+        response_visibility: str | None,
         mutation_hook: tuple[HookTrigger, RoomEvent] | None,
     ) -> Callable[[RoomEvent], DeliveryPlan | None]:
         """The plan builder of a response its gates accepted, called on the
         committed event: its delivery set, with its hooks' tasks and
         observations for after delivery, and the mutation trigger of an edit
         or a delete (RFC §10.3), delivered with the target it changed. What
-        answers the response is scoped by the response's own
-        ``response_visibility``, never by its trigger's: an answer to a
-        response answers no message (RFC §5.12). A detached source has no
-        delivery set: its plan, if any, fires the trigger."""
+        answers the response is scoped by *response_visibility*, the scope of
+        the message its cascade derives from, at any depth (RFC §5.12). A
+        detached source has no delivery set: its plan, if any, fires the
+        trigger."""
         binding = ready.source_binding
         context = with_target(ready.context, mutation_hook[1] if mutation_hook else None)
         if binding is None:
@@ -1171,7 +1191,7 @@ class LaneExecutionMixin(HelpersMixin):
 
         def factory(committed: RoomEvent) -> DeliveryPlan:
             child = router.plan(committed, binding, context)
-            child.response_visibility = committed.response_visibility
+            child.response_visibility = response_visibility
             child.hook_tasks = list(ready.sync_result.tasks)
             child.hook_observations = list(ready.sync_result.observations)
             child.mutation_hook = mutation_hook
@@ -1183,6 +1203,7 @@ class LaneExecutionMixin(HelpersMixin):
         self,
         room_id: str,
         ready: _Ready,
+        response_visibility: str | None,
         cascade: DeliveryCascade,
         queued: QueuedInjections,
     ) -> None:
@@ -1203,7 +1224,7 @@ class LaneExecutionMixin(HelpersMixin):
             room_id,
             reentry.model_copy(update={"status": EventStatus.DELIVERED}),
             cascade,
-            self._reentry_plan_factory(ready, mutation_hook),
+            self._reentry_plan_factory(ready, response_visibility, mutation_hook),
             target=target,
         )
         if binding is None:
