@@ -1145,8 +1145,10 @@ async def test_a_key_its_channel_holds_refuses_another_event(
     """RFC §13.4, §14.3: a key is unique per room and per source channel. A
     direct commit of another event under a key its channel holds in the room
     raises ``IdempotencyKeyTakenError``, nothing written, a change's target
-    included. A second commit of the event itself is the database's refusal
-    of a held id, as it was: a caller catches the driver's own error."""
+    included, and so does its insert through ``add_event`` or
+    ``add_event_auto_index``. A second commit of the event itself is the
+    database's refusal of a held id, as it was: a caller catches the
+    driver's own error."""
     room = await contract_store.create_room(Room(id=uuid4().hex))
     try:
         first = await contract_store.commit_event(
@@ -1165,6 +1167,12 @@ async def test_a_key_its_channel_holds_refuses_another_event(
         kept = await contract_store.get_event(target.id)
         assert kept is not None
         assert (kept.content, kept.metadata) == (target.content, target.metadata)
+        inserted = make_event(room_id=room.id, channel_id="sms", idempotency_key="k", index=50)
+        with pytest.raises(IdempotencyKeyTakenError):
+            await contract_store.add_event(inserted)
+        with pytest.raises(IdempotencyKeyTakenError):
+            await contract_store.add_event_auto_index(room.id, inserted)
+        assert await contract_store.get_event(inserted.id) is None
         held = await contract_store.get_event_by_idempotency_key(room.id, "k", channel_id="sms")
         assert held is not None and held.id == first.id
         after = await contract_store.get_room(room.id)
