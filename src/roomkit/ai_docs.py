@@ -38,7 +38,7 @@ def get_llms_txt() -> str:
         The llms.txt content as a string.
 
     Example:
-        >>> from roomkit.ai_docs import get_llms_txt
+        >>> from roomkit import get_llms_txt
         >>> content = get_llms_txt()
         >>> print(content[:50])
         # RoomKit
@@ -54,7 +54,7 @@ def get_agents_md() -> str:
         The AGENTS.md content as a string.
 
     Example:
-        >>> from roomkit.ai_docs import get_agents_md
+        >>> from roomkit import get_agents_md
         >>> content = get_agents_md()
         >>> print(content[:50])
         # RoomKit
@@ -73,7 +73,7 @@ def get_llms_full_txt() -> str:
         The llms-full.txt content as a string.
 
     Example:
-        >>> from roomkit.ai_docs import get_llms_full_txt
+        >>> from roomkit import get_llms_full_txt
         >>> content = get_llms_full_txt()
         >>> print(len(content))
         ...
@@ -90,7 +90,7 @@ def get_ai_context() -> str:
         Combined content optimized for AI consumption.
 
     Example:
-        >>> from roomkit.ai_docs import get_ai_context
+        >>> from roomkit import get_ai_context
         >>> context = get_ai_context()
         >>> # Pass to AI assistant as system context
     """

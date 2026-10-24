@@ -5,7 +5,7 @@ Requires a local MuseTalk installation (git clone) and GPU.
 
 Usage::
 
-    from roomkit.video.avatar.musetalk import MuseTalkAvatarProvider
+    from roomkit.video.avatar import MuseTalkAvatarProvider
 
     avatar = MuseTalkAvatarProvider(musetalk_dir="/path/to/MuseTalk")
     await avatar.start(image_bytes)

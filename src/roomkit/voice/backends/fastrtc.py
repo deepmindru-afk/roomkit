@@ -17,7 +17,7 @@ Requires the ``fastrtc`` optional dependency::
 
 Usage::
 
-    from roomkit.voice.backends.fastrtc import FastRTCVoiceBackend, mount_fastrtc_voice
+    from roomkit.voice.backends import FastRTCVoiceBackend, mount_fastrtc_voice
 
     backend = FastRTCVoiceBackend()
     voice_channel = VoiceChannel("voice", stt=stt, tts=tts, backend=backend)

@@ -91,7 +91,7 @@ class WebSocketSource(BaseSourceProvider):
 
     Example:
         from roomkit import RoomKit
-        from roomkit.sources.websocket import WebSocketSource
+        from roomkit.sources import WebSocketSource
 
         # Simple usage with default JSON parser
         source = WebSocketSource(

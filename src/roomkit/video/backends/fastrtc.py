@@ -12,7 +12,7 @@ Requires the ``fastrtc`` optional dependency::
 
 Usage::
 
-    from roomkit.video.backends.fastrtc import FastRTCVideoBackend, mount_fastrtc_av
+    from roomkit.video.backends import FastRTCVideoBackend, mount_fastrtc_av
 
     backend = FastRTCVideoBackend()
     channel = AudioVideoChannel("av", backend=backend, ...)

@@ -15,9 +15,7 @@ existing HTTP server.  Browsers connect via the WebTransport API::
 
 Usage::
 
-    from roomkit.voice.backends.webtransport import (
-        WebTransportBackend,
-    )
+    from roomkit.voice.backends import WebTransportBackend
 
     backend = WebTransportBackend(
         host="0.0.0.0",

@@ -10,7 +10,7 @@ Requires the ``aiortp`` optional dependency::
 
 Usage::
 
-    from roomkit.video.backends.rtp import RTPVideoBackend
+    from roomkit.video.backends import RTPVideoBackend
 
     backend = RTPVideoBackend(
         local_addr=("0.0.0.0", 10000),

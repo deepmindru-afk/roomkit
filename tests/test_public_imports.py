@@ -4,8 +4,10 @@ A name is public where the ``__all__`` of ``roomkit`` or of one of its
 packages lists it, imported from that package (README, "Public API"). What a
 reader copies from an example or a page is what an application imports: a
 module path there makes an internal module part of the API, and a name that
-does not resolve fails whoever copies it. ``tests/public_imports.py`` reads
-the imports; ``make docs`` runs it on the docs site's pages.
+does not resolve fails whoever copies it. The docstrings under
+``src/roomkit`` are read too: the API reference renders them. ``tests/
+public_imports.py`` reads the imports; ``make docs`` runs it on the docs
+site's pages.
 """
 
 from __future__ import annotations
@@ -24,6 +26,31 @@ def test_documents_and_examples_import_from_public_paths() -> None:
     found = check([_ROOT / path for path in _DOCUMENTS], root=_ROOT)
 
     assert [str(finding) for finding in found] == []
+
+
+def test_docstrings_import_from_public_paths() -> None:
+    found = check([_ROOT / "src" / "roomkit"], root=_ROOT, docstrings=True)
+
+    assert [str(finding) for finding in found] == []
+
+
+def test_a_docstring_is_read_and_the_code_around_it_is_not(tmp_path: Path) -> None:
+    """roomkit's own code imports its modules; only what it documents is read."""
+    module = tmp_path / "module.py"
+    module.write_text(
+        "from roomkit.models.event import TextContent\n\n\n"
+        "def build():\n"
+        '    """Build one::\n\n'
+        "        >>> from roomkit.models.event import RoomEvent\n"
+        '    """\n',
+        encoding="utf-8",
+    )
+
+    found = check([module], docstrings=True)
+
+    assert [(f.line, f.statement) for f in found] == [
+        (7, "from roomkit.models.event import RoomEvent")
+    ]
 
 
 @pytest.mark.parametrize(

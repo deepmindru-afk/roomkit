@@ -7,7 +7,7 @@ search via ``plainto_tsquery`` and ``ts_rank_cd``.
 
 Usage::
 
-    from roomkit.knowledge.postgres import PostgresKnowledgeSource
+    from roomkit.knowledge import PostgresKnowledgeSource
 
     source = PostgresKnowledgeSource(dsn="postgresql://localhost/mydb")
     await source.init()

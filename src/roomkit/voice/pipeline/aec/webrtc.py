@@ -9,7 +9,7 @@ Requires the ``aec-audio-processing`` pip dependency::
 
 Usage::
 
-    from roomkit.voice.pipeline.aec.webrtc import WebRTCAECProvider
+    from roomkit.voice.pipeline.aec import WebRTCAECProvider
 
     aec = WebRTCAECProvider(sample_rate=16000)
     config = AudioPipelineConfig(aec=aec)

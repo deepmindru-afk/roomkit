@@ -61,7 +61,7 @@ def make_text_frame(
 
     Example::
 
-        from roomkit.video.utils import make_text_frame
+        from roomkit.video import make_text_frame
 
         frame = make_text_frame("Connecting to avatar...\\nPlease wait")
     """

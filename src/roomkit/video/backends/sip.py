@@ -11,7 +11,7 @@ Requires ``aiosipua[rtp]``::
 
 Usage::
 
-    from roomkit.video.backends.sip import SIPVideoBackend
+    from roomkit.video.backends import SIPVideoBackend
 
     backend = SIPVideoBackend(
         local_sip_addr=("0.0.0.0", 5060),

@@ -190,7 +190,7 @@ def parse_telnyx_webhook(
     Example:
         Recommended: Use extract_sms_meta() for generic handling::
 
-            from roomkit import extract_sms_meta
+            from roomkit.providers.sms import extract_sms_meta
 
             @app.post("/webhooks/sms/{provider}")
             async def sms_webhook(provider: str, payload: dict):

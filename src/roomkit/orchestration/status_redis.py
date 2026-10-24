@@ -11,8 +11,7 @@ Requires ``redis>=5.0.2``::
 
 Usage::
 
-    from roomkit.orchestration.status_bus import StatusBus
-    from roomkit.orchestration.status_redis import RedisStatusBackend
+    from roomkit.orchestration import RedisStatusBackend, StatusBus
 
     bus = StatusBus(backend=RedisStatusBackend("redis://localhost:6379"))
 

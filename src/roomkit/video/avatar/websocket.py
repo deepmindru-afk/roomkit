@@ -15,7 +15,7 @@ Frame wire format (WS binary + HTTP body)::
 
 Usage::
 
-    from roomkit.video.avatar.websocket import WebSocketAvatarProvider
+    from roomkit.video.avatar import WebSocketAvatarProvider
 
     avatar = WebSocketAvatarProvider(base_url="http://gpu-server:8765")
     await avatar.start(image_bytes, width=512, height=512)

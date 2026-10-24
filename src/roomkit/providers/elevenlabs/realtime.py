@@ -55,8 +55,10 @@ class ElevenLabsRealtimeProvider(RealtimeVoiceProvider):
 
     Example::
 
-        from roomkit.providers.elevenlabs.config import ElevenLabsRealtimeConfig
-        from roomkit.providers.elevenlabs.realtime import ElevenLabsRealtimeProvider
+        from roomkit.providers.elevenlabs import (
+            ElevenLabsRealtimeConfig,
+            ElevenLabsRealtimeProvider,
+        )
 
         config = ElevenLabsRealtimeConfig(api_key="xi-...", agent_id="agent_abc123")
         provider = ElevenLabsRealtimeProvider(config)

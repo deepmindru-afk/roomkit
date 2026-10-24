@@ -98,9 +98,9 @@ class SourceOpsMixin(HelpersMixin):
                 this channel_id.
 
         Example:
-            from roomkit.sources.neonize import NeonizeSource
+            from roomkit.sources import WhatsAppPersonalSourceProvider
 
-            source = NeonizeSource(session_path="~/.roomkit/wa.db")
+            source = WhatsAppPersonalSourceProvider(db="wa-session.db")
             await kit.attach_source(
                 "whatsapp-personal",
                 source,

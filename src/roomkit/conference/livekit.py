@@ -20,7 +20,7 @@ Requires the ``livekit`` optional dependency::
 Usage::
 
     from roomkit import ConferenceChannel
-    from roomkit.conference.livekit import LiveKitConfig, LiveKitConferenceBackend
+    from roomkit.conference import LiveKitConferenceBackend, LiveKitConfig
 
     backend = LiveKitConferenceBackend(
         LiveKitConfig(url="wss://my-project.livekit.cloud")  # key/secret from env

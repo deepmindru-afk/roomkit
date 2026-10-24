@@ -6,7 +6,9 @@ separate ``tools`` and ``tool_handler`` parameters.
 
 Example::
 
-    from roomkit import DescribeWebcamTool, AIChannel, compose_tool_handlers
+    from roomkit import AIChannel
+    from roomkit.tools import compose_tool_handlers
+    from roomkit.video import DescribeWebcamTool
 
     webcam = DescribeWebcamTool(vision, device=0)
 

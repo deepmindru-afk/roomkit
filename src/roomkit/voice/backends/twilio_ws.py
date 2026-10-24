@@ -17,7 +17,7 @@ Twilio protocol (JSON over WebSocket)::
 
 Usage::
 
-    from roomkit.voice.backends.twilio_ws import TwilioWebSocketBackend
+    from roomkit.voice.backends import TwilioWebSocketBackend
 
     backend = TwilioWebSocketBackend(output_sample_rate=24000)
     voice = VoiceChannel("voice", stt=stt, tts=tts, backend=backend)

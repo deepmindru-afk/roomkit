@@ -12,7 +12,7 @@ and :attr:`~roomkit.models.enums.HookTrigger.ON_TOOL_CALL` hooks.
 
 Usage::
 
-    from roomkit.tools.external import ExternalToolHandler, ToolDecision
+    from roomkit.tools import ExternalToolHandler, ToolDecision
 
     class MyToolHandler(ExternalToolHandler):
         async def process_tool_call(self, tool_name, tool_input, **kwargs):

@@ -6,7 +6,7 @@ to automatically audit all tool executions.
 
 Usage::
 
-    from roomkit.orchestration.tool_audit import JSONLToolAuditor
+    from roomkit.orchestration import JSONLToolAuditor
 
     auditor = JSONLToolAuditor("/tmp/audit.jsonl")
     agent = Agent("my-agent", provider=..., auditor=auditor)

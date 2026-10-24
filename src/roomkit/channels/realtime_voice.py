@@ -192,7 +192,7 @@ class RealtimeVoiceChannel(
     - ``deliver()`` is called but returns empty (customer is on voice)
 
     Example:
-        from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+        from roomkit.voice.realtime import MockRealtimeProvider, MockRealtimeTransport
 
         provider = MockRealtimeProvider()
         transport = MockRealtimeTransport()

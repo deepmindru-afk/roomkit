@@ -5,7 +5,7 @@ a JSONL file and a human-readable conversation transcript.
 
 Usage::
 
-    from roomkit.orchestration.session_audit import JSONLSessionAuditor
+    from roomkit.orchestration import JSONLSessionAuditor
 
     auditor = JSONLSessionAuditor("/tmp/session.jsonl")
     auditor.attach(kit)          # auto-capture speech, vision, barge-in

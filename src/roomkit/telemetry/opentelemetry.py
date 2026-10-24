@@ -37,7 +37,7 @@ class OpenTelemetryProvider(TelemetryProvider):
         provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
 
         from roomkit import RoomKit
-        from roomkit.telemetry.opentelemetry import OpenTelemetryProvider
+        from roomkit.telemetry import OpenTelemetryProvider
 
         kit = RoomKit(telemetry=OpenTelemetryProvider(tracer_provider=provider))
 

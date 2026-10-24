@@ -7,7 +7,7 @@ channel.  Requires the ``pyroscope-io`` package::
 
 Usage::
 
-    from roomkit.telemetry.pyroscope import PyroscopeProfiler
+    from roomkit.telemetry import PyroscopeProfiler
 
     profiler = PyroscopeProfiler(
         application_name="my-voice-app",

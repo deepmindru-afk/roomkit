@@ -21,7 +21,7 @@ auth_context: contextvars.ContextVar[dict[str, Any] | None] = contextvars.Contex
 Set automatically before ``session_factory`` is called so the factory can
 read auth metadata without changing its signature::
 
-    from roomkit.voice.auth import auth_context
+    from roomkit.voice import auth_context
 
     async def my_session_factory(websocket_id: str) -> VoiceSession:
         meta = auth_context.get()  # dict or None

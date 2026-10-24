@@ -14,8 +14,7 @@ For the external-provider path (Claude Code sandbox), applications use
 
 Usage (native)::
 
-    from roomkit.tools.human_input import HumanInputToolHandler
-    from roomkit.tools.compose import compose_tool_handlers
+    from roomkit.tools import HumanInputToolHandler, compose_tool_handlers
 
     human = HumanInputToolHandler(
         tool_names={"AskUserQuestion"},
@@ -33,7 +32,7 @@ Usage (native)::
 
 Usage (external / Claude Code)::
 
-    from roomkit.tools.human_input import HumanInputHandler
+    from roomkit.tools import HumanInputHandler
 
     handler = HumanInputHandler()
 

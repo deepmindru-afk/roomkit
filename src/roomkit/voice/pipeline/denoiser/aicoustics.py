@@ -9,10 +9,7 @@ and 30 ms algorithmic delay::
 
 Usage::
 
-    from roomkit.voice.pipeline.denoiser.aicoustics import (
-        AICousticsDenoiserConfig,
-        AICousticsDenoiserProvider,
-    )
+    from roomkit.voice.pipeline import AICousticsDenoiserConfig, AICousticsDenoiserProvider
 
     denoiser = AICousticsDenoiserProvider(
         AICousticsDenoiserConfig(model="quail-vf-2.0-l-16khz")

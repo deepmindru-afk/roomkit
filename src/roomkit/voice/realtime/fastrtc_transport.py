@@ -15,10 +15,7 @@ Requires the ``fastrtc`` and ``numpy`` optional dependencies::
 
 Usage::
 
-    from roomkit.voice.realtime.fastrtc_transport import (
-        FastRTCRealtimeTransport,
-        mount_fastrtc_realtime,
-    )
+    from roomkit.voice.realtime import FastRTCRealtimeTransport, mount_fastrtc_realtime
 
     transport = FastRTCRealtimeTransport()
     channel = RealtimeVoiceChannel("voice", provider=provider, transport=transport)

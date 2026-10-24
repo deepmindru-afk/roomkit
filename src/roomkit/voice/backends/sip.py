@@ -11,7 +11,7 @@ Requires the ``aiosipua[rtp]`` optional dependency::
 
 Usage::
 
-    from roomkit.voice.backends.sip import SIPVoiceBackend
+    from roomkit.voice.backends import SIPVoiceBackend
 
     backend = SIPVoiceBackend(
         local_sip_addr=("0.0.0.0", 5060),

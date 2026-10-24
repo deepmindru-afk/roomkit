@@ -14,7 +14,7 @@ class MockVADProvider(VADProvider):
     """Mock VAD provider that returns a preconfigured sequence of events.
 
     Example:
-        from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
+        from roomkit.voice.pipeline.vad import VADEvent, VADEventType
 
         events = [
             VADEvent(type=VADEventType.SPEECH_START),

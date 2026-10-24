@@ -14,7 +14,7 @@ runs at 16 kHz the provider handles internal resampling (exact 1:3 ratio).
 
 Usage::
 
-    from roomkit.voice.pipeline.denoiser.rnnoise import RNNoiseDenoiserProvider
+    from roomkit.voice.pipeline.denoiser import RNNoiseDenoiserProvider
 
     denoiser = RNNoiseDenoiserProvider()
     config = AudioPipelineConfig(denoiser=denoiser)

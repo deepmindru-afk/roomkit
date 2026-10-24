@@ -46,8 +46,7 @@ class XAIRealtimeProvider(OpenAIRealtimeBase):
 
     Example::
 
-        from roomkit.providers.xai.config import XAIRealtimeConfig
-        from roomkit.providers.xai.realtime import XAIRealtimeProvider
+        from roomkit.providers.xai import XAIRealtimeConfig, XAIRealtimeProvider
 
         config = XAIRealtimeConfig(api_key="xai-...")
         provider = XAIRealtimeProvider(config)

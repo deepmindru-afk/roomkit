@@ -273,7 +273,7 @@ class WhatsAppPersonalSourceProvider(BaseSourceProvider):
     events (QR codes, auth, disconnect) are forwarded to ``on_event``.
 
     Example:
-        from roomkit.sources.neonize import WhatsAppPersonalSourceProvider
+        from roomkit.sources import WhatsAppPersonalSourceProvider
 
         async def handle_events(event_type: str, data: dict):
             if event_type == "qr":

@@ -10,7 +10,7 @@ Requires the ``sounddevice`` optional dependency::
 
 Usage::
 
-    from roomkit.voice.backends.local import LocalAudioBackend
+    from roomkit.voice.backends import LocalAudioBackend
 
     backend = LocalAudioBackend()
     voice_channel = VoiceChannel("voice", stt=stt, tts=tts, backend=backend, pipeline=pipeline)

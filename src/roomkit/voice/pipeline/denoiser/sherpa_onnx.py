@@ -9,10 +9,7 @@ requires a system library), sherpa-onnx is a pure-Python dependency::
 
 Usage::
 
-    from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-        SherpaOnnxDenoiserConfig,
-        SherpaOnnxDenoiserProvider,
-    )
+    from roomkit.voice.pipeline import SherpaOnnxDenoiserConfig, SherpaOnnxDenoiserProvider
 
     denoiser = SherpaOnnxDenoiserProvider(
         SherpaOnnxDenoiserConfig(model="gtcrn_simple.onnx")

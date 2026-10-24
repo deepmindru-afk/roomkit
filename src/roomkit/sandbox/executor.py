@@ -8,7 +8,7 @@ tool calls through it.
 Usage::
 
     from roomkit import Agent, SandboxExecutor, SandboxResult
-    from roomkit.sandbox.tools import SANDBOX_TOOL_SCHEMAS
+    from roomkit.sandbox import SANDBOX_TOOL_SCHEMAS
 
     class DockerSandboxExecutor(SandboxExecutor):
         async def execute(self, command, arguments=None):

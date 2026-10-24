@@ -5,7 +5,7 @@ Captures a full-resolution screenshot and analyzes it with a
 
 Example with RealtimeVoiceChannel::
 
-    from roomkit import DescribeScreenTool, GeminiVisionConfig, GeminiVisionProvider
+    from roomkit.video import DescribeScreenTool, GeminiVisionConfig, GeminiVisionProvider
 
     vision = GeminiVisionProvider(GeminiVisionConfig(api_key="..."))
     screen_tool = DescribeScreenTool(vision)

@@ -8,7 +8,7 @@ the user points their camera at.
 
 Example with RealtimeVoiceChannel::
 
-    from roomkit import DescribeWebcamTool, GeminiVisionConfig, GeminiVisionProvider
+    from roomkit.video import DescribeWebcamTool, GeminiVisionConfig, GeminiVisionProvider
 
     vision = GeminiVisionProvider(GeminiVisionConfig(api_key="..."))
     webcam_tool = DescribeWebcamTool(vision)

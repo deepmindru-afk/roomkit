@@ -24,7 +24,7 @@ class MockFaceTouchFilter(VideoFilterProvider):
 
     Example::
 
-        from roomkit.video.events import VideoDetectionEvent
+        from roomkit.video import VideoDetectionEvent
 
         mock = MockFaceTouchFilter(events_at={
             5: [VideoDetectionEvent(

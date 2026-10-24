@@ -18,10 +18,7 @@ JSON control messages::
 
 Usage::
 
-    from roomkit.video.backends.websocket import (
-        WebSocketVideoBackend,
-        mount_websocket_video,
-    )
+    from roomkit.video.backends import WebSocketVideoBackend, mount_websocket_video
 
     backend = WebSocketVideoBackend()
     channel = VideoChannel("video", backend=backend, ...)

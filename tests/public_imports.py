@@ -9,15 +9,18 @@ rule, ``import roomkit.voice.stt.deepgram`` does not.
 
 ``check(paths)`` reads every line of the given files that starts a ``from
 roomkit... import`` or ``import roomkit...`` statement, in code, in a
-docstring or in a fenced block at any indent, and every inline code span that
-holds one. It returns one finding per import that names a non-public path, or
-that does not resolve. ``__all__`` is read from the source, so a name a
+docstring, at a doctest prompt or in a fenced block at any indent, and every
+inline code span that holds one; ``check(paths, docstrings=True)`` reads only
+the triple-quoted strings of Python files, as the API reference renders them
+from roomkit's own sources. It returns one finding per import that names a
+non-public path, or that does not resolve. ``__all__`` is read from the source, so a name a
 package exports only when its optional dependency is installed counts as
 public; whether a name resolves is checked by importing it, and a name whose
 optional dependency the environment lacks is left out.
 
 ``test_public_imports.py`` runs it on roomkit's examples, README, AGENTS.md,
-``llms.txt`` and ``docs/c7``; ``make docs`` runs it on the docs site's pages::
+``llms.txt``, ``docs/c7`` and the docstrings under ``src/roomkit``; ``make
+docs`` runs it on the docs site's pages::
 
     uv run python -m tests.public_imports ../roomkit-docs/docs
 """
@@ -39,10 +42,13 @@ import roomkit
 _PACKAGE_ROOT = Path(roomkit.__file__).parent
 _INLINE = re.compile(r"`((?:from|import)[ \t]+roomkit[^`\n]*)`")
 _STATEMENT = re.compile(
-    r"^[ \t]*(?:from[ \t]+roomkit[\w.]*[ \t]+import[ \t]+(?:\([^)]*\)|[^\n]*)"
+    r"^[ \t]*(?:>>>[ \t]+)?"
+    r"(?P<statement>from[ \t]+roomkit[\w.]*[ \t]+import[ \t]+(?:\([^)]*\)|[^\n]*)"
     r"|import[ \t]+roomkit[^\n]*)",
     re.M,
 )
+# roomkit's sources write every docstring with triple double quotes.
+_TRIPLE_QUOTED = re.compile(r'"""(.*?)"""', re.S)
 _SUFFIXES = (".py", ".md", ".txt")
 
 
@@ -59,13 +65,16 @@ class Finding:
         return f"{self.path}:{self.line}: {self.statement}: {self.problem}"
 
 
-def check(paths: Iterable[Path], *, root: Path | None = None) -> list[Finding]:
+def check(
+    paths: Iterable[Path], *, root: Path | None = None, docstrings: bool = False
+) -> list[Finding]:
     """The imports in ``paths`` (files, or directories read recursively) that
-    break the rule or do not resolve; ``root`` shortens the paths reported."""
+    break the rule or do not resolve; ``root`` shortens the paths reported, and
+    ``docstrings`` reads a Python file's triple-quoted strings only."""
     found: list[Finding] = []
     for path in _files(paths):
         shown = str(path.relative_to(root)) if root else str(path)
-        for line, module, name in _imports(path):
+        for line, module, name in _imports(path, docstrings=docstrings):
             problem = _problem(module, name)
             if problem:
                 statement = f"from {module} import {name}" if name else f"import {module}"
@@ -83,15 +92,28 @@ def _files(paths: Iterable[Path]) -> Iterator[Path]:
             yield path
 
 
-def _imports(path: Path) -> Iterator[tuple[int, str, str | None]]:
+def _imports(path: Path, *, docstrings: bool) -> Iterator[tuple[int, str, str | None]]:
     """``(line, module, name)`` per imported roomkit name; ``name`` is None for
     ``import roomkit.x``."""
     text = path.read_text(encoding="utf-8", errors="replace")
-    for statement in _STATEMENT.finditer(text):
-        yield from _code_imports(statement.group(0), text.count("\n", 0, statement.start()))
     if path.suffix != ".py":
+        yield from _read(text, 0, spans=True)
+    elif not docstrings:
+        yield from _read(text, 0, spans=False)
+    else:
+        for string in _TRIPLE_QUOTED.finditer(text):
+            yield from _read(string.group(1), text.count("\n", 0, string.start(1)), spans=True)
+
+
+def _read(text: str, offset: int, *, spans: bool) -> Iterator[tuple[int, str, str | None]]:
+    """The imports ``text`` holds, its first line at ``offset``: each statement
+    line, and with ``spans`` each inline code span."""
+    for statement in _STATEMENT.finditer(text):
+        line = offset + text.count("\n", 0, statement.start())
+        yield from _code_imports(statement.group("statement"), line)
+    if spans:
         for span in _INLINE.finditer(text):
-            yield from _code_imports(span.group(1), text.count("\n", 0, span.start()))
+            yield from _code_imports(span.group(1), offset + text.count("\n", 0, span.start()))
 
 
 def _code_imports(code: str, offset: int) -> Iterator[tuple[int, str, str | None]]:

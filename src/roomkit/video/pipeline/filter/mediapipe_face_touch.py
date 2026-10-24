@@ -290,9 +290,7 @@ class FaceTouchFilter(VideoFilterProvider):
 
     Example::
 
-        from roomkit.video.pipeline.filter.mediapipe_face_touch import (
-            FaceTouchConfig, FaceTouchFilter,
-        )
+        from roomkit.video.pipeline.filter import FaceTouchConfig, FaceTouchFilter
 
         filter = FaceTouchFilter(FaceTouchConfig(
             sensitivity=FaceTouchSensitivity.HIGH,
