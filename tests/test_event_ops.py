@@ -380,3 +380,45 @@ class TestAChangeWhoseRoomCannotBeReadAfter:
 
 def _text(event: RoomEvent) -> str:
     return getattr(event.content, "body", "")
+
+
+class _CountsContextReads(InMemoryStore):
+    """A store that counts the room contexts read from it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.context_reads = 0
+
+    async def load_room_context(self, room_id: str, **kw: Any) -> Any:
+        self.context_reads += 1
+        return await super().load_room_context(room_id, **kw)
+
+
+class TestADirectChangesContext:
+    @pytest.mark.parametrize("operation", ["update", "delete"])
+    @pytest.mark.parametrize("hooked", [False, True], ids=["no-hook", "a-hook"])
+    async def test_is_read_only_for_a_hook_of_its_trigger(
+        self, operation: str, hooked: bool
+    ) -> None:
+        """A direct update or delete reads the room's context for its
+        trigger's hooks only, under the lock and once it is released (RFC
+        §10.3); with no hook of that trigger it reads none."""
+        store = _CountsContextReads()
+        kit = RoomKit(store=store)
+        kit.register_channel(RecordingTransport("src"))
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "src")
+        original = await _send(kit, "v1")
+        trigger = (
+            HookTrigger.ON_EVENT_UPDATED if operation == "update" else HookTrigger.ON_EVENT_DELETED
+        )
+        fired = _track(kit, trigger) if hooked else []
+        store.context_reads = 0
+
+        if operation == "update":
+            await kit.update_event("r1", original.id, content=TextContent(body="v2"))
+        else:
+            await kit.delete_event("r1", original.id)
+
+        assert (store.context_reads, len(fired)) == ((2, 1) if hooked else (0, 0))
+        await kit.close()

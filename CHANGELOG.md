@@ -201,7 +201,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   right after the write) raised from the call, which reported a stored
   change as failed. The failure is now logged as a warning, the call
   returns as the change stands, and the triggers fire with the context the
-  call held under the lock, as the change left it.
+  call held under the lock, as the change left it. Either context is read
+  only when a hook of the call's trigger is registered: a call no hook
+  observes reads none.
 
 - A record nobody receives reaches the room's delivery lane when its caller
   is cancelled while it commits (RFC §13.5, §13.6, RMK-943): step 2's attach

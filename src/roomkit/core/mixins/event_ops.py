@@ -162,15 +162,18 @@ class EventOpsMixin(HelpersMixin):
             changed = target.model_copy(update=update)
             if changed == target:
                 return target
-            held = await self._build_context(room_id)
+            # A context is store reads: only for a hook that will read it.
+            hooked = self._hook_engine.has_hooks(HookTrigger.ON_EVENT_UPDATED)
+            held = await self._build_context(room_id) if hooked else None
             updated = await self._store.update_event(changed)
-        recent = [updated if e.id == updated.id else e for e in held.recent_events]
-        context = await self._context_after_change(
-            room_id, held.model_copy(update={"recent_events": recent})
-        )
-        await self._hook_engine.run_async_hooks(
-            room_id, HookTrigger.ON_EVENT_UPDATED, updated, context
-        )
+        if held is not None:
+            recent = [updated if e.id == updated.id else e for e in held.recent_events]
+            context = await self._context_after_change(
+                room_id, held.model_copy(update={"recent_events": recent})
+            )
+            await self._hook_engine.run_async_hooks(
+                room_id, HookTrigger.ON_EVENT_UPDATED, updated, context
+            )
         return updated
 
     async def delete_event(
@@ -199,11 +202,13 @@ class EventOpsMixin(HelpersMixin):
             target = await self._store.get_event(event_id)
             if target is None or target.room_id != room_id:
                 return []
-            held = await self._build_context(room_id)
+            # A context is store reads: only for a hook that will read it.
+            hooked = self._hook_engine.has_hooks(HookTrigger.ON_EVENT_DELETED)
+            held = await self._build_context(room_id) if hooked else None
             removed = await self._store.delete_event(
                 room_id, event_id, cascade_replies=cascade_replies
             )
-        if removed:
+        if removed and held is not None:
             gone = {event.id for event in removed}
             recent = [e for e in held.recent_events if e.id not in gone]
             context = await self._context_after_change(
