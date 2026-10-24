@@ -39,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message, and one naming a room the store lacks, are still charged once
   step 2 knows their room.
 
+- A routed message of the room's own work is charged once on its reentry
+  budget, wherever routing places it (RFC §8.3, §9.5.1, RMK-930). Charged
+  for creating a room another call created first, it read that room as
+  existing, and when it was routed again into the room its work delivers
+  in, it was charged a second time there: with one pass left, it was
+  refused `reentry_loop_cap`.
+
 - An edit delivered to a channel that does not edit is one text, the edit's
   text form (RFC §6.6, RMK-930): `Correction: ` followed by the text form of
   its new content. A new content that was not a text reached the channel
