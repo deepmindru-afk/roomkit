@@ -292,9 +292,9 @@ recipient and its chat are (RFC §5.7, Appendix A).
 Discord (`discord_channel_id` / `channel_id`) and Buzz (`buzz_channel_id`)
 declare chat keys of their own; a webhook forwards a binding's `recipient_id`
 to its provider, which names no one. A recipient, and a chat, is a string
-that is not blank or a number (a chat id): `true`, a blank string, a list or
-an object under the key is none, so a delivery to that binding is refused
-`no_recipient` and routing reads no correspondent in it. On a channel whose
+that is not blank or an integer (a chat id): `true`, a float, a blank string,
+a list or an object under the key is none, so a delivery to that binding is
+refused `no_recipient` and routing reads no correspondent in it. On a channel whose
 replies go to a chat only, a message that does not carry its chat has no
 address: it records no one, and a room opened for it names neither
 correspondent nor recipient (deliveries refused `no_recipient` until the host

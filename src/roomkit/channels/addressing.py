@@ -130,18 +130,19 @@ def addressing_of(channel_type: ChannelType) -> ChannelAddressing:
     return _BY_TYPE.get(channel_type, _AS_WRITTEN)
 
 
-def written_recipient(metadata: Mapping[str, Any], key: str) -> str | int | float | None:
+def written_recipient(metadata: Mapping[str, Any], key: str) -> str | int | None:
     """The recipient *metadata* holds under *key*, as written (RFC §5.7, §10.2
-    step 3d): a string that is not blank, or a number (a chat id). Null, a
-    blank string, a boolean, a list and an object are none: a delivery to a
-    binding holding one is refused ``no_recipient``, and routing reads no
-    correspondent in it. The same rule reads the chat a message carries under
-    its channel's chat key."""
+    step 3d): a string that is not blank, or an integer (a chat id). Null, a
+    blank string, a boolean, a float, a list and an object are none: a
+    delivery to a binding holding one is refused ``no_recipient``, and
+    routing reads no correspondent in it. The same rule reads the chat a
+    message carries under its channel's chat key, and the stores' recipient
+    lookup (``find_room_id_by_binding``)."""
     value = metadata.get(key)
     if isinstance(value, bool):
         return None
     if isinstance(value, str):
         return value if value.strip() else None
-    if isinstance(value, int | float):
+    if isinstance(value, int):
         return value
     return None

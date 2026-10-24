@@ -225,14 +225,14 @@ class TestARoomTheHostOpened:
 
     @pytest.mark.parametrize(
         "held",
-        [None, True, "  ", {"number": BOB}, [BOB]],
-        ids=["nothing", "true", "blank", "object", "list"],
+        [None, True, "  ", {"number": BOB}, [BOB], 15550000002.0],
+        ids=["nothing", "true", "blank", "object", "list", "float"],
     )
     async def test_a_room_opened_for_no_one_keeps_its_first_sender(
         self, store: ConversationStore, held: object
     ) -> None:
         """A value under the recipient key that is no recipient (RFC §5.7: a
-        string that is not blank, or a number) names no one: the first
+        string that is not blank, or an integer) names no one: the first
         sender is the room's, and their address its recipient."""
         shop = _Shop(store)
         room = await shop.open_free_room(metadata=None if held is None else {"phone_number": held})
@@ -588,8 +588,15 @@ class TestADeliveryStatus:
 
     @pytest.mark.parametrize(
         ("held", "taken"),
-        [(ALICE, False), (True, True), ("  ", True), ({"number": ALICE}, True), ([ALICE], True)],
-        ids=["another-number", "true", "blank", "object", "list"],
+        [
+            (ALICE, False),
+            (True, True),
+            ("  ", True),
+            ({"number": ALICE}, True),
+            ([ALICE], True),
+            (15550000001.0, True),
+        ],
+        ids=["another-number", "true", "blank", "object", "list", "float"],
     )
     async def test_the_one_room_delivering_to_another_number_is_not_the_status(
         self, store: ConversationStore, held: object, taken: bool
@@ -597,7 +604,7 @@ class TestADeliveryStatus:
         """The fallback of the one ACTIVE room reads its binding's recipient as
         step 3 does: Bob's room is closed, Alice's, delivering to her number
         and naming no correspondent, is not Bob's. A value that is no
-        recipient (RFC §5.7: a string that is not blank, or a number)
+        recipient (RFC §5.7: a string that is not blank, or an integer)
         delivers to no one: the room takes Bob's status."""
         shop = _Shop(store)
         bob_room = await shop.room_of(BOB)

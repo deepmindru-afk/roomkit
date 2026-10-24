@@ -368,16 +368,22 @@ async def test_no_recipient_is_logged_as_a_refusal_without_traceback(
 
 @pytest.mark.parametrize(
     "nobody",
-    [{}, {"phone_number": True}, {"phone_number": "  "}, {"phone_number": {"number": ALICE}}],
-    ids=["nothing", "true", "blank", "object"],
+    [
+        {},
+        {"phone_number": True},
+        {"phone_number": "  "},
+        {"phone_number": {"number": ALICE}},
+        {"phone_number": 15550000001.0},
+    ],
+    ids=["nothing", "true", "blank", "object", "float"],
 )
 async def test_no_recipient_is_refused_before_any_send_and_spares_the_breaker(
     nobody: dict[str, Any],
 ) -> None:
     """Six refusals in one room; another room on the same channel still
-    delivers. A recipient is a string that is not blank, or a number (RFC
-    §5.7): any other value under the key is none, never handed to the
-    provider."""
+    delivers. A recipient is a string that is not blank, or an integer (RFC
+    §5.7): any other value under the key, a float included, is none, never
+    handed to the provider."""
     sms = MockSMSProvider()
     kit = RoomKit()
     kit.register_channel(SMSChannel("sms", provider=sms))

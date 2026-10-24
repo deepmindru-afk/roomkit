@@ -1012,7 +1012,8 @@ class PostgresStore(ConversationStore):
         # Newest room first, id as tie-breaker, like the other stores. A
         # binding naming no correspondent, not a group, names its recipient
         # (RFC §5.7): its value under the key, a string that is not blank or
-        # a number. Two branches, each read through
+        # an integer, a number whose text has digits only (a float keeps its
+        # fraction, 4242.0). Two branches, each read through
         # idx_bindings_channel_participant: the bindings naming one of the
         # names, and the channel's bindings naming no one, which the kit
         # leaves only where no recipient was given or a binding was written
@@ -1032,7 +1033,8 @@ class PostgresStore(ConversationStore):
             branches.append(
                 "SELECT b.room_id, r.created_at FROM bindings b JOIN rooms r ON r.id = b.room_id"  # nosec B608  # fragments are internal, values parameterised
                 " WHERE b.channel_id = $1 AND b.participant_id IS NULL AND NOT b.is_group"
-                f" AND jsonb_typeof(b.metadata -> ${key}) IN ('string', 'number')"
+                f" AND CASE jsonb_typeof(b.metadata -> ${key}) WHEN 'string' THEN true"
+                f" WHEN 'number' THEN b.metadata ->> ${key} ~ '^-?[0-9]+$' ELSE false END"
                 f" AND b.metadata ->> ${key} = ${address}" + _room_filter(params, room_filter)
             )
         query = (

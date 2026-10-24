@@ -1188,7 +1188,7 @@ class SQLiteStore(ConversationStore):
         if recipient_key is not None and participant_id.strip():
             # A binding naming no correspondent, not a group, names its
             # recipient (RFC §5.7): its value under the key, a string that
-            # is not blank or a number, read whatever characters the key
+            # is not blank or an integer, read whatever characters the key
             # holds. The value is compared to the address, so a blank
             # address finds none.
             unnamed = [
@@ -1196,7 +1196,7 @@ class SQLiteStore(ConversationStore):
                 "b.participant_id IS NULL",
                 "NOT COALESCE(json_extract(b.data, '$.group'), 0)",
                 "EXISTS (SELECT 1 FROM json_each(b.data, '$.metadata')"
-                " WHERE key = ? AND type IN ('text', 'integer', 'real')"
+                " WHERE key = ? AND type IN ('text', 'integer')"
                 " AND CAST(value AS TEXT) = ?)",
             ]
             params += [channel_id, recipient_key, participant_id]

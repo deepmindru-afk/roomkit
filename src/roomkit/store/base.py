@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
+from roomkit.channels.addressing import written_recipient
 from roomkit.core.exceptions import (
     AddressLinkedError,
     EventNotFoundError,
@@ -76,15 +77,14 @@ def names_by_recipient(binding: ChannelBinding, address: str, recipient_key: str
     §10.4 step 1): a binding stored with a recipient and no correspondent,
     and not ``group``, is its recipient's conversation.
 
-    The recipient is the value under *recipient_key*, the channel's, a
-    string that is not blank or a number (a chat id), compared as stored:
-    the framework writes a recipient in its channel's form (§5.7)."""
+    The recipient is the value under *recipient_key*, the channel's, read by
+    the rule a delivery reads it by (:func:`written_recipient`: a string
+    that is not blank, or an integer), compared as stored: the framework
+    writes a recipient in its channel's form (§5.7)."""
     if recipient_key is None or binding.participant_id is not None or binding.group:
         return False
-    value = binding.metadata.get(recipient_key)
-    if isinstance(value, bool) or not isinstance(value, str | int | float):
-        return False
-    return str(value) == address and bool(address.strip())
+    value = written_recipient(binding.metadata, recipient_key)
+    return value is not None and str(value) == address
 
 
 def _recency(room: Room) -> tuple[float, str]:

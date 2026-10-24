@@ -51,6 +51,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the stored results on a rewrite, and then overrides
   `record_delivery_results()`, whose default writes through `update_event()`.
 
+- **BREAKING — a recipient is a string that is not blank, or an integer**
+  (RFC §5.7, §10.2 step 3d, §10.4, RMK-942). 0.108.0 took any number, and a
+  float was then written as three texts: the in-memory store matched
+  `1e16` as `"1e+16"`, SQLite as `"1.0e+16"`, Postgres as
+  `"10000000000000000"`, and a delivery handed `15550000001.0` to the
+  provider as the number `15550000001.0`. A float under a channel's
+  recipient key, or under its chat key, is now no recipient, like a boolean:
+  the delivery to that binding is refused `no_recipient`, attach and routing
+  read no correspondent in it, the record of a routed sender writes the
+  sender's address over it, and `find_room_id_by_binding()` finds no room by
+  it in any store. One rule
+  reads it, `written_recipient()` in `roomkit.channels.addressing`, which the
+  stores' lookup now reads too. Postgres keeps a number as the exact value
+  it equals, so a float written in exponent form with no fraction (`1e16`)
+  is stored, and read back, as the integer it equals.
+  Migrate: a binding that holds a chat id or a number as a float holds it as
+  an `int` (`int(value)`) or a string.
+
 ## [0.108.0] — 2026-10-24
 
 ### Added

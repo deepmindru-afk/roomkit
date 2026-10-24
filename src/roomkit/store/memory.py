@@ -7,6 +7,7 @@ import copy
 from datetime import datetime
 from typing import Any
 
+from roomkit.channels.addressing import written_recipient
 from roomkit.core.exceptions import RoomNotFoundError
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import RoomStatus, VerificationStatus
@@ -979,7 +980,8 @@ def _changes_one_of(event: RoomEvent, event_ids: set[str]) -> bool:
 def _binding_names(binding: ChannelBinding) -> set[str]:
     """The names the participant index holds *binding* under: its
     correspondent, or, naming none and not ``group``, every value its
-    metadata holds, among which its recipient is (the store does not know
+    metadata holds that could be a recipient (a string that is not blank,
+    or an integer), among which its recipient is (the store does not know
     the channel's recipient key; a read re-checks the binding)."""
     if binding.participant_id:
         return {binding.participant_id}
@@ -987,8 +989,8 @@ def _binding_names(binding: ChannelBinding) -> set[str]:
         return set()
     return {
         str(value)
-        for value in binding.metadata.values()
-        if isinstance(value, str | int | float) and not isinstance(value, bool) and value != ""
+        for key in binding.metadata
+        if (value := written_recipient(binding.metadata, key)) is not None
     }
 
 
