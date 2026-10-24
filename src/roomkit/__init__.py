@@ -195,7 +195,13 @@ from roomkit.models.enums import (
     VerificationStatus,
     Visibility,
 )
-from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
+from roomkit.models.event import (
+    EventSource,
+    RoomEvent,
+    TextContent,
+    ToolCallContent,
+    refuse_too_deep,
+)
 from roomkit.models.framework_event import FrameworkEvent
 from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.participant import Participant
@@ -755,6 +761,7 @@ __all__ = [
     "RoomEvent",
     "RoomTimers",
     "SessionStartedEvent",
+    "refuse_too_deep",
     "response_transcript",
     "TextContent",
     "ThinkingEvent",

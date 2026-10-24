@@ -1195,8 +1195,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   target's failed delivery; `send_event()`, `commit_event()` and
   `update_event()` raise `ValueError` before anything is read. An edit's new
   content counts its levels in the edit's place. The new
-  `roomkit.models.event.holds_too_deep()` and `refuse_too_deep()` are the
-  one count, the validator's included. Migrate: content assembled with
+  `roomkit.refuse_too_deep(content)`, which raises that `ValueError`, and
+  `roomkit.models.event.holds_too_deep(content)`, which it asks, are the one
+  count, the validator's included. Migrate: content assembled with
   `model_copy()` is checked with `refuse_too_deep()` before it is sent, or
   flattened to five levels; a webhook handler that answered a malformed
   message with a blocked result catches `ValueError` from
