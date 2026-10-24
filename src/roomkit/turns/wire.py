@@ -30,6 +30,10 @@ class OwnerTool(BaseModel):
     """Bounded by its own bound, not the channel's default call bound (RFC §21.6)."""
 
 
+_SCOPES_KEPT = 32
+"""How many turns' answer scopes a previous-turn record keeps, newest last."""
+
+
 class PreviousTurn(BaseModel):
     """The room's previous turn of the channel, the one the owner submitted
     last, ended or not (RFC §10.6.2); or its last channel call, which leaves
@@ -39,6 +43,27 @@ class PreviousTurn(BaseModel):
     """The turn's id, or the channel call's."""
     executor_id: str | None = None
     """The executor that took it; ``None`` when none had said so yet."""
+    _scopes: dict[str, bool] = PrivateAttr(default_factory=dict)
+    """Per turn of this record's executor in the room, newest last: whether
+    its trigger scoped its answers nowhere. Kept on the owner, never sent."""
+
+    def record_scope(self, turn_id: str, *, unscoped: bool) -> None:
+        """Keep whether *turn_id*'s trigger scoped its answers nowhere (RFC
+        §5.12), for what its work publishes after it (RFC §8.4)."""
+        self._scopes[turn_id] = unscoped
+        while len(self._scopes) > _SCOPES_KEPT:
+            del self._scopes[next(iter(self._scopes))]
+
+    def inherit_scopes(self, previous: PreviousTurn | None) -> None:
+        """Keep the earlier turns' scopes: a publication may name an earlier
+        turn of the executor that still holds the room (RFC §10.6.3)."""
+        if previous is not None:
+            self._scopes.update(previous._scopes)
+
+    def unscoped(self, turn_id: str) -> bool:
+        """Whether *turn_id*'s trigger scoped its answers nowhere; ``False``
+        for a turn this record does not know, a channel call included."""
+        return self._scopes.get(turn_id, False)
 
 
 class _HandedOver(BaseModel):

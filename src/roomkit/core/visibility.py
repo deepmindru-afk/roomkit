@@ -74,6 +74,20 @@ def answers_reach(event: RoomEvent) -> str:
     return Visibility.ALL if scope is None else scope
 
 
+def binding_reaches_room(binding: ChannelBinding) -> bool:
+    """Whether *binding* lets its channel's answers reach every channel of the
+    room (RFC §7.3, §7.5, §8.4): the channel can write and its visibility is
+    ``all``.
+
+    A turn's live ephemerals (reasoning, answer text, tool calls) are
+    published only then, the binding read as the room holds it when each is
+    published, and only when the turn's trigger scopes its answers nowhere
+    (:func:`answers_reach`): their subscribers are not bound channels, so no
+    narrower scope can be tested against them.
+    """
+    return binding.can_write and normal_visibility(binding.visibility) == Visibility.ALL
+
+
 def narrower_scope(
     first: str | None, second: str | None, bindings: Iterable[ChannelBinding]
 ) -> str | None:

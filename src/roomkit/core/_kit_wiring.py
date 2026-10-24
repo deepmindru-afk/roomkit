@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels._video_hooks import room_vision_note
+from roomkit.core.visibility import binding_reaches_room
 from roomkit.models.enums import EventType
 from roomkit.models.store_filter import EventFilter
 from roomkit.turns._wiring_env import WiringEnv
@@ -83,6 +84,10 @@ class KitEvents(OwnerEvents):
             await self._kit._realtime.publish_to_room(room_id, event)
         else:
             await self._kit._realtime.publish(channel, event)
+
+    async def reaches_room(self, room_id: str, channel_id: str) -> bool:
+        binding = await self._kit._store.get_binding(room_id, channel_id)
+        return binding is not None and binding_reaches_room(binding)
 
     async def emit(
         self,

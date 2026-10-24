@@ -149,6 +149,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A turn's live ephemerals reach no one its answer would not reach**
+  (RFC §8.4, §10.6.3, RMK-952). A turn's reasoning (`THINKING_*`), its tool
+  calls' full arguments (`TOOL_CALL_START`) and result previews
+  (`TOOL_CALL_END`), and any ephemeral its channel published were sent to
+  every subscriber of the room, whatever the answer's visibility: an agent
+  attached with `visibility="intelligence"`, or answering a message whose
+  `response_visibility` kept its answer from the customer, still showed its
+  reasoning to a customer's browser subscribed to the room. The room owner
+  now publishes a turn's ephemerals only when its answer reaches the whole
+  room: the trigger's answer scope restricts nothing, and the agent's binding,
+  read when each ephemeral is published, lets it write with the visibility
+  `all`, so a binding narrowed mid-turn, or after it while work it began still
+  publishes, stops them at once; otherwise none. What a turn's work publishes
+  after it follows that turn's trigger, never a later turn's. Framework events
+  are unaffected. A custom `OwnerEvents` decides with the new
+  `reaches_room(room_id, channel_id)`, whose default, `False`, publishes none.
+
 - **A blank idempotency key is no key** (RFC §13.4, RMK-942). The pipeline
   skipped an empty key while the stores indexed it: a second message from a
   channel carrying `idempotency_key=""` was refused by SQLite with

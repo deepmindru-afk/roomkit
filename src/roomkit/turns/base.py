@@ -217,6 +217,13 @@ class OwnerEvents(ABC):
     ) -> None:
         """Emit the framework event *event_type*."""
 
+    async def reaches_room(self, room_id: str, channel_id: str) -> bool:
+        """Whether *channel_id*'s binding in *room_id*, as the room holds it
+        now, lets its answers reach the whole room (RFC §8.4): what decides,
+        at each publish, whether a turn's ephemerals are published. An owner
+        that cannot read its rooms answers ``False``: none is published."""
+        return False
+
 
 class RoomOwner(ABC):
     """What reaches a room owner outside a turn (RFC §10.6.3): the owner

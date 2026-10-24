@@ -62,12 +62,14 @@ async def publish_between_turns(
     if events is None:
         return
     try:
+        held = previous.get(message.channel_id, message.room_id)
         await publish_frame(
             events,
             message.room_id,
             message.channel_id,
             message.frame,
             label=f"The work of turn {message.turn_id}",
+            unscoped=held is not None and held.unscoped(message.turn_id),
         )
     except Exception:
         logger.exception("A publication after turn %s could not be published", message.turn_id)

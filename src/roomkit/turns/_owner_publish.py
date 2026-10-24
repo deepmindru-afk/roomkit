@@ -10,6 +10,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from roomkit.core.visibility import answers_reach
+from roomkit.models.enums import Visibility
 from roomkit.realtime.base import EphemeralEvent
 from roomkit.turns.wire import Ephemeral
 
@@ -50,10 +52,20 @@ async def publish_frame(
     frame: Ephemeral | FrameworkEventFrame,
     *,
     label: str,
+    unscoped: bool,
 ) -> None:
     """Publish *frame*, published by a turn of *channel_id* in *room_id*
-    (*label* names it in the log), as that channel in that room."""
+    (*label* names it in the log), as that channel in that room.
+
+    An ephemeral is published only when the turn's answer reaches the whole
+    room (RFC §8.4): its trigger is *unscoped*, and the channel's binding, as
+    the room holds it at this publish, lets it (``events.reaches_room``). Its
+    subscribers are not bound channels, so a turn whose answer the room
+    narrows publishes none, from the moment the room narrows it."""
     if isinstance(frame, Ephemeral):
+        if not (unscoped and await events.reaches_room(room_id, channel_id)):
+            logger.debug("%s: its answer does not reach the room, ephemeral not published", label)
+            return
         event = EphemeralEvent.from_dict(frame.event)
         if not names_its_room(room_id, channel_id, event.room_id, event.channel_id) or (
             frame.channel != f"room:{room_id}"
@@ -84,6 +96,7 @@ class TurnPublisher:
     def __init__(self, events: OwnerEvents | None, request: TurnRequest) -> None:
         self._events = events
         self._request = request
+        self._unscoped = answers_reach(request.event) == Visibility.ALL
         self._queue: asyncio.Queue[Ephemeral | FrameworkEventFrame | None] = asyncio.Queue()
         self._task: asyncio.Task[None] | None = None
 
@@ -119,6 +132,7 @@ class TurnPublisher:
                 request.channel_id,
                 frame,
                 label=f"Turn {request.turn_id}",
+                unscoped=self._unscoped,
             )
         except Exception:
             # What the turn published never stops the turn.
