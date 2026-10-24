@@ -859,16 +859,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the cut it was), yet every door took it from integrator code. It is now
   refused with `ValueError`, before anything is read or written, by
   `attach_channel()`, `set_visibility()`, `send_event()` and
-  `InboundMessage(visibility=...)` (a pydantic `ValidationError`); a
+  `InboundMessage(visibility=...)` (a pydantic `ValidationError`), and so
+  is a message's `response_visibility="internal"`, on `send_event()` and
+  `InboundMessage` alike (its answers were stored `none`); a
   `BEFORE_BROADCAST` hook's modify that writes it, or that changes it on a
   framework record that holds it (the interruption record), has the
   event's visibility put back; and a channel's answer, a row of its
   stream, or the record stored in place of an answer at the chain-depth
-  limit, carrying it (a channel's own, or the trigger's
-  `response_visibility`) is committed with `none`, a warning logged. An
-  event stored for no channel takes `none`. `kit.commit_event()`, a record
-  outside the pipeline, still stores the visibility it is given. Migrate:
-  `visibility="internal"` → `visibility="none"`.
+  limit, carrying it (a channel's own, or the `response_visibility` a
+  hook's modify gave the trigger) is committed with `none`, a warning
+  logged. An event stored for no channel takes `none`.
+  `kit.commit_event()`, a record outside the pipeline, still stores the
+  visibility it is given. Migrate: `visibility="internal"` →
+  `visibility="none"`, `response_visibility="internal"` →
+  `response_visibility="none"`.
 
 - **BREAKING — a room is created once** (RFC §14.3, §10.1 step 2,
   RMK-930). The in-memory and SQLite stores replaced the room held under an
@@ -993,9 +997,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it, so their `ChannelOutput.response_metadata`, and with it
   `InboundResult.response_metadata`, no longer carry it. The fingerprint is
   of the text the instruction's content reads as (RFC §6.6): a rich text by
-  its plain text, a media by its label, a composite by its parts. It was of
-  a `TextContent` body only (any other content hashed the empty string) and,
-  on ACP, of the text once its copies of runtime marks were replaced.
+  its plain text, a media by its label, a system notice by its body, a tool
+  call as `[Tool call: <name>]`, a composite by its parts' texts, one per
+  line, an empty one skipped. It was of a `TextContent` body only (any
+  other content hashed the empty string) and, on ACP, of the text once its
+  copies of runtime marks were replaced.
   `AIChannel` reads that same text as the turn's input, where a non-text
   instruction gave the turn none. The key is reserved: it is removed from
   every other event, whoever wrote it (a channel's parser,
@@ -1374,6 +1380,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capabilities=SMS_CAPABILITIES.model_copy(update={"supported_media_types":
   [...]}))`, or an empty list for every type; a Telegram integration that
   read the `[Voice message: ...]` or `[Video: ...]` text receives the file.
+
+- **BREAKING — a composite delivered as one text skips its empty parts**
+  (RFC §6.6, RMK-930). A composite whose every part becomes a text for its
+  target was joined part by part, an empty text part giving an empty line;
+  it is now the composite's text form, its parts' texts one per line, an
+  empty one skipped: the text an instruction's fingerprint is of, so a
+  text-only agent reads the instruction its responses record.
+  Migrate: a sender that relied on the empty line writes it in a text
+  part (`"First.\n\nThen."`).
+
+- **BREAKING — a recipient is a string that is not blank, or a number**
+  (RFC §5.7, §10.2 step 3d, RMK-930). A binding's value under its
+  channel's recipient key was a recipient whenever it was truthy: the
+  delivery handed `{"phone_number": true}`, a string of spaces, a list or
+  an object to the provider as `to` (and refused the number `0`), attach
+  and routing read `str(value)` as the binding's correspondent (a binding
+  holding `true` named `"True"`, which kept the first sender out of the
+  room opened for no one), a sender recorded on such a binding kept the
+  value as their recipient, and a delivery status's fallback to the one
+  room read it as another number. Null, a blank string, a boolean, a list
+  and an object are now no recipient: the delivery is refused
+  `no_recipient`, the binding names no correspondent, and the sender
+  routed to it gets their address written as its recipient. A number is
+  one, as before. The chat a message carries under its
+  channel's chat key is read the same way: `true` or a blank string there
+  is no chat, and the message has no address.
+  Migrate: write a recipient as the address string (`"+15550000001"`) or
+  the chat id; a binding holding another value receives nothing until
+  one is written.
 
 - **BREAKING — a chat message that does not carry its chat has no
   address** (RFC §5.7, RMK-930). On a channel whose replies go to a chat
