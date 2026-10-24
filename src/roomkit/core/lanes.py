@@ -36,7 +36,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.core._reentrance import ReentryBudget, delivering, in_off_lock_body
+from roomkit.core._reentrance import ReentryBudget, delivering
 from roomkit.core.locks import _has_room_lock, _held_rooms
 from roomkit.core.task_utils import start_named
 from roomkit.models.response_metadata import ResponseMetadata
@@ -336,8 +336,7 @@ class DeliveryCascade:
     async def abandon(self, reason: str) -> None:
         """Stop the turns of a cascade its caller left (cancelled or
         failed): drained within :meth:`cancel_and_wait`'s budget, or only
-        cancelled from a context the lane cannot progress past
-        (:meth:`waiter_would_deadlock`)."""
+        cancelled when the caller is the lane or holds the room lock."""
         if self.waiter_would_deadlock():
             self.cancel(reason)
         else:
@@ -353,10 +352,7 @@ class DeliveryCascade:
         if not math.isfinite(timeout) or timeout < 0:
             raise ValueError("timeout must be finite and non-negative")
         if self.waiter_would_deadlock():
-            raise RuntimeError(
-                "Cannot drain delivery from its lane or room lock, nor from an off-lock "
-                "hook's body"
-            )
+            raise RuntimeError("Cannot drain delivery from its lane or room lock")
         self.cancel(reason)
         deadline = asyncio.get_running_loop().time() + timeout
         interrupted = False
@@ -453,9 +449,8 @@ class DeliveryCascade:
         """Wait for the cascade to complete.
 
         Short-circuits (returning ``False``) when the current task is the
-        room's own lane executor, holds the room lock, or runs an off-lock
-        hook's body of the room (:meth:`waiter_would_deadlock`): waiting
-        would deadlock (the lane cannot progress past the caller),
+        room's own lane executor or holds the room lock: in both cases
+        waiting would deadlock (the lane cannot progress past the caller),
         so the call returns with the event committed and its delivery
         following in lane order — the detached completion RFC §10.1 step 18
         permits. Returns ``True`` when the cascade actually completed; a
@@ -480,20 +475,12 @@ class DeliveryCascade:
         """Whether the current task must not wait on this room's delivery.
 
         The same condition ``wait()`` short-circuits on — the caller is the
-        room's own lane executor, holds the room lock, or is the body of an
-        off-lock hook of one of the room's events while it runs, so the lane
-        cannot progress past it (RFC §9.5.1 Reentrance) — exposed for
-        waiters outside this module: a
+        room's own lane executor or holds the room lock, so the lane cannot
+        progress past it — exposed for waiters outside this module: a
         :class:`~roomkit.models.delivery.DeliveryHandle` awaited from a tool
-        handler or a sync hook would otherwise hang on its own turn, and one
-        an off-lock hook's body awaits on the call it made into the room, on
-        a delivery waiting behind that body.
+        handler or a sync hook would otherwise hang on its own turn.
         """
-        return (
-            _active_lane_room.get() == self.room_id
-            or _has_room_lock(self.room_id)
-            or in_off_lock_body(self.room_id)
-        )
+        return _active_lane_room.get() == self.room_id or _has_room_lock(self.room_id)
 
 
 def anchor_index(latest_index: int | None) -> int:
