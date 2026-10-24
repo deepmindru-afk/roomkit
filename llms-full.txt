@@ -1104,10 +1104,7 @@ alone leaves deferred work running. A completed handle is unchanged by cancel.
 The default cleanup budget is five seconds on both paths. `TimeoutError`
 means cleanup is incomplete: keep resources still in use, and for a deferred
 call await its handle later. Repeated cancellation does not interrupt
-finalizers. A handle cannot drain its own room lock or lane, nor the
-admission work of one of its room's events (an off-lock hook's body, a
-`hook_error` handler, a channel's `handle_inbound()`): `RuntimeError`. Its
-`wait()` from those returns at once, unwaited.
+finalizers. A handle cannot drain its own room lock or lane (`RuntimeError`).
 
 Code without the handle names the delivery by a key the caller set on the
 message, `InboundMessage(..., delivery_key="task-42")`, and cancels it from
@@ -1321,12 +1318,12 @@ the event it runs for. The call is part of that event's work (RFC §9.5.1):
   still ahead of the event.
 - Either way it answers at its commit (a `process_inbound()` result carries
   no `delivery_results`): its delivery follows in the room's lane, behind the
-  event's work. With `defer_delivery=True`, `await result.delivery.wait()`
-  from that work while it runs (the locked hook, the off-lock hook's body,
-  the `hook_error` handler, a channel's `handle_inbound()`) returns at once
-  with the result as it is, unwaited and raising nothing; a task the work
-  starts waits as any caller does. It draws on the event's reentry budget,
-  one pass as it starts:
+  event's work. From an event's admission work (an off-lock hook's body, a
+  `hook_error` handler, a channel's `handle_inbound()`), a
+  `result.delivery.wait()` on a call it adopted whose delivery needs that
+  room (a transport's `deliver()` that sends into it) ends at
+  `process_timeout`. It draws on the event's reentry budget, one pass as it
+  starts:
   a hook that injects on every event stops at the cap. Past it, `send_event()`
   stores the event `BLOCKED` with `reentry_loop_cap`, no hook run, and returns
   that record; `process_inbound()` naming the room returns `blocked=True,

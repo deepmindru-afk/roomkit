@@ -244,7 +244,11 @@ class DeliveryHandle:
         lock (a sync hook), where the lane cannot progress past the caller
         — it returns the result immediately, unwaited and un-backfilled:
         the same short-circuit the waiting path's step 18 applies, with
-        delivery following in lane order.
+        delivery following in lane order. From an event's admission work (an
+        off-lock hook's body, a handler its check's report awaits, the
+        message's parse), a wait on a call it adopted whose delivery needs
+        that room (a transport's ``deliver()`` that sends into it) ends at
+        ``process_timeout`` (RFC §9.5.1, §13.6).
         """
         if not self.done and self._cascade.waiter_would_deadlock():
             return self._result

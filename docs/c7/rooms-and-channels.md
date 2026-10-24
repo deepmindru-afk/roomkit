@@ -593,10 +593,7 @@ alone leaves deferred work running. A completed handle is unchanged by cancel.
 The default cleanup budget is five seconds on both paths. `TimeoutError`
 means cleanup is incomplete: keep resources still in use, and for a deferred
 call await its handle later. Repeated cancellation does not interrupt
-finalizers. A handle cannot drain its own room lock or lane, nor the
-admission work of one of its room's events (an off-lock hook's body, a
-`hook_error` handler, a channel's `handle_inbound()`): `RuntimeError`. Its
-`wait()` from those returns at once, unwaited.
+finalizers. A handle cannot drain its own room lock or lane (`RuntimeError`).
 
 Code without the handle names the delivery by a key the caller set on the
 message, `InboundMessage(..., delivery_key="task-42")`, and cancels it from
