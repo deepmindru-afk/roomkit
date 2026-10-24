@@ -1687,11 +1687,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the kit it holds, and a tool handler or a `TurnHost` verb on any
     backend. With a Redis turn backend the turn's own code runs on its
     executor, outside the owner's context, and reaches the room through
-    its `TurnHost`, whose verbs carry the depth. A call into another room
-    has a budget of its own, and work a turn, a tool call or a delivery
-    began starts fresh once that work is over: depth 0 and a budget of its
-    own (a result delivered later on the turn's behalf, a delegation's,
-    names the turn's depth itself);
+    its `TurnHost`, whose verbs carry the depth while the turn runs. A
+    call into another room has a budget of its own, and work a turn, a
+    tool call or a delivery began starts fresh once that work is over:
+    depth 0 and a budget of its own (a result delivered later on the
+    turn's behalf, a delegation's, names the turn's depth itself). So does
+    a `TurnHost` verb made after its turn ended, which crossed as a
+    `room_call` at the turn's response depth, the owner holding it there
+    (0.106.0): its `send_event` is at the depth it names. Migrate: work
+    after the turn that must continue the turn's chain passes
+    `chain_depth` itself;
   - a message routed (no `room_id`) back into the room whose lock the
     caller holds, or in whose admission order it stands (an off-lock hook's
     body, a parse), raises the new `ReentrantCallError` before anything is
