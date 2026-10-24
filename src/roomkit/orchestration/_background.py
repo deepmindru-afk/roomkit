@@ -94,7 +94,7 @@ async def run_in_background[T](kit: RoomKit, run: BackgroundRun[T]) -> None:
     """
     chain_depth = _current_turn_chain_depth()
     session = get_current_voice_session()
-    outcome = await _work(run)
+    outcome = await _work(run, closing=kit._closed)
     text = run.told(outcome)
     try:
         delivered = await hand_back(
@@ -119,12 +119,16 @@ async def run_in_background[T](kit: RoomKit, run: BackgroundRun[T]) -> None:
         run.post(*run.ended(outcome))
 
 
-async def _work[T](run: BackgroundRun[T]) -> T | None:
+async def _work[T](run: BackgroundRun[T], *, closing: bool) -> T | None:
     """The run's result, or ``None`` when it raised, which is logged and
     posted with its message (for the logs and the status bus, never a model);
-    the room is freed either way, a cancellation included."""
+    the room is freed either way, a cancellation included. On a *closing*
+    kit (a run held just before its close, cut once started) the work never
+    runs: the run ends as the close cuts it, cancelled (RFC §19.7.3)."""
     outcome: T | None = None
     try:
+        if closing:
+            raise asyncio.CancelledError
         outcome = await run.work()
     except asyncio.CancelledError:
         run.post(StatusLevel.FAILED, "cancelled")

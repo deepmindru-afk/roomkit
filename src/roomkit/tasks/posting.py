@@ -83,7 +83,11 @@ async def post_result(
 async def send_posted(kit: RoomKit, event: RoomEvent) -> None:
     """Commit a posted result, *event*, as its agent's message: through the
     room's pipeline (``BEFORE_BROADCAST``, the agent's right to write,
-    storage, broadcast), addressed to no one."""
+    storage, broadcast), addressed to no one. A closing framework posts
+    nothing, logged: a post held as it closes is cut once started."""
+    if kit._closed:
+        logger.info("Result in room %s not posted: closing", event.room_id)
+        return
     await kit.send_event(
         event.room_id,
         event.source.channel_id,

@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import inspect
 import logging
+import weakref
 from collections.abc import Awaitable, Coroutine
 from typing import Any, Protocol
 
@@ -51,9 +52,11 @@ def hold_task(
     """Run *work* as a task *kit* holds until it ends, so its ``close()``
     cancels it with the other background work and waits for its end (RFC
     §19.7.3, §23.3). Held once the kit's close began, or after it, it is cut
-    at once, as that close cuts the runs it finds: it runs its first step,
-    then its end, never its work, and is never left running past the close.
-    *eager* starts it at once (:func:`start_named`). An exception it ends on
+    at once, as that close cuts the runs it finds: its first step runs (a
+    work that must not start on a closing kit checks it there, as a
+    strategy's background run does), then its end, and it is never left
+    running past the close. *eager* starts it at once (:func:`start_named`).
+    An exception it ends on
     is logged, unless its caller *awaited* it and receives it. *context*,
     when given, is the one it runs in instead of a copy of the caller's."""
     task = start_named(work, context=context, eager=eager)
@@ -72,12 +75,29 @@ def cut_once_started(task: asyncio.Task[Any]) -> None:
     coroutine never runs its body, its own end included: the cancellation
     handler that posts a run's terminal entry, the ``finally`` that runs a
     task's completion. A task not started yet has its first step scheduled
-    already, so a cancellation scheduled now comes right after it."""
+    already, so a cancellation scheduled now comes right after it.
+
+    A task whose cut is under way (scheduled, or delivered and not over) is
+    left to end: a second cut (a close's pass finding a run held on the
+    closing kit) would cut the end the first one started."""
+    if task.cancelling() or task in _CUTS_SCHEDULED:
+        return
     work = task.get_coro()
     if inspect.iscoroutine(work) and inspect.getcoroutinestate(work) == inspect.CORO_CREATED:
-        asyncio.get_running_loop().call_soon(task.cancel)
+        _CUTS_SCHEDULED.add(task)
+        asyncio.get_running_loop().call_soon(_cut_scheduled, task)
     else:
         task.cancel()
+
+
+def _cut_scheduled(task: asyncio.Task[Any]) -> None:
+    """The cut :func:`cut_once_started` scheduled after *task*'s first step."""
+    _CUTS_SCHEDULED.discard(task)
+    task.cancel()
+
+
+_CUTS_SCHEDULED: weakref.WeakSet[asyncio.Task[Any]] = weakref.WeakSet()
+"""The tasks whose cut waits for their first step to have run."""
 
 
 def start_named[T](

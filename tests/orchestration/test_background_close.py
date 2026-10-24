@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -189,3 +190,36 @@ async def test_a_run_asked_for_while_the_kit_closes_never_starts(door: str) -> N
 
     assert _runs_alive() == []
     assert not started.is_set()
+
+
+@pytest.mark.parametrize("door", ["supervisor-tool", "supervised-tool", "per-worker"])
+async def test_a_run_held_as_the_kit_closes_ends_cancelled_without_its_work(
+    door: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The kit closes right after a tool call started a run, before the
+    run's first step: the run ends as one the close cuts, its terminal entry
+    posted failed, ``cancelled``, and its work never runs, nor fails on the
+    closing kit (RFC §19.7.3)."""
+    started, release = asyncio.Event(), asyncio.Event()
+    worker = Agent("worker", provider=_Held(started, release, responses=["The draft."]))
+    kit = RoomKit()
+    call = await DOORS[door](kit, worker)
+    posted: list[tuple[str, Any, str]] = []
+    real_post = kit.status_bus.post
+
+    def post(agent_id: str, action: str, status: Any, **kwargs: Any) -> Any:
+        posted.append((agent_id, status, kwargs.get("detail", "")))
+        return real_post(agent_id, action, status, **kwargs)
+
+    kit.status_bus.post = post  # type: ignore[method-assign]
+
+    await call()
+    with caplog.at_level(logging.ERROR):
+        await asyncio.wait_for(kit.close(), 10)
+
+    assert _runs_alive() == []
+    assert [p for p in posted if p[0] == "orchestration"][-1:] == [
+        ("orchestration", StatusLevel.FAILED, "cancelled")
+    ]
+    assert not started.is_set()
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []

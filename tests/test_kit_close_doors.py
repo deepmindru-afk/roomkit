@@ -19,6 +19,7 @@ import pytest
 
 from roomkit import HookExecution, HookTrigger, RoomKit, RoomStatus
 from roomkit.channels.agent import Agent
+from roomkit.core import framework
 from roomkit.core.task_utils import hold_task
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
@@ -36,6 +37,8 @@ from roomkit.providers.ai.base import (
     StreamTextDelta,
 )
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.store.memory import InMemoryStore
+from roomkit.tasks.posting import send_posted
 from tests.test_framework import SimpleChannel
 
 
@@ -472,16 +475,60 @@ class _TracesAsItCloses(SimpleChannel):
         await super().close()
 
 
-async def test_a_hook_task_started_as_a_channel_closes_ends_with_the_close() -> None:
+class _SlowRecords(InMemoryStore):
+    """A store whose commit of a ``record`` takes a few steps, and that says
+    how many were still in flight when it closed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_flight = 0
+        self.in_flight_at_close: list[int] = []
+
+    async def commit_event(self, room_id: str, event: RoomEvent, **kw: Any) -> RoomEvent:
+        if getattr(event.content, "body", None) != "record":
+            return await super().commit_event(room_id, event, **kw)
+        self.in_flight += 1
+        try:
+            for _ in range(5):
+                await asyncio.sleep(0)
+            return await super().commit_event(room_id, event, **kw)
+        finally:
+            self.in_flight -= 1
+
+    async def close(self) -> None:
+        self.in_flight_at_close.append(self.in_flight)
+        await super().close()
+
+
+def _record() -> RoomEvent:
+    return RoomEvent(
+        room_id="r1",
+        source=EventSource(channel_id="sip", channel_type="sms"),
+        content=TextContent(body="record"),
+    )
+
+
+@pytest.mark.parametrize("its_end", ["ends", "holds-a-run", "commits-unawaited"])
+async def test_a_hook_task_started_as_a_channel_closes_ends_with_the_close(its_end: str) -> None:
     """A channel's close starts a hook of the kit's (its last trace's
     ON_PROTOCOL_TRACE): the hook is cut before close() returns, its end run,
-    never left running past it."""
-    kit = RoomKit()
+    and what its end starts (a run the kit holds, a record it commits
+    without awaiting it) ends before the store is released."""
+    store = _SlowRecords()
+    kit = RoomKit(store=store)
     hook_started = asyncio.Event()
     kit.register_channel(_TracesAsItCloses("sip", hook_started))
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "sip")
     steps: list[str] = []
+
+    async def late_run() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.01)  # its end: a terminal entry it posts
+            steps.append("run ended")
+            raise
 
     @kit.hook(HookTrigger.ON_PROTOCOL_TRACE, execution=HookExecution.ASYNC, name="audit")
     async def audit(trace: ProtocolTrace, ctx: RoomContext) -> None:
@@ -491,11 +538,103 @@ async def test_a_hook_task_started_as_a_channel_closes_ends_with_the_close() -> 
             await asyncio.Event().wait()
         except asyncio.CancelledError:
             steps.append("ended")
+            if its_end == "holds-a-run":
+                hold_task(kit, late_run())
+            if its_end == "commits-unawaited":
+                asyncio.get_running_loop().create_task(kit.commit_event("r1", _record()))
             raise
 
     await kit.close()
 
-    assert steps == ["started", "ended"]
+    assert steps == ["started", "ended", *(["run ended"] if its_end == "holds-a-run" else [])]
+    assert store.in_flight_at_close == [0]
+
+
+class _SaysByeAsItCloses(SimpleChannel):
+    """A channel whose close sends a last message into its room."""
+
+    kit: RoomKit | None = None
+
+    async def close(self) -> None:
+        assert self.kit is not None
+        await self.kit.send_event("r1", self.channel_id, TextContent(body="bye"))
+        await super().close()
+
+
+async def test_an_observer_started_as_a_channel_closes_ends_before_the_close_returns() -> None:
+    """A channel's close sends into its room, and the ASYNC observers of that
+    event's BEFORE_BROADCAST chain start then: close() waits for them, as it
+    waits for the observers already running, before it releases the store."""
+    kit = RoomKit()
+    channel = _SaysByeAsItCloses("sms")
+    channel.kit = kit
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms")
+    observed: list[str] = []
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: RoomEvent, ctx: RoomContext) -> None:
+        for _ in range(5):
+            await asyncio.sleep(0)  # an observer that takes a few steps
+        observed.append(getattr(event.content, "body", ""))
+
+    await kit.close()
+
+    assert observed == ["bye"]
+
+
+class _WritesSlowlyAsItCloses(SimpleChannel):
+    """A channel whose close starts a record and takes longer than the kit's
+    closing budget; the record's commit ends just after."""
+
+    kit: RoomKit | None = None
+    store: _GatedRecords | None = None
+
+    async def close(self) -> None:
+        assert self.kit is not None and self.store is not None
+        asyncio.get_running_loop().create_task(self.kit.commit_event("r1", _record()))
+        await asyncio.sleep(0.06)  # past the 0.05 s budget
+        asyncio.get_running_loop().call_later(0.01, self.store.answer.set)
+        await super().close()
+
+
+class _GatedRecords(_SlowRecords):
+    """A ``record``'s commit that waits for *answer*."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.answer = asyncio.Event()
+
+    async def commit_event(self, room_id: str, event: RoomEvent, **kw: Any) -> RoomEvent:
+        if getattr(event.content, "body", None) == "record":
+            self.in_flight += 1
+            try:
+                await self.answer.wait()
+            finally:
+                self.in_flight -= 1
+        return await InMemoryStore.commit_event(self, room_id, event, **kw)
+
+
+@pytest.mark.wallclock  # the channels' closes spend the kit's closing budget
+async def test_what_a_slow_channel_close_starts_has_a_budget_of_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The channels' closes outlast the kit's closing budget, and one of
+    them started a decided write: close() waits for it on a budget of its
+    own, counted from the channels' end, before it releases the store."""
+    monkeypatch.setattr(framework, "CLOSE_WAIT_S", 0.05)
+    store = _GatedRecords()
+    kit = RoomKit(store=store)
+    channel = _WritesSlowlyAsItCloses("sip")
+    channel.kit, channel.store = kit, store
+    kit.register_channel(channel)
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sip")
+
+    await kit.close()
+
+    assert store.in_flight_at_close == [0]
 
 
 async def test_a_caller_waiting_for_its_injected_events_returns_when_the_close_cuts_them() -> None:
@@ -556,3 +695,26 @@ async def test_a_timer_check_waiting_for_its_hooks_returns_when_the_close_cuts_t
 
     room = await asyncio.wait_for(check, 1)
     assert room.status is RoomStatus.PAUSED
+
+
+async def test_a_result_post_held_just_before_the_close_posts_nothing() -> None:
+    """A task's result posted as its agent's message, in work the kit holds
+    (a discussion's post turn), is held just before the kit closes: cut once
+    started, it posts nothing on the closing kit (RFC §19.7.5 rule 19)."""
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms"))
+    kit.register_channel(Agent("ai1", provider=MockAIProvider(responses=["hello"])))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms")
+    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    result = RoomEvent(
+        room_id="r1",
+        source=EventSource(channel_id="ai1", channel_type="ai"),
+        content=TextContent(body="result"),
+    )
+    hold_task(kit, send_posted(kit, result))
+    await kit.close()
+
+    assert "result" not in [
+        getattr(e.content, "body", None) for e in await kit.store.list_events("r1")
+    ]

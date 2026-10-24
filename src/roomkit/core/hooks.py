@@ -1410,19 +1410,24 @@ class HookEngine:
         another trigger is waited for too. The observers the caller runs
         under are spared: waiting for them would wait for itself.
         """
+        # Only the tasks still running: a done one leaves the set on its done
+        # callback, which awaiting it again would never let run.
+        while running := self.running_observers():
+            await asyncio.gather(*running, return_exceptions=True)
+
+    def running_observers(self) -> list[asyncio.Task[None]]:
+        """The observers still running, this engine's and its turn side's,
+        but the ones the caller runs under (:meth:`drain_observers`)."""
         engines = [self]
         if self.turn_side is not None and self.turn_side.engine is not self:
             engines.append(self.turn_side.engine)
         spared = set(held_runs())
-        # Only the tasks still running: a done one leaves the set on its done
-        # callback, which awaiting it again would never let run.
-        while running := [
+        return [
             task
             for engine in engines
             for task in engine._observers
             if not task.done() and task not in spared
-        ]:
-            await asyncio.gather(*running, return_exceptions=True)
+        ]
 
     async def _run_async_hooks_list(
         self,

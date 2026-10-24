@@ -199,6 +199,11 @@ __all__ = [
 ]
 
 
+def _running(tasks: set[asyncio.Task[Any]], spared: set[asyncio.Task[Any] | None]) -> bool:
+    """Whether a task of *tasks* still runs, but those *spared*."""
+    return any(not task.done() and task not in spared for task in tasks)
+
+
 class RoomKit(
     InboundMixin,
     InboundIdentityMixin,
@@ -827,6 +832,32 @@ class RoomKit(
             await asyncio.gather(*pending, return_exceptions=True)
             self._pending_hook_tasks.difference_update(pending)
 
+    async def _end_what_the_channels_started(self) -> None:
+        """End what the channels' closes started, before the store is
+        released: a run held on the closing kit, cut once started; a decided
+        write, waited for on a budget of its own, counted from the channels'
+        end; a hook task, cut once started; an observer, drained. Again
+        until none is left, since the end of one may start another (a cut
+        hook's end holding a run, an observer's call committing a record);
+        what an end scheduled takes its first step before the check."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + CLOSE_WAIT_S
+        while True:
+            await self._cancel_background_runs()
+            await wait_for_held(self._decided_writes, until=deadline)
+            await self._cancel_pending_tasks()
+            await self._hook_engine.drain_observers()
+            await asyncio.sleep(0)
+            spared = {*held_runs(), asyncio.current_task()}
+            writes = loop.time() < deadline and _running(self._decided_writes, spared)
+            if not (
+                writes
+                or _running(self._background_runs, spared)
+                or _running(self._pending_hook_tasks, spared)
+                or self._hook_engine.running_observers()
+            ):
+                return
+
     async def close(self) -> None:
         """Close every channel, then release what they share.
 
@@ -926,13 +957,9 @@ class RoomKit(
         if self._voice:
             await self._voice.close()
         await self._realtime.close()
-        # What the channels' closes started (a run held on the closing kit,
-        # cut as it started; a decided write; a hook task, a trace's or a
-        # held message's cancellation record) ends before the store is
+        # What the channels' closes started ends before the store is
         # released, as what the drains started did.
-        await self._cancel_background_runs()
-        await wait_for_held(self._decided_writes, until=writes_deadline)
-        await self._cancel_pending_tasks()
+        await self._end_what_the_channels_started()
         # Every channel is closed and its media released. Only now wait for
         # the operations the store or the lock manager already has — they are
         # bracketed by resource leases, and this wait is what lets a channel's

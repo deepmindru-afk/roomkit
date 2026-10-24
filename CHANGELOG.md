@@ -187,18 +187,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Work the kit holds, started late in its `close()` or after it, is cut as
-  the close cuts the rest (RFC §19.7.3, §23.3, RMK-943). A strategy's
-  background run, a delegation's hand-back, a handoff greeting's turn or a
-  discussion's post started while a channel closed, or once the kit had
-  closed, ran on past `close()`, against a released store. One held just
-  before the close and cut before its first step never ran its end: a
-  background run posted no terminal entry and never freed its room. Each is
-  now cut once it has started, its end run (a run's terminal entry, a task's
-  completion), and `close()` waits for it before it releases the store. So
-  is a hook task the kit starts while a channel closes (the
-  `ON_PROTOCOL_TRACE` hooks of its last trace, a framework event it
-  schedules, the record of a held message's cancelled delivery): it ran on
-  past `close()`.
+  the close cuts the rest (RFC §19.7.3, §23.3, RMK-943). A delegation's
+  hand-back, a handoff greeting's turn or a discussion's post started while
+  a channel closed, or once the kit had closed, ran on past `close()`,
+  against a released store. One held just before the close and cut before
+  its first step never ran its end: a strategy's background run posted no
+  terminal entry and never freed its room. Each is now cut once its first
+  step has run, so its end runs (a run's terminal entry, a task's
+  completion); a strategy's background run cut so ends `cancelled` without
+  running its work, and a discussion's post posts nothing. What the
+  channels' closes start (such work, a decided write, a hook task such as
+  the `ON_PROTOCOL_TRACE` hooks of a last trace, an `ASYNC` observer of a
+  last message) ends before the store is released, on a closing budget of
+  its own counted from the channels' end, and again until nothing is left,
+  since one's end may start another.
 
 - A record nobody receives reaches the room's delivery lane when its caller
   is cancelled while it commits (RFC §13.5, §13.6, RMK-943): step 2's attach
