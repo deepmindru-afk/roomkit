@@ -226,7 +226,9 @@ class ReleaseTolerantLockManager(RoomLockManager):
         except BaseException as exc:
             try:
                 await lock.__aexit__(type(exc), exc, exc.__traceback__)
-            except BaseException as release_error:
+            except Exception as release_error:
+                # A cancellation met while releasing is the caller's, not a
+                # failed release: it is raised, as on the normal path.
                 if release_error is not exc:
                     _log_failed_release(room_id, release_error)
             raise

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -40,6 +41,21 @@ class _LeaseLost(RoomLockManager):
             yield
         if self.failing:
             raise ConnectionError("lease expired")
+
+
+class _SlowRelease(RoomLockManager):
+    """A lock whose release takes a round trip that never ends on its own."""
+
+    def __init__(self) -> None:
+        self.releasing = asyncio.Event()
+
+    @asynccontextmanager
+    async def locked(self, room_id: str) -> AsyncGenerator[None, None]:
+        try:
+            yield
+        finally:
+            self.releasing.set()
+            await asyncio.Event().wait()
 
 
 async def _room(locks: _LeaseLost) -> tuple[RoomKit, SimpleChannel]:
@@ -161,6 +177,25 @@ class TestTheKitsHold:
         with pytest.raises(ValueError):
             async with ReleaseTolerantLockManager(locks).locked("r1"):
                 raise ValueError("the section's own")
+
+    async def test_a_cancellation_during_the_release_after_a_failure_is_delivered(self) -> None:
+        """The section raised, and its caller is cancelled while the lock is
+        released (a distributed lock's round trip): the cancellation reaches
+        the caller rather than be logged as a failed release."""
+        locks = _SlowRelease()
+
+        async def section() -> str:
+            try:
+                async with ReleaseTolerantLockManager(locks).locked("r1"):
+                    raise ValueError("the section's own")
+            except ValueError:
+                return "carried on"
+
+        task = asyncio.create_task(section())
+        await locks.releasing.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
     async def test_holds_the_lock_reentrantly(self) -> None:
         held = ReleaseTolerantLockManager(InMemoryLockManager())
