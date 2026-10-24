@@ -3,6 +3,8 @@ mutation triggers (ON_EVENT_UPDATED / ON_EVENT_DELETED)."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from roomkit.channels.base import Channel
@@ -19,6 +21,7 @@ from roomkit.models.event import (
     TextContent,
 )
 from roomkit.models.hook import HookResult
+from roomkit.models.room import RoomTimers
 from tests.conftest import make_event
 
 
@@ -146,6 +149,43 @@ class TestUpdateEventApi:
         assert await kit.update_event("r1", "missing", content=TextContent(body="x")) is None
         assert await kit.update_event("r2", original.id, content=TextContent(body="x")) is None
         assert updated_calls == []
+
+
+class TestAnotherOrganizationsRoom:
+    @pytest.mark.parametrize("operation", ["update", "delete"])
+    async def test_it_acts_as_on_a_missing_room(self, operation: str) -> None:
+        """RFC §17.2, §10.3: scoped to an organization, an update or a delete
+        in another organization's room writes nothing, its due timers
+        included, and fires no hook; the room's own organization acts."""
+        kit = RoomKit()
+        kit.register_channel(RecordingTransport("src"))
+        await kit.create_room(room_id="r1", organization_id="acme")
+        await kit.attach_channel("r1", "src")
+        original = await _send(kit, "v1")
+        room = await kit.store.get_room("r1")
+        assert room is not None
+        # Its pause is due: a read that applied it would write the room.
+        idle = datetime.now(UTC) - timedelta(hours=1)
+        timers = RoomTimers(inactive_after_seconds=60, last_activity_at=idle)
+        await kit.store.update_room(room.model_copy(update={"timers": timers}))
+        before = (await kit.store.get_room("r1"), await kit.store.get_event(original.id))
+        fired = _track(kit, HookTrigger.ON_EVENT_UPDATED) + _track(
+            kit, HookTrigger.ON_EVENT_DELETED
+        )
+        acts = {
+            "update": lambda org: kit.update_event(
+                "r1", original.id, content=TextContent(body="v2"), organization_id=org
+            ),
+            "delete": lambda org: kit.delete_event("r1", original.id, organization_id=org),
+        }
+
+        refused = await acts[operation]("globex")
+
+        assert not refused
+        after = (await kit.store.get_room("r1"), await kit.store.get_event(original.id))
+        assert (after, fired) == (before, [])
+        assert await acts[operation]("acme")
+        await kit.close()
 
 
 class TestDeleteEventApi:

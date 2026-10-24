@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._publication_keys import refuse_reserved
-from roomkit.core.exceptions import RoomClosedError
+from roomkit.core.exceptions import RoomClosedError, RoomNotFoundError
 from roomkit.core.mixins.helpers import HelpersMixin, _refuses_writes
 from roomkit.models.enums import HookTrigger
 from roomkit.models.event import EventContent, EventSource, RoomEvent, refuse_too_deep
@@ -13,6 +13,7 @@ from roomkit.models.event import EventContent, EventSource, RoomEvent, refuse_to
 if TYPE_CHECKING:
     from roomkit.core.hooks import HookEngine
     from roomkit.core.locks import RoomLockManager
+    from roomkit.models.room import Room
     from roomkit.store.base import ConversationStore
 
 
@@ -105,6 +106,7 @@ class EventOpsMixin(HelpersMixin):
         content: EventContent | None = None,
         source: EventSource | None = None,
         metadata: dict[str, Any] | None = None,
+        organization_id: str | None = None,
     ) -> RoomEvent | None:
         """Update a persisted event's content, source, and/or metadata.
 
@@ -120,7 +122,10 @@ class EventOpsMixin(HelpersMixin):
         event, or ``None`` when *event_id* does not exist in *room_id* (no
         hook fires). An update that changes nothing, no field or the values
         the event holds, writes nothing, fires nothing and returns the event
-        as stored (RFC §10.3).
+        as stored (RFC §10.3). Scoped to *organization_id* (RFC §17.2), the
+        room of another organization is a missing room: ``None``, nothing
+        written, its due timers included; unset, the call is unscoped, as the
+        kit's other calls.
 
         Raises:
             ValueError: *content* holds more than five composite levels (RFC
@@ -130,7 +135,7 @@ class EventOpsMixin(HelpersMixin):
         async with self._lock_manager.locked(room_id):
             # At any status, once the room's due timer transitions are
             # applied (RFC §10.3, §5.1).
-            if await self._room_timers.room_due(room_id) is None:
+            if await self._room_in_scope(room_id, organization_id) is None:
                 return None
             target = await self._store.get_event(event_id)
             if target is None or target.room_id != room_id:
@@ -153,7 +158,12 @@ class EventOpsMixin(HelpersMixin):
         return updated
 
     async def delete_event(
-        self, room_id: str, event_id: str, *, cascade_replies: bool = True
+        self,
+        room_id: str,
+        event_id: str,
+        *,
+        cascade_replies: bool = True,
+        organization_id: str | None = None,
     ) -> list[str]:
         """Hard-delete a persisted event, cascading to thread replies by default.
 
@@ -163,10 +173,12 @@ class EventOpsMixin(HelpersMixin):
         event as it was stored, once the room lock is released. Returns the
         removed event IDs (the root, its replies, then the changes), or an
         empty list when *event_id* does not exist in *room_id* (no hook
-        fires).
+        fires). Scoped to *organization_id* (RFC §17.2), the room of another
+        organization is a missing room: an empty list, nothing written, its
+        due timers included; unset, the call is unscoped.
         """
         async with self._lock_manager.locked(room_id):
-            if await self._room_timers.room_due(room_id) is None:
+            if await self._room_in_scope(room_id, organization_id) is None:
                 return []
             target = await self._store.get_event(event_id)
             if target is None or target.room_id != room_id:
@@ -181,3 +193,13 @@ class EventOpsMixin(HelpersMixin):
                     room_id, HookTrigger.ON_EVENT_DELETED, event, context
                 )
         return [event.id for event in removed]
+
+    async def _room_in_scope(self, room_id: str, organization_id: str | None) -> Room | None:
+        """The room, its due timer transitions applied (RFC §5.1), or ``None``
+        when the store holds none or it is another organization's than
+        *organization_id* (RFC §17.2), which is read before any transition
+        is written. Call under the room lock."""
+        try:
+            return await self._room_timers.room_due(room_id, organization_id=organization_id)
+        except RoomNotFoundError:
+            return None
