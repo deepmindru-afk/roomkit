@@ -312,9 +312,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   right after it. A direct `send_event()` from code holding the lock still
   commits ahead of the cause, and what its own hooks inject runs once its
   nested section ends, inside the section it nests in. An identity challenge
-  takes the same pass. The passes are run by
-  `roomkit.core.mixins.InjectedEventsMixin`, a new base of `RoomKit`. See
-  "Injected events" in `docs/c7/hooks.md`.
+  takes the same pass. See "Injected events" in `docs/c7/hooks.md`.
   Migrate: a hook that blocks or injects on every event now reads its own
   injections too: it lets them through (by their source or content), or each
   one injects again until the budget; code that read an injected event at the
