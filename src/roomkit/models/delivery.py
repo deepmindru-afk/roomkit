@@ -246,9 +246,11 @@ class DeliveryHandle:
         the same short-circuit the waiting path's step 18 applies, with
         delivery following in lane order. From an event's admission work (an
         off-lock hook's body, a handler its check's report awaits, the
-        message's parse), a wait on a call it adopted whose delivery needs
-        that room (a transport's ``deliver()`` that sends into it) ends at
-        ``process_timeout`` (RFC §9.5.1, §13.6).
+        message's parse), a wait on a call it adopted returns with its
+        results, that delivery run ahead of the event; one whose delivery
+        needs the event's admission ticket (a transport's ``deliver()`` that
+        sends into the room) ends at the event's ``process_timeout`` (RFC
+        §9.5.1, §13.6).
         """
         if not self.done and self._cascade.waiter_would_deadlock():
             return self._result
