@@ -6598,8 +6598,9 @@ What every store keeps alike (RFC §10.3, §14.1, §14.3):
   (`commit_event(target=)`, `write_change_target()`) keep the stored results,
   whatever the copy they write carries. Its default reads the event and
   writes it back through `update_event()` (the framework calls it under the
-  room lock), so a store whose `update_event()` keeps the results, as the
-  shipped stores do, overrides it.
+  room lock), under `records_delivery_results()` (`roomkit.store.base`), the
+  one rewrite whose results `update_event()` writes; a store that can update
+  the field in place overrides it.
 ---
 
 RoomKit provides mock implementations for every pluggable component: AI providers, voice backends, pipeline stages, identity resolvers, and telemetry.

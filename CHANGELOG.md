@@ -46,10 +46,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stores out of three. `update_event()`, the target `commit_event(target=)`
   writes and `write_change_target()` now keep the stored results in every
   shipped store, whatever the copy carries.
+  The ABC's default `record_delivery_results()`, which a custom store
+  inherits, still writes through `update_event()`: it writes under
+  `records_delivery_results()` (`roomkit.store.base`), true for that write
+  alone, under which every shipped `update_event()` writes the results.
   Migrate: code that set `delivery_results` through `update_event()` calls
   `record_delivery_results(room_id, event_id, results)`; a custom store keeps
-  the stored results on a rewrite, and then overrides
-  `record_delivery_results()`, whose default writes through `update_event()`.
+  the stored results on a rewrite unless `records_delivery_results()` is
+  true.
 
 - **BREAKING — a recipient is a string that is not blank, or an integer**
   (RFC §5.7, §10.2 step 3d, §10.4, RMK-942). 0.108.0 took any number, and a

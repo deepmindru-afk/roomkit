@@ -33,6 +33,7 @@ from roomkit.store.base import (
     deletes_edits,
     is_marked_deleted,
     key_taken,
+    records_delivery_results,
     room_holds,
     room_taken,
     sender_names,
@@ -170,15 +171,20 @@ async def _execute_insert(conn: Any, event: RoomEvent) -> None:
     )
 
 
-async def _update_event_row(conn: Any, event: RoomEvent, *, room_id: str | None = None) -> bool:
+async def _update_event_row(
+    conn: Any, event: RoomEvent, *, room_id: str | None = None, with_results: bool = False
+) -> bool:
     """Rewrite *event*'s stored row on *conn*, in *room_id* when one is
     named; whether a row was written. Shared by ``update_event`` and the
-    target a change's commit writes (RFC §14.3)."""
+    target a change's commit writes (RFC §14.3). The stored delivery
+    results stay unless the rewrite is a delivery set's record
+    (*with_results*, :func:`records_delivery_results`, RFC §10.3)."""
     status = await conn.execute(
         "UPDATE events SET content=$2, status=$3, visibility=$4,"
         " metadata=$5, idempotency_key=$6, blocked_by=$7,"
         " source_channel_id=$8, source_channel_type=$9,"
-        " source_participant_id=$10, source_provider=$11, source_extra=$12"
+        " source_participant_id=$10, source_provider=$11, source_extra=$12,"
+        " delivery_results=COALESCE($14::jsonb, delivery_results)"
         " WHERE id=$1 AND ($13::text IS NULL OR room_id = $13)",
         event.id,
         event.content.model_dump(mode="json"),
@@ -193,6 +199,7 @@ async def _update_event_row(conn: Any, event: RoomEvent, *, room_id: str | None 
         event.source.provider,
         _source_extra(event.source),
         room_id,
+        event.delivery_results if with_results else None,
     )
     return status != "UPDATE 0"
 
@@ -1134,7 +1141,7 @@ class PostgresStore(ConversationStore):
     async def update_event(self, event: RoomEvent) -> RoomEvent:
         with self._query_span("update_event", "events"):
             async with self._acquire() as conn:
-                await _update_event_row(conn, event)
+                await _update_event_row(conn, event, with_results=records_delivery_results())
         return event
 
     async def write_change_target(self, room_id: str, target: RoomEvent) -> None:

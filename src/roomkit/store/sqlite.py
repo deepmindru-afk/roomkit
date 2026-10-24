@@ -55,6 +55,7 @@ from roomkit.store.base import (
     is_marked_deleted,
     key_taken,
     link_target,
+    records_delivery_results,
     room_holds,
     room_taken,
     sender_names,
@@ -769,8 +770,9 @@ class SQLiteStore(ConversationStore):
                            responds_to)
         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
-    # A rewrite of a stored row keeps its delivery results: only
-    # record_delivery_results writes them (RFC §10.3, §14.3).
+    # A rewrite of a stored row keeps its delivery results unless it is a
+    # delivery set's record (the last parameter): only a record writes them
+    # (RFC §10.3, §14.3).
     _EVENT_UPSERT = """
         INSERT INTO events(id, room_id, idx, type, visibility, source_channel_id,
                            source_channel_type, participant_id, correlation_id,
@@ -787,15 +789,20 @@ class SQLiteStore(ConversationStore):
             parent_event_id=excluded.parent_event_id,
             idempotency_key=excluded.idempotency_key,
             created_ts=excluded.created_ts,
-            data=json_set(
+            data=CASE WHEN ? THEN excluded.data ELSE json_set(
                 excluded.data, '$.delivery_results',
                 json(COALESCE(json_extract(events.data, '$.delivery_results'), '{}'))
-            ),
+            ) END,
             responds_to=excluded.responds_to
     """
 
     def _write_event_row(
-        self, conn: sqlite3.Connection, event: RoomEvent, *, replace: bool = False
+        self,
+        conn: sqlite3.Connection,
+        event: RoomEvent,
+        *,
+        replace: bool = False,
+        with_results: bool = False,
     ) -> None:
         source = event.source
         row = (
@@ -815,7 +822,10 @@ class SQLiteStore(ConversationStore):
             event.responds_to,
         )
         try:
-            conn.execute(self._EVENT_UPSERT if replace else self._EVENT_INSERT, row)
+            if replace:
+                conn.execute(self._EVENT_UPSERT, (*row, with_results))
+            else:
+                conn.execute(self._EVENT_INSERT, row)
         except sqlite3.IntegrityError as exc:
             if not replace and _key_taken(conn, event):
                 raise key_taken(event) from exc
@@ -1318,12 +1328,13 @@ class SQLiteStore(ConversationStore):
         return _load_event(row[0]) if row is not None else None
 
     async def update_event(self, event: RoomEvent) -> RoomEvent:
-        return await self._run(self._x_update_event, event)
+        # Read here: the worker thread does not see the caller's context.
+        return await self._run(self._x_update_event, event, records_delivery_results())
 
-    def _x_update_event(self, event: RoomEvent) -> RoomEvent:
+    def _x_update_event(self, event: RoomEvent, with_results: bool) -> RoomEvent:
         conn = self._db()
         with _write_transaction(conn):
-            self._write_event_row(conn, event, replace=True)
+            self._write_event_row(conn, event, replace=True, with_results=with_results)
         return event
 
     async def write_change_target(self, room_id: str, target: RoomEvent) -> None:
