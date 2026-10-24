@@ -19,6 +19,7 @@ import pytest
 
 from roomkit import ConferenceRealtimeConfig, ReentrantCallError, RoomKit
 from roomkit.channels.ai import AIChannel
+from roomkit.core.inbound_router import InboundRoomRouter
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage, InboundResult
@@ -161,6 +162,87 @@ class TestACallFromADelivery:
             assert len(await _messages(kit)) == 1 + BUDGET
         finally:
             await kit.close()
+
+    async def test_a_transport_opening_a_room_on_every_delivery_stops_at_the_cap(self) -> None:
+        """A message the room's work routes into a new room is that work's:
+        it draws on the budget of the cascade that delivers, so a transport
+        whose every delivery opens a room stops at the cap."""
+        kit = RoomKit(max_chain_depth=1, inbound_router=_NoRoom())
+        opening = _Opening("opener", kit)
+        kit.register_channel(opening)
+
+        @kit.hook(HookTrigger.ON_ROOM_CREATED)
+        async def bind_opener(event: object, ctx: RoomContext) -> None:
+            await kit.attach_channel(ctx.room.id, "opener")
+
+        await _room(kit)
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message(), room_id="r1"), 5)
+            await asyncio.wait_for(opening.refused.wait(), 5)
+            rooms = await kit.store.list_rooms()
+            assert len(rooms) == 1 + BUDGET
+        finally:
+            await kit.close()
+
+    async def test_a_delivery_s_call_into_another_existing_room_has_its_own_budget(
+        self,
+    ) -> None:
+        """A call into an existing room the delivery does not deliver in is
+        none of its work: each has a budget of its own."""
+        kit = RoomKit(max_chain_depth=1)
+        fanning = _Fanning("fan", kit, sends=BUDGET + 1)
+        await _room(kit, fanning)
+        await kit.create_room(room_id="r2")
+        await kit.attach_channel("r2", "sms")
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message(), room_id="r1"), 5)
+            assert [e.blocked_by for e in fanning.sent] == [None] * (BUDGET + 1)
+        finally:
+            await kit.close()
+
+
+class _NoRoom(InboundRoomRouter):
+    """Finds no room for any message: each one opens a new room."""
+
+    async def route(self, channel_id: str, channel_type: Any, **kwargs: Any) -> str | None:
+        return None
+
+
+class _Opening(SimpleChannel):
+    """A transport whose every delivery routes a message, which opens a room."""
+
+    def __init__(self, channel_id: str, kit: RoomKit) -> None:
+        super().__init__(channel_id)
+        self._kit = kit
+        self.refused = asyncio.Event()
+
+    async def deliver(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        result = await self._kit.process_inbound(_message("again"))
+        if result.reason == "reentry_loop_cap":
+            self.refused.set()
+        return ChannelOutput.empty()
+
+
+class _Fanning(SimpleChannel):
+    """A transport whose delivery of the first message sends *sends*
+    messages into room ``r2``."""
+
+    def __init__(self, channel_id: str, kit: RoomKit, sends: int) -> None:
+        super().__init__(channel_id)
+        self._kit, self._sends = kit, sends
+        self.sent: list[RoomEvent] = []
+
+    async def deliver(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        if _body(event) == "hi":
+            for n in range(self._sends):
+                self.sent.append(
+                    await self._kit.send_event("r2", "sms", TextContent(body=f"there {n}"))
+                )
+        return ChannelOutput.empty()
 
 
 class _Injecting(AILikeChannel):

@@ -13,7 +13,9 @@ The execution context of a call tells it, for the room it names:
 - in the room's delivery work (a delivery set's deliveries and turns): it is a
   new *arrival*, with its ticket and its ``process_timeout``, drawing on the
   budget of the cascade that delivers, so a transport whose delivery calls
-  into its room on every event stops at the cap;
+  into its room on every event stops at the cap; and so does a message it
+  routes that opens a new room, that work's own (``opening_budget``), while
+  a call into another existing room has a budget of its own;
 - elsewhere: a new arrival with a budget of its own.
 
 A call the room's work made is charged one pass as it starts. A call made
@@ -223,6 +225,17 @@ class RoomWork:
         if frame is not None and frame.kind is _Kind.DELIVERING:
             return Entry(Placement.ARRIVAL, frame.budget, True)
         return Entry(Placement.ARRIVAL, self.budget(), False)
+
+    def opening_budget(self) -> ReentryBudget | None:
+        """The budget a message this context routes draws on when it opens a
+        new room (RFC §9.5.1, gap G-070): the budget of the cascade whose
+        delivery work, a delivery or a turn, still runs in the innermost
+        such frame, since the room it opens is that work's own; ``None``
+        outside every delivery, for a budget of its own."""
+        for frame in reversed(_frames.get()):
+            if frame.active and frame.kind is _Kind.DELIVERING:
+                return frame.budget
+        return None
 
     def refuse_routed(self, room_id: str) -> None:
         """Refuse a message routed into *room_id* from under its lock or from

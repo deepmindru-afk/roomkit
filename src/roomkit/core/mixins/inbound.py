@@ -18,6 +18,8 @@ from roomkit.core._publication_keys import admitted_key
 from roomkit.core._reentrance import (
     REENTRY_LOOP_CAP,
     Entry,
+    Placement,
+    ReentryBudget,
     RoomWork,
     admission_order,
     chain_floor,
@@ -403,6 +405,10 @@ class InboundMixin(HelpersMixin):
         if refused is not None:
             return refused
 
+        # A routed message the room's delivery work sends that opens a new
+        # room is that work's: charged on its budget before the room is
+        # created (RFC §9.5.1, gap G-070).
+        opening = self._room_work.opening_budget() if room_id is None else None
         try:
             room_id, room_just_created = await self._route_to_room(
                 message,
@@ -412,13 +418,20 @@ class InboundMixin(HelpersMixin):
                 inbound_span_id,
                 organization_id=organization_id,
                 deadline=deadline,
+                opening=opening,
             )
         except _RoutingTimeoutError as exc:
             # Null while the message was routed (RFC §8.2), else the room the
             # call named or routing gave it.
             return await self._refuse_on_timeout(exc.room_id, channel_id=message.channel_id)
+        except _PastTheCapError:
+            return _past_the_cap("a new room", message)
 
-        entry = self._room_work.entry(room_id)
+        if room_just_created and opening is not None:
+            # Charged as the room was opened: its cascade draws on the same.
+            entry = Entry(Placement.ARRIVAL, opening, False)
+        else:
+            entry = self._room_work.entry(room_id)
         if entry.charged and not entry.budget.take():
             return _past_the_cap(room_id, message)
         try:
@@ -749,13 +762,16 @@ class InboundMixin(HelpersMixin):
         *,
         organization_id: str | None,
         deadline: float,
+        opening: ReentryBudget | None = None,
     ) -> tuple[str, bool]:
         """Route inbound message to a room, auto-creating if needed.
 
         ``organization_id`` scopes the room the message lands in (RFC §17.2):
         a room of another organization is not found, a room created here is
         created under it. *deadline* is the call's (RFC §13.6): past it,
-        :class:`_RoutingTimeoutError`.
+        :class:`_RoutingTimeoutError`. *opening* is the budget a routed
+        message draws on when it opens a new room, charged before the room
+        is created: spent, :class:`_PastTheCapError` with nothing written.
 
         Returns:
             A tuple of (room_id, room_just_created).
@@ -773,7 +789,7 @@ class InboundMixin(HelpersMixin):
         try:
             if room_id is None:
                 room_id, room_just_created = await self._route_and_claim(
-                    message, channel, organization_id, deadline
+                    message, channel, organization_id, deadline, opening
                 )
             else:
                 room_id, room_just_created = await self._find_or_open_room(
@@ -802,6 +818,7 @@ class InboundMixin(HelpersMixin):
         identity: Identity | None = None,
         *,
         deadline: float,
+        opening: ReentryBudget | None = None,
     ) -> tuple[str, bool]:
         """The room *message* goes to, opened or attached as needed (RFC §10.1 step 2).
 
@@ -827,6 +844,7 @@ class InboundMixin(HelpersMixin):
                 room_id=None,
             )
         if room_id is None:
+            _charge_opening(opening)
             return await self._open_room_for(message, None, organization_id), True
         created = await self._ensure_room_and_binding(
             message, room_id, organization_id, attach=not routed, deadline=deadline
@@ -971,6 +989,7 @@ class InboundMixin(HelpersMixin):
         channel: Channel,
         organization_id: str | None,
         deadline: float,
+        opening: ReentryBudget | None = None,
     ) -> tuple[str, bool]:
         """The room the router gives *message*, its binding naming the sender.
 
@@ -991,7 +1010,13 @@ class InboundMixin(HelpersMixin):
         own = known_as(sender, identity)
         for _ in range(_ROUTES):
             room_id, created = await self._find_or_open_room(
-                message, channel, None, organization_id, identity, deadline=deadline
+                message,
+                channel,
+                None,
+                organization_id,
+                identity,
+                deadline=deadline,
+                opening=opening,
             )
             if not created:
                 # Its room known only now, a message its room's own work
@@ -1000,6 +1025,7 @@ class InboundMixin(HelpersMixin):
             if created or await self._claim_room(room_id, message, channel, own, deadline):
                 return room_id, created
             logger.debug("Room %s is no longer the routed message's; routing it again", room_id)
+        _charge_opening(opening)
         return await self._open_room_for(message, None, organization_id), True
 
     async def _routing_identity(
@@ -1223,6 +1249,23 @@ class InboundMixin(HelpersMixin):
             )
         except Exception:
             logger.exception("Error firing ON_SESSION_STARTED for text channel")
+
+
+class _PastTheCapError(Exception):
+    """A routed message the room's delivery work sent would open a new room
+    past the reentry budget it draws on (RFC §8.3, gap G-070): refused with
+    nothing written."""
+
+
+def _charge_opening(opening: ReentryBudget | None) -> None:
+    """Charge *opening*, the budget a routed message opening a new room
+    draws on, one pass before the room is created.
+
+    Raises:
+        _PastTheCapError: the budget is spent.
+    """
+    if opening is not None and not opening.take():
+        raise _PastTheCapError
 
 
 class _RoutingTimeoutError(Exception):
