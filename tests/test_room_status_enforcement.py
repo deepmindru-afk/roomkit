@@ -190,25 +190,40 @@ class TestClosedRoomRefuses:
             "event_type": str(EventType.MESSAGE),
         }
 
-    @pytest.mark.parametrize("event_type", [EventType.MESSAGE, EventType.INSTRUCTION])
-    async def test_a_room_the_event_s_hook_closed_refuses_it(self, event_type: EventType) -> None:
+    @pytest.mark.parametrize(
+        ("door", "event_type"),
+        [
+            ("process_inbound", EventType.MESSAGE),
+            ("process_inbound", EventType.INSTRUCTION),
+            ("send_event", EventType.MESSAGE),
+        ],
+        ids=["message", "instruction", "send_event"],
+    )
+    async def test_a_room_the_event_s_hook_closed_refuses_it(
+        self, door: str, event_type: EventType
+    ) -> None:
         """RFC §10.1 step 9a: a room a locked hook closed refuses the event
         as step 6 does, nothing stored, the agent not asked, the events the
-        hook injected dropped."""
+        hook injected dropped; ``send_event()``, whose contract is the
+        committed event, raises."""
         kit, _src, agent, refused = await _closing_room(lambda event: event.type == event_type)
 
-        result = await kit.process_inbound(
-            InboundMessage(
-                channel_id="ws",
-                sender_id="u1",
-                event_type=event_type,
-                content=TextContent(body="hi"),
-                addressed_to=["ai"] if event_type == EventType.INSTRUCTION else None,
-            ),
-            room_id="r1",
-        )
+        if door == "send_event":
+            with pytest.raises(RoomClosedError):
+                await kit.send_event("r1", "ws", TextContent(body="hi"))
+        else:
+            result = await kit.process_inbound(
+                InboundMessage(
+                    channel_id="ws",
+                    sender_id="u1",
+                    event_type=event_type,
+                    content=TextContent(body="hi"),
+                    addressed_to=["ai"] if event_type == EventType.INSTRUCTION else None,
+                ),
+                room_id="r1",
+            )
+            assert (result.blocked, result.reason, result.event) == (True, "room_closed", None)
 
-        assert (result.blocked, result.reason, result.event) == (True, "room_closed", None)
         assert await _said(kit) == []
         assert agent.delivered == []
         assert refused == [("inbound", str(event_type))]
