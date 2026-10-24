@@ -62,8 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   redacted read unredacted there. It now ends with the change as committed,
   at its index and as its hooks left it, the target as rewritten in its
   place, as for an inbound change, and whether or not the change has a
-  target to deliver to. The delivery set of a response and of an injected
-  event reads the same history.
+  target to deliver to. Whatever the origin, an entry a hook committed
+  during the change's hooks (a `send_event()`) was missing from that
+  history, and `ctx.room` read the counters from before the change; the
+  history now holds it, and `ctx.room.event_count` and `latest_index` are
+  the change's commit's. The delivery set of a response and of an injected
+  event reads the same history. A pass whose hooks all ran off the lock no
+  longer reads the room and the source's binding again (step 9a).
 
 - A coordinate in a location's text form is written with one decimal at
   least, the shortest that reads back as the same number, never with an
