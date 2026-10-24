@@ -1306,7 +1306,9 @@ class RoomKit(
         lock: a binding the integrator made, before or concurrently, keeps its
         settings. A room the host channel was detached from is refused, not
         attached again, and so is a room that refuses events; nothing is
-        written either way.
+        written either way. One ``process_timeout`` bounds the whole call, the
+        wait for that lock included; once the lock is held, the attach runs to
+        its end, a cancelled caller's included (RFC §13.6).
 
         Returns:
             The committed event, as :meth:`send_event` returns it.
@@ -1314,6 +1316,9 @@ class RoomKit(
         Raises:
             ChannelNotRegisteredError: *channel_id* names no registered channel.
             ChannelNotFoundError: the host channel was detached from the room.
+            ProcessTimeoutError: ``process_timeout`` passed before the commit,
+                the first post's wait for the room lock included; nothing
+                written.
             RoomClosedError: the room's status refuses new events (RFC §5.1).
             RoomNotFoundError: the room does not exist, or is another
                 organization's.
@@ -1353,6 +1358,7 @@ class RoomKit(
         addressed_to: list[str] | None = None,
         organization_id: str | None = None,
         standalone: bool = False,
+        deadline: float | None = None,
     ) -> RoomEvent:
         """:meth:`send_event` for the framework's own records too, whose
         *visibility* may be ``internal`` (an interruption record, RFC §6.4,
@@ -1360,12 +1366,15 @@ class RoomKit(
 
         The framework's door for the records it writes itself, never the
         integrator's: integrator code calls :meth:`send_event`, which refuses
-        ``internal`` before anything is read (RFC §7.3).
+        ``internal`` before anything is read (RFC §7.3). *deadline* is the
+        call's when a caller started it earlier (:meth:`post`, whose first
+        attach spends it too); ``process_timeout`` from now otherwise.
         """
         # One deadline from the call's start to its decision (RFC §13.6,
         # §10.5): the room's read, the off-lock check, the wait for its turn
         # and for the room lock, and the locked gates.
-        deadline = asyncio.get_running_loop().time() + self._process_timeout
+        if deadline is None:
+            deadline = asyncio.get_running_loop().time() + self._process_timeout
         # A sixth composite level is refused before anything is read (RFC §5.3).
         refuse_too_deep(content)
         # The visibility grammar (RFC §7.3): an invalid scope is refused.

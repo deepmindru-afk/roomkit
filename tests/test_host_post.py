@@ -19,12 +19,14 @@ from roomkit import (
     EventDirection,
     EventFilter,
     EventType,
+    FrameworkEvent,
     HookResult,
     HookTrigger,
     HostChannel,
     InboundMessage,
     Participant,
     Pipeline,
+    ProcessTimeoutError,
     RoomClosedError,
     RoomEvent,
     RoomKit,
@@ -36,7 +38,7 @@ from roomkit import (
 )
 from roomkit.channels.agent import Agent
 from roomkit.models.context import RoomContext
-from roomkit.models.enums import ChannelMediaType
+from roomkit.models.enums import ChannelDirection, ChannelMediaType
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.providers.sms.mock import MockSMSProvider
 from roomkit.store.memory import InMemoryStore
@@ -61,6 +63,19 @@ class _IntelligentHost(HostChannel):
     """A host channel that declares itself an intelligence channel."""
 
     category = ChannelCategory.INTELLIGENCE
+
+
+class _SlowAttachHost(HostChannel):
+    """A host channel whose attach waits until the test releases it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.attaching = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def on_room_attached(self, room_id, binding):
+        self.attaching.set()
+        await self.release.wait()
 
 
 @pytest.fixture
@@ -143,6 +158,10 @@ async def test_post_texts_the_correspondent_and_solicits_no_agent(kit, organizat
     )
     stored = next(e for e in await _events(kit) if e.id == event.id)
     assert stored.metadata["job"] == "shipping-notice"
+    # The host may post any content: its binding declares every media type.
+    binding = await kit.store.get_binding("r", "host")
+    assert binding is not None
+    assert set(binding.capabilities.media_types) == set(ChannelMediaType)
 
 
 @pytest.mark.parametrize(
@@ -220,6 +239,63 @@ async def test_a_host_binding_the_integrator_sets_keeps_its_settings(store, when
         await kit.close()
 
 
+async def test_a_first_post_waits_for_the_room_lock_within_process_timeout():
+    """The first post's wait for the room lock spends the call's
+    ``process_timeout``, as step 2's attach does (RFC §13.6): past it,
+    ``ProcessTimeoutError`` with its framework event, nothing written."""
+    kit = RoomKit(process_timeout=0.05)
+    timeouts: list[FrameworkEvent] = []
+    held, released = asyncio.Event(), asyncio.Event()
+
+    @kit.on("process_timeout")
+    async def timed_out(event: FrameworkEvent) -> None:
+        timeouts.append(event)
+
+    async def hold() -> None:
+        async with kit._lock_manager.locked("r"):
+            held.set()
+            await released.wait()
+
+    try:
+        sms = await _sms_room(kit, agent=None)
+        before = await _written(kit)
+        holder = asyncio.create_task(hold())
+        await held.wait()
+
+        with pytest.raises(ProcessTimeoutError):
+            await asyncio.wait_for(kit.post("r", "Notice."), 1)
+
+        released.set()
+        await holder
+        assert [event.room_id for event in timeouts] == ["r"]
+        assert await _written(kit) == before
+        assert sms.sent == []
+    finally:
+        released.set()
+        await kit.close()
+
+
+async def test_a_cancelled_first_post_attaches_the_host_channel_to_its_end(kit):
+    """Once the lock is held, the attach runs to its end whatever becomes of
+    the caller (RFC §13.6): its binding comes with its CHANNEL_ATTACHED
+    record, and the cancelled post sends nothing."""
+    sms = await _sms_room(kit, agent=None)
+    host = _SlowAttachHost()
+    kit.register_channel(host)
+    posting = asyncio.create_task(kit.post("r", "Notice."))
+    await host.attaching.wait()
+
+    posting.cancel()
+    await asyncio.sleep(0)
+    host.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await posting
+
+    assert await kit.store.get_binding("r", "host") is not None
+    assert await _host_attachments(kit) == 1
+    assert sms.sent == []
+
+
 async def test_post_reaches_the_correspondent_of_a_discussion_room(kit):
     sms = await _sms_room(
         kit, agent=MockAIProvider(["unused"]), orchestration=Discussion(agents=["assistant"])
@@ -274,11 +350,16 @@ async def test_the_host_s_words_are_a_person_s_message_to_the_room_s_routing(
 
 
 async def _detach_after_a_post(kit: RoomKit) -> None:
-    await kit.post("r", "An earlier notice.")
+    await kit.post("r", "An earlier notice.", idempotency_key="notice")
     await kit.detach_channel("r", "host")
 
 
 async def _close(kit: RoomKit) -> None:
+    await kit.close_room("r")
+
+
+async def _close_after_a_post(kit: RoomKit) -> None:
+    await kit.post("r", "An earlier notice.", idempotency_key="notice")
     await kit.close_room("r")
 
 
@@ -296,6 +377,17 @@ _REFUSALS: dict[str, tuple[Callable[[RoomKit], Awaitable[None]], dict[str, Any],
     "host taken by another type": (_take_host_id, {}, ValueError),
     "a closed room": (_close, {}, RoomClosedError),
     "a detached host channel": (_detach_after_a_post, {}, ChannelNotFoundError),
+    # The room's status and binding are read before the key (RFC §10.1).
+    "a replay into a room closed since": (
+        _close_after_a_post,
+        {"idempotency_key": "notice"},
+        RoomClosedError,
+    ),
+    "a replay after a detach": (
+        _detach_after_a_post,
+        {"idempotency_key": "notice"},
+        ChannelNotFoundError,
+    ),
     "another organization's room": (_nothing, {"organization_id": "other"}, RoomNotFoundError),
     "a key in the framework's namespace": (
         _nothing,
@@ -407,10 +499,28 @@ async def test_a_post_replayed_from_the_room_s_work_draws_no_pass(needs_lock):
         await kit.close()
 
 
-async def test_the_host_channel_narrows_nothing_an_agent_may_answer_with(kit):
-    """Never delivered to, the host channel is no transport an answer
-    reaches: the agent may use what the room's other transports carry
-    (RFC A.14.1), and the channel declares every media type it may post."""
+async def _post_once(kit: RoomKit) -> None:
+    await kit.post("r", "Your order shipped.")
+
+
+async def _sms_received_only(kit: RoomKit) -> None:
+    kit.register_channel(SMSChannel("sms", provider=MockSMSProvider()))
+    await kit.attach_channel(
+        "r", "sms", metadata={"phone_number": CUSTOMER}, direction=ChannelDirection.INBOUND
+    )
+
+
+@pytest.mark.parametrize(
+    "bind_another",
+    [_post_once, _sms_received_only],
+    ids=["the host channel", "an SMS bound INBOUND"],
+)
+async def test_a_transport_that_does_not_send_narrows_nothing_an_agent_may_answer_with(
+    kit, bind_another
+):
+    """Never delivered to, a transport that does not send is no transport an
+    answer reaches: the agent may use what the transports that send carry
+    (RFC §4.2, §6.7, §10.5), a WebSocket's six media types and rich text."""
     ai = MockAIProvider(["Sure."])
     ws = WebSocketChannel("ws")
     kit.register_channel(ws)
@@ -418,8 +528,8 @@ async def test_the_host_channel_narrows_nothing_an_agent_may_answer_with(kit):
     await kit.create_room(room_id="r")
     await kit.attach_channel("r", "ws")
     await kit.attach_channel("r", "assistant", category=ChannelCategory.INTELLIGENCE)
+    await bind_another(kit)
 
-    await kit.post("r", "Your order shipped.")
     await kit.process_inbound(
         InboundMessage(channel_id="ws", sender_id="u", content=TextContent(body="Thanks!")),
         room_id="r",
@@ -431,6 +541,3 @@ async def test_the_host_channel_narrows_nothing_an_agent_may_answer_with(kit):
     assert context.target_capabilities.model_dump(exclude={"media_types"}) == carried.model_dump(
         exclude={"media_types"}
     )
-    binding = await kit.store.get_binding("r", "host")
-    assert binding is not None
-    assert set(binding.capabilities.media_types) == set(ChannelMediaType)

@@ -45,17 +45,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   work; a blank key is no key. A room that never bound the host channel gets
   it attached on its first post, in one section under the room lock:
   concurrent first posts attach it once, and a binding the integrator sets,
-  before or concurrently, keeps its settings. A room the host channel was
-  detached from is refused with `ChannelNotFoundError`, a closed or archived
-  room with `RoomClosedError`, and an argument `send_event()` refuses before
-  the attach, each with nothing written. A host channel attached as
-  `INTELLIGENCE` raises `ValueError`, and so does `process_inbound()` on it,
-  before anything is read. It declares every media type, and narrows nothing
-  an agent's answer may carry (see "an agent's answer is narrowed only by
-  the transports it reaches"). An intelligence channel used for this was
-  refused by a Discussion room and turned the host's words into an agent's
-  output; a `SYSTEM` source dropped the author. `deliver()` remains the way
-  in for the room's agents.
+  before or concurrently, keeps its settings. One `process_timeout` bounds
+  the whole call, the wait for that lock included (`ProcessTimeoutError`),
+  and once the lock is held the attach runs to its end, a cancelled
+  caller's included. A room the host channel was detached from is refused
+  with `ChannelNotFoundError`, a closed or archived room with
+  `RoomClosedError`, and an argument `send_event()` refuses before the
+  attach, each with nothing written. A host channel attached as
+  `INTELLIGENCE` raises `ValueError` before anything is written, and
+  `process_inbound()` on it before anything is read. It declares every media
+  type, and narrows nothing an agent's answer may carry (see "an agent's
+  answer is narrowed only by the transports that send"). An intelligence
+  channel used for this was refused by a Discussion room and turned the
+  host's words into an agent's output; a `SYSTEM` source dropped the author.
+  `deliver()` remains the way in for the room's agents.
   Rolling upgrade: a version before this one cannot read a stored `"host"`
   channel type. Its store reads of the room's bindings and events raise
   `ValidationError` once a post wrote one, so every worker sharing a store
@@ -179,12 +182,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- An agent's answer is narrowed only by the transports it reaches (RFC §4.2,
-  RMK-947). The media types and capabilities a turn is given intersected
-  every transport of the room, one never delivered to included: a binding
-  attached with `direction=ChannelDirection.INBOUND` cut what the answer
-  could carry to what that binding declared (text only, without rich text,
-  typing or reactions, for most channels).
+- An agent's answer is narrowed only by the transports that send (RFC §6.7,
+  §10.5, RMK-947). The media types and capabilities a turn is given
+  intersected every transport of the room, one never delivered to included:
+  a binding attached with `direction=ChannelDirection.INBOUND` cut what the
+  answer could carry to what that binding declared, an SMS's text and media
+  in a WebSocket room, without rich text, typing or reactions.
 
 - **A turn's live ephemerals reach no one its answer would not reach**
   (RFC §8.4, §10.6.3, RMK-952). A turn's reasoning (`THINKING_*`), its tool
