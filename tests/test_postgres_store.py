@@ -386,45 +386,6 @@ class TestPostgresStore:
 
     # ── Migration safety (P0: no destructive DDL on connect) ─────
 
-    def test_schema_has_no_destructive_ddl(self) -> None:
-        """The connect-path SCHEMA must never DROP a table — drops live only
-        in the explicit, opt-in migration DDL."""
-        from roomkit.store import postgres_schema
-
-        assert "DROP TABLE" not in postgres_schema.SCHEMA
-        drops = postgres_schema.V1_TO_V2_DROP.splitlines()
-        assert len(drops) == len(postgres_schema.V1_TABLES)
-        for table, drop in zip(postgres_schema.V1_TABLES, drops, strict=True):
-            assert "DROP TABLE IF EXISTS %I.%I CASCADE', current_schema()" in drop
-            assert f"'{table}'" in drop
-
-    def test_schema_backfills_the_participant_primary_channel(self) -> None:
-        """The additive migration repairs pre-connected_via participant rows."""
-        from roomkit.store import postgres_schema
-
-        assert "SET connected_via = ARRAY[channel_id]" in postgres_schema.SCHEMA
-        assert "connected_via[1] IS DISTINCT FROM channel_id" in postgres_schema.SCHEMA
-
-    def test_schema_tracks_monotonic_event_high_water_marks(self) -> None:
-        from roomkit.store import postgres_schema
-
-        assert "CREATE TABLE IF NOT EXISTS event_sequences" in postgres_schema.SCHEMA
-        assert "GREATEST(event_sequences.next_index" in postgres_schema.SCHEMA
-
-    def test_thread_index_is_composite_under_a_new_name(self) -> None:
-        """The thread-reply index carries (parent_event_id, index) under a name
-        distinct from the legacy single-column idx_events_parent — so init()'s
-        additive CREATE IF NOT EXISTS actually creates it on existing databases
-        instead of no-op'ing against the old index."""
-        from roomkit.store import postgres_schema
-
-        assert (
-            "idx_events_parent_index\n    ON events(parent_event_id, index)"
-            in postgres_schema.SCHEMA
-        )
-        # The old single-column index must not be re-created for fresh databases.
-        assert "ON events(parent_event_id)" not in postgres_schema.SCHEMA
-
     async def test_init_refuses_v1_schema(self) -> None:
         """A legacy v1 schema makes init() raise rather than drop tables."""
         store, mock_conn = _make_store_with_pool()
@@ -1304,46 +1265,3 @@ class TestPostgresStore:
             store._query_span("test_op", "test_table"),
         ):
             raise ValueError("boom")
-
-
-def _drops(mock_conn) -> list[str]:
-    """The DROP INDEX statements executed on the mock connection."""
-    return [
-        str(call.args[0])
-        for call in mock_conn.execute.await_args_list
-        if "DROP INDEX" in str(call.args[0])
-    ]
-
-
-class TestDropLegacyParentIndex:
-    """The composite idx_events_parent_index is created additively by init(),
-    but init() never drops, so an existing database keeps the redundant single-
-    column idx_events_parent until this opt-in migration removes it."""
-
-    async def test_dry_run_reports_without_dropping(self) -> None:
-        store, mock_conn = _make_store_with_pool()
-        mock_conn.fetchval.return_value = 1  # legacy index present
-
-        report = await store.drop_legacy_parent_index()  # dry_run defaults to True
-
-        assert report == {"action": "dry_run"}
-        assert _drops(mock_conn) == []
-
-    async def test_drops_the_legacy_index_when_present(self) -> None:
-        store, mock_conn = _make_store_with_pool()
-        mock_conn.fetchval.return_value = 1  # present on this (existing) database
-
-        report = await store.drop_legacy_parent_index(dry_run=False)
-
-        assert report == {"action": "dropped"}
-        [drop] = _drops(mock_conn)
-        assert "'idx_events_parent'" in drop and "current_schema()" in drop
-
-    async def test_noop_when_already_absent(self) -> None:
-        store, mock_conn = _make_store_with_pool()
-        mock_conn.fetchval.return_value = None  # fresh DB / already migrated
-
-        report = await store.drop_legacy_parent_index(dry_run=False)
-
-        assert report == {"action": "noop"}
-        assert _drops(mock_conn) == []

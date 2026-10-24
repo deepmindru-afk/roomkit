@@ -89,6 +89,27 @@ def _add_missing_columns(table: str, columns: dict[str, str]) -> str:
     return "".join(("DO $$\nBEGIN\n", *checks, "END $$;\n"))
 
 
+def _index_check(table: str, name: str, definition: str, unique: bool) -> str:
+    """The check creating index *name* on *table* when the schema this
+    session writes to lacks it."""
+    kind = "UNIQUE INDEX" if unique else "INDEX"
+    return (
+        f"    IF to_regclass(format('%I.%I', current_schema(), '{name}')) IS NULL THEN\n"
+        f"        CREATE {kind} {name} ON {table} {definition};\n"
+        "    END IF;\n"
+    )
+
+
+def _create_missing_indexes(table: str, indexes: dict[str, str], *, unique: bool = False) -> str:
+    """A block creating each of *indexes* (name: columns and predicate) on
+    *table*, only when the schema this session writes to lacks it. ``CREATE
+    INDEX`` takes SHARE on the table even when ``IF NOT EXISTS`` finds the
+    index, which waits for every open writer of the table, and every writer
+    then waits behind it."""
+    checks = (_index_check(table, name, cols, unique) for name, cols in indexes.items())
+    return "".join(("DO $$\nBEGIN\n", *checks, "END $$;\n"))
+
+
 # Additive, idempotent schema. Run on every connect. Contains no DROP TABLE.
 SCHEMA = "".join(
     (
@@ -235,10 +256,15 @@ END $$;
         _add_missing_columns(
             "rooms", {"agent_response_policy": "TEXT NOT NULL DEFAULT 'agent_chain'"}
         ),
+        _create_missing_indexes(
+            "rooms",
+            {
+                "idx_rooms_org": "(organization_id)",
+                "idx_rooms_status": "(status)",
+                "idx_rooms_updated": "(updated_at DESC)",
+            },
+        ),
         """\
-CREATE INDEX IF NOT EXISTS idx_rooms_org ON rooms(organization_id);
-CREATE INDEX IF NOT EXISTS idx_rooms_status ON rooms(status);
-CREATE INDEX IF NOT EXISTS idx_rooms_updated ON rooms(updated_at DESC);
 
 -- events
 CREATE TABLE IF NOT EXISTS events (
@@ -287,25 +313,36 @@ CREATE TABLE IF NOT EXISTS events (
                 "delivery_results": "JSONB NOT NULL DEFAULT '{}'",
             },
         ),
+        _create_missing_indexes(
+            "events", {"idx_events_room_index": "(room_id, index)"}, unique=True
+        ),
         """\
-CREATE UNIQUE INDEX IF NOT EXISTS idx_events_room_index ON events(room_id, index);
-CREATE INDEX IF NOT EXISTS idx_events_room_created ON events(room_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_events_room_type ON events(room_id, type);
-CREATE INDEX IF NOT EXISTS idx_events_correlation
-    ON events(correlation_id) WHERE correlation_id IS NOT NULL;
--- Composite on (parent_event_id, index): thread-reply pagination filters by
--- parent_event_id then reads forward ORDER BY index, so the second column lets
--- Postgres return the page pre-sorted instead of sorting the whole thread. The
--- leading column still serves plain parent_event_id lookups. A distinct name
--- (not the older single-column idx_events_parent) so init()'s additive
--- CREATE IF NOT EXISTS actually creates it on databases that predate the
+-- Composite idx_events_parent_index on (parent_event_id, index): thread-reply
+-- pagination filters by parent_event_id then reads forward ORDER BY index, so
+-- the second column lets Postgres return the page pre-sorted instead of
+-- sorting the whole thread. The leading column still serves plain
+-- parent_event_id lookups. A distinct name (not the older single-column
+-- idx_events_parent) so init() creates it on databases that predate the
 -- composite; PostgresStore.drop_legacy_parent_index() removes the old one.
-CREATE INDEX IF NOT EXISTS idx_events_parent_index
-    ON events(parent_event_id, index) WHERE parent_event_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_events_source ON events(source_channel_id);
--- A request's answers: the events of a room that answer a given event.
-CREATE INDEX IF NOT EXISTS idx_events_room_responds_to
-    ON events(room_id, responds_to) WHERE responds_to IS NOT NULL;
+-- idx_events_room_responds_to finds a request's answers: the events of a
+-- room that answer a given event.
+""",
+        _create_missing_indexes(
+            "events",
+            {
+                "idx_events_room_created": "(room_id, created_at)",
+                "idx_events_room_type": "(room_id, type)",
+                "idx_events_correlation": "(correlation_id) WHERE correlation_id IS NOT NULL",
+                "idx_events_parent_index": (
+                    "(parent_event_id, index) WHERE parent_event_id IS NOT NULL"
+                ),
+                "idx_events_source": "(source_channel_id)",
+                "idx_events_room_responds_to": (
+                    "(room_id, responds_to) WHERE responds_to IS NOT NULL"
+                ),
+            },
+        ),
+        """\
 -- An idempotency key is unique per room and per source channel (RFC §13.4):
 -- the per-room index gives way to one that names the channel. Keys unique
 -- per room are unique per room and channel, so the new index always builds.
@@ -319,39 +356,55 @@ BEGIN
         EXECUTE format('DROP INDEX %I.%I', current_schema(), 'idx_events_idempotency');
     END IF;
 END $$;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotency_channel
-    ON events(room_id, source_channel_id, idempotency_key)
-    WHERE idempotency_key IS NOT NULL;
+""",
+        _create_missing_indexes(
+            "events",
+            {
+                "idx_events_idempotency_channel": (
+                    "(room_id, source_channel_id, idempotency_key)"
+                    " WHERE idempotency_key IS NOT NULL"
+                )
+            },
+            unique=True,
+        ),
+        """\
 -- A proactive delivery's key is looked up within its room, whatever channel
--- committed it (RFC §22.1). Created only when missing: CREATE INDEX takes a
--- lock on events even when the index exists.
-DO $$
-BEGIN
-    IF to_regclass(format('%I.%I', current_schema(), 'idx_events_room_idempotency')) IS NULL THEN
-        CREATE INDEX idx_events_room_idempotency ON events(room_id, idempotency_key)
-            WHERE idempotency_key IS NOT NULL;
-    END IF;
-END $$;
+-- committed it (RFC §22.1).
+""",
+        _create_missing_indexes(
+            "events",
+            {
+                "idx_events_room_idempotency": (
+                    "(room_id, idempotency_key) WHERE idempotency_key IS NOT NULL"
+                )
+            },
+        ),
+        """\
 
 -- Per-room high-water marks make indexes monotonic even when the latest
--- event is deleted. The UPSERT is an additive backfill for deployments that
--- predate this table; room counters preserve commit_event history while the
--- live MAX covers events inserted directly through add_event().
-CREATE TABLE IF NOT EXISTS event_sequences (
-    room_id    TEXT PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
-    next_index INTEGER NOT NULL DEFAULT 0 CHECK (next_index >= 0)
-);
-INSERT INTO event_sequences(room_id, next_index)
-SELECT r.id,
-       GREATEST(
-           CASE WHEN r.event_count > 0 THEN r.latest_index + 1 ELSE 0 END,
-           COALESCE(MAX(e.index) + 1, 0)
-       )
-FROM rooms r
-LEFT JOIN events e ON e.room_id = r.id
-GROUP BY r.id, r.event_count, r.latest_index
-ON CONFLICT(room_id) DO UPDATE SET
-    next_index = GREATEST(event_sequences.next_index, EXCLUDED.next_index);
+-- event is deleted. Every write keeps them since the table exists (an insert
+-- observes its index, a commit reserves the next), so the backfill from the
+-- rooms and events of a deployment that predates it runs in the boot that
+-- creates it, and only then: run at every boot it wrote every row, waiting on
+-- any commit holding one, and every commit then waited behind it.
+DO $$
+BEGIN
+    IF to_regclass(format('%I.%I', current_schema(), 'event_sequences')) IS NULL THEN
+        CREATE TABLE event_sequences (
+            room_id    TEXT PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
+            next_index INTEGER NOT NULL DEFAULT 0 CHECK (next_index >= 0)
+        );
+        INSERT INTO event_sequences(room_id, next_index)
+        SELECT r.id,
+               GREATEST(
+                   CASE WHEN r.event_count > 0 THEN r.latest_index + 1 ELSE 0 END,
+                   COALESCE(MAX(e.index) + 1, 0)
+               )
+        FROM rooms r
+        LEFT JOIN events e ON e.room_id = r.id
+        GROUP BY r.id, r.event_count, r.latest_index;
+    END IF;
+END $$;
 
 -- bindings
 CREATE TABLE IF NOT EXISTS bindings (
@@ -371,7 +424,6 @@ CREATE TABLE IF NOT EXISTS bindings (
     metadata      JSONB NOT NULL DEFAULT '{}',
     PRIMARY KEY (room_id, channel_id)
 );
-CREATE INDEX IF NOT EXISTS idx_bindings_channel_id ON bindings(channel_id);
 
 -- Nullable policies preserve defaults for existing deployments, and retain
 -- existing binding rows. A group binding admits every sender (RFC §10.4);
@@ -388,8 +440,15 @@ CREATE INDEX IF NOT EXISTS idx_bindings_channel_id ON bindings(channel_id);
         """\
 -- Routing reads the binding of one channel naming one sender (RFC §10.4): on
 -- a number shared by many correspondents every binding has the same channel.
-CREATE INDEX IF NOT EXISTS idx_bindings_channel_participant
-    ON bindings(channel_id, participant_id);
+""",
+        _create_missing_indexes(
+            "bindings",
+            {
+                "idx_bindings_channel_id": "(channel_id)",
+                "idx_bindings_channel_participant": "(channel_id, participant_id)",
+            },
+        ),
+        """\
 
 -- participants
 CREATE TABLE IF NOT EXISTS participants (
@@ -418,18 +477,18 @@ CREATE TABLE IF NOT EXISTS participants (
 UPDATE participants
 SET connected_via = ARRAY[channel_id] || array_remove(connected_via, channel_id)
 WHERE connected_via[1] IS DISTINCT FROM channel_id;
-CREATE INDEX IF NOT EXISTS idx_participants_channel
-    ON participants(room_id, channel_id);
--- Routing reads the rooms a sender is a participant of (RFC §10.4 step 1).
-CREATE INDEX IF NOT EXISTS idx_participants_id ON participants(id);
--- Routing names a participant by its identity too (RFC §10.4 step 1).
--- Created only when missing, as idx_events_room_idempotency is.
-DO $$
-BEGIN
-    IF to_regclass(format('%I.%I', current_schema(), 'idx_participants_identity')) IS NULL THEN
-        CREATE INDEX idx_participants_identity ON participants(identity_id);
-    END IF;
-END $$;
+-- Routing reads the rooms a sender is a participant of, and names a
+-- participant by its identity too (RFC §10.4 step 1).
+""",
+        _create_missing_indexes(
+            "participants",
+            {
+                "idx_participants_channel": "(room_id, channel_id)",
+                "idx_participants_id": "(id)",
+                "idx_participants_identity": "(identity_id)",
+            },
+        ),
+        """\
 
 -- identities
 CREATE TABLE IF NOT EXISTS identities (
@@ -504,7 +563,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     metadata    JSONB NOT NULL DEFAULT '{}'
 );
-CREATE INDEX IF NOT EXISTS idx_tasks_room_id ON tasks(room_id);
+""",
+        _create_missing_indexes("tasks", {"idx_tasks_room_id": "(room_id)"}),
+        """\
 
 -- observations
 CREATE TABLE IF NOT EXISTS observations (
@@ -517,7 +578,9 @@ CREATE TABLE IF NOT EXISTS observations (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     metadata    JSONB NOT NULL DEFAULT '{}'
 );
-CREATE INDEX IF NOT EXISTS idx_observations_room_id ON observations(room_id);
+""",
+        _create_missing_indexes("observations", {"idx_observations_room_id": "(room_id)"}),
+        """\
 
 -- read tracking
 CREATE TABLE IF NOT EXISTS read_markers (

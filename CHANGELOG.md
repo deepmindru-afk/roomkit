@@ -98,14 +98,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tenant lacked. Every catalog lookup and every drop now names the session's
   own schema.
 
-- **Postgres `init()` takes no table lock on an up-to-date schema**
-  (RMK-942). It ran `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` on `rooms`,
-  `bindings`, `participants` and `identity_addresses` at every boot, which
-  takes ACCESS EXCLUSIVE even when the column exists: a worker starting
-  while a transaction read one of these tables waited for it, and every
-  query on the table queued behind the boot. 0.108.0 guarded the columns of
-  `events`; every column a release added is now added only when its table,
-  in the session's schema, lacks it.
+- **Postgres `init()` on an up-to-date schema waits on no open transaction,
+  and no query waits on it** (RMK-942). At every boot it ran `ALTER TABLE
+  ... ADD COLUMN IF NOT EXISTS` on `rooms`, `bindings`, `participants` and
+  `identity_addresses`, which takes ACCESS EXCLUSIVE even when the column
+  exists, so it waited for any reader of these tables; `CREATE INDEX IF NOT
+  EXISTS` on every table, which takes SHARE even when the index exists, so
+  it waited for any writer; and the `event_sequences` catch-up, which wrote
+  every row, so it waited for any commit in flight. Every query on the table
+  then queued behind the boot. 0.108.0 guarded the columns of `events`. Now
+  a column and an index are created only when the session's schema lacks
+  them, and the high-water marks are seeded from the rooms and events once,
+  in the boot that creates `event_sequences`: every write keeps them since.
+  On an up-to-date schema the boot takes ROW EXCLUSIVE on `participants`
+  (its `connected_via` repair, which updates no row there) and on
+  `schema_version`, neither of which a reader or a writer waits on.
 
 ## [0.108.0] — 2026-10-24
 

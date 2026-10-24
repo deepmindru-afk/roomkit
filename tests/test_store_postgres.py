@@ -982,25 +982,69 @@ async def test_binding_policy_migration_preserves_old_rows(store) -> None:
     assert await store.get_binding("r1", "sms") == changed
 
 
-async def test_init_indexes_the_routing_and_key_lookups_once(store) -> None:
-    """A proactive key is looked up within its room (RFC §22.1), a
-    participant by its identity (§10.4): init() creates both indexes when
-    they are missing, and leaves them be when present."""
-    names = ("idx_events_room_idempotency", "idx_participants_identity")
+async def test_init_creates_each_index_it_lacks_and_leaves_the_others_be(store) -> None:
+    """init() creates every index of its schema that is missing, as it
+    defines it (a unique one unique, a partial one partial, the thread
+    index composite), and finds an index present as it is."""
+    indexes = "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = current_schema()"
     async with store._pool.acquire() as conn:
-        for name in names:
-            await conn.execute(f"DROP INDEX {name}")
+        before = {row["indexname"]: row["indexdef"] for row in await conn.fetch(indexes)}
+        for name in before:
+            if name.startswith("idx_"):
+                await conn.execute(f'DROP INDEX "{name}"')
     await store.init()
     await store.init()
     async with store._pool.acquire() as conn:
-        found = {
-            row["indexname"]
-            for row in await conn.fetch(
-                "SELECT indexname FROM pg_indexes WHERE indexname = ANY($1::text[])",
-                list(names),
-            )
-        }
-    assert found == set(names)
+        after = {row["indexname"]: row["indexdef"] for row in await conn.fetch(indexes)}
+    assert after == before
+    assert "(parent_event_id, index) WHERE" in after["idx_events_parent_index"]
+
+
+async def test_the_legacy_parent_index_is_dropped_on_request_only(store) -> None:
+    """init() never drops: the single-column idx_events_parent the composite
+    supersedes stays until drop_legacy_parent_index() is asked, which a dry
+    run only reports."""
+    legacy = "SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1"
+    async with store._pool.acquire() as conn:
+        await conn.execute("CREATE INDEX idx_events_parent ON events(parent_event_id)")
+    try:
+        await store.init()
+        dry = await store.drop_legacy_parent_index()
+        async with store._pool.acquire() as conn:
+            kept = await conn.fetchval(legacy, "idx_events_parent")
+        dropped = await store.drop_legacy_parent_index(dry_run=False)
+        again = await store.drop_legacy_parent_index(dry_run=False)
+        async with store._pool.acquire() as conn:
+            gone = await conn.fetchval(legacy, "idx_events_parent") is None
+    finally:
+        async with store._pool.acquire() as conn:
+            await conn.execute("DROP INDEX IF EXISTS idx_events_parent")
+    assert (dry, dropped, again) == (
+        {"action": "dry_run"},
+        {"action": "dropped"},
+        {"action": "noop"},
+    )
+    assert kept == 1 and gone
+
+
+async def test_init_seeds_the_index_marks_of_a_store_from_before_them(store) -> None:
+    """A store from before the per-room high-water marks gains them at its
+    first init(), seeded from its rooms and events, so the next commit takes
+    the next index."""
+    await store.create_room(Room(id="r1"))
+    await store.create_room(Room(id="r2"))
+    for _ in range(3):
+        await store.commit_event("r1", _make_event())
+    async with store._pool.acquire() as conn:
+        await conn.execute("DROP TABLE event_sequences")
+    await store.init()
+
+    committed = await store.commit_event("r1", _make_event())
+
+    assert committed.index == 3
+    async with store._pool.acquire() as conn:
+        seeded = await conn.fetch("SELECT room_id, next_index FROM event_sequences")
+    assert {(row["room_id"], row["next_index"]) for row in seeded} == {("r1", 4), ("r2", 0)}
 
 
 async def test_a_store_from_before_group_bindings_upgrades_its_rows(store) -> None:
@@ -1136,27 +1180,44 @@ async def test_a_held_id_is_the_driver_s_refusal_whatever_the_index_order(
     assert [e.id for e in await store.list_events("r1")] == [held.id]
 
 
-@pytest.mark.parametrize(
-    "table", ["events", "rooms", "bindings", "participants", "identity_addresses"]
-)
-async def test_a_second_init_waits_on_no_reader_of_its_tables(store, table: str) -> None:
-    """``init()`` on an up-to-date schema adds no column, so it takes no lock
-    that queues behind a reader of a table it once added columns to (an
-    ``ALTER TABLE`` takes ACCESS EXCLUSIVE, even when ``IF NOT EXISTS`` finds
-    the column, and waits for every open transaction on the table)."""
+# Open transactions a booting worker meets: readers of the tables init()
+# once added columns to, a writer of a room, and a commit reserving an index.
+_OPEN_TRANSACTIONS = {
+    **{
+        f"reader of {table}": f"SELECT count(*) FROM {table}"
+        for table in ("events", "rooms", "bindings", "participants", "identity_addresses")
+    },
+    "writer of a room": "UPDATE rooms SET updated_at = now() WHERE id = 'r1'",
+    "commit reserving an index": (
+        "UPDATE event_sequences SET next_index = next_index + 1 WHERE room_id = 'r1'"
+    ),
+}
+
+
+@pytest.mark.parametrize("holder", list(_OPEN_TRANSACTIONS))
+async def test_a_second_init_waits_on_no_open_transaction(store, holder: str) -> None:
+    """``init()`` on an up-to-date schema takes no lock an open transaction
+    on its tables holds against it: no ``ALTER TABLE`` (ACCESS EXCLUSIVE,
+    even when ``IF NOT EXISTS`` finds the column), no ``CREATE INDEX``
+    (SHARE, which waits for every writer, even when ``IF NOT EXISTS`` finds
+    the index), and no write of a row a commit holds."""
     import asyncpg
 
     from roomkit.store.postgres import PostgresStore
 
-    reader = await asyncpg.connect(POSTGRES_DSN)
-    again = PostgresStore(dsn=POSTGRES_DSN)
+    await store.create_room(Room(id="r1"))
+    await store.commit_event("r1", _make_event())
+    other = await asyncpg.connect(POSTGRES_DSN)
+    pool = await asyncpg.create_pool(
+        POSTGRES_DSN, min_size=1, max_size=1, server_settings={"lock_timeout": "500ms"}
+    )
     try:
-        async with reader.transaction():
-            await reader.execute(f"SELECT count(*) FROM {table}")
-            await asyncio.wait_for(again.init(min_size=1, max_size=1), 1)
+        async with other.transaction():
+            await other.execute(_OPEN_TRANSACTIONS[holder])
+            await PostgresStore(pool=pool).init()
     finally:
-        await again.close()
-        await reader.close()
+        await pool.close()
+        await other.close()
 
 
 # What an older deployment left in its schema: a v1 ``rooms.data`` column,
