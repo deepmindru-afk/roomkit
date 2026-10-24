@@ -724,6 +724,30 @@ class TestACallFromAnAsyncHook:
         finally:
             await kit.close()
 
+    async def test_a_hook_opening_a_room_after_every_event_stops_at_the_cap(self) -> None:
+        """A message the hook sends that opens a room is the cascade's work
+        too, charged before the room is created: a hook that opens a room
+        after every event, each room's message firing it again, stops at the
+        cap."""
+        kit = RoomKit(max_chain_depth=1, inbound_router=_NoRoom())
+        calls: list[None] = []
+        answers: list[InboundResult] = []
+
+        @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="open")
+        async def open_room(event: RoomEvent, ctx: RoomContext) -> None:
+            if event.type is EventType.MESSAGE and len(calls) <= 2 * BUDGET:
+                calls.append(None)
+                answers.append(await kit.process_inbound(_message("again")))
+
+        await _room(kit)
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message(), room_id="r1"), 5)
+            # Each call waits for the room it opens, so the last one answers first.
+            assert [a.reason for a in answers] == ["reentry_loop_cap"] + [None] * BUDGET
+            assert len(await kit.store.list_rooms()) == 1 + BUDGET
+        finally:
+            await kit.close()
+
     async def test_a_hook_posting_to_the_agent_after_each_answer_stops_at_the_cap(
         self,
     ) -> None:
