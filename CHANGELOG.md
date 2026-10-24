@@ -183,6 +183,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reply naming a reply whose root a hard delete removed
   (`cascade_replies=False` kept the reply) named the removed root, and is
   now posted at the top level, as one naming no event of the room is.
+  Migrate: a `commit_event()` whose parent the room does not hold (yet)
+  loses it, logged as a warning: an import that commits a reply before its
+  root, or a reference to another room's event, commits the root first or
+  keeps the reference in its metadata. An answer, an injected event or a
+  record that named a reply now names its thread's root: code that read its
+  `parent_event_id` to find the message it answers reads `responds_to`,
+  which an agent's answer carries and which an injected event or a record
+  can be given.
 
 ### Fixed
 
