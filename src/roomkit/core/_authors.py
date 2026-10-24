@@ -93,8 +93,12 @@ class People:
         """Whether *event*'s id is a participant's the room reached through
         other channels only: it names nobody on the event's channel, and read
         back on its own it would name them."""
-        pid = event.source.participant_id
-        return pid is not None and pid in self._by_id and self.named(event) is None
+        return self.names_another_on(event.source.participant_id, event.source.channel_id)
+
+    def names_another_on(self, pid: str | None, channel: str) -> bool:
+        """Whether *pid* is a participant's the room reached through channels
+        other than *channel* only, as :meth:`names_another` reads an event."""
+        return pid is not None and pid in self._by_id and self.named_on(pid, channel) is None
 
     def _standing_for(self, record: Participant) -> Participant:
         """The record standing for *record*'s person: its identity's first."""

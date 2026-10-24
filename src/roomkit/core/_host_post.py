@@ -103,12 +103,17 @@ async def _refuse_unreached_speaker(
     """
     await kit.get_room(room_id, organization_id=organization_id)
     people = People(await kit.store.list_participants(room_id))
-    if people.named_on(participant_id, host_id) is None:
-        raise ParticipantNotFoundError(
-            f"post() speaks as a participant of room {room_id} reached through the host "
-            f"channel {host_id!r}, and {participant_id!r} names none: add them with "
-            f"kit.add_member({room_id!r}, {host_id!r}, {participant_id!r})"
-        )
+    if people.named_on(participant_id, host_id) is not None:
+        return
+    if people.names_another_on(participant_id, host_id):
+        why = "names a participant reached through other channels only"
+    else:
+        why = "names nobody of the room"
+    raise ParticipantNotFoundError(
+        f"post() speaks as a participant of room {room_id} the host channel {host_id!r} "
+        f"reaches, and {participant_id!r} {why}. The host's own speakers are members "
+        f"added on that channel: kit.add_member(room_id, {host_id!r}, speaker_id)"
+    )
 
 
 async def _attach_on_first_post(

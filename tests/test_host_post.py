@@ -510,6 +510,27 @@ async def test_a_refused_post_writes_nothing(kit, setup, arguments, error):
     assert sms.sent == texted
 
 
+@pytest.mark.parametrize(
+    ("setup", "speaker", "says"),
+    [
+        (_nothing, "ghost", "names nobody"),
+        (_customer_on_sms, CUSTOMER, "reached through other channels only"),
+    ],
+    ids=["an unknown speaker", "a speaker reached through SMS only"],
+)
+async def test_a_refused_speaker_is_told_why(kit, setup, speaker, says):
+    """The refusal says why, and never suggests adding the refused id on
+    the host channel, which would have the host speak in that person's
+    name."""
+    await _sms_room(kit, agent=None)
+    await setup(kit)
+
+    with pytest.raises(ParticipantNotFoundError, match=says) as refused:
+        await kit.post("r", "Never sent.", participant_id=speaker)
+
+    assert repr(speaker) not in str(refused.value).split("add_member", 1)[-1]
+
+
 async def _desk_on_host(kit: RoomKit) -> None:
     await kit.add_member("r", "host", "desk", identity_id="id-desk", display_name="Acme Support")
 
