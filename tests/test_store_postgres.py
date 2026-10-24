@@ -1106,6 +1106,36 @@ async def test_init_records_when_a_room_stored_paused_before_paused_at_paused(st
     assert active.paused_at is None
 
 
+@pytest.mark.parametrize("write", ["commit_event", "add_event", "add_event_auto_index"])
+async def test_a_held_id_is_the_driver_s_refusal_whatever_the_index_order(
+    store, write: str
+) -> None:
+    """RFC §14.3: a second write of a stored event, its key held with it, is
+    the database's refusal of the id (``UniqueViolationError``), and another
+    event under the key is a taken key, whichever unique index Postgres
+    checks first: after ``REINDEX ... CONCURRENTLY`` the primary key is the
+    newest index, checked last."""
+    import asyncpg
+
+    from roomkit.core.exceptions import IdempotencyKeyTakenError
+
+    async with store._pool.acquire() as conn:
+        await conn.execute("REINDEX INDEX CONCURRENTLY events_pkey")
+    await store.create_room(Room(id="r1"))
+    held = await store.commit_event("r1", _make_event(idempotency_key="k"))
+    writes = {
+        "commit_event": lambda event: store.commit_event("r1", event),
+        "add_event": lambda event: store.add_event(event.model_copy(update={"index": 99})),
+        "add_event_auto_index": lambda event: store.add_event_auto_index("r1", event),
+    }
+
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await writes[write](held)
+    with pytest.raises(IdempotencyKeyTakenError):
+        await writes[write](_make_event(idempotency_key="k"))
+    assert [e.id for e in await store.list_events("r1")] == [held.id]
+
+
 @pytest.mark.parametrize(
     "table", ["events", "rooms", "bindings", "participants", "identity_addresses"]
 )

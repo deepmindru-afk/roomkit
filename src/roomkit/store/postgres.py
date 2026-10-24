@@ -15,7 +15,11 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
-from roomkit.core.exceptions import IdentityNotFoundError, RoomNotFoundError
+from roomkit.core.exceptions import (
+    IdempotencyKeyTakenError,
+    IdentityNotFoundError,
+    RoomNotFoundError,
+)
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import EventStatus, RoomStatus, VerificationStatus
 from roomkit.models.event import RoomEvent, ThreadSummary
@@ -109,9 +113,10 @@ _KEY_INDEX = "idx_events_idempotency_channel"
 
 def _refuses_the_key(exc: Exception) -> bool:
     """Whether *exc* is the database refusing an event's key, which its
-    source channel holds in the room for another event: a unique violation
-    on the key's index. One on ``events_pkey``, an id the store holds, is the
-    driver's own error, which a caller catches as such."""
+    source channel holds in the room: a unique violation on the key's index.
+    One on ``events_pkey``, an id the store holds, is the driver's own
+    error, which a caller catches as such; so is a refused key whose event
+    id the store holds (:meth:`PostgresStore._a_held_id_as_such`)."""
     return (
         getattr(exc, "sqlstate", None) == "23505"
         and getattr(exc, "constraint_name", None) == _KEY_INDEX
@@ -491,6 +496,24 @@ class PostgresStore(ConversationStore):
         if bound is not None:
             return _lend(bound)
         return self._ensure_pool().acquire(timeout=self._acquire_timeout)
+
+    @asynccontextmanager
+    async def _a_held_id_as_such(self, event_id: str) -> AsyncGenerator[None, None]:
+        """Around the transaction of an event's insert: a key refused for an
+        event whose id the store holds is a second write of that event, which
+        stays the driver's refusal of the id (RFC §14.3). Postgres reports
+        the first unique index it checks, in index order, which a reindex or
+        a restore changes: whether the id is held is read once the
+        transaction rolled back."""
+        try:
+            yield
+        except IdempotencyKeyTakenError as taken:
+            driver = taken.__cause__
+            async with self._acquire() as conn:
+                held = await conn.fetchval("SELECT 1 FROM events WHERE id = $1", event_id)
+            if held is not None and driver is not None:
+                raise driver from None
+            raise
 
     @asynccontextmanager
     async def connection(self) -> AsyncGenerator[None, None]:
@@ -1127,7 +1150,11 @@ class PostgresStore(ConversationStore):
 
     async def add_event(self, event: RoomEvent) -> RoomEvent:
         with self._query_span("add_event", "events"):
-            async with self._acquire() as conn, conn.transaction():
+            async with (
+                self._a_held_id_as_such(event.id),
+                self._acquire() as conn,
+                conn.transaction(),
+            ):
                 await _observe_event_index(conn, event.room_id, event.index)
                 await _insert_event(conn, event)
         return event
@@ -1430,7 +1457,11 @@ class PostgresStore(ConversationStore):
         never decremented when events are deleted.
         """
         with self._query_span("add_event_auto_index", "events"):
-            async with self._acquire() as conn, conn.transaction():
+            async with (
+                self._a_held_id_as_such(event.id),
+                self._acquire() as conn,
+                conn.transaction(),
+            ):
                 next_idx = await _reserve_event_index(conn, room_id)
                 indexed = event.model_copy(update={"index": next_idx})
                 await _insert_event(conn, indexed)
@@ -1457,7 +1488,11 @@ class PostgresStore(ConversationStore):
         ``last_activity_at`` and resumes a PAUSED room (RFC §5.1).
         """
         with self._query_span("commit_event", "events"):
-            async with self._acquire() as conn, conn.transaction():
+            async with (
+                self._a_held_id_as_such(event.id),
+                self._acquire() as conn,
+                conn.transaction(),
+            ):
                 room_row = await conn.fetchrow(
                     "SELECT * FROM rooms WHERE id = $1 FOR UPDATE",
                     room_id,
