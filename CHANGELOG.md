@@ -82,12 +82,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on `SherpaOnnxTTSConfig`, `SherpaOnnxVADConfig`, `SherpaOnnxDenoiserConfig`
   and `SmartTurnConfig`. A model that is not downloaded raises
   `ModelNotDownloadedError`, whose message is the command that downloads it.
-  Models live in `$ROOMKIT_MODELS_DIR`, else `~/.cache/roomkit/models`.
+  Models live in `$ROOMKIT_MODELS_DIR`, else `~/.cache/roomkit/models`. From
+  Python, `roomkit.local_models` holds the same steps:
+  `download_local_model(model, models_dir=None)` (blocking, for a setup step),
+  `is_downloaded()`, `local_model_dir()`, `find_local_model(name, kind=None)`,
+  `local_model_config(name, kind=...)` (the fields `from_local_model()` builds
+  a config from) and `default_models_dir()`. `LOCAL_MODELS` holds the known
+  models as `LocalModel`s (name, kind, description, size, voices, and its
+  files as `ModelFile`s, each pinned to its SHA-256), `KINDS` the five kinds
+  (`SHERPA_ONNX_STT`, `SHERPA_ONNX_TTS`, `SHERPA_ONNX_VAD`,
+  `SHERPA_ONNX_DENOISER`, `SMART_TURN`), and `MODELS_DIR_ENV` the variable's
+  name. A config takes `from_local_model()` from the `FromLocalModel` mixin
+  and names its kind in `local_model_kind`. A file that cannot be fetched, or
+  does not match its SHA-256, raises `ModelDownloadError`. Neither error is a
+  `RoomKitError`: a `ModelDownloadError` is a `RuntimeError`, a
+  `ModelNotDownloadedError` a `FileNotFoundError`. `LocalModel`, `ModelFile`
+  and both errors are also exported from `roomkit`; the functions and
+  constants are imported from `roomkit.local_models`.
 
-- Kokoro voices by name: `SherpaOnnxTTSConfig.voice_names` (filled by
-  `from_local_model()`) lets `voice="af_heart"` stand where a speaker id is
+- Kokoro voices by name (RMK-893): `SherpaOnnxTTSConfig.voice_names` (filled
+  by `from_local_model()`) lets `voice="af_heart"` stand where a speaker id is
   taken, per synthesis included; `from_local_model(..., voice=...)` sets the
   default voice. A number still reads as a speaker id.
+  `SherpaOnnxTTSConfig.speaker_id_for(voice)` gives the speaker id a name or a
+  number stands for (`None`: the default `speaker_id`; any other value raises
+  `ValueError`, naming the voices), and
+  `roomkit.local_models.KOKORO_V1_VOICES` lists Kokoro v1.0's names in
+  speaker-id order.
 
 - `roomkit[rnnoise]` (`pyrnnoise>=0.4.3`, in `roomkit[all]` too):
   `RNNoiseDenoiserProvider` falls back on the `librnnoise` the `pyrnnoise`
@@ -110,7 +131,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Kitten TTS (RMK-896): `SherpaOnnxTTSConfig(model_type="kitten")` runs a
   Kitten model (model, voices.bin, tokens, espeak-ng data), and the local
   model list carries Kitten v0.8 nano (int8, 31 MB) and mini (68 MB), English,
-  24 kHz, their eight voices named (`voice="expr-voice-2-f"`).
+  24 kHz, their eight voices named (`voice="expr-voice-2-f"`), in
+  `roomkit.local_models.KITTEN_V08_VOICES`.
 
 - Moonshine STT (RMK-897): `SherpaOnnxSTTConfig(mode="moonshine")` runs a
   Moonshine v2 model (encoder, merged decoder, tokens) through sherpa-onnx's
@@ -125,10 +147,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unless `stream_language` fixes it. `examples/voice_local_pocket_fr.py` takes
   it with `STT_MODEL`.
 
-- `roomkit.local_models.list_local_models(kind=None)` (RMK-898): the known
-  local models, or those for one provider config
-  (`list_local_models("sherpa-onnx-tts")`); an unknown kind is refused with
-  the valid ones named. `python -m roomkit.local_models list` reads it.
+- `list_local_models(kind=None)` (RMK-898), imported from the package as the
+  other local model functions are (`from roomkit.local_models import
+  list_local_models`): the known local models, or those for one provider
+  config (`list_local_models("sherpa-onnx-tts")`); an unknown kind is refused
+  with the valid ones named. `python -m roomkit.local_models list` reads it.
 
 - `TurnExecutor.hosts_channel(channel_id)` (RMK-880): whether a channel is
   among those an executor was given (`hosts=`), closed or not, for a turn
@@ -289,7 +312,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   right after it. A direct `send_event()` from code holding the lock still
   commits ahead of the cause, and what its own hooks inject runs once its
   nested section ends, inside the section it nests in. An identity challenge
-  takes the same pass. See "Injected events" in `docs/c7/hooks.md`.
+  takes the same pass. The passes are run by
+  `roomkit.core.mixins.InjectedEventsMixin`, a new base of `RoomKit`. See
+  "Injected events" in `docs/c7/hooks.md`.
   Migrate: a hook that blocks or injects on every event now reads its own
   injections too: it lets them through (by their source or content), or each
   one injects again until the budget; code that read an injected event at the
@@ -731,11 +756,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING — a binding's direction decides delivery, not reception** (RFC
   §4.2, §10.2, RMK-902). Every receiver gets `on_event()`; only a transport
   whose direction sends (`OUTBOUND` or `BIDIRECTIONAL`) also gets `deliver()`
-  and live streams, hook-injected deliveries included. An `OUTBOUND` binding
-  was skipped entirely, and an `INBOUND` one was delivered to. Direction never
-  filters an intelligence channel. A binding takes its channel's `direction`
-  unless the attachment names one, and a channel shared into a delegated room
-  keeps its parent binding's.
+  and live streams, hook-injected deliveries included; the new
+  `ChannelBinding.sends` says whether a binding's direction sends. An
+  `OUTBOUND` binding was skipped entirely, and an `INBOUND` one was delivered
+  to. Direction never filters an intelligence channel. A binding takes its
+  channel's `direction` unless the attachment names one, and a channel shared
+  into a delegated room keeps its parent binding's.
   Migrate: a transport bound `INBOUND` that must receive deliveries is bound
   `BIDIRECTIONAL` or `OUTBOUND` (`attach_channel(...,
   direction=ChannelDirection.BIDIRECTIONAL)`); a channel bound `OUTBOUND` now
@@ -1620,16 +1646,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its own task, never before it (RMK-901).
 
 - A room a `BEFORE_BROADCAST` hook closed refuses the event as a closed room
-  does (RFC §10.1 step 9a, RMK-930). A hook that called `close_room()` let
-  the message it ran for be stored DELIVERED and its agent asked, an
-  instruction be delivered, and an agent's response or an injected event be
-  stored in the closed room. Once a hook ran under the room lock the room is
-  read again, and one that no longer accepts events refuses the event
-  `room_closed`, as step 6 does: nothing of it stored, what its hooks
-  returned dropped (their injected events included), and
-  `room_refused_event` emitted (`operation` `inbound`, or `reentry` for a
-  response and an injected event). `send_event()` raises `RoomClosedError`
-  alike.
+  does (RFC §10.1 step 9a, RMK-930). A hook that called `close_room()` let the
+  message it ran for be stored DELIVERED and its agent asked, an instruction
+  be delivered, and an agent's response or an injected event be stored in the
+  closed room. Once a hook ran under the room lock the room is read again (a
+  pass whose hooks all run off the lock reads nothing again;
+  `HookEngine.has_sync_hooks()` takes `needs_lock=` to tell them apart), and
+  one that no longer accepts events refuses the event `room_closed`, as step 6
+  does: nothing of it stored, what its hooks returned dropped (their injected
+  events included), and `room_refused_event` emitted (`operation` `inbound`,
+  or `reentry` for a response and an injected event). `send_event()` raises
+  `RoomClosedError` alike.
 
 - An instruction's result reports the room's next index once its hooks ran
   (RFC §10.1 step 9a, §10.1.1 step 5, RMK-930), allowed or blocked. What a
