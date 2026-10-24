@@ -14,7 +14,7 @@ from roomkit.core._instructions import response_metadata
 from roomkit.core._queued_injections import QueuedInjections
 from roomkit.core.event_router import stream_record
 from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT
-from roomkit.core.mixins.inbound_locked import _Blocked, _Refused
+from roomkit.core.mixins.inbound_locked import _Blocked, _Refused, within_answer_scope
 from roomkit.core.task_utils import cancel_reason
 from roomkit.core.visibility import answer_scope, answers_reach
 from roomkit.models.enums import EventDirection, EventStatus, EventType, Visibility
@@ -624,6 +624,8 @@ class LaneSink:
         their injected events laned.
         """
         room_id = self._room_id
+        # The row carries its cascade's scope (TurnScope), before its hooks.
+        scope = event.response_visibility
         decision = await self._kit._gate_commit(room_id, event, self._context)
         # The hooks ran without the room lock: a close meanwhile refuses the
         # row, which is then neither committed nor recorded as blocked.
@@ -633,6 +635,8 @@ class LaneSink:
         if isinstance(decision, _Refused):
             # Only a change is refused here, and a streamed row is text.
             return None
+        # Its hooks may have widened it: back within the cascade's scope.
+        decision = within_answer_scope(decision, scope)
         if isinstance(decision, _Blocked):
             # A row commits without the room lock: what its hooks injected
             # runs its passes now, each taking the lock (RFC §9.5.1), and

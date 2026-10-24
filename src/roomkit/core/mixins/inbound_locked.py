@@ -14,7 +14,7 @@ import asyncio
 import functools
 import logging
 from collections.abc import Coroutine
-from dataclasses import KW_ONLY, dataclass
+from dataclasses import KW_ONLY, dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -41,7 +41,12 @@ from roomkit.core.mixins.helpers import (
     HelpersMixin,
     _source_block_reason,
 )
-from roomkit.core.visibility import narrowed_to_target, with_committed_visibility
+from roomkit.core.visibility import (
+    answer_scope,
+    intersect_visibility,
+    narrowed_to_target,
+    with_committed_visibility,
+)
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundResult
 from roomkit.models.enums import (
@@ -125,6 +130,23 @@ class _Ready:
     sync_result: Any
     context: RoomContext
     edit_delete_target: RoomEvent | None
+
+
+def within_answer_scope[D: (_Ready, _Blocked)](decision: D, scope: str | None) -> D:
+    """*decision*, a response's or a stream row's, its event narrowed back
+    within *scope* once its hooks ran (RFC §5.12, §9.4): a hook may change
+    the visibility as on any event, never past where the answers of the
+    message its cascade derives from may go. A list is read against the
+    categories of the room's bindings."""
+    scope = answer_scope(scope)
+    if scope is None:
+        return decision
+    event = decision.event
+    categories = {binding.channel_id: binding.category for binding in decision.context.bindings}
+    visibility = intersect_visibility(event.visibility, scope, categories.get)
+    if visibility == event.visibility:
+        return decision
+    return replace(decision, event=event.model_copy(update={"visibility": visibility}))
 
 
 @dataclass(frozen=True, slots=True)
@@ -682,7 +704,7 @@ class InboundLockedMixin(HelpersMixin):
             # The off-lock hooks rewrote the event as it stood before the
             # lock: their changes stand on the locked event, never what the
             # locked section decided of it (RFC §9.4, §9.5.1).
-            event = kept_identity(event, precheck.event)
+            event = kept_identity(event, precheck.event, context.bindings)
         locked = await self._hook_engine.run_sync_hooks(
             room_id, HookTrigger.BEFORE_BROADCAST, event, context, needs_lock=True
         )

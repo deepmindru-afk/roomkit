@@ -559,9 +559,74 @@ class TestAnEmptyAnswerScope:
             await kit.close()
 
 
+class TestAHookOnAnAnswerScope:
+    """RFC §5.12, §9.4: a hook may narrow where an event's answers go, never
+    widen or clear it; and a response stays within its cascade's scope
+    whatever its own hooks write."""
+
+    @pytest.mark.parametrize(
+        ("asked", "written", "answered", "kept"),
+        [
+            ("sms", "all", "sms", "sms"),
+            ("sms", None, "sms", "sms"),
+            ("sms,ws", "sms", "sms", "sms"),
+            (None, "internal", "none", "none"),
+        ],
+        ids=["widened", "cleared", "narrowed", "internal"],
+    )
+    async def test_a_hook_may_only_narrow_where_the_answers_go(
+        self, asked: str | None, written: str | None, answered: str, kept: str
+    ) -> None:
+        kit = await _room(
+            _Told("sms"),
+            _Told("ws"),
+            AILikeChannel("ai"),
+            ai={"category": ChannelCategory.INTELLIGENCE},
+        )
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="rescope")
+        async def rescope(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if event.source.channel_id != "sms":
+                return HookResult.allow()
+            return HookResult.modify(event.model_copy(update={"response_visibility": written}))
+
+        try:
+            result = await kit.process_inbound(_message("hello", response_visibility=asked))
+            assert result.event is not None
+            events = await kit.store.list_events("r1")
+            answers = [e.visibility for e in events if _body(e) == "AI reply"]
+            assert (result.event.response_visibility, answers) == (kept, [answered])
+        finally:
+            await kit.close()
+
+    @pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streamed"])
+    async def test_a_response_s_hook_cannot_widen_it_past_the_scope(self, streamed: bool) -> None:
+        if streamed:
+            kit, _ = await _streaming_room({})
+            body = "answer"
+        else:
+            kit = await _room(
+                _Told("sms"), AILikeChannel("ai"), ai={"category": ChannelCategory.INTELLIGENCE}
+            )
+            body = "AI reply"
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="widen")
+        async def widen(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if event.source.channel_id != "ai":
+                return HookResult.allow()
+            return HookResult.modify(event.model_copy(update={"visibility": "all"}))
+
+        try:
+            await kit.process_inbound(_message("hello", response_visibility="sms"))
+            answers = [e for e in await kit.store.list_events("r1") if _body(e) == body]
+            assert [e.visibility for e in answers] == ["sms"]
+        finally:
+            await kit.close()
+
+
 def _scope_answers_internal(kit: RoomKit) -> None:
     """A hook that scopes the answers to the message ``internal``, which no
-    door takes (RFC §7.3)."""
+    door takes and a hook's modify writes as ``none`` (RFC §7.3)."""
 
     @kit.hook(HookTrigger.BEFORE_BROADCAST, name="scope-answers")
     async def scope(event: RoomEvent, ctx: RoomContext) -> HookResult:

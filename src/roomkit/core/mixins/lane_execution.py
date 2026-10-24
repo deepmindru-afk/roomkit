@@ -39,6 +39,7 @@ from roomkit.core.mixins.inbound_locked import (
     _Refused,
     mutation_plan,
     target_update,
+    within_answer_scope,
 )
 from roomkit.core.task_utils import await_unless_cut, start_named
 from roomkit.core.visibility import (
@@ -1166,6 +1167,8 @@ class LaneExecutionMixin(HelpersMixin):
         decision = await self._gate_commit(room_id, reentry, reentry_ctx, change=check)
         if isinstance(decision, _Refused):
             return
+        # Its hooks may have widened it: back within the cascade's scope.
+        decision = within_answer_scope(decision, response_visibility)
         if isinstance(decision, _Blocked):
             await self._store_blocked(room_id, decision, queued)
             return

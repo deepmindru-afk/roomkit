@@ -11,6 +11,8 @@ from typing import Any, ClassVar, Protocol, cast
 
 from roomkit.core._changes import holds_change
 from roomkit.core._instructions import kept_metadata
+from roomkit.core.visibility import answer_scope, narrower_scope
+from roomkit.models.channel import ChannelBinding
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import (
     ChannelType,
@@ -261,7 +263,9 @@ _KEPT_FIELDS = (
 §9.4): which event it is, never what it says or whom it asks."""
 
 
-def kept_identity(original: RoomEvent, replacement: RoomEvent) -> RoomEvent:
+def kept_identity(
+    original: RoomEvent, replacement: RoomEvent, bindings: Iterable[ChannelBinding] = ()
+) -> RoomEvent:
     """*replacement* with the fields of *original* a hook may not change put
     back (RFC §9.4): its identity, and the checks already passed on it, the
     event an EDIT or a DELETE targets, its ``edit_source`` or ``delete_type``
@@ -271,7 +275,9 @@ def kept_identity(original: RoomEvent, replacement: RoomEvent) -> RoomEvent:
     visibility ``internal``, which only the framework writes (§7.3), is
     the original's whenever either holds it: a hook can neither give an
     event the framework's mark nor widen a framework record that has it.
-    The hook's other changes stand."""
+    Where the event's answers may go is narrowed only
+    (:func:`_hook_answer_scope`), a list read against the room's
+    *bindings*. The hook's other changes stand."""
     kept: dict[str, Any] = {
         name: getattr(original, name)
         for name in _KEPT_FIELDS
@@ -288,7 +294,28 @@ def kept_identity(original: RoomEvent, replacement: RoomEvent) -> RoomEvent:
     metadata = kept_metadata(original, replacement.metadata)
     if metadata != replacement.metadata:
         kept["metadata"] = metadata
+    scope = _hook_answer_scope(
+        original.response_visibility, replacement.response_visibility, bindings
+    )
+    if scope != replacement.response_visibility:
+        kept["response_visibility"] = scope
     return replacement.model_copy(update=kept) if kept else replacement
+
+
+def _hook_answer_scope(
+    original: str | None, written: str | None, bindings: Iterable[ChannelBinding]
+) -> str | None:
+    """Where an event's answers may go once a hook wrote *written* in place
+    of *original* (RFC §5.12, §9.4): the hook may narrow it, never widen or
+    clear it, so the result is *original* intersected with what it wrote,
+    ``None`` on the hook's side keeping *original*. ``internal``, which only
+    the framework writes (§7.3), reads as ``none`` from a hook."""
+    if written is None:
+        return original
+    scope = answer_scope(written)
+    if scope == Visibility.INTERNAL:
+        scope = Visibility.NONE
+    return narrower_scope(original, scope, bindings)
 
 
 def _kept_content(original: EventContent, content: EventContent) -> EventContent:
@@ -920,6 +947,7 @@ class HookEngine:
         original: Any,
         hook_result: HookResult,
         fold: Callable[[Any, dict[str, Any]], Any] | None,
+        bindings: Iterable[ChannelBinding] = (),
     ) -> bool:
         """Carry *hook_result*'s rewrite into the event the next hook sees.
 
@@ -931,14 +959,15 @@ class HookEngine:
         closed, else the chain carries on from the previous outcome, under a
         *fold* with the hook's metadata rewrite still applied. A
         BEFORE_BROADCAST replacement keeps the identity of the event it
-        replaces (§9.4). Returns whether the pipeline was closed.
+        replaces (§9.4), a list in it read against the room's *bindings*.
+        Returns whether the pipeline was closed.
         """
         current = result.event if result.event is not None else original
         payload = hook_result.event
         if hook_result.action == "modify":
             if _usable_payload(current, payload):
                 if trigger == HookTrigger.BEFORE_BROADCAST and isinstance(payload, RoomEvent):
-                    payload = kept_identity(current, payload)
+                    payload = kept_identity(current, payload, bindings)
                 result.event = payload
             else:
                 # The consumer would silently ignore a payload it cannot use
@@ -1218,7 +1247,9 @@ class HookEngine:
                 result.blocked_by = hook.name
                 return result
 
-            if self._apply_rewrite(result, hook, trigger, room_id, event, hook_result, fold):
+            if self._apply_rewrite(
+                result, hook, trigger, room_id, event, hook_result, fold, context.bindings
+            ):
                 return result
 
         # Fire ASYNC observers for the same trigger (fire-and-forget).
