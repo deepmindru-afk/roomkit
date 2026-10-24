@@ -126,7 +126,6 @@ async def persist_tool_calls(
         room_id=room_id,
         chain_depth=scope.chain_depth,
         visibility=scope.visibility,
-        response_visibility=scope.response_visibility,
         correlation_id=correlation_id,
         parent_event_id=scope.parent_event_id,
     )
@@ -372,7 +371,7 @@ async def _deliver_answer(
     """
     cascade = DeliveryCascade(child_room_id, reentry_budget=kit._max_chain_depth * 10)
     cascade.add_streams(result.streaming_responses)
-    await kit._commit_responses(child_room_id, result.reentry_events, None, cascade)
+    await kit._commit_responses(child_room_id, result.reentry_events, cascade)
     # The failure is raised to the delegation, which logs it, a stream a
     # shared transport rendered included.
     stream_error, _ = await kit._finish_cascade(

@@ -60,7 +60,6 @@ class TurnScope:
 
     chain_depth: int
     visibility: str
-    response_visibility: str | None
     parent_event_id: str | None
 
     @classmethod
@@ -71,7 +70,8 @@ class TurnScope:
         thread (already normalised to a root by the locked pipeline); a
         top-level trigger keeps the reply top-level. A scope of ``internal``,
         which only the framework writes, commits the rows with ``none``,
-        with a warning (RFC §7.3, §8.5).
+        with a warning (RFC §7.3, §8.5). The rows carry no answer scope of
+        their own: what answers a row answers no message (§5.12).
         """
         visibility = trigger.response_visibility or Visibility.ALL
         if visibility == Visibility.INTERNAL:
@@ -85,7 +85,6 @@ class TurnScope:
         return cls(
             chain_depth=trigger.chain_depth + 1,
             visibility=visibility,
-            response_visibility=trigger.response_visibility,
             parent_event_id=trigger.parent_event_id,
         )
 
@@ -117,7 +116,6 @@ class SegmentWriter:
         room_id: str,
         chain_depth: int,
         visibility: str = Visibility.ALL,
-        response_visibility: str | None = None,
         correlation_id: str | None = None,
         parent_event_id: str | None = None,
         streamed_to: set[str] | None = None,
@@ -130,9 +128,6 @@ class SegmentWriter:
         self._room_id = room_id
         self._chain_depth = chain_depth
         self._visibility = visibility
-        # The trigger's answer scope rides every row, so what another agent
-        # answers to a row is scoped as the turn itself is (RFC §8.3).
-        self._response_visibility = response_visibility
         self._correlation_id = correlation_id
         self._parent_event_id = parent_event_id
         # The channel a text segment reaches *as it is produced* — the stream
@@ -498,7 +493,6 @@ class SegmentWriter:
             status=EventStatus.DELIVERED,
             chain_depth=self._chain_depth,
             visibility=self._visibility,
-            response_visibility=self._response_visibility,
             correlation_id=self._correlation_id,
             parent_event_id=self._parent_event_id,
             # Every row of the turn names the event it answers (RFC §8.5),

@@ -106,6 +106,34 @@ class TestTheCommittedVisibility:
         finally:
             await kit.close()
 
+    @pytest.mark.parametrize(
+        ("given", "scope", "stored"),
+        [("sms", "sms,ws", "sms"), ("transport", "ai,sms", "sms"), ("all", "ws", "ws")],
+        ids=["a-list-within-the-scope", "a-category-within-a-list", "unrestricted"],
+    )
+    async def test_an_answer_keeps_its_channel_s_scope_within_the_message_s(
+        self, given: str, scope: str, stored: str
+    ) -> None:
+        """RFC §5.12, §7.3: what the channel gave its answer is intersected
+        with where the message's answers may go, a listed channel's category
+        read from the room's bindings: the message's scope never widens it."""
+        sms, ws = _Told("sms"), _Told("ws")
+        kit = await _room(
+            sms, ws, _Says("ai", given), ai={"category": ChannelCategory.INTELLIGENCE}
+        )
+        try:
+            await kit.process_inbound(_message("hello", response_visibility=scope))
+            answers = [e for e in await kit.store.list_events("r1") if _body(e) == "AI reply"]
+            assert [e.visibility for e in answers] == [stored]
+            reached = {
+                channel.channel_id
+                for channel in (sms, ws)
+                if any(_body(e) == "AI reply" for e in channel.delivered)
+            }
+            assert reached == set(stored.split(","))
+        finally:
+            await kit.close()
+
     async def test_narrowing_a_binding_later_hides_nothing_already_committed(self) -> None:
         sms, ws, ai = _Told("sms"), _Told("ws"), AILikeChannel("ai")
         kit = await _room(sms, ws, ai)
@@ -441,14 +469,20 @@ class TestALiveStream:
             await kit.close()
 
 
-class _SaysInternal(AILikeChannel):
-    """An agent whose answer carries the framework's mark."""
+class _Says(AILikeChannel):
+    """An agent whose answer carries *visibility*."""
+
+    def __init__(self, channel_id: str, visibility: str) -> None:
+        super().__init__(channel_id)
+        self._visibility = visibility
 
     async def on_event(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:
         output = await super().on_event(event, binding, context)
-        marked = [e.model_copy(update={"visibility": "internal"}) for e in output.response_events]
+        marked = [
+            e.model_copy(update={"visibility": self._visibility}) for e in output.response_events
+        ]
         return output.model_copy(update={"response_events": marked})
 
 
@@ -551,7 +585,7 @@ class TestOnlyTheFrameworkWritesInternal:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         kit = await _room(
-            _Told("sms"), _SaysInternal("ai"), ai={"category": ChannelCategory.INTELLIGENCE}
+            _Told("sms"), _Says("ai", "internal"), ai={"category": ChannelCategory.INTELLIGENCE}
         )
         try:
             with caplog.at_level(logging.WARNING):

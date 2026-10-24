@@ -188,7 +188,6 @@ class InboundStreamingMixin(HelpersMixin):
             room_id=room_id,
             chain_depth=chain_depth,
             visibility=visibility,
-            response_visibility=scope.response_visibility,
             correlation_id=correlation_id,
             parent_event_id=parent_event_id,
             streamed_to=streamed_to,
