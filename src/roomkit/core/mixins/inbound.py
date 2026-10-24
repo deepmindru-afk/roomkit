@@ -427,7 +427,7 @@ class InboundMixin(HelpersMixin):
             # call named or routing gave it.
             return await self._refuse_on_timeout(exc.room_id, channel_id=message.channel_id)
         except _PastTheCapError:
-            return _past_the_cap("a new room", message)
+            return _past_the_cap(None, message)
 
         if room_just_created and opening is not None:
             # Charged as the room was opened: its cascade draws on the same.
@@ -1322,13 +1322,14 @@ async def _by[T](deadline: float, work: Awaitable[T], *, room_id: str | None) ->
         raise _RoutingTimeoutError(room_id) from None
 
 
-def _past_the_cap(room_id: str, message: InboundMessage) -> InboundResult:
+def _past_the_cap(room_id: str | None, message: InboundMessage) -> InboundResult:
     """The refusal of a message the room's own work sent past the reentry
     budget it draws on (RFC §8.3, §9.5.1): charged as its arrival starts,
-    before its parse, it is refused with no event."""
+    before its parse, it is refused with no event. *room_id* is ``None`` for
+    a message that would have opened a new room."""
     logger.warning(
-        "A message sent into room %s from its own work is past the reentry budget: refused",
-        room_id,
+        "A message sent into %s from its own work is past the reentry budget: refused",
+        f"room {room_id}" if room_id is not None else "a new room",
         extra={"room_id": room_id, "channel_id": message.channel_id},
     )
     return InboundResult(blocked=True, reason=REENTRY_LOOP_CAP)
