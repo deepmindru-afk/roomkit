@@ -19,7 +19,7 @@ from roomkit.core.mixins._streaming_segments import LaneSink, SegmentWriter, Tur
 from roomkit.core.mixins.helpers import HelpersMixin, _source_block_reason
 from roomkit.core.mixins.lane_execution import DeliverySource
 from roomkit.core.task_utils import cancel_reason
-from roomkit.core.visibility import visibility_allows
+from roomkit.core.visibility import answer_scope, answers_reach, visibility_allows
 from roomkit.models.enums import (
     Access,
     ChannelCategory,
@@ -436,7 +436,7 @@ class InboundStreamingMixin(HelpersMixin):
             error_type=error_type_name(exc),
             error_category="streaming",
             chain_depth=sr.trigger_event.chain_depth + 1,
-            visibility=sr.trigger_event.response_visibility or "all",
+            visibility=answers_reach(sr.trigger_event),
             correlation_id=correlation_id,
             parent_event_id=sr.trigger_event.parent_event_id,
             responds_to=sr.trigger_event.id,
@@ -457,7 +457,7 @@ class InboundStreamingMixin(HelpersMixin):
         source_binding = context.get_binding(sr.source_channel_id)
         if _source_block_reason(source_binding) is not None:
             return []
-        response_vis = sr.trigger_event.response_visibility
+        response_vis = answer_scope(sr.trigger_event.response_visibility)
         targets: list[Any] = []
         for binding in context.bindings:
             if binding.category != ChannelCategory.TRANSPORT:

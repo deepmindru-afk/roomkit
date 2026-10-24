@@ -528,6 +528,37 @@ class _Says(AILikeChannel):
         return output.model_copy(update={"response_events": marked})
 
 
+class TestAnEmptyAnswerScope:
+    """RFC §5.12: ``None`` alone restricts nothing; any other scope is one,
+    an empty one naming nobody, on every path (fail-closed)."""
+
+    @pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streamed"])
+    async def test_a_hook_writing_an_empty_scope_sends_the_answers_nowhere(
+        self, streamed: bool
+    ) -> None:
+        if streamed:
+            kit, _ = await _streaming_room({})
+            body = "answer"
+        else:
+            kit = await _room(
+                _Told("sms"), AILikeChannel("ai"), ai={"category": ChannelCategory.INTELLIGENCE}
+            )
+            body = "AI reply"
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="empty-scope")
+        async def scope(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if event.source.channel_id != "sms":
+                return HookResult.allow()
+            return HookResult.modify(event.model_copy(update={"response_visibility": ""}))
+
+        try:
+            await kit.process_inbound(_message("hello"))
+            answers = [e for e in await kit.store.list_events("r1") if _body(e) == body]
+            assert [e.visibility for e in answers] == ["none"]
+        finally:
+            await kit.close()
+
+
 def _scope_answers_internal(kit: RoomKit) -> None:
     """A hook that scopes the answers to the message ``internal``, which no
     door takes (RFC §7.3)."""

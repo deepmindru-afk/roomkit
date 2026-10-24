@@ -59,13 +59,30 @@ def intersect_visibility(
     return _listing(_ids(a) & _ids(b))
 
 
+def answer_scope(response_visibility: str | None) -> str | None:
+    """Where the answers to an event whose ``response_visibility`` is
+    *response_visibility* may go (RFC §5.12), in the normal form: ``None``
+    alone restricts nothing; any other value is a scope, an empty or blank
+    one naming nobody (``none``), so a scope never fails open."""
+    return None if response_visibility is None else normal_visibility(response_visibility)
+
+
+def answers_reach(event: RoomEvent) -> str:
+    """The widest visibility an answer to *event* may take: its answer scope
+    (:func:`answer_scope`), ``all`` when it names none."""
+    scope = answer_scope(event.response_visibility)
+    return Visibility.ALL if scope is None else scope
+
+
 def narrower_scope(
     first: str | None, second: str | None, bindings: Iterable[ChannelBinding]
 ) -> str | None:
-    """The answer scope within both *first* and *second* (RFC §5.12, §7.3):
-    ``None``, no restriction, on either side gives the other; two scopes give
-    their intersection, a list matched against the categories of the room's
-    *bindings*. Never wider than either."""
+    """The answer scope within both *first* and *second* (RFC §5.12, §7.3),
+    each read by :func:`answer_scope`: ``None``, no restriction, on either
+    side gives the other; two scopes give their intersection, a list matched
+    against the categories of the room's *bindings*. Never wider than
+    either."""
+    first, second = answer_scope(first), answer_scope(second)
     if first is None:
         return second
     if second is None:

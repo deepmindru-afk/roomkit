@@ -16,6 +16,7 @@ from roomkit.core.event_router import stream_record
 from roomkit.core.mixins.helpers import _RECENT_EVENTS_LIMIT
 from roomkit.core.mixins.inbound_locked import _Blocked, _Refused
 from roomkit.core.task_utils import cancel_reason
+from roomkit.core.visibility import answer_scope, answers_reach
 from roomkit.models.enums import EventDirection, EventStatus, EventType, Visibility
 from roomkit.models.event import EventSource, RoomEvent, TextContent, ToolCallContent
 from roomkit.models.response_metadata import recorded_turn_end
@@ -75,7 +76,7 @@ class TurnScope:
         scope, so what answers a row stays within the perimeter of the
         message the cascade derives from (§5.12).
         """
-        visibility = trigger.response_visibility or Visibility.ALL
+        visibility = answers_reach(trigger)
         if visibility == Visibility.INTERNAL:
             logger.warning(
                 "The answer to event %s is scoped 'internal', which only the framework "
@@ -87,7 +88,7 @@ class TurnScope:
         return cls(
             chain_depth=trigger.chain_depth + 1,
             visibility=visibility,
-            response_visibility=trigger.response_visibility,
+            response_visibility=answer_scope(trigger.response_visibility),
             parent_event_id=trigger.parent_event_id,
         )
 

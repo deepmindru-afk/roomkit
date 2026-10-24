@@ -42,6 +42,8 @@ from roomkit.core.mixins.inbound_locked import (
 )
 from roomkit.core.task_utils import await_unless_cut, start_named
 from roomkit.core.visibility import (
+    answer_scope,
+    answers_reach,
     intersect_visibility,
     narrowed_to_target,
     narrower_scope,
@@ -138,7 +140,8 @@ def scoped(
     response, buffered or streamed, at any depth, stays within the
     perimeter the message asked for.
     """
-    if not scope:
+    scope = answer_scope(scope)
+    if scope is None:
         return response
     categories = {binding.channel_id: binding.category for binding in bindings}
     visibility = intersect_visibility(response.visibility, scope, categories.get)
@@ -910,7 +913,7 @@ class LaneExecutionMixin(HelpersMixin):
                 error_type=error_type_name(exc) if exc is not None else "unknown",
                 error_category="generation",
                 chain_depth=event.chain_depth + 1,
-                visibility=event.response_visibility or "all",
+                visibility=answers_reach(event),
                 parent_event_id=event.parent_event_id,
                 responds_to=event.id,
             )

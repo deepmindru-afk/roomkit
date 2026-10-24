@@ -22,7 +22,7 @@ from roomkit.core.lanes import DeliveryCascade, DeliveryPlan
 from roomkit.core.rate_limiter import TokenBucketRateLimiter
 from roomkit.core.retry import retry_with_backoff
 from roomkit.core.transcoder import DefaultContentTranscoder, takes_file, takes_files_of
-from roomkit.core.visibility import committed_visibility, visibility_allows
+from roomkit.core.visibility import answers_reach, committed_visibility, visibility_allows
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import (
@@ -33,7 +33,6 @@ from roomkit.models.enums import (
     EventDirection,
     EventStatus,
     EventType,
-    Visibility,
 )
 from roomkit.models.event import (
     AudioContent,
@@ -131,7 +130,7 @@ def unanswered(trigger: RoomEvent, channel_id: str, channel_type: Any) -> RoomEv
         ),
         content=TextContent(body=""),
         chain_depth=trigger.chain_depth + 1,
-        visibility=trigger.response_visibility or Visibility.ALL,
+        visibility=answers_reach(trigger),
         parent_event_id=trigger.parent_event_id,
         responds_to=trigger.id,
     )
