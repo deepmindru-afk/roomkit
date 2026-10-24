@@ -32,7 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `add_event_auto_index()` of every shipped store now raise the new
   `IdempotencyKeyTakenError` (a `RoomKitError`, exported from `roomkit`),
   nothing written, a change's target included, and the key stays its first
-  event's. An event under an id the store holds keeps the database's own
+  event's. `kit.commit_event()` raises it too: a record is never a replay
+  (RFC §10.5), where the in-memory store committed a second record under the
+  key. An event under an id the store holds keeps the database's own
   error, `asyncpg.UniqueViolationError` or `sqlite3.IntegrityError`, the key
   held with it or not.
   Migrate: a direct caller that caught the driver's error for a taken key
@@ -45,7 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   target read before its delivery was recorded erased the outcome in two
   stores out of three. `update_event()`, the target `commit_event(target=)`
   writes and `write_change_target()` now keep the stored results in every
-  shipped store, whatever the copy carries.
+  shipped store, whatever the copy carries, and `record_delivery_results()`
+  replaces the map in each. An event is committed with the results it brings
+  (RFC §10.5): Postgres's insert dropped them, so a record `commit_event()`
+  stored with its delivery outcome read back `{}` there.
   The ABC's default `record_delivery_results()`, which a custom store
   inherits, still writes through `update_event()`: it writes under
   `records_delivery_results()` (`roomkit.store.base`), true for that write

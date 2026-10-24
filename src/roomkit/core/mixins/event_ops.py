@@ -81,6 +81,9 @@ class EventOpsMixin(HelpersMixin):
             RoomNotFoundError: the room is missing, or another organization's.
             RoomClosedError: the room's status refuses new events (RFC §5.1);
                 nothing is written.
+            IdempotencyKeyTakenError: the room holds an event of the record's
+                source channel under its idempotency key: a record is never a
+                replay (RFC §10.5, §14.3); nothing is written.
         """
         if event.room_id != room_id:
             # The stores file the row under the event's room: the room checked

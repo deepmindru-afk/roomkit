@@ -227,9 +227,10 @@ What every store keeps alike (RFC §10.3, §14.1, §14.3):
   within its source channel, or with `channel_id=None` within the whole room
   (the lowest index first), as a proactive delivery's key is.
 - `record_delivery_results(room_id, event_id, results)` writes a delivery set's
-  outcome on the event as stored, that field alone, so an edit or a delete
-  committed while the delivery ran stands. It is the one write of
-  `delivery_results`: `update_event()` and a change's target
+  outcome on the event as stored, replacing the map, that field alone, so an
+  edit or a delete committed while the delivery ran stands. An event is
+  committed with the `delivery_results` it brings; once stored, this is the
+  one write of `delivery_results`: `update_event()` and a change's target
   (`commit_event(target=)`, `write_change_target()`) keep the stored results,
   whatever the copy they write carries. Its default reads the event and
   writes it back through `update_event()` (the framework calls it under the

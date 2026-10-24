@@ -6595,9 +6595,10 @@ What every store keeps alike (RFC §10.3, §14.1, §14.3):
   within its source channel, or with `channel_id=None` within the whole room
   (the lowest index first), as a proactive delivery's key is.
 - `record_delivery_results(room_id, event_id, results)` writes a delivery set's
-  outcome on the event as stored, that field alone, so an edit or a delete
-  committed while the delivery ran stands. It is the one write of
-  `delivery_results`: `update_event()` and a change's target
+  outcome on the event as stored, replacing the map, that field alone, so an
+  edit or a delete committed while the delivery ran stands. An event is
+  committed with the `delivery_results` it brings; once stored, this is the
+  one write of `delivery_results`: `update_event()` and a change's target
   (`commit_event(target=)`, `write_change_target()`) keep the stored results,
   whatever the copy they write carries. Its default reads the event and
   writes it back through `update_event()` (the framework calls it under the
@@ -7297,7 +7298,7 @@ kit = RoomKit(
 | `await steer(directive, channel_id, *, room_id=None, turn_id=None)` | Steer the running turns of an intelligence channel the kit started, wherever they run; answers the loops reached (RFC §21.3, §10.6.8) |
 | `await channel_call(channel_id, room_id, verb, *, organization_id=None, **arguments)` | Run a per-room verb of a channel attached to the room, on the executor holding the room's state (an ACP agent's `set_config_option`, `close_session`, `session_config`, `config_options`); what the room keeps for the channel is stored in its metadata, written by this call alone (RFC §10.6.3, §6.4) |
 | `await answer_input(request_id, value)` / `await reject_input(request_id, reason)` | Answer or reject a turn's human-input request, wherever its tool runs; an early answer is held 60 s, a second one returns `False` (RFC §10.6.5) |
-| `commit_event(room_id, event, organization_id?)` | Commit a record no member receives, outside the pipeline: its index counted delivered, no hook, no broadcast (RFC §10.5) |
+| `commit_event(room_id, event, organization_id?)` | Commit a record no member receives, outside the pipeline: stored as given, its `delivery_results` included, its index counted delivered, no hook, no broadcast; never a replay, a key its channel holds raises `IdempotencyKeyTakenError` (RFC §10.5) |
 | `await start_room_recording(room_id, recorders, *, organization_id=None)` | Start recorders on an existing room, all or nothing, each announced (ON_RECORDING_STARTED) before any media |
 | `await room_recordings(room_id, *, organization_id=None)` | The handles of the room's running recordings; the room read with its scope (another organization's, or a missing room recording nothing, is not found) |
 | `await add_room_recording_track(room_id, track, *, organization_id=None)` | Declare a track to the room's recordings; returns a `RoomRecordingFeed` (`feed(data, timestamp_ms)`, `close()`), or `None` when the room records nothing; the room read with its scope |

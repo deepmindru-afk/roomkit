@@ -141,9 +141,9 @@ async def _execute_insert(conn: Any, event: RoomEvent) -> None:
         "  source_direction, source_participant_id, source_provider, source_extra,"
         "  status, visibility, addressed_to, response_visibility, index, chain_depth,"
         "  correlation_id, parent_event_id, idempotency_key, blocked_by,"
-        "  metadata, channel_data, created_at, responds_to)"
+        "  metadata, channel_data, created_at, responds_to, delivery_results)"
         " VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,"
-        "         $16,$17,$18,$19,$20,$21,$22,$23,$24)",
+        "         $16,$17,$18,$19,$20,$21,$22,$23,$24,$25)",
         event.id,
         event.room_id,
         event.type.value,
@@ -168,6 +168,8 @@ async def _execute_insert(conn: Any, event: RoomEvent) -> None:
         event.channel_data.model_dump(mode="json"),
         event.created_at,
         event.responds_to,
+        # An event is committed with the results it brings (RFC §10.5, §14.3).
+        event.delivery_results,
     )
 
 

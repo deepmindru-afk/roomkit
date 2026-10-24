@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 import pytest
 
 from roomkit import HookExecution, HookResult, HookTrigger, RoomKit
-from roomkit.core.exceptions import RoomClosedError, RoomNotFoundError
+from roomkit.core.exceptions import IdempotencyKeyTakenError, RoomClosedError, RoomNotFoundError
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.enums import EventStatus
@@ -81,6 +81,26 @@ class _Held(SimpleChannel):
         self.entered.set()
         await self.release.wait()
         return await super().deliver(event, binding, context)
+
+
+async def test_a_record_under_a_key_its_channel_holds_is_refused() -> None:
+    """RFC §10.5, §14.3: a record is never a replay. One under a key its
+    source channel holds in the room raises ``IdempotencyKeyTakenError``,
+    nothing written, and takes no index the room's next event would wait on."""
+    kit = RoomKit(delivery_gap_timeout=5.0)
+    await _room(kit)
+    first = await kit.commit_event("r1", _record().model_copy(update={"idempotency_key": "k"}))
+    again = _record("again").model_copy(update={"idempotency_key": "k"})
+
+    with pytest.raises(IdempotencyKeyTakenError):
+        await kit.commit_event("r1", again)
+
+    assert await kit.store.get_event(again.id) is None
+    sent = await asyncio.wait_for(
+        kit.send_event("r1", "sms1", TextContent(body="hello")), timeout=2.0
+    )
+    assert sent.index == first.index + 1
+    await kit.close()
 
 
 async def test_a_record_behind_a_delivery_in_flight_is_passed_at_its_turn() -> None:

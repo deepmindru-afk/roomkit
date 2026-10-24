@@ -777,13 +777,14 @@ async def test_a_hard_delete_takes_every_removed_event_s_changes(
 async def test_only_a_delivery_record_writes_the_results(
     contract_store: ConversationStore, record: str
 ) -> None:
-    """RFC §10.3, §14.3: the record of a delivery set writes its results on
-    the event as stored, never the event as it stood at its commit: an edit
-    or a delete committed since stands. It alone writes them: a rewrite of
-    the row (``update_event``, a change's target, a target written alone)
-    keeps the results stored, whatever its copy carries. The ABC's default
-    record, which a custom store inherits, writes them through the store's
-    ``update_event`` as the store's own does."""
+    """RFC §10.3, §10.5, §14.3: an event is committed with the delivery
+    results it brings. Once stored, the record of a delivery set writes its
+    results on the event as stored, replacing the map, never the event as it
+    stood at its commit: an edit or a delete committed since stands. It alone
+    writes them: a rewrite of the row (``update_event``, a change's target, a
+    target written alone) keeps the results stored, whatever its copy
+    carries. The ABC's default record, which a custom store inherits, writes
+    them through the store's ``update_event`` as the store's own does."""
     room = await contract_store.create_room(Room(id=uuid4().hex))
 
     async def record_results(room_id: str, event_id: str, results: dict[str, Any]) -> None:
@@ -795,7 +796,12 @@ async def test_only_a_delivery_record_writes_the_results(
             )
 
     try:
-        target = await contract_store.commit_event(room.id, make_event(room_id=room.id))
+        brought = {"sms": {"status": "delivered"}, "web": {"status": "delivered"}}
+        target = await contract_store.commit_event(
+            room.id, make_event(room_id=room.id, delivery_results=brought)
+        )
+        committed = await contract_store.get_event(target.id)
+        assert committed is not None and committed.delivery_results == brought
         edit, edited = _edit_of(target, "corrected")
         await contract_store.commit_event(room.id, edit, target=edited)
         results = {"sms": {"status": "failed", "error": "provider down"}}
