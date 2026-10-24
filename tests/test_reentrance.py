@@ -92,11 +92,12 @@ class TestAnInjectionMadeFromTheRoomsOwnWork:
         finally:
             await kit.close()
 
-    async def test_a_replay_past_the_cap_returns_its_original(self) -> None:
-        """A hook sends with the same idempotency key every time, past its
-        cascade's budget: a replay is no new pass, so the call past the cap
-        returns the event the key committed, as every replay before it did,
-        nothing stored and nothing raised (RFC §13.4, §8.3)."""
+    async def test_a_replay_draws_nothing_and_returns_its_original(self) -> None:
+        """A hook sends with the same idempotency key more times than its
+        cascade's budget holds passes, then a new event: a replay is no new
+        pass and draws nothing, so each replay returns the event the key
+        committed, past the cap too, nothing stored and nothing raised, and
+        the new event still has its pass (RFC §13.4, §8.3, §9.5.1)."""
         kit = await _room(RoomKit(max_chain_depth=1))
         sent: list[RoomEvent] = []
 
@@ -109,13 +110,18 @@ class TestAnInjectionMadeFromTheRoomsOwnWork:
                             "r1", "sms", TextContent(body=f"sent {n}"), idempotency_key="k"
                         )
                     )
+                sent.append(await kit.send_event("r1", "sms", TextContent(body="new")))
             return HookResult.allow()
 
         try:
             await asyncio.wait_for(kit.process_inbound(_message()), 5)
-            assert len(sent) == BUDGET + 2
-            assert {e.id for e in sent} == {sent[0].id}
-            assert [_body(e) for e in await _messages(kit)] == ["sent 0", "hi"]
+            assert len(sent) == BUDGET + 3
+            assert {e.id for e in sent[:-1]} == {sent[0].id}
+            assert [(_body(e), e.blocked_by) for e in await _messages(kit)] == [
+                ("sent 0", None),
+                ("new", None),
+                ("hi", None),
+            ]
         finally:
             await kit.close()
 

@@ -34,10 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing written, a change's target included, and the key stays its first
   event's. `kit.commit_event()` raises it too: a record is never a replay
   (RFC §10.5), where the in-memory store committed a second record under the
-  key. `send_event()` past its cascade's reentry budget with a key its
-  channel holds returns what the key committed, as a replay within the
-  budget does: a replay is no new pass, and only a new event is stored
-  `BLOCKED` past the cap. An event under an id the store holds keeps the
+  key. A `send_event()` of the room's own work (a hook, a parse, a
+  delivery) with a key its channel holds is a replay read before its
+  cascade's reentry budget: it returns what the key committed and draws no
+  pass, past the cap too, where it raised; only a new event is stored
+  `BLOCKED` past the cap. A message past the cap stays refused first thing,
+  its key unread. An event under an id the store holds keeps the
   database's own error, `asyncpg.UniqueViolationError` or
   `sqlite3.IntegrityError`, the key held with it or not.
   The ABC's default `commit_event()`, which a custom store inherits, looks

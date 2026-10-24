@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Generator, Iterable
+from collections.abc import Coroutine, Generator, Iterable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -1341,10 +1341,18 @@ class RoomKit(
             fields["created_at"] = created_at
         event = RoomEvent(**fields)
         entry = self._room_work.entry(room_id)
-        if entry.charged and not entry.budget.take():
-            # Past the budget of the work that made it, it is not a pass: its
-            # hooks never run (RFC §8.3, §9.5.1).
-            return await self._store_entry_past_cap(room_id, event)
+        if entry.charged:
+            # A replay of a key its channel holds is no pass: it is read
+            # before the budget, and draws nothing (RFC §13.4, §9.5.1).
+            replayed = await self._by_deadline(
+                self._replay_of_key(room_id, event), room_id, channel_id, deadline
+            )
+            if replayed is not None:
+                return replayed
+            if not entry.budget.take():
+                # Past the budget of the work that made it, it is not a pass:
+                # its hooks never run (RFC §8.3, §9.5.1).
+                return await self._store_entry_past_cap(room_id, event)
         return await self._inject(event, entry, deadline)
 
     async def _inject(self, event: RoomEvent, entry: Entry, deadline: float) -> RoomEvent:
@@ -1490,10 +1498,12 @@ class RoomKit(
 
     async def _replay_of_key(self, room_id: str, event: RoomEvent) -> RoomEvent | None:
         """What *event*'s source channel committed in the room with its
-        idempotency key, which a replay returns rather than store anything
-        (RFC §13.4), read under the room lock the caller holds: ``None`` for
-        a key not taken; *event* itself when the store holds the key but
-        cannot read its event back, as the pipeline's replay returns it."""
+        idempotency key, which a direct injection of the room's own work
+        returns rather than draw a pass or store anything (RFC §13.4,
+        §9.5.1): read before its budget, and again under the room lock before
+        a record past the cap is stored. ``None`` for a key not taken;
+        *event* itself when the store holds the key but cannot read its event
+        back, as the pipeline's replay returns it."""
         key, channel_id = event.idempotency_key, event.source.channel_id
         if not key or not await self._store.check_idempotency(room_id, key, channel_id=channel_id):
             return None
@@ -1501,7 +1511,7 @@ class RoomKit(
             room_id, key, channel_id=channel_id
         )
         logger.info(
-            "Duplicate event %s past the reentry budget: replayed",
+            "Duplicate event %s from the room's own work: replayed, no pass drawn",
             key,
             extra={"room_id": room_id, "idempotency_key": key},
         )
@@ -1520,11 +1530,34 @@ class RoomKit(
             ChannelNotFoundError: the room does not bind the channel.
             ProcessTimeoutError: the deadline passed first; nothing written.
         """
+        return await self._by_deadline(
+            self._scoped_binding(room_id, channel_id, organization_id),
+            room_id,
+            channel_id,
+            deadline,
+        )
+
+    async def _scoped_binding(
+        self, room_id: str, channel_id: str, organization_id: str | None
+    ) -> ChannelBinding:
+        """:meth:`_injection_binding`'s reads."""
+        await self.get_room(room_id, organization_id=organization_id)
+        return await self._get_binding(room_id, channel_id)
+
+    async def _by_deadline[T](
+        self, work: Coroutine[Any, Any, T], room_id: str, channel_id: str, deadline: float
+    ) -> T:
+        """*work*, a direct injection's read before its commit, within the
+        call's *deadline* (RFC §13.6), past which it raises once the
+        ``process_timeout`` framework event is emitted.
+
+        Raises:
+            ProcessTimeoutError: the deadline passed first; nothing written.
+        """
         timeout = asyncio.timeout_at(deadline)
         try:
             async with timeout:
-                await self.get_room(room_id, organization_id=organization_id)
-                return await self._get_binding(room_id, channel_id)
+                return await work
         except TimeoutError:
             if not timeout.expired():
                 raise
