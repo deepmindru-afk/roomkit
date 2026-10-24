@@ -72,7 +72,7 @@ The `ChannelType` enum defines 24 values: `SMS`, `MMS`, `RCS`, `EMAIL`, `WHATSAP
 | Webhook | `HTTPChannel(id, provider=...)` | TRANSPORT | Generic HTTP webhook (`ChannelType.WEBHOOK`) |
 | WebSocket | `WebSocketChannel(id)` | TRANSPORT | Real-time bidirectional |
 | CLI | `CLIChannel(id)` | TRANSPORT | Interactive terminal (stdin/stdout REPL) |
-| Host | `HostChannel(id="host")` | TRANSPORT | The host application's own voice, written with `kit.post()` (INBOUND, never delivered to) |
+| Host | `HostChannel(channel_id="host")` | TRANSPORT | The host application's own voice, written with `kit.post()` (INBOUND, never delivered to) |
 | AI | `AIChannel(id, provider=...)` | INTELLIGENCE | LLM responses |
 | Agent | `Agent(id, provider=...)` | INTELLIGENCE | Agent with tools + greeting |
 | ACP | `ACPChannel(id, command, cwd=...)` | INTELLIGENCE | External coding agent via Agent Client Protocol (`channel_type` is `AI`; one session per room) |
@@ -175,20 +175,44 @@ question, a reminder — is the host's own words, written with `kit.post()`
 await kit.post(room_id, "Your order shipped.")          # texted to the correspondent
 await kit.post(room_id, "Summarise the order.", addressed_to=["assistant"])
 await kit.post(room_id, "Back at 3 pm.", participant_id="desk", metadata={"job": "hours"})
+await kit.post(room_id, "Refund issued.", idempotency_key=webhook_delivery_id)
 ```
 
 - The post comes from a `HostChannel`, a transport of type `HOST` whose
   direction is `INBOUND`: the room reads it as a party's message and
-  broadcasts it to its transports. It is never delivered to.
+  broadcasts it to its transports. It is never delivered to, and it narrows
+  nothing an agent's answer may carry: it declares every media type, and the
+  room's other transports decide what an answer uses.
 - It solicits no agent unless `addressed_to` names one. To let the room's
   routing decide, use `send_event()` from the host channel instead.
 - `participant_id` names who speaks: once two people take part, an agent
-  reads the turn as `Acme Support: "..."`. `metadata` says where it comes
-  from (a workflow, its step, a job).
-- The kit registers its host channel under `"host"` on first use and attaches
-  it to a room on the room's first post; a binding set up beforehand keeps its
-  settings. `channel_id=` speaks from another `HostChannel` you registered; a
-  channel of another type is refused before anything is written.
+  reads the turn as `Acme Support: "..."`. The name is shown only for a
+  participant connected via the host channel the post comes from (their
+  `channel_id`, or `connected_via`, names it): an id names its participant
+  only on the channels they are reached through:
+
+  ```python
+  await kit.store.add_participant(Participant(
+      id="desk", room_id=room_id, channel_id="host", display_name="Acme Support",
+  ))
+  ```
+- `metadata` says where it comes from (a workflow, its step, a job).
+- `idempotency_key`: a key the host channel holds in the room is a replay. The
+  post returns the event the key committed and texts nothing again, and from
+  the room's own work it draws no pass. A blank key is no key. A webhook
+  delivered twice posts once.
+- The kit registers its host channel under `"host"` on first use. `"host"`
+  taken by a channel of another type raises `ValueError`; `channel_id=` then
+  speaks from another `HostChannel` you registered, and a channel of another
+  type is refused before anything is written.
+- A room that never bound the host channel gets it attached on its first
+  post, decided under the room lock: a binding you set up, before or
+  concurrently, keeps its settings. A room you detached the host channel from
+  is refused with `ChannelNotFoundError`, and a closed or archived room with
+  `RoomClosedError`; nothing is written. `attach_channel()` grants it again.
+- A host channel is attached as a transport only: `category=INTELLIGENCE`
+  raises `ValueError`. `process_inbound()` on it raises `ValueError` before
+  anything is read: it receives no external payload.
 - `deliver()` is the other way in: content for the room's agents, never shown
   to the correspondent.
 
