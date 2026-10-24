@@ -22,6 +22,7 @@ from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import HookTrigger
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult, InjectedEvent
+from roomkit.models.room import Room
 from roomkit.store.memory import InMemoryStore
 from tests.test_framework import SimpleChannel
 
@@ -131,6 +132,49 @@ class TestARoomStepTwoOpens:
 
             [room] = await kit.store.list_rooms()
             assert second.event is not None and second.event.room_id == room.id
+        finally:
+            await kit.close()
+
+
+class _SlowCreation(InMemoryStore):
+    """A room's creation that waits, once armed, while another call creates
+    the same room first."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.armed = False
+        self.creating = asyncio.Event()
+        self.answer = asyncio.Event()
+
+    async def create_room(self, room: Room) -> Room:
+        if self.armed:
+            self.armed = False
+            self.creating.set()
+            await self.answer.wait()
+        return await super().create_room(room)
+
+
+class TestARoomAnotherCallCreatedFirst:
+    async def test_is_no_error_when_the_caller_left(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Step 2 creates the room the message names, another call creates it
+        first, and the caller is gone meanwhile: the store's refusal is the
+        race step 2 reads the room again for (RFC §10.1 step 2), never
+        logged as a failed write."""
+        store = _SlowCreation()
+        kit = RoomKit(store=store)
+        kit.register_channel(SimpleChannel("sms1"))
+        store.armed = True
+        try:
+            caller = asyncio.create_task(kit.process_inbound(_msg("first"), room_id="r1"))
+            await _cancelled_while(caller, store.creating)
+            await kit.create_room(room_id="r1")
+            with caplog.at_level(logging.DEBUG):
+                store.answer.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await caller
+            assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []
         finally:
             await kit.close()
 

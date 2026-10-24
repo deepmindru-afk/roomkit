@@ -96,6 +96,7 @@ async def run_to_its_end[T](
     *,
     held: set[asyncio.Task[Any]],
     name: str,
+    expected: tuple[type[Exception], ...] = (),
 ) -> T:
     """Run *work* to its end whatever becomes of its caller, and return what
     it returns: the writes past a call's decision (RFC §13.6, A caller that
@@ -110,7 +111,8 @@ async def run_to_its_end[T](
     it ends it is in *held*, which the kit's close waits for on its budget
     (:func:`wait_for_held`) and never cancels. Its exception is raised, as
     awaiting it would; to a cancelled caller its cancellation is, and the
-    exception is logged.
+    exception is logged: as an error, unless it is one of *expected*, an end
+    the caller would have handled (a race another call won), at debug.
     """
     task = start_named(work, name=name, eager=True)
     if task.done():
@@ -127,7 +129,8 @@ async def run_to_its_end[T](
     if cancelled is None:
         return task.result()
     if not task.cancelled() and (error := task.exception()) is not None:
-        logger.error("Writes a cancelled caller left failed: %s", error, exc_info=error)
+        level = logging.DEBUG if isinstance(error, expected) else logging.ERROR
+        logger.log(level, "Writes a cancelled caller left failed: %s", error, exc_info=error)
     raise cancelled
 
 

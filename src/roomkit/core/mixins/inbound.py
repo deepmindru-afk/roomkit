@@ -1053,6 +1053,8 @@ class InboundMixin(HelpersMixin):
             self._open_room(message, room_id, organization_id),
             held=self._decided_writes,
             name=f"roomkit-decided-write-{room_id or 'new-room'}",
+            # Another call created the room first: step 2 reads it again.
+            expected=(RoomAlreadyExistsError,),
         )
 
     async def _open_room(
