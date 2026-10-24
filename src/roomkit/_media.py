@@ -12,6 +12,7 @@ long.
 from __future__ import annotations
 
 from collections.abc import Callable
+from decimal import Decimal
 
 from roomkit._media_url import (
     VISION_IMAGE_TYPES,
@@ -46,6 +47,7 @@ __all__ = [
     "canonical_data_uri",
     "content_text",
     "content_words",
+    "coordinate_text",
     "data_uri_media_type",
     "is_data_uri",
     "is_link",
@@ -94,8 +96,17 @@ def location_label(content: LocationContent) -> str:
     """How *content* reads as text (RFC §6.6): its label or address with its
     coordinates, its coordinates alone with neither."""
     name = content.label or content.address
-    point = f"({content.latitude}, {content.longitude})"
+    point = f"({coordinate_text(content.latitude)}, {coordinate_text(content.longitude)})"
     return f"[Location: {name} {point}]" if name else f"[Location: {point}]"
+
+
+def coordinate_text(value: float) -> str:
+    """How a coordinate reads in a text form (RFC §6.6): the shortest decimal
+    that reads back as *value*, with one decimal at least and never an
+    exponent, so that every implementation writes it alike (``45.0``,
+    ``0.00005``, never ``45`` nor ``5e-05``)."""
+    text = format(Decimal(repr(value)), "f")
+    return text if "." in text else f"{text}.0"
 
 
 def text_form(content: EventContent) -> str:

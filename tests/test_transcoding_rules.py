@@ -69,11 +69,29 @@ def _text_only(channel_id: str) -> ChannelBinding:
 
 
 class TestLocation:
-    async def test_a_location_without_a_name_reads_its_coordinates(self) -> None:
+    @pytest.mark.parametrize(
+        ("latitude", "longitude", "text"),
+        [
+            (45.5, -73.6, "[Location: (45.5, -73.6)]"),
+            (45, -73.0, "[Location: (45.0, -73.0)]"),
+            (5e-05, -1.5e-07, "[Location: (0.00005, -0.00000015)]"),
+        ],
+        ids=["decimals", "whole-degrees", "tiny"],
+    )
+    async def test_a_location_without_a_name_reads_its_coordinates(
+        self, latitude: float, longitude: float, text: str
+    ) -> None:
+        """Each coordinate with one decimal at least, the shortest that reads
+        back as the same number, never an exponent, wherever it is read as
+        text (RFC §6.6)."""
+        location = LocationContent(latitude=latitude, longitude=longitude)
+
         transcoded = await DefaultContentTranscoder().transcode(
-            LocationContent(latitude=45.5, longitude=-73.6), _text_only("a"), _text_only("b")
+            location, _text_only("a"), _text_only("b")
         )
-        assert transcoded == TextContent(body="[Location: (45.5, -73.6)]")
+
+        assert transcoded == TextContent(body=text)
+        assert text_form(location) == text
 
     async def test_a_named_location_reads_its_name_first(self) -> None:
         transcoded = await DefaultContentTranscoder().transcode(
