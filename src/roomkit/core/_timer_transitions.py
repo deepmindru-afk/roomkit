@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.core._room_timers import DueTransition, due_transitions, transitioned
 from roomkit.core.locks import _has_room_lock, unlocked_context
-from roomkit.core.task_utils import run_to_its_end, start_named
+from roomkit.core.task_utils import await_unless_cut, run_to_its_end, start_named
 from roomkit.models.enums import EventType, HookTrigger, RoomStatus
 
 if TYPE_CHECKING:
@@ -228,9 +228,10 @@ class TimerTransitions:
     async def settle(self, room_id: str, hooks: list[asyncio.Task[None]]) -> None:
         """Wait, once the caller's section released the lock, for the hooks
         :meth:`apply_due` started; not under a lock held from before it,
-        which their task waits for."""
+        which their task waits for. The kit's close cutting them ends the
+        wait quietly: the caller was not cancelled."""
         if hooks and not _has_room_lock(room_id, self._lock_manager):
-            await asyncio.shield(asyncio.gather(*hooks))
+            await await_unless_cut(asyncio.shield(asyncio.gather(*hooks)))
 
     async def _announce(self, room_id: str, transition: DueTransition) -> None:
         """*transition*'s lifecycle record and its framework event, once the

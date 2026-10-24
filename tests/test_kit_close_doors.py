@@ -17,13 +17,14 @@ from typing import Any
 
 import pytest
 
-from roomkit import HookExecution, HookTrigger, RoomKit
+from roomkit import HookExecution, HookTrigger, RoomKit, RoomStatus
 from roomkit.channels.agent import Agent
 from roomkit.core.task_utils import hold_task
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory
 from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.room import RoomTimers
 from roomkit.providers.ai.base import (
     AIContext,
@@ -358,3 +359,63 @@ async def test_a_task_started_while_the_kit_drains_ends_with_its_close(
 
     running = [t.get_name() for t in asyncio.all_tasks() if not t.done()]
     assert [name for name in running if name.startswith("roomkit-")] == []
+
+
+async def test_a_caller_waiting_for_its_injected_events_returns_when_the_close_cuts_them() -> None:
+    """process_inbound committed its event and waits for the pass of what
+    its hook injected when the kit closes and cuts that pass: the caller
+    returns its committed event, never a CancelledError it did not ask for."""
+    kit = RoomKit()
+    for channel_id in ("sms1", "sms2"):
+        kit.register_channel(SimpleChannel(channel_id))
+    await kit.create_room(room_id="r1")
+    for channel_id in ("sms1", "sms2"):
+        await kit.attach_channel("r1", channel_id)
+    in_pass = asyncio.Event()
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, name="gate")
+    async def gate(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        body = getattr(event.content, "body", "")
+        if body == "injected":
+            in_pass.set()
+            await asyncio.Event().wait()
+        if body != "hello":
+            return HookResult.allow()
+        injected = RoomEvent(
+            room_id="r1",
+            source=EventSource(channel_id="sms2", channel_type="sms"),
+            content=TextContent(body="injected"),
+        )
+        return HookResult(
+            action="allow",
+            injected_events=[InjectedEvent(event=injected, target_channel_ids=["sms2"])],
+        )
+
+    message = InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="hello"))
+    caller = asyncio.create_task(kit.process_inbound(message, room_id="r1"))
+    await asyncio.wait_for(in_pass.wait(), 1)
+    await kit.close()
+
+    result = await asyncio.wait_for(caller, 1)
+    assert result.event is not None and result.event.content == TextContent(body="hello")
+
+
+async def test_a_timer_check_waiting_for_its_hooks_returns_when_the_close_cuts_them() -> None:
+    """check_room_timers() paused the room and waits for its ON_ROOM_PAUSED
+    hook when the kit closes and cuts it: the check returns the room as
+    stored, never a CancelledError its caller did not ask for."""
+    kit = RoomKit()
+    await kit.create_room(room_id="r1", timers=RoomTimers(inactive_after_seconds=0))
+    in_hook = asyncio.Event()
+
+    @kit.hook(HookTrigger.ON_ROOM_PAUSED, name="slow")
+    async def slow(event: RoomEvent, ctx: RoomContext) -> None:
+        in_hook.set()
+        await asyncio.Event().wait()
+
+    check = asyncio.create_task(kit.check_room_timers("r1"))
+    await asyncio.wait_for(in_hook.wait(), 1)
+    await kit.close()
+
+    room = await asyncio.wait_for(check, 1)
+    assert room.status is RoomStatus.PAUSED

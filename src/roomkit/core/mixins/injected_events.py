@@ -42,7 +42,7 @@ from roomkit.core.mixins.inbound_locked import (
     target_update,
 )
 from roomkit.core.mixins.lane_execution import provisional
-from roomkit.core.task_utils import start_named
+from roomkit.core.task_utils import await_unless_cut, start_named
 from roomkit.core.visibility import intersect_visibility, narrowed_to_target, visibility_allows
 from roomkit.models.channel import ChannelBinding
 from roomkit.models.enums import (
@@ -209,9 +209,11 @@ class InjectedEventsMixin(HelpersMixin):
     async def _finish_queued(handed: asyncio.Task[None] | None) -> None:
         """Wait, once the caller's section released the lock, for the
         passes it handed off (:meth:`_hand_off_decided`), shielded from the
-        caller's cancellation, so they commit before the call returns."""
+        caller's cancellation, so they commit before the call returns. The
+        kit's close cutting them ends the wait quietly: the caller was not
+        cancelled."""
         if handed is not None:
-            await asyncio.shield(handed)
+            await await_unless_cut(asyncio.shield(handed))
 
     async def _run_queued(
         self, queued: QueuedInjections, room_id: str, cascade: DeliveryCascade
