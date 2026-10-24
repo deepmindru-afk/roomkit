@@ -44,6 +44,7 @@ from roomkit.core.task_utils import await_unless_cut, start_named
 from roomkit.core.visibility import (
     intersect_visibility,
     narrowed_to_target,
+    narrower_scope,
     with_committed_visibility,
     without_framework_mark,
 )
@@ -141,9 +142,7 @@ def scoped(
         return response
     categories = {binding.channel_id: binding.category for binding in bindings}
     visibility = intersect_visibility(response.visibility, scope, categories.get)
-    carried = intersect_visibility(
-        response.response_visibility or Visibility.ALL, scope, categories.get
-    )
+    carried = narrower_scope(response.response_visibility, scope, bindings)
     return response.model_copy(update={"visibility": visibility, "response_visibility": carried})
 
 
@@ -1179,10 +1178,10 @@ class LaneExecutionMixin(HelpersMixin):
         committed event: its delivery set, with its hooks' tasks and
         observations for after delivery, and the mutation trigger of an edit
         or a delete (RFC §10.3), delivered with the target it changed. What
-        answers the response is scoped by *response_visibility*, the scope of
-        the message its cascade derives from, at any depth (RFC §5.12). A
-        detached source has no delivery set: its plan, if any, fires the
-        trigger."""
+        answers the response is kept within both *response_visibility*, the
+        scope of the message its cascade derives from, at any depth, and the
+        response's own (RFC §5.12): neither widens the other. A detached
+        source has no delivery set: its plan, if any, fires the trigger."""
         binding = ready.source_binding
         context = with_target(ready.context, mutation_hook[1] if mutation_hook else None)
         if binding is None:
@@ -1191,7 +1190,9 @@ class LaneExecutionMixin(HelpersMixin):
 
         def factory(committed: RoomEvent) -> DeliveryPlan:
             child = router.plan(committed, binding, context)
-            child.response_visibility = response_visibility
+            child.response_visibility = narrower_scope(
+                response_visibility, committed.response_visibility, context.bindings
+            )
             child.hook_tasks = list(ready.sync_result.tasks)
             child.hook_observations = list(ready.sync_result.observations)
             child.mutation_hook = mutation_hook

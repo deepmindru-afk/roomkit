@@ -134,6 +134,30 @@ class TestTheCommittedVisibility:
         finally:
             await kit.close()
 
+    @pytest.mark.parametrize("scope", [None, "a,b,sms,ws"], ids=["no-scope", "a-wider-scope"])
+    async def test_an_answer_s_own_scope_holds_within_the_message_s(
+        self, scope: str | None
+    ) -> None:
+        """RFC §5.12: what answers an answer stays within both the scope the
+        answer names and the message's, ``None`` restricting nothing: no
+        scope on the message keeps the answer's, a wider one never widens
+        it."""
+        kit = RoomKit(max_chain_depth=3)
+        await kit.create_room(room_id="r1")
+        agents = (_Scopes("a", "A", "b,sms"), AILikeChannel("b", response="B"))
+        for channel in (_Told("sms"), _Told("ws"), *agents):
+            kit.register_channel(channel)
+            await kit.attach_channel("r1", channel.channel_id)
+        try:
+            await kit.process_inbound(_message("hello", response_visibility=scope))
+            events = await kit.store.list_events("r1")
+            # b's answer to a's answer, which names "b,sms" for its answers.
+            assert [e.visibility for e in events if _body(e) == "B" and e.chain_depth == 2] == [
+                "b,sms"
+            ]
+        finally:
+            await kit.close()
+
     async def test_narrowing_a_binding_later_hides_nothing_already_committed(self) -> None:
         sms, ws, ai = _Told("sms"), _Told("ws"), AILikeChannel("ai")
         kit = await _room(sms, ws, ai)
@@ -467,6 +491,24 @@ class TestALiveStream:
             assert "".join(streamed["push"]) == "answer"
         finally:
             await kit.close()
+
+
+class _Scopes(AILikeChannel):
+    """An agent whose answers name *scope* for what answers them."""
+
+    def __init__(self, channel_id: str, response: str, scope: str) -> None:
+        super().__init__(channel_id, response=response)
+        self._scope = scope
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        output = await super().on_event(event, binding, context)
+        scoped = [
+            e.model_copy(update={"response_visibility": self._scope})
+            for e in output.response_events
+        ]
+        return output.model_copy(update={"response_events": scoped})
 
 
 class _Says(AILikeChannel):

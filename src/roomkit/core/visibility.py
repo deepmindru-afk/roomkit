@@ -59,6 +59,21 @@ def intersect_visibility(
     return _listing(_ids(a) & _ids(b))
 
 
+def narrower_scope(
+    first: str | None, second: str | None, bindings: Iterable[ChannelBinding]
+) -> str | None:
+    """The answer scope within both *first* and *second* (RFC §5.12, §7.3):
+    ``None``, no restriction, on either side gives the other; two scopes give
+    their intersection, a list matched against the categories of the room's
+    *bindings*. Never wider than either."""
+    if first is None:
+        return second
+    if second is None:
+        return first
+    categories = {binding.channel_id: binding.category for binding in bindings}
+    return intersect_visibility(first, second, categories.get)
+
+
 def committed_visibility(
     visibility: str, source_binding: ChannelBinding | None, bindings: Iterable[ChannelBinding]
 ) -> str:
