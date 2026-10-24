@@ -120,9 +120,9 @@ class RoomAdmission:
         would otherwise wait for the ticket its own caller holds, released
         only once the caller returns.
 
-        The check's hooks stand in the room's admission order for *event*:
-        what their bodies send into the room is adopted beside it, on its
-        cascade's *budget*.
+        The check's hooks, and the handlers of its error report, stand in the
+        room's admission order for *event*: what they send into the room is
+        adopted beside it, on its cascade's *budget*.
 
         Otherwise yields the off-lock outcome once every earlier ticket of the
         room has been released. The caller takes the room lock and commits inside the
@@ -140,11 +140,15 @@ class RoomAdmission:
         try:
             if context is None:
                 context = await self._build_context(room_id)
+            # The check and its report stand in the event's admission order:
+            # what a hook's body or a ``hook_error`` handler sends into the
+            # room is adopted beside the event, rather than wait for the
+            # ticket this call holds.
             with admission_order(room_id, budget):
                 outcome = await self._hook_engine.run_sync_hooks(
                     room_id, HookTrigger.BEFORE_BROADCAST, event, context, needs_lock=False
                 )
-            await self._report(room_id, event, outcome)
+                await self._report(room_id, event, outcome)
             await ticket.wait_turn()
             yield outcome
         finally:

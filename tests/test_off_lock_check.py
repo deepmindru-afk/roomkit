@@ -314,6 +314,38 @@ class TestReentrance:
         assert result.event is not None
         assert notice.index < result.event.index
 
+    async def test_an_error_handler_recording_the_failure_is_adopted_by_the_check(self) -> None:
+        """A ``hook_error`` handler runs as the check reports, its event's
+        ticket held: what it sends into the room is adopted beside the event
+        (RFC §9.5.1), rather than wait for that ticket until its own
+        ``process_timeout`` passes and be lost."""
+        kit = RoomKit(process_timeout=1.0)
+        await _room(kit)
+        kit.register_channel(SimpleChannel("sys", ChannelType.SYSTEM))
+        await kit.attach_channel("r1", "sys")
+
+        async def scan(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if _body(event) == "A":
+                raise RuntimeError("scanner down")
+            return HookResult.allow()
+
+        kit.hook(HookTrigger.BEFORE_BROADCAST, name="pii", needs_lock=False)(scan)
+
+        @kit.on("hook_error")
+        async def record(event: FrameworkEvent) -> None:
+            await kit.send_event("r1", "sys", TextContent(body="PII check failed"))
+
+        try:
+            result = await asyncio.wait_for(kit.process_inbound(_msg("A"), room_id="r1"), 2)
+            events = await kit.store.list_events("r1")
+            assert result.event is not None and not result.blocked
+            assert [_body(e) for e in events if e.type == EventType.MESSAGE] == [
+                "PII check failed",
+                "A",
+            ]
+        finally:
+            await kit.close()
+
 
 def _reg(
     name: str, *, priority: int = 0, needs_lock: bool = True, **kw: object

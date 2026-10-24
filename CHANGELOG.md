@@ -1608,9 +1608,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - a call into the room made under its lock (a locked hook, code under the
     lock) is nested in the section holding it and draws on the reentry
     budget of the cascade whose section that is; one made from an off-lock
-    hook's body or from a channel's `handle_inbound()` is adopted beside the
-    event being processed, takes no admission ticket, runs every hook under
-    the lock and draws on that event's budget;
+    hook's body, from a `hook_error` handler of that check, or from a
+    channel's `handle_inbound()` is adopted beside the event being
+    processed, takes no admission ticket, runs every hook under the lock and
+    draws on that event's budget;
   - a call made from a delivery set's deliveries or turns (a transport's
     `deliver()`, an agent's `on_event()`, a tool handler, a `TurnHost`
     verb, a streamed reply's reading) is a new arrival, with its ticket and
