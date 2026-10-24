@@ -1410,8 +1410,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an answer), is now what its channel gave it intersected with the scope,
   a listed channel's category read from the room's bindings; and what
   answers a response stays within both the cascade's scope and the
-  response's own, `None` restricting nothing and an empty scope (`""`)
-  naming nobody. A `BEFORE_BROADCAST` hook may narrow an event's
+  response's own, `None` restricting nothing; `InboundMessage` and
+  `send_event()` refuse an empty scope (`""`), and one that reaches an
+  event another way (a hook's modify) names nobody. A `BEFORE_BROADCAST`
+  hook may narrow an event's
   `response_visibility`, never widen or clear it: what it writes is
   intersected with the original, `None` keeps the original and `internal`
   reads as `none`; and a response whose visibility its hooks widen is
