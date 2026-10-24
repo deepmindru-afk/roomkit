@@ -202,7 +202,7 @@ class TurnClient(RoomOwner):
         request.previous_turn, submitted = self._leave(
             channel_id, request.room_id, request.turn_id
         )
-        submitted.record_scope(request.turn_id, unscoped=answers_reach(event) == Visibility.ALL)
+        submitted._record_scope(request.turn_id, unscoped=answers_reach(event) == Visibility.ALL)
         handed: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._handing[request.turn_id] = (request, handed)
         try:
@@ -311,7 +311,7 @@ class TurnClient(RoomOwner):
         it replaces (a copy, as a request carries it), and its own."""
         previous = self._previous.get(channel_id, room_id)
         made = PreviousTurn(turn_id=entry_id)
-        made.inherit_scopes(previous)
+        made._inherit_scopes(previous)
         self._previous.put(channel_id, room_id, made)
         return (previous.model_copy() if previous is not None else None), made
 

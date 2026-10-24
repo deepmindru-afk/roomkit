@@ -163,10 +163,10 @@ async def test_work_a_turn_began_publishes_after_it_as_that_turn_and_the_room_al
 ):
     previous: RoomRecords[PreviousTurn] = RoomRecords()
     earlier = PreviousTurn(turn_id="t1", executor_id="x")
-    earlier.record_scope("t1", unscoped=False)
+    earlier._record_scope("t1", unscoped=False)
     latest = PreviousTurn(turn_id="t2", executor_id="x")
-    latest.inherit_scopes(earlier)
-    latest.record_scope("t2", unscoped=True)
+    latest._inherit_scopes(earlier)
+    latest._record_scope("t2", unscoped=True)
     previous.put("assistant", "r", latest)
     events = _Events(reaches_room=binding_reaches_room)
 

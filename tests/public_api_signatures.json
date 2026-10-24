@@ -1527,10 +1527,7 @@
   },
   "roomkit.PreviousTurn": {
     "__init__": ["def", "*", "turn_id", "executor_id=None"],
-    "inherit_scopes": ["def", "previous"],
-    "model_post_init": ["def", "context", "/"],
-    "record_scope": ["def", "turn_id", "*", "unscoped"],
-    "unscoped": ["def", "turn_id"]
+    "model_post_init": ["def", "context", "/"]
   },
   "roomkit.ProcessTimeoutError": {},
   "roomkit.ProviderDeliveryError": {

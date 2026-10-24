@@ -47,20 +47,20 @@ class PreviousTurn(BaseModel):
     """Per turn of this record's executor in the room, newest last: whether
     its trigger scoped its answers nowhere. Kept on the owner, never sent."""
 
-    def record_scope(self, turn_id: str, *, unscoped: bool) -> None:
+    def _record_scope(self, turn_id: str, *, unscoped: bool) -> None:
         """Keep whether *turn_id*'s trigger scoped its answers nowhere (RFC
         §5.12), for what its work publishes after it (RFC §8.4)."""
         self._scopes[turn_id] = unscoped
         while len(self._scopes) > _SCOPES_KEPT:
             del self._scopes[next(iter(self._scopes))]
 
-    def inherit_scopes(self, previous: PreviousTurn | None) -> None:
+    def _inherit_scopes(self, previous: PreviousTurn | None) -> None:
         """Keep the earlier turns' scopes: a publication may name an earlier
         turn of the executor that still holds the room (RFC §10.6.3)."""
         if previous is not None:
             self._scopes.update(previous._scopes)
 
-    def unscoped(self, turn_id: str) -> bool:
+    def _unscoped(self, turn_id: str) -> bool:
         """Whether *turn_id*'s trigger scoped its answers nowhere; ``False``
         for a turn this record does not know, a channel call included."""
         return self._scopes.get(turn_id, False)
