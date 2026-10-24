@@ -193,7 +193,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before the close and cut before its first step never ran its end: a
   background run posted no terminal entry and never freed its room. Each is
   now cut once it has started, its end run (a run's terminal entry, a task's
-  completion), and `close()` waits for it before it releases the store.
+  completion), and `close()` waits for it before it releases the store. So
+  is a hook task the kit starts while a channel closes (the
+  `ON_PROTOCOL_TRACE` hooks of its last trace, a framework event it
+  schedules, the record of a held message's cancelled delivery): it ran on
+  past `close()`.
 
 - A record nobody receives reaches the room's delivery lane when its caller
   is cancelled while it commits (RFC §13.5, §13.6, RMK-943): step 2's attach

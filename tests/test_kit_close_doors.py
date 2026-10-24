@@ -26,6 +26,7 @@ from roomkit.models.enums import ChannelCategory
 from roomkit.models.event import EventSource, RoomEvent, TextContent
 from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.room import RoomTimers
+from roomkit.models.trace import ProtocolTrace
 from roomkit.providers.ai.base import (
     AIContext,
     AIResponse,
@@ -447,6 +448,55 @@ async def test_a_run_held_around_the_close_is_cut_with_its_end_run(when: str) ->
 
     assert [run.cancelled() for run in runs] == [True]
     assert steps == ["started", "ended"]
+
+
+class _TracesAsItCloses(SimpleChannel):
+    """A channel whose close emits a protocol trace (a SIP BYE), and returns
+    once the trace's hook has started."""
+
+    def __init__(self, channel_id: str, hook_started: asyncio.Event) -> None:
+        super().__init__(channel_id)
+        self._hook_started = hook_started
+
+    async def close(self) -> None:
+        self.emit_trace(
+            ProtocolTrace(
+                channel_id=self.channel_id,
+                direction="outbound",
+                protocol="sip",
+                summary="BYE",
+                room_id="r1",
+            )
+        )
+        await asyncio.wait_for(self._hook_started.wait(), 1.0)
+        await super().close()
+
+
+async def test_a_hook_task_started_as_a_channel_closes_ends_with_the_close() -> None:
+    """A channel's close starts a hook of the kit's (its last trace's
+    ON_PROTOCOL_TRACE): the hook is cut before close() returns, its end run,
+    never left running past it."""
+    kit = RoomKit()
+    hook_started = asyncio.Event()
+    kit.register_channel(_TracesAsItCloses("sip", hook_started))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sip")
+    steps: list[str] = []
+
+    @kit.hook(HookTrigger.ON_PROTOCOL_TRACE, execution=HookExecution.ASYNC, name="audit")
+    async def audit(trace: ProtocolTrace, ctx: RoomContext) -> None:
+        steps.append("started")
+        hook_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            steps.append("ended")
+            raise
+
+    await kit.close()
+
+    assert steps == ["started", "ended"]
+    assert [t for t in kit._pending_hook_tasks if not t.done()] == []
 
 
 async def test_a_caller_waiting_for_its_injected_events_returns_when_the_close_cuts_them() -> None:

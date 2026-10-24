@@ -94,7 +94,13 @@ from roomkit.core.mixins import (
     VoiceOpsMixin,
 )
 from roomkit.core.mixins.helpers import _refuses_writes
-from roomkit.core.task_utils import CLOSE_WAIT_S, cancel_and_wait, held_runs, wait_for_held
+from roomkit.core.task_utils import (
+    CLOSE_WAIT_S,
+    cancel_and_wait,
+    cut_once_started,
+    held_runs,
+    wait_for_held,
+)
 from roomkit.core.transcoder import DefaultContentTranscoder
 from roomkit.identity.base import IdentityResolver
 from roomkit.models._visibility import parse_given_visibility, parse_visibility
@@ -809,14 +815,15 @@ class RoomKit(
     async def _cancel_pending_tasks(self) -> None:
         """Cancel the pending hook tasks and the stream readers the kit holds
         and wait for their ends, but the ones this close runs under: waiting
-        for them would wait for itself. A task one of them starts as it ends
-        is cancelled in turn."""
+        for them would wait for itself. A task not started yet is cut once
+        started, as a held run is, so its end runs. A task one of them
+        starts as it ends is cancelled in turn."""
         spared = set(held_runs())
         while pending := [
             task for task in self._pending_hook_tasks if not task.done() and task not in spared
         ]:
             for task in pending:
-                task.cancel()
+                cut_once_started(task)
             await asyncio.gather(*pending, return_exceptions=True)
             self._pending_hook_tasks.difference_update(pending)
 
@@ -920,10 +927,12 @@ class RoomKit(
             await self._voice.close()
         await self._realtime.close()
         # What the channels' closes started (a run held on the closing kit,
-        # cut as it started; a decided write) ends before the store is
+        # cut as it started; a decided write; a hook task, a trace's or a
+        # held message's cancellation record) ends before the store is
         # released, as what the drains started did.
         await self._cancel_background_runs()
         await wait_for_held(self._decided_writes, until=writes_deadline)
+        await self._cancel_pending_tasks()
         # Every channel is closed and its media released. Only now wait for
         # the operations the store or the lock manager already has — they are
         # bracketed by resource leases, and this wait is what lets a channel's
