@@ -626,7 +626,7 @@ class LaneSink:
         room_id = self._room_id
         # The row carries its cascade's scope (TurnScope), before its hooks.
         scope = event.response_visibility
-        decision = await self._kit._gate_commit(room_id, event, self._context)
+        decision = await self._kit._gate_commit(room_id, event, self._context, under_lock=False)
         # The hooks ran without the room lock: a close meanwhile refuses the
         # row, which is then neither committed nor recorded as blocked.
         if await self._room_refuses_writes():

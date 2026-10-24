@@ -1164,7 +1164,9 @@ class LaneExecutionMixin(HelpersMixin):
         # (RFC §10.1 steps 9 and 11): orchestration routing stamps
         # _routed_to here, and a muted or read-only agent's answer is
         # stored BLOCKED with what its hooks decided kept (§7.5 rule 3).
-        decision = await self._gate_commit(room_id, reentry, reentry_ctx, change=check)
+        decision = await self._gate_commit(
+            room_id, reentry, reentry_ctx, change=check, operation="reentry"
+        )
         if isinstance(decision, _Refused):
             return
         # Its hooks may have widened it: back within the cascade's scope.

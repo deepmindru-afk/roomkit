@@ -39,6 +39,7 @@ from roomkit.core.mixins.helpers import (
     _RECENT_EVENTS_LIMIT,
     _REFUSING_STATUSES,
     HelpersMixin,
+    _RefusedOperation,
     _source_block_reason,
 )
 from roomkit.core.visibility import (
@@ -151,9 +152,11 @@ def within_answer_scope[D: (_Ready, _Blocked)](decision: D, scope: str | None) -
 
 @dataclass(frozen=True, slots=True)
 class _Refused:
-    """Decision returned by ``_gate_commit``: the edit or the delete its
-    hooks let through was refused once its target was read again (RFC §10.1
-    step 9a). Nothing of it is stored, its hooks' results included."""
+    """Decision returned by ``_gate_commit``: once its hooks ran under the
+    lock, the room was read again (RFC §10.1 step 9a) and refused the event:
+    a hook closed the room (``room_closed``), or the edit or the delete its
+    hooks let through no longer had a target it may change. Nothing of it is
+    stored, its hooks' results included."""
 
     reason: str
 
@@ -578,11 +581,18 @@ class InboundLockedMixin(HelpersMixin):
         *,
         source_check: bool = True,
         change: ChangeCheck = NO_CHANGE,
+        under_lock: bool = True,
+        operation: _RefusedOperation = "inbound",
     ) -> _Blocked | _Ready | _Refused:
         """RFC §10.1 steps 9 to 11 for an event about to commit: its
         BEFORE_BROADCAST hooks, then its source's right to write, unless
         *source_check* is off for an event a hook injected (§9.4), which is
         the hook's, not a channel's.
+
+        Once a hook ran *under_lock*, the room is read again (step 9a): a
+        room a hook closed refuses the event as step 6 does, announced for
+        *operation* (:class:`_Refused`). A streamed row's hooks run off the
+        lock, and its stream reads the room's status itself (§5.1).
 
         *change* is what step 8a accepted of an edit or a delete: once a
         hook ran under the lock, its target is read and validated again
@@ -604,6 +614,10 @@ class InboundLockedMixin(HelpersMixin):
         # §9.5.1) its outcome comes first and only the locked hooks run here.
         sync_result = await self._run_before_broadcast(room_id, event, context, precheck)
         await self._announce_hook_errors(room_id, event, sync_result)
+        if hooked and under_lock:
+            room = await self._room_after_hooks(room_id, event, operation)
+            if room is None:
+                return _Refused("room_closed")
 
         if not sync_result.allowed:
             if source_check:
@@ -648,6 +662,20 @@ class InboundLockedMixin(HelpersMixin):
                 event, context, sync_result, reason=reason, blocked_by=reason
             )
         return _Ready(event, source_binding, sync_result, context, target)
+
+    async def _room_after_hooks(
+        self, room_id: str, event: RoomEvent, operation: _RefusedOperation
+    ) -> Room | None:
+        """The room as *event*'s hooks left it (RFC §10.1 step 9a), or
+        ``None`` when it no longer accepts events, a hook having closed it:
+        refused as step 6 refuses it, the refusal announced for *operation*
+        (§5.1, §8.2), and nothing of the event stored."""
+        room = await self._store.get_room(room_id)
+        if room is not None and room.status not in _REFUSING_STATUSES:
+            return room
+        status = None if room is None else room.status
+        await self._refuse_closed_room(room_id, status=status, operation=operation, event=event)
+        return None
 
     async def _source_binding(
         self, room_id: str, event: RoomEvent, context: RoomContext, *, hooked: bool

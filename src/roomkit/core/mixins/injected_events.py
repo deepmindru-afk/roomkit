@@ -265,7 +265,7 @@ class InjectedEventsMixin(HelpersMixin):
         if check.refusal is not None:
             return
         decision = await self._gate_commit(
-            room_id, event, context, source_check=False, change=check
+            room_id, event, context, source_check=False, change=check, operation="reentry"
         )
         if isinstance(decision, _Refused):
             return
