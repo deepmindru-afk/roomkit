@@ -41,6 +41,7 @@ from roomkit.core.mixins.channel_ops import is_channel_detached
 from roomkit.core.mixins.helpers import _REFUSING_STATUSES, HelpersMixin
 from roomkit.core.mixins.inbound_identity import _IdentityBlockedError
 from roomkit.core.mixins.verification import HELD_KEY
+from roomkit.core.task_utils import run_to_its_end
 from roomkit.models.delivery import (
     STANDALONE,
     DeliveryHandle,
@@ -1044,8 +1045,18 @@ class InboundMixin(HelpersMixin):
         The binding names the sender (RFC §10.1 step 2), so the router finds
         them there on their next message and admits no one else through it
         (§10.4): on a shared number, the second correspondent gets a room of
-        their own.
+        their own. Completed whatever becomes of the caller, as whatever the
+        deadline (RFC §13.6): its creation, its ON_ROOM_CREATED hooks and its
+        attach.
         """
+        return await run_to_its_end(
+            self._open_room(message, room_id, organization_id), held=self._decided_writes
+        )
+
+    async def _open_room(
+        self, message: InboundMessage, room_id: str | None, organization_id: str | None
+    ) -> str:
+        """:meth:`_open_room_for`'s creation, hooks and attach."""
         room = await self.create_room(room_id=room_id, organization_id=organization_id)
         channel = self._channels.get(message.channel_id)
         sender = _conversation(message, channel) if channel else message.sender_id

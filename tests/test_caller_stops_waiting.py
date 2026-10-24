@@ -3,7 +3,8 @@
 Once its call is decided, a caller cancelled (a client gone, an outer timeout
 of its own) leaves the call's writes whole: the event a commit in flight
 wrote is delivered, what its hooks injected is committed, and the room's
-lane goes on.
+lane goes on. A room step 2 opens is completed whatever becomes of its
+caller.
 """
 
 from __future__ import annotations
@@ -99,6 +100,35 @@ class TestACommitInFlight:
 
             first = ["first"] if action == "allow" else []
             assert [_body(e) for e in ws.delivered] == [*first, "notice", "second"]
+        finally:
+            await kit.close()
+
+
+class TestARoomStepTwoOpens:
+    async def test_is_completed_when_its_caller_leaves_during_on_room_created(self) -> None:
+        """A new sender's first message opens a room and its caller is
+        cancelled while an ON_ROOM_CREATED hook provisions it: the room keeps
+        its binding naming the sender, and their next message lands there
+        (RFC §13.6, §10.1 step 2)."""
+        kit = RoomKit()
+        kit.register_channel(SimpleChannel("sms1"))
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        @kit.hook(HookTrigger.ON_ROOM_CREATED, name="provision")
+        async def provision(event: RoomEvent, ctx: RoomContext) -> None:
+            entered.set()
+            await release.wait()
+
+        try:
+            caller = asyncio.create_task(kit.process_inbound(_msg("first", "+15550000001")))
+            await _cancelled_while(caller, entered)
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+            second = await kit.process_inbound(_msg("second", "+15550000001"))
+
+            [room] = await kit.store.list_rooms()
+            assert second.event is not None and second.event.room_id == room.id
         finally:
             await kit.close()
 
