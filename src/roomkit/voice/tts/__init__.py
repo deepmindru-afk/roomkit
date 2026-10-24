@@ -28,9 +28,17 @@ from roomkit.voice.tts.filters import (
 from roomkit.voice.tts.sentence_splitter import split_sentences
 
 if TYPE_CHECKING:
-    from roomkit.voice.tts.azure_speech import AzureSpeechTTSConfig, AzureSpeechTTSProvider
+    from roomkit.voice.tts.azure_speech import (
+        AzureSpeechTTSConfig,
+        AzureSpeechTTSError,
+        AzureSpeechTTSProvider,
+    )
     from roomkit.voice.tts.elevenlabs import ElevenLabsConfig, ElevenLabsTTSProvider
-    from roomkit.voice.tts.fish_audio import FishAudioTTSConfig, FishAudioTTSProvider
+    from roomkit.voice.tts.fish_audio import (
+        FishAudioTTSConfig,
+        FishAudioTTSError,
+        FishAudioTTSProvider,
+    )
     from roomkit.voice.tts.fluxions import FluxionsTTSConfig, FluxionsTTSProvider
     from roomkit.voice.tts.gemini import GeminiTTSConfig, GeminiTTSProvider
     from roomkit.voice.tts.gemini_library import (
@@ -47,17 +55,19 @@ if TYPE_CHECKING:
     from roomkit.voice.tts.qwen3 import Qwen3TTSConfig, Qwen3TTSProvider
     from roomkit.voice.tts.qwen3 import VoiceCloneConfig as Qwen3VoiceCloneConfig
     from roomkit.voice.tts.sherpa_onnx import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
-    from roomkit.voice.tts.voxtral import VoxtralTTSConfig, VoxtralTTSProvider
+    from roomkit.voice.tts.voxtral import VoxtralTTSConfig, VoxtralTTSError, VoxtralTTSProvider
     from roomkit.voice.tts.vui import VUI_TAGS, VuiTTSConfig, VuiTTSProvider, VuiVoice
 
 __all__ = [
     "AzureSpeechTTSConfig",
+    "AzureSpeechTTSError",
     "AzureSpeechTTSProvider",
     "CONSENT_STATEMENTS",
     "ConversationTurn",
     "ElevenLabsConfig",
     "ElevenLabsTTSProvider",
     "FishAudioTTSConfig",
+    "FishAudioTTSError",
     "FishAudioTTSProvider",
     "FluxionsTTSConfig",
     "FluxionsTTSProvider",
@@ -94,6 +104,7 @@ __all__ = [
     "TTSStreamFilter",
     "VUI_TAGS",
     "VoxtralTTSConfig",
+    "VoxtralTTSError",
     "VoxtralTTSProvider",
     "VuiTTSConfig",
     "VuiTTSProvider",
@@ -106,11 +117,13 @@ __getattr__ = lazy_exports(
     __name__,
     {
         "AzureSpeechTTSConfig": "roomkit.voice.tts.azure_speech",
+        "AzureSpeechTTSError": "roomkit.voice.tts.azure_speech",
         "AzureSpeechTTSProvider": "roomkit.voice.tts.azure_speech",
         "CONSENT_STATEMENTS": "roomkit.voice.tts.gemini_library",
         "ElevenLabsConfig": "roomkit.voice.tts.elevenlabs",
         "ElevenLabsTTSProvider": "roomkit.voice.tts.elevenlabs",
         "FishAudioTTSConfig": "roomkit.voice.tts.fish_audio",
+        "FishAudioTTSError": "roomkit.voice.tts.fish_audio",
         "FishAudioTTSProvider": "roomkit.voice.tts.fish_audio",
         "FluxionsTTSConfig": "roomkit.voice.tts.fluxions",
         "FluxionsTTSProvider": "roomkit.voice.tts.fluxions",
@@ -137,6 +150,7 @@ __getattr__ = lazy_exports(
         "SherpaOnnxTTSProvider": "roomkit.voice.tts.sherpa_onnx",
         "VUI_TAGS": "roomkit.voice.tts.vui",
         "VoxtralTTSConfig": "roomkit.voice.tts.voxtral",
+        "VoxtralTTSError": "roomkit.voice.tts.voxtral",
         "VoxtralTTSProvider": "roomkit.voice.tts.voxtral",
         "VuiTTSConfig": "roomkit.voice.tts.vui",
         "VuiTTSProvider": "roomkit.voice.tts.vui",

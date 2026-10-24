@@ -104,7 +104,13 @@ from roomkit.conference import (
     MockUtterance,
     TrackKind,
 )
-from roomkit.core.delivery import DeliveryStrategy, Immediate, Queued, WaitForIdle
+from roomkit.core.delivery import (
+    DeliveryContext,
+    DeliveryStrategy,
+    Immediate,
+    Queued,
+    WaitForIdle,
+)
 from roomkit.core.exceptions import (
     AddressLinkedError,
     ChangeRefusedError,
@@ -152,6 +158,7 @@ from roomkit.core.framework import (
     VoiceNotConfiguredError,
 )
 from roomkit.core.hooks import TURN_TRIGGERS
+from roomkit.core.inbound_router import DefaultInboundRoomRouter, InboundRoomRouter
 from roomkit.core.locks import InMemoryLockManager, RoomLockManager
 from roomkit.core.visibility import visibility_allows, visible_events
 from roomkit.delivery import (
@@ -471,6 +478,7 @@ __all__ = [
     "DeliveryBackend",
     "DeliveryItem",
     "DeliveryItemStatus",
+    "DeliveryContext",
     "DeliveryStrategy",
     "Immediate",
     "InMemoryDeliveryBackend",
@@ -671,6 +679,9 @@ __all__ = [
     # Locking (extension point — RFC §13.5)
     "InMemoryLockManager",
     "RoomLockManager",
+    # Inbound routing (extension point)
+    "DefaultInboundRoomRouter",
+    "InboundRoomRouter",
     # Memory
     "MemoryProvider",
     "MemoryResult",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from roomkit.tools.base import Tool
 from roomkit.tools.compose import compose_tool_handlers, extract_tools
 from roomkit.tools.context import (
@@ -22,6 +24,9 @@ from roomkit.tools.external import ExternalToolHandler, PolicyExternalToolHandle
 from roomkit.tools.fence import FENCED_TAGS, fence, named_blocks
 from roomkit.tools.human_input import HumanInputHandler, HumanInputToolHandler
 from roomkit.tools.policy import RoleOverride, ToolPolicy
+
+if TYPE_CHECKING:
+    from roomkit.tools.mcp import MCPToolProvider
 
 __all__ = [
     "FENCED_TAGS",

@@ -769,6 +769,10 @@
     "__init__": ["def", "name", "description", "parameters", "origin='always'"],
     "from_tool": ["classmethod", "tool", "origin='always'"]
   },
+  "roomkit.DefaultInboundRoomRouter": {
+    "__init__": ["def", "store", "*", "channel_of=None"],
+    "route": ["async def", "channel_id", "channel_type", "participant_id=None", "channel_data=None", "*", "organization_id=None", "identity=None"]
+  },
   "roomkit.DeliveryBackend": {
     "ack": ["async def", "item_id"],
     "close": ["async def"],
@@ -779,6 +783,11 @@
     "get_queue_depth": ["async def"],
     "nack": ["async def", "item_id", "error=None"],
     "start": ["async def", "kit"]
+  },
+  "roomkit.DeliveryContext": {
+    "__init__": ["def", "kit", "room_id", "content", "channel_id=None", "metadata=None", "addressed_to=None", "idempotency_key=None", "session_id=None", "chain_depth=0", "instruction=False", "_voice_sessions=None", "_voice_channel=None", "_wait_for_turn=True"],
+    "find_transport_channel_id": ["async def"],
+    "resolve_channel_id": ["async def"]
   },
   "roomkit.DeliveryError": {
     "__init__": ["def", "*", "code", "message", "retryable=True"]
@@ -1254,6 +1263,9 @@
   "roomkit.InboundResult": {
     "__init__": ["def", "*", "event=None", "duplicate=False", "unavailable_targets=None", "blocked=False", "reason=None", "error=None", "cancellation_reason=None", "response_metadata=<factory>", "response_events=<factory>", "delivery_results=<factory>", "delivery=None"],
     "report_cascade": ["def", "cascade"]
+  },
+  "roomkit.InboundRoomRouter": {
+    "route": ["async def", "channel_id", "channel_type", "participant_id=None", "channel_data=None", "*", "organization_id=None", "identity=None"]
   },
   "roomkit.InjectedEvent": {
     "__init__": ["def", "*", "event", "target_channel_ids=None"]
@@ -3250,6 +3262,9 @@
   "roomkit.orchestration.audit_tool_handler": {
     "__call__": ["def", "handler", "auditor", "agent_id"]
   },
+  "roomkit.orchestration.build_handoff_tool": {
+    "__call__": ["def", "targets"]
+  },
   "roomkit.orchestration.strategies.supervisor.WorkerStrategy": {
     "PARALLEL": ["member", "'parallel'"],
     "SEQUENTIAL": ["member", "'sequential'"]
@@ -4330,6 +4345,9 @@
     "supports_fallback": ["property"],
     "verify_signature": ["def", "payload", "signature", "timestamp=None"]
   },
+  "roomkit.providers.rcs.RCSDeliveryResult": {
+    "__init__": ["def", "*", "success", "provider_message_id=None", "error=None", "metadata=<factory>", "channel_used='rcs'", "fallback=False"]
+  },
   "roomkit.providers.rcs.RCSProvider": {
     "check_capability": ["async def", "phone_number"],
     "close": ["async def"],
@@ -5037,6 +5055,15 @@
     "start": ["async def", "emit"],
     "status": ["property"],
     "stop": ["async def"]
+  },
+  "roomkit.sources.huddle_announcement_parser": {
+    "__call__": ["def", "channel_id", "*", "started_after=None"]
+  },
+  "roomkit.sources.parse_buzz_event": {
+    "__call__": ["def", "event", "channel_id", "*", "own_pubkey=None", "ignore_own=True"]
+  },
+  "roomkit.sources.parse_discord_message": {
+    "__call__": ["def", "message", "channel_id", "*", "bot_user_id=None", "ignore_bots=True"]
   },
   "roomkit.split_turn_notes": {
     "__call__": ["def", "text"]
@@ -6945,6 +6972,9 @@
     "supports_playback_callback": ["property"],
     "wait_playback": ["async def", "session"]
   },
+  "roomkit.voice.backends.MockVoiceCall": {
+    "__init__": ["def", "method", "args=<factory>"]
+  },
   "roomkit.voice.backends.RTPVoiceBackend": {
     "__init__": ["def", "*", "local_addr=('0.0.0.0', 0)", "remote_addr=None", "payload_type=0", "clock_rate=8000", "dtmf_payload_type=101", "rtcp_interval=5.0", "port_allocator=None"],
     "accept": ["async def", "session", "connection"],
@@ -7022,6 +7052,43 @@
     "set_trace_emitter": ["def", "emitter"],
     "start": ["async def"],
     "subscribe_audio_received": ["def", "callback"],
+    "supports_playback_callback": ["property"],
+    "wait_playback": ["async def", "session"]
+  },
+  "roomkit.voice.backends.TwilioWebSocketBackend": {
+    "__init__": ["def", "output_sample_rate=24000"],
+    "accept": ["async def", "session", "connection"],
+    "audio_received_callback": ["property"],
+    "auto_connect": ["property"],
+    "bind_websocket": ["def", "websocket"],
+    "cancel_audio": ["async def", "session"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "disconnect": ["async def", "session"],
+    "end_of_response": ["def", "session"],
+    "feed_twilio_audio": ["async def", "session", "mulaw_payload"],
+    "feeds_aec_reference": ["property"],
+    "get_session": ["def", "session_id"],
+    "interrupt": ["def", "session"],
+    "is_playing": ["def", "session"],
+    "list_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "notify_session_ready": ["def", "session"],
+    "on_aec_tap": ["def", "callback"],
+    "on_audio_played": ["def", "callback"],
+    "on_audio_received": ["def", "callback"],
+    "on_barge_in": ["def", "callback"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_speaker_change": ["def", "callback"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_audio_sync": ["def", "session", "chunk"],
+    "send_dtmf": ["def", "session", "digit", "duration_ms=160"],
+    "send_transcription": ["async def", "session", "text", "role='user'"],
+    "set_input_gated": ["def", "session", "gated"],
+    "set_input_muted": ["def", "session", "muted"],
+    "set_trace_emitter": ["def", "emitter"],
     "supports_playback_callback": ["property"],
     "wait_playback": ["async def", "session"]
   },
@@ -7471,6 +7538,9 @@
   "roomkit.voice.stt.AzureMAISTTConfig": {
     "__init__": ["def", "endpoint", "api_key", "deployment='MAI-Transcribe-2-Streaming'", "language=None", "handshake_timeout_s=10.0", "final_timeout_s=10.0"]
   },
+  "roomkit.voice.stt.AzureMAISTTError": {
+    "__init__": ["def", "message", "*", "code=None", "error_type=None", "retryable=False", "status_code=None"]
+  },
   "roomkit.voice.stt.AzureMAISTTProvider": {
     "__init__": ["def", "config"],
     "close": ["async def"],
@@ -7559,6 +7629,9 @@
   "roomkit.voice.stt.MetaSTTConfig": {
     "__init__": ["def", "api_key", "model='muse-voice-transcribe-1.0'", "mode='ENDPOINTING'", "keywords=<factory>", "language_bias=<factory>", "base_url='https://api.meta.ai/v1'", "realtime_url='wss://api.meta.ai/v1/asr/realtime'", "timeout_s=60.0", "handshake_timeout_s=10.0"]
   },
+  "roomkit.voice.stt.MetaSTTError": {
+    "__init__": ["def", "message", "*", "code=None", "error_type=None", "retryable=False", "status_code=None"]
+  },
   "roomkit.voice.stt.MetaSTTProvider": {
     "__init__": ["def", "config"],
     "close": ["async def"],
@@ -7620,6 +7693,9 @@
     "next_turn_wait_s": ["property"],
     "stream_url": ["property"]
   },
+  "roomkit.voice.stt.VoxtralSTTError": {
+    "__init__": ["def", "message", "*", "code=None", "error_type=None", "retryable=False", "status_code=None"]
+  },
   "roomkit.voice.stt.VoxtralSTTProvider": {
     "__init__": ["def", "config"],
     "close": ["async def"],
@@ -7653,6 +7729,9 @@
   },
   "roomkit.voice.tts.AzureSpeechTTSConfig": {
     "__init__": ["def", "api_key", "region=None", "endpoint=None", "voice='en-US-Harper:MAI-Voice-2.1-Flash'", "language=None", "style=None", "rate=None", "sample_rate=24000", "timeout=30.0", "connect_timeout=5.0"]
+  },
+  "roomkit.voice.tts.AzureSpeechTTSError": {
+    "__init__": ["def", "message", "*", "status_code"]
   },
   "roomkit.voice.tts.AzureSpeechTTSProvider": {
     "__init__": ["def", "config"],
@@ -7693,6 +7772,9 @@
   },
   "roomkit.voice.tts.FishAudioTTSConfig": {
     "__init__": ["def", "api_key", "model='drama-3'", "voice=None", "expressive=False", "sample_rate=24000", "latency='balanced'", "speed=None", "base_url='https://api.fish.audio'", "ws_url='wss://api.fish.audio/v1/tts/live'", "timeout=60.0", "connect_timeout=5.0"]
+  },
+  "roomkit.voice.tts.FishAudioTTSError": {
+    "__init__": ["def", "message", "*", "status_code"]
   },
   "roomkit.voice.tts.FishAudioTTSProvider": {
     "__init__": ["def", "config"],
@@ -7932,6 +8014,9 @@
   },
   "roomkit.voice.tts.VoxtralTTSConfig": {
     "__init__": ["def", "api_key", "model='voxtral-mini-tts-3'", "voice='voice_478'", "expressiveness=None", "base_url='https://api.mistral.ai'", "timeout=60.0", "connect_timeout=5.0"]
+  },
+  "roomkit.voice.tts.VoxtralTTSError": {
+    "__init__": ["def", "message", "*", "code=None", "error_type=None", "retryable=False", "status_code=None"]
   },
   "roomkit.voice.tts.VoxtralTTSProvider": {
     "__init__": ["def", "config"],

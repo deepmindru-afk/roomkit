@@ -139,7 +139,7 @@ from roomkit.voice.tts.library import CustomVoice, VoiceConsentError, VoiceLibra
 from roomkit.voice.voices import DialogueTurn, VoiceInfo, filter_voices
 
 if TYPE_CHECKING:
-    from roomkit.voice.auth import auth_context
+    from roomkit.voice.auth import AuthCallback, auth_context
     from roomkit.voice.pipeline.mixer.numpy import NumpyMixerProvider
 
 __all__ = [
@@ -167,6 +167,7 @@ __all__ = [
     "VoiceSessionState",
     "speaker_label",
     # Transport authentication
+    "AuthCallback",
     "auth_context",
     # Callback types
     "AudioReceivedCallback",
@@ -287,6 +288,7 @@ __all__ = [
 __getattr__ = lazy_exports(
     __name__,
     {
+        "AuthCallback": "roomkit.voice.auth",
         "NumpyMixerProvider": "roomkit.voice.pipeline.mixer.numpy",
         "auth_context": "roomkit.voice.auth",
     },

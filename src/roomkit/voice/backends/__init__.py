@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from roomkit._lazy import lazy_exports
-from roomkit.voice.backends.mock import MockVoiceBackend
+from roomkit.voice.backends.mock import MockVoiceBackend, MockVoiceCall
 
 if TYPE_CHECKING:
     from roomkit.voice.backends._sip_types import PT_G722, PT_PCMA, PT_PCMU
@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from roomkit.voice.backends.local import LocalAudioBackend
     from roomkit.voice.backends.rtp import RTPVoiceBackend
     from roomkit.voice.backends.sip import SIPVoiceBackend
+    from roomkit.voice.backends.twilio_ws import TwilioWebSocketBackend
     from roomkit.voice.backends.webtransport import WebTransportBackend
 
 __all__ = [
@@ -26,11 +27,13 @@ __all__ = [
     "FastRTCVoiceBackend",
     "LocalAudioBackend",
     "MockVoiceBackend",
+    "MockVoiceCall",
     "PT_G722",
     "PT_PCMA",
     "PT_PCMU",
     "RTPVoiceBackend",
     "SIPVoiceBackend",
+    "TwilioWebSocketBackend",
     "WebTransportBackend",
     "mount_fastrtc_voice",
 ]
@@ -47,6 +50,7 @@ __getattr__ = lazy_exports(
         "PT_PCMU": "roomkit.voice.backends._sip_types",
         "RTPVoiceBackend": "roomkit.voice.backends.rtp",
         "SIPVoiceBackend": "roomkit.voice.backends.sip",
+        "TwilioWebSocketBackend": "roomkit.voice.backends.twilio_ws",
         "WebTransportBackend": "roomkit.voice.backends.webtransport",
         "mount_fastrtc_voice": "roomkit.voice.backends.fastrtc",
     },

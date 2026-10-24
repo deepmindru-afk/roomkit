@@ -12,6 +12,7 @@ from roomkit.orchestration.handoff import (
     HandoffMemoryProvider,
     HandoffRequest,
     HandoffResult,
+    build_handoff_tool,
     setup_handoff,
 )
 from roomkit.orchestration.pipeline import (
@@ -108,6 +109,7 @@ __all__ = [
     "HandoffMemoryProvider",
     "HandoffRequest",
     "HandoffResult",
+    "build_handoff_tool",
     "setup_handoff",
     # Pipeline
     "ConversationPipeline",
