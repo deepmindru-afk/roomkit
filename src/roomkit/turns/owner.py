@@ -26,7 +26,7 @@ from roomkit.turns._owner_turn import OwnerTurn
 from roomkit.turns._registry_tools import OwnerToolStore, RegistryOwnerTools
 from roomkit.turns._remote_stream import RemoteStream
 from roomkit.turns._rooms import RoomRecords
-from roomkit.turns.base import RoomOwner, TurnTimeouts, response_depth
+from roomkit.turns.base import RoomOwner, TurnTimeouts
 from roomkit.turns.executor import TurnExecutor
 from roomkit.turns.memory import InMemoryTurnBackend
 from roomkit.turns.wire import (
@@ -168,10 +168,8 @@ class TurnClient(RoomOwner):
         self._calls: set[asyncio.Task[None]] = set()
         # The open human-input requests of its turns, answered here.
         self.inputs = OwnerInputs(self._timeouts.input_hold_timeout)
-        # Each room's last turn of a channel submitted here (RFC §10.6.2), and
-        # the chain depth of its response, which bounds its work after it.
+        # Each room's last turn of a channel submitted here (RFC §10.6.2).
         self._previous: RoomRecords[PreviousTurn] = RoomRecords()
-        self._depths: RoomRecords[tuple[str, int]] = RoomRecords()
         self._closed = False
         # The names of each room's hooks on executor triggers (RFC §10.6.6).
         self._room_hooks: dict[str, list[str]] = {}
@@ -202,7 +200,6 @@ class TurnClient(RoomOwner):
         request.previous_turn, submitted = self._leave(
             channel_id, request.room_id, request.turn_id
         )
-        self._depths.put(channel_id, request.room_id, (request.turn_id, response_depth(request)))
         handed: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._handing[request.turn_id] = (request, handed)
         try:
@@ -283,7 +280,6 @@ class TurnClient(RoomOwner):
         await self._serve_own()
         if isinstance(message, RoomDetached):
             self._previous.pop(message.channel_id, message.room_id)
-            self._depths.pop(message.channel_id, message.room_id)
         if isinstance(message, CommittedEvent):
             message = message.model_copy(
                 update={"room_hooks": self.room_hook_names(message.room_id)}
@@ -333,18 +329,16 @@ class TurnClient(RoomOwner):
 
     async def room_call(self, message: RoomCall) -> HostResult:
         """A host verb an executor made after its turn ended (RFC §10.6.5),
-        at the depth this client recorded for the turn; refused once the
-        client closed, and cancelled by its close."""
+        work that starts fresh once its turn is over (RFC §8.3); refused once
+        the client closed, and cancelled by its close."""
         if self._closed:
             refusal = RuntimeError("The room owner has closed")
             return HostResult(call_id=message.call_id, error=error_record(refusal))
-        held = self._depths.get(message.channel_id, message.room_id)
-        depth = held[1] if held is not None and held[0] == message.turn_id else None
         task = asyncio.current_task()
         if task is not None:
             self._calls.add(task)
         try:
-            return await answer_room_call(self._previous, self._host, message, depth=depth)
+            return await answer_room_call(self._previous, self._host, message)
         finally:
             if task is not None:
                 self._calls.discard(task)

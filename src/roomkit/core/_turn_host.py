@@ -30,9 +30,8 @@ from pydantic_core import to_jsonable_python
 from roomkit.channels._video_hooks import room_vision_note
 from roomkit.models.enums import TaskStatus
 from roomkit.tasks.status import RUN_ENTRY, TASK_ACTION
-from roomkit.tools.context import _current_turn_chain_depth
 from roomkit.turns._error_codec import error_record
-from roomkit.turns.base import OwnerHost
+from roomkit.turns.base import OwnerHost, response_depth
 from roomkit.turns.host import (
     BETWEEN_TURNS,
     VERBS,
@@ -59,8 +58,8 @@ ENDED_TASKS_KEPT = 1024
 @dataclass(frozen=True, slots=True)
 class _Scope:
     """What a verb acts for: its turn's room and organization, the turn's
-    context while it runs, and the depth an event it sends is at least
-    (``None``: the depth of the owner's turn it runs under)."""
+    context while it runs, and the depth an event it sends is at least while
+    the turn runs (``None`` once it is over: what the verb names)."""
 
     room_id: str
     organization_id: str | None
@@ -70,7 +69,7 @@ class _Scope:
     @classmethod
     def of(cls, request: TurnRequest) -> _Scope:
         room = request.context.room
-        return cls(request.room_id, room.organization_id, request.context, None)
+        return cls(request.room_id, room.organization_id, request.context, response_depth(request))
 
 
 Verb = Callable[[_Scope, Any], Awaitable[Any]]
@@ -104,7 +103,9 @@ class KitHost(OwnerHost):
         if room is None:
             raise ValueError(f"No room {message.room_id!r}")
         serve, args = self._parsed(message.verb, message.arguments)
-        scope = _Scope(message.room_id, room.organization_id, None, message.chain_depth)
+        # Work its turn began, which starts fresh once the turn is over
+        # (RFC §8.3): the call's depth for its turn floors nothing.
+        scope = _Scope(message.room_id, room.organization_id, None, None)
         return to_jsonable_python(await serve(scope, args), fallback=str)
 
     def _parsed(self, verb: str, arguments: dict[str, Any]) -> tuple[Verb, Any]:
@@ -125,7 +126,7 @@ class KitHost(OwnerHost):
 
     async def _send_event(self, scope: _Scope, args: SendEvent) -> Any:
         options = args.model_dump(exclude={"content", "chain_depth", "organization_id"})
-        floor = scope.chain_depth if scope.chain_depth is not None else _current_turn_chain_depth()
+        floor = scope.chain_depth if scope.chain_depth is not None else 0
         return await self._kit.send_event(
             content=args.content,
             chain_depth=max(args.chain_depth, floor),

@@ -473,7 +473,8 @@ class ChannelControlEnvelope(BaseModel):
 class RoomCall(BaseModel):
     """A verb of a turn's host made after its turn ended (RFC §10.6.3,
     §10.6.5), answered by a :class:`HostResult`: the turn it belongs to names
-    the room, and its chain depth bounds what it sends."""
+    the room. The work starts fresh once its turn is over (RFC §8.3): what
+    it sends is at the depth its arguments name."""
 
     type: Literal["room_call"] = "room_call"
     call_id: str = Field(default_factory=lambda: f"call-{uuid4().hex}")
@@ -483,7 +484,8 @@ class RoomCall(BaseModel):
     turn_id: str
     """The turn the work making the call began in."""
     chain_depth: int = 0
-    """The chain depth of that turn's response."""
+    """Read by no owner: kept so that an executor sending it is still
+    understood. What the call sends is at the depth its arguments name."""
     verb: str
     arguments: dict[str, Any] = Field(default_factory=dict)
 

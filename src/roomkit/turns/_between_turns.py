@@ -4,9 +4,11 @@
 Work a turn began can outlive it: a background thinker reports its thought
 after its turn returned, a hook's task runs on. Its host and its outlet then
 reach the owner outside the turn's link, through the port the backend gave
-the executor: a host verb as a ``room_call``, at the turn's chain depth, and
-a publication as a ``room_publication``, both naming the turn, which the
-owner checks against the last turn it sent for the channel and room.
+the executor: a host verb as a ``room_call``, and a publication as a
+``room_publication``, both naming the turn, which the owner checks against
+the last turn it sent for the channel and room. The work starts fresh once
+its turn is over (RFC §8.3): what a verb sends is at the depth its arguments
+name.
 """
 
 from __future__ import annotations
@@ -14,7 +16,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from roomkit.turns.base import response_depth
 from roomkit.turns.wire import RoomCall, RoomPublication
 
 if TYPE_CHECKING:
@@ -49,8 +50,6 @@ class BetweenTurns:
                 room_id=request.room_id,
                 executor_id=self._executor_id,
                 turn_id=request.turn_id,
-                # What the turn's response is at: the bound on agent loops.
-                chain_depth=response_depth(request),
                 verb=verb,
                 arguments=arguments,
             )

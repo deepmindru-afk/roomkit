@@ -138,7 +138,8 @@ async def test_work_a_turn_began_writes_the_room_after_the_turn_ended() -> None:
     assert [
         (p.action, p.detail, p.metadata.get("room_id")) for p in posted if p.action == "thought"
     ] == [("thought", "Still thinking", "r")]
-    assert stored and stored[0].chain_depth >= 1
+    # Work a turn began starts fresh once the turn is over (RFC §8.3).
+    assert [e.chain_depth for e in stored] == [0]
 
 
 async def test_a_verb_that_needs_its_turn_is_refused_after_it() -> None:
@@ -337,7 +338,8 @@ async def test_the_write_verbs_between_turns_keep_their_refusals() -> None:
     assert room.metadata["thought"] == "kept"
     assert [o.id for o in observations] == ["o1"]
     assert refusals == [True] * 4
-    assert sent.chain_depth == 1  # the turn's response depth, as the owner recorded it
+    # Work a turn began starts fresh once the turn is over (RFC §8.3).
+    assert sent.chain_depth == 0
 
 
 async def test_a_framework_event_after_the_turn_reaches_the_owner() -> None:
@@ -487,9 +489,10 @@ async def test_a_second_owner_on_one_in_memory_backend_is_told(
     await first.close()
 
 
-async def test_the_owner_holds_a_call_to_the_depth_it_recorded_for_the_turn() -> None:
-    """A room call naming a shallower depth than its turn's response is held
-    to the turn's, as the owner recorded it when it sent the turn."""
+async def test_a_room_call_after_the_turn_sends_at_the_depth_it_names() -> None:
+    """Work a turn began starts fresh once the turn is over (RFC §8.3): a
+    room call's event is at the depth its arguments name, whatever depth
+    the call carries for its turn and the owner recorded."""
     later = _Later()
     host = _Host(later)
     kit = await host.kit()
@@ -502,7 +505,7 @@ async def test_the_owner_holds_a_call_to_the_depth_it_recorded_for_the_turn() ->
         room_id="r",
         executor_id=record.executor_id,
         turn_id=record.turn_id,
-        chain_depth=0,
+        chain_depth=1,
         verb="send_event",
         arguments={"room_id": "r", "channel_id": "ana", "content": {"type": "text", "body": "x"}},
     )
@@ -511,4 +514,4 @@ async def test_the_owner_holds_a_call_to_the_depth_it_recorded_for_the_turn() ->
     await host.close(kit)
 
     assert answer.error is None
-    assert answer.result["chain_depth"] == 1
+    assert answer.result["chain_depth"] == 0
