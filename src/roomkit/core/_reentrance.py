@@ -21,10 +21,15 @@ The execution context of a call tells it, for the room it names:
   into another existing room has a budget of its own;
 - elsewhere: a new arrival with a budget of its own.
 
-A call the room's work made is charged one pass as it starts. A call made
-while a turn or a tool call runs, into whatever room, is at least as deep as
-the turn's response or the call's (§8.3, §10.6); only the budget is the
-room's.
+A call the room's work made is charged one pass as it starts, and one made
+from an ASYNC hook's body one of the cascade's hook calls, a counter of the
+same size kept apart from its passes. A direct change made from a hook's
+body (``update_event()``, ``delete_event()``, ``regenerate_response()``)
+draws a hook call too, refused with ``ReentryLoopCapError`` past the cap,
+and a direct change's triggers run on the budget of the work it is made in
+(:meth:`RoomWork.direct_change`). A call made while a turn or a tool call
+runs, into whatever room, is at least as deep as the turn's response or the
+call's (§8.3, §10.6); only the budget is the room's.
 
 A frame stands for its work only while that work runs: a task the work
 spawns inherits the frame and finds it inactive once the work is over, as a
@@ -37,15 +42,18 @@ budget of its own.
 from __future__ import annotations
 
 import contextvars
+import logging
 from collections.abc import Generator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from roomkit.core.exceptions import ReentrantCallError
+from roomkit.core.exceptions import ReentrantCallError, ReentryLoopCapError
 from roomkit.core.locks import _has_room_lock
 from roomkit.tools.context import _live_turn_chain_depth
+
+logger = logging.getLogger("roomkit.framework")
 
 if TYPE_CHECKING:
     from roomkit.core._queued_injections import QueuedInjections
@@ -200,6 +208,30 @@ def after_delivery(room_id: str, budget: ReentryBudget) -> AbstractContextManage
     return _framed(_Frame(_Kind.DELIVERING, room_id, budget, hook_body=True))
 
 
+def charge_direct_change(change: Entry, room_id: str, call: str) -> None:
+    """Draw the hook call *change*, a direct change of *room_id* made from
+    an ASYNC hook's body, costs before it writes (RFC §9.5.1, §10.3);
+    nothing for one made elsewhere (:meth:`RoomWork.direct_change`).
+
+    Raises:
+        ReentryLoopCapError: the budget the body runs on holds no hook call;
+            nothing is written.
+    """
+    if not change.charged or change.draw():
+        return
+    logger.warning(
+        "%s() from an ASYNC hook's body in room %s is past the reentry budget that "
+        "body runs on: refused, nothing written",
+        call,
+        room_id,
+        extra={"room_id": room_id},
+    )
+    raise ReentryLoopCapError(
+        f"{call}() from an ASYNC hook's body in room {room_id} is past the reentry budget "
+        "that body runs on: nothing written"
+    )
+
+
 @contextmanager
 def within_turn(response_depth: int) -> Generator[None, None, None]:
     """A turn whose response is *response_depth* deep: what the context calls
@@ -270,6 +302,18 @@ class RoomWork:
             if frame.active and frame.kind is _Kind.DELIVERING:
                 return Entry(Placement.ARRIVAL, frame.budget, True, hook_body=frame.hook_body)
         return None
+
+    def direct_change(self, room_id: str) -> Entry:
+        """What a direct change of *room_id* made in this context is (RFC
+        §10.3, §9.5.1): ``update_event()``, ``delete_event()``,
+        ``regenerate_response()``. Its triggers run on the budget of the
+        room's work it is made in, the innermost frame's, or on one of its
+        own outside that work; it draws one hook call only from an ASYNC
+        hook's body (``charged``)."""
+        frame = _innermost(room_id, locked=_has_room_lock(room_id, self._lock_manager))
+        if frame is None:
+            return Entry(Placement.ARRIVAL, self.budget(), False)
+        return Entry(Placement.ARRIVAL, frame.budget, frame.hook_body, hook_body=frame.hook_body)
 
     def refuse_routed(self, room_id: str) -> None:
         """Refuse a message routed into *room_id* from under its lock or from

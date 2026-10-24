@@ -1722,6 +1722,7 @@
     "submit": ["async def", "request"]
   },
   "roomkit.ReentrantCallError": {},
+  "roomkit.ReentryLoopCapError": {},
   "roomkit.RemoteTurnError": {
     "__init__": ["def", "message", "*", "kind", "bases=()"]
   },

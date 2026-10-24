@@ -214,6 +214,7 @@
     "ReasoningRequest",
     "RedisTurnBackend",
     "ReentrantCallError",
+    "ReentryLoopCapError",
     "RemoteTurnError",
     "RequiresMatch",
     "ResponseMetadata",

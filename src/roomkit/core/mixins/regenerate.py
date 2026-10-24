@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._changes import withdrawn
+from roomkit.core._reentrance import ReentryBudget, charge_direct_change
 from roomkit.core._room_timers import due_transitions
 from roomkit.core.event_router import CHAIN_DEPTH_LIMIT
 from roomkit.core.exceptions import RoomClosedError
@@ -23,6 +24,7 @@ from roomkit.models.response_metadata import merge_caller_record
 
 if TYPE_CHECKING:
     from roomkit.core._delivery_keys import NamedDelivery
+    from roomkit.core._reentrance import RoomWork
     from roomkit.core.locks import RoomLockManager
     from roomkit.models.channel import ChannelBinding
     from roomkit.models.context import RoomContext
@@ -64,6 +66,7 @@ class RegenerateMixin(HelpersMixin):
     _lock_manager: RoomLockManager
     _process_timeout: float
     _max_chain_depth: int
+    _room_work: RoomWork
     _discussions: dict[str, Any]  # rooms a discussion holds (RFC §19.7.5)
 
     # Cross-mixin methods — attribute annotations avoid MRO shadowing
@@ -223,22 +226,35 @@ class RegenerateMixin(HelpersMixin):
         returns once they are queued, with no answer in its result: the
         answers come in those turns. A discussion that is over refuses it,
         ``InboundResult(blocked=True, reason="discussion_over")``.
+
+        Made from the body of an ASYNC hook a cascade fires once an event's
+        delivery set has run, the call draws one of that cascade's hook calls
+        as it starts (RFC §9.5.1); the regeneration's cascade draws on the
+        budget of the room's work the call is made in, one of its own
+        outside it, so a hook that regenerates after every answer stops at
+        the cap.
+
+        Raises:
+            ReentryLoopCapError: made from an ASYNC hook's body past the
+                budget that body runs on; nothing is run or written.
         """
+        change = self._room_work.direct_change(room_id)
+        charge_direct_change(change, room_id, "regenerate_response")
         discussion = self._discussions.get(room_id)
         if discussion is not None:
             return await self._regenerate_in_discussion(discussion, room_id, trigger_id)
         with collecting_release_failures() as failed_releases:
-            result = await self._regenerate_alone(room_id, trigger_id)
+            result = await self._regenerate_alone(room_id, trigger_id, change.budget)
         if result is not None and result.error is None and failed_releases:
             # A failed release of the room lock, as on the inbound path (RFC §13.5).
             result.error = failed_releases[0]
         return result
 
     async def _regenerate_alone(
-        self, room_id: str, trigger_id: str | None
+        self, room_id: str, trigger_id: str | None, budget: ReentryBudget
     ) -> InboundResult | None:
-        """A regenerate in a room no discussion holds."""
-        cascade = DeliveryCascade(room_id, reentry_budget=self._max_chain_depth * 10)
+        """A regenerate in a room no discussion holds, its cascade on *budget*."""
+        cascade = DeliveryCascade(room_id, reentry_budget=budget)
         try:
             planned = await self._plan_regeneration(room_id, trigger_id, cascade)
             if not isinstance(planned, tuple):

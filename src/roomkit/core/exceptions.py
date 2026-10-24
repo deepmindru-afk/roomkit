@@ -184,6 +184,21 @@ class ReentrantCallError(RoomKitError):
     """
 
 
+class ReentryLoopCapError(RoomKitError):
+    """A direct change an ASYNC hook's body made into its room is past the
+    reentry budget that body runs on (RFC §8.3, §9.5.1, §10.3): nothing was
+    written.
+
+    Raised by ``update_event()``, ``delete_event()`` and
+    ``regenerate_response()`` called from the body of an ASYNC hook a
+    cascade fires once an event's delivery set has run (``AFTER_BROADCAST``,
+    a change's ``ON_EVENT_UPDATED`` or ``ON_EVENT_DELETED``), each drawing
+    one of the cascade's hook calls: a hook that changes its room on every
+    change stops at the cap. A message or an injected event past the cap
+    is not raised but stored ``BLOCKED`` with ``reentry_loop_cap``.
+    """
+
+
 class ChannelNotFoundError(RoomKitError):
     """Channel binding not found in room."""
 

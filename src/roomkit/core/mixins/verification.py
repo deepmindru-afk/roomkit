@@ -40,6 +40,7 @@ from roomkit.models.verification import Verification, VerificationPolicy, Verifi
 
 if TYPE_CHECKING:
     from roomkit.core._delivery_keys import NamedDelivery
+    from roomkit.core._reentrance import RoomWork
     from roomkit.core.hooks import HookEngine
     from roomkit.core.locks import RoomLockManager
     from roomkit.models.context import RoomContext
@@ -101,6 +102,7 @@ class VerificationMixin(HelpersMixin):
     _verification_policy: VerificationPolicy
     _verification_timers: dict[str, asyncio.Task[None]]
     _hook_engine: HookEngine
+    _room_work: RoomWork
 
     # Cross-mixin methods — attribute annotation avoids MRO shadowing
     _rerun_agents_on: Any  # see RegenerateMixin
@@ -434,9 +436,12 @@ class VerificationMixin(HelpersMixin):
         if not released:
             return []
         context = await self._build_context(request.room_id)
+        # The triggers of a change the framework makes for the room's work run
+        # on that work's budget, as a direct change's do (RFC §9.5.1, §10.3).
+        budget = self._room_work.direct_change(request.room_id).budget
         for event in released:
             await self._hook_engine.run_async_hooks(
-                request.room_id, HookTrigger.ON_EVENT_UPDATED, event, context
+                request.room_id, HookTrigger.ON_EVENT_UPDATED, event, context, budget=budget
             )
         await self._answer_released(request.room_id, released, cancelled)
         return released

@@ -18,7 +18,12 @@ from typing import Any
 
 import pytest
 
-from roomkit import ConferenceRealtimeConfig, ReentrantCallError, RoomKit
+from roomkit import (
+    ConferenceRealtimeConfig,
+    ReentrantCallError,
+    ReentryLoopCapError,
+    RoomKit,
+)
 from roomkit.channels.ai import AIChannel
 from roomkit.channels.base import Channel
 from roomkit.core.inbound_router import InboundRoomRouter
@@ -1066,6 +1071,125 @@ async def _notice_per_agent_row(kit: RoomKit) -> list[RoomEvent]:
             )
 
     return notices
+
+
+class TestADirectChangeFromAHook:
+    """A direct ``update_event()``, ``delete_event()`` or
+    ``regenerate_response()`` an ASYNC hook's body makes draws one hook call
+    of the budget that body runs on; the call's own triggers run their
+    bodies on the budget of the work it came from, one of its own from
+    outside. Past the cap it raises ``ReentryLoopCapError``, nothing written
+    (RFC §8.3, §9.5.1, §10.3)."""
+
+    @pytest.mark.parametrize(
+        ("loop", "max_chain_depth", "runs"),
+        [
+            pytest.param("update", 1, 11, id="ON_EVENT_UPDATED updates again"),
+            pytest.param("delete", 1, 6, id="ON_EVENT_DELETED sends and deletes again"),
+            pytest.param("regenerate", 2, 11, id="AFTER_BROADCAST deletes and regenerates"),
+        ],
+    )
+    async def test_a_hook_changing_its_room_on_every_change_stops_at_the_cap(
+        self, loop: str, max_chain_depth: int, runs: int
+    ) -> None:
+        """Started from outside the room's work, each loop runs on the
+        budget of its first call (a cap of 10 hook calls, 20 for the agent's
+        loop at depth limit 2), and its last run's call raises."""
+        kit = await _room(RoomKit(max_chain_depth=max_chain_depth))
+        refused: list[ReentryLoopCapError] = []
+        ran = await _DIRECT_LOOPS[loop](kit, refused)
+
+        try:
+            await asyncio.wait_for(_settled(kit), 5)
+            assert (len(ran), len(refused)) == (runs, 1)
+        finally:
+            await kit.close()
+
+    async def test_a_direct_change_past_the_cap_writes_nothing(self) -> None:
+        """The refused update leaves the event as the last allowed one
+        wrote it."""
+        kit = await _room(RoomKit(max_chain_depth=1))
+        refused: list[ReentryLoopCapError] = []
+        ran = await _DIRECT_LOOPS["update"](kit, refused)
+
+        try:
+            await asyncio.wait_for(_settled(kit), 5)
+            [event] = await _messages(kit)
+            assert event.metadata == {"n": len(ran) - 1}
+        finally:
+            await kit.close()
+
+
+async def _updating(kit: RoomKit, refused: list[ReentryLoopCapError]) -> list[None]:
+    """``ON_EVENT_UPDATED`` updates its event again; the first update is the test's."""
+    ran: list[None] = []
+
+    @kit.hook(HookTrigger.ON_EVENT_UPDATED, execution=HookExecution.ASYNC, name="again")
+    async def again(event: RoomEvent, ctx: RoomContext) -> None:
+        ran.append(None)
+        if len(ran) > 4 * BUDGET:
+            return
+        try:
+            await kit.update_event("r1", event.id, metadata={"n": len(ran)})
+        except ReentryLoopCapError as error:
+            refused.append(error)
+
+    first = await kit.send_event("r1", "sms", TextContent(body="v"))
+    await kit.update_event("r1", first.id, metadata={"n": 0})
+    return ran
+
+
+async def _deleting(kit: RoomKit, refused: list[ReentryLoopCapError]) -> list[None]:
+    """``ON_EVENT_DELETED`` sends a message and deletes it; the first delete is the test's."""
+    ran: list[None] = []
+
+    @kit.hook(HookTrigger.ON_EVENT_DELETED, execution=HookExecution.ASYNC, name="again")
+    async def again(event: RoomEvent, ctx: RoomContext) -> None:
+        ran.append(None)
+        if len(ran) > 4 * BUDGET:
+            return
+        sent = await kit.send_event("r1", "sms", TextContent(body="x"), addressed_to=[])
+        if sent.blocked_by is not None:
+            refused.append(ReentryLoopCapError("the send was capped"))
+            return
+        try:
+            await kit.delete_event("r1", sent.id)
+        except ReentryLoopCapError as error:
+            refused.append(error)
+
+    first = await kit.send_event("r1", "sms", TextContent(body="v"))
+    await kit.delete_event("r1", first.id)
+    return ran
+
+
+async def _regenerating(kit: RoomKit, refused: list[ReentryLoopCapError]) -> list[None]:
+    """After each answer of the agent, a hook deletes it and regenerates it."""
+    kit.register_channel(AILikeChannel("ai", response="Answer."))
+    await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+    ran: list[None] = []
+
+    @kit.hook(HookTrigger.AFTER_BROADCAST, execution=HookExecution.ASYNC, name="redo")
+    async def redo(event: RoomEvent, ctx: RoomContext) -> None:
+        if event.source.channel_id != "ai" or event.blocked_by is not None:
+            return
+        ran.append(None)
+        if len(ran) > 4 * BUDGET:
+            return
+        try:
+            await kit.delete_event("r1", event.id)
+            await kit.regenerate_response("r1")
+        except ReentryLoopCapError as error:
+            refused.append(error)
+
+    await kit.send_event("r1", "sms", TextContent(body="hi"), addressed_to=["ai"])
+    return ran
+
+
+_DIRECT_LOOPS: dict[str, Callable[[RoomKit, list[ReentryLoopCapError]], Awaitable[list[None]]]] = {
+    "update": _updating,
+    "delete": _deleting,
+    "regenerate": _regenerating,
+}
 
 
 class TestARoutedMessageBackIntoItsRoom:

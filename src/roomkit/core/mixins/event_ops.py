@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from roomkit.core._publication_keys import refuse_reserved
+from roomkit.core._reentrance import charge_direct_change
 from roomkit.core.exceptions import RoomClosedError, RoomNotFoundError
 from roomkit.core.mixins.helpers import HelpersMixin, _refuses_writes
 from roomkit.models.enums import HookTrigger
@@ -14,6 +15,7 @@ from roomkit.models.event import EventContent, EventSource, RoomEvent, refuse_to
 logger = logging.getLogger("roomkit.framework")
 
 if TYPE_CHECKING:
+    from roomkit.core._reentrance import RoomWork
     from roomkit.core.hooks import HookEngine
     from roomkit.core.locks import RoomLockManager
     from roomkit.models.context import RoomContext
@@ -55,6 +57,7 @@ class EventOpsMixin(HelpersMixin):
     _store: ConversationStore
     _hook_engine: HookEngine
     _lock_manager: RoomLockManager
+    _room_work: RoomWork
     get_room: Any  # see EventOpsHost / RoomLifecycleMixin
 
     async def commit_event(
@@ -139,11 +142,21 @@ class EventOpsMixin(HelpersMixin):
         written, its due timers included; unset, the call is unscoped, as the
         kit's other calls.
 
+        Made from the body of an ASYNC hook a cascade fires once an event's
+        delivery set has run, an update that changes something draws one of
+        that cascade's hook calls before it writes (RFC §9.5.1), and its
+        ON_EVENT_UPDATED hooks run on the budget of the work it is made in,
+        one of its own outside the room's work: a hook that updates its
+        event on every update stops at the cap.
+
         Raises:
             ValueError: *content* holds more than five composite levels (RFC
                 §5.3); nothing is read or written.
+            ReentryLoopCapError: made from an ASYNC hook's body past the
+                budget that body runs on; nothing is written.
         """
         refuse_too_deep(content)
+        change = self._room_work.direct_change(room_id)
         async with self._lock_manager.locked(room_id):
             # At any status, once the room's due timer transitions are
             # applied (RFC §10.3, §5.1).
@@ -162,6 +175,7 @@ class EventOpsMixin(HelpersMixin):
             changed = target.model_copy(update=update)
             if changed == target:
                 return target
+            charge_direct_change(change, room_id, "update_event")
             # A context is store reads: only for a hook that will read it.
             hooked = self._hook_engine.has_hooks(HookTrigger.ON_EVENT_UPDATED)
             held = await self._build_context(room_id) if hooked else None
@@ -172,7 +186,7 @@ class EventOpsMixin(HelpersMixin):
                 room_id, held.model_copy(update={"recent_events": recent})
             )
             await self._hook_engine.run_async_hooks(
-                room_id, HookTrigger.ON_EVENT_UPDATED, updated, context
+                room_id, HookTrigger.ON_EVENT_UPDATED, updated, context, budget=change.budget
             )
         return updated
 
@@ -195,13 +209,25 @@ class EventOpsMixin(HelpersMixin):
         fires). Scoped to *organization_id* (RFC §17.2), the room of another
         organization is a missing room: an empty list, nothing written, its
         due timers included; unset, the call is unscoped.
+
+        Made from the body of an ASYNC hook a cascade fires once an event's
+        delivery set has run, a delete of an event the room holds draws one
+        of that cascade's hook calls before it writes (RFC §9.5.1), and its
+        ON_EVENT_DELETED hooks run on the budget of the work it is made in,
+        one of its own outside the room's work.
+
+        Raises:
+            ReentryLoopCapError: made from an ASYNC hook's body past the
+                budget that body runs on; nothing is written.
         """
+        change = self._room_work.direct_change(room_id)
         async with self._lock_manager.locked(room_id):
             if await self._room_in_scope(room_id, organization_id) is None:
                 return []
             target = await self._store.get_event(event_id)
             if target is None or target.room_id != room_id:
                 return []
+            charge_direct_change(change, room_id, "delete_event")
             # A context is store reads: only for a hook that will read it.
             hooked = self._hook_engine.has_hooks(HookTrigger.ON_EVENT_DELETED)
             held = await self._build_context(room_id) if hooked else None
@@ -216,7 +242,7 @@ class EventOpsMixin(HelpersMixin):
             )
             for event in removed:
                 await self._hook_engine.run_async_hooks(
-                    room_id, HookTrigger.ON_EVENT_DELETED, event, context
+                    room_id, HookTrigger.ON_EVENT_DELETED, event, context, budget=change.budget
                 )
         return [event.id for event in removed]
 
