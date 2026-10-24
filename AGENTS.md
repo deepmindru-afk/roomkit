@@ -61,7 +61,7 @@ make coverage                          # With coverage
 
 ```
 src/roomkit/
-├── __init__.py              # Public API exports — ALL public classes exported here
+├── __init__.py              # Top-level public API; each package exports its own in __all__
 ├── _version.py              # Version string (auto-managed)
 ├── ai_docs.py               # AI documentation helpers (llms.txt, AGENTS.md)
 ├── core/
@@ -681,10 +681,9 @@ For a messaging or AI provider — one implementing an ABC that lives under
 1. Create config in `providers/<name>/config.py`
 2. Create provider in `providers/<name>/<type>.py`
 3. Create webhook parser if needed: `parse_<name>_webhook()`
-4. Export from `__init__.py`
-5. Add to main `roomkit/__init__.py` exports
-6. Add tests in `tests/test_<name>_provider.py`
-7. For an `AIProvider`: register it with the text conformance suite
+4. Export from the provider package's `__init__.py` (its `__all__`)
+5. Add tests in `tests/test_<name>_provider.py`
+6. For an `AIProvider`: register it with the text conformance suite
    (`tests/text_conformance/`). A provider on an existing wire adds one entry
    to that family's `wires()`; a new wire gets its own driver module. The suite
    fails on a provider class with neither a driver nor an exemption, with its
@@ -702,7 +701,9 @@ For a `ConferenceBackend`, `VoiceBackend`, `STTProvider`, `TTSProvider`,
    wired, not what the vendor's product can do
 3. Add optional runtime deps as their own `pyproject.toml` extra, named for the
    vendor, imported lazily behind `try/except ImportError`
-4. Export from the subsystem `__init__.py` and main `roomkit/__init__.py`
+4. Export from the subsystem `__init__.py` (its `__all__`); a module that
+   needs an optional dependency at import is exported lazily
+   (`roomkit._lazy.lazy_exports`), so `import roomkit` never needs the extra
 5. Add contract tests that need no network, plus an integration suite skipped
    when the service is absent
 
@@ -733,7 +734,8 @@ For a `ConferenceBackend`, `VoiceBackend`, `STTProvider`, `TTSProvider`,
 
 - Run `make all` before committing (lint + typecheck + security + test)
 - Add tests for new features
-- Export new public classes from `roomkit/__init__.py`
+- List every new public name in its package's `__all__`: a name is public only
+  there, and documents and examples import it from there
 - Follow existing ABC patterns for new pluggable backends
 - Use `model_copy(update={...})` for Pydantic model updates (immutable pattern)
 

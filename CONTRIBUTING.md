@@ -103,7 +103,7 @@ Every new feature, provider, or channel type **must** include:
 
 1. Config in `src/roomkit/providers/<name>/config.py`
 2. Implementation in `src/roomkit/providers/<name>/<type>.py`
-3. Export from `__init__.py` and `src/roomkit/__init__.py`
+3. Export from the provider package's `__init__.py` (its `__all__`)
 4. Tests in `tests/test_providers/test_<name>.py`
 5. Example in `examples/`
 6. Docs update in `../roomkit-docs/`
