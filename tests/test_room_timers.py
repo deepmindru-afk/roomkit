@@ -34,6 +34,7 @@ from roomkit.core.locks import InMemoryLockManager
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.event import SystemContent, TextContent
 from roomkit.models.room import Room
+from roomkit.models.store_filter import EventFilter
 from roomkit.store.memory import InMemoryStore
 from tests.conftest import make_event
 from tests.test_framework import AILikeChannel, SimpleChannel
@@ -76,10 +77,10 @@ class _Heard:
         await asyncio.wait_for(enough(), timeout=1.0)
 
 
-async def _kit(**room: Any) -> tuple[RoomKit, _Heard]:
+async def _kit(store: InMemoryStore | None = None, **room: Any) -> tuple[RoomKit, _Heard]:
     """A kit holding room ``r1``, its channel ``sms1`` bound, the room then
     written with *room*'s fields."""
-    kit = RoomKit()
+    kit = RoomKit(store=store)
     kit.register_channel(SimpleChannel("sms1"))
     await kit.create_room(room_id="r1")
     await kit.attach_channel("r1", "sms1")
@@ -248,6 +249,59 @@ async def test_a_message_after_its_room_fell_due_is_refused_as_if_on_time() -> N
     await kit.close()
 
 
+class _SlowTransitionAnswer(InMemoryStore):
+    """A transition's write whose answer travels back once armed: the room is
+    written and the call has not returned yet, as over a round trip."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.armed = False
+        self.written = asyncio.Event()
+        self.answer = asyncio.Event()
+
+    async def update_room_if(self, room: Room, **expected: Any) -> Room | None:
+        written = await super().update_room_if(room, **expected)
+        if self.armed and written is not None:
+            self.armed = False
+            self.written.set()
+            await self.answer.wait()
+        return written
+
+
+async def test_a_transition_its_caller_left_is_reported_whole() -> None:
+    """The message's caller is cancelled once the transitions' write is
+    stored: each still takes its record, its framework event and its hook
+    (RFC §5.1, §13.6), since no later section finds them due."""
+    store = _SlowTransitionAnswer()
+    kit, heard = await _kit(
+        store,
+        timers=RoomTimers(
+            inactive_after_seconds=60, closed_after_seconds=60, last_activity_at=_ago(3600)
+        ),
+    )
+    store.armed = True
+    try:
+        caller = asyncio.create_task(kit.process_inbound(_message("too late"), room_id="r1"))
+        await asyncio.wait_for(store.written.wait(), 1)
+        caller.cancel()
+        store.answer.set()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        await heard.hooks_fired(2)
+
+        records = await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
+        codes = [e.content.code for e in records if isinstance(e.content, SystemContent)]
+        assert codes[-2:] == ["room_paused_by_timer", "room_closed_by_timer"]
+        assert heard.reports == [
+            "room_paused:timer",
+            "room_closed:timer",
+            "room_paused",
+            "room_closed",
+        ]
+    finally:
+        await kit.close()
+
+
 async def _attach(kit: RoomKit) -> None:
     kit.register_channel(SimpleChannel("sms2"))
     await kit.attach_channel("r1", "sms2")
@@ -345,6 +399,7 @@ async def test_the_component_applies_a_due_pause_with_what_it_was_given() -> Non
         fire_hook=fire_hook,
         build_context=context,
         background=set(),
+        writes=set(),
     )
     idle = await store.create_room(
         Room(id="idle", timers=RoomTimers(inactive_after_seconds=60, last_activity_at=_ago(30)))

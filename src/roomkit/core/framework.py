@@ -576,6 +576,7 @@ class RoomKit(
             fire_hook=self._fire_lifecycle_hook,
             build_context=self._build_context,
             background=self._pending_hook_tasks,
+            writes=self._decided_writes,
         )
 
     def _start_turns(

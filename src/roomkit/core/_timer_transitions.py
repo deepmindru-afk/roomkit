@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from roomkit.core._room_timers import DueTransition, due_transitions, transitioned
 from roomkit.core.locks import _has_room_lock, unlocked_context
-from roomkit.core.task_utils import start_named
+from roomkit.core.task_utils import run_to_its_end, start_named
 from roomkit.models.enums import EventType, HookTrigger, RoomStatus
 
 if TYPE_CHECKING:
@@ -78,7 +78,8 @@ class TimerTransitions:
     record (``_emit_system_event``); *emit* a framework event; *fire_hook*
     a lifecycle hook in a given context; *build_context* reads a room's
     context. *background* is the set of the kit's background tasks, which
-    its close cancels and waits for.
+    its close cancels and waits for; *writes* the set of its writes past a
+    decision, which its close waits for and never cancels.
     """
 
     def __init__(
@@ -94,6 +95,7 @@ class TimerTransitions:
         fire_hook: Callable[..., Awaitable[None]],
         build_context: Callable[[str], Awaitable[RoomContext]],
         background: set[asyncio.Task[Any]],
+        writes: set[asyncio.Task[Any]],
     ) -> None:
         self._store = store
         self._lock_manager = lock_manager
@@ -105,6 +107,7 @@ class TimerTransitions:
         self._fire_hook = fire_hook
         self._build_context = build_context
         self._background = background
+        self._writes = writes
 
     async def check(self, room_id: str, *, organization_id: str | None = None) -> Room:
         """Apply the room's due transitions under its lock, for a room nobody
@@ -147,10 +150,17 @@ class TimerTransitions:
         Each then has its lifecycle record and its framework event, before
         anything the section decides next; their hooks fire once the lock
         is released, from a task the kit holds, which *hooks* collects for a
-        caller that waits for it (:meth:`settle`).
+        caller that waits for it (:meth:`settle`). Once due, they are written
+        and reported whole whatever becomes of the caller (RFC §13.6): no
+        later section would find them due again.
         """
         if not due_transitions(room, datetime.now(UTC)):
             return room
+        return await run_to_its_end(self._apply(room, hooks), held=self._writes)
+
+    async def _apply(self, room: Room, hooks: list[asyncio.Task[None]] | None) -> Room:
+        """:meth:`apply_due`'s writes and reports, for a room whose
+        transitions fell due."""
         room, due = await self._write_due(room)
         if not due:
             return room
