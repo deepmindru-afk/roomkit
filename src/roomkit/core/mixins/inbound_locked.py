@@ -974,6 +974,18 @@ def committed_in(context: RoomContext, committed: RoomEvent) -> RoomContext:
     return context.model_copy(update={"recent_events": recent})
 
 
+def with_counters(context: RoomContext, committed: RoomEvent) -> RoomContext:
+    """*context* with its room's counters as *committed*'s commit left them
+    (RFC §10.1 step 12): ``event_count`` past its index, ``latest_index`` at
+    it. For a change's mutation trigger alone (§10.3): a context a channel
+    is handed keeps the counters it was built with, which tell a later read
+    that its history may not be carried (``_carried_history``)."""
+    room = context.room.model_copy(
+        update={"event_count": committed.index + 1, "latest_index": committed.index}
+    )
+    return context.model_copy(update={"room": room})
+
+
 def mutation_plan(
     committed: RoomEvent,
     context: RoomContext,

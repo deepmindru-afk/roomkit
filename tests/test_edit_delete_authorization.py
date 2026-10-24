@@ -931,17 +931,22 @@ class TestTheMutationTriggers:
     target as rewritten, and the change itself as the newest event, at its
     committed index and as its hooks left it."""
 
+    @pytest.mark.parametrize("nested", [False, True], ids=["alone", "after-a-nested-commit"])
     @pytest.mark.parametrize("kind", ["edit", "delete"])
     @pytest.mark.parametrize("origin", ["inbound", "response", "injected"])
     async def test_a_trigger_reads_the_room_as_the_change_left_it(
-        self, origin: str, kind: str
+        self, origin: str, kind: str, nested: bool
     ) -> None:
+        """*nested*: the change's own hook commits an event ahead of it
+        (``send_event()``), which the trigger's history holds."""
         kit = await _setup()
         trigger = HookTrigger.ON_EVENT_UPDATED if kind == "edit" else HookTrigger.ON_EVENT_DELETED
         contexts: list[RoomContext] = []
 
         @kit.hook(HookTrigger.BEFORE_BROADCAST, name="redact")
         async def redact(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if nested and event.type in (EventType.EDIT, EventType.DELETE):
+                await kit.send_event("r1", "sys", TextContent(body="nested"))
             return _redacted(event)
 
         @kit.hook(trigger, execution=HookExecution.ASYNC)
@@ -963,6 +968,17 @@ class TestTheMutationTriggers:
         assert [e for e in context.recent_events if e.id == change.content.target_event_id] == [
             target
         ]
+        # The whole history and the counters as the change's commit left
+        # them: the room's conversation, then the change.
+        conversation = await kit._store.get_conversation("r1", limit=50)
+        assert [_said(e, "nested") for e in conversation].count(True) == int(nested)
+        assert context.recent_events == [*conversation, change]
+        room = await kit._store.get_room("r1")
+        assert room is not None
+        assert (context.room.event_count, context.room.latest_index) == (
+            room.event_count,
+            room.latest_index,
+        )
         await kit.close()
 
 

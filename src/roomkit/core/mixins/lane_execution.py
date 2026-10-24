@@ -40,6 +40,7 @@ from roomkit.core.mixins.inbound_locked import (
     committed_in,
     mutation_plan,
     target_update,
+    with_counters,
     within_answer_scope,
 )
 from roomkit.core.task_utils import await_unless_cut, start_named
@@ -326,6 +327,8 @@ class LaneExecutionMixin(HelpersMixin):
             return None
         committed = await self._commit(room_id, event, target=target, activity=True)
         plan = plan_factory(committed) if plan_factory is not None else None
+        if plan is not None and plan.mutation_hook is not None:
+            plan.mutation_context = with_counters(plan.context, committed)
         if plan is None:
             await self._note_committed_index(room_id, committed.index)
         else:
@@ -762,7 +765,9 @@ class LaneExecutionMixin(HelpersMixin):
 
         if plan.mutation_hook is not None:
             trigger, target = plan.mutation_hook
-            await self._hook_engine.run_async_hooks(room_id, trigger, target, context)
+            await self._hook_engine.run_async_hooks(
+                room_id, trigger, target, plan.mutation_context or context
+            )
 
         if plan.injected:
             # Its targets' side effects are collected, as at any delivery

@@ -103,6 +103,10 @@ class DeliveryPlan:
     # executor before the event's own AFTER_BROADCAST — matching the order the
     # locked pipeline produced them.
     mutation_hook: tuple[HookTrigger, RoomEvent] | None = None
+    # The context the mutation trigger reads, the room as the change's commit
+    # left it (RFC §10.3): ``context`` with the room's counters past the
+    # change. None reads ``context`` (a change delivered unstored moves none).
+    mutation_context: RoomContext | None = None
     # The trigger's response_visibility, stamped onto reentry events so the
     # router's visibility check honours the caller's response scope.
     response_visibility: str | None = None
