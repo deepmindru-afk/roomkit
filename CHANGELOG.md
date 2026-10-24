@@ -912,7 +912,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   room read it as another number. Null, a blank string, a boolean, a list
   and an object are now no recipient: the delivery is refused
   `no_recipient`, the binding names no correspondent, and the sender
-  routed to it gets their address written as its recipient. A number is
+  routed to it gets their address written as its recipient, and no store's
+  `find_room_id_by_binding()` finds a room for a blank address. A number is
   one, as before. The chat a message carries under its
   channel's chat key is read the same way: `true` or a blank string there
   is no chat, and the message has no address.
@@ -957,7 +958,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the most recently created, the greatest id breaking a tie, in every store
   and in the base fallbacks. Postgres gains an index on
   `participants(identity_id)`, which `init()` creates only when missing (a
-  `CREATE INDEX` locks the table even when the index exists).
+  `CREATE INDEX` locks the table even when the index exists), and SQLite one
+  on the participant's identity: its participant lookup reads through
+  `participants(id)` and that index (about 0.08 ms against 18 ms for a scan of
+  20,000 participants). Postgres `init()` looks its index names up in its own
+  schema (`current_schema()`), not through `search_path`: with two
+  deployments in one database, one no longer skips its own indexes because
+  the other has them, nor drops the other's unique idempotency index.
   Migrate: `find_room_id_by_binding(ch, pid, status="active")` becomes
   `find_room_id_by_binding(ch, pid, None,
   RoomFilter(statuses=[RoomStatus.ACTIVE]))`, and
@@ -1651,7 +1658,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does: nothing of it stored, what its hooks returned dropped (their injected
   events included), and `room_refused_event` emitted (`operation` `inbound`,
   or `reentry` for a response and an injected event). `send_event()` raises
-  `RoomClosedError` alike.
+  `RoomClosedError` alike. An event its locked hooks let through is planned
+  with the history and the bindings as they left them: a message a hook
+  hard-deleted or redacted (`delete_event()`, `update_event()`) no longer
+  reaches the agent, and a channel a hook detached no longer receives the
+  event when the persistence policy stores no detach record. The room's
+  context is read again once per such pass, on one connection.
 
 - An instruction's result reports the room's next index once its hooks ran
   (RFC §10.1 step 9a, §10.1.1 step 5, RMK-930), allowed or blocked. What a
@@ -1755,7 +1767,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SQLiteStore.search_events()` no longer finds a soft-deleted message's
   text (RFC §10.3, RMK-930): the commit that marked it `metadata.deleted`
   indexed its original content again. A deleted message is now left out of
-  the full-text index; its record keeps the text.
+  the full-text index; its record keeps the text. An SQLite file moves to
+  schema version 11, which drops from the index the messages deleted before
+  it: a file from 0.107.0 still found them.
 
 - The record of a failed delivery no longer undoes an edit or a delete (RFC
   §10.3, §14.3, RMK-930). Once a delivery set with a failure in it had run,
