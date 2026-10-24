@@ -220,11 +220,14 @@ class InboundMixin(HelpersMixin):
         being processed and takes no ticket; from a turn or a delivery it is
         a new arrival. It draws on the reentry budget of that event, or of the
         cascade that delivers, as it starts: past it, it is refused
-        ``reentry_loop_cap`` with no event. A message sent within a turn is at
+        ``reentry_loop_cap`` with no event, before anything else when it names
+        its room (its channel not looked up, nothing attached), once routing
+        knows its room when it is routed. A message sent within a turn is at
         least as deep as the turn's response (RFC §8.3).
 
         Raises:
-            ChannelNotRegisteredError: the message's channel is not registered.
+            ChannelNotRegisteredError: the message's channel is not registered
+                (a message refused past its room's work budget first excepted).
             ReentrantCallError: the message is routed (no *room_id*) into the
                 room whose lock the caller holds or in whose admission order it
                 stands (an off-lock hook's body, a parse); nothing is written.
@@ -237,6 +240,14 @@ class InboundMixin(HelpersMixin):
         # A sixth composite level is refused where it is built (RFC §5.3):
         # the message fails before anything is read or written.
         refuse_too_deep(message.content)
+
+        # RFC §10.1 step 1, §9.5.1 Past the cap: a message that names its
+        # room, sent by that room's work, draws on its budget as it starts,
+        # before anything else; a routed one, and one naming a room of no
+        # work, are charged at step 2 once their room is known.
+        charged = self._named_room_work(room_id)
+        if charged is not None and not charged.budget.take():
+            return _past_the_cap(room_id, message)
 
         # Inbound rate limiting — drop excess messages before any processing
         if (
@@ -281,6 +292,7 @@ class InboundMixin(HelpersMixin):
                 inbound_span_id,
                 defer_delivery,
                 organization_id=organization_id,
+                charged=charged,
             )
             return _inbound_result
         except Exception as exc:
@@ -346,6 +358,16 @@ class InboundMixin(HelpersMixin):
         """The deliveries a caller named by a key (RFC §10.1)."""
         return DeliveryKeys(self._record_held_cancellation)
 
+    def _named_room_work(self, room_id: str | None) -> Entry | None:
+        """What a call naming *room_id* is to that room's work when it draws
+        on the work's reentry budget, charged as it starts (RFC §10.1 step 1,
+        §9.5.1); ``None`` for a call routed or into a room of no work,
+        charged at step 2 if at all."""
+        if room_id is None:
+            return None
+        entry = self._room_work.entry(room_id)
+        return entry if entry.charged else None
+
     async def _process_inbound_inner(
         self,
         message: InboundMessage,
@@ -355,6 +377,7 @@ class InboundMixin(HelpersMixin):
         inbound_span_id: str,
         defer_delivery: bool,
         organization_id: str | None = None,
+        charged: Entry | None = None,
     ) -> InboundResult:
         """Inner inbound processing (extracted for telemetry wrapping), its
         delivery named by the message's key from the call's start (RFC
@@ -374,6 +397,7 @@ class InboundMixin(HelpersMixin):
                 defer_delivery,
                 named,
                 organization_id=organization_id,
+                charged=charged,
             )
         if result.error is None and failed_releases:
             # In place: a detached delivery's handle holds this result.
@@ -391,8 +415,10 @@ class InboundMixin(HelpersMixin):
         named: NamedDelivery,
         *,
         organization_id: str | None,
+        charged: Entry | None,
     ) -> InboundResult:
-        """RFC §10.1 steps 2-18 for *message*, whose delivery *named* names."""
+        """RFC §10.1 steps 2-18 for *message*, whose delivery *named* names;
+        *charged* the entry of a call naming its room, drawn as it started."""
         # One deadline from the call's start to its decision (RFC §13.6), as
         # an absolute instant shared by every wait before the commit rather
         # than re-applied at each: routing, with the identity it reads, the
@@ -408,8 +434,9 @@ class InboundMixin(HelpersMixin):
 
         # A message the room's delivery work sends that creates a room,
         # routed or named, is that work's: charged once on its budget before
-        # the room is created (RFC §9.5.1, gap G-070).
-        budget = self._room_work.opening_budget()
+        # the room is created (RFC §9.5.1, gap G-070), unless it was charged
+        # as it started.
+        budget = self._room_work.opening_budget() if charged is None else None
         opening = _Opening(budget) if budget is not None else None
         try:
             room_id, room_just_created = await self._route_to_room(
@@ -429,12 +456,8 @@ class InboundMixin(HelpersMixin):
         except _PastTheCapError:
             return _past_the_cap(None, message)
 
-        if room_just_created and opening is not None:
-            # Charged as the room was opened: its cascade draws on the same.
-            entry = Entry(Placement.ARRIVAL, opening.budget, False)
-        else:
-            entry = self._room_work.entry(room_id)
-        if entry.charged and not entry.budget.take():
+        entry = self._entry_after_routing(room_id, room_just_created, opening, charged)
+        if entry is None:
             return _past_the_cap(room_id, message)
         try:
             prepared = await self._prepare_event(
@@ -458,6 +481,27 @@ class InboundMixin(HelpersMixin):
             entry,
             defer_delivery=defer_delivery,
         )
+
+    def _entry_after_routing(
+        self,
+        room_id: str,
+        room_just_created: bool,
+        opening: _Opening | None,
+        charged: Entry | None,
+    ) -> Entry | None:
+        """What the call is to its room's work once step 2 knows the room
+        (RFC §9.5.1), charged one pass if it was not yet; ``None`` past the
+        budget. A call naming its room was charged as it started, one that
+        opened a room as the room was created; its cascade draws on that
+        budget."""
+        if charged is not None:
+            return charged
+        if room_just_created and opening is not None:
+            return Entry(Placement.ARRIVAL, opening.budget, False)
+        entry = self._room_work.entry(room_id)
+        if entry.charged and not entry.budget.take():
+            return None
+        return entry
 
     def _refused_instruction(self, message: InboundMessage) -> InboundResult | None:
         """The refusal of an instruction that could only land as something

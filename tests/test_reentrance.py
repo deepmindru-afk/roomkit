@@ -131,18 +131,26 @@ class TestACallFromAParse:
 
 
 class _Looping(SimpleChannel):
-    """A transport whose every delivery sends a message into its room."""
+    """A transport whose every delivery sends a message into its room; once
+    one is refused, it sends *then* into the room too, past the budget."""
 
-    def __init__(self, channel_id: str, kit: RoomKit) -> None:
+    def __init__(self, channel_id: str, kit: RoomKit, then: InboundMessage | None = None) -> None:
         super().__init__(channel_id)
         self._kit = kit
+        self._then = then
         self.refused = asyncio.Event()
+        self.then_answer: InboundResult | Exception | None = None
 
     async def deliver(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:
         result = await self._kit.process_inbound(_message("again"), room_id="r1")
-        if result.reason == "reentry_loop_cap":
+        if result.reason == "reentry_loop_cap" and not self.refused.is_set():
+            if self._then is not None:
+                try:
+                    self.then_answer = await self._kit.process_inbound(self._then, room_id="r1")
+                except Exception as error:
+                    self.then_answer = error
             self.refused.set()
         return ChannelOutput.empty()
 
@@ -159,6 +167,33 @@ class TestACallFromADelivery:
         try:
             await asyncio.wait_for(kit.process_inbound(_message()), 5)
             await asyncio.wait_for(looping.refused.wait(), 5)
+            assert len(await _messages(kit)) == 1 + BUDGET
+        finally:
+            await kit.close()
+
+    @pytest.mark.parametrize("channel_id", ["ghost", "late"], ids=["unregistered", "unattached"])
+    async def test_a_call_naming_its_room_past_the_budget_is_refused_before_anything_else(
+        self, channel_id: str
+    ) -> None:
+        """RFC §10.1 step 1, §9.5.1 Past the cap: a message that names its
+        room is refused as it starts, before its channel is looked up or
+        attached: nothing created or stored."""
+        kit = RoomKit(max_chain_depth=1)
+        then = InboundMessage(channel_id=channel_id, sender_id="u", content=TextContent(body="x"))
+        looping = _Looping("loop", kit, then=then)
+        await _room(kit, looping)
+        kit.register_channel(SimpleChannel("late"))
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message()), 5)
+            await asyncio.wait_for(looping.refused.wait(), 5)
+            answer = looping.then_answer
+            assert isinstance(answer, InboundResult), answer
+            assert (answer.blocked, answer.reason, answer.event) == (
+                True,
+                "reentry_loop_cap",
+                None,
+            )
+            assert await kit.store.get_binding("r1", channel_id) is None
             assert len(await _messages(kit)) == 1 + BUDGET
         finally:
             await kit.close()
