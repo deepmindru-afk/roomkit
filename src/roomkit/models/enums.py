@@ -33,6 +33,7 @@ class ChannelType(StrEnum):
     AUDIO_VIDEO = "audio_video"
     CONFERENCE = "conference"
     CLI = "cli"
+    HOST = "host"
     SYSTEM = "system"
 
 

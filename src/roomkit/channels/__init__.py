@@ -19,6 +19,7 @@ from roomkit.channels.addressing import addressing_of as addressing_of
 from roomkit.channels.ai import AIChannel as AIChannel
 from roomkit.channels.cli import CLIChannel as CLIChannel
 from roomkit.channels.declared import DeclaredChannel as DeclaredChannel
+from roomkit.channels.host import HostChannel as HostChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel as RealtimeVoiceChannel
 from roomkit.channels.skill_script_tool import RunSkillScriptTool as RunSkillScriptTool
 from roomkit.channels.transport import TransportChannel

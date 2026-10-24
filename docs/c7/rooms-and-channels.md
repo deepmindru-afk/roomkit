@@ -55,7 +55,7 @@ timer transitions first, and a delivered message resumes a PAUSED room.
 
 ## Channel Types
 
-The `ChannelType` enum defines 23 values: `SMS`, `MMS`, `RCS`, `EMAIL`, `WHATSAPP`, `WHATSAPP_PERSONAL`, `WEBSOCKET`, `AI`, `VOICE`, `REALTIME_VOICE`, `REALTIME_AUDIO_VIDEO`, `PUSH`, `MESSENGER`, `TELEGRAM`, `TEAMS`, `DISCORD`, `BUZZ`, `WEBHOOK`, `VIDEO`, `AUDIO_VIDEO`, `CONFERENCE`, `CLI`, `SYSTEM`. RoomKit ships with these factories and channel classes:
+The `ChannelType` enum defines 24 values: `SMS`, `MMS`, `RCS`, `EMAIL`, `WHATSAPP`, `WHATSAPP_PERSONAL`, `WEBSOCKET`, `AI`, `VOICE`, `REALTIME_VOICE`, `REALTIME_AUDIO_VIDEO`, `PUSH`, `MESSENGER`, `TELEGRAM`, `TEAMS`, `DISCORD`, `BUZZ`, `WEBHOOK`, `VIDEO`, `AUDIO_VIDEO`, `CONFERENCE`, `CLI`, `HOST`, `SYSTEM`. RoomKit ships with these factories and channel classes:
 
 | Channel | Factory / Class | Category | Use Case |
 |---------|----------------|----------|----------|
@@ -72,6 +72,7 @@ The `ChannelType` enum defines 23 values: `SMS`, `MMS`, `RCS`, `EMAIL`, `WHATSAP
 | Webhook | `HTTPChannel(id, provider=...)` | TRANSPORT | Generic HTTP webhook (`ChannelType.WEBHOOK`) |
 | WebSocket | `WebSocketChannel(id)` | TRANSPORT | Real-time bidirectional |
 | CLI | `CLIChannel(id)` | TRANSPORT | Interactive terminal (stdin/stdout REPL) |
+| Host | `HostChannel(id="host")` | TRANSPORT | The host application's own voice, written with `kit.post()` (INBOUND, never delivered to) |
 | AI | `AIChannel(id, provider=...)` | INTELLIGENCE | LLM responses |
 | Agent | `Agent(id, provider=...)` | INTELLIGENCE | Agent with tools + greeting |
 | ACP | `ACPChannel(id, command, cwd=...)` | INTELLIGENCE | External coding agent via Agent Client Protocol (`channel_type` is `AI`; one session per room) |
@@ -163,6 +164,39 @@ scope does not follow: a background delegation's result handed back with
 `deliver()` or `send_event()`, a tool's own `send_event()`, a child room's
 answer to the channels it shares. Give such a call its own
 `response_visibility`.
+
+## Writing as the Host
+
+What the application says to a room's people — a notice, a workflow's
+question, a reminder — is the host's own words, written with `kit.post()`
+(RFC §10.5):
+
+```python
+await kit.post(room_id, "Your order shipped.")          # texted to the correspondent
+await kit.post(room_id, "Summarise the order.", addressed_to=["assistant"])
+await kit.post(room_id, "Back at 3 pm.", participant_id="desk", metadata={"job": "hours"})
+```
+
+- The post comes from a `HostChannel`, a transport of type `HOST` whose
+  direction is `INBOUND`: the room reads it as a party's message and
+  broadcasts it to its transports. It is never delivered to.
+- It solicits no agent unless `addressed_to` names one. To let the room's
+  routing decide, use `send_event()` from the host channel instead.
+- `participant_id` names who speaks: once two people take part, an agent
+  reads the turn as `Acme Support: "..."`. `metadata` says where it comes
+  from (a workflow, its step, a job).
+- The kit registers its host channel under `"host"` on first use and attaches
+  it to a room on the room's first post; a binding set up beforehand keeps its
+  settings. `channel_id=` speaks from another `HostChannel` you registered; a
+  channel of another type is refused before anything is written.
+- `deliver()` is the other way in: content for the room's agents, never shown
+  to the correspondent.
+
+The host's words come from neither an intelligence channel, which would make
+them an agent's output (a Discussion refuses to bind one that is not its
+agent, and `ADDRESSED_ONLY` lets an unaddressed one solicit no agent), nor a
+`SYSTEM` source, which marks what the framework writes: no author, and
+changes reserved to the system.
 
 ## Muting Channels
 

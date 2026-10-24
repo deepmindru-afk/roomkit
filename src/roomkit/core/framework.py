@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Coroutine, Generator, Iterable
+from collections.abc import Coroutine, Generator, Iterable, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 from roomkit.channels.base import Channel
 from roomkit.channels.websocket import SendFn, StreamSendFn, WebSocketChannel
+from roomkit.core import _host_post
 from roomkit.core._changes import CHANGE_REFUSALS
 from roomkit.core._instructions import names_an_agent, without_fingerprint
 from roomkit.core._kit_turn_hooks import KitTurnHooks
@@ -117,7 +118,7 @@ from roomkit.models.enums import (
     HookTrigger,
     Visibility,
 )
-from roomkit.models.event import EventSource, RoomEvent, refuse_too_deep
+from roomkit.models.event import EventContent, EventSource, RoomEvent, refuse_too_deep
 from roomkit.models.store_filter import EventFilter, PersistencePolicy
 from roomkit.models.task import Observation, Task
 from roomkit.models.verification import VerificationPolicy
@@ -1255,6 +1256,65 @@ class RoomKit(
             addressed_to=addressed_to,
             organization_id=organization_id,
             standalone=standalone,
+        )
+
+    async def post(
+        self,
+        room_id: str,
+        content: str | EventContent,
+        *,
+        participant_id: str | None = None,
+        addressed_to: Sequence[str] = (),
+        metadata: dict[str, Any] | None = None,
+        channel_id: str | None = None,
+        organization_id: str | None = None,
+    ) -> RoomEvent:
+        """Write to a room's people in the host's own name (RFC §10.5).
+
+        A notice, a workflow's question, a reminder: what the application says,
+        not what an agent says. It comes from a :class:`HostChannel`, a
+        transport of type ``HOST``, so the room reads it as a party's message
+        and broadcasts it to its transports (an SMS to the room's
+        correspondent). :meth:`deliver` is the other way in: content for the
+        room's agents.
+
+        Args:
+            room_id: The room to write to.
+            content: The text, or any event content.
+            participant_id: Who speaks, a participant of the room: readers,
+                agents included, are shown their name.
+            addressed_to: The agents asked to answer. None by default: the
+                host's message solicits no agent unless it names one.
+            metadata: Where the message comes from (a workflow, its step, a
+                job), stored on the event.
+            channel_id: A registered ``HostChannel`` to speak from; by
+                default the kit's own, registered under ``"host"`` on first
+                use.
+            organization_id: The organization the caller acts for (RFC
+                §17.2).
+
+        The room is given the host channel on its first post, an ordinary
+        attachment; a room that binds it already keeps its binding as set.
+
+        Returns:
+            The committed event, as :meth:`send_event` returns it.
+
+        Raises:
+            ChannelNotRegisteredError: *channel_id* names no registered channel.
+            ValueError: *channel_id* names a channel that is not of type
+                ``HOST``, or ``"host"`` is taken by another channel.
+            RoomNotFoundError: the room does not exist, or is another
+                organization's.
+        """
+        return await _host_post.post(
+            self,
+            room_id,
+            content,
+            participant_id=participant_id,
+            addressed_to=addressed_to,
+            metadata=metadata,
+            channel_id=channel_id,
+            organization_id=organization_id,
         )
 
     async def _send_event(

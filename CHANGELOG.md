@@ -19,6 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signature on purpose runs `make api-snapshot` and carries its BREAKING
   entry. Type annotations, and what a call does, are not compared.
 
+- `kit.post()` and `HostChannel`: the host writes to a room's people in its
+  own name (RFC §10.5, RMK-947). A notice, a workflow's question, a reminder
+  is the application's words, not an agent's: it comes from a transport of
+  type `HOST` (new `ChannelType.HOST`), never delivered to, so the room reads
+  it as a party's message and broadcasts it to its transports. `post()`
+  registers and attaches the host channel on first use (a binding set up
+  beforehand keeps its settings), solicits no agent unless `addressed_to`
+  names one, signs with `participant_id` and keeps `metadata`. An
+  intelligence channel used for this was refused by a Discussion room and
+  turned the host's words into an agent's output; a `SYSTEM` source dropped
+  the author. `deliver()` remains the way in for the room's agents.
+
 ### Changed
 
 - **BREAKING — a key its channel holds refuses another event in every store,

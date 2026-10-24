@@ -57,6 +57,7 @@ from roomkit.channels.conference import (
     UtteranceTiming,
 )
 from roomkit.channels.declared import DeclaredChannel
+from roomkit.channels.host import HostChannel
 from roomkit.channels.realtime_av import RealtimeAudioVideoChannel
 from roomkit.channels.realtime_voice import RealtimeVoiceChannel, get_current_voice_session
 from roomkit.channels.realtime_voice import ToolHandler as ToolHandler
@@ -516,6 +517,7 @@ __all__ = [
     "BuzzChannel",
     "Channel",
     "CLIChannel",
+    "HostChannel",
     "DeclaredChannel",
     "ConferenceChannel",
     "DiscordChannel",

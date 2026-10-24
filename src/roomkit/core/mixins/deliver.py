@@ -76,9 +76,8 @@ class DeliverMixin(HelpersMixin):
         message received on that channel from the framework's own sender
         (``system``): the correspondent receives the agents' answer, never
         *content* itself, and with no agent in the room nothing is sent. A
-        message for the correspondent is published from a channel of the
-        host's own with :meth:`send_event` (``addressed_to=[]`` for no agent
-        to answer it).
+        message for the correspondent is the host's own words: write it with
+        :meth:`post` (RFC §10.5).
 
         When a :class:`~roomkit.delivery.base.DeliveryBackend` is
         configured, the item is enqueued and the worker executes
