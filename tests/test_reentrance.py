@@ -163,16 +163,20 @@ class TestACallFromADelivery:
         finally:
             await kit.close()
 
-    @pytest.mark.parametrize("router", ["no-room", "a-room-id-the-store-lacks"])
+    @pytest.mark.parametrize(
+        "opens", ["no-room", "a-room-id-the-store-lacks", "a-named-room-the-store-lacks"]
+    )
     async def test_a_transport_opening_a_room_on_every_delivery_stops_at_the_cap(
-        self, router: str
+        self, opens: str
     ) -> None:
-        """A message the room's work routes into a new room is that work's:
-        it draws on the budget of the cascade that delivers, whichever way
-        routing opens the room (no answer, or an id the store lacks), so a
-        transport whose every delivery opens a room stops at the cap."""
-        kit = RoomKit(max_chain_depth=1, inbound_router=_OPENING_ROUTERS[router]())
-        opening = _Opening("opener", kit)
+        """A message the room's work sends that creates a room is that
+        work's: it draws on the budget of the cascade that delivers, whether
+        routing opens the room (no answer, or an id the store lacks) or the
+        call names a room the store lacks, so a transport whose every
+        delivery opens a room stops at the cap."""
+        router = _OPENING_ROUTERS.get(opens, _NoRoom)()
+        kit = RoomKit(max_chain_depth=1, inbound_router=router)
+        opening = _Opening("opener", kit, naming=opens == "a-named-room-the-store-lacks")
         kit.register_channel(opening)
 
         @kit.hook(HookTrigger.ON_ROOM_CREATED)
@@ -230,17 +234,22 @@ _OPENING_ROUTERS: dict[str, Callable[[], InboundRoomRouter]] = {
 
 
 class _Opening(SimpleChannel):
-    """A transport whose every delivery routes a message, which opens a room."""
+    """A transport whose every delivery sends a message that opens a room:
+    routed, or naming a fresh room id when *naming*."""
 
-    def __init__(self, channel_id: str, kit: RoomKit) -> None:
+    def __init__(self, channel_id: str, kit: RoomKit, *, naming: bool = False) -> None:
         super().__init__(channel_id)
         self._kit = kit
+        self._naming = naming
+        self._named = 0
         self.refused = asyncio.Event()
 
     async def deliver(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
     ) -> ChannelOutput:
-        result = await self._kit.process_inbound(_message("again"))
+        self._named += 1
+        room_id = f"named-{self._named}" if self._naming else None
+        result = await self._kit.process_inbound(_message("again"), room_id=room_id)
         if result.reason == "reentry_loop_cap":
             self.refused.set()
         return ChannelOutput.empty()

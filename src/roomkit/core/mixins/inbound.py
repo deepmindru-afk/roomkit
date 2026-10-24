@@ -406,10 +406,10 @@ class InboundMixin(HelpersMixin):
         if refused is not None:
             return refused
 
-        # A routed message the room's delivery work sends that opens a new
-        # room is that work's: charged on its budget before the room is
-        # created (RFC §9.5.1, gap G-070).
-        budget = self._room_work.opening_budget() if room_id is None else None
+        # A message the room's delivery work sends that creates a room,
+        # routed or named, is that work's: charged once on its budget before
+        # the room is created (RFC §9.5.1, gap G-070).
+        budget = self._room_work.opening_budget()
         opening = _Opening(budget) if budget is not None else None
         try:
             room_id, room_just_created = await self._route_to_room(
@@ -771,9 +771,10 @@ class InboundMixin(HelpersMixin):
         ``organization_id`` scopes the room the message lands in (RFC §17.2):
         a room of another organization is not found, a room created here is
         created under it. *deadline* is the call's (RFC §13.6): past it,
-        :class:`_RoutingTimeoutError`. *opening* is the budget a routed
-        message draws on when it opens a new room, charged before the room
-        is created: spent, :class:`_PastTheCapError` with nothing written.
+        :class:`_RoutingTimeoutError`. *opening* is the budget a message of
+        the room's delivery work draws on when it creates a room, routed or
+        named, charged once before the room is created: spent,
+        :class:`_PastTheCapError` with nothing written.
 
         Returns:
             A tuple of (room_id, room_just_created).
@@ -795,7 +796,7 @@ class InboundMixin(HelpersMixin):
                 )
             else:
                 room_id, room_just_created = await self._find_or_open_room(
-                    message, channel, room_id, organization_id, deadline=deadline
+                    message, channel, room_id, organization_id, deadline=deadline, opening=opening
                 )
             telemetry.end_span(route_span, attributes={"room_id": room_id or ""})
         except Exception as exc:
@@ -875,7 +876,7 @@ class InboundMixin(HelpersMixin):
         so a room that is not gets no binding. The reads of a room that exists
         and the wait for its lock are bounded by the call's *deadline* (RFC
         §13.6); a room created here is completed whatever the deadline, once
-        *opening*, the budget a routed message of the room's work opens a
+        *opening*, the budget a message of the room's delivery work creates a
         room on, is charged (:meth:`_Opening.charge`). Returns whether the
         room was just created.
         """
@@ -887,8 +888,8 @@ class InboundMixin(HelpersMixin):
             room_id=room_id,
         )
         if not room_present:
-            # A router may answer an id the store lacks: the room it opens
-            # is charged as one routing answered none (gap G-070).
+            # A room the store lacks, named by the call or by its router, is
+            # charged as one routing answered none (gap G-070).
             _charge_opening(opening)
             try:
                 await self._open_room_for(message, room_id, organization_id)
@@ -1265,16 +1266,16 @@ class InboundMixin(HelpersMixin):
 
 
 class _PastTheCapError(Exception):
-    """A routed message the room's delivery work sent would open a new room
-    past the reentry budget it draws on (RFC §8.3, gap G-070): refused with
-    nothing written."""
+    """A message the room's delivery work sent would create a room past the
+    reentry budget it draws on (RFC §8.3, gap G-070): refused with nothing
+    written."""
 
 
 @dataclass(slots=True)
 class _Opening:
-    """The budget a routed message of the room's delivery work draws on when
-    it opens a new room (RFC §9.5.1, gap G-070), charged once whichever
-    branch of routing creates the room."""
+    """The budget a message of the room's delivery work draws on when it
+    creates a room, routed or named (RFC §9.5.1, gap G-070), charged once
+    whichever branch creates the room."""
 
     budget: ReentryBudget
     charged: bool = False
