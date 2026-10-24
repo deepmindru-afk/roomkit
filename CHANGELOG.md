@@ -883,9 +883,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   framework record that holds it (the interruption record), has the
   event's visibility put back; and a channel's answer, a row of its
   stream, or the record stored in place of an answer at the chain-depth
-  limit, carrying it (a channel's own, or the `response_visibility` a
-  hook's modify gave the trigger) is committed with `none`, a warning
-  logged. An event stored for no channel takes `none`.
+  limit, carrying it (a channel's own) is committed with `none`, a warning
+  logged; a hook's modify that writes it as `response_visibility` writes
+  `none`. An event stored for no channel takes `none`.
   `kit.commit_event()`, a record outside the pipeline, still stores the
   visibility it is given. Migrate: `visibility="internal"` →
   `visibility="none"`, `response_visibility="internal"` →
@@ -1410,10 +1410,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an answer), is now what its channel gave it intersected with the scope,
   a listed channel's category read from the room's bindings; and what
   answers a response stays within both the cascade's scope and the
-  response's own, `None` restricting nothing.
+  response's own, `None` restricting nothing and an empty scope (`""`)
+  naming nobody. A `BEFORE_BROADCAST` hook may narrow an event's
+  `response_visibility`, never widen or clear it: what it writes is
+  intersected with the original, `None` keeps the original and `internal`
+  reads as `none`; and a response whose visibility its hooks widen is
+  narrowed back within the scope after them, a stream's rows included.
+  The scope binds the message's cascade only: work that leaves it, a
+  background delegation's result handed back with `deliver()` or
+  `send_event()`, a tool's own `send_event()`, a child room's answer to
+  the channels it shares, is a new cascade the scope does not follow.
   Migrate: a channel that relied on the message's scope to widen its
   answer gives the answer the visibility it means (`"all"` keeps the
-  scope).
+  scope); a hook that widened or cleared a message's `response_visibility`
+  sets the message's own instead; work that hands an answer back outside
+  the cascade passes its own `response_visibility`.
 
 - **BREAKING — a composite delivered as one text skips its empty parts**
   (RFC §6.6, RMK-930). A composite whose every part becomes a text for its
@@ -1664,8 +1675,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     record (a room that refuses events raises `RoomClosedError`), and
     `process_inbound()` returns `InboundResult(blocked=True,
     reason="reentry_loop_cap")` with no event, before its parse;
-  - a call made within a turn, or by work the turn began (a task it
-    spawned, after the turn too), is at least as deep as the turn's
+  - a call into a room made within one of its turns while the turn runs,
+    by the turn or a task it spawned, is at least as deep as the turn's
     response: `send_event()` and `process_inbound()` raise the event's
     `chain_depth` to it, so an agent that injects at each turn stops at
     `max_chain_depth` as its answers do. The floor holds where the owner
@@ -1673,7 +1684,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the kit it holds, and a tool handler or a `TurnHost` verb on any
     backend. With a Redis turn backend the turn's own code runs on its
     executor, outside the owner's context, and reaches the room through
-    its `TurnHost`, whose verbs carry the depth;
+    its `TurnHost`, whose verbs carry the depth. A call into another room
+    is at the depth it names, and work a turn or a delivery began starts
+    fresh once that work is over: depth 0 and a budget of its own (a
+    result delivered later on the turn's behalf, a delegation's, names
+    the turn's depth itself);
   - a message routed (no `room_id`) back into the room whose lock the
     caller holds, or in whose admission order it stands (an off-lock hook's
     body, a parse), raises the new `ReentrantCallError` before anything is
