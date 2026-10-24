@@ -277,7 +277,7 @@ cause = await agent.run()        # blocks until the owner, a signal, or idleness
 
 Runnable example: `examples/buzz_agent.py`.
 
-Buzz huddles (live voice calls in ephemeral channels) are handled by the voice subsystem, not this transport: `BuzzHuddleBackend` (`roomkit.voice.backends.buzz_huddle`) is a `VoiceBackend` carrying huddle Opus audio for a `RealtimeVoiceChannel`, and `BuzzHuddleWatcher` owns the announcement-to-call lifecycle, watching the parent channel for kind-48100 announcements (`KIND_HUDDLE_STARTED` / `huddle_announcement_parser` in `roomkit.sources.buzz`) and bridging each huddle. See `examples/buzz_voice_agent.py`.
+Buzz huddles (live voice calls in ephemeral channels) are handled by the voice subsystem, not this transport: `BuzzHuddleBackend` (`roomkit.voice.backends`) is a `VoiceBackend` carrying huddle Opus audio for a `RealtimeVoiceChannel`, and `BuzzHuddleWatcher` owns the announcement-to-call lifecycle, watching the parent channel for kind-48100 announcements (`KIND_HUDDLE_STARTED` / `huddle_announcement_parser` in `roomkit.sources`) and bridging each huddle. See `examples/buzz_voice_agent.py`.
 
 ## Microsoft Teams
 

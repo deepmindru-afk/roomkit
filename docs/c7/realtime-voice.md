@@ -70,18 +70,33 @@ Transports handle the client-side audio (browser or device):
 | Local mic/speaker | `LocalAudioBackend` | `roomkit[local-audio]` | Local development |
 | Mock | `MockRealtimeTransport` | built-in | Testing |
 
-```python
-from roomkit.voice.realtime import WebSocketRealtimeTransport
+The WebSocket transport does not listen itself: the application serves the
+sockets (here with `websockets`) and starts a session on each connection.
 
-transport = WebSocketRealtimeTransport(host="0.0.0.0", port=8765)
+```python
+from websockets.asyncio.server import serve
+
+from roomkit.voice.realtime import WebSocketRealtimeTransport
 
 realtime = RealtimeVoiceChannel(
     "realtime-voice",
     provider=provider,
-    transport=transport,
+    transport=WebSocketRealtimeTransport(),  # audio_format="base64_json" for JSON frames
     system_prompt="You are a helpful assistant.",
 )
+kit.register_channel(realtime)
+
+async def handle_client(ws):
+    room = await kit.create_room()
+    await kit.attach_channel(room.id, "realtime-voice")
+    await realtime.start_session(room.id, "caller", ws)
+    await ws.wait_closed()  # the transport reads the socket until the client leaves
+
+server = await serve(handle_client, "0.0.0.0", 8765)
 ```
+
+`examples/realtime_voice_gemini.py` serves one, with its page and an origin
+check.
 
 A host that will not serve a WebRTC peer (no session waits for it, its call
 expired) refuses it with `await transport.reject_connection(webrtc_id,
