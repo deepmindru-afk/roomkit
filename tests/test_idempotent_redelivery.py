@@ -72,6 +72,22 @@ class TestTheSecondDeliveryAnswersWithTheFirst:
 
         assert len(await kit.get_timeline("r1")) == before
 
+    @pytest.mark.parametrize("store", ["memory", "sqlite"])
+    @pytest.mark.parametrize("blank", ["", "   "], ids=["empty", "spaces"])
+    async def test_a_blank_key_is_no_key(self, store: str, blank: str) -> None:
+        """RFC §13.4: a blank key, empty or of spaces only, is no key: two
+        messages carrying one are two messages, each processed, in every
+        store."""
+        kit = await _kit(InMemoryStore() if store == "memory" else SQLiteStore(":memory:"))
+
+        first = await kit.process_inbound(_message("one", key=blank))
+        second = await kit.process_inbound(_message("two", key=blank))
+
+        assert first.event is not None and second.event is not None
+        assert (second.duplicate, second.blocked) == (False, False)
+        assert second.event.id != first.event.id
+        await kit.close()
+
     async def test_a_distinct_key_is_processed_normally(self) -> None:
         kit = await _kit()
 
