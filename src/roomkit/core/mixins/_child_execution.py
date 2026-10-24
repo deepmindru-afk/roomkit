@@ -118,7 +118,7 @@ async def persist_tool_calls(
         cascade=cascade,
         plan_source=DeliverySource.of(sr.source_channel_id, context),
     )
-    scope = TurnScope.answering(sr.trigger_event)
+    scope = TurnScope.answering(await kit._with_thread_root(room_id, sr.trigger_event))
     writer = SegmentWriter(
         kit,
         sr,

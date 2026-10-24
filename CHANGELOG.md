@@ -152,6 +152,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the lock: its drain could only wait for its caller. A task the body starts
   waits as any caller does.
 
+- **BREAKING — a reply's parent is rooted on every path that commits an
+  event** (RFC §10.1 step 8, §10.3, §10.5, RMK-943). Only an inbound message
+  and `send_event()` replaced a `parent_event_id` naming a reply by that
+  reply's thread root, and dropped one naming no event of the room. An
+  agent's response, an event a hook injects, a streamed row (which takes its
+  trigger's parent), a `kit.commit_event()` record and the BLOCKED records
+  that stand in for them (past the reentry budget, an answer a delivery set
+  blocked) stored the parent as given, so a hard delete of the root
+  (`delete_event()`, one level of replies) left an answer to a reply in
+  place. Each path now roots the parent as the inbound path does, before
+  the event's hooks where it has some; `commit_event()` stores everything
+  else as given. A reply always names its thread's root, and deleting the
+  root removes the whole thread.
+
 ### Fixed
 
 - Work the kit holds, started late in its `close()` or after it, is cut as

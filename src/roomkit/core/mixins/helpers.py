@@ -327,6 +327,38 @@ class HelpersMixin:
             return None
         return await self._commit_noted(room_id, event, target=target, activity=activity)
 
+    async def _with_thread_root(self, room_id: str, event: RoomEvent) -> RoomEvent:
+        """*event* with its in-app thread parent rooted, as every path that
+        commits an event stores it (RFC §10.1 step 8): a parent naming a reply
+        is replaced by that reply's thread root, and one the room does not
+        hold is dropped, the event posted at the top level. The same event
+        when its parent needs no change."""
+        parent = event.parent_event_id
+        if parent is None:
+            return event
+        root = await self._resolve_thread_root(room_id, parent)
+        return event if root == parent else event.model_copy(update={"parent_event_id": root})
+
+    async def _resolve_thread_root(self, room_id: str, parent_event_id: str) -> str | None:
+        """Resolve an in-app thread parent to its thread root.
+
+        Flat two-level threading: a reply always points at the thread ROOT.
+        If the referenced event is itself a reply, its root is returned so
+        replying-to-a-reply stays in a single thread. A parent that does not
+        exist or belongs to another room drops to ``None`` (top level) with a
+        warning — a stale reference must not lose the sender's message.
+        """
+        parent = await self._store.get_event(parent_event_id)
+        if parent is None or parent.room_id != room_id:
+            logger.warning(
+                "Thread parent %s not found in room %s; posting at top level",
+                parent_event_id,
+                room_id,
+                extra={"room_id": room_id, "parent_event_id": parent_event_id},
+            )
+            return None
+        return parent.parent_event_id or parent_event_id
+
     async def _commit_indexed(self, room_id: str, event: RoomEvent) -> RoomEvent:
         """Commit an event unconditionally (policy-exempt) and account its
         index on the delivery cursor.

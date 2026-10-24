@@ -986,6 +986,7 @@ class LaneExecutionMixin(HelpersMixin):
         async with self._lock_manager.locked(room_id):
             if await self._refuses_record(room_id, blocked):
                 return
+            blocked = await self._with_thread_root(room_id, blocked)
             blocked = await self._commit_indexed(room_id, await self._scoped_record(blocked))
         if blocked.blocked_by == CHAIN_DEPTH_LIMIT:
             await self._emit_framework_event(
@@ -1077,6 +1078,7 @@ class LaneExecutionMixin(HelpersMixin):
             record = response.model_copy(
                 update={"status": EventStatus.BLOCKED, "blocked_by": "reentry_loop_cap"}
             )
+            record = await self._with_thread_root(room_id, record)
             if channels:
                 record = await self._scoped_record(record)
             await self._commit_indexed(room_id, record)
@@ -1166,6 +1168,9 @@ class LaneExecutionMixin(HelpersMixin):
         context = await self._open_pass(room_id, reentry)
         if context is None:
             return
+        # Its thread parent, the channel's or its trigger's, rooted (RFC
+        # §10.1 step 8), as its hooks will read it.
+        reentry = await self._with_thread_root(room_id, reentry)
         reentry, reentry_ctx = provisional(reentry, context)
         # A response's edit or delete takes step 8a as an inbound one
         # does (RFC §10.3); a refused one is logged, and nothing stored.

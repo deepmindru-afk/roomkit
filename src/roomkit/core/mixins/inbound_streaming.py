@@ -165,7 +165,9 @@ class InboundStreamingMixin(HelpersMixin):
             {streaming_targets[0][1].channel_id} if streaming_targets else set()
         )
         correlation_id = uuid4().hex
-        scope = TurnScope.answering(sr.trigger_event)
+        # The rows take the trigger's thread parent, rooted once for the run
+        # (RFC §10.1 step 8): a root deleted since is not named.
+        scope = TurnScope.answering(await self._with_thread_root(room_id, sr.trigger_event))
         chain_depth = scope.chain_depth
         visibility = scope.visibility
         parent_event_id = scope.parent_event_id

@@ -288,26 +288,6 @@ class InboundLockedMixin(HelpersMixin):
     # Stub for cross-mixin call — implemented by RoomKit._get_router().
     def _get_router(self) -> EventRouter: ...
 
-    async def _resolve_thread_root(self, room_id: str, parent_event_id: str) -> str | None:
-        """Resolve an in-app thread parent to its thread root.
-
-        Flat two-level threading: a reply always points at the thread ROOT.
-        If the referenced event is itself a reply, its root is returned so
-        replying-to-a-reply stays in a single thread. A parent that does not
-        exist or belongs to another room drops to ``None`` (top level) with a
-        warning — a stale reference must not lose the sender's message.
-        """
-        parent = await self._store.get_event(parent_event_id)
-        if parent is None or parent.room_id != room_id:
-            logger.warning(
-                "Thread parent %s not found in room %s; posting at top level",
-                parent_event_id,
-                room_id,
-                extra={"room_id": room_id, "parent_event_id": parent_event_id},
-            )
-            return None
-        return parent.parent_event_id or parent_event_id
-
     async def _rooted(self, room_id: str, before: RoomEvent, after: RoomEvent) -> RoomEvent:
         """*after*, the event as its hooks left it, with a thread parent a
         hook set resolved to its thread root in this room (§9.4 lets a hook
@@ -614,15 +594,10 @@ class InboundLockedMixin(HelpersMixin):
         # room's whole timeline on every single inbound.
         event = event.model_copy(update={"index": context.room.event_count})
 
-        # Normalize the in-app thread parent to the thread ROOT (flat two-level
-        # model). This is the single choke point for every entry point — direct
-        # send_event and inbound both traverse here (RFC §10.5) — so the
-        # invariant "parent_event_id points at a thread root" holds regardless
-        # of how the caller referenced the parent.
-        if event.parent_event_id is not None:
-            root_id = await self._resolve_thread_root(room_id, event.parent_event_id)
-            if root_id != event.parent_event_id:
-                event = event.model_copy(update={"parent_event_id": root_id})
+        # The in-app thread parent, rooted (RFC §10.1 step 8): direct
+        # send_event and inbound both traverse here (§10.5), and every other
+        # path that commits an event roots it at its own commit.
+        event = await self._with_thread_root(room_id, event)
 
         # Edit/Delete validation (RFC §10.1 step 8a). The target mutation is
         # deferred to the commit, once BEFORE_BROADCAST hooks allow the event,

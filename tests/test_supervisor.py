@@ -100,8 +100,10 @@ def _make_mock_kit(room: Room) -> MagicMock:
     kit.channels = {}
     kit.register_channel = MagicMock()
     kit.deliver = AsyncMock()
-    # Pass 1's rows ride the room's lane, whose cascade the turn finishes.
+    # Pass 1's rows ride the room's lane, whose cascade the turn finishes,
+    # in their trigger's thread, rooted (here as it stands).
     kit._max_chain_depth = 5
+    kit._with_thread_root = AsyncMock(side_effect=lambda room_id, event: event)
     kit._finish_cascade = AsyncMock(return_value=(None, None))
     # The owner keeps the strategies' runners (RFC §10.6.1).
     kit._turn_runners = TurnRunners()

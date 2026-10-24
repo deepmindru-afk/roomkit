@@ -64,9 +64,12 @@ class EventOpsMixin(HelpersMixin):
         on it no longer than on the events before it; no delivery set, no hook
         and no broadcast follow. It is no activity (RFC §5.1): the room's
         ``last_activity_at`` stays, and a PAUSED room stays paused. It is stored as
-        given, whatever the persistence policy, but for the record of its
-        author, which the room fixes when the event names one
-        (``metadata["author"]``, RFC §10.1 step 12, any value given dropped);
+        given, whatever the persistence policy, but for its thread parent,
+        rooted as every committed event's is (a reply named is replaced by its
+        thread's root, an event the room does not hold dropped, RFC §10.1
+        step 8), and the record of its author, which the room fixes when the
+        event names one (``metadata["author"]``, RFC §10.1 step 12, any value
+        given dropped);
         the source write rule (RFC §7.5 rule 2) does not apply to it. An event
         the members must receive goes through :meth:`send_event`.
 
@@ -99,7 +102,9 @@ class EventOpsMixin(HelpersMixin):
             room = await self._room_timers.apply_due(room)
             if _refuses_writes(room):
                 raise RoomClosedError(f"Room {room_id} does not accept new events")
-            return await self._commit_indexed(room_id, event)
+            return await self._commit_indexed(
+                room_id, await self._with_thread_root(room_id, event)
+            )
 
     async def update_event(
         self,

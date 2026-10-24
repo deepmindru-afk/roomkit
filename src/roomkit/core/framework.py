@@ -1444,6 +1444,7 @@ class RoomKit(
                     event=record,
                 )
                 raise RoomClosedError(f"Room {room_id} does not accept new events")
+            record = await self._with_thread_root(room_id, record)
             return await self._commit_indexed(room_id, await self._scoped_record(record))
 
     async def _injection_binding(

@@ -68,9 +68,10 @@ class TurnScope:
     def answering(cls, trigger: RoomEvent) -> TurnScope:
         """The scope of a turn that answers *trigger*.
 
-        The trigger's thread root is inherited, so the reply lands in the same
-        thread (already normalised to a root by the locked pipeline); a
-        top-level trigger keeps the reply top-level. A scope of ``internal``,
+        The trigger's thread parent is inherited, so the reply lands in the
+        same thread; the caller hands the trigger with its parent rooted
+        (RFC §10.1 step 8), and a top-level trigger keeps the reply
+        top-level. A scope of ``internal``,
         which only the framework writes, commits the rows with ``none``,
         with a warning (RFC §7.3, §8.5). The rows carry the trigger's answer
         scope, so what answers a row stays within the perimeter of the

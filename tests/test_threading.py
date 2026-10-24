@@ -14,6 +14,7 @@ Covers the framework pieces added for threaded conversations:
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -23,15 +24,16 @@ from roomkit.core.framework import RoomKit
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory, ChannelType
-from roomkit.models.event import RoomEvent, TextContent
+from roomkit.models.enums import ChannelCategory, ChannelType, EventStatus, HookTrigger
+from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
 from roomkit.providers.ai.base import AIResponse
 from roomkit.providers.ai.mock import MockAIProvider
 from roomkit.store.memory import InMemoryStore
 from tests.conftest import make_event
-from tests.test_framework import SimpleChannel
+from tests.test_framework import AILikeChannel, SimpleChannel
 
 
 def _body(event: RoomEvent) -> str | None:
@@ -259,3 +261,182 @@ class TestAIResponseInheritsThreadIntegration:
         ai_events = [e for e in await kit.store.list_events("r1") if e.source.channel_id == "ai1"]
         assert ai_events
         assert all(e.parent_event_id == root_id for e in ai_events)
+
+
+# ---------------------------------------------------------------------------
+# Every path that commits an event roots its thread
+# ---------------------------------------------------------------------------
+
+
+class _AnswersInThread(AILikeChannel):
+    """An agent whose answers, *count* of them, name *parent* as their
+    thread parent."""
+
+    def __init__(self, channel_id: str, parent: str | None, count: int = 1) -> None:
+        super().__init__(channel_id, response="answer")
+        self.parent = parent
+        self.count = count
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        output = await super().on_event(event, binding, context)
+        [answer] = output.response_events
+        answers = [
+            answer.model_copy(update={"parent_event_id": self.parent}) for _ in range(self.count)
+        ]
+        return output.model_copy(update={"response_events": answers})
+
+
+async def _threaded_kit(**kwargs: Any) -> tuple[RoomKit, RoomEvent, RoomEvent]:
+    """A room holding a thread: its root and a reply to it."""
+    kit = RoomKit(**kwargs)
+    kit.register_channel(SimpleChannel("sms1"))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms1")
+    root = await kit.send_event("r1", "sms1", TextContent(body="root"))
+    reply = await kit.send_event("r1", "sms1", TextContent(body="reply"), parent_event_id=root.id)
+    return kit, root, reply
+
+
+def _ask() -> InboundMessage:
+    return InboundMessage(channel_id="sms1", sender_id="u1", content=TextContent(body="ask"))
+
+
+def _past_the_budget(kit: RoomKit) -> int:
+    """How many passes take a cascade past its reentry budget (RFC §8.3)."""
+    return kit._max_chain_depth * 10 + 1
+
+
+async def _answer(kit: RoomKit, parent: str, *, count: int = 1) -> None:
+    kit.register_channel(_AnswersInThread("ai1", parent, count))
+    await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+    await kit.process_inbound(_ask(), room_id="r1")
+
+
+async def _answer_past_the_budget(kit: RoomKit, parent: str) -> None:
+    await _answer(kit, parent, count=_past_the_budget(kit))
+
+
+async def _inject(kit: RoomKit, parent: str) -> None:
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, name="inject")
+    async def inject(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if _body(event) != "ask":
+            return HookResult.allow()
+        injected = RoomEvent(
+            room_id="r1",
+            source=EventSource(channel_id="sms1", channel_type="sms"),
+            content=TextContent(body="injected"),
+            parent_event_id=parent,
+        )
+        return HookResult(action="allow", injected_events=[InjectedEvent(event=injected)])
+
+    await kit.process_inbound(_ask(), room_id="r1")
+
+
+async def _send_past_the_budget(kit: RoomKit, parent: str) -> None:
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, name="send")
+    async def send(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if _body(event) == "ask":
+            for _ in range(_past_the_budget(kit)):
+                await kit.send_event(
+                    "r1", "sms1", TextContent(body="sent"), parent_event_id=parent
+                )
+        return HookResult.allow()
+
+    await kit.process_inbound(_ask(), room_id="r1")
+
+
+async def _commit_record(kit: RoomKit, parent: str) -> None:
+    record = RoomEvent(
+        room_id="r1",
+        source=EventSource(channel_id="sms1", channel_type="sms"),
+        content=TextContent(body="record"),
+        parent_event_id=parent,
+    )
+    await kit.commit_event("r1", record)
+
+
+async def _record_a_blocked_answer(kit: RoomKit, parent: str) -> None:
+    """The record a delivery set leaves for an answer it blocked (past a
+    strategy's depth limit), as the router hands it on."""
+    blocked = RoomEvent(
+        room_id="r1",
+        source=EventSource(channel_id="sms1", channel_type="sms"),
+        content=TextContent(body="blocked"),
+        status=EventStatus.BLOCKED,
+        blocked_by="chain_depth_limit",
+        parent_event_id=parent,
+    )
+    await kit._commit_blocked_response("r1", blocked)
+
+
+def _past_cap(event: RoomEvent) -> bool:
+    return event.blocked_by == "reentry_loop_cap"
+
+
+async def _stored(kit: RoomKit) -> list[RoomEvent]:
+    """Every event the room holds, its BLOCKED records included."""
+    return await kit.store.list_events(
+        "r1", limit=200, event_filter=EventFilter(include_blocked=True)
+    )
+
+
+_PATHS: dict[str, tuple[Any, Any]] = {
+    "response": (_answer, lambda e: _body(e) == "answer"),
+    "response-past-the-budget": (_answer_past_the_budget, _past_cap),
+    "hook-injected-event": (_inject, lambda e: _body(e) == "injected"),
+    "send_event-past-the-budget": (_send_past_the_budget, _past_cap),
+    "record-of-a-blocked-answer": (_record_a_blocked_answer, lambda e: _body(e) == "blocked"),
+    "commit_event": (_commit_record, lambda e: _body(e) == "record"),
+}
+
+
+class TestEveryPathRootsItsThread:
+    @pytest.mark.parametrize("path", list(_PATHS))
+    @pytest.mark.parametrize("names", ["a-reply", "no-event-of-the-room"])
+    async def test_a_parent_is_rooted(self, path: str, names: str) -> None:
+        """Whatever path commits it, its BLOCKED record past the reentry
+        budget included, an event naming a reply as its parent names that
+        reply's thread root, and one naming no event of the room is posted at
+        the top level (RFC §10.1 step 8)."""
+        kit, root, reply = await _threaded_kit(max_chain_depth=2)
+        commit, stored_by = _PATHS[path]
+        await commit(kit, reply.id if names == "a-reply" else "does-not-exist")
+
+        [stored] = [e for e in await _stored(kit) if stored_by(e)]
+        assert stored.parent_event_id == (root.id if names == "a-reply" else None)
+        await kit.close()
+
+    async def test_a_streamed_answer_to_a_reply_whose_root_is_gone_is_top_level(self) -> None:
+        """The root of a thread is deleted without its replies, and an agent
+        streams an answer to one of them: its rows take the reply's parent,
+        which the room no longer holds, and are posted at the top level."""
+        kit, root, reply = await _threaded_kit()
+        provider = MockAIProvider(
+            streaming=True, ai_responses=[AIResponse(content="streamed", finish_reason="stop")]
+        )
+        kit.register_channel(AIChannel("ai1", provider=provider))
+        await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+        await kit.delete_event("r1", root.id, cascade_replies=False)
+
+        await kit.regenerate_response("r1", trigger_id=reply.id)
+
+        rows = [e for e in await _stored(kit) if e.source.channel_id == "ai1"]
+        assert rows
+        assert all(e.parent_event_id is None for e in rows)
+        await kit.close()
+
+    async def test_a_hard_delete_of_the_root_removes_the_whole_thread(self) -> None:
+        """An agent's answer, a hook's injected event and a host's record,
+        each naming a reply, are replies of the root: deleting the root
+        removes them with it (RFC §10.3)."""
+        kit, root, reply = await _threaded_kit()
+        for commit in (_answer, _inject, _commit_record):
+            await commit(kit, reply.id)
+
+        await kit.delete_event("r1", root.id)
+
+        left = {_body(e) for e in await _stored(kit)}
+        assert left & {"root", "reply", "answer", "injected", "record"} == set()
+        await kit.close()
