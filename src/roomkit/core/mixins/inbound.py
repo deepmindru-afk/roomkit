@@ -947,10 +947,14 @@ class InboundMixin(HelpersMixin):
         recorded = sender if recordable_sender(sender) else None
         # Once its ON_ROOM_CREATED hooks have run, under the room lock: a
         # binding of the channel one of them made is the room's (RFC §10.1
-        # step 2, §7.5 rule 7).
+        # step 2, §7.5 rule 7), and a room one of them closed gets none, as
+        # a room in hand whose status refuses events: step 6 refuses the
+        # message there.
         async with self._lock_manager.locked(room.id):
             created = await self._store.get_room(room.id)
             if created is not None:
+                created = await self._room_timers.apply_due(created)
+            if created is not None and created.status not in _REFUSING_STATUSES:
                 await self._attach_unbound(
                     created,
                     message.channel_id,

@@ -321,6 +321,28 @@ class TestTheAttachOfStepTwo:
         assert (result.blocked, result.reason) == (True, "room_closed")
         assert await kit._store.get_binding("r1", "ws") is None
 
+    async def test_a_room_its_creation_hook_closed_gets_no_attach(self) -> None:
+        """The room created for the message, closed by an ``ON_ROOM_CREATED``
+        hook, gets no binding, as a room in hand whose status refuses events:
+        step 6 refuses the message ``room_closed``, not routed again."""
+        kit = RoomKit()
+        kit.register_channel(_Transport("ws"))
+        created: list[str] = []
+
+        @kit.hook(HookTrigger.ON_ROOM_CREATED)
+        async def close_at_once(event: object, ctx: RoomContext) -> None:
+            created.append(ctx.room.id)
+            await kit.close_room(ctx.room.id)
+
+        result = await kit.process_inbound(
+            InboundMessage(channel_id="ws", sender_id="u1", content=TextContent(body="hi"))
+        )
+
+        assert (result.blocked, result.reason) == (True, "room_closed")
+        assert len(created) == 1
+        assert await kit._store.get_binding(created[0], "ws") is None
+        await kit.close()
+
     async def test_a_binding_a_creation_hook_made_is_kept(self) -> None:
         kit = RoomKit()
         kit.register_channel(_Transport("ws"))
