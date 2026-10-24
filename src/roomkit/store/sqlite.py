@@ -61,7 +61,7 @@ from roomkit.store.base import (
     without_address,
 )
 
-_SCHEMA_VERSION = 10
+_SCHEMA_VERSION = 11
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS rooms(
@@ -555,6 +555,29 @@ def _migrate_v9_to_v10(conn: sqlite3.Connection) -> None:
         raise
 
 
+def _migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
+    """A soft-deleted message's text is withheld (RFC §10.3): no search
+    finds it. A file from before kept it in the full-text index, which the
+    delete's rewrite of the message filled again: its rows leave the index,
+    the records keep their text."""
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if int(conn.execute("PRAGMA user_version").fetchone()[0]) >= 11:
+            conn.execute("COMMIT")
+            return
+        conn.execute(
+            """DELETE FROM events_fts WHERE event_id IN (
+                   SELECT id FROM events
+                   WHERE json_type(data, '$.metadata.deleted') = 'true')"""
+        )
+        conn.execute("PRAGMA user_version=11")
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
@@ -565,6 +588,7 @@ _MIGRATIONS = {
     7: _migrate_v7_to_v8,
     8: _migrate_v8_to_v9,
     9: _migrate_v9_to_v10,
+    10: _migrate_v10_to_v11,
 }
 """Each step takes a file from its version to the next."""
 

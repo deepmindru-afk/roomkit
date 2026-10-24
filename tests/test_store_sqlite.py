@@ -357,9 +357,38 @@ class TestPersistence:
         try:
             names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
             assert {"idx_idempotency_room_key", "idx_events_room_idempotency"} <= names
-            assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == _SCHEMA_VERSION
         finally:
             conn.close()
+
+    async def test_a_v0107_file_no_longer_finds_its_soft_deleted_messages(self, tmp_path) -> None:
+        """v0.107.0 (schema 6) indexed a soft-deleted message's text again
+        when its delete marked it: the upgrade drops it from the index (RFC
+        §10.3), and the record keeps its text."""
+        path = tmp_path / "v6.db"
+        store = SQLiteStore(path)
+        await store.create_room(Room(id="r1"))
+        secret = await store.commit_event("r1", make_event(room_id="r1", body="zebra secret"))
+        await store.commit_event("r1", make_event(room_id="r1", body="zebra fresh"))
+        await store.update_event(secret.model_copy(update={"metadata": {"deleted": True}}))
+        await store.close()
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "INSERT INTO events_fts(text, event_id, room_id) VALUES(?, ?, ?)",
+            ("zebra secret", secret.id, "r1"),
+        )
+        conn.execute("PRAGMA user_version=6")
+        conn.commit()
+        conn.close()
+
+        store = SQLiteStore(path)
+        try:
+            hits = await store.search_events("zebra")
+            kept = await store.get_event(secret.id)
+        finally:
+            await store.close()
+        assert [e.content.body for e in hits] == ["zebra fresh"]
+        assert kept is not None and kept.content == secret.content
 
     async def test_two_connections_allocate_one_monotonic_sequence(self, tmp_path) -> None:
         path = tmp_path / "shared.db"
