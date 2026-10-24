@@ -53,18 +53,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fence` and `turn_report_claim` from `roomkit.tools`, and others.
   Gemini's transcript types and Qwen3's clone reference are exported under
   vendor names (`GeminiTranscript`, `GeminiTranscriptWord`,
-  `GeminiTranscriptSegment`, `Qwen3VoiceCloneConfig`). `roomkit.channels`
-  gets an `__all__` listing the channels and factories it already held. A
-  name whose module `import roomkit` did not load is exported lazily, and
-  imported for type checkers: `import roomkit` loads no new module, and a
-  missing extra raises on first use. Every module path that imported keeps
+  `GeminiTranscriptSegment`, `Qwen3VoiceCloneConfig`). 18 more that the API
+  reference documented are exported: `InboundRoomRouter`,
+  `DefaultInboundRoomRouter` and `DeliveryContext` from `roomkit`,
+  `build_handoff_tool`, `RCSDeliveryResult`, the Buzz and Discord parsers
+  from `roomkit.sources`, the Meta, Azure MAI, Voxtral, Azure Speech and
+  Fish Audio errors from `roomkit.voice.stt` / `roomkit.voice.tts`,
+  `MockVoiceCall`, `TwilioWebSocketBackend` and `AuthCallback`.
+  `roomkit.channels` gets an `__all__` listing the channels and factories it
+  already held. A name whose module `import roomkit` did not load is
+  exported lazily, and imported for type checkers: `import roomkit` loads no
+  new module, and a missing extra raises on first use. Every module path that imported keeps
   importing; the `roomkit.voice.get_*()` lookups keep working and are
   internal. A star import resolves every name `__all__` lists:
   `from roomkit.voice.tts import *`, `roomkit.voice.realtime` and
   `roomkit.video.avatar` now need the extras of the providers they list
-  (httpx, fastapi, numpy), as `from roomkit.voice import *` already did. `tests/test_public_imports.py` fails on an example or a document
-  that imports a roomkit name from anywhere else, and `make docs` runs the
-  same check on the docs site.
+  (httpx, fastapi, numpy), as `from roomkit.voice import *` already did.
+  `tests/test_public_imports.py` fails on an example, a document or a
+  docstring under `src/` that imports a roomkit name from anywhere else, and
+  `make docs` runs the same check on the docs site.
 
 - `kit.post()` and `HostChannel`: the host writes to a room's people in its
   own name (RFC §10.5, RMK-947). A notice, a workflow's question, a reminder
@@ -349,6 +356,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `circuit_breaker_opened` / `circuit_breaker_closed` events, not the
   router's internal breaker and limiter; the Context7 section on a custom
   content transcoder, an extension point RoomKit does not have, is removed.
+  68 import examples in docstrings, rendered by the API reference, named a
+  module path or a name that does not exist (`from roomkit import
+  DescribeWebcamTool`); and the Context7 realtime page built
+  `WebSocketRealtimeTransport(host=, port=)`, which takes neither: the
+  application serves the sockets.
 
 ## [0.108.0] — 2026-10-24
 
