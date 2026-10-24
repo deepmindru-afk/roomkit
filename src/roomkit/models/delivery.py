@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from roomkit.models._keys import IdempotencyKey
 from roomkit.models._time import UtcDatetime
 from roomkit.models._visibility import parse_given_visibility
 from roomkit.models.enums import EventType, Visibility
@@ -78,7 +79,7 @@ class InboundMessage(BaseModel):
     # to the thread ROOT (flat two-level model) and the AI's reply inherits it,
     # so the response lands in the same thread. See ``RoomEvent.parent_event_id``.
     parent_event_id: str | None = None
-    idempotency_key: str | None = None
+    idempotency_key: IdempotencyKey = None
     # The provider's payload exactly as it arrived, before any parsing (RFC
     # §5.2). It is the audit trail and the source of truth for provider-specific
     # data: a parser reads the handful of fields RoomKit models, and everything

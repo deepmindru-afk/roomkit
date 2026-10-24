@@ -9,6 +9,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from roomkit._media_url import is_data_uri, is_link, is_safe_reference, lowercase_scheme
+from roomkit.models._keys import IdempotencyKey
 from roomkit.models._time import UtcDatetime
 from roomkit.models.enums import (
     ChannelType,
@@ -304,7 +305,7 @@ class RoomEvent(BaseModel):
     # an answer is tied to its request. Unrelated to the thread above.
     responds_to: str | None = None
     correlation_id: str | None = None
-    idempotency_key: str | None = None
+    idempotency_key: IdempotencyKey = None
     created_at: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = Field(default_factory=dict)
     channel_data: ChannelData = Field(default_factory=ChannelData)

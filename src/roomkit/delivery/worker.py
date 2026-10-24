@@ -141,7 +141,9 @@ async def reject_invalid_delivery(
     reason = None
     if item.session_id is not None and (item.channel_id is None or item.addressed_to is not None):
         reason = "invalid_session_target"
-    elif item.idempotency_key == "":
+    elif item.idempotency_key is not None and not item.idempotency_key.strip():
+        # A blank key names no publication (RFC §13.4): a request asking for
+        # idempotency with one is refused, not delivered unkeyed.
         reason = "empty_idempotency_key"
     if reason is None:
         return None

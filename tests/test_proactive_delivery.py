@@ -447,6 +447,7 @@ async def test_replay_hook_describes_original_publication() -> None:
     ("kwargs", "reason"),
     [
         ({"idempotency_key": ""}, "empty_idempotency_key"),
+        ({"idempotency_key": "   "}, "empty_idempotency_key"),
         ({"session_id": "s"}, "invalid_session_target"),
     ],
 )

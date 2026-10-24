@@ -82,6 +82,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A blank idempotency key is no key** (RFC §13.4, RMK-942). The pipeline
+  skipped an empty key while the stores indexed it: a second message from a
+  channel carrying `idempotency_key=""` was refused by SQLite with
+  `sqlite3.IntegrityError` and by Postgres as a taken key, and one carrying
+  spaces was answered as a replay of the first. `RoomEvent` and
+  `InboundMessage` now read a key that is empty or blank as `None`, so no
+  store indexes it, whatever path committed the event. `kit.deliver()`
+  refuses a key of spaces `empty_idempotency_key`, as it refuses an empty
+  one.
+
 - **Postgres reads and drops the names of its own schema only** (RMK-942).
   0.108.0 scoped its new schema guards to `current_schema()`; the older ones
   still resolved names through `search_path`, so beside another deployment

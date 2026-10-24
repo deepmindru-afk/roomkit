@@ -12,6 +12,8 @@ from uuid import uuid4
 
 import pytest
 
+from roomkit import InboundMessage, RoomKit
+from roomkit.channels import SMSChannel
 from roomkit.core.exceptions import EventNotFoundError, IdempotencyKeyTakenError
 from roomkit.core.inbound_router import DefaultInboundRoomRouter
 from roomkit.models.channel import ChannelBinding, RateLimit, RetryPolicy
@@ -26,6 +28,7 @@ from roomkit.models.event import DeleteContent, EditContent, RoomEvent, TextCont
 from roomkit.models.participant import Participant
 from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter, RoomFilter
+from roomkit.providers.sms.mock import MockSMSProvider
 from roomkit.store.base import ConversationStore
 from roomkit.store.memory import InMemoryStore
 from roomkit.store.sqlite import SQLiteStore
@@ -1102,3 +1105,42 @@ async def test_a_key_its_channel_holds_refuses_another_event(
                 await contract_store.commit_event(room.id, first)
     finally:
         await contract_store.delete_room(room.id)
+
+
+@pytest.mark.parametrize("blank", ["", "   "], ids=["empty", "spaces"])
+async def test_a_blank_key_is_no_key(contract_store: ConversationStore, blank: str) -> None:
+    """RFC §13.4: a blank idempotency key is no key. Two messages carrying it
+    are both processed, neither a replay of the other, and two events
+    committed directly with it are both stored, each with no key."""
+    kit = RoomKit(store=contract_store)
+    kit.register_channel(SMSChannel("sms", provider=MockSMSProvider()))
+    rooms: set[str] = set()
+    try:
+        results = [
+            await kit.process_inbound(
+                InboundMessage(
+                    channel_id="sms",
+                    sender_id="+15550000001",
+                    content=TextContent(body=body),
+                    idempotency_key=blank,
+                )
+            )
+            for body in ("one", "two")
+        ]
+        assert [(r.blocked, r.duplicate) for r in results] == [(False, False), (False, False)]
+        assert results[0].event is not None and results[1].event is not None
+        assert results[0].event.id != results[1].event.id
+        room = await contract_store.create_room(Room(id=uuid4().hex))
+        rooms = {results[0].event.room_id, room.id}
+        direct = [
+            await contract_store.commit_event(
+                room.id, make_event(room_id=room.id, channel_id="sms", idempotency_key=blank)
+            )
+            for _ in range(2)
+        ]
+        stored = [await contract_store.get_event(event.id) for event in direct]
+        assert [e.idempotency_key if e else "missing" for e in stored] == [None, None]
+    finally:
+        for room_id in rooms:
+            await contract_store.delete_room(room_id)
+        await kit.close()
