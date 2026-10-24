@@ -73,9 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it in any store. An integer stays the address its digits write: `12345`
   and `"12345"` name one conversation, at attach, in routing and in every
   store's lookup. One rule reads it, `written_recipient()` in
-  `roomkit.channels.addressing`, which the stores' lookup now reads too. Postgres keeps a number as the exact value
-  it equals, so a float written in exponent form with no fraction (`1e16`)
-  is stored, and read back, as the integer it equals.
+  `roomkit.channels.addressing`, which the stores' lookup now reads too.
+  Postgres keeps a number as the exact value it equals, so a float written
+  in exponent form with no fraction (`1e16`) is stored, and read back, as
+  the integer it equals.
   Migrate: a binding that holds a chat id or a number as a float holds it as
   an `int` (`int(value)`) or a string.
 
