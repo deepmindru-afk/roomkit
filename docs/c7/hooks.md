@@ -190,8 +190,9 @@ the event it runs for. The call is part of that event's work (RFC §9.5.1):
 - Either way it draws on the event's reentry budget, one pass as it starts: a
   hook that injects on every event stops at the cap. Past it, `send_event()`
   stores the event `BLOCKED` with `reentry_loop_cap`, no hook run, and returns
-  that record; `process_inbound()` returns `blocked=True,
-  reason="reentry_loop_cap"` with no event.
+  that record; `process_inbound()` naming the room returns `blocked=True,
+  reason="reentry_loop_cap"` with no event, before anything else: its channel
+  is not looked up, nothing is attached.
 - A message routed back into the room (`process_inbound()` with no
   `room_id`) raises `ReentrantCallError` before anything is written: its room
   is known only once routed, so it cannot be adopted. Name the room instead.
@@ -199,7 +200,7 @@ the event it runs for. The call is part of that event's work (RFC §9.5.1):
 Once a hook ran under the lock, the room is read again before the event
 commits (RFC §10.1 step 9a). The event takes the room's next index: what the
 hooks committed ahead of it took the one they were shown, so an instruction,
-never stored, reports the index after it. A room a hook closed
+never stored, reports the index after it, allowed or blocked. A room a hook closed
 (`kit.close_room()`) refuses the event as a closed room does: `blocked=True,
 reason="room_closed"` (`send_event()` raises `RoomClosedError`), nothing of it
 stored, what its hooks returned dropped, and `room_refused_event` emitted. An
