@@ -157,16 +157,26 @@ def without_framework_mark(event: RoomEvent) -> RoomEvent:
     commits it: one carrying ``internal``, which only the framework writes,
     with ``none`` and a warning logged (RFC §7.3, §8.5). It is stored and
     reaches no channel, as asked, without the mark of the framework's own
-    records."""
-    if event.visibility != Visibility.INTERNAL:
+    records. An answer scope of ``internal`` its channel gave it reads as
+    ``none`` the same way, as a hook's does (§9.4): what answers it reaches
+    no channel."""
+    update: dict[str, str] = {}
+    if event.visibility == Visibility.INTERNAL:
+        update["visibility"] = Visibility.NONE
+    if answer_scope(event.response_visibility) == Visibility.INTERNAL:
+        update["response_visibility"] = Visibility.NONE
+    if not update:
         return event
     logger.warning(
-        "Channel %s answered with the visibility 'internal', which only the framework "
-        "writes: committed with 'none'",
+        "Channel %s answered with %s 'internal', which only the framework writes: "
+        "committed with 'none'",
         event.source.channel_id,
+        " and ".join(
+            "the visibility" if field == "visibility" else "the answer scope" for field in update
+        ),
         extra={"room_id": event.room_id, "channel_id": event.source.channel_id},
     )
-    return event.model_copy(update={"visibility": Visibility.NONE})
+    return event.model_copy(update=update)
 
 
 def visibility_allows(visibility: str, target_binding: ChannelBinding) -> bool:

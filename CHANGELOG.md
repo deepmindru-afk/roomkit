@@ -210,6 +210,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its own counted from the channels' end, and again until nothing is left,
   since one's end may start another.
 
+- An answer scope of `internal` a channel gives its response reads as
+  `none` (RFC §7.3, §8.5, §9.4, RMK-943), as a hook's does: only the
+  framework writes `internal`. The response was stored with the framework's
+  mark as its `response_visibility`; it is now stored with `none`, and a
+  warning is logged.
+
 - A direct `update_event()` or `delete_event()` no longer fails once its
   change is stored (RFC §10.3, §13.6, RMK-943). The room is read again once
   the call has released the room lock, for the context of `ON_EVENT_UPDATED`

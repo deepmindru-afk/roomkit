@@ -528,6 +528,20 @@ class _Says(AILikeChannel):
         return output.model_copy(update={"response_events": marked})
 
 
+class _ScopesItsAnswers(AILikeChannel):
+    """An agent that scopes its answer's own answers ``internal``."""
+
+    async def on_event(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        output = await super().on_event(event, binding, context)
+        scoped = [
+            e.model_copy(update={"response_visibility": "internal"})
+            for e in output.response_events
+        ]
+        return output.model_copy(update={"response_events": scoped})
+
+
 class TestAnEmptyAnswerScope:
     """RFC §5.12: ``None`` alone restricts nothing; any other scope is one,
     an empty one naming nobody, on every path (fail-closed)."""
@@ -731,6 +745,24 @@ class TestOnlyTheFrameworkWritesInternal:
             answers = [e for e in await kit.store.list_events("r1") if _body(e) == "AI reply"]
             assert [e.visibility for e in answers] == ["none"]
             assert any("internal" in r.getMessage() for r in caplog.records)
+        finally:
+            await kit.close()
+
+    async def test_an_answer_scope_its_channel_gives_reads_as_none(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A channel gives its answer the answer scope ``internal``: it reads
+        as ``none``, as a hook's does (RFC §8.5, §9.4), the answer stored with
+        that scope and a warning logged."""
+        kit = await _room(
+            _Told("sms"), _ScopesItsAnswers("ai"), ai={"category": ChannelCategory.INTELLIGENCE}
+        )
+        try:
+            with caplog.at_level(logging.WARNING):
+                await kit.process_inbound(_message("hello"))
+            answers = [e for e in await kit.store.list_events("r1") if _body(e) == "AI reply"]
+            assert [e.response_visibility for e in answers] == ["none"]
+            assert any("answer scope 'internal'" in r.getMessage() for r in caplog.records)
         finally:
             await kit.close()
 
