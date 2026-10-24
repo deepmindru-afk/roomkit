@@ -493,13 +493,16 @@ class InboundMixin(HelpersMixin):
         (RFC §9.5.1), charged one pass if it was not yet; ``None`` past the
         budget. A call naming its room was charged as it started, one that
         opened a room as the room was created; its cascade draws on that
-        budget."""
+        budget. A message is charged once (§8.3): one charged for a room
+        another call created first, then routed into the room its work
+        delivers in, is not charged there again."""
         if charged is not None:
             return charged
         if room_just_created and opening is not None:
             return Entry(Placement.ARRIVAL, opening.budget, False)
         entry = self._room_work.entry(room_id)
-        if entry.charged and not entry.budget.take():
+        drawn = opening is not None and opening.charged
+        if entry.charged and not drawn and not entry.budget.take():
             return None
         return entry
 

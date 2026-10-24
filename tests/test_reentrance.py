@@ -23,12 +23,14 @@ from roomkit.core.inbound_router import InboundRoomRouter
 from roomkit.models.channel import ChannelBinding, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage, InboundResult
-from roomkit.models.enums import ChannelCategory, EventType, HookTrigger
+from roomkit.models.enums import ChannelCategory, ChannelType, EventType, HookTrigger
 from roomkit.models.event import RoomEvent, TextContent
 from roomkit.models.hook import HookResult
+from roomkit.models.room import Room
 from roomkit.models.store_filter import EventFilter
 from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
 from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.store.memory import InMemoryStore
 from roomkit.voice.realtime.mock import MockRealtimeProvider
 from tests.conference.test_conference_realtime import ROOM, realtime_kit, until
 from tests.conference.test_conference_tool_calls import LOOKUP
@@ -227,6 +229,26 @@ class TestACallFromADelivery:
         finally:
             await kit.close()
 
+    async def test_a_routed_message_charged_for_a_room_created_meanwhile_is_charged_once(
+        self,
+    ) -> None:
+        """RFC §8.3, §9.5.1: a routed message charged for creating a room
+        another call created first, then routed again into the room its work
+        delivers in, is not charged a second time there: with one pass left
+        on the budget, it lands."""
+        kit = RoomKit(
+            max_chain_depth=1, store=_CreatedMeanwhile(), inbound_router=_AbsentThenTheRoom()
+        )
+        spender = _SpendsThenRoutes("spender", kit, named=BUDGET - 1)
+        await _room(kit, spender)
+        try:
+            await asyncio.wait_for(kit.process_inbound(_message("go"), room_id="r1"), 5)
+            routed = spender.routed
+            assert routed is not None and not routed.blocked, routed
+            assert routed.event is not None and routed.event.room_id == "r1"
+        finally:
+            await kit.close()
+
     async def test_a_delivery_s_call_into_another_existing_room_has_its_own_budget(
         self,
     ) -> None:
@@ -260,6 +282,56 @@ class _FreshRoom(InboundRoomRouter):
     async def route(self, channel_id: str, channel_type: Any, **kwargs: Any) -> str | None:
         self._rooms += 1
         return f"fresh-{self._rooms}"
+
+
+class _CreatedMeanwhile(InMemoryStore):
+    """Another call creates room ``fresh`` right after a routed message read
+    it absent, its binding of ``sms`` naming another correspondent: the
+    message, charged for the creation, reads it as existing, is no one it
+    admits, and is routed again."""
+
+    async def room_exists(self, room_id: str) -> bool:
+        exists = await super().room_exists(room_id)
+        if room_id == "fresh" and not exists:
+            await super().create_room(Room(id="fresh"))
+            await super().add_binding(
+                ChannelBinding(
+                    channel_id="sms",
+                    room_id="fresh",
+                    channel_type=ChannelType.SMS,
+                    participant_id="someone-else",
+                )
+            )
+        return exists
+
+
+class _AbsentThenTheRoom(InboundRoomRouter):
+    """Answers ``fresh``, an id the store lacks, then ``r1``."""
+
+    def __init__(self) -> None:
+        self._answers = ["fresh"]
+
+    async def route(self, channel_id: str, channel_type: Any, **kwargs: Any) -> str | None:
+        return self._answers.pop() if self._answers else "r1"
+
+
+class _SpendsThenRoutes(SimpleChannel):
+    """A transport whose delivery of ``go`` sends *named* messages naming its
+    room, then one routed."""
+
+    def __init__(self, channel_id: str, kit: RoomKit, *, named: int) -> None:
+        super().__init__(channel_id)
+        self._kit, self._named = kit, named
+        self.routed: InboundResult | None = None
+
+    async def deliver(
+        self, event: RoomEvent, binding: ChannelBinding, context: RoomContext
+    ) -> ChannelOutput:
+        if _body(event) == "go":
+            for _ in range(self._named):
+                await self._kit.process_inbound(_message("named"), room_id="r1")
+            self.routed = await self._kit.process_inbound(_message("routed"))
+        return ChannelOutput.empty()
 
 
 _OPENING_ROUTERS: dict[str, Callable[[], InboundRoomRouter]] = {
