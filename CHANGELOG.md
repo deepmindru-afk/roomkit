@@ -1675,20 +1675,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     record (a room that refuses events raises `RoomClosedError`), and
     `process_inbound()` returns `InboundResult(blocked=True,
     reason="reentry_loop_cap")` with no event, before its parse;
-  - a call into a room made within one of its turns while the turn runs,
-    by the turn or a task it spawned, is at least as deep as the turn's
-    response: `send_event()` and `process_inbound()` raise the event's
-    `chain_depth` to it, so an agent that injects at each turn stops at
-    `max_chain_depth` as its answers do. The floor holds where the owner
+  - a call made while a turn or a tool call runs (a realtime or a
+    conference call included), by it or a task it spawned, into whatever
+    room, is at least as deep as the turn's response or the call's:
+    `send_event()` and `process_inbound()` raise the event's `chain_depth`
+    to it, so an agent that injects at each turn stops at `max_chain_depth`
+    as its answers do. The floor holds where the owner
     runs the turn's code: a turn on the in-memory turn backend that calls
     the kit it holds, and a tool handler or a `TurnHost` verb on any
     backend. With a Redis turn backend the turn's own code runs on its
     executor, outside the owner's context, and reaches the room through
     its `TurnHost`, whose verbs carry the depth. A call into another room
-    is at the depth it names, and work a turn or a delivery began starts
-    fresh once that work is over: depth 0 and a budget of its own (a
-    result delivered later on the turn's behalf, a delegation's, names
-    the turn's depth itself);
+    has a budget of its own, and work a turn, a tool call or a delivery
+    began starts fresh once that work is over: depth 0 and a budget of its
+    own (a result delivered later on the turn's behalf, a delegation's,
+    names the turn's depth itself);
   - a message routed (no `room_id`) back into the room whose lock the
     caller holds, or in whose admission order it stands (an off-lock hook's
     body, a parse), raises the new `ReentrantCallError` before anything is
