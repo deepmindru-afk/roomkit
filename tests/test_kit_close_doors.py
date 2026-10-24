@@ -361,6 +361,44 @@ async def test_a_task_started_while_the_kit_drains_ends_with_its_close(
     assert [name for name in running if name.startswith("roomkit-")] == []
 
 
+async def test_a_background_run_started_while_the_kit_drains_ends_with_its_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An observer still running as the kit closes starts work the kit holds
+    (a hand-off greeting's turn): started while close() drains the
+    observers, it is cut with the kit's other background work, never left
+    running past close()."""
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms"))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms")
+    draining = asyncio.Event()
+    drain = kit.hook_engine.drain_observers
+
+    async def draining_observers() -> None:
+        draining.set()
+        await drain()
+
+    monkeypatch.setattr(kit.hook_engine, "drain_observers", draining_observers)
+    runs: list[asyncio.Task[None]] = []
+
+    async def greeting() -> None:
+        await asyncio.Event().wait()
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, execution=HookExecution.ASYNC, name="greet")
+    async def greet(event: RoomEvent, ctx: RoomContext) -> None:
+        await draining.wait()
+        runs.append(hold_task(kit, greeting()))
+
+    await kit.process_inbound(
+        InboundMessage(channel_id="sms", sender_id="u1", content=TextContent(body="hi")),
+        room_id="r1",
+    )
+    await kit.close()
+
+    assert [run.done() for run in runs] == [True]
+
+
 async def test_a_caller_waiting_for_its_injected_events_returns_when_the_close_cuts_them() -> None:
     """process_inbound committed its event and waits for the pass of what
     its hook injected when the kit closes and cuts that pass: the caller

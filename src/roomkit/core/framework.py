@@ -887,9 +887,10 @@ class RoomKit(
         # The ASYNC observers still running finish while the channels they may
         # use are open; each is bounded by its hook's timeout.
         await self._hook_engine.drain_observers()
-        # What the drains started meanwhile (a timer's hooks, an injected
-        # pass, a stream's reader) ends before the channels close, as what
-        # was there at the first pass did.
+        # What the drains started meanwhile (a background run, a timer's
+        # hooks, an injected pass, a stream's reader) ends before the
+        # channels close, as what was there at the first pass did.
+        await self._cancel_background_runs()
         await wait_for_held(self._decided_writes, until=writes_deadline)
         await self._cancel_pending_tasks()
         # Then close the channels. In sequence, but shielded from one another:
