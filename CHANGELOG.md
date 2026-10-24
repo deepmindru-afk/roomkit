@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A room a `BEFORE_BROADCAST` hook closed refuses the event as a closed room
+  does (RFC §10.1 step 9a, RMK-930). A hook that called `close_room()` let
+  the message it ran for be stored DELIVERED and its agent asked, an
+  instruction be delivered, and an agent's response or an injected event be
+  stored in the closed room. Once a hook ran under the room lock the room is
+  read again, and one that no longer accepts events refuses the event
+  `room_closed`, as step 6 does: nothing of it stored, what its hooks
+  returned dropped (their injected events included), and
+  `room_refused_event` emitted (`operation` `inbound`, or `reentry` for a
+  response and an injected event). `send_event()` raises `RoomClosedError`
+  alike.
+
+- An instruction's result reports the room's next index once its hooks ran
+  (RFC §10.1 step 9a, RMK-930). What a hook committed during them (a
+  `send_event()`) took the index the hooks were shown, and the instruction's
+  result still reported it: in a room of four events, both read 4. The room
+  read again after the hooks gives the event its next index, 5 here; a
+  stored event took its own at its commit already.
+
+- An edit delivered to a channel that does not edit is one text, the edit's
+  text form (RFC §6.6, RMK-930): `Correction: ` followed by the text form of
+  its new content. A new content that was not a text reached the channel
+  without the prefix, as a new message: a file to a channel that takes
+  files, a composite keeping a file, a rich text to a channel that takes rich
+  text; and one the transcoder could not carry read `[Correction]`. An edit
+  of a photo now reads `Correction: [Media: https://example.com/a.jpg]`.
+
+- `ON_EVENT_UPDATED` and `ON_EVENT_DELETED` read the room as the change's
+  commit left it, whatever pass committed it (RFC §10.3, RMK-930). For an
+  agent's response and a hook's injected change, the hook's `recent_events`
+  held the change as its own hooks were shown it, `PENDING` at its
+  provisional index and before their modify; it now ends with the committed
+  change, the target as rewritten in its place, as for an inbound change.
+  The delivery set of a response and of an injected event reads the same
+  history.
+
+- A coordinate in a location's text form is written with one decimal at
+  least, the shortest that reads back as the same number, never with an
+  exponent (RFC §6.6, RMK-930): a latitude of 0.00005 read `5e-05` and now
+  reads `0.00005`. Only the text of such tiny coordinates changes: 45 still
+  reads `45.0`, 45.5 `45.5`.
+
 - `update_event()` and `delete_event()` take the organization the caller
   acts for (RFC §17.2, §10.3, RMK-930). A tenant's host could rewrite or
   delete an event of another tenant's room, and the call applied that
