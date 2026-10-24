@@ -42,6 +42,7 @@ import asyncio
 import json
 
 from roomkit import (
+    AIChannel,
     AIResponseEvent,
     ChannelCategory,
     HookExecution,
@@ -53,9 +54,7 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.base import AIResponse, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import AIResponse, AIToolCall, MockAIProvider
 
 # --- A large tool catalogue: a few meaningful tools + noise to cross the
 # 20-tool auto-activation threshold. In a real agent these come from MCP. ---

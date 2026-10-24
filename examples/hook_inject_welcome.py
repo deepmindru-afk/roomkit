@@ -33,7 +33,7 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.models.event import SystemContent
+from roomkit.models import SystemContent
 
 
 def _welcome(room_id: str, channel_id: str) -> InjectedEvent:

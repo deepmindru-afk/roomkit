@@ -28,6 +28,8 @@ from roomkit import (
     Agent,
     ChannelCategory,
     InboundMessage,
+    RoomContext,
+    RoomEvent,
     RoomKit,
     RunSkillScriptTool,
     TextContent,
@@ -40,9 +42,7 @@ from roomkit.memory import (
     SlidingWindowMemory,
     current_turn_footprint,
 )
-from roomkit.models.context import RoomContext
-from roomkit.models.event import RoomEvent
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import MockAIProvider
 from roomkit.skills import ScriptExecutor, ScriptResult, Skill, SkillMetadata, SkillRegistry
 
 logger = setup_logging("agent_skills_in_memory")

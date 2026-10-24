@@ -24,7 +24,7 @@ import asyncio
 
 from shared import require_env
 
-from roomkit.voice.tts.grok import GrokTTSConfig, GrokTTSProvider
+from roomkit.voice.tts import GrokTTSConfig, GrokTTSProvider
 
 
 async def main() -> None:

@@ -24,6 +24,7 @@ import logging
 import time
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     HookExecution,
     HookResult,
@@ -36,9 +37,7 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import AIResponse, AITool, AIToolCall, MockAIProvider
 
 logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
 logger = logging.getLogger("example")

@@ -36,19 +36,19 @@ from __future__ import annotations
 import asyncio
 import os
 
-from roomkit.providers.ai.base import ModelInfo, ModelPricing
-from roomkit.providers.anthropic.ai import AnthropicAIProvider
+from roomkit.providers.ai import ModelInfo, ModelPricing
+from roomkit.providers.anthropic import AnthropicAIProvider
 from roomkit.providers.cerebras import CerebrasAIProvider
-from roomkit.providers.deepseek.ai import DeepSeekAIProvider
-from roomkit.providers.gemini.ai import GeminiAIProvider
-from roomkit.providers.meta.ai import MetaAIProvider
-from roomkit.providers.mistral.ai import MistralAIProvider
-from roomkit.providers.ollama.ai import OllamaAIProvider
-from roomkit.providers.openai.ai import OpenAIAIProvider
-from roomkit.providers.openrouter.ai import OpenRouterAIProvider
-from roomkit.providers.polargrid.ai import PolarGridAIProvider
-from roomkit.providers.qwen.ai import QwenAIProvider
-from roomkit.providers.xai.ai import XAIAIProvider
+from roomkit.providers.deepseek import DeepSeekAIProvider
+from roomkit.providers.gemini import GeminiAIProvider
+from roomkit.providers.meta import MetaAIProvider
+from roomkit.providers.mistral import MistralAIProvider
+from roomkit.providers.ollama import OllamaAIProvider
+from roomkit.providers.openai import OpenAIAIProvider
+from roomkit.providers.openrouter import OpenRouterAIProvider
+from roomkit.providers.polargrid import PolarGridAIProvider
+from roomkit.providers.qwen import QwenAIProvider
+from roomkit.providers.xai import XAIAIProvider
 
 CURATED_PROVIDERS = {
     "Cerebras": CerebrasAIProvider,
@@ -133,7 +133,7 @@ async def show_live_openai() -> None:
         print("\n(set OPENAI_API_KEY to see a live list_models() call)")
         return
 
-    from roomkit.providers.openai.config import OpenAIConfig
+    from roomkit.providers.openai import OpenAIConfig
 
     provider = OpenAIAIProvider(OpenAIConfig(api_key=api_key, model="gpt-5.6-sol"))
     try:
@@ -152,7 +152,7 @@ async def show_live_openrouter() -> None:
         print("\n(set OPENROUTER_API_KEY to list every model OpenRouter exposes)")
         return
 
-    from roomkit.providers.openrouter.config import OpenRouterConfig
+    from roomkit.providers.openrouter import OpenRouterConfig
 
     provider = OpenRouterAIProvider(OpenRouterConfig(api_key=api_key, model="openai/gpt-5.6-sol"))
     try:

@@ -54,18 +54,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import console_enabled, setup_logging
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     CLIChannel,
+    InboundMessage,
+    Participant,
+    RoomEvent,
     RoomKit,
     SMSChannel,
+    TextContent,
     Visibility,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.models.delivery import InboundMessage
-from roomkit.models.event import RoomEvent, TextContent
-from roomkit.models.participant import Participant
 from roomkit.providers.ai import MockAIProvider
-from roomkit.providers.sms.mock import MockSMSProvider
+from roomkit.providers.sms import MockSMSProvider
 
 COLLEAGUE_NUMBER = "+15551234567"
 COLLEAGUE_NAME = "Marie"

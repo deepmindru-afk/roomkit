@@ -26,15 +26,13 @@ from __future__ import annotations
 import asyncio
 import os
 
-from roomkit.providers.deepgram.realtime import DeepgramAgentProvider
-from roomkit.providers.elevenlabs.config import ElevenLabsRealtimeConfig
-from roomkit.providers.elevenlabs.realtime import ElevenLabsRealtimeProvider
-from roomkit.providers.gemini.realtime import GeminiLiveProvider
-from roomkit.providers.openai.live import OpenAILiveProvider
-from roomkit.providers.openai.realtime import OpenAIRealtimeProvider
-from roomkit.providers.personaplex.realtime import PersonaPlexRealtimeProvider
-from roomkit.providers.xai.realtime import XAIRealtimeProvider
-from roomkit.voice.realtime.provider import VoiceInfo
+from roomkit.providers.deepgram import DeepgramAgentProvider
+from roomkit.providers.elevenlabs import ElevenLabsRealtimeConfig, ElevenLabsRealtimeProvider
+from roomkit.providers.gemini import GeminiLiveProvider
+from roomkit.providers.openai import OpenAILiveProvider, OpenAIRealtimeProvider
+from roomkit.providers.personaplex import PersonaPlexRealtimeProvider
+from roomkit.providers.xai import XAIRealtimeProvider
+from roomkit.voice.realtime import VoiceInfo
 
 CURATED_PROVIDERS = {
     "OpenAI Realtime": OpenAIRealtimeProvider,

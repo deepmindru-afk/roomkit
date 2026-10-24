@@ -34,11 +34,12 @@ import torch
 from shared import setup_logging
 
 from roomkit import RoomKit, TTSContextConfig, VoiceChannel
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.base import VoiceCapability
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.vui import SAMPLE_RATE, VuiTTSConfig, VuiTTSProvider, VuiVoice
+from roomkit.voice import AudioFrame, VoiceCapability
+from roomkit.voice.backends import MockVoiceBackend
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import VuiTTSConfig, VuiTTSProvider, VuiVoice
+
+SAMPLE_RATE = 24000  # Vui speaks 24 kHz
 
 logger = setup_logging("voice_vui_context")
 logging.getLogger("roomkit.voice.tts.vui").setLevel(logging.DEBUG)

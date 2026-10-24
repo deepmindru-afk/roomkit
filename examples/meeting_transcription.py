@@ -55,15 +55,21 @@ import asyncio
 import os
 import tempfile
 
-from shared import pcm_from_wav_url, require_env
+from shared import pcm_from_wav_url, require_env, wav_bytes
 
-from roomkit import ChannelCategory, InboundMessage, InboundResult, RoomEvent, RoomKit, TextContent
-from roomkit.channels.ai import AIChannel
-from roomkit.channels.websocket import WebSocketChannel
+from roomkit import (
+    AIChannel,
+    ChannelCategory,
+    InboundMessage,
+    InboundResult,
+    RoomEvent,
+    RoomKit,
+    TextContent,
+    WebSocketChannel,
+)
 from roomkit.providers.gemini import GeminiAIProvider, GeminiConfig
-from roomkit.voice.stt.gemini import GeminiSTTConfig, GeminiSTTProvider, Transcript
-from roomkit.voice.tts.audio_utils import wrap_wav
-from roomkit.voice.tts.gemini import GeminiTTSConfig, GeminiTTSProvider
+from roomkit.voice.stt import GeminiSTTConfig, GeminiSTTProvider, GeminiTranscript
+from roomkit.voice.tts import GeminiTTSConfig, GeminiTTSProvider
 
 ROOM_ID = "meeting-room"
 STT_MODEL = os.environ.get("GEMINI_STT_MODEL", "gemini-3.8-flash")
@@ -93,12 +99,12 @@ async def synthesize_meeting(api_key: str) -> Path:
     await tts.close()
 
     path = Path(tempfile.mkdtemp(prefix="roomkit_meeting_")) / "meeting.wav"
-    path.write_bytes(wrap_wav(pcm, 24000))
+    path.write_bytes(wav_bytes(pcm, 24000))
     print(f"  wrote {path} ({(len(pcm) / 2 / 24000):.1f}s)\n")
     return path
 
 
-def print_transcript(transcript: Transcript) -> None:
+def print_transcript(transcript: GeminiTranscript) -> None:
     # The dedicated recogniser reports no language unless it was given one.
     language = transcript.language or "language not reported"
     print(f"=== transcript ({language}, {len(transcript.segments)} turns) ===")

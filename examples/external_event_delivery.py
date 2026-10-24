@@ -16,7 +16,7 @@ from roomkit import (
     RoomKit,
     WebSocketChannel,
 )
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import MockAIProvider
 
 logger = logging.getLogger(__name__)
 

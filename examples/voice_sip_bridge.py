@@ -50,8 +50,8 @@ from roomkit import (
     RoomKit,
     VoiceChannel,
 )
-from roomkit.voice.backends.sip import SIPVoiceBackend
-from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
+from roomkit.voice.backends import SIPVoiceBackend
+from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider
 
 # ---------------------------------------------------------------------------
 # Configuration

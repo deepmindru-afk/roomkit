@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 
 from roomkit import InboundMessage, RoomEvent, RoomKit, TextContent, WebSocketChannel
-from roomkit.models.event import LocationContent
+from roomkit.models import LocationContent
 
 
 async def main() -> None:

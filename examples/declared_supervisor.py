@@ -35,15 +35,14 @@ from roomkit import (
     AgentIdentity,
     ChannelDeclaration,
     InboundMessage,
+    InMemoryStore,
     RoomKit,
     SMSChannel,
     Supervisor,
     TextContent,
 )
-from roomkit.providers.ai.base import AIResponse, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.sms.mock import MockSMSProvider
-from roomkit.store.memory import InMemoryStore
+from roomkit.providers.ai import AIResponse, AIToolCall, MockAIProvider
+from roomkit.providers.sms import MockSMSProvider
 from roomkit.turns import InMemoryTurnBackend, TurnExecutor
 
 logger = setup_logging("example.declared_supervisor")

@@ -32,6 +32,7 @@ import os
 from shared import require_env
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     InboundMessage,
     RoomEvent,
@@ -39,10 +40,13 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
-from roomkit.video.vision.openai import OpenAIVisionConfig, OpenAIVisionProvider
-from roomkit.video.vision.webcam_tool import DescribeWebcamTool, ListWebcamsTool
+from roomkit.video.vision import (
+    DescribeWebcamTool,
+    ListWebcamsTool,
+    OpenAIVisionConfig,
+    OpenAIVisionProvider,
+)
 
 SYSTEM_PROMPT = """\
 You are a helpful assistant with access to the user's webcam.

@@ -37,17 +37,19 @@ import sys
 
 from shared import run_until_stopped, setup_logging
 
-from roomkit import HookExecution, HookTrigger, RoomKit
-from roomkit.channels.video import VideoChannel
-from roomkit.video.backends.local import LocalVideoBackend
-from roomkit.video.events import VideoDetectionEvent
-from roomkit.video.pipeline.config import VideoPipelineConfig
-from roomkit.video.pipeline.filter.mediapipe_face_touch import (
+from roomkit import (
     FaceTouchConfig,
     FaceTouchFilter,
     FaceTouchSensitivity,
     FaceZone,
+    HookExecution,
+    HookTrigger,
+    RoomKit,
+    VideoChannel,
+    VideoDetectionEvent,
 )
+from roomkit.video.backends import LocalVideoBackend
+from roomkit.video.pipeline import VideoPipelineConfig
 
 logger = setup_logging("face_touch_guard")
 

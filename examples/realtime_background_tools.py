@@ -41,8 +41,8 @@ from typing import Any
 from shared import IncomingScenarioBackend, require_env, setup_logging
 
 from roomkit import RealtimeVoiceChannel, RoomKit
-from roomkit.providers.gemini.realtime import GeminiLiveProvider
-from roomkit.voice.base import VoiceSession
+from roomkit.providers.gemini import GeminiLiveProvider
+from roomkit.voice import VoiceSession
 
 logger = setup_logging("roomkit.examples.realtime_background_tools")
 

@@ -47,13 +47,16 @@ from shared import require_local_models, run_until_stopped, setup_logging
 
 from roomkit import Agent, ChannelCategory, HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.providers.llamacpp import LlamaCppAIProvider, LlamaCppConfig
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.pipeline import AudioPipelineConfig
-from roomkit.voice.pipeline.denoiser.rnnoise import RNNoiseDenoiserProvider
+from roomkit.voice.backends import LocalAudioBackend
+from roomkit.voice.pipeline import (
+    AudioPipelineConfig,
+    RNNoiseDenoiserProvider,
+    SherpaOnnxVADConfig,
+    SherpaOnnxVADProvider,
+)
 from roomkit.voice.pipeline.turn import SmartTurnConfig, SmartTurnDetector
-from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
-from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
-from roomkit.voice.tts.sherpa_onnx import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
+from roomkit.voice.stt import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
+from roomkit.voice.tts import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
 
 logger = setup_logging("voice_local_offline")
 

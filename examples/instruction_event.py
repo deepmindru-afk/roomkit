@@ -23,11 +23,9 @@ from __future__ import annotations
 
 import asyncio
 
-from roomkit import AIChannel, InboundMessage, RoomKit
+from roomkit import AIChannel, ChannelCategory, EventType, InboundMessage, RoomKit, TextContent
 from roomkit.channels import WebSocketChannel
-from roomkit.models.enums import ChannelCategory, EventType
-from roomkit.models.event import TextContent
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import MockAIProvider
 
 ROOM = "support"
 

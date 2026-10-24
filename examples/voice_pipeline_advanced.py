@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     HookExecution,
     HookResult,
@@ -29,11 +30,9 @@ from roomkit import (
     TextContent,
     VoiceChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.base import VoiceCapability
+from roomkit.providers.ai import MockAIProvider
+from roomkit.voice import AudioFrame, VoiceCapability
+from roomkit.voice.backends import MockVoiceBackend
 from roomkit.voice.pipeline import (
     AudioPipelineConfig,
     MockAECProvider,
@@ -48,8 +47,8 @@ from roomkit.voice.pipeline import (
     VADEvent,
     VADEventType,
 )
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 setup_logging("voice_pipeline_advanced")
 

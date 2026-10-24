@@ -28,6 +28,7 @@ import os
 from shared import require_env
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     InboundMessage,
     RoomEvent,
@@ -35,7 +36,6 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
 from roomkit.providers.azure import AzureAIConfig, AzureAIProvider
 
 

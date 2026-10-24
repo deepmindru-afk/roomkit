@@ -51,6 +51,7 @@ from roomkit import (
     Discussion,
     DispatchDecisionEvent,
     DispatchPolicy,
+    EventFilter,
     EventStatus,
     HookExecution,
     HookTrigger,
@@ -65,11 +66,8 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.models.store_filter import EventFilter
-from roomkit.providers.ai.base import AIResponse
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.anthropic.ai import AnthropicAIProvider
-from roomkit.providers.anthropic.config import AnthropicConfig
+from roomkit.providers.ai import AIResponse, MockAIProvider
+from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 
 logger = setup_logging("example.discussion_dispatch")
 # The room's own records of each silent turn, and each classifier request,

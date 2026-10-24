@@ -79,8 +79,8 @@ from shared import run_until_stopped, setup_console, setup_logging
 logger = setup_logging("voice_webtransport")
 
 from roomkit import RoomKit, VoiceChannel
-from roomkit.voice.backends.webtransport import WebTransportBackend
-from roomkit.voice.base import AudioChunk
+from roomkit.voice import AudioChunk
+from roomkit.voice.backends import WebTransportBackend
 
 # ---------------------------------------------------------------------------
 # Configuration

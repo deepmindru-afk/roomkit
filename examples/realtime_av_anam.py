@@ -74,12 +74,12 @@ from roomkit import RealtimeAudioVideoChannel, RoomKit
 from roomkit.providers.anam import AnamConfig, AnamRealtimeProvider
 from roomkit.video import VideoFrame, VideoSession
 from roomkit.video.recorder import (
+    PyAVVideoRecorder,
     VideoRecordingConfig,
     VideoRecordingHandle,
     VideoRecordingResult,
 )
-from roomkit.video.recorder.pyav import PyAVVideoRecorder
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.voice.backends import LocalAudioBackend
 
 logger = setup_logging("realtime_av_anam")
 

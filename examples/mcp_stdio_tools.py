@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     InboundMessage,
     RoomEvent,
@@ -41,7 +42,6 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
 from roomkit.providers.llamacpp import LlamaCppAIProvider, LlamaCppConfig
 from roomkit.tools import MCPToolProvider
 

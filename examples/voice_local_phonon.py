@@ -102,17 +102,22 @@ from shared import (
     setup_logging,
 )
 
-from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.base import AIProvider
+from roomkit import (
+    AIChannel,
+    ChannelCategory,
+    HookExecution,
+    HookResult,
+    HookTrigger,
+    RoomKit,
+    VoiceChannel,
+)
+from roomkit.providers.ai import AIProvider
 from roomkit.providers.llamacpp import LlamaCppAIProvider, LlamaCppConfig
 from roomkit.providers.ollama import OllamaAIProvider, OllamaConfig
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.pipeline import AudioPipelineConfig
-from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
-from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
-from roomkit.voice.tts.filters import StripEmoji
-from roomkit.voice.tts.phonon import SAMPLE_RATE, PhononTTSConfig, PhononTTSProvider
+from roomkit.voice.backends import LocalAudioBackend
+from roomkit.voice.pipeline import AudioPipelineConfig, SherpaOnnxVADConfig, SherpaOnnxVADProvider
+from roomkit.voice.stt import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
+from roomkit.voice.tts import PhononTTSConfig, PhononTTSProvider, StripEmoji
 
 logger = setup_logging("voice_local_phonon")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -182,7 +187,7 @@ async def main() -> None:
     aec = build_aec(MIC_RATE, BLOCK_MS)
     backend = LocalAudioBackend(
         input_sample_rate=MIC_RATE,
-        output_sample_rate=SAMPLE_RATE,  # Phonon speaks 24 kHz
+        output_sample_rate=24000,  # Phonon speaks 24 kHz
         channels=1,
         block_duration_ms=BLOCK_MS,
         mute_mic_during_playback=aec is None,

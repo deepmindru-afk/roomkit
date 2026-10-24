@@ -28,6 +28,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from roomkit import (
+    ConferenceChannel,
     ConferenceRecordingConfig,
     ConferenceRecordingStarted,
     ConferenceRecordingStopped,
@@ -37,9 +38,8 @@ from roomkit import (
     RoomContext,
     RoomKit,
 )
-from roomkit.channels.conference import ConferenceChannel
-from roomkit.recorder.mock import MockMediaRecorder
-from roomkit.voice.audio_frame import AudioFrame
+from roomkit.recorder import MockMediaRecorder
+from roomkit.voice import AudioFrame
 
 ROOM = "board-meeting"
 STORAGE = Path(tempfile.gettempdir()) / "roomkit-conference-recordings"

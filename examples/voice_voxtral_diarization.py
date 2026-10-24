@@ -47,9 +47,9 @@ from typing import Any
 from shared import require_env, run_until_stopped, setup_logging, voice_language
 
 from roomkit import HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.voice.backends import LocalAudioBackend
 from roomkit.voice.pipeline import AudioPipelineConfig
-from roomkit.voice.stt.voxtral import VoxtralSTTConfig, VoxtralSTTProvider
+from roomkit.voice.stt import VoxtralSTTConfig, VoxtralSTTProvider
 
 logger = setup_logging("roomkit.examples.voice_voxtral_diarization")
 

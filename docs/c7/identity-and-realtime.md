@@ -21,7 +21,7 @@ Inbound message arrives with sender_id
 
 ```python
 from roomkit import RoomKit, HookTrigger
-from roomkit.models.identity import IdentityHookResult, Identity
+from roomkit.models import Identity, IdentityHookResult
 
 kit = RoomKit()
 
@@ -48,9 +48,8 @@ async def handle_unknown(event, ctx):
 ### Custom Identity Resolver
 
 ```python
-from roomkit.identity.base import IdentityResolver
-from roomkit.models.identity import IdentityResult, Identity
-from roomkit.models.enums import IdentificationStatus
+from roomkit.identity import IdentityResolver
+from roomkit.models import IdentificationStatus, Identity, IdentityResult
 
 class DatabaseIdentityResolver(IdentityResolver):
     async def resolve(self, message: InboundMessage, context: RoomContext) -> IdentityResult:
@@ -144,7 +143,7 @@ await kit.publish_reaction("room-1", "alice", target_event_id="evt-123", emoji="
 await kit.publish_read_receipt("room-1", "alice", event_id="evt-123")
 
 # Tool call events (AIChannel publishes these automatically)
-from roomkit.realtime.base import EphemeralEventType
+from roomkit.realtime import EphemeralEventType
 
 await kit.publish_tool_call("room-1", "ai-agent", [
     {"id": "tc1", "name": "search", "arguments": {"q": "test"}}
@@ -223,7 +222,7 @@ await kit.mark_all_read("room-1", "ws-user")
 The default `InMemoryRealtime` works for single-process deployments. For distributed systems, implement `RealtimeBackend`:
 
 ```python
-from roomkit.realtime.base import RealtimeBackend
+from roomkit.realtime import RealtimeBackend
 
 class RedisRealtimeBackend(RealtimeBackend):
     # Implement publish, subscribe, unsubscribe using Redis Pub/Sub

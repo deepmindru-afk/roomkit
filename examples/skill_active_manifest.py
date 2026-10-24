@@ -27,15 +27,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     InboundMessage,
     RoomKit,
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.base import AIContext, AIResponse, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import AIContext, AIResponse, AIToolCall, MockAIProvider
 from roomkit.skills import SkillRegistry
 
 SKILLS_DIR = Path(__file__).parent / "skills"

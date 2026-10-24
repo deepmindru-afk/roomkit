@@ -46,10 +46,9 @@ from collections.abc import AsyncIterator
 
 from shared import require_env, setup_logging
 
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.base import AudioChunk, VoiceSession
-from roomkit.voice.stt.meta import MetaSTTConfig, MetaSTTProvider
+from roomkit.voice import AudioChunk, AudioFrame, VoiceSession
+from roomkit.voice.backends import LocalAudioBackend
+from roomkit.voice.stt import MetaSTTConfig, MetaSTTProvider
 
 logger = setup_logging("roomkit.examples.stt_meta_mic")
 

@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     HookExecution,
     HookResult,
@@ -35,12 +36,10 @@ from roomkit import (
     RoomKit,
     TextContent,
     ToolCallEvent,
+    ToolPolicy,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.base import AIResponse, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.tools.policy import ToolPolicy
+from roomkit.providers.ai import AIResponse, AIToolCall, MockAIProvider
 
 logger = setup_logging("examples.tool_call_audit")
 

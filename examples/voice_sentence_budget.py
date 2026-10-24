@@ -26,16 +26,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
-from roomkit import RoomKit, VoiceChannel
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.base import AIContext, AIProvider, AIResponse
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.base import AudioChunk
-from roomkit.voice.pipeline import AudioPipelineConfig, MockVADProvider
-from roomkit.voice.pipeline.vad.base import VADEvent, VADEventType
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.base import TTSProvider
+from roomkit import AIChannel, RoomKit, VoiceChannel
+from roomkit.providers.ai import AIContext, AIProvider, AIResponse
+from roomkit.voice import AudioChunk, AudioFrame
+from roomkit.voice.backends import MockVoiceBackend
+from roomkit.voice.pipeline import AudioPipelineConfig, MockVADProvider, VADEvent, VADEventType
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import TTSProvider
 
 logger = setup_logging("example.voice_sentence_budget")
 

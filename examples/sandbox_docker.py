@@ -30,8 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from shared import log_tool_call, require_env
 
-from roomkit import ChannelCategory, CLIChannel, HookTrigger, RoomKit
-from roomkit.channels.ai import AIChannel
+from roomkit import AIChannel, ChannelCategory, CLIChannel, HookTrigger, RoomKit
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 
 

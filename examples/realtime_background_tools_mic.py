@@ -53,9 +53,9 @@ from typing import Any
 from shared import build_aec, build_pipeline, require_env, run_until_stopped, setup_logging
 
 from roomkit import RealtimeVoiceChannel, RoomKit
-from roomkit.providers.gemini.realtime import GeminiLiveProvider
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.base import VoiceSession
+from roomkit.providers.gemini import GeminiLiveProvider
+from roomkit.voice import VoiceSession
+from roomkit.voice.backends import LocalAudioBackend
 
 logger = setup_logging("roomkit.examples.realtime_background_tools_mic")
 

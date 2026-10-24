@@ -41,11 +41,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import require_env, setup_logging
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     Classifier,
     ClassifierSpeakPolicy,
     HookExecution,
     HookTrigger,
+    InboundMessage,
     JevClassifier,
     LLMThinker,
     MockClassifier,
@@ -58,12 +60,9 @@ from roomkit import (
     Thought,
     ThoughtEvent,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.models.delivery import InboundMessage
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.anthropic.ai import AnthropicAIProvider
-from roomkit.providers.anthropic.config import AnthropicConfig
-from roomkit.providers.sms.mock import MockSMSProvider
+from roomkit.providers.ai import MockAIProvider
+from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
+from roomkit.providers.sms import MockSMSProvider
 
 logger = setup_logging("example.thinking_while_listening")
 

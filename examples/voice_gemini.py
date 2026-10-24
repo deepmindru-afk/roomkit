@@ -52,14 +52,10 @@ from shared import require_env, run_until_stopped, setup_logging, voice_language
 
 from roomkit import AIChannel, ChannelCategory, HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.providers.gemini import GeminiAIProvider, GeminiConfig
-from roomkit.voice.backends.base import VoiceBackend
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.stt.gemini_transcribe import (
-    REQUIRED_SAMPLE_RATE,
-    GeminiTranscribeConfig,
-    GeminiTranscribeProvider,
-)
-from roomkit.voice.tts.gemini import OUTPUT_SAMPLE_RATE, GeminiTTSConfig, GeminiTTSProvider
+from roomkit.voice import VoiceBackend
+from roomkit.voice.backends import LocalAudioBackend
+from roomkit.voice.stt import GeminiTranscribeConfig, GeminiTranscribeProvider
+from roomkit.voice.tts import GeminiTTSConfig, GeminiTTSProvider
 
 logger = setup_logging("roomkit.examples.voice_gemini")
 
@@ -121,8 +117,8 @@ async def main() -> None:
     backend = LocalAudioBackend(
         # Capture at the rate the recogniser documents, play at the rate the
         # TTS answers: no resampling anywhere.
-        input_sample_rate=REQUIRED_SAMPLE_RATE,
-        output_sample_rate=OUTPUT_SAMPLE_RATE,
+        input_sample_rate=16000,  # Gemini Transcribe takes 16 kHz
+        output_sample_rate=24000,  # Gemini TTS speaks 24 kHz
     )
     voice, ai = build_channels(env["GEMINI_API_KEY"], backend)
     kit.register_channel(voice)

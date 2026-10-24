@@ -60,16 +60,12 @@ from roomkit import (
     HookTrigger,
     RoomKit,
 )
-from roomkit.recorder.base import (
-    MediaRecordingConfig,
-    RoomRecorderBinding,
-)
-from roomkit.recorder.pyav import PyAVMediaRecorder
-from roomkit.video.backends.sip import SIPVideoBackend
-from roomkit.voice.base import VoiceSession
+from roomkit.recorder import MediaRecordingConfig, PyAVMediaRecorder, RoomRecorderBinding
+from roomkit.video.backends import SIPVideoBackend
+from roomkit.voice import VoiceSession
 from roomkit.voice.pipeline import AudioPipelineConfig, EnergyVADProvider
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 logger = setup_logging("sip_video_call")
 

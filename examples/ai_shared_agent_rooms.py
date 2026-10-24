@@ -30,9 +30,8 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.models.steering import Cancel
-from roomkit.providers.ai.base import AIContext, AIResponse
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.models import Cancel
+from roomkit.providers.ai import AIContext, AIResponse, MockAIProvider
 
 logger = setup_logging("ai_shared_agent_rooms")
 

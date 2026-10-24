@@ -32,15 +32,12 @@ from collections.abc import AsyncIterator
 
 from shared import pcm_from_wav_url, require_env, setup_logging
 
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.base import AudioChunk
+from roomkit.voice import AudioChunk, AudioFrame
 from roomkit.voice.pipeline import LinearResamplerProvider
-from roomkit.voice.stt.gemini_transcribe import (
-    REQUIRED_SAMPLE_RATE,
-    GeminiTranscribeConfig,
-    GeminiTranscribeProvider,
-)
-from roomkit.voice.tts.gemini import GeminiTTSConfig, GeminiTTSProvider
+from roomkit.voice.stt import GeminiTranscribeConfig, GeminiTranscribeProvider
+from roomkit.voice.tts import GeminiTTSConfig, GeminiTTSProvider
+
+REQUIRED_SAMPLE_RATE = 16000  # the rate Gemini Transcribe takes
 
 logger = setup_logging("roomkit.examples.stt_gemini_transcribe_live")
 

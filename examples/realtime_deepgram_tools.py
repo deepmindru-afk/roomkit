@@ -57,7 +57,7 @@ from shared import (
 
 from roomkit import RealtimeVoiceChannel, RoomKit
 from roomkit.providers.deepgram import DeepgramAgentConfig, DeepgramAgentProvider
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.voice.backends import LocalAudioBackend
 
 logger = setup_logging("realtime_deepgram_tools")
 

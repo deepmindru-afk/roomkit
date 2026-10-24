@@ -30,7 +30,9 @@ import asyncio
 from shared import require_env, run_until_stopped, setup_logging
 
 from roomkit import (
+    ChannelType,
     DiscordChannel,
+    EventSource,
     HookExecution,
     HookResult,
     HookTrigger,
@@ -39,10 +41,9 @@ from roomkit import (
     RoomKit,
     TextContent,
 )
-from roomkit.models.enums import ChannelType
-from roomkit.models.event import EventSource, MediaContent
+from roomkit.models import MediaContent
 from roomkit.providers.discord import DiscordBotProvider, DiscordConfig
-from roomkit.sources.discord import DiscordGatewaySource
+from roomkit.sources import DiscordGatewaySource
 
 logger = setup_logging("discord_bot")
 

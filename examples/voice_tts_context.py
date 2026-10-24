@@ -22,11 +22,10 @@ from typing import Any
 from shared import setup_logging
 
 from roomkit import RoomKit, TTSContext, TTSContextConfig, TTSContextLevel, VoiceChannel
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.base import AudioChunk
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.base import TTSProvider
+from roomkit.voice import AudioChunk, AudioFrame
+from roomkit.voice.backends import MockVoiceBackend
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import TTSProvider
 
 logger = setup_logging("voice_tts_context")
 

@@ -113,23 +113,31 @@ from shared import (
     voice_language,
 )
 
-from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.channels.ai import AIChannel
+from roomkit import (
+    AIChannel,
+    ChannelCategory,
+    HookExecution,
+    HookResult,
+    HookTrigger,
+    RoomKit,
+    VoiceChannel,
+)
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
+from roomkit.voice import InterruptionConfig, InterruptionStrategy
+from roomkit.voice.backends import LocalAudioBackend
 from roomkit.voice.pipeline import (
     AudioPipelineConfig,
     DenoiserProvider,
+    EnergyVADProvider,
     PipelineDebugTaps,
     RecordingChannelMode,
     RecordingConfig,
+    SherpaOnnxVADConfig,
+    SherpaOnnxVADProvider,
     WavFileRecorder,
 )
-from roomkit.voice.pipeline.vad.energy import EnergyVADProvider
-from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
-from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
-from roomkit.voice.tts.elevenlabs import ElevenLabsConfig, ElevenLabsTTSProvider
+from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider
+from roomkit.voice.tts import ElevenLabsConfig, ElevenLabsTTSProvider
 
 logger = setup_logging("voice_cloud")
 
@@ -185,7 +193,7 @@ async def main() -> None:
     aec = None
     aec_mode = os.environ.get("AEC", "webrtc").lower()
     if aec_mode in ("1", "webrtc"):
-        from roomkit.voice.pipeline.aec.webrtc import WebRTCAECProvider
+        from roomkit.voice.pipeline.aec import WebRTCAECProvider
 
         # AEC3 carries its own noise suppressor and gain control, both off by
         # default. On open speakers the echo AEC3 leaves behind can clear the
@@ -197,7 +205,7 @@ async def main() -> None:
         aec = WebRTCAECProvider(sample_rate=sample_rate, enable_ns=aec_ns, enable_agc=aec_agc)
         logger.info("AEC enabled (WebRTC AEC3, ns=%s, agc=%s)", aec_ns, aec_agc)
     elif aec_mode == "speex":
-        from roomkit.voice.pipeline.aec.speex import SpeexAECProvider
+        from roomkit.voice.pipeline import SpeexAECProvider
 
         aec = SpeexAECProvider(
             frame_size=frame_size,

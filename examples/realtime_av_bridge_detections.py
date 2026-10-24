@@ -24,14 +24,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from shared import setup_logging
 
-from roomkit.video.events import VideoDetectionEvent
-from roomkit.video.pipeline.config import VideoPipelineConfig
-from roomkit.video.pipeline.filter.mock_face_touch import MockFaceTouchFilter
-from roomkit.video.video_frame import VideoFrame
-from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.base import VoiceSession
-from roomkit.voice.realtime.bridge import RealtimeAVBridge
-from roomkit.voice.realtime.mock import MockRealtimeAudioVideoProvider
+from roomkit.video import VideoDetectionEvent, VideoFrame
+from roomkit.video.pipeline import VideoPipelineConfig
+from roomkit.video.pipeline.filter import MockFaceTouchFilter
+from roomkit.voice import VoiceSession
+from roomkit.voice.backends import MockVoiceBackend
+from roomkit.voice.realtime import MockRealtimeAudioVideoProvider, RealtimeAVBridge
 
 logger = setup_logging("realtime_av_bridge_detections")
 

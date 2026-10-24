@@ -35,8 +35,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
 from roomkit import ChannelCategory, HookExecution, HookTrigger, RoomKit, VoiceChannel
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends.mock import MockVoiceBackend
+from roomkit.voice import AudioFrame
+from roomkit.voice.backends import MockVoiceBackend
 from roomkit.voice.pipeline import (
     AudioPipelineConfig,
     DTMFEvent,
@@ -47,8 +47,8 @@ from roomkit.voice.pipeline import (
     RecordingEncryption,
     WavFileRecorder,
 )
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 logger = setup_logging("voice_sensitive_data")
 

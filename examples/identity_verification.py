@@ -29,6 +29,7 @@ from typing import Any
 from shared import setup_logging
 
 from roomkit import (
+    AIChannel,
     HookExecution,
     HookResult,
     HookTrigger,
@@ -38,11 +39,10 @@ from roomkit import (
     VerificationPolicy,
 )
 from roomkit.channels import SMSChannel, WebSocketChannel
-from roomkit.channels.ai import AIChannel
-from roomkit.identity.mock import MockIdentityResolver
-from roomkit.models.identity import Identity
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.sms.mock import MockSMSProvider
+from roomkit.identity import MockIdentityResolver
+from roomkit.models import Identity
+from roomkit.providers.ai import MockAIProvider
+from roomkit.providers.sms import MockSMSProvider
 
 logger = setup_logging("identity_verification")
 

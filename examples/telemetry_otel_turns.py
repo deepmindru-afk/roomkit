@@ -37,12 +37,12 @@ from roomkit import (
     InboundMessage,
     RedisTurnBackend,
     RoomKit,
+    SQLiteStore,
     TextContent,
     TurnExecutor,
     WebSocketChannel,
 )
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.store.sqlite import SQLiteStore
+from roomkit.providers.ai import MockAIProvider
 
 logger = setup_logging("telemetry_otel_turns")
 
@@ -54,7 +54,7 @@ def otel(exporter: Any, service: str) -> Any:
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
-    from roomkit.telemetry.opentelemetry import OpenTelemetryProvider
+    from roomkit.telemetry import OpenTelemetryProvider
 
     tracer_provider = TracerProvider()
     tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))

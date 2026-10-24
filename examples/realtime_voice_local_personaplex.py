@@ -48,8 +48,8 @@ from shared import (
 )
 
 from roomkit import RealtimeVoiceChannel, RoomKit
-from roomkit.providers.personaplex.realtime import PersonaPlexRealtimeProvider
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.providers.personaplex import PersonaPlexRealtimeProvider
+from roomkit.voice.backends import LocalAudioBackend
 
 logger = setup_logging("realtime_voice_local_personaplex")
 

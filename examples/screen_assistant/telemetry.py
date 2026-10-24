@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from roomkit.telemetry.base import Attr, SpanKind
-from roomkit.telemetry.console import ConsoleTelemetryProvider
+from roomkit.telemetry import Attr, ConsoleTelemetryProvider, SpanKind
 
 
 class CostTrackingTelemetry(ConsoleTelemetryProvider):

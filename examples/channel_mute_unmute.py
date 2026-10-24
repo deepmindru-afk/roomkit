@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     EventFilter,
     EventStatus,
@@ -31,9 +32,8 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.models.event import SystemContent
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.models import SystemContent
+from roomkit.providers.ai import MockAIProvider
 
 mute_log: list[str] = []
 

@@ -18,8 +18,8 @@ from roomkit import (
     SQLiteStore,
     VoiceInjectionResult,
 )
-from roomkit.voice.base import VoiceSession
-from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from roomkit.voice import VoiceSession
+from roomkit.voice.realtime import MockRealtimeProvider, MockRealtimeTransport
 
 logger = logging.getLogger(__name__)
 

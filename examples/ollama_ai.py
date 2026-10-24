@@ -43,11 +43,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import console_enabled, env_bool, setup_logging  # noqa: E402
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     CLIChannel,
     RoomKit,
 )
-from roomkit.channels.ai import AIChannel
 from roomkit.providers.ollama import OllamaAIProvider, OllamaConfig, ThinkEffort
 
 setup_logging("ollama_ai")

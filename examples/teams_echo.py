@@ -14,12 +14,17 @@ from __future__ import annotations
 
 import asyncio
 
-from roomkit import HookExecution, RoomKit
+from roomkit import (
+    ChannelType,
+    EventSource,
+    HookExecution,
+    HookTrigger,
+    RoomEvent,
+    RoomKit,
+    TextContent,
+)
 from roomkit.channels import TeamsChannel
-from roomkit.models.enums import ChannelType, HookTrigger
-from roomkit.models.event import EventSource, RoomEvent, TextContent
-from roomkit.providers.teams import MockTeamsProvider
-from roomkit.providers.teams.webhook import parse_teams_webhook
+from roomkit.providers.teams import MockTeamsProvider, parse_teams_webhook
 
 
 async def main() -> None:

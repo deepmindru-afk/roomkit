@@ -31,13 +31,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
 from roomkit import HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.telemetry.pyroscope import PyroscopeProfiler
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.pipeline import AudioPipelineConfig, VADEvent, VADEventType
-from roomkit.voice.pipeline.vad.mock import MockVADProvider
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.telemetry import PyroscopeProfiler
+from roomkit.voice import AudioFrame
+from roomkit.voice.backends import MockVoiceBackend
+from roomkit.voice.pipeline import AudioPipelineConfig, MockVADProvider, VADEvent, VADEventType
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 logger = setup_logging("telemetry_pyroscope")
 

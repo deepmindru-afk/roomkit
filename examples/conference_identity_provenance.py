@@ -34,13 +34,13 @@ import asyncio
 
 from roomkit import (
     CONFERENCE_METADATA_KEY,
+    ConferenceChannel,
     MockConferenceBackend,
     Participant,
     RoomKit,
 )
-from roomkit.channels.conference import ConferenceChannel
-from roomkit.identity.mock import MockIdentityResolver
-from roomkit.models.identity import Identity
+from roomkit.identity import MockIdentityResolver
+from roomkit.models import Identity
 
 ROOM = "board-meeting"
 DIAL_IN = "sip_15551234"

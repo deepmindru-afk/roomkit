@@ -47,8 +47,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from roomkit import ChannelCategory, CLIChannel, RoomKit
-from roomkit.channels.ai import AIChannel
+from roomkit import AIChannel, ChannelCategory, CLIChannel, RoomKit
 from roomkit.memory import SlidingWindowMemory
 from roomkit.providers.vllm import VLLMConfig, create_vllm_provider
 

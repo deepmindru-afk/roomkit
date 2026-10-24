@@ -50,15 +50,11 @@ from shared import require_env, run_until_stopped, setup_console, setup_logging
 
 logger = setup_logging("voice_sip_dial")
 
-from roomkit import RealtimeVoiceChannel, RoomKit
-from roomkit.models.context import RoomContext
-from roomkit.models.enums import HookTrigger
-from roomkit.models.hook import HookResult
-from roomkit.models.trace import ProtocolTrace
-from roomkit.providers.gemini.realtime import GeminiLiveProvider
-from roomkit.voice.backends.sip import PT_G722, PT_PCMA, PT_PCMU, SIPVoiceBackend
-from roomkit.voice.realtime.events import RealtimeTranscriptionEvent
-from roomkit.voice.realtime.sip_transport import SIPRealtimeTransport
+from roomkit import HookResult, HookTrigger, RealtimeVoiceChannel, RoomContext, RoomKit
+from roomkit.models import ProtocolTrace
+from roomkit.providers.gemini import GeminiLiveProvider
+from roomkit.voice.backends import PT_G722, PT_PCMA, PT_PCMU, SIPVoiceBackend
+from roomkit.voice.realtime import RealtimeTranscriptionEvent, SIPRealtimeTransport
 
 # ---------------------------------------------------------------------------
 # Debug (set SIP_DEBUG=1 to enable verbose SIP/RTP/SDP tracing)

@@ -10,7 +10,7 @@ import asyncio
 import logging
 
 from roomkit import RealtimeVoiceChannel, RoomKit
-from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from roomkit.voice.realtime import MockRealtimeProvider, MockRealtimeTransport
 
 logger = logging.getLogger(__name__)
 

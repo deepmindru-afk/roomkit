@@ -37,9 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from shared import require_env, setup_logging
 
-from roomkit import CLIChannel, RoomKit
-from roomkit.channels.ai import AIChannel
-from roomkit.models.enums import ChannelCategory
+from roomkit import AIChannel, ChannelCategory, CLIChannel, RoomKit
 from roomkit.providers.meta import MetaAIProvider, MetaConfig
 
 

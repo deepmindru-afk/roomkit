@@ -16,8 +16,10 @@ from __future__ import annotations
 import asyncio
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     ChannelType,
+    EventDirection,
     HookExecution,
     HookTrigger,
     InboundMessage,
@@ -27,9 +29,7 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.models.enums import EventDirection
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import MockAIProvider
 
 # Simulated analytics log
 analytics_log: list[dict[str, str]] = []

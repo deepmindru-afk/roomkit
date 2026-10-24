@@ -40,9 +40,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import require_env
 
 from roomkit import RealtimeVoiceChannel, RoomKit
-from roomkit.providers.openai.realtime import OpenAIRealtimeProvider
-from roomkit.voice.base import VoiceSession
-from roomkit.voice.realtime.mock import MockRealtimeTransport
+from roomkit.providers.openai import OpenAIRealtimeProvider
+from roomkit.voice import VoiceSession
+from roomkit.voice.realtime import MockRealtimeTransport
 
 _MIME_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 

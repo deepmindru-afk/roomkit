@@ -75,8 +75,8 @@ from roomkit import (
     RoomKit,
 )
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
-from roomkit.providers.openai.live import IntegratorReasoning, OpenAILiveProvider
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.providers.openai import IntegratorReasoning, OpenAILiveProvider
+from roomkit.voice.backends import LocalAudioBackend
 
 logger = setup_logging("realtime_voice_local_openai_live_backend")
 

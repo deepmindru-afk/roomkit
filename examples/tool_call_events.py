@@ -27,9 +27,8 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.providers.ai.base import AIResponse, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
+from roomkit.providers.ai import AIResponse, AIToolCall, MockAIProvider
+from roomkit.realtime import EphemeralEvent, EphemeralEventType
 
 # Collect tool call events
 tool_events: list[EphemeralEvent] = []

@@ -33,10 +33,9 @@ import tempfile
 
 from shared import setup_logging
 
-from roomkit import HookExecution, HookTrigger, RoomKit, VideoChannel
-from roomkit.models.session_event import SessionStartedEvent
+from roomkit import HookExecution, HookTrigger, RoomKit, SessionStartedEvent, VideoChannel
 from roomkit.video import VideoFrame
-from roomkit.video.backends.local import LocalVideoBackend
+from roomkit.video.backends import LocalVideoBackend
 from roomkit.video.pipeline import VideoPipelineConfig
 from roomkit.video.recorder import MockVideoRecorder, VideoRecordingConfig
 
@@ -64,7 +63,7 @@ async def main() -> None:
 
     # --- Recorder: OpenCV if available, mock fallback ------------------------
     try:
-        from roomkit.video.recorder.opencv import OpenCVVideoRecorder
+        from roomkit.video.recorder import OpenCVVideoRecorder
 
         recorder = OpenCVVideoRecorder()
         recorder_name = "OpenCV → MP4"

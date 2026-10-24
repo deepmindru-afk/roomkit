@@ -60,20 +60,22 @@ logger = setup_logging("realtime_triage")
 # Suppress chain-depth warnings (expected in multi-agent setups)
 logging.getLogger("roomkit.event_router").setLevel(logging.ERROR)
 
-from roomkit import Agent, RealtimeVoiceChannel, RoomKit
-from roomkit.models.context import RoomContext
-from roomkit.models.enums import HookTrigger
-from roomkit.models.hook import HookResult
-from roomkit.orchestration.pipeline import ConversationPipeline, PipelineStage
-from roomkit.orchestration.state import (
+from roomkit import (
+    Agent,
+    ConversationPipeline,
     ConversationState,
+    HookResult,
+    HookTrigger,
+    PipelineStage,
+    RealtimeVoiceChannel,
+    RoomContext,
+    RoomKit,
     get_conversation_state,
     save_conversation_state,
 )
-from roomkit.providers.gemini.realtime import GeminiLiveProvider
-from roomkit.voice.backends.sip import SIPVoiceBackend
-from roomkit.voice.realtime.events import RealtimeTranscriptionEvent
-from roomkit.voice.realtime.sip_transport import SIPRealtimeTransport
+from roomkit.providers.gemini import GeminiLiveProvider
+from roomkit.voice.backends import SIPVoiceBackend
+from roomkit.voice.realtime import RealtimeTranscriptionEvent, SIPRealtimeTransport
 
 # ---------------------------------------------------------------------------
 # Configuration

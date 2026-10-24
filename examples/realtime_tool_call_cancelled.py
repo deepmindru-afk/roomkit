@@ -38,7 +38,7 @@ from roomkit import (
     RoomKit,
     ToolCallEvent,
 )
-from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from roomkit.voice.realtime import MockRealtimeProvider, MockRealtimeTransport
 
 logger = setup_logging("roomkit.examples.realtime_tool_call_cancelled")
 

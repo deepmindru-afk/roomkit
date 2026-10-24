@@ -28,10 +28,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import run_until_stopped, setup_console, setup_logging
 
-from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.voice.backends.rtp import RTPVoiceBackend
+from roomkit import (
+    AIChannel,
+    ChannelCategory,
+    HookExecution,
+    HookResult,
+    HookTrigger,
+    RoomKit,
+    VoiceChannel,
+)
+from roomkit.providers.ai import MockAIProvider
+from roomkit.voice.backends import RTPVoiceBackend
 from roomkit.voice.pipeline import (
     AudioPipelineConfig,
     MockVADProvider,
@@ -39,8 +46,8 @@ from roomkit.voice.pipeline import (
     VADEventType,
 )
 from roomkit.voice.pipeline.dtmf import MockDTMFDetector
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 logger = setup_logging("voice_rtp")
 

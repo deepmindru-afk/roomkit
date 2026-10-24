@@ -39,10 +39,13 @@ pip install roomkit
 ```python
 import asyncio
 from roomkit import (
-    ChannelCategory, InboundMessage, RoomKit,
-    TextContent, WebSocketChannel,
+    AIChannel,
+    ChannelCategory,
+    InboundMessage,
+    RoomKit,
+    TextContent,
+    WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 
 async def main():
@@ -164,8 +167,8 @@ RoomKit has five built-in orchestration strategies, all configured through `Room
 ```python
 from roomkit import Agent
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
-from roomkit.orchestration.handoff import HandoffMemoryProvider
-from roomkit.memory.sliding_window import SlidingWindowMemory
+from roomkit.orchestration import HandoffMemoryProvider
+from roomkit.memory import SlidingWindowMemory
 
 triage = Agent(
     "agent-triage",
@@ -360,9 +363,11 @@ All stages are optional — configure only what you need.
 
 ```python
 from roomkit import VideoChannel
-from roomkit.video.pipeline import VideoPipelineConfig
-from roomkit.video.pipeline.filter.yolo import YOLODetectorFilter
-from roomkit.video.pipeline.filter.watermark import WatermarkFilter
+from roomkit.video.pipeline import (
+    VideoPipelineConfig,
+    WatermarkFilter,
+    YOLODetectorFilter,
+)
 
 video = VideoChannel(
     "video",
@@ -401,8 +406,7 @@ Room-level A/V recording to MP4 with VP9 → H.264 transcoding, per-track sync, 
 ```python
 from roomkit import AudioVideoChannel
 from roomkit.video.pipeline import VideoPipelineConfig
-from roomkit.video.recorder.pyav import PyAVVideoRecorder
-from roomkit.video.recorder import VideoRecordingConfig
+from roomkit.video.recorder import PyAVVideoRecorder, VideoRecordingConfig
 
 video = VideoChannel(
     "video",

@@ -39,12 +39,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from aiohttp import web
 from shared import require_env, run_until_stopped
 
-from roomkit import HookExecution, RoomKit
+from roomkit import (
+    ChannelType,
+    EventSource,
+    HookExecution,
+    HookTrigger,
+    RoomEvent,
+    RoomKit,
+    TextContent,
+)
 from roomkit.channels import TeamsChannel
-from roomkit.models.enums import ChannelType, HookTrigger
-from roomkit.models.event import ChannelData, EventSource, RoomEvent, TextContent
-from roomkit.providers.teams import BotFrameworkTeamsProvider, TeamsConfig
-from roomkit.providers.teams.webhook import (
+from roomkit.models import ChannelData
+from roomkit.providers.teams import (
+    BotFrameworkTeamsProvider,
+    TeamsConfig,
     is_bot_added,
     parse_teams_activity,
     parse_teams_reactions,

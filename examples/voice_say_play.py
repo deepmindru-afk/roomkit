@@ -37,9 +37,9 @@ from roomkit import (
     RoomKit,
     VoiceChannel,
 )
-from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.voice.backends import MockVoiceBackend
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 logger = setup_logging("voice_say_play")
 

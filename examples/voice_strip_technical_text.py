@@ -31,10 +31,8 @@ from shared import setup_logging
 
 from roomkit import VoiceChannel
 from roomkit.voice import StripEmoji, StripTechnicalText, TTSFilterChain
-from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.tts.filters import filtered_stream
-from roomkit.voice.tts.mock import MockTTSProvider
-from roomkit.voice.tts.sentence_splitter import split_sentences
+from roomkit.voice.backends import MockVoiceBackend
+from roomkit.voice.tts import MockTTSProvider, filtered_stream, split_sentences
 
 logger = setup_logging("example.voice_strip_technical_text")
 

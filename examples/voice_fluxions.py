@@ -34,7 +34,9 @@ import wave
 
 from shared import require_env, setup_logging
 
-from roomkit.voice.tts.fluxions import SAMPLE_RATE, FluxionsTTSConfig, FluxionsTTSProvider
+from roomkit.voice.tts import FluxionsTTSConfig, FluxionsTTSProvider
+
+SAMPLE_RATE = 24000  # Fluxions speaks 24 kHz
 
 logger = setup_logging("voice_fluxions")
 

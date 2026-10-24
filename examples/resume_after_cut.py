@@ -36,15 +36,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import require_env, setup_logging
 
 from roomkit import (
+    AIChannel,
     AIGenerationEvent,
     ChannelCategory,
     ChannelType,
     Classifier,
     ClassifierSpeakPolicy,
     EventSource,
+    EventType,
     HookExecution,
     HookResult,
     HookTrigger,
+    InboundMessage,
     JevClassifier,
     MockClassifier,
     RoomEvent,
@@ -52,14 +55,12 @@ from roomkit import (
     SMSChannel,
     SpeakDecisionEvent,
     TextContent,
+    Visibility,
     VoiceChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import EventType, Visibility
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.sms.mock import MockSMSProvider
-from roomkit.voice.backends.mock import MockVoiceBackend
+from roomkit.providers.ai import MockAIProvider
+from roomkit.providers.sms import MockSMSProvider
+from roomkit.voice.backends import MockVoiceBackend
 
 logger = setup_logging("example.resume_after_cut")
 

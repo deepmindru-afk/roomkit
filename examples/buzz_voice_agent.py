@@ -45,8 +45,8 @@ from shared import require_env, run_until_stopped, setup_logging
 
 from roomkit import RealtimeVoiceChannel, RoomKit
 from roomkit.providers.buzz import BuzzConfig
-from roomkit.providers.gemini.realtime import GeminiLiveProvider
-from roomkit.voice.backends.buzz_huddle import BuzzHuddleBackend, BuzzHuddleWatcher
+from roomkit.providers.gemini import GeminiLiveProvider
+from roomkit.voice.backends import BuzzHuddleBackend, BuzzHuddleWatcher
 
 logger = setup_logging("buzz_voice_agent")
 

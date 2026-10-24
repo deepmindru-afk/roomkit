@@ -25,10 +25,9 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.identity.base import IdentityResolver
-from roomkit.models.delivery import InboundMessage as InboundMessageType
-from roomkit.models.enums import IdentificationStatus
-from roomkit.models.identity import Identity, IdentityHookResult, IdentityResult
+from roomkit import InboundMessage as InboundMessageType
+from roomkit.identity import IdentityResolver
+from roomkit.models import IdentificationStatus, Identity, IdentityHookResult, IdentityResult
 
 
 # --- Custom identity resolver: simulates a database lookup ---

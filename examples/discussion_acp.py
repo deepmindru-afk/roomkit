@@ -53,8 +53,7 @@ from roomkit import (
     WebSocketChannel,
 )
 from roomkit.console import DiscussionConsole
-from roomkit.providers.ai.base import AIResponse
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import AIResponse, MockAIProvider
 from roomkit.tools import PolicyExternalToolHandler, ToolPolicy
 
 setup_logging("discussion_acp")

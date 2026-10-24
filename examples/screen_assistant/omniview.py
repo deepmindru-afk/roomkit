@@ -7,11 +7,42 @@ scaling so coordinates work correctly on Retina / HiDPI displays.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import ctypes
 import json
 import logging
+import os
+import platform
 import re
 
 logger = logging.getLogger("screen_assistant.omniview")
+
+
+def _scale_factor() -> tuple[float, float]:
+    """Logical pixels per physical pixel on this display, per axis."""
+    system = platform.system()
+    if system == "Darwin":
+        try:
+            import mss
+            import pyautogui  # type: ignore[import-untyped]
+
+            with mss.mss() as sct:
+                monitor = sct.monitors[1]
+            width, height = pyautogui.size()
+            return width / monitor["width"], height / monitor["height"]
+        except Exception:
+            return 1.0, 1.0
+    if system == "Windows":
+        # Coordinates are physical once the process is DPI aware.
+        with contextlib.suppress(Exception):
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # type: ignore[attr-defined]
+        return 1.0, 1.0
+    try:
+        scale = float(os.environ.get("GDK_SCALE", "1"))
+    except ValueError:
+        return 1.0, 1.0
+    return 1.0 / scale, 1.0 / scale
+
 
 # -- Tool definitions exposed to the realtime voice model -------------------
 
@@ -73,7 +104,7 @@ class OmniViewClient:
         import base64
         import io
 
-        from roomkit.video.vision.screen_tool import capture_screen_frame
+        from roomkit.video.vision import capture_screen_frame
 
         frame = capture_screen_frame(self.monitor)
         if frame is None:
@@ -90,9 +121,7 @@ class OmniViewClient:
     @staticmethod
     def _scale_coords(cx: int, cy: int) -> tuple[int, int]:
         """Apply DPI scale factor to convert physical -> logical coords."""
-        from roomkit.video.vision.screen_input import _get_scale_factor
-
-        sx, sy = _get_scale_factor()
+        sx, sy = _scale_factor()
         return int(cx * sx), int(cy * sy)
 
     def click_at(

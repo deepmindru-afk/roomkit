@@ -21,21 +21,20 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from roomkit import (
+    AIChannel,
+    ChannelBinding,
     ChannelCategory,
     ChannelOutput,
     InboundMessage,
+    RoomContext,
     RoomEvent,
     RoomKit,
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.channels.websocket import StreamChunk, StreamEnd, StreamMessage, StreamStart
-from roomkit.models.channel import ChannelBinding
-from roomkit.models.context import RoomContext
-from roomkit.models.streaming import LoopEndMarker
-from roomkit.providers.ai.base import AIResponse, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.channels import StreamChunk, StreamEnd, StreamMessage, StreamStart
+from roomkit.models import LoopEndMarker
+from roomkit.providers.ai import AIResponse, AIToolCall, MockAIProvider
 
 # ---------------------------------------------------------------------------
 # 1. Tool handler — simulates order lookup and ticket creation

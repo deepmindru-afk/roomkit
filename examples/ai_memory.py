@@ -25,15 +25,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import require_env
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     CLIChannel,
+    MemoryResult,
+    RoomContext,
+    RoomEvent,
     RoomKit,
 )
-from roomkit.channels.ai import AIChannel
 from roomkit.memory import SlidingWindowMemory, SummarizingMemory
-from roomkit.memory.base import MemoryResult
-from roomkit.models.context import RoomContext
-from roomkit.models.event import RoomEvent
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 
 _CYAN = "\033[36m"

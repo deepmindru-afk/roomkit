@@ -32,22 +32,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
 from roomkit import (
+    Agent,
+    AIChannel,
     ChannelCategory,
+    EventType,
     HookExecution,
     HookResult,
     HookTrigger,
+    InboundMessage,
     RoomKit,
     SMSChannel,
     TextContent,
 )
-from roomkit.channels.agent import Agent
-from roomkit.channels.ai import AIChannel
-from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import EventType
-from roomkit.providers.ai import AIContext, AIResponse
-from roomkit.providers.ai.base import AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.sms.mock import MockSMSProvider
+from roomkit.providers.ai import AIContext, AIResponse, AIToolCall, MockAIProvider
+from roomkit.providers.sms import MockSMSProvider
 from roomkit.tasks import (
     CANCEL_TASK_TOOL,
     DelegateHandler,

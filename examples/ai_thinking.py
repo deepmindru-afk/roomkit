@@ -19,6 +19,7 @@ import asyncio
 from typing import Any
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     InboundMessage,
     RoomEvent,
@@ -26,10 +27,8 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.base import AIResponse
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.realtime.base import EphemeralEvent, EphemeralEventType
+from roomkit.providers.ai import AIResponse, MockAIProvider
+from roomkit.realtime import EphemeralEvent, EphemeralEventType
 
 
 async def main() -> None:

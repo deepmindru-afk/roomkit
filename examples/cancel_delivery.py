@@ -10,8 +10,7 @@ import logging
 from typing import Any
 
 from roomkit import Agent, ChannelCategory, InboundMessage, RoomKit, TextContent, WebSocketChannel
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import AIResponse, AITool, AIToolCall, MockAIProvider
 
 logger = logging.getLogger(__name__)
 

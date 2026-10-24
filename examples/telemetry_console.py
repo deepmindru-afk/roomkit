@@ -13,6 +13,7 @@ import asyncio
 import logging
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     HookResult,
     HookTrigger,
@@ -23,9 +24,8 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.telemetry.console import ConsoleTelemetryProvider
+from roomkit.providers.ai import MockAIProvider
+from roomkit.telemetry import ConsoleTelemetryProvider
 
 # Enable logging to see telemetry output
 logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")

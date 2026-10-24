@@ -42,6 +42,7 @@ from shared import setup_logging
 
 from roomkit import (
     ACPChannel,
+    AIResponseEvent,
     ChannelCategory,
     HookExecution,
     HookResult,
@@ -50,9 +51,9 @@ from roomkit import (
     RoomContext,
     RoomKit,
     TextContent,
+    ToolCallEvent,
     WebSocketChannel,
 )
-from roomkit.models.tool_call import AIResponseEvent, ToolCallEvent
 from roomkit.tools import PolicyExternalToolHandler, ToolPolicy
 
 setup_logging("acp_room_mcp")

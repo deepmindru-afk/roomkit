@@ -24,20 +24,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
 from roomkit import (
+    AIChannel,
     AIGenerationEvent,
     ChannelCategory,
     HookResult,
     HookTrigger,
+    InboundMessage,
     RoomKit,
     SMSChannel,
     TextContent,
     split_turn_notes,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.models.delivery import InboundMessage
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.sms.mock import MockSMSProvider
+from roomkit.providers.ai import AIResponse, AITool, AIToolCall, MockAIProvider
+from roomkit.providers.sms import MockSMSProvider
 from roomkit.tasks import post_task_progress
 
 logger = setup_logging("example.task_progress_note")

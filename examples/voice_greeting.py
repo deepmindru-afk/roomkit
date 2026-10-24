@@ -44,17 +44,17 @@ from roomkit import (
     Agent,
     HookExecution,
     HookTrigger,
+    InboundMessage,
     RoomKit,
+    SessionStartedEvent,
+    TextContent,
     VoiceChannel,
 )
-from roomkit.models.delivery import InboundMessage
-from roomkit.models.event import TextContent
-from roomkit.models.session_event import SessionStartedEvent
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import MockAIProvider
 from roomkit.voice import AudioPipelineConfig
-from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.voice.backends import MockVoiceBackend
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 logger = setup_logging("voice_greeting")
 

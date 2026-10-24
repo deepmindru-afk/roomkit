@@ -34,10 +34,10 @@ from roomkit import (
     RoomEvent,
     RoomKit,
     TextContent,
+    ToolPolicy,
     WebSocketChannel,
 )
-from roomkit.models.channel import RateLimit
-from roomkit.tools.policy import ToolPolicy
+from roomkit.models import RateLimit
 
 logger = setup_logging("guardrails")
 

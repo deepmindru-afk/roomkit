@@ -49,12 +49,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import require_env, run_until_stopped, setup_logging
 
 from roomkit import RealtimeVoiceChannel, RoomKit
-from roomkit.providers.gemini.realtime import GeminiLiveProvider
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.providers.gemini import GeminiLiveProvider
+from roomkit.voice import AudioFrame
+from roomkit.voice.backends import LocalAudioBackend
 from roomkit.voice.capture import CaptureMark, CaptureSubscription, LocalMicSource
-from roomkit.voice.pipeline.vad.base import VADEventType
-from roomkit.voice.pipeline.vad.energy import EnergyVADProvider
+from roomkit.voice.pipeline.vad import EnergyVADProvider, VADEventType
 
 logger = setup_logging("shared_mic_capture")
 

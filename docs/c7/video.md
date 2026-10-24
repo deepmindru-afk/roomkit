@@ -12,9 +12,8 @@ Real-time video channels with pluggable processing pipelines, vision AI, bridgin
 
 ```python
 from roomkit import RoomKit, VideoChannel
-from roomkit.video import VideoPipelineConfig
-from roomkit.video.backends.local import LocalVideoBackend
-from roomkit.video.vision.mock import MockVisionProvider
+from roomkit.video import MockVisionProvider, VideoPipelineConfig
+from roomkit.video.backends import LocalVideoBackend
 
 kit = RoomKit()
 video = VideoChannel(
@@ -47,8 +46,8 @@ Inbound frames are `VideoFrame` dataclasses: `data: bytes`, `codec="h264"`, `wid
 Inbound order: `[Decoder] -> [Resizer] -> [Transforms...] -> [Filters...] -> taps/bridge/vision`. All stages optional; decoder, resizer, and vision are singular, transforms and filters are chained lists. Vision runs async on its own throttled schedule; the rest is synchronous per-frame.
 
 ```python
-from roomkit.video.pipeline.decoder.pyav import PyAVVideoDecoder
-from roomkit.video.pipeline.resizer.pyav import PyAVVideoResizer
+from roomkit.video.pipeline.decoder import PyAVVideoDecoder
+from roomkit.video.pipeline.resizer import PyAVVideoResizer
 
 pipeline = VideoPipelineConfig(
     decoder=PyAVVideoDecoder(output_format="rgb24"),

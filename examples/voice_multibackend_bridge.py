@@ -70,6 +70,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     HookExecution,
     HookResult,
@@ -79,13 +80,11 @@ from roomkit import (
     TextContent,
     VoiceChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.base import AIContext, AIMessage
+from roomkit.providers.ai import AIContext, AIMessage
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
-from roomkit.voice.backends.fastrtc import FastRTCVoiceBackend, mount_fastrtc_voice
-from roomkit.voice.backends.sip import SIPVoiceBackend
-from roomkit.voice.bridge import AudioBridgeConfig
-from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
+from roomkit.voice import AudioBridgeConfig
+from roomkit.voice.backends import FastRTCVoiceBackend, SIPVoiceBackend, mount_fastrtc_voice
+from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider
 
 # ---------------------------------------------------------------------------
 # Configuration

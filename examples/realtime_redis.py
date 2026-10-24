@@ -26,8 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
 from roomkit import RoomKit
-from roomkit.orchestration import RedisStatusBackend
-from roomkit.orchestration.status_bus import StatusBus, StatusEntry, StatusLevel
+from roomkit.orchestration import RedisStatusBackend, StatusBus, StatusEntry, StatusLevel
 from roomkit.realtime import EphemeralEvent, RedisRealtimeBackend
 
 logger = setup_logging("realtime_redis")

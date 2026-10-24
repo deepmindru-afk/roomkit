@@ -75,8 +75,7 @@ When you send a message from a transport channel, it flows to the AI and back au
 
 ```python
 from roomkit import RoomKit, AIChannel, WebSocketChannel, ChannelCategory, InboundMessage, TextContent
-from roomkit.providers.anthropic.ai import AnthropicAIProvider
-from roomkit.providers.anthropic.config import AnthropicConfig
+from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 
 kit = RoomKit()
 
@@ -129,7 +128,7 @@ Replace any component at construction:
 
 ```python
 from roomkit import RoomKit, SQLiteStore
-from roomkit.store.postgres import PostgresStore
+from roomkit.store import PostgresStore
 
 embedded = RoomKit(store=SQLiteStore("roomkit.db"))
 kit = RoomKit(store=PostgresStore("postgresql://..."))

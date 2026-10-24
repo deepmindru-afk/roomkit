@@ -55,10 +55,10 @@ from roomkit import (
     HookTrigger,
     RoomKit,
 )
-from roomkit.video.backends.rtp import RTPVideoBackend
+from roomkit.video.backends import RTPVideoBackend
 from roomkit.voice.pipeline import AudioPipelineConfig, EnergyVADProvider
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 logger = setup_logging("rtp_video_call")
 

@@ -43,7 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from shared import setup_logging  # noqa: E402
 
-from roomkit.providers.ai.base import (  # noqa: E402
+from roomkit.providers.ai import (  # noqa: E402
     AIContext,
     AIMessage,
     AITextPart,
@@ -326,7 +326,7 @@ async def _wrap_generate_as_stream(
 
 async def _setup_mcp(url: str, stack: AsyncExitStack) -> Any:
     """Connect to an MCP server and return the entered provider."""
-    from roomkit.tools.mcp import MCPToolProvider
+    from roomkit.tools import MCPToolProvider
 
     mcp = MCPToolProvider.from_url(url)
     await stack.enter_async_context(mcp)

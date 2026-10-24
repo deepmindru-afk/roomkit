@@ -36,8 +36,7 @@ from roomkit import (
     ToolRoundEvent,
     WebSocketChannel,
 )
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import AIResponse, AITool, AIToolCall, MockAIProvider
 from roomkit.tools import current_response_metadata
 
 logger = setup_logging("hook_after_tool_round")

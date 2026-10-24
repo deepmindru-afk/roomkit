@@ -29,14 +29,14 @@ from shared import setup_logging
 from roomkit import (
     HookExecution,
     HookTrigger,
+    Participant,
     RealtimeVoiceChannel,
     RoleOverride,
     RoomKit,
     ToolCallEvent,
     ToolPolicy,
 )
-from roomkit.models.participant import Participant
-from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from roomkit.voice.realtime import MockRealtimeProvider, MockRealtimeTransport
 
 logger = setup_logging("realtime_tool_policy")
 

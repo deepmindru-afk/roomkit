@@ -46,9 +46,8 @@ from shared import (
 )
 
 from roomkit import RealtimeVoiceChannel, RoomKit
-from roomkit.providers.xai.config import XAIRealtimeConfig
-from roomkit.providers.xai.realtime import XAIRealtimeProvider
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.providers.xai import XAIRealtimeConfig, XAIRealtimeProvider
+from roomkit.voice.backends import LocalAudioBackend
 
 logger = setup_logging("realtime_voice_local_xai")
 

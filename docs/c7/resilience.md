@@ -7,7 +7,8 @@ RoomKit provides built-in resilience patterns for production deployments: rate l
 Apply rate limits per channel binding:
 
 ```python
-from roomkit import RoomKit, RateLimit
+from roomkit import RoomKit
+from roomkit.models import RateLimit
 
 kit = RoomKit()
 
@@ -19,52 +20,50 @@ await kit.attach_channel("room-1", "sms-out",
 Framework-level inbound rate limiting:
 
 ```python
-from roomkit import RoomKit, RateLimit
+from roomkit import RoomKit
+from roomkit.models import RateLimit
 
 kit = RoomKit(inbound_rate_limit=RateLimit(max_per_second=10.0))
 ```
 
 ## Circuit Breaker
 
-Isolate provider failures with circuit breakers:
+RoomKit keeps one circuit breaker per transport channel. Five consecutive
+failed deliveries (each after its binding's retries) open it: deliveries to
+that channel are then skipped, without calling the provider, for 60 seconds;
+after that one probe delivery goes through, and a success closes the breaker.
+A delivery refused for having no recipient does not count. Each transition is
+a framework event:
 
 ```python
-from roomkit.core.circuit_breaker import CircuitBreaker
+@kit.on("circuit_breaker_opened")
+async def breaker_opened(event):
+    logger.warning("Deliveries to %s suspended", event.data["channel_id"])
 
-cb = CircuitBreaker(failure_threshold=5, recovery_timeout=60.0)
-
-if cb.allow_request():
-    try:
-        result = await provider.send(event, to="+1234567890")
-        cb.record_success()
-    except Exception:
-        cb.record_failure()  # Opens after 5 consecutive failures
+@kit.on("circuit_breaker_closed")
+async def breaker_closed(event):
+    logger.info("Deliveries to %s resumed", event.data["channel_id"])
 ```
 
 States: CLOSED (normal) -> OPEN (failing, fast-reject) -> HALF_OPEN (testing recovery).
 
 ## Retry with Backoff
 
-Retry failed operations with exponential backoff:
+A binding's `RetryPolicy` retries a failed delivery with exponential backoff
+(`base_delay_seconds × exponential_base^attempt`, capped at
+`max_delay_seconds`). An error that declares itself not retryable, or one
+outside `retryable_errors` when the policy names some, fails on its first
+attempt:
 
 ```python
-from roomkit import RetryPolicy
-from roomkit.core.retry import retry_with_backoff
+from roomkit.models import RetryPolicy
 
-policy = RetryPolicy(
-    max_retries=3,
-    base_delay_seconds=1.0,
-    max_delay_seconds=60.0,
-)
-
-result = await retry_with_backoff(flaky_function, policy)
-```
-
-Apply per binding:
-
-```python
 await kit.attach_channel("room-1", "sms-out",
-    retry_policy=RetryPolicy(max_retries=3, base_delay_seconds=1.0),
+    retry_policy=RetryPolicy(
+        max_retries=3,
+        base_delay_seconds=1.0,
+        max_delay_seconds=60.0,
+    ),
 )
 ```
 
@@ -193,8 +192,9 @@ await kit.process_delivery_status(status)
 ## Production Setup Example
 
 ```python
-from roomkit import RoomKit, RateLimit, RetryPolicy
-from roomkit.store.postgres import PostgresStore
+from roomkit import RoomKit
+from roomkit.models import RateLimit, RetryPolicy
+from roomkit.store import PostgresStore
 
 kit = RoomKit(
     store=PostgresStore("postgresql://user:pass@localhost/roomkit"),

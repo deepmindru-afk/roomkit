@@ -124,18 +124,16 @@ at resolution naming the two extras rather than backtracking onto an older
 Provider-specific API keys are passed via configuration objects, not environment variables. Example:
 
 ```python
-from roomkit.providers.anthropic.config import AnthropicConfig
+from roomkit.providers.anthropic import AnthropicConfig
 
 config = AnthropicConfig(api_key="sk-ant-...", model="claude-opus-5")
 ```
 
-For voice providers, use lazy loaders to avoid import-time dependency checks:
+Voice providers are imported from their package; a provider's module, and the
+extra it needs, load on first use of its name:
 
 ```python
-from roomkit.voice import get_deepgram_provider, get_deepgram_config
-
-DeepgramSTTProvider = get_deepgram_provider()
-DeepgramConfig = get_deepgram_config()
+from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider
 
 stt = DeepgramSTTProvider(DeepgramConfig(api_key="..."))
 ```

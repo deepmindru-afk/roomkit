@@ -7,9 +7,9 @@ VoiceChannel handles real-time audio conversations with speech-to-text, text-to-
 ```python
 from roomkit import RoomKit, VoiceChannel
 from roomkit.voice.pipeline import AudioPipelineConfig, MockVADProvider, VADEvent, VADEventType
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
-from roomkit.voice.backends.mock import MockVoiceBackend
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
+from roomkit.voice.backends import MockVoiceBackend
 
 kit = RoomKit()
 
@@ -71,10 +71,7 @@ reaches its recordings. Left unset, the read is unscoped.
 Use lazy loaders to avoid import-time dependency checks:
 
 ```python
-from roomkit.voice import get_deepgram_provider, get_deepgram_config
-
-DeepgramSTTProvider = get_deepgram_provider()
-DeepgramConfig = get_deepgram_config()
+from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider
 
 stt = DeepgramSTTProvider(DeepgramConfig(
     api_key="...",
@@ -143,10 +140,7 @@ async def pin_language(event, ctx):
 | Mock | `MockTTSProvider` | — | built-in |
 
 ```python
-from roomkit.voice import get_elevenlabs_provider, get_elevenlabs_config
-
-ElevenLabsTTSProvider = get_elevenlabs_provider()
-ElevenLabsConfig = get_elevenlabs_config()
+from roomkit.voice.tts import ElevenLabsConfig, ElevenLabsTTSProvider
 
 tts = ElevenLabsTTSProvider(ElevenLabsConfig(
     api_key="...",
@@ -172,17 +166,14 @@ stream it goes with the next sentence. Do not put `StripBrackets` in front of
 an expressive provider: it removes the directions.
 
 ```python
-from roomkit.voice import get_fish_audio_tts_config, get_fish_audio_tts_provider
-
-FishAudioTTSProvider = get_fish_audio_tts_provider()
-FishAudioTTSConfig = get_fish_audio_tts_config()
+from roomkit.voice.tts import FishAudioTTSConfig, FishAudioTTSProvider
 
 tts = FishAudioTTSProvider(FishAudioTTSConfig(api_key="...", voice="<voice id>", expressive=True))
 ```
 A voice is an index into `voices.bin` (`ff_siwis` is 30). It speaks 24 kHz.
 
 ```python
-from roomkit.voice.tts.sherpa_onnx import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
+from roomkit.voice.tts import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
 
 d = "kokoro-int8-multi-lang-v1_0"
 tts = SherpaOnnxTTSProvider(SherpaOnnxTTSConfig(
@@ -203,8 +194,8 @@ dialogue in one clip, and `GeminiVoiceLibrary` designs or replicates custom
 voices, replication requiring the person's recorded consent.
 
 ```python
-from roomkit.voice.tts.gemini import GeminiTTSConfig, GeminiTTSProvider
-from roomkit.voice.voices import DialogueTurn
+from roomkit.voice.tts import GeminiTTSConfig, GeminiTTSProvider
+from roomkit.voice import DialogueTurn
 
 tts = GeminiTTSProvider(GeminiTTSConfig(api_key="..."))
 quebec = await tts.list_voices(language="fr-CA", gender="female")   # 37 voices
@@ -228,9 +219,8 @@ Backends handle audio transport between the framework and participants:
 | Mock | `MockVoiceBackend` | built-in | Testing |
 
 ```python
-from roomkit.voice import get_local_audio_backend
+from roomkit.voice.backends import LocalAudioBackend
 
-LocalAudioBackend = get_local_audio_backend()
 backend = LocalAudioBackend(sample_rate=16000, channels=1)
 ```
 
@@ -248,7 +238,7 @@ running, and the session becomes one subscriber among several.
 
 ```python
 from roomkit.voice.capture import LocalMicSource
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.voice.backends import LocalAudioBackend
 
 mic = LocalMicSource(sample_rate=24000, backlog_seconds=10)
 mic.start()                                        # the device opens once
@@ -283,7 +273,7 @@ unchanged.
 Four strategies for handling user speech during TTS playback:
 
 ```python
-from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
+from roomkit.voice import InterruptionConfig, InterruptionStrategy
 
 voice = VoiceChannel(
     "voice",

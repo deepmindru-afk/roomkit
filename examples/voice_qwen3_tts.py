@@ -71,14 +71,20 @@ from shared import (
     setup_logging,
 )
 
-from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.channels.ai import AIChannel
+from roomkit import (
+    AIChannel,
+    ChannelCategory,
+    HookExecution,
+    HookResult,
+    HookTrigger,
+    RoomKit,
+    VoiceChannel,
+)
 from roomkit.providers.vllm import VLLMConfig, create_vllm_provider
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.pipeline import AudioPipelineConfig
-from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
-from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
-from roomkit.voice.tts.qwen3 import Qwen3TTSConfig, Qwen3TTSProvider, VoiceCloneConfig
+from roomkit.voice.backends import LocalAudioBackend
+from roomkit.voice.pipeline import AudioPipelineConfig, SherpaOnnxVADConfig, SherpaOnnxVADProvider
+from roomkit.voice.stt import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
+from roomkit.voice.tts import Qwen3TTSConfig, Qwen3TTSProvider, Qwen3VoiceCloneConfig
 
 logger = setup_logging("voice_qwen3_tts")
 
@@ -140,7 +146,7 @@ async def main() -> None:
         language=os.environ.get("TTS_LANGUAGE", "English"),
         x_vector_only_mode=os.environ.get("TTS_X_VECTOR_ONLY", "0") == "1",
         voices={
-            "default": VoiceCloneConfig(ref_audio=ref_audio, ref_text=ref_text),
+            "default": Qwen3VoiceCloneConfig(ref_audio=ref_audio, ref_text=ref_text),
         },
     )
     tts = Qwen3TTSProvider(tts_config)

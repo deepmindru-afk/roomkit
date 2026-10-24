@@ -34,13 +34,11 @@ import tempfile
 
 from shared import setup_logging
 
-from roomkit import HookExecution, HookTrigger, RoomKit, VideoChannel
-from roomkit.models.session_event import SessionStartedEvent
+from roomkit import HookExecution, HookTrigger, RoomKit, SessionStartedEvent, VideoChannel
 from roomkit.video import VideoFrame
-from roomkit.video.backends.local import LocalVideoBackend
+from roomkit.video.backends import LocalVideoBackend
 from roomkit.video.pipeline import VideoPipelineConfig
-from roomkit.video.recorder import VideoRecordingConfig
-from roomkit.video.recorder.pyav import PyAVVideoRecorder
+from roomkit.video.recorder import PyAVVideoRecorder, VideoRecordingConfig
 
 setup_logging("pyav_video_recorder", level=logging.WARNING)
 

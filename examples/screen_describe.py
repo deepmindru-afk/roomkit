@@ -56,6 +56,7 @@ import logging
 from shared import require_env, run_until_stopped, setup_logging
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     FrameworkEvent,
     HookExecution,
@@ -63,18 +64,21 @@ from roomkit import (
     InboundMessage,
     RoomEvent,
     RoomKit,
+    SessionStartedEvent,
     TextContent,
     VideoChannel,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.models.session_event import SessionStartedEvent
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.video.backends.screen import ScreenCaptureBackend
-from roomkit.video.vision.base import VisionProvider
-from roomkit.video.vision.gemini import GeminiVisionConfig, GeminiVisionProvider
-from roomkit.video.vision.mock import MockVisionProvider
-from roomkit.video.vision.openai import OpenAIVisionConfig, OpenAIVisionProvider
+from roomkit.providers.ai import MockAIProvider
+from roomkit.video.backends import ScreenCaptureBackend
+from roomkit.video.vision import (
+    GeminiVisionConfig,
+    GeminiVisionProvider,
+    MockVisionProvider,
+    OpenAIVisionConfig,
+    OpenAIVisionProvider,
+    VisionProvider,
+)
 
 setup_logging("screen_describe", level=logging.WARNING)
 

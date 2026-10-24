@@ -59,6 +59,8 @@ from shared import require_env, setup_logging
 
 from roomkit import (
     BuzzChannel,
+    ChannelType,
+    EventSource,
     HookExecution,
     HookResult,
     HookTrigger,
@@ -67,10 +69,9 @@ from roomkit import (
     RoomKit,
     TextContent,
 )
-from roomkit.models.enums import ChannelType
-from roomkit.models.event import ChannelData, EventSource
+from roomkit.models import ChannelData
 from roomkit.providers.buzz import BuzzAgent, BuzzConfig, BuzzProvider
-from roomkit.sources.buzz import BuzzRelaySource
+from roomkit.sources import BuzzRelaySource
 
 logger = setup_logging("buzz_agent")
 

@@ -40,12 +40,10 @@ import tempfile
 import time
 from collections.abc import AsyncIterator
 
-from shared import pcm_from_wav_url, require_env, setup_logging
+from shared import pcm_from_wav_url, require_env, setup_logging, wav_bytes
 
-from roomkit.voice.base import AudioChunk
-from roomkit.voice.tts.audio_utils import wrap_wav
-from roomkit.voice.tts.fish_audio import FishAudioTTSConfig, FishAudioTTSProvider
-from roomkit.voice.voices import DialogueTurn
+from roomkit.voice import AudioChunk, DialogueTurn
+from roomkit.voice.tts import FishAudioTTSConfig, FishAudioTTSProvider
 
 logger = setup_logging("voice_fish_audio")
 
@@ -120,7 +118,7 @@ async def main() -> None:
     clips["dialogue"], _ = pcm_from_wav_url(dialogue.url)
 
     for name, pcm in clips.items():
-        (out / f"{name}.wav").write_bytes(wrap_wav(pcm, RATE))
+        (out / f"{name}.wav").write_bytes(wav_bytes(pcm, RATE))
     logger.info("Wrote %s", ", ".join(str(out / f"{name}.wav") for name in clips))
     await plain.close()
     await directed.close()

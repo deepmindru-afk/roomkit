@@ -12,7 +12,7 @@ import logging
 import os
 import wave
 
-from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
+from roomkit.voice import InterruptionConfig, InterruptionStrategy
 from roomkit.voice.pipeline.backchannel import PhraseBackchannelDetector
 
 from .models import require_local_models
@@ -30,6 +30,17 @@ def pcm_from_wav_url(url: str) -> tuple[bytes, int]:
     wav = base64.b64decode(url.split(",", 1)[1])
     with wave.open(io.BytesIO(wav), "rb") as reader:
         return reader.readframes(reader.getnframes()), reader.getframerate()
+
+
+def wav_bytes(pcm: bytes, sample_rate: int, channels: int = 1) -> bytes:
+    """16-bit PCM wrapped in a WAV container, to write to a ``.wav`` file."""
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as writer:
+        writer.setnchannels(channels)
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        writer.writeframes(pcm)
+    return buffer.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +72,7 @@ def build_aec(
 
     if aec_mode in ("1", "webrtc"):
         try:
-            from roomkit.voice.pipeline.aec.webrtc import WebRTCAECProvider
+            from roomkit.voice.pipeline.aec import WebRTCAECProvider
 
             try:
                 stream_delay_ms = max(0, int(os.environ.get("AEC_DELAY_MS", "0")))
@@ -84,7 +95,7 @@ def build_aec(
 
     if aec_mode == "speex":
         try:
-            from roomkit.voice.pipeline.aec.speex import SpeexAECProvider
+            from roomkit.voice.pipeline.aec import SpeexAECProvider
 
             frame_size = sample_rate * block_ms // 1000
             logger.info("AEC enabled (Speex)")
@@ -130,9 +141,7 @@ def build_denoiser(sample_rate: int = 16000, *, default: str = "0") -> object | 
 
     if mode == "webrtc":
         try:
-            from roomkit.voice.pipeline.denoiser.webrtc import (
-                WebRTCNoiseSuppressorProvider,
-            )
+            from roomkit.voice.pipeline.denoiser import WebRTCNoiseSuppressorProvider
 
             denoiser = WebRTCNoiseSuppressorProvider(sample_rate=sample_rate)
             logger.info("Denoiser enabled (WebRTC NS)")
@@ -151,7 +160,7 @@ def build_denoiser(sample_rate: int = 16000, *, default: str = "0") -> object | 
             local_model = "dpdfnet2"
         model = os.environ.get("DENOISE_MODEL") or local_model
         try:
-            from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
+            from roomkit.voice.pipeline.denoiser import (
                 SherpaOnnxDenoiserConfig,
                 SherpaOnnxDenoiserProvider,
             )
@@ -180,7 +189,7 @@ def build_denoiser(sample_rate: int = 16000, *, default: str = "0") -> object | 
 
     if mode == "rnnoise":
         try:
-            from roomkit.voice.pipeline.denoiser.rnnoise import RNNoiseDenoiserProvider
+            from roomkit.voice.pipeline.denoiser import RNNoiseDenoiserProvider
 
             denoiser = RNNoiseDenoiserProvider(sample_rate=sample_rate)
             logger.info("Denoiser enabled (RNNoise)")
@@ -207,7 +216,7 @@ def build_debug_taps() -> object | None:
     """
     if os.environ.get("DEBUG_AUDIO", "0") != "1":
         return None
-    from roomkit.voice.pipeline.debug_taps import PipelineDebugTaps
+    from roomkit.voice.pipeline import PipelineDebugTaps
 
     logger.info("Debug audio taps enabled → ./debug_audio/")
     return PipelineDebugTaps(output_dir="./debug_audio/", stages=["all"])
@@ -239,17 +248,14 @@ def build_vad(sample_rate: int = 24000, *, default: str = "energy") -> object | 
         mode = default
 
     if mode == "energy":
-        from roomkit.voice.pipeline.vad.energy import EnergyVADProvider
+        from roomkit.voice.pipeline.vad import EnergyVADProvider
 
         logger.info("VAD enabled (Energy-based)")
         return EnergyVADProvider()
 
     if mode in ("silero", "ten"):
         try:
-            from roomkit.voice.pipeline.vad.sherpa_onnx import (
-                SherpaOnnxVADConfig,
-                SherpaOnnxVADProvider,
-            )
+            from roomkit.voice.pipeline.vad import SherpaOnnxVADConfig, SherpaOnnxVADProvider
 
             model_file = os.environ.get("VAD_MODEL")
             if model_file:
@@ -264,7 +270,7 @@ def build_vad(sample_rate: int = 24000, *, default: str = "energy") -> object | 
             return SherpaOnnxVADProvider(config)
         except ImportError:
             logger.warning("sherpa-onnx not installed — falling back to energy VAD")
-            from roomkit.voice.pipeline.vad.energy import EnergyVADProvider
+            from roomkit.voice.pipeline.vad import EnergyVADProvider
 
             logger.info("VAD enabled (Energy-based, fallback)")
             return EnergyVADProvider()
@@ -338,7 +344,7 @@ def build_turn_detector(*, default: str = "0") -> object | None:
         model_file = os.environ.get("TURN_MODEL")
         threshold = float(os.environ.get("TURN_THRESHOLD", "0.5"))
         try:
-            from roomkit.voice.pipeline.turn.smart_turn import SmartTurnConfig, SmartTurnDetector
+            from roomkit.voice.pipeline.turn import SmartTurnConfig, SmartTurnDetector
 
             if model_file:
                 config = SmartTurnConfig(model_path=model_file, threshold=threshold)
@@ -379,6 +385,6 @@ def build_pipeline(
     all_values = {"aec": aec, "denoiser": denoiser, "debug_taps": debug_taps, **kwargs}
     if not any(v for v in all_values.values()):
         return None
-    from roomkit.voice.pipeline.config import AudioPipelineConfig
+    from roomkit.voice.pipeline import AudioPipelineConfig
 
     return AudioPipelineConfig(**all_values)  # type: ignore[arg-type]

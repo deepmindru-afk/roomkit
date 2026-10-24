@@ -84,7 +84,7 @@ def test_webrtc_denoiser_factory_constructs_before_logging_enabled(
 
     with (
         patch(
-            "roomkit.voice.pipeline.denoiser.webrtc.WebRTCNoiseSuppressorProvider",
+            "roomkit.voice.pipeline.denoiser.WebRTCNoiseSuppressorProvider",
             constructor,
         ),
         caplog.at_level(logging.INFO, logger="examples.shared.audio"),
@@ -104,7 +104,7 @@ def test_failed_denoiser_initialization_is_not_logged_as_enabled(
 
     with (
         patch(
-            "roomkit.voice.pipeline.denoiser.rnnoise.RNNoiseDenoiserProvider",
+            "roomkit.voice.pipeline.denoiser.RNNoiseDenoiserProvider",
             side_effect=ImportError("librnnoise missing"),
         ),
         caplog.at_level(logging.INFO, logger="examples.shared.audio"),
@@ -125,7 +125,7 @@ def test_dpdfnet_mode_builds_a_dpdfnet_denoiser(monkeypatch, caplog, tmp_path) -
 
     with (
         patch(
-            "roomkit.voice.pipeline.denoiser.sherpa_onnx.SherpaOnnxDenoiserProvider",
+            "roomkit.voice.pipeline.denoiser.SherpaOnnxDenoiserProvider",
             constructor,
         ),
         caplog.at_level(logging.INFO, logger="examples.shared.audio"),
@@ -151,7 +151,7 @@ def test_dpdfnet_is_left_out_at_a_rate_its_model_does_not_run(
 
     with (
         patch(
-            "roomkit.voice.pipeline.denoiser.sherpa_onnx.SherpaOnnxDenoiserProvider",
+            "roomkit.voice.pipeline.denoiser.SherpaOnnxDenoiserProvider",
             constructor,
         ),
         caplog.at_level(logging.INFO, logger="examples.shared.audio"),
@@ -170,9 +170,7 @@ def test_dpdfnet_takes_the_48khz_model_on_a_48khz_pipeline(monkeypatch, tmp_path
     constructor = MagicMock()
     constructor.return_value.model_sample_rate = 48000
 
-    with patch(
-        "roomkit.voice.pipeline.denoiser.sherpa_onnx.SherpaOnnxDenoiserProvider", constructor
-    ):
+    with patch("roomkit.voice.pipeline.denoiser.SherpaOnnxDenoiserProvider", constructor):
         result = build_denoiser(48000)
 
     assert result is constructor.return_value
@@ -186,9 +184,7 @@ def test_a_denoiser_model_file_overrides_the_local_model(monkeypatch, tmp_path) 
     monkeypatch.setenv("ROOMKIT_MODELS_DIR", str(tmp_path))  # empty: never consulted
     constructor = MagicMock()
 
-    with patch(
-        "roomkit.voice.pipeline.denoiser.sherpa_onnx.SherpaOnnxDenoiserProvider", constructor
-    ):
+    with patch("roomkit.voice.pipeline.denoiser.SherpaOnnxDenoiserProvider", constructor):
         build_denoiser(16000)
 
     assert constructor.call_args.args[0].model == "/models/my_gtcrn.onnx"
@@ -216,7 +212,7 @@ def test_sherpa_vad_runs_its_local_model(monkeypatch, tmp_path, mode: str) -> No
     root = _downloaded(monkeypatch, tmp_path, f"{mode}-vad")
     constructor = MagicMock()
 
-    with patch("roomkit.voice.pipeline.vad.sherpa_onnx.SherpaOnnxVADProvider", constructor):
+    with patch("roomkit.voice.pipeline.vad.SherpaOnnxVADProvider", constructor):
         build_vad(16000)
 
     config = constructor.call_args.args[0]
@@ -232,7 +228,7 @@ def test_turn_detector_runs_the_local_smart_turn(monkeypatch, tmp_path) -> None:
     root = _downloaded(monkeypatch, tmp_path, "smart-turn-v3.2-cpu")
     constructor = MagicMock()
 
-    with patch("roomkit.voice.pipeline.turn.smart_turn.SmartTurnDetector", constructor):
+    with patch("roomkit.voice.pipeline.turn.SmartTurnDetector", constructor):
         build_turn_detector()
 
     config = constructor.call_args.args[0]

@@ -37,7 +37,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
 from roomkit import (
+    Agent,
+    AIChannel,
     ChannelCategory,
+    EventType,
     HookExecution,
     HookResult,
     HookTrigger,
@@ -46,26 +49,20 @@ from roomkit import (
     VoiceChannel,
 )
 from roomkit.channels import EmailChannel
-from roomkit.channels.agent import Agent
-from roomkit.channels.ai import AIChannel
-from roomkit.models.enums import EventType
-from roomkit.models.event import SystemContent
-from roomkit.providers.ai import AIContext, AIResponse
-from roomkit.providers.ai.base import AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.email.mock import MockEmailProvider
+from roomkit.models import SystemContent
+from roomkit.providers.ai import AIContext, AIResponse, AIToolCall, MockAIProvider
+from roomkit.providers.email import MockEmailProvider
 from roomkit.tasks import TASK_STATUS_TOOL, TaskStatusTool
-from roomkit.voice import VoiceCapability
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends.mock import MockVoiceBackend
+from roomkit.voice import AudioFrame, VoiceCapability
+from roomkit.voice.backends import MockVoiceBackend
 from roomkit.voice.pipeline import (
     AudioPipelineConfig,
     MockVADProvider,
     VADEvent,
     VADEventType,
 )
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 logger = setup_logging("example.background_task")
 

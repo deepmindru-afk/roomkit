@@ -12,6 +12,7 @@ from .audio import (
     build_turn_detector,
     build_vad,
     pcm_from_wav_url,
+    wav_bytes,
 )
 from .bench import IncomingScenarioBackend
 from .console import console_enabled, setup_console
@@ -47,4 +48,5 @@ __all__ = [
     "setup_console",
     "setup_logging",
     "voice_language",
+    "wav_bytes",
 ]

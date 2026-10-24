@@ -42,18 +42,12 @@ from shared import require_env, run_until_stopped, setup_console, setup_logging
 
 logger = setup_logging("sip_elevenlabs_example")
 
-from roomkit import RealtimeVoiceChannel, RoomKit
-from roomkit.models.context import RoomContext
-from roomkit.models.enums import HookTrigger
-from roomkit.models.event import RoomEvent, SystemContent
-from roomkit.models.hook import HookResult
-from roomkit.models.trace import ProtocolTrace
-from roomkit.providers.elevenlabs.config import ElevenLabsRealtimeConfig
-from roomkit.providers.elevenlabs.realtime import ElevenLabsRealtimeProvider
+from roomkit import HookResult, HookTrigger, RealtimeVoiceChannel, RoomContext, RoomEvent, RoomKit
+from roomkit.models import ProtocolTrace, SystemContent
+from roomkit.providers.elevenlabs import ElevenLabsRealtimeConfig, ElevenLabsRealtimeProvider
 from roomkit.voice import parse_voice_session
-from roomkit.voice.backends.sip import SIPVoiceBackend
-from roomkit.voice.realtime.events import RealtimeTranscriptionEvent
-from roomkit.voice.realtime.sip_transport import SIPRealtimeTransport
+from roomkit.voice.backends import SIPVoiceBackend
+from roomkit.voice.realtime import RealtimeTranscriptionEvent, SIPRealtimeTransport
 
 # ---------------------------------------------------------------------------
 # Configuration

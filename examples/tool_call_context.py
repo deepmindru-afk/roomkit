@@ -54,9 +54,8 @@ from roomkit import (
     ToolHandler,
     WebSocketChannel,
 )
-from roomkit.models.enums import IdentificationStatus
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.models import IdentificationStatus
+from roomkit.providers.ai import AIResponse, AITool, AIToolCall, MockAIProvider
 from roomkit.tools import (
     current_tool_actor_id,
     current_tool_allowed_names,
@@ -64,7 +63,7 @@ from roomkit.tools import (
     current_tool_room_id,
     tool_turn_context,
 )
-from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from roomkit.voice.realtime import MockRealtimeProvider, MockRealtimeTransport
 
 # The rows the tool guards. Keyed by *identity*, not by participant id: the
 # participant is how someone shows up in one room, the identity is who they are.

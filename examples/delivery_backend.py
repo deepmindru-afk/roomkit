@@ -33,13 +33,14 @@ from roomkit import (
     HookExecution,
     HookTrigger,
     InMemoryDeliveryBackend,
+    RoomContext,
+    RoomEvent,
     RoomKit,
+    TextContent,
     WaitForIdle,
     WebSocketChannel,
 )
-from roomkit.models.context import RoomContext
-from roomkit.models.event import RoomEvent, TextContent
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import MockAIProvider
 
 logger = setup_logging("delivery_backend")
 logging.getLogger("roomkit.delivery").setLevel(logging.DEBUG)

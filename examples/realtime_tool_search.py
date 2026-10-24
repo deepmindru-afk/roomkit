@@ -24,8 +24,8 @@ from typing import Any
 from shared import IncomingScenarioBackend
 
 from roomkit import HookTrigger, RealtimeVoiceChannel, RoomKit, VoiceTrace
-from roomkit.providers.gemini.realtime import GeminiLiveProvider
-from roomkit.voice.base import VoiceSession
+from roomkit.providers.gemini import GeminiLiveProvider
+from roomkit.voice import VoiceSession
 
 logger = logging.getLogger("roomkit.examples.realtime_tool_search")
 

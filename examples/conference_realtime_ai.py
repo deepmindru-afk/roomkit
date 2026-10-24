@@ -46,18 +46,18 @@ import time
 from typing import Any
 
 from roomkit import (
+    ConferenceChannel,
     ConferenceRealtimeConfig,
     ConferenceTranscription,
+    HookExecution,
     HookResult,
+    HookTrigger,
     MockConferenceBackend,
     RoomKit,
 )
-from roomkit.channels.conference import ConferenceChannel
-from roomkit.models.enums import HookExecution, HookTrigger
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.base import VoiceSession
-from roomkit.voice.realtime.mock import MockRealtimeProvider
-from roomkit.voice.stt.mock import MockSTTProvider
+from roomkit.voice import AudioFrame, VoiceSession
+from roomkit.voice.realtime import MockRealtimeProvider
+from roomkit.voice.stt import MockSTTProvider
 
 ROOM = "standup"
 

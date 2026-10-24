@@ -43,8 +43,7 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.providers.ai.base import AIResponse, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import AIResponse, AIToolCall, MockAIProvider
 from roomkit.tasks import BACKGROUND_TOOL
 
 setup_logging("discussion_background")

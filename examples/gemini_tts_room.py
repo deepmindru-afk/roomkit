@@ -66,8 +66,8 @@ import asyncio
 from shared import require_env
 
 from roomkit import CLIChannel, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.tts.gemini import GeminiTTSConfig, GeminiTTSProvider
+from roomkit.voice.backends import LocalAudioBackend
+from roomkit.voice.tts import GeminiTTSConfig, GeminiTTSProvider
 
 ROOM_ID = "gemini-tts-room"
 

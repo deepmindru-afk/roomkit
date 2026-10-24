@@ -8,10 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from roomkit.video.backends.screen import ScreenCaptureBackend
-from roomkit.video.vision.base import VisionProvider
-from roomkit.video.vision.screen_input import ScreenInputTools
-from roomkit.video.vision.screen_tool import DescribeScreenTool
+from roomkit.video.backends import ScreenCaptureBackend
+from roomkit.video.vision import DescribeScreenTool, ScreenInputTools, VisionProvider
 
 from .omniview import OmniViewClient
 from .telemetry import CostTrackingTelemetry

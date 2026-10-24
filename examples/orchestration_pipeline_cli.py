@@ -21,14 +21,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import require_env, setup_logging
 
-from roomkit import Agent, CLIChannel, HookExecution, HookTrigger, Pipeline, RoomKit
-from roomkit.memory.sliding_window import SlidingWindowMemory
-from roomkit.models.context import RoomContext
-from roomkit.models.event import RoomEvent
-from roomkit.orchestration.handoff import HandoffMemoryProvider
-from roomkit.orchestration.state import get_conversation_state
-from roomkit.providers.anthropic.ai import AnthropicAIProvider
-from roomkit.providers.anthropic.config import AnthropicConfig
+from roomkit import (
+    Agent,
+    CLIChannel,
+    HookExecution,
+    HookTrigger,
+    Pipeline,
+    RoomContext,
+    RoomEvent,
+    RoomKit,
+    get_conversation_state,
+)
+from roomkit.memory import SlidingWindowMemory
+from roomkit.orchestration import HandoffMemoryProvider
+from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 
 setup_logging("pipeline_cli")
 logging.getLogger("roomkit").setLevel(logging.WARNING)

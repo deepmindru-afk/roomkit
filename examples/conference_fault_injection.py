@@ -33,31 +33,33 @@ import threading
 import time
 
 from roomkit import (
+    Channel,
+    ChannelBinding,
+    ChannelOutput,
+    ChannelType,
+    ConferenceChannel,
     ConferenceGrants,
     ConferenceRecordingConfig,
     ConferenceRecordingStarted,
+    ConferenceTrack,
     ConferenceTranscription,
+    EventSource,
     HookExecution,
     HookResult,
     HookTrigger,
+    InboundMessage,
     MockConferenceBackend,
     MockTrackFormat,
+    RoomContext,
+    RoomEvent,
     RoomKit,
+    TextContent,
 )
-from roomkit.channels.base import Channel
-from roomkit.channels.conference import ConferenceChannel
-from roomkit.conference.models import ConferenceTrack
-from roomkit.models.channel import ChannelBinding, ChannelOutput
-from roomkit.models.context import RoomContext
-from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelType
-from roomkit.models.event import AudioContent, EventSource, RoomEvent, TextContent
-from roomkit.recorder.base import MediaRecordingHandle, RecordingTrack
-from roomkit.recorder.mock import MockMediaRecorder
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.base import AudioChunk, TranscriptionResult
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.models import AudioContent
+from roomkit.recorder import MediaRecordingHandle, MockMediaRecorder, RecordingTrack
+from roomkit.voice import AudioChunk, AudioFrame, TranscriptionResult
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 ROOM = "board-meeting"
 

@@ -36,17 +36,17 @@ from roomkit import (
     Agent,
     AgentIdentity,
     ChannelDeclaration,
+    EventType,
     HookResult,
     HookTrigger,
     InboundMessage,
+    InMemoryStore,
     RoomKit,
     SMSChannel,
     TextContent,
 )
-from roomkit.models.enums import EventType
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.sms.mock import MockSMSProvider
-from roomkit.store.memory import InMemoryStore
+from roomkit.providers.ai import MockAIProvider
+from roomkit.providers.sms import MockSMSProvider
 from roomkit.turns import InMemoryTurnBackend, TurnExecutor
 
 logger = setup_logging("example.declared_agent")

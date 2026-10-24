@@ -15,13 +15,19 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 
-from roomkit import RoomEvent, WebSocketChannel
-from roomkit.channels.websocket import StreamChunk, StreamEnd, StreamMessage, StreamStart
-from roomkit.models.channel import ChannelBinding, ChannelCapabilities
-from roomkit.models.context import RoomContext
-from roomkit.models.enums import ChannelMediaType, ChannelType
-from roomkit.models.event import EventSource, TextContent
-from roomkit.models.room import Room
+from roomkit import (
+    ChannelBinding,
+    ChannelCapabilities,
+    ChannelType,
+    EventSource,
+    Room,
+    RoomContext,
+    RoomEvent,
+    TextContent,
+    WebSocketChannel,
+)
+from roomkit.channels import StreamChunk, StreamEnd, StreamMessage, StreamStart
+from roomkit.models import ChannelMediaType
 
 
 async def main() -> None:

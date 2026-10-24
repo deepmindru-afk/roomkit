@@ -47,7 +47,7 @@ voice = VoiceChannel(
 AEC and AGC stages automatically skip when the backend declares native capabilities:
 
 ```python
-from roomkit.voice.base import VoiceCapability
+from roomkit.voice import VoiceCapability
 
 # If backend has NATIVE_AEC, pipeline skips the AEC stage
 # If backend has NATIVE_AGC, pipeline skips the AGC stage
@@ -81,11 +81,9 @@ vad = MockVADProvider(events=[
 ])
 
 # Production: SherpaOnnx VAD (local, offline)
-from roomkit.voice import get_sherpa_onnx_vad_provider, get_sherpa_onnx_vad_config
+from roomkit.voice.pipeline import SherpaOnnxVADConfig, SherpaOnnxVADProvider
 
-SherpaVAD = get_sherpa_onnx_vad_provider()
-SherpaVADConfig = get_sherpa_onnx_vad_config()
-vad = SherpaVAD(SherpaVADConfig(threshold=0.5))
+vad = SherpaOnnxVADProvider(SherpaOnnxVADConfig(threshold=0.5))
 ```
 
 ### AEC (Acoustic Echo Cancellation)
@@ -94,10 +92,9 @@ Removes echo from the microphone signal caused by speaker output.
 
 ```python
 # Speex AEC
-from roomkit.voice import get_speex_aec_provider
+from roomkit.voice.pipeline import SpeexAECProvider
 
-SpeexAEC = get_speex_aec_provider()
-aec = SpeexAEC(sample_rate=16000, frame_size=160, filter_length=1024)
+aec = SpeexAECProvider(sample_rate=16000, frame_size=160, filter_length=1024)
 
 # WebRTC AEC
 # pip install roomkit[webrtc-aec]
@@ -144,20 +141,17 @@ from roomkit.voice.pipeline import WebRTCNoiseSuppressorProvider
 denoiser = WebRTCNoiseSuppressorProvider(sample_rate=24000)
 
 # RNNoise (local, CPU-based): the system librnnoise, else pip install roomkit[rnnoise]
-from roomkit.voice import get_rnnoise_denoiser_provider
+from roomkit.voice.pipeline import RNNoiseDenoiserProvider
 
-RNNoise = get_rnnoise_denoiser_provider()
-denoiser = RNNoise()
+denoiser = RNNoiseDenoiserProvider()
 
 # ai|coustics Quail (cloud API)
 # pip install roomkit[aicoustics]
 
 # SherpaOnnx denoiser (local ONNX model)
-from roomkit.voice import get_sherpa_onnx_denoiser_provider, get_sherpa_onnx_denoiser_config
+from roomkit.voice.pipeline import SherpaOnnxDenoiserConfig, SherpaOnnxDenoiserProvider
 
-SherpaDenoiser = get_sherpa_onnx_denoiser_provider()
-SherpaDenoiserConfig = get_sherpa_onnx_denoiser_config()
-denoiser = SherpaDenoiser(SherpaDenoiserConfig())
+denoiser = SherpaOnnxDenoiserProvider(SherpaOnnxDenoiserConfig())
 
 # DPDFNet through the same provider (sherpa-onnx 1.12.30+), streaming
 from roomkit.voice.pipeline import SherpaOnnxDenoiserConfig, SherpaOnnxDenoiserProvider
@@ -195,7 +189,7 @@ format before creating native state and keep model history isolated per stream.
 Identifies different speakers in multi-speaker audio.
 
 ```python
-from roomkit.voice.pipeline.diarization.mock import MockDiarizationProvider
+from roomkit.voice.pipeline.diarization import MockDiarizationProvider
 
 diarizer = MockDiarizationProvider()
 ```
@@ -205,7 +199,7 @@ diarizer = MockDiarizationProvider()
 Detects dual-tone multi-frequency signals (phone keypad tones).
 
 ```python
-from roomkit.voice.pipeline.dtmf.mock import MockDTMFDetector
+from roomkit.voice.pipeline.dtmf import MockDTMFDetector
 
 dtmf = MockDTMFDetector()
 ```
@@ -217,8 +211,7 @@ DTMF runs in parallel with other pipeline stages (before AEC/AGC/denoiser).
 Records inbound and outbound audio.
 
 ```python
-from roomkit.voice.pipeline.recorder.mock import MockAudioRecorder
-from roomkit.voice.pipeline.recorder import RecordingConfig
+from roomkit.voice.pipeline.recorder import MockAudioRecorder, RecordingConfig
 
 recorder = MockAudioRecorder()
 config = RecordingConfig(
@@ -233,7 +226,7 @@ config = RecordingConfig(
 Determines when a speaker's turn is complete (post-STT):
 
 ```python
-from roomkit.voice.pipeline.turn.mock import MockTurnDetector
+from roomkit.voice.pipeline.turn import MockTurnDetector
 
 turn = MockTurnDetector()
 
@@ -248,7 +241,7 @@ Turn detection accumulates transcription fragments until `is_complete=True`, the
 Classifies short utterances as backchannel (e.g., "uh-huh", "yeah") to prevent false interruptions:
 
 ```python
-from roomkit.voice.pipeline.backchannel.mock import MockBackchannelDetector
+from roomkit.voice.pipeline.backchannel import MockBackchannelDetector
 
 bc = MockBackchannelDetector()
 ```
@@ -260,7 +253,7 @@ Used with `InterruptionStrategy.SEMANTIC`.
 Custom audio transformations on outbound TTS audio:
 
 ```python
-from roomkit.voice.pipeline.postprocessor.base import AudioPostProcessor
+from roomkit.voice.pipeline.postprocessor import AudioPostProcessor
 ```
 
 ## Local Models
@@ -284,11 +277,14 @@ whose message is the download command. Other keywords override the model's
 settings:
 
 ```python
-from roomkit.voice.pipeline import AudioPipelineConfig
+from roomkit.voice.pipeline import (
+    AudioPipelineConfig,
+    SherpaOnnxVADConfig,
+    SherpaOnnxVADProvider,
+)
 from roomkit.voice.pipeline.turn import SmartTurnConfig, SmartTurnDetector
-from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
-from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
-from roomkit.voice.tts.sherpa_onnx import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
+from roomkit.voice.stt import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
+from roomkit.voice.tts import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
 
 stt = SherpaOnnxSTTProvider(SherpaOnnxSTTConfig.from_local_model("zipformer-en-2023-06-26"))
 tts = SherpaOnnxTTSProvider(
@@ -321,7 +317,7 @@ speaker id is taken (`voice="ff_siwis"`, per synthesis too).
 The `InterruptionHandler` manages what happens when the user speaks during TTS playback:
 
 ```python
-from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
+from roomkit.voice import InterruptionConfig, InterruptionStrategy
 
 config = InterruptionConfig(
     strategy=InterruptionStrategy.CONFIRMED,
@@ -351,7 +347,7 @@ audio path when immediate barge-in is more important.
 Inbound audio is represented as `AudioFrame`:
 
 ```python
-from roomkit.voice.audio_frame import AudioFrame
+from roomkit.voice import AudioFrame
 
 frame = AudioFrame(
     data=b"\x00" * 320,   # Raw PCM bytes

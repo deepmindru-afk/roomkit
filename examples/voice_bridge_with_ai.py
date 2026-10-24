@@ -38,16 +38,16 @@ from roomkit import (
     RoomKit,
     VoiceChannel,
 )
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends.mock import MockVoiceBackend
+from roomkit.voice import AudioFrame
+from roomkit.voice.backends import MockVoiceBackend
 from roomkit.voice.pipeline import (
     AudioPipelineConfig,
     MockVADProvider,
     VADEvent,
     VADEventType,
 )
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 logger = setup_logging("voice_bridge_with_ai")
 

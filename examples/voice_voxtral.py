@@ -61,14 +61,12 @@ from shared import (
     voice_language,
 )
 
-from roomkit import ChannelCategory, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.channels.ai import AIChannel
+from roomkit import AIChannel, ChannelCategory, HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.providers.mistral import MistralAIProvider, MistralConfig
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.voice.backends import LocalAudioBackend
 from roomkit.voice.pipeline import AudioPipelineConfig
-from roomkit.voice.stt.voxtral import VoxtralSTTConfig, VoxtralSTTProvider, VoxtralTurnDetection
-from roomkit.voice.tts.filters import StripEmoji
-from roomkit.voice.tts.voxtral import DEFAULT_VOICE, VoxtralTTSConfig, VoxtralTTSProvider
+from roomkit.voice.stt import VoxtralSTTConfig, VoxtralSTTProvider, VoxtralTurnDetection
+from roomkit.voice.tts import StripEmoji, VoxtralTTSConfig, VoxtralTTSProvider
 
 logger = setup_logging("voice_voxtral")
 
@@ -119,9 +117,9 @@ async def main() -> None:
     )
 
     # --- Voxtral Speech: each sentence rendered and streamed --------------------
-    tts = VoxtralTTSProvider(
-        VoxtralTTSConfig(api_key=api_key, voice=os.environ.get("VOICE", DEFAULT_VOICE))
-    )
+    # The config's default voice applies when VOICE is unset.
+    tts_voice = {"voice": os.environ["VOICE"]} if "VOICE" in os.environ else {}
+    tts = VoxtralTTSProvider(VoxtralTTSConfig(api_key=api_key, **tts_voice))
     logger.info("Hearing in %s, speaking with %s", language or "any language", tts.default_voice)
 
     # --- Channels ---------------------------------------------------------------

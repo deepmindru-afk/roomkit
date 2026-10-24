@@ -31,11 +31,8 @@ from pathlib import Path
 
 import sounddevice as sd
 
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.pipeline.denoiser.aicoustics import (
-    AICousticsDenoiserConfig,
-    AICousticsDenoiserProvider,
-)
+from roomkit.voice import AudioFrame
+from roomkit.voice.pipeline.denoiser import AICousticsDenoiserConfig, AICousticsDenoiserProvider
 
 SAMPLE_RATE = 16000
 BLOCK_MS = 10

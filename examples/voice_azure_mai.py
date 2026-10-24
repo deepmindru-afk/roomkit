@@ -43,17 +43,9 @@ from collections.abc import AsyncIterator
 
 from shared import require_env, setup_logging
 
-from roomkit.voice.base import AudioChunk
-from roomkit.voice.stt.azure_mai import (
-    DEFAULT_DEPLOYMENT,
-    AzureMAISTTConfig,
-    AzureMAISTTProvider,
-)
-from roomkit.voice.tts.azure_speech import (
-    DEFAULT_VOICE,
-    AzureSpeechTTSConfig,
-    AzureSpeechTTSProvider,
-)
+from roomkit.voice import AudioChunk
+from roomkit.voice.stt import AzureMAISTTConfig, AzureMAISTTProvider
+from roomkit.voice.tts import AzureSpeechTTSConfig, AzureSpeechTTSProvider
 
 logger = setup_logging("voice_azure_mai")
 
@@ -108,19 +100,26 @@ async def hear(stt: AzureMAISTTProvider, pcm: bytes) -> str:
 
 async def main() -> None:
     env = require_env("AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION", "AZURE_MAI_ENDPOINT")
+    # Each config's own default applies when the variable is unset.
+    tts_voice = {"voice": os.environ["VOICE"]} if "VOICE" in os.environ else {}
+    stt_deployment = (
+        {"deployment": os.environ["AZURE_MAI_DEPLOYMENT"]}
+        if "AZURE_MAI_DEPLOYMENT" in os.environ
+        else {}
+    )
     tts = AzureSpeechTTSProvider(
         AzureSpeechTTSConfig(
             api_key=env["AZURE_SPEECH_KEY"],
             region=env["AZURE_SPEECH_REGION"],
-            voice=os.environ.get("VOICE", DEFAULT_VOICE),
             sample_rate=SAMPLE_RATE,
+            **tts_voice,
         )
     )
     stt = AzureMAISTTProvider(
         AzureMAISTTConfig(
             endpoint=env["AZURE_MAI_ENDPOINT"],
             api_key=env["AZURE_SPEECH_KEY"],
-            deployment=os.environ.get("AZURE_MAI_DEPLOYMENT", DEFAULT_DEPLOYMENT),
+            **stt_deployment,
         )
     )
     text = os.environ.get("TEXT", TEXT)

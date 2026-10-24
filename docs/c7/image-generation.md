@@ -91,7 +91,7 @@ base64, never a remote URL. `MediaContent.url` accepts data URIs, so a
 generated image enters a room without conversion:
 
 ```python
-from roomkit.models.event import MediaContent
+from roomkit.models import MediaContent
 
 await kit.send_event(
     room_id=room_id,

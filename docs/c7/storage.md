@@ -42,7 +42,7 @@ Install: `pip install roomkit[postgres]`
 
 ```python
 from roomkit import RoomKit
-from roomkit.store.postgres import PostgresStore
+from roomkit.store import PostgresStore
 
 store = PostgresStore("postgresql://user:pass@localhost/roomkit")
 await store.init()  # Creates connection pool and tables
@@ -114,7 +114,7 @@ import asyncio
 import os
 
 from roomkit import InboundMessage, RoomKit, TextContent, WebSocketChannel
-from roomkit.store.postgres import PostgresStore
+from roomkit.store import PostgresStore
 
 
 async def main() -> None:
@@ -153,9 +153,7 @@ if __name__ == "__main__":
 Implement `ConversationStore` for other backends (Redis, DynamoDB, etc.):
 
 ```python
-from roomkit import RoomAlreadyExistsError
-from roomkit.store.base import ConversationStore
-from roomkit.models.room import Room
+from roomkit import ConversationStore, Room, RoomAlreadyExistsError
 
 class RedisStore(ConversationStore):
     async def create_room(self, room: Room) -> Room:

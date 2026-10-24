@@ -19,9 +19,9 @@ from __future__ import annotations
 
 import logging
 
-from roomkit.channels.realtime_voice import RealtimeVoiceChannel
-from roomkit.core.framework import RoomKit
-from roomkit.models.enums import HookExecution, HookTrigger
+from roomkit import RoomKit
+from roomkit.channels import RealtimeVoiceChannel
+from roomkit.models import HookExecution, HookTrigger
 
 from .state import ScreenAssistantState
 from .vision import build_change_context

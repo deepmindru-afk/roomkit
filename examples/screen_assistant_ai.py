@@ -130,10 +130,9 @@ from roomkit import (
     RoomKit,
     VideoChannel,
 )
-from roomkit.orchestration.session_audit import JSONLSessionAuditor
-from roomkit.orchestration.tool_audit import ToolAuditEntry
-from roomkit.video.backends.screen import ScreenCaptureBackend
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.orchestration import JSONLSessionAuditor, ToolAuditEntry
+from roomkit.video.backends import ScreenCaptureBackend
+from roomkit.voice.backends import LocalAudioBackend
 
 logger = setup_logging("screen_assistant_ai")
 

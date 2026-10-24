@@ -22,10 +22,9 @@ import asyncio
 import httpx
 from shared import setup_logging
 
-from roomkit.providers.ai.base import AIContext, AIMessage, ProviderError
-from roomkit.providers.openai.ai import OpenAIAIProvider
-from roomkit.providers.openai.config import OpenAIConfig
-from roomkit.providers.url_safety import validate_public_url
+from roomkit.providers import validate_public_url
+from roomkit.providers.ai import AIContext, AIMessage, ProviderError
+from roomkit.providers.openai import OpenAIAIProvider, OpenAIConfig
 
 logger = setup_logging("openai_outbound_policy")
 

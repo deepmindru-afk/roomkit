@@ -46,6 +46,7 @@ from shared import run_until_stopped, setup_console, setup_logging
 logger = setup_logging("voice_sip_dtmf")
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     HookExecution,
     HookResult,
@@ -53,11 +54,9 @@ from roomkit import (
     RoomKit,
     VoiceChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.base import AIResponse, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.voice.backends.sip import PT_PCMU, SIPVoiceBackend
-from roomkit.voice.base import VoiceSession
+from roomkit.providers.ai import AIResponse, AIToolCall, MockAIProvider
+from roomkit.voice import VoiceSession
+from roomkit.voice.backends import PT_PCMU, SIPVoiceBackend
 from roomkit.voice.pipeline import (
     AudioPipelineConfig,
     MockVADProvider,
@@ -65,8 +64,8 @@ from roomkit.voice.pipeline import (
     VADEventType,
 )
 from roomkit.voice.pipeline.dtmf import MockDTMFDetector
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 # ---------------------------------------------------------------------------
 # Configuration

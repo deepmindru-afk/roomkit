@@ -18,7 +18,7 @@ import time
 
 import sounddevice as sd
 
-from roomkit.voice.pipeline.denoiser.rnnoise import RNNoiseDenoiserProvider
+from roomkit.voice.pipeline.denoiser import RNNoiseDenoiserProvider
 
 SAMPLE_RATE = 16000
 BLOCK_MS = 10
@@ -44,7 +44,7 @@ def main() -> None:
     print()
 
     def callback(indata: bytes, frames: int, time_info: object, status: object) -> None:
-        from roomkit.voice.audio_frame import AudioFrame
+        from roomkit.voice import AudioFrame
 
         n = len(indata) // 2
         samples = struct.unpack(f"<{n}h", bytes(indata))

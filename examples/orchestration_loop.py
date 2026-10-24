@@ -21,22 +21,21 @@ import asyncio
 from roomkit import (
     Agent,
     ChannelCategory,
+    ConversationPipeline,
+    ConversationState,
     EventType,
     InboundMessage,
+    PipelineStage,
+    RoomEvent,
     RoomKit,
     TextContent,
     WebSocketChannel,
-)
-from roomkit.memory.sliding_window import SlidingWindowMemory
-from roomkit.models.event import RoomEvent
-from roomkit.orchestration.handoff import HandoffMemoryProvider
-from roomkit.orchestration.pipeline import ConversationPipeline, PipelineStage
-from roomkit.orchestration.state import (
-    ConversationState,
     get_conversation_state,
     save_conversation_state,
 )
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.memory import SlidingWindowMemory
+from roomkit.orchestration import HandoffMemoryProvider
+from roomkit.providers.ai import MockAIProvider
 
 # --- Pipeline definition (with loop) ----------------------------------------
 

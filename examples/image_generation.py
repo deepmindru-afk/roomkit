@@ -73,9 +73,8 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.models.event import MediaContent
-from roomkit.providers.ai.base import AIResponse, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.models import MediaContent
+from roomkit.providers.ai import AIResponse, AIToolCall, MockAIProvider
 
 ROOM_ID = "studio"
 OUTPUT_DIR = Path(

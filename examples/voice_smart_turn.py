@@ -76,15 +76,21 @@ from shared import (
     setup_logging,
 )
 
-from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.channels.ai import AIChannel
+from roomkit import (
+    AIChannel,
+    ChannelCategory,
+    HookExecution,
+    HookResult,
+    HookTrigger,
+    RoomKit,
+    VoiceChannel,
+)
 from roomkit.providers.vllm import VLLMConfig, create_vllm_provider
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.pipeline import AudioPipelineConfig
+from roomkit.voice.backends import LocalAudioBackend
+from roomkit.voice.pipeline import AudioPipelineConfig, SherpaOnnxVADConfig, SherpaOnnxVADProvider
 from roomkit.voice.pipeline.turn import SmartTurnConfig, SmartTurnDetector
-from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
-from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
-from roomkit.voice.tts.sherpa_onnx import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
+from roomkit.voice.stt import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
+from roomkit.voice.tts import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
 
 logger = setup_logging("voice_smart_turn")
 

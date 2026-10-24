@@ -52,12 +52,11 @@ from roomkit import (
     RoomKit,
 )
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
-from roomkit.video.backends.fastrtc import FastRTCVideoBackend, mount_fastrtc_av
-from roomkit.video.vision.openai import OpenAIVisionConfig, OpenAIVisionProvider
-from roomkit.voice.pipeline import AudioPipelineConfig
-from roomkit.voice.pipeline.vad.energy import EnergyVADProvider
-from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
-from roomkit.voice.tts.elevenlabs import ElevenLabsConfig, ElevenLabsTTSProvider
+from roomkit.video.backends import FastRTCVideoBackend, mount_fastrtc_av
+from roomkit.video.vision import OpenAIVisionConfig, OpenAIVisionProvider
+from roomkit.voice.pipeline import AudioPipelineConfig, EnergyVADProvider
+from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider
+from roomkit.voice.tts import ElevenLabsConfig, ElevenLabsTTSProvider
 
 logger = setup_logging("webrtc_video")
 # Suppress noisy transport logs

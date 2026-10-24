@@ -5,10 +5,8 @@ AIChannel connects rooms to LLM providers. When a message is broadcast to an AI 
 ## Basic Setup
 
 ```python
-from roomkit import RoomKit, ChannelCategory
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.anthropic.ai import AnthropicAIProvider
-from roomkit.providers.anthropic.config import AnthropicConfig
+from roomkit import AIChannel, ChannelCategory, RoomKit
+from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 
 kit = RoomKit()
 
@@ -66,19 +64,17 @@ Pick **Ollama** over the OpenAI-compat shim (`OpenAIAIProvider` pointed at `http
 
 ```python
 # OpenAI
-from roomkit.providers.openai.ai import OpenAIAIProvider
-from roomkit.providers.openai.config import OpenAIConfig
+from roomkit.providers.openai import OpenAIAIProvider, OpenAIConfig
 
 provider = OpenAIAIProvider(OpenAIConfig(api_key="sk-...", model="gpt-4o"))
 
 # Gemini
-from roomkit.providers.gemini.ai import GeminiAIProvider
-from roomkit.providers.gemini.config import GeminiConfig
+from roomkit.providers.gemini import GeminiAIProvider, GeminiConfig
 
 provider = GeminiAIProvider(GeminiConfig(api_key="...", model="gemini-3.8-flash"))
 
 # Mock (for testing)
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import MockAIProvider
 
 provider = MockAIProvider(responses=["Hello!", "How can I help?"])
 ```
@@ -102,7 +98,7 @@ current Grok usage after total input crosses the vendor's threshold.
 
 ```python
 from roomkit import Agent
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import MockAIProvider
 
 agent = Agent(
     "support-agent",
@@ -192,7 +188,7 @@ channel object serves every room it is bound to, so a host acting for one
 room addresses that room:
 
 ```python
-from roomkit.models.steering import Cancel, InjectMessage
+from roomkit.models import Cancel, InjectMessage
 
 agent.steer(Cancel(reason="stop pressed"), room_id="room-a")   # every loop of room-a
 agent.steer(InjectMessage(content="Also check the logs."), room_id="room-a")  # its latest
@@ -223,10 +219,8 @@ reaches the loops of the process it is called in.
 Define tools as JSON schema and attach them to the AI channel:
 
 ```python
-from roomkit import ChannelCategory
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.openai.ai import OpenAIAIProvider
-from roomkit.providers.openai.config import OpenAIConfig
+from roomkit import AIChannel, ChannelCategory
+from roomkit.providers.openai import OpenAIAIProvider, OpenAIConfig
 
 ai = AIChannel(
     "ai-assistant",
@@ -300,7 +294,7 @@ result says `isError` raises it.
 For structured tool definitions, use the `Tool` base class:
 
 ```python
-from roomkit.tools.base import Tool
+from roomkit.tools import Tool
 
 class GetWeather(Tool):
     name = "get_weather"
@@ -324,7 +318,7 @@ ai = AIChannel("ai", provider=provider, tools=[GetWeather()])
 Integrate Model Context Protocol servers:
 
 ```python
-from roomkit.tools.mcp import MCPToolProvider
+from roomkit.tools import MCPToolProvider
 
 async with MCPToolProvider.from_command("uvx", ["mcp-server-sqlite", "--db", "data.db"]) as mcp:
     ai = AIChannel("ai", provider=provider, tools=mcp.get_tools(), tool_handler=mcp.as_tool_handler())
@@ -744,8 +738,8 @@ Read it at the source, by subclassing `AIChannel` and wrapping
 `ChannelOutput.response_stream`:
 
 ```python
-from roomkit.channels.ai import AIChannel
-from roomkit.models.streaming import LoopEndMarker
+from roomkit.channels import AIChannel
+from roomkit.models import LoopEndMarker
 
 
 class ObservingAIChannel(AIChannel):
@@ -814,7 +808,7 @@ the turn's deliveries are done (`ON_EVENT_UPDATED` fires), so read it from the
 store or the `InboundResult`, not from the frames a channel was streamed.
 
 ```python
-from roomkit.models.enums import EventType
+from roomkit.models import EventType
 
 result = await kit.process_inbound(message)
 reply = [e for e in result.response_events if e.type == EventType.MESSAGE][-1]
@@ -936,7 +930,7 @@ provider = create_vllm_provider(VLLMConfig(
 AI providers that support vision can process images sent as `MediaContent`:
 
 ```python
-from roomkit.models.event import MediaContent
+from roomkit.models import MediaContent
 
 await kit.process_inbound(
     InboundMessage(
@@ -1210,7 +1204,7 @@ ai = AIChannel(
 For production use without a vector database, use `PostgresKnowledgeSource`:
 
 ```python
-from roomkit.knowledge.postgres import PostgresKnowledgeSource
+from roomkit.knowledge import PostgresKnowledgeSource
 
 source = PostgresKnowledgeSource(dsn="postgresql://localhost/mydb")
 await source.init()

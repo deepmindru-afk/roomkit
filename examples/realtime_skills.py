@@ -26,7 +26,7 @@ from realtime_tool_search import write_evidence
 from shared import IncomingScenarioBackend, require_env
 
 from roomkit import HookTrigger, RealtimeVoiceChannel, RoomKit, VoiceTrace
-from roomkit.providers.gemini.realtime import GeminiLiveProvider
+from roomkit.providers.gemini import GeminiLiveProvider
 from roomkit.skills import SkillRegistry
 
 logger = logging.getLogger("roomkit.examples.realtime_skills")

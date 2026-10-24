@@ -151,20 +151,28 @@ from shared import (
     setup_logging,
 )
 
-from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.channels.ai import AIChannel
+from roomkit import (
+    AIChannel,
+    ChannelCategory,
+    HookExecution,
+    HookResult,
+    HookTrigger,
+    RoomKit,
+    VoiceChannel,
+)
 from roomkit.providers.vllm import VLLMConfig, create_vllm_provider
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.voice.backends import LocalAudioBackend
 from roomkit.voice.pipeline import (
     AudioPipelineConfig,
     PipelineDebugTaps,
     RecordingChannelMode,
     RecordingConfig,
+    SherpaOnnxVADConfig,
+    SherpaOnnxVADProvider,
     WavFileRecorder,
 )
-from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
-from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
-from roomkit.voice.tts.sherpa_onnx import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
+from roomkit.voice.stt import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
+from roomkit.voice.tts import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
 
 logger = setup_logging("voice_local_onnx_vllm")
 
@@ -250,12 +258,12 @@ async def main() -> None:
     aec = None
     aec_mode = os.environ.get("AEC", "0").lower()
     if aec_mode in ("1", "webrtc"):
-        from roomkit.voice.pipeline.aec.webrtc import WebRTCAECProvider
+        from roomkit.voice.pipeline.aec import WebRTCAECProvider
 
         aec = WebRTCAECProvider(sample_rate=sample_rate)
         logger.info("AEC enabled (WebRTC AEC3)")
     elif aec_mode == "speex":
-        from roomkit.voice.pipeline.aec.speex import SpeexAECProvider
+        from roomkit.voice.pipeline import SpeexAECProvider
 
         aec = SpeexAECProvider(
             frame_size=frame_size,
@@ -286,10 +294,7 @@ async def main() -> None:
     # --- Denoiser (optional, sherpa-onnx GTCRN) -------------------------------
     denoiser = None
     if denoise:
-        from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-            SherpaOnnxDenoiserConfig,
-            SherpaOnnxDenoiserProvider,
-        )
+        from roomkit.voice.pipeline import SherpaOnnxDenoiserConfig, SherpaOnnxDenoiserProvider
 
         denoiser = SherpaOnnxDenoiserProvider(
             SherpaOnnxDenoiserConfig.from_local_model("gtcrn-simple", provider="cpu")

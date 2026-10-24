@@ -35,9 +35,8 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.tools.compose import compose_tool_handlers
+from roomkit.providers.ai import AIResponse, AITool, AIToolCall, MockAIProvider
+from roomkit.tools import compose_tool_handlers
 
 setup_logging("mcp_tool_provider")
 

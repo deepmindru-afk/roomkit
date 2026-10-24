@@ -27,9 +27,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from shared import setup_logging
 
-from roomkit import HookExecution, HookResult, HookTrigger, RealtimeVoiceChannel, RoomKit
-from roomkit.skills.registry import SkillRegistry
-from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from roomkit import (
+    HookExecution,
+    HookResult,
+    HookTrigger,
+    RealtimeVoiceChannel,
+    RoomKit,
+    SkillRegistry,
+)
+from roomkit.voice.realtime import MockRealtimeProvider, MockRealtimeTransport
 
 logger = setup_logging("realtime_tool_gate")
 

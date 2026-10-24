@@ -27,15 +27,14 @@ from roomkit import (
     CLIChannel,
     HookExecution,
     HookTrigger,
+    RoomContext,
+    RoomEvent,
     RoomKit,
     Supervisor,
     TextContent,
 )
-from roomkit.memory.sliding_window import SlidingWindowMemory
-from roomkit.models.context import RoomContext
-from roomkit.models.event import RoomEvent
-from roomkit.providers.anthropic.ai import AnthropicAIProvider
-from roomkit.providers.anthropic.config import AnthropicConfig
+from roomkit.memory import SlidingWindowMemory
+from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 
 # Show task runner errors — important for debugging delegation
 setup_logging("content_workflow")

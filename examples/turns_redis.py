@@ -42,17 +42,21 @@ from shared import setup_logging
 from roomkit import (
     Agent,
     AgentIdentity,
+    Channel,
+    ChannelBinding,
+    ChannelCategory,
     ChannelDeclaration,
+    ChannelOutput,
+    ChannelType,
+    EventSource,
     InboundMessage,
+    RoomContext,
+    RoomEvent,
     RoomKit,
+    SQLiteStore,
     TextContent,
 )
-from roomkit.channels.base import Channel
-from roomkit.models.channel import ChannelBinding, ChannelOutput
-from roomkit.models.context import RoomContext
-from roomkit.models.enums import ChannelCategory, ChannelType
-from roomkit.models.event import EventSource, RoomEvent
-from roomkit.providers.ai.base import (
+from roomkit.providers.ai import (
     AIContext,
     AIProvider,
     AIResponse,
@@ -60,16 +64,14 @@ from roomkit.providers.ai.base import (
     StreamEvent,
     StreamTextDelta,
 )
-from roomkit.providers.anthropic.ai import AnthropicAIProvider
-from roomkit.providers.anthropic.config import AnthropicConfig
-from roomkit.store.sqlite import SQLiteStore
+from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 from roomkit.turns import TurnExecutor, TurnTimeouts
 
 try:
     from redis.asyncio import from_url
     from redis.exceptions import RedisError
 
-    from roomkit.turns.redis import RedisTurnBackend
+    from roomkit import RedisTurnBackend
 except ImportError:
     print("Error: install the redis extra: pip install roomkit[redis]")
     sys.exit(1)

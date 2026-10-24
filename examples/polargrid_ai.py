@@ -63,17 +63,13 @@ import asyncio
 from shared import WebSearchTool, env_bool, require_env, setup_logging
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     CLIChannel,
     RoomKit,
-)
-from roomkit.channels.ai import AIChannel
-from roomkit.models.event import (
-    CompositeContent,
-    EventContent,
-    MediaContent,
     TextContent,
 )
+from roomkit.models import CompositeContent, EventContent, MediaContent
 from roomkit.providers.polargrid import PolarGridAIProvider, PolarGridConfig
 
 _IMAGE_COMMAND = "/image"

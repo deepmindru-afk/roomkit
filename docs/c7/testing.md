@@ -60,9 +60,8 @@ class TestMyFeature:
 ## Mock AI Provider
 
 ```python
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.channels.ai import AIChannel
-from roomkit import ChannelCategory
+from roomkit.providers.ai import MockAIProvider
+from roomkit import AIChannel, ChannelCategory
 
 # Responds with pre-configured messages in order
 provider = MockAIProvider(responses=["Response 1", "Response 2"])
@@ -82,7 +81,7 @@ print([t.name for t in last_call.tools])
 ## Mock Voice Backend
 
 ```python
-from roomkit.voice.backends.mock import MockVoiceBackend
+from roomkit.voice.backends import MockVoiceBackend
 
 backend = MockVoiceBackend()
 
@@ -168,8 +167,8 @@ backchannel = MockBackchannelDetector()
 ## Mock STT/TTS
 
 ```python
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 stt = MockSTTProvider(transcripts=["Hello", "How are you?"])
 tts = MockTTSProvider()
@@ -178,7 +177,7 @@ tts = MockTTSProvider()
 ## Mock Identity Resolver
 
 ```python
-from roomkit.identity.mock import MockIdentityResolver
+from roomkit.identity import MockIdentityResolver
 
 resolver = MockIdentityResolver()
 kit = RoomKit(identity_resolver=resolver)
@@ -187,7 +186,7 @@ kit = RoomKit(identity_resolver=resolver)
 ## Mock Realtime Provider
 
 ```python
-from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from roomkit.voice.realtime import MockRealtimeProvider, MockRealtimeTransport
 
 provider = MockRealtimeProvider()
 transport = MockRealtimeTransport()
@@ -227,10 +226,10 @@ async def test_hook_blocks_message() -> None:
 ```python
 from roomkit import VoiceChannel
 from roomkit.voice.pipeline import AudioPipelineConfig, MockVADProvider, VADEvent, VADEventType
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
-from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.audio_frame import AudioFrame
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
+from roomkit.voice.backends import MockVoiceBackend
+from roomkit.voice import AudioFrame
 
 async def test_voice_pipeline() -> None:
     kit = RoomKit()
@@ -262,7 +261,7 @@ async def test_voice_pipeline() -> None:
 
 ```python
 from roomkit import Agent, Pipeline, RoomKit, WebSocketChannel
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import MockAIProvider
 
 async def test_pipeline_orchestration() -> None:
     agent1 = Agent("a1", provider=MockAIProvider(responses=["Transferring..."]))

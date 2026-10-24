@@ -33,16 +33,18 @@ from shared import setup_logging
 from roomkit import (
     AIChannel,
     ChannelCategory,
+    HookExecution,
+    HookTrigger,
     InboundMessage,
     RemoteTurnError,
+    RoomContext,
+    RoomEvent,
     RoomKit,
     SMSChannel,
     TextContent,
 )
-from roomkit.core.exceptions import error_type_name
-from roomkit.providers.ai.base import AIContext, ProviderError, StreamEvent
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.sms.mock import MockSMSProvider
+from roomkit.providers.ai import AIContext, MockAIProvider, ProviderError, StreamEvent
+from roomkit.providers.sms import MockSMSProvider
 
 logger = setup_logging("example.turn_error_classes")
 
@@ -67,8 +69,15 @@ class QuotaModel(MockAIProvider):
         yield  # pragma: no cover - keeps this an async generator
 
 
-async def ask(kit: RoomKit) -> BaseException | None:
-    """One message to a room whose agent's model fails: the error the kit read."""
+async def ask(kit: RoomKit) -> tuple[BaseException | None, list[str]]:
+    """One message to a room whose agent's model fails: the error the kit read,
+    and the ``error_type`` its ON_ERROR hooks were given."""
+    reported: list[str] = []
+
+    @kit.hook(HookTrigger.ON_ERROR, execution=HookExecution.ASYNC)
+    async def on_error(event: RoomEvent, ctx: RoomContext) -> None:
+        reported.append(event.metadata["error_type"])
+
     kit.register_channel(SMSChannel("sms", provider=MockSMSProvider()))
     kit.register_channel(AIChannel("assistant", provider=QuotaModel()))
     await kit.create_room(room_id="support")
@@ -78,11 +87,11 @@ async def ask(kit: RoomKit) -> BaseException | None:
         InboundMessage(channel_id="sms", sender_id="+15550100", content=TextContent(body="Hi"))
     )
     await kit.close()
-    return result.error
+    return result.error, reported
 
 
-def show(error: BaseException | None) -> None:
-    logger.info("  type: %s (reported as %s)", type(error).__name__, error_type_name(error))
+def show(error: BaseException | None, reported: list[str]) -> None:
+    logger.info("  type: %s (reported as %s)", type(error).__name__, ", ".join(reported))
     logger.info("  a ProviderError: %s", isinstance(error, ProviderError))
     logger.info("  a RemoteTurnError: %s", isinstance(error, RemoteTurnError))
     logger.info("  code: %s, retry after: %s s", error.code, error.retry_after)  # type: ignore[union-attr]
@@ -90,11 +99,11 @@ def show(error: BaseException | None) -> None:
 
 async def main() -> None:
     logger.info("1. A kit that declares nothing:")
-    show(await ask(RoomKit()))
+    show(*await ask(RoomKit()))
 
     logger.info("2. A kit that declares QuotaExceededError:")
-    error = await ask(RoomKit(error_classes=(QuotaExceededError,)))
-    show(error)
+    error, reported = await ask(RoomKit(error_classes=(QuotaExceededError,)))
+    show(error, reported)
     logger.info("  the application's class itself: %s", type(error) is QuotaExceededError)
 
 

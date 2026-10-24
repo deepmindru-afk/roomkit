@@ -224,8 +224,8 @@ CONSOLE=1 uv run python examples/<example>.py
 | `background_agent_task.py` | Delegation | Background task delegation with `kit.delegate()` |
 | `custom_identity_resolver.py` | Identity | Custom IdentityResolver for inbound message senders |
 | `identity_verification.py` | Identity | Verify an identified sender: a held question answered once they prove who they are (a link to a PIN page, a code replied in the conversation), an advisor ending it (mock providers, no API key) |
-| `rate_limiting.py` | Rate limiting | TokenBucketRateLimiter for message throttling |
-| `circuit_breaker_retry.py` | Resilience | Circuit breaker and retry patterns |
+| `rate_limiting.py` | Rate limiting | A binding's RateLimit paces delivery; inbound rate limiting drops a flood |
+| `circuit_breaker_retry.py` | Resilience | A binding's RetryPolicy and the channel's circuit breaker, with its framework events |
 | `postgres_store.py` | Storage | PostgreSQL storage backend for production |
 | `store_filtered_count.py` | Storage | Exact event counts under the filter a page would use |
 | `delivery_backend.py` | Delivery | Persistent delivery with InMemoryDeliveryBackend |

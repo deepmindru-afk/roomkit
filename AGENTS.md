@@ -225,8 +225,7 @@ Channels are created via factory functions in `roomkit.channels`:
 
 ```python
 from roomkit.channels import SMSChannel
-from roomkit.providers.twilio.sms import TwilioSMSProvider
-from roomkit.providers.twilio.config import TwilioConfig
+from roomkit.providers.twilio import TwilioConfig, TwilioSMSProvider
 
 # Factory function creates a TransportChannel with the right provider
 sms = SMSChannel("sms-main", provider=TwilioSMSProvider(TwilioConfig(...)))
@@ -236,7 +235,7 @@ kit.register_channel(sms)
 For custom channels, extend `Channel` or `TransportChannel`:
 
 ```python
-from roomkit.channels.base import Channel
+from roomkit import Channel
 
 class CustomChannel(Channel):
     channel_type = ChannelType.WEBHOOK
@@ -251,7 +250,7 @@ class CustomChannel(Channel):
 ### Provider Implementation
 
 ```python
-from roomkit.providers.sms.base import SMSProvider
+from roomkit.providers.sms import SMSProvider
 
 class TwilioSMSProvider(SMSProvider):
     def __init__(self, config: TwilioConfig) -> None:
@@ -312,7 +311,7 @@ AEC and AGC stages are automatically skipped when the backend declares `NATIVE_A
 ```python
 from roomkit import VoiceChannel
 from roomkit.voice.pipeline import AudioPipelineConfig, VADConfig
-from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
+from roomkit.voice import InterruptionConfig, InterruptionStrategy
 
 # All stages are optional — configure what you need
 pipeline = AudioPipelineConfig(
@@ -452,9 +451,9 @@ Results in END events are preview-truncated to 500 characters. Events are best-e
 Sources maintain persistent connections and push events into the framework:
 
 ```python
-from roomkit.sources.neonize import NeonizeSource
+from roomkit.sources import WhatsAppPersonalSourceProvider
 
-source = NeonizeSource(session_path="~/.roomkit/wa.db")
+source = WhatsAppPersonalSourceProvider(db="wa-session.db", channel_id="whatsapp-personal")
 await kit.attach_source(
     "whatsapp-personal", source,
     auto_restart=True,            # Auto-restart on failure
@@ -473,28 +472,23 @@ await kit.detach_source("whatsapp-personal")
 ### Resilience Patterns
 
 ```python
-from roomkit import RateLimit, RetryPolicy
-from roomkit.core.circuit_breaker import CircuitBreaker
-from roomkit.core.retry import retry_with_backoff
+from roomkit.models import RateLimit, RetryPolicy
 
-# Rate limit on channel binding
+# Rate limit and retry with exponential backoff, per channel binding
 await kit.attach_channel("room-1", "sms-out",
     rate_limit=RateLimit(max_per_second=1.0, max_per_minute=30.0),
-    retry_policy=RetryPolicy(max_retries=3, base_delay_seconds=1.0),
+    retry_policy=RetryPolicy(max_retries=3, base_delay_seconds=1.0, max_delay_seconds=60.0),
 )
 
-# Circuit breaker for provider fault isolation
-cb = CircuitBreaker(failure_threshold=5, recovery_timeout=60.0)
-if cb.allow_request():
-    try:
-        result = await provider.send(...)
-        cb.record_success()
-    except Exception:
-        cb.record_failure()  # Opens after 5 consecutive failures
+# Each transport channel has a circuit breaker: 5 failed deliveries (retries
+# included) open it, deliveries are skipped for 60 s, then one probe goes through.
+@kit.on("circuit_breaker_opened")
+async def breaker_opened(event):
+    logger.warning("Deliveries to %s suspended", event.data["channel_id"])
 
-# Retry with exponential backoff
-policy = RetryPolicy(max_retries=3, base_delay_seconds=1.0, max_delay_seconds=60.0)
-result = await retry_with_backoff(flaky_function, policy)
+@kit.on("circuit_breaker_closed")
+async def breaker_closed(event):
+    logger.info("Deliveries to %s resumed", event.data["channel_id"])
 ```
 
 ### Room Timers
@@ -609,12 +603,11 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 # Local imports — absolute from roomkit
-from roomkit.models.room import Room
-from roomkit.models.enums import RoomStatus
+from roomkit.models import Room, RoomStatus
 
 # TYPE_CHECKING imports for circular dependencies
 if TYPE_CHECKING:
-    from roomkit.core.framework import RoomKit
+    from roomkit import RoomKit
 ```
 
 ## Testing Patterns

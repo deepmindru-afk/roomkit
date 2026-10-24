@@ -40,23 +40,15 @@ import numpy as np
 from shared import require_local_models, run_until_stopped, setup_logging
 from shared.env import require_env
 
-from roomkit import HookExecution, HookTrigger, RoomKit, VoiceChannel
-from roomkit.channels.video import VideoChannel
-from roomkit.providers.ai.base import AIContext, AIMessage
-from roomkit.providers.anthropic.ai import AnthropicAIProvider
-from roomkit.providers.anthropic.config import AnthropicConfig
-from roomkit.video import get_local_video_backend
-from roomkit.video.pipeline.config import VideoPipelineConfig
-from roomkit.video.pipeline.filter.base import FilterContext, VideoFilterProvider
+from roomkit import HookExecution, HookTrigger, RoomKit, VideoChannel, VoiceChannel
+from roomkit.providers.ai import AIContext, AIMessage
+from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
+from roomkit.video import VideoFrame, VideoPipelineConfig, get_local_video_backend
+from roomkit.video.pipeline.filter import FilterContext, VideoFilterProvider
 from roomkit.video.pipeline.overlay import Overlay, OverlayPosition, SubtitleManager
-from roomkit.video.video_frame import VideoFrame
-from roomkit.voice import (
-    get_deepgram_config,
-    get_deepgram_provider,
-    get_local_audio_backend,
-)
-from roomkit.voice.pipeline import AudioPipelineConfig
-from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
+from roomkit.voice.backends import LocalAudioBackend
+from roomkit.voice.pipeline import AudioPipelineConfig, SherpaOnnxVADConfig, SherpaOnnxVADProvider
+from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider
 
 logger = setup_logging("subtitles")
 
@@ -174,8 +166,8 @@ async def main() -> None:
 
     # --- STT (Deepgram, French) ------------------------------------------
 
-    stt = get_deepgram_provider()(
-        get_deepgram_config()(api_key=env["DEEPGRAM_API_KEY"], language="fr"),
+    stt = DeepgramSTTProvider(
+        DeepgramConfig(api_key=env["DEEPGRAM_API_KEY"], language="fr"),
     )
 
     # --- Translation (Claude Haiku) --------------------------------------
@@ -203,7 +195,7 @@ async def main() -> None:
 
     # --- Backends --------------------------------------------------------
 
-    audio_backend = get_local_audio_backend()(
+    audio_backend = LocalAudioBackend(
         input_sample_rate=16000,
         output_sample_rate=24000,
     )

@@ -23,8 +23,8 @@ from pathlib import Path
 from shared import require_env, setup_logging
 
 from roomkit import RoomKit, VoiceChannel
-from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.tts.elevenlabs import ElevenLabsConfig, ElevenLabsTTSProvider
+from roomkit.voice.backends import MockVoiceBackend
+from roomkit.voice.tts import ElevenLabsConfig, ElevenLabsTTSProvider
 
 logger = setup_logging("voice_elevenlabs_context")
 logging.getLogger("roomkit.voice.tts.elevenlabs").setLevel(logging.DEBUG)

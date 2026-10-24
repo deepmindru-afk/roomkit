@@ -35,6 +35,7 @@ from shared import setup_console, setup_logging
 
 from roomkit import (
     Access,
+    AIChannel,
     ChannelCategory,
     EventFilter,
     HookExecution,
@@ -48,19 +49,18 @@ from roomkit import (
     VoiceChannel,
 )
 from roomkit.channels import SMSChannel
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.sms.mock import MockSMSProvider
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends.mock import MockVoiceBackend
+from roomkit.providers.ai import MockAIProvider
+from roomkit.providers.sms import MockSMSProvider
+from roomkit.voice import AudioFrame
+from roomkit.voice.backends import MockVoiceBackend
 from roomkit.voice.pipeline import (
     AudioPipelineConfig,
     MockVADProvider,
     VADEvent,
     VADEventType,
 )
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 setup_logging("async_sms_notification")
 

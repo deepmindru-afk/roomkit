@@ -43,7 +43,7 @@ from fastapi.responses import HTMLResponse
 from shared import setup_logging
 
 from roomkit import RoomKit
-from roomkit.video.backends.websocket import WebSocketVideoBackend, mount_websocket_video
+from roomkit.video.backends import WebSocketVideoBackend, mount_websocket_video
 
 logger = setup_logging("websocket_video")
 

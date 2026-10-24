@@ -45,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from shared import setup_logging  # noqa: E402
 
-from roomkit.providers.ai.base import AIContext, AIMessage  # noqa: E402
+from roomkit.providers.ai import AIContext, AIMessage  # noqa: E402
 from roomkit.providers.ollama import (  # noqa: E402
     OllamaAIProvider,
     OllamaConfig,

@@ -1,10 +1,16 @@
-"""Circuit breaker and retry patterns.
+"""Retry and the circuit breaker on a channel's deliveries.
 
-Demonstrates RoomKit's built-in resilience primitives for handling
-provider failures. Shows:
-- CircuitBreaker: Fault isolation with closed/open/half-open states
-- retry_with_backoff: Exponential backoff retry using RetryPolicy
-- How these work together to handle flaky providers
+RoomKit retries a failed delivery and isolates a failing provider itself: the
+binding's ``RetryPolicy`` sets the retries, and the router keeps one circuit
+breaker per transport channel. Shows:
+
+- a provider that fails twice: the message is delivered on the third attempt
+  of the binding's ``RetryPolicy``;
+- a provider that is down: once five deliveries failed, retries included, the
+  channel's breaker opens, RoomKit publishes the ``circuit_breaker_opened``
+  framework event, and the next deliveries are skipped without calling the
+  provider. After 60 s the breaker lets one probe delivery through; a success
+  closes it and publishes ``circuit_breaker_closed``.
 
 Run with:
     uv run python examples/circuit_breaker_retry.py
@@ -13,148 +19,108 @@ Run with:
 from __future__ import annotations
 
 import asyncio
-import time
+import sys
+from pathlib import Path
 
-from roomkit.core.circuit_breaker import CircuitBreaker
-from roomkit.core.retry import retry_with_backoff
-from roomkit.models.channel import RetryPolicy
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from shared import setup_logging
+
+from roomkit import (
+    FrameworkEvent,
+    InboundMessage,
+    ProviderResult,
+    RoomEvent,
+    RoomKit,
+    SMSChannel,
+    TextContent,
+    WebSocketChannel,
+)
+from roomkit.models import RetryPolicy
+from roomkit.providers.ai import ProviderError
+from roomkit.providers.sms import MockSMSProvider
+
+logger = setup_logging("example.circuit_breaker_retry")
+
+
+class FlakySMSProvider(MockSMSProvider):
+    """An SMS provider whose first ``failures`` sends fail."""
+
+    def __init__(self, failures: int) -> None:
+        super().__init__()
+        self.failures = failures
+        self.calls = 0
+
+    async def send(self, event: RoomEvent, to: str, from_: str | None = None) -> ProviderResult:
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise ProviderError(
+                f"unreachable (call {self.calls})",
+                provider="sms",
+                status_code=503,
+                retryable=True,
+            )
+        return await super().send(event, to, from_)
+
+
+async def room_with(provider: FlakySMSProvider, retry_policy: RetryPolicy) -> RoomKit:
+    """A room where what a user writes is sent out by SMS through ``provider``."""
+    kit = RoomKit()
+    kit.register_channel(WebSocketChannel("ws-user"))
+    kit.register_channel(SMSChannel("sms-out", provider=provider))
+    await kit.create_room(room_id="alerts")
+    await kit.attach_channel("alerts", "ws-user")
+    await kit.attach_channel(
+        "alerts",
+        "sms-out",
+        metadata={"phone_number": "+15550100"},
+        retry_policy=retry_policy,
+    )
+    return kit
+
+
+async def write(kit: RoomKit, body: str) -> None:
+    await kit.process_inbound(
+        InboundMessage(channel_id="ws-user", sender_id="user", content=TextContent(body=body))
+    )
 
 
 async def main() -> None:
-    # =====================================================
-    # Part 1: Circuit Breaker
-    # =====================================================
-    print("=== Circuit Breaker Demo ===\n")
+    # Part 1: the binding's RetryPolicy rides out a provider that fails twice.
+    logger.info("=== Retry ===")
+    provider = FlakySMSProvider(failures=2)
+    kit = await room_with(provider, RetryPolicy(max_retries=3, base_delay_seconds=0.05))
+    await write(kit, "Server load above 90%")
+    logger.info("provider calls: %d, messages sent: %d", provider.calls, len(provider.sent))
+    await kit.close()
 
-    # Create a circuit breaker: trips after 3 failures, recovers after 2 seconds
-    cb = CircuitBreaker(failure_threshold=3, recovery_timeout=2.0)
+    # Part 2: a provider that is down trips the channel's circuit breaker.
+    logger.info("=== Circuit breaker ===")
+    provider = FlakySMSProvider(failures=1_000)
+    kit = await room_with(provider, RetryPolicy(max_retries=1, base_delay_seconds=0.05))
+    opened = asyncio.Event()
 
-    print(f"Initial state: closed={cb.is_closed}, open={cb.is_open}")
+    @kit.on("circuit_breaker_opened")
+    async def on_opened(event: FrameworkEvent) -> None:
+        logger.info("breaker opened for %s", event.data["channel_id"])
+        opened.set()
 
-    # Simulate successful requests
-    print("\n--- Successful requests ---")
-    for i in range(3):
-        if cb.allow_request():
-            cb.record_success()
-            print(f"  Request {i + 1}: OK (closed={cb.is_closed})")
+    @kit.on("circuit_breaker_closed")
+    async def on_closed(event: FrameworkEvent) -> None:
+        logger.info("breaker closed for %s", event.data["channel_id"])
 
-    # Simulate failures until the breaker trips
-    print("\n--- Failing requests ---")
-    for i in range(4):
-        if cb.allow_request():
-            cb.record_failure()
-            print(f"  Request {i + 1}: FAILED (closed={cb.is_closed}, open={cb.is_open})")
-        else:
-            print(f"  Request {i + 1}: REJECTED (circuit is open)")
-
-    # Breaker is now open — requests are rejected immediately
-    print(f"\nCircuit state: closed={cb.is_closed}, open={cb.is_open}")
-    allowed = cb.allow_request()
-    print(f"Can we send a request? {allowed}")
-
-    # Wait for recovery timeout
-    print("\nWaiting 2 seconds for recovery timeout...")
-    await asyncio.sleep(2.1)
-
-    # Breaker is now half-open — allows one probe request
-    print(f"After recovery: half_open={cb.is_half_open}")
-    if cb.allow_request():
-        print("  Probe request allowed (half-open)")
-        # If the probe succeeds, breaker closes again
-        cb.record_success()
-        print(f"  Probe succeeded! closed={cb.is_closed}")
-
-    # =====================================================
-    # Part 2: Retry with Backoff
-    # =====================================================
-    print("\n\n=== Retry with Backoff Demo ===\n")
-
-    call_count = 0
-
-    async def flaky_operation() -> str:
-        """Simulates an operation that fails twice then succeeds."""
-        nonlocal call_count
-        call_count += 1
-        if call_count <= 2:
-            raise ConnectionError(f"Connection refused (attempt {call_count})")
-        return f"Success on attempt {call_count}"
-
-    # Define a retry policy
-    policy = RetryPolicy(
-        max_retries=5,
-        base_delay_seconds=0.1,  # Start with 100ms delay
-        max_delay_seconds=2.0,  # Cap at 2s
-        exponential_base=2.0,  # Double each retry
-    )
-
-    # Retry with exponential backoff
-    start = time.monotonic()
-    result = await retry_with_backoff(flaky_operation, policy)
-    elapsed = time.monotonic() - start
-
-    print(f"Result: {result}")
-    print(f"Total attempts: {call_count}")
-    print(f"Elapsed: {elapsed:.2f}s")
-
-    # =====================================================
-    # Part 3: Combined Pattern
-    # =====================================================
-    print("\n\n=== Combined: Circuit Breaker + Retry ===\n")
-
-    # The breaker counts one failure per message, once retry has given up on it.
-    # on_state_change is the breaker's public report of its transitions.
-    cb2 = CircuitBreaker(
-        failure_threshold=3,
-        recovery_timeout=1.0,
-        on_state_change=lambda state: attempt_log.append(f"[breaker] -> {state}"),
-    )
-    retry_policy = RetryPolicy(max_retries=2, base_delay_seconds=0.05)  # 3 attempts
-    attempt_log: list[str] = []
-
-    async def send_with_resilience(message: str) -> str:
-        """Send a message with circuit breaker protection and retry."""
-        if not cb2.allow_request():
-            attempt_log.append(f"REJECTED by circuit breaker: {message}")
-            return "REJECTED"
-
-        try:
-            result = await retry_with_backoff(_simulate_send, retry_policy)
-            cb2.record_success()
-            attempt_log.append(f"OK: {message}")
-            return result
-        except ConnectionError:
-            attempt_log.append(f"FAILED after {retry_policy.max_retries + 1} attempts: {message}")
-            cb2.record_failure()
-            return "FAILED"
-
-    send_count = 0
-
-    async def _simulate_send() -> str:
-        nonlocal send_count
-        send_count += 1
-        # The provider is down for the first 9 sends: 3 messages x 3 attempts,
-        # enough failed messages to trip the breaker (threshold 3).
-        if send_count <= 9:
-            raise ConnectionError("Provider down")
-        return "delivered"
-
-    # Messages 1-3 fail (retries exhausted) and trip the breaker; 4-5 are
-    # rejected at once, without touching the provider.
     for i in range(5):
-        result = await send_with_resilience(f"Message {i + 1}")
-        print(f"  Message {i + 1}: {result}")
+        await write(kit, f"Alert {i + 1}")
+        logger.info("alert %d: provider calls so far %d", i + 1, provider.calls)
+    await asyncio.wait_for(opened.wait(), timeout=5)
 
-    # After the recovery timeout, one probe goes through; the provider is back.
-    print("\nWaiting 1s for the breaker's recovery timeout...")
-    await asyncio.sleep(1.1)
-    result = await send_with_resilience("Message 6")
-    print(f"  Message 6: {result} (half-open probe)")
-
-    print(f"\nProvider calls made: {send_count}")
-    print("\nAttempt log:")
-    for entry in attempt_log:
-        print(f"  {entry}")
-    print(f"\nFinal circuit state: closed={cb2.is_closed}, open={cb2.is_open}")
+    calls = provider.calls
+    for i in range(5, 7):
+        await write(kit, f"Alert {i + 1}")
+    logger.info(
+        "alerts 6 and 7 were skipped: provider calls still %d (was %d)", provider.calls, calls
+    )
+    logger.info("one probe delivery goes through 60 s after the breaker opened")
+    await kit.close()
 
 
 if __name__ == "__main__":

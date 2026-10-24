@@ -73,7 +73,7 @@ from roomkit import (
     RoomKit,
     VoiceChannel,
 )
-from roomkit.voice.backends.rtp import RTPVoiceBackend
+from roomkit.voice.backends import RTPVoiceBackend
 from roomkit.voice.pipeline import AudioFormat, AudioPipelineConfig, AudioPipelineContract
 from roomkit.voice.pipeline.recorder import (
     RecordingChannelMode,
@@ -82,8 +82,8 @@ from roomkit.voice.pipeline.recorder import (
     WavFileRecorder,
 )
 from roomkit.voice.pipeline.resampler import SincResamplerProvider
-from roomkit.voice.stt.gradium import GradiumSTTConfig, GradiumSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.voice.stt import GradiumSTTConfig, GradiumSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 logger = setup_logging("rtp_gradium_stt")
 

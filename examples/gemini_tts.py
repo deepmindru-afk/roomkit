@@ -42,29 +42,23 @@ import base64
 import tempfile
 import time
 
-from shared import require_env
+from shared import require_env, wav_bytes
 
-from roomkit.voice.tts.audio_utils import wrap_wav
-from roomkit.voice.tts.gemini import (
-    GEMINI_TTS_MODELS,
-    GeminiTTSConfig,
-    GeminiTTSProvider,
-)
+from roomkit.voice.tts import GeminiTTSConfig, GeminiTTSProvider
 
 OUT_DIR = Path(tempfile.mkdtemp(prefix="roomkit_gemini_tts_"))
 TEXT = "Hello, you have reached RoomKit. How can I help you today?"
 
 
-def _write_wav(name: str, wav_bytes: bytes) -> Path:
+def _write_wav(name: str, data: bytes) -> Path:
     path = OUT_DIR / name
-    path.write_bytes(wav_bytes)
+    path.write_bytes(data)
     return path
 
 
 async def main() -> None:
     env = require_env("GEMINI_API_KEY")
 
-    print(f"Available TTS models : {', '.join(GEMINI_TTS_MODELS)}")
     voices = GeminiTTSProvider.available_voices()
     print(
         f"Prebuilt voices      : {len(voices)} (e.g. " + ", ".join(v.id for v in voices[:5]) + ")"
@@ -110,7 +104,7 @@ async def main() -> None:
         f"  chunks     : {len(frames)}  "
         f"audio: {len(pcm) / 2 / sample_rate:.2f}s @ {sample_rate} Hz"
     )
-    print(f"  wrote      : {_write_wav('streamed.wav', wrap_wav(pcm, sample_rate))}")
+    print(f"  wrote      : {_write_wav('streamed.wav', wav_bytes(pcm, sample_rate))}")
 
     # ── Style direction ─────────────────────────────────────────────
     print("\n=== style_prompt ===")

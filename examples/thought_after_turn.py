@@ -37,6 +37,7 @@ from roomkit import (
     HookExecution,
     HookTrigger,
     InboundMessage,
+    InMemoryStore,
     MockSpeakPolicy,
     MockThinker,
     RoomKit,
@@ -46,9 +47,8 @@ from roomkit import (
     ThoughtEvent,
     current_turn_host,
 )
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.sms.mock import MockSMSProvider
-from roomkit.store.memory import InMemoryStore
+from roomkit.providers.ai import MockAIProvider
+from roomkit.providers.sms import MockSMSProvider
 from roomkit.turns import InMemoryTurnBackend, TurnExecutor
 
 logger = setup_logging("example.thought_after_turn")

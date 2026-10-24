@@ -10,7 +10,7 @@ Linear agent chain: triage -> handler -> resolver. Each agent can only hand off 
 
 ```python
 from roomkit import Agent, Pipeline, RoomKit, WebSocketChannel
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import MockAIProvider
 
 triage = Agent(
     "triage",
@@ -375,7 +375,7 @@ Built-in phases: `ConversationPhase.INTAKE`, `QUALIFICATION`, `HANDLING`, `ESCAL
 ### Reading State
 
 ```python
-from roomkit.orchestration.state import get_conversation_state
+from roomkit.orchestration import get_conversation_state
 
 room = await kit.get_room("support")
 state = get_conversation_state(room)
@@ -395,7 +395,7 @@ for t in state.phase_history:
 Use `state.context` to store arbitrary data that survives across conversation turns:
 
 ```python
-from roomkit.orchestration.state import get_conversation_state, save_conversation_state
+from roomkit.orchestration import get_conversation_state, save_conversation_state
 
 room = await kit.get_room("support")
 state = get_conversation_state(room)
@@ -429,7 +429,7 @@ attempts = state.context.get("attempts", 0)
 Use `state.transition()` to change phase and record an audit entry:
 
 ```python
-from roomkit.orchestration.state import get_conversation_state, save_conversation_state
+from roomkit.orchestration import get_conversation_state, save_conversation_state
 
 room = await kit.get_room("support")
 state = get_conversation_state(room)
@@ -461,8 +461,15 @@ Each transition creates an immutable `PhaseTransition`:
 ### Using State in Hooks
 
 ```python
-from roomkit import HookTrigger, HookResult, RoomEvent, RoomContext, TextContent
-from roomkit.orchestration.state import get_conversation_state, save_conversation_state
+from roomkit import (
+    HookResult,
+    HookTrigger,
+    RoomContext,
+    RoomEvent,
+    TextContent,
+    get_conversation_state,
+    save_conversation_state,
+)
 
 @kit.hook(HookTrigger.BEFORE_BROADCAST)
 async def track_sentiment(event: RoomEvent, ctx: RoomContext) -> HookResult:
@@ -498,7 +505,7 @@ All conditions are ANDed — every non-None field must match:
 ### Routing by Phase
 
 ```python
-from roomkit.orchestration.router import ConversationRouter, RoutingRule, RoutingConditions
+from roomkit.orchestration import ConversationRouter, RoutingConditions, RoutingRule
 
 router = ConversationRouter(
     rules=[
@@ -512,7 +519,7 @@ router = ConversationRouter(
 ### Routing by Channel Type (Origin)
 
 ```python
-from roomkit.models.enums import ChannelType
+from roomkit.models import ChannelType
 
 router = ConversationRouter(
     rules=[
@@ -660,7 +667,7 @@ RoomKit takes the decision, never the syntax: `@codex`, a `/agent` command or a 
 Define stages explicitly:
 
 ```python
-from roomkit.orchestration.pipeline import ConversationPipeline, PipelineStage
+from roomkit.orchestration import ConversationPipeline, PipelineStage
 
 pipeline = ConversationPipeline(stages=[
     PipelineStage(phase="triage", agent_id="triage", next="handling"),
@@ -710,8 +717,8 @@ the tenant from `current_tool_room().organization_id`, as in the parent, and
 Agents use memory providers to maintain conversation context across handoffs:
 
 ```python
-from roomkit.memory.sliding_window import SlidingWindowMemory
-from roomkit.orchestration.handoff import HandoffMemoryProvider
+from roomkit.memory import SlidingWindowMemory
+from roomkit.orchestration import HandoffMemoryProvider
 
 agent = Agent(
     "agent",

@@ -42,21 +42,19 @@ from roomkit import (
     HookExecution,
     HookTrigger,
     RealtimeVoiceChannel,
+    RoomContext,
+    RoomEvent,
     RoomKit,
     Supervisor,
     WaitForIdle,
+    WebRTCNoiseSuppressorProvider,
 )
-from roomkit.memory.sliding_window import SlidingWindowMemory
-from roomkit.models.context import RoomContext
-from roomkit.models.event import RoomEvent
-from roomkit.providers.anthropic.ai import AnthropicAIProvider
-from roomkit.providers.anthropic.config import AnthropicConfig
-from roomkit.providers.xai.config import XAIRealtimeConfig
-from roomkit.providers.xai.realtime import XAIRealtimeProvider
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.pipeline.aec.webrtc import WebRTCAECProvider
-from roomkit.voice.pipeline.config import AudioPipelineConfig
-from roomkit.voice.pipeline.denoiser.webrtc import WebRTCNoiseSuppressorProvider
+from roomkit.memory import SlidingWindowMemory
+from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
+from roomkit.providers.xai import XAIRealtimeConfig, XAIRealtimeProvider
+from roomkit.voice.backends import LocalAudioBackend
+from roomkit.voice.pipeline import AudioPipelineConfig
+from roomkit.voice.pipeline.aec import WebRTCAECProvider
 
 logger = setup_logging("voice_parallel")
 logging.getLogger("roomkit").setLevel(logging.WARNING)

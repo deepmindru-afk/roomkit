@@ -52,18 +52,17 @@ from shared import env_bool, run_until_stopped, setup_console, setup_logging
 logger = setup_logging("voice_sip_play_prompt")
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     HookExecution,
     HookTrigger,
     RoomKit,
+    SessionStartedEvent,
     VoiceChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.models.session_event import SessionStartedEvent
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.base import VoiceCapability, VoiceSession
+from roomkit.providers.ai import MockAIProvider
+from roomkit.voice import AudioFrame, VoiceCapability, VoiceSession
+from roomkit.voice.backends import MockVoiceBackend
 from roomkit.voice.pipeline import (
     AudioFormat,
     AudioPipelineConfig,
@@ -72,8 +71,8 @@ from roomkit.voice.pipeline import (
     VADEvent,
     VADEventType,
 )
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -321,7 +320,7 @@ async def run_mock(wav: Path) -> None:
 async def run_sip(wav: Path) -> None:
     # Local import: SIP is an optional extra (roomkit[sip]) and mock mode
     # must run without it installed.
-    from roomkit.voice.backends.sip import SIPVoiceBackend
+    from roomkit.voice.backends import SIPVoiceBackend
 
     sip_host = os.environ.get("SIP_HOST", "0.0.0.0")  # nosec B104
     sip_port = int(os.environ.get("SIP_PORT", "5060"))

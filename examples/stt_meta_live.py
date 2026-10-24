@@ -46,9 +46,9 @@ from collections.abc import AsyncIterator
 
 from shared import pcm_from_wav_url, require_env, setup_logging
 
-from roomkit.voice.base import AudioChunk
-from roomkit.voice.stt.meta import MetaSTTConfig, MetaSTTProvider
-from roomkit.voice.tts.gemini import GeminiTTSConfig, GeminiTTSProvider
+from roomkit.voice import AudioChunk
+from roomkit.voice.stt import MetaSTTConfig, MetaSTTProvider
+from roomkit.voice.tts import GeminiTTSConfig, GeminiTTSProvider
 
 logger = setup_logging("roomkit.examples.stt_meta_live")
 

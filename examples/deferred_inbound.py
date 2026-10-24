@@ -34,8 +34,7 @@ from roomkit import (
     RoomKit,
     TextContent,
 )
-from roomkit.providers.ai.base import AIContext, AIResponse
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import AIContext, AIResponse, MockAIProvider
 
 logger = logging.getLogger(__name__)
 

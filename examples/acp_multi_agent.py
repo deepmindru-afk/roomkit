@@ -100,9 +100,9 @@ from roomkit import (
     RoomContext,
     RoomEvent,
     RoomKit,
+    TextContent,
 )
 from roomkit.console import terminal_input, terminal_select
-from roomkit.models.event import TextContent
 from roomkit.tools import ExternalToolHandler, ToolDecision
 
 CLAUDE_ACP = "@agentclientprotocol/claude-agent-acp@0.61.0"

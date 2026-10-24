@@ -37,10 +37,9 @@ import wave
 
 from shared import require_env, setup_logging
 
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.base import AudioChunk, VoiceSession
-from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
+from roomkit.voice import AudioChunk, AudioFrame, VoiceSession
+from roomkit.voice.backends import LocalAudioBackend
+from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider
 
 logger = setup_logging("roomkit.examples.stt_deepgram_diarization")
 

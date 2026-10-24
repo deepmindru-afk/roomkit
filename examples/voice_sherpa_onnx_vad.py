@@ -51,14 +51,12 @@ from shared import (
     setup_logging,
 )
 
-from roomkit import ChannelCategory, HookExecution, HookTrigger, RoomKit, VoiceChannel
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.pipeline import AudioPipelineConfig
-from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit import AIChannel, ChannelCategory, HookExecution, HookTrigger, RoomKit, VoiceChannel
+from roomkit.providers.ai import MockAIProvider
+from roomkit.voice.backends import LocalAudioBackend
+from roomkit.voice.pipeline import AudioPipelineConfig, SherpaOnnxVADConfig, SherpaOnnxVADProvider
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 logger = setup_logging("voice_sherpa_onnx_vad")
 
@@ -97,10 +95,7 @@ async def main() -> None:
     # --- Denoiser (optional, GTCRN via sherpa-onnx) ----------------------------
     denoiser = None
     if denoise:
-        from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-            SherpaOnnxDenoiserConfig,
-            SherpaOnnxDenoiserProvider,
-        )
+        from roomkit.voice.pipeline import SherpaOnnxDenoiserConfig, SherpaOnnxDenoiserProvider
 
         denoiser = SherpaOnnxDenoiserProvider(
             SherpaOnnxDenoiserConfig.from_local_model("gtcrn-simple")

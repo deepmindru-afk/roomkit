@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import log_tool_call, require_env
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     CLIChannel,
     HookTrigger,
@@ -46,29 +47,21 @@ from roomkit import (
     SandboxExecutor,
     SandboxResult,
 )
-from roomkit.channels.ai import AIChannel
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
-from roomkit.sandbox.tools import (
-    SANDBOX_BASH_SCHEMA,
-    SANDBOX_DIFF_SCHEMA,
-    SANDBOX_FIND_SCHEMA,
-    SANDBOX_GIT_SCHEMA,
-    SANDBOX_GREP_SCHEMA,
-    SANDBOX_LS_SCHEMA,
-    SANDBOX_READ_SCHEMA,
-)
+from roomkit.sandbox import SANDBOX_TOOL_SCHEMAS
 
 # Only the tools _build_command implements: announcing write, edit or delete
 # would let the model call tools that do nothing.
-IMPLEMENTED_TOOLS = [
-    SANDBOX_READ_SCHEMA,
-    SANDBOX_LS_SCHEMA,
-    SANDBOX_GREP_SCHEMA,
-    SANDBOX_FIND_SCHEMA,
-    SANDBOX_GIT_SCHEMA,
-    SANDBOX_DIFF_SCHEMA,
-    SANDBOX_BASH_SCHEMA,
-]
+IMPLEMENTED_TOOL_NAMES = {
+    "sandbox_read",
+    "sandbox_ls",
+    "sandbox_grep",
+    "sandbox_find",
+    "sandbox_git",
+    "sandbox_diff",
+    "sandbox_bash",
+}
+IMPLEMENTED_TOOLS = [s for s in SANDBOX_TOOL_SCHEMAS if s["name"] in IMPLEMENTED_TOOL_NAMES]
 DEFAULT_TIMEOUT = 30
 MAX_TIMEOUT = 300
 

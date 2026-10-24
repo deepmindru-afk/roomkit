@@ -45,12 +45,11 @@ import signal
 from shared import require_env, setup_logging
 
 from roomkit.providers.anam import AnamConfig, AnamRealtimeProvider
-from roomkit.video.backends.sip import SIPVideoBackend
-from roomkit.video.pipeline import VideoPipelineConfig
-from roomkit.video.pipeline.encoder.pyav import PyAVVideoEncoder
-from roomkit.video.pipeline.filter.watermark import WatermarkFilter
-from roomkit.video.utils import make_text_frame
-from roomkit.voice.realtime.bridge import RealtimeAVBridge
+from roomkit.video import make_text_frame
+from roomkit.video.backends import SIPVideoBackend
+from roomkit.video.pipeline import VideoPipelineConfig, WatermarkFilter
+from roomkit.video.pipeline.encoder import PyAVVideoEncoder
+from roomkit.voice.realtime import RealtimeAVBridge
 
 logger = setup_logging("sip_anam_avatar")
 

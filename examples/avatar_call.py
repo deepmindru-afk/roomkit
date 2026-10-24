@@ -62,30 +62,23 @@ from PIL import Image
 from shared import env_bool, require_env, run_until_stopped, setup_logging, voice_language
 
 from roomkit import (
+    AIChannel,
     AudioVideoChannel,
     ChannelCategory,
     RoomKit,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.anthropic.ai import AnthropicAIProvider, AnthropicConfig
-from roomkit.recorder.base import (
-    MediaRecordingConfig,
-    RoomRecorderBinding,
-)
-from roomkit.recorder.pyav import PyAVMediaRecorder
-from roomkit.video.avatar.base import AvatarProvider
-from roomkit.video.avatar.mock import MockAvatarProvider
-from roomkit.video.avatar.websocket import WebSocketAvatarProvider
-from roomkit.video.backends.sip import SIPVideoBackend
-from roomkit.video.pipeline.config import VideoPipelineConfig
-from roomkit.video.pipeline.encoder.pyav import PyAVVideoEncoder
-from roomkit.video.pipeline.filter.watermark import WatermarkFilter
-from roomkit.voice.base import VoiceSession
-from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
+from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
+from roomkit.recorder import MediaRecordingConfig, PyAVMediaRecorder, RoomRecorderBinding
+from roomkit.video.avatar import AvatarProvider, MockAvatarProvider, WebSocketAvatarProvider
+from roomkit.video.backends import SIPVideoBackend
+from roomkit.video.pipeline import VideoPipelineConfig
+from roomkit.video.pipeline.encoder import PyAVVideoEncoder
+from roomkit.video.pipeline.filter import WatermarkFilter
+from roomkit.voice import InterruptionConfig, InterruptionStrategy, VoiceSession
 from roomkit.voice.pipeline import AudioPipelineConfig
-from roomkit.voice.pipeline.aec.webrtc import WebRTCAECProvider
-from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
-from roomkit.voice.tts.elevenlabs import ElevenLabsConfig, ElevenLabsTTSProvider
+from roomkit.voice.pipeline.aec import WebRTCAECProvider
+from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider
+from roomkit.voice.tts import ElevenLabsConfig, ElevenLabsTTSProvider
 
 logger = setup_logging("avatar_call")
 

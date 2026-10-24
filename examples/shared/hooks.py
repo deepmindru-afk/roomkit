@@ -5,8 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 
-from roomkit import HookExecution, HookResult, HookTrigger, RoomKit
-from roomkit.telemetry.redaction import set_content_logging
+from roomkit import HookExecution, HookResult, HookTrigger, RoomKit, set_content_logging
 
 _MAGENTA = "\033[35m"
 _RESULT_PREVIEW = 300

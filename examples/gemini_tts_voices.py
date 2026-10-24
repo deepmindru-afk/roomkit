@@ -27,8 +27,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import require_env, setup_logging, voice_language
 
-from roomkit.voice.tts.gemini import GeminiTTSConfig, GeminiTTSProvider
-from roomkit.voice.voices import DialogueTurn, filter_voices
+from roomkit.voice import DialogueTurn, filter_voices
+from roomkit.voice.tts import GeminiTTSConfig, GeminiTTSProvider
 
 logger = setup_logging("roomkit.examples.gemini_tts_voices")
 

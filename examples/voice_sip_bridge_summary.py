@@ -54,6 +54,7 @@ from shared import require_env, run_until_stopped, setup_console, setup_logging
 logger = setup_logging("voice_sip_bridge_summary")
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     HookExecution,
     HookResult,
@@ -63,10 +64,9 @@ from roomkit import (
     TextContent,
     VoiceChannel,
 )
-from roomkit.channels.ai import AIChannel
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
-from roomkit.voice.backends.sip import SIPVoiceBackend
-from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
+from roomkit.voice.backends import SIPVoiceBackend
+from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider
 
 # ---------------------------------------------------------------------------
 # Configuration

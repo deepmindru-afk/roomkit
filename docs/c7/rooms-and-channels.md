@@ -90,12 +90,9 @@ The `ChannelType` enum defines 24 values: `SMS`, `MMS`, `RCS`, `EMAIL`, `WHATSAP
 Channels are registered globally, then attached to specific rooms:
 
 ```python
-from roomkit import RoomKit, SMSChannel, ChannelCategory
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.twilio.sms import TwilioSMSProvider
-from roomkit.providers.twilio.config import TwilioConfig
-from roomkit.providers.anthropic.ai import AnthropicAIProvider
-from roomkit.providers.anthropic.config import AnthropicConfig
+from roomkit import AIChannel, ChannelCategory, RoomKit, SMSChannel
+from roomkit.providers.twilio import TwilioConfig, TwilioSMSProvider
+from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 
 kit = RoomKit()
 
@@ -304,10 +301,18 @@ Events carry typed content. RoomKit supports 11 content types, all discriminated
 | `DeleteContent` | `"delete"` | `target_event_id`, `delete_type`, `reason` | Message deletion |
 
 ```python
-from roomkit.models.event import (
-    TextContent, RichContent, MediaContent, AudioContent, VideoContent,
-    LocationContent, CompositeContent, TemplateContent, SystemContent,
-    EditContent, DeleteContent,
+from roomkit.models import (
+    AudioContent,
+    CompositeContent,
+    DeleteContent,
+    EditContent,
+    LocationContent,
+    MediaContent,
+    RichContent,
+    SystemContent,
+    TemplateContent,
+    TextContent,
+    VideoContent,
 )
 
 # Plain text
@@ -422,8 +427,7 @@ When broadcasting events, the EventRouter automatically **transcodes** content t
 Each channel binding declares what content types it supports via `ChannelCapabilities`:
 
 ```python
-from roomkit.models.channel import ChannelCapabilities
-from roomkit.models.enums import ChannelMediaType
+from roomkit.models import ChannelCapabilities, ChannelMediaType
 
 # SMS channel: text only, 160 char limit
 sms_caps = ChannelCapabilities(
@@ -473,44 +477,6 @@ content = CompositeContent(parts=[
 # WebSocket channel: receives CompositeContent as-is (supports RICH + MEDIA)
 # SMS channel: receives TextContent("Check this out!\n[Media: Sunset]")
 # Voice channel (TTS): receives TextContent("Check this out!\n[Media: Sunset]")
-```
-
-### Custom Content Transcoder
-
-Implement the `ContentTranscoder` ABC to customize how content is adapted:
-
-```python
-from roomkit.core.router import ContentTranscoder
-from roomkit.models.channel import ChannelBinding
-from roomkit.models.event import EventContent, TextContent, MediaContent
-from roomkit.models.enums import ChannelMediaType
-
-class MyTranscoder(ContentTranscoder):
-    async def transcode(
-        self,
-        content: EventContent,
-        source_binding: ChannelBinding,
-        target_binding: ChannelBinding,
-    ) -> EventContent | None:
-        target_types = target_binding.capabilities.media_types
-
-        # Custom: convert images to descriptive text for voice channels
-        if isinstance(content, MediaContent) and content.mime_type.startswith("image/"):
-            if ChannelMediaType.MEDIA not in target_types:
-                caption = content.caption or "an image"
-                return TextContent(body=f"[Image received: {caption}]")
-
-        # Custom: truncate long text for SMS
-        if isinstance(content, TextContent):
-            max_len = target_binding.capabilities.max_length
-            if max_len and len(content.body) > max_len:
-                return TextContent(body=content.body[: max_len - 3] + "...")
-
-        return content
-
-# Override the default transcoder on the RoomKit instance
-kit = RoomKit()
-kit._transcoder = MyTranscoder()
 ```
 
 ## Edits and Deletes

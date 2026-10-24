@@ -42,15 +42,15 @@ from roomkit import (
     ChannelCategory,
     HookExecution,
     HookTrigger,
+    RoomContext,
+    RoomEvent,
     RoomKit,
+    TextContent,
     WaitForIdle,
     WebSocketChannel,
 )
 from roomkit.delivery import RedisDeliveryBackend
-from roomkit.models.context import RoomContext
-from roomkit.models.event import RoomEvent, TextContent
-from roomkit.providers.anthropic.ai import AnthropicAIProvider
-from roomkit.providers.anthropic.config import AnthropicConfig
+from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 
 try:
     import redis.asyncio as aioredis

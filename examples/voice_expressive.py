@@ -49,9 +49,9 @@ from shared import require_env, run_until_stopped, setup_console, setup_logging
 
 from roomkit import AIChannel, ChannelCategory, HookExecution, HookTrigger, RoomKit, VoiceChannel
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
-from roomkit.voice.tts.elevenlabs import ElevenLabsConfig, ElevenLabsTTSProvider
+from roomkit.voice.backends import LocalAudioBackend
+from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider
+from roomkit.voice.tts import ElevenLabsConfig, ElevenLabsTTSProvider
 
 logger = setup_logging("voice_expressive")
 

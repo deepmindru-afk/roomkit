@@ -21,11 +21,17 @@ from __future__ import annotations
 
 import asyncio
 
-from roomkit import InboundMessage, RoomEvent, RoomKit, TextContent, WebSocketChannel
-from roomkit.channels.ai import AIChannel
-from roomkit.models.enums import ChannelCategory
-from roomkit.models.store_filter import EventFilter
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit import (
+    AIChannel,
+    ChannelCategory,
+    EventFilter,
+    InboundMessage,
+    RoomEvent,
+    RoomKit,
+    TextContent,
+    WebSocketChannel,
+)
+from roomkit.providers.ai import MockAIProvider
 
 
 def _short(event_id: str) -> str:

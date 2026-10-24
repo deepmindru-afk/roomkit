@@ -35,14 +35,15 @@ import zlib
 from shared import require_env, setup_logging
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     InboundMessage,
+    RoomEvent,
     RoomKit,
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.models.event import MediaContent, RoomEvent
+from roomkit.models import MediaContent
 from roomkit.providers.ai import AIImagePart, AIProvider, MockAIProvider
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 

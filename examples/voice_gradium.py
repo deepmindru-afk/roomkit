@@ -90,10 +90,17 @@ from shared import (
     voice_language,
 )
 
-from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.channels.ai import AIChannel
+from roomkit import (
+    AIChannel,
+    ChannelCategory,
+    HookExecution,
+    HookResult,
+    HookTrigger,
+    RoomKit,
+    VoiceChannel,
+)
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.voice.backends import LocalAudioBackend
 from roomkit.voice.pipeline import (
     AudioPipelineConfig,
     DenoiserProvider,
@@ -102,8 +109,8 @@ from roomkit.voice.pipeline import (
     RecordingConfig,
     WavFileRecorder,
 )
-from roomkit.voice.stt.gradium import GradiumSTTConfig, GradiumSTTProvider
-from roomkit.voice.tts.gradium import GradiumTTSConfig, GradiumTTSProvider
+from roomkit.voice.stt import GradiumSTTConfig, GradiumSTTProvider
+from roomkit.voice.tts import GradiumTTSConfig, GradiumTTSProvider
 
 logger = setup_logging("voice_gradium")
 logging.getLogger("roomkit.voice.stt.gradium").setLevel(logging.DEBUG)
@@ -160,12 +167,12 @@ async def main() -> None:
     aec = None
     aec_mode = os.environ.get("AEC", "webrtc").lower()
     if aec_mode in ("1", "webrtc"):
-        from roomkit.voice.pipeline.aec.webrtc import WebRTCAECProvider
+        from roomkit.voice.pipeline.aec import WebRTCAECProvider
 
         aec = WebRTCAECProvider(sample_rate=sample_rate)
         logger.info("AEC enabled (WebRTC AEC3)")
     elif aec_mode == "speex":
-        from roomkit.voice.pipeline.aec.speex import SpeexAECProvider
+        from roomkit.voice.pipeline import SpeexAECProvider
 
         aec = SpeexAECProvider(
             frame_size=frame_size,

@@ -41,13 +41,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
-from roomkit import Discussion, InboundMessage, RoomKit, TextContent, WebSocketChannel
-from roomkit.channels.ai import AIChannel
-from roomkit.core.locks import InMemoryLockManager
-from roomkit.models.enums import EventType
-from roomkit.providers.ai.base import AIResponse
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.store.memory import InMemoryStore
+from roomkit import (
+    AIChannel,
+    Discussion,
+    EventType,
+    InboundMessage,
+    InMemoryLockManager,
+    InMemoryStore,
+    RoomKit,
+    TextContent,
+    WebSocketChannel,
+)
+from roomkit.providers.ai import AIResponse, MockAIProvider
 
 logger = setup_logging("example.discussion_two_workers")
 

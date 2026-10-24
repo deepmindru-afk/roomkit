@@ -35,8 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import log_tool_call, require_env, setup_logging
 
-from roomkit import ChannelCategory, CLIChannel, HookTrigger, RoomKit
-from roomkit.channels.ai import AIChannel
+from roomkit import AIChannel, ChannelCategory, CLIChannel, HookTrigger, RoomKit
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 from roomkit.skills import SkillRegistry
 from roomkit.tools import MCPToolProvider

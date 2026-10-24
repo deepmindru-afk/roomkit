@@ -21,13 +21,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
-from roomkit import HookTrigger, RoomKit, ScenarioVoiceBackend, VoiceChannel, VoiceTrace
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit import AIChannel, HookTrigger, RoomKit, ScenarioVoiceBackend, VoiceChannel, VoiceTrace
+from roomkit.providers.ai import MockAIProvider
 from roomkit.voice.pipeline import AudioPipelineConfig, MockVADProvider, VADEvent, VADEventType
-from roomkit.voice.stt.mock import MockSTTProvider
+from roomkit.voice.stt import MockSTTProvider
 from roomkit.voice.testing import silence, tone
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.voice.tts import MockTTSProvider
 
 
 async def main() -> None:

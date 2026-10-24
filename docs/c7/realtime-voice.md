@@ -5,15 +5,12 @@ RealtimeVoiceChannel connects to speech-to-speech AI models that handle audio di
 ## Basic Setup
 
 ```python
-from roomkit import RoomKit, ChannelCategory
-from roomkit.channels.realtime_voice import RealtimeVoiceChannel
+from roomkit import ChannelCategory, RealtimeVoiceChannel, RoomKit
 
 kit = RoomKit()
 
 # Gemini Live example
-from roomkit.voice import get_gemini_live_provider
-
-GeminiLiveProvider = get_gemini_live_provider()
+from roomkit.providers.gemini import GeminiLiveProvider
 
 realtime = RealtimeVoiceChannel(
     "realtime-voice",
@@ -42,13 +39,12 @@ await kit.attach_channel("voice-room", "realtime-voice", category=ChannelCategor
 
 ```python
 # OpenAI Realtime
-from roomkit.voice import get_openai_realtime_provider
+from roomkit.providers.openai import OpenAIRealtimeProvider
 
-OpenAIRealtime = get_openai_realtime_provider()
-provider = OpenAIRealtime(api_key="sk-...")  # defaults to gpt-realtime-2.1
+provider = OpenAIRealtimeProvider(api_key="sk-...")  # defaults to gpt-realtime-2.1
 
 # OpenAI GPT-Live (full-duplex; the model listens and speaks at once)
-from roomkit.providers.openai.live import HostedReasoning, OpenAILiveProvider
+from roomkit.providers.openai import HostedReasoning, OpenAILiveProvider
 
 provider = OpenAILiveProvider(
     api_key="sk-...",  # defaults to gpt-live-1
@@ -58,11 +54,9 @@ provider = OpenAILiveProvider(
 # RealtimeVoiceChannel(reasoning_backend=AIProviderReasoningBackend(...))
 
 # xAI Grok
-from roomkit.voice import get_xai_realtime_provider, get_xai_realtime_config
+from roomkit.providers.xai import XAIRealtimeConfig, XAIRealtimeProvider
 
-XAIRealtime = get_xai_realtime_provider()
-XAIConfig = get_xai_realtime_config()
-provider = XAIRealtime(XAIConfig(api_key="..."))
+provider = XAIRealtimeProvider(XAIRealtimeConfig(api_key="..."))
 ```
 
 ## Audio Transports
@@ -77,10 +71,9 @@ Transports handle the client-side audio (browser or device):
 | Mock | `MockRealtimeTransport` | built-in | Testing |
 
 ```python
-from roomkit.voice import get_websocket_realtime_transport
+from roomkit.voice.realtime import WebSocketRealtimeTransport
 
-WSTransport = get_websocket_realtime_transport()
-transport = WSTransport(host="0.0.0.0", port=8765)
+transport = WebSocketRealtimeTransport(host="0.0.0.0", port=8765)
 
 realtime = RealtimeVoiceChannel(
     "realtime-voice",
@@ -122,7 +115,8 @@ it or reaches its recordings. Left unset, `join()` reads the room unscoped and
 Realtime voice channels support tool calling during conversations:
 
 ```python
-from roomkit.channels.realtime_voice import RealtimeVoiceChannel, ToolHandler
+from roomkit.channels import RealtimeVoiceChannel
+from roomkit import ToolHandler
 
 async def handle_tool(name: str, arguments: dict) -> str:
     if name == "get_weather":

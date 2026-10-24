@@ -51,11 +51,10 @@ from collections.abc import AsyncIterator
 import numpy as np
 from shared import setup_logging
 
-from roomkit.video.backends.sip import SIPVideoBackend
-from roomkit.video.base import VideoChunk, VideoSession, VideoSessionState
+from roomkit.video import VideoChunk, VideoFrame, VideoSession, VideoSessionState
+from roomkit.video.backends import SIPVideoBackend
 from roomkit.video.pipeline.encoder import PyAVVideoEncoder
-from roomkit.video.video_frame import VideoFrame
-from roomkit.voice.base import VoiceSession
+from roomkit.voice import VoiceSession
 
 logger = setup_logging("sip_send_video")
 

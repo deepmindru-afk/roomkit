@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-from roomkit.tools.fence import fence
-from roomkit.video.vision.screen_tool import capture_screen_frame
+from roomkit.tools import fence
+from roomkit.video.vision import capture_screen_frame
 
 from .state import ScreenAssistantState
 

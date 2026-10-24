@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     HookResult,
     HookTrigger,
@@ -23,8 +24,7 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import MockAIProvider
 
 
 async def main() -> None:
@@ -43,7 +43,7 @@ async def main() -> None:
     provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
 
     # Create RoomKit with OpenTelemetry
-    from roomkit.telemetry.opentelemetry import OpenTelemetryProvider
+    from roomkit.telemetry import OpenTelemetryProvider
 
     # Exports never run on the event loop: flush() (the end of a voice session)
     # hands them to a thread, and close() waits for them at most this long.

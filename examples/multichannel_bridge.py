@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     InboundMessage,
     RoomEvent,
@@ -26,11 +27,10 @@ from roomkit import (
     WebSocketChannel,
 )
 from roomkit.channels import EmailChannel, HTTPChannel, SMSChannel
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.email.mock import MockEmailProvider
-from roomkit.providers.http.mock import MockHTTPProvider
-from roomkit.providers.sms.mock import MockSMSProvider
+from roomkit.providers.ai import MockAIProvider
+from roomkit.providers.email import MockEmailProvider
+from roomkit.providers.http import MockHTTPProvider
+from roomkit.providers.sms import MockSMSProvider
 
 
 async def main() -> None:

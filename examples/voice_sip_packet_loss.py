@@ -50,7 +50,7 @@ from shared import run_until_stopped, setup_console, setup_logging
 logger = setup_logging("voice_sip_packet_loss")
 
 from roomkit import RoomKit, VoiceChannel
-from roomkit.voice.backends.sip import SIPVoiceBackend
+from roomkit.voice.backends import SIPVoiceBackend
 
 LOCAL_PORT = int(os.environ.get("SIP_LOCAL_PORT", "5060"))
 RTP_PORT_START = int(os.environ.get("SIP_RTP_PORT_START", "10000"))

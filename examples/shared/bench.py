@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from roomkit import ScenarioVoiceBackend
-from roomkit.voice.base import VoiceSession
+from roomkit.voice import VoiceSession
 
 __all__ = ["IncomingScenarioBackend"]
 

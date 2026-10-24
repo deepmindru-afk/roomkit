@@ -50,8 +50,7 @@ from roomkit import (
     ScoreQuestion,
     YesNoQuestion,
 )
-from roomkit.providers.anthropic.ai import AnthropicAIProvider
-from roomkit.providers.anthropic.config import AnthropicConfig
+from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 
 logger = setup_logging("example.classifier_judgments")
 

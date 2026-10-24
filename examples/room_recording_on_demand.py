@@ -24,11 +24,24 @@ from typing import Any
 
 from shared import setup_logging
 
-from roomkit import HookExecution, HookTrigger, RoomKit, TextContent, WebSocketChannel
-from roomkit.models.enums import ChannelType, EventType
-from roomkit.models.event import EventSource, RoomEvent, SystemContent
-from roomkit.recorder import MediaRecordingConfig, RecordingTrack, RoomRecorderBinding
-from roomkit.recorder.mock import MockMediaRecorder
+from roomkit import (
+    ChannelType,
+    EventSource,
+    EventType,
+    HookExecution,
+    HookTrigger,
+    RoomEvent,
+    RoomKit,
+    TextContent,
+    WebSocketChannel,
+)
+from roomkit.models import SystemContent
+from roomkit.recorder import (
+    MediaRecordingConfig,
+    MockMediaRecorder,
+    RecordingTrack,
+    RoomRecorderBinding,
+)
 
 logger = setup_logging("room_recording_on_demand")
 

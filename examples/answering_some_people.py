@@ -30,20 +30,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
 from roomkit import (
+    AIChannel,
     AlwaysSpeak,
     AnswerOnly,
     ChannelCategory,
     HookExecution,
     HookTrigger,
+    InboundMessage,
     RoomKit,
     SMSChannel,
     SpeakDecisionEvent,
     TextContent,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.models.delivery import InboundMessage
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.sms.mock import MockSMSProvider
+from roomkit.providers.ai import MockAIProvider
+from roomkit.providers.sms import MockSMSProvider
 
 logger = setup_logging("example.answering_some_people")
 

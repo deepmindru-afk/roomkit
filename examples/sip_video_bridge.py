@@ -52,12 +52,12 @@ import os
 from shared import run_until_stopped, setup_logging
 
 from roomkit import AudioVideoChannel, HookExecution, HookResult, HookTrigger, RoomKit
-from roomkit.video.backends.sip import SIPVideoBackend
-from roomkit.video.bridge import VideoBridgeConfig
-from roomkit.voice.base import VoiceSession
+from roomkit.video import VideoBridgeConfig
+from roomkit.video.backends import SIPVideoBackend
+from roomkit.voice import VoiceSession
 from roomkit.voice.pipeline import AudioPipelineConfig, EnergyVADProvider
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
 
 logger = setup_logging("sip_video_bridge")
 

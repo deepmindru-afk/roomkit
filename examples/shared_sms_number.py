@@ -25,11 +25,10 @@ import asyncio
 
 from shared import setup_logging
 
-from roomkit import HookTrigger, InboundMessage, RoomKit, TextContent
+from roomkit import AIChannel, HookTrigger, InboundMessage, RoomKit, TextContent
 from roomkit.channels import SMSChannel
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.sms.mock import MockSMSProvider
+from roomkit.providers.ai import MockAIProvider
+from roomkit.providers.sms import MockSMSProvider
 
 logger = setup_logging("shared_sms_number")
 

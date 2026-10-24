@@ -35,15 +35,15 @@ import struct
 from typing import Any
 
 from roomkit import (
+    ConferenceChannel,
     ConferenceTranscription,
     HookResult,
+    HookTrigger,
     MockConferenceBackend,
     RoomKit,
 )
-from roomkit.channels.conference import ConferenceChannel
-from roomkit.models.enums import HookTrigger
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.stt.mock import MockSTTProvider
+from roomkit.voice import AudioFrame
+from roomkit.voice.stt import MockSTTProvider
 
 ROOM = "standup"
 

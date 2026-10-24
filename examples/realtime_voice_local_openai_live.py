@@ -57,8 +57,8 @@ from shared import (
 )
 
 from roomkit import HookExecution, HookTrigger, RealtimeVoiceChannel, RoomKit
-from roomkit.providers.openai.live import HostedReasoning, OpenAILiveProvider
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.providers.openai import HostedReasoning, OpenAILiveProvider
+from roomkit.voice.backends import LocalAudioBackend
 
 logger = setup_logging("realtime_voice_local_openai_live")
 

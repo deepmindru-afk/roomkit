@@ -43,11 +43,8 @@ from fastapi.responses import HTMLResponse
 from shared import require_env, setup_console, setup_logging
 
 from roomkit import RealtimeVoiceChannel, RoomKit
-from roomkit.providers.gemini.realtime import GeminiLiveProvider
-from roomkit.voice.realtime.fastrtc_transport import (
-    FastRTCRealtimeTransport,
-    mount_fastrtc_realtime,
-)
+from roomkit.providers.gemini import GeminiLiveProvider
+from roomkit.voice.realtime import FastRTCRealtimeTransport, mount_fastrtc_realtime
 
 logger = setup_logging("realtime_voice_fastrtc")
 env = require_env("GEMINI_API_KEY")

@@ -109,18 +109,26 @@ from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import quote
 
-from roomkit import ConferenceGrants, RoomKit
-from roomkit.channels.base import Channel
-from roomkit.channels.conference import ConferenceChannel
-from roomkit.conference.livekit import LiveKitConferenceBackend, LiveKitConfig
-from roomkit.models.channel import ChannelBinding, ChannelOutput
-from roomkit.models.context import RoomContext
-from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelType, HookTrigger
-from roomkit.models.event import EventSource, RoomEvent, TextContent
-from roomkit.voice.base import AudioChunk
-from roomkit.voice.pipeline.config import AudioPipelineConfig, AudioPipelineContract
-from roomkit.voice.tts.base import TTSProvider
+from roomkit import (
+    Channel,
+    ChannelBinding,
+    ChannelOutput,
+    ChannelType,
+    ConferenceChannel,
+    ConferenceGrants,
+    EventSource,
+    HookTrigger,
+    InboundMessage,
+    LiveKitConferenceBackend,
+    LiveKitConfig,
+    RoomContext,
+    RoomEvent,
+    RoomKit,
+    TextContent,
+)
+from roomkit.voice import AudioChunk
+from roomkit.voice.pipeline import AudioPipelineConfig, AudioPipelineContract
+from roomkit.voice.tts import TTSProvider
 
 URL = os.getenv("ROOMKIT_LIVEKIT_URL", "ws://127.0.0.1:7880")
 API_KEY = os.getenv("ROOMKIT_LIVEKIT_API_KEY", "devkey")
@@ -221,7 +229,7 @@ def build_providers() -> tuple[Any, TTSProvider, list[str]]:
     """
     notes: list[str] = []
     if os.getenv("DEEPGRAM_API_KEY"):
-        from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
+        from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider
 
         # language= is not optional in practice: the provider's default is
         # "en", and speaking anything else at it transcribes gibberish.
@@ -231,7 +239,7 @@ def build_providers() -> tuple[Any, TTSProvider, list[str]]:
         )
         notes.append(f"STT: Deepgram ({language}) — transcriptions will be real words")
     else:
-        from roomkit.voice.stt.mock import MockSTTProvider
+        from roomkit.voice.stt import MockSTTProvider
 
         stt = MockSTTProvider(transcripts=["(stubbed text — set DEEPGRAM_API_KEY)"])
         notes.append(
@@ -240,7 +248,7 @@ def build_providers() -> tuple[Any, TTSProvider, list[str]]:
         )
 
     if os.getenv("ELEVENLABS_API_KEY"):
-        from roomkit.voice.tts.elevenlabs import ElevenLabsConfig, ElevenLabsTTSProvider
+        from roomkit.voice.tts import ElevenLabsConfig, ElevenLabsTTSProvider
 
         tts: TTSProvider = ElevenLabsTTSProvider(
             ElevenLabsConfig(
@@ -289,7 +297,7 @@ def build_realtime(notes: list[str]) -> Any | None:
     voice = os.getenv("ROOMKIT_VOICE")
     spoken = voice or "provider default"
     if os.getenv("GEMINI_API_KEY"):
-        from roomkit.providers.gemini.realtime import GeminiLiveProvider
+        from roomkit.providers.gemini import GeminiLiveProvider
 
         model = os.getenv("GEMINI_MODEL", "gemini-3.8-live")
         notes.append(f"REALTIME: Gemini Live {model}, voice {spoken} (ROOMKIT_VOICE=)")
@@ -299,7 +307,7 @@ def build_realtime(notes: list[str]) -> Any | None:
             voice=voice,
         )
     if os.getenv("OPENAI_API_KEY"):
-        from roomkit.providers.openai.realtime import OpenAIRealtimeProvider
+        from roomkit.providers.openai import OpenAIRealtimeProvider
 
         model = os.getenv("OPENAI_MODEL")
         notes.append(
@@ -335,7 +343,7 @@ def build_ai(notes: list[str]) -> Any | None:
             "        (set ANTHROPIC_API_KEY to talk WITH the bot instead)"
         )
         return None
-    from roomkit.channels.ai import AIChannel
+    from roomkit import AIChannel
     from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 
     # Named explicitly rather than left to the provider default, and defaulted
@@ -367,10 +375,7 @@ def build_vad(notes: list[str]) -> Any:
         os.path.dirname(__file__), "models", "ten-vad.onnx"
     )
     if os.path.exists(model):
-        from roomkit.voice.pipeline.vad.sherpa_onnx import (
-            SherpaOnnxVADConfig,
-            SherpaOnnxVADProvider,
-        )
+        from roomkit.voice.pipeline.vad import SherpaOnnxVADConfig, SherpaOnnxVADProvider
 
         notes.append(f"VAD: TEN-VAD (sherpa-onnx), 700 ms silence — {os.path.basename(model)}")
         # threshold 0.5: the provider's recommendation without a denoiser.
@@ -381,7 +386,7 @@ def build_vad(notes: list[str]) -> Any:
             SherpaOnnxVADConfig(model=model, threshold=0.5, silence_threshold_ms=700)
         )
 
-    from roomkit.voice.pipeline.vad.energy import EnergyVADProvider
+    from roomkit.voice.pipeline.vad import EnergyVADProvider
 
     notes.append(
         "VAD: energy (RMS) — fallback. For real utterance boundaries:\n"

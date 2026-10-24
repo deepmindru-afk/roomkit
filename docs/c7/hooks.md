@@ -345,7 +345,7 @@ async def pii_redactor(event: RoomEvent, ctx: RoomContext) -> HookResult:
 Filter hooks by channel type, channel ID, or direction:
 
 ```python
-from roomkit.models.enums import ChannelType, EventDirection
+from roomkit.models import ChannelType, EventDirection
 
 @kit.hook(
     HookTrigger.AFTER_BROADCAST,

@@ -44,12 +44,11 @@ import tempfile
 from shared import setup_logging
 
 from roomkit import RoomKit, VideoChannel, VoiceChannel
-from roomkit.recorder import MockMediaRecorder, RoomRecorderBinding
-from roomkit.recorder.base import MediaRecordingConfig
+from roomkit.recorder import MediaRecordingConfig, MockMediaRecorder, RoomRecorderBinding
 from roomkit.video import VideoFrame
-from roomkit.video.backends.local import LocalVideoBackend
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.pipeline.config import AudioPipelineConfig
+from roomkit.video.backends import LocalVideoBackend
+from roomkit.voice.backends import LocalAudioBackend
+from roomkit.voice.pipeline import AudioPipelineConfig
 
 setup_logging("room_media_recorder", level=logging.WARNING)
 logging.getLogger("roomkit.recorder").setLevel(logging.INFO)
@@ -71,7 +70,7 @@ async def main() -> None:
 
     # --- Recorder: PyAV if available, mock fallback ----------------------
     try:
-        from roomkit.recorder.pyav import PyAVMediaRecorder
+        from roomkit.recorder import PyAVMediaRecorder
 
         recorder = PyAVMediaRecorder()
         recorder_name = "PyAV → MP4"

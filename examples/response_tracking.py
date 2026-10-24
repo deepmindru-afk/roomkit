@@ -21,7 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
+    EventFilter,
     HookResult,
     HookTrigger,
     InboundMessage,
@@ -30,9 +32,7 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.models.store_filter import EventFilter
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import MockAIProvider
 
 ROOM = "tracking-room"
 logger = setup_logging("example.response_tracking")

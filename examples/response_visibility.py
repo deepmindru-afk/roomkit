@@ -18,18 +18,18 @@ from __future__ import annotations
 import asyncio
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     HookResult,
     HookTrigger,
     InboundMessage,
+    RoomContext,
     RoomEvent,
     RoomKit,
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.models.context import RoomContext
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import MockAIProvider
 
 
 async def main() -> None:

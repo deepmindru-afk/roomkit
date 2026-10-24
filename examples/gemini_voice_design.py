@@ -37,13 +37,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import env_bool, require_env, setup_logging, voice_language
 
-from roomkit.voice.tts.gemini import GeminiTTSConfig, GeminiTTSProvider
-from roomkit.voice.tts.gemini_library import (
+from roomkit.voice import VoiceConsentError
+from roomkit.voice.tts import (
     CONSENT_STATEMENTS,
+    GeminiTTSConfig,
+    GeminiTTSProvider,
     GeminiVoiceLibrary,
     GeminiVoiceLibraryConfig,
 )
-from roomkit.voice.tts.library import VoiceConsentError
 
 logger = setup_logging("roomkit.examples.gemini_voice_design")
 

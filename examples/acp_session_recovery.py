@@ -17,12 +17,18 @@ from typing import Any
 import acp
 from acp.schema import InitializeResponse, NewSessionResponse, PromptResponse
 
-from roomkit import ACPChannel, ACPSessionInvalidatedError, ACPTransport
-from roomkit.models.channel import ChannelBinding
-from roomkit.models.context import RoomContext
-from roomkit.models.enums import ChannelType
-from roomkit.models.event import EventSource, RoomEvent, TextContent
-from roomkit.models.room import Room
+from roomkit import (
+    ACPChannel,
+    ACPSessionInvalidatedError,
+    ACPTransport,
+    ChannelBinding,
+    ChannelType,
+    EventSource,
+    Room,
+    RoomContext,
+    RoomEvent,
+    TextContent,
+)
 
 logger = logging.getLogger("roomkit.examples.acp_recovery")
 

@@ -31,19 +31,18 @@ from __future__ import annotations
 import asyncio
 
 from roomkit import (
+    AIChannel,
     AIChannelTurnConfig,
+    ChannelBinding,
     ChannelCategory,
     InboundMessage,
+    RoomContext,
     RoomEvent,
     RoomKit,
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.models.channel import ChannelBinding
-from roomkit.models.context import RoomContext
-from roomkit.providers.ai.base import AIResponse
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import AIResponse, MockAIProvider
 
 # ---------------------------------------------------------------------------
 # 1. The per-turn callback

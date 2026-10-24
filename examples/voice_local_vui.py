@@ -102,6 +102,7 @@ from shared import (
 )
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     HookExecution,
     HookResult,
@@ -110,23 +111,29 @@ from roomkit import (
     TTSContextConfig,
     VoiceChannel,
 )
-from roomkit.channels.ai import AIChannel
 from roomkit.local_models import is_downloaded
-from roomkit.providers.ai.base import AIProvider
+from roomkit.providers.ai import AIProvider
 from roomkit.providers.llamacpp import LlamaCppAIProvider, LlamaCppConfig
 from roomkit.providers.ollama import OllamaAIProvider, OllamaConfig
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.pipeline import AECProvider, AudioPipelineConfig
+from roomkit.voice.backends import LocalAudioBackend
+from roomkit.voice.pipeline import (
+    AECProvider,
+    AudioPipelineConfig,
+    SherpaOnnxVADConfig,
+    SherpaOnnxVADProvider,
+)
 from roomkit.voice.pipeline.turn import SmartTurnConfig, SmartTurnDetector
-from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
-from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
-from roomkit.voice.tts.filters import (
+from roomkit.voice.stt import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
+from roomkit.voice.tts import (
+    VUI_TAGS,
     StripBrackets,
     StripEmoji,
     TTSFilterChain,
     TTSStreamFilter,
+    VuiTTSConfig,
+    VuiTTSProvider,
+    VuiVoice,
 )
-from roomkit.voice.tts.vui import SAMPLE_RATE, VUI_TAGS, VuiTTSConfig, VuiTTSProvider, VuiVoice
 
 logger = setup_logging("voice_local_vui")
 
@@ -215,11 +222,11 @@ async def start_llm(provider: AIProvider) -> None:
 def build_aec() -> AECProvider | None:
     mode = os.environ.get("AEC", "webrtc").lower()
     if mode in ("1", "webrtc"):
-        from roomkit.voice.pipeline.aec.webrtc import WebRTCAECProvider
+        from roomkit.voice.pipeline.aec import WebRTCAECProvider
 
         return WebRTCAECProvider(sample_rate=MIC_RATE)
     if mode == "speex":
-        from roomkit.voice.pipeline.aec.speex import SpeexAECProvider
+        from roomkit.voice.pipeline import SpeexAECProvider
 
         frame = MIC_RATE * BLOCK_MS // 1000
         return SpeexAECProvider(frame_size=frame, filter_length=frame * 10, sample_rate=MIC_RATE)
@@ -243,7 +250,7 @@ async def main() -> None:
     mute_mic = mute_env == "1" if mute_env is not None else aec is None
     backend = LocalAudioBackend(
         input_sample_rate=MIC_RATE,
-        output_sample_rate=SAMPLE_RATE,  # Vui speaks 24 kHz
+        output_sample_rate=24000,  # Vui speaks 24 kHz
         channels=1,
         block_duration_ms=BLOCK_MS,
         mute_mic_during_playback=mute_mic,

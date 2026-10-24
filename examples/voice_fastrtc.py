@@ -55,11 +55,10 @@ from roomkit import (
     VoiceChannel,
 )
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
-from roomkit.voice.backends.fastrtc import FastRTCVoiceBackend, mount_fastrtc_voice
-from roomkit.voice.pipeline import AudioPipelineConfig
-from roomkit.voice.pipeline.vad.energy import EnergyVADProvider
-from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
-from roomkit.voice.tts.elevenlabs import ElevenLabsConfig, ElevenLabsTTSProvider
+from roomkit.voice.backends import FastRTCVoiceBackend, mount_fastrtc_voice
+from roomkit.voice.pipeline import AudioPipelineConfig, EnergyVADProvider
+from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider
+from roomkit.voice.tts import ElevenLabsConfig, ElevenLabsTTSProvider
 
 logger = setup_logging("voice_fastrtc")
 env = require_env("ANTHROPIC_API_KEY", "DEEPGRAM_API_KEY", "ELEVENLABS_API_KEY")

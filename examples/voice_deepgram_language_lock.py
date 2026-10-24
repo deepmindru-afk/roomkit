@@ -65,6 +65,7 @@ from shared import (
 )
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     HookResult,
     HookTrigger,
@@ -72,12 +73,11 @@ from roomkit import (
     STTLanguageLock,
     VoiceChannel,
 )
-from roomkit.channels.ai import AIChannel
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.voice.backends import LocalAudioBackend
 from roomkit.voice.pipeline import AudioPipelineConfig
-from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
-from roomkit.voice.tts.elevenlabs import ElevenLabsConfig, ElevenLabsTTSProvider
+from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider
+from roomkit.voice.tts import ElevenLabsConfig, ElevenLabsTTSProvider
 
 logger = setup_logging("voice_deepgram_language_lock")
 

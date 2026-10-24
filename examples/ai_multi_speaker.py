@@ -21,15 +21,14 @@ from __future__ import annotations
 import asyncio
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     InboundMessage,
     RoomKit,
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.base import AIContext
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import AIContext, MockAIProvider
 
 ROOM = "planning"
 CHANNEL = "ws-team"

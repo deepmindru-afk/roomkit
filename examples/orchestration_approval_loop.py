@@ -21,10 +21,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
-from roomkit import Agent, EventType, InboundMessage, Loop, RoomKit, TextContent, WebSocketChannel
-from roomkit.memory.sliding_window import SlidingWindowMemory
-from roomkit.models.event import RoomEvent
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit import (
+    Agent,
+    EventType,
+    InboundMessage,
+    Loop,
+    RoomEvent,
+    RoomKit,
+    TextContent,
+    WebSocketChannel,
+)
+from roomkit.memory import SlidingWindowMemory
+from roomkit.providers.ai import MockAIProvider
 
 # Warnings from everything, plus the loop strategy's per-iteration progress.
 setup_logging("example.approval_loop", level=logging.WARNING)

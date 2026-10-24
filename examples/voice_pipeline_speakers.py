@@ -58,13 +58,13 @@ import sounddevice as sd
 from shared import build_vad, require_env, run_until_stopped, setup_logging
 
 from roomkit import HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.voice.backends import LocalAudioBackend
 from roomkit.voice.pipeline import AudioPipelineConfig
 from roomkit.voice.pipeline.diarization import (
     SherpaOnnxDiarizationConfig,
     SherpaOnnxDiarizationProvider,
 )
-from roomkit.voice.stt.meta import MetaSTTConfig, MetaSTTProvider
+from roomkit.voice.stt import MetaSTTConfig, MetaSTTProvider
 
 logger = setup_logging("roomkit.examples.voice_pipeline_speakers")
 

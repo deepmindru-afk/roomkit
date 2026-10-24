@@ -44,9 +44,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import require_env, run_until_stopped, setup_console, setup_logging
 
 from roomkit import RealtimeVoiceChannel, RoomKit
-from roomkit.providers.elevenlabs.config import ElevenLabsRealtimeConfig
-from roomkit.providers.elevenlabs.realtime import ElevenLabsRealtimeProvider
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.providers.elevenlabs import ElevenLabsRealtimeConfig, ElevenLabsRealtimeProvider
+from roomkit.voice.backends import LocalAudioBackend
 
 logger = setup_logging("realtime_elevenlabs_tools")
 

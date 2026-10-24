@@ -81,7 +81,7 @@ SYSTEM lifecycle events; payload in `event.content.data` (always includes `chann
 | Mock | `MockConferenceBackend` | `capabilities=` kwarg | built-in |
 
 ```python
-from roomkit.conference.livekit import LiveKitConfig, LiveKitConferenceBackend
+from roomkit.conference import LiveKitConferenceBackend, LiveKitConfig
 
 backend = LiveKitConferenceBackend(LiveKitConfig(url="wss://my-project.livekit.cloud"))
 ```
@@ -122,9 +122,8 @@ await channel.set_bot_grants(ConferenceGrants.observer())  # None returns to der
 
 ```python
 import asyncio
-from roomkit import MockConferenceBackend, RoomKit
-from roomkit.channels.conference import ConferenceChannel
-from roomkit.voice.stt.mock import MockSTTProvider
+from roomkit import ConferenceChannel, MockConferenceBackend, RoomKit
+from roomkit.voice.stt import MockSTTProvider
 
 async def main() -> None:
     backend = MockConferenceBackend()

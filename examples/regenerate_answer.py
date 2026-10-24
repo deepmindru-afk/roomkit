@@ -23,12 +23,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
-from roomkit import ChannelCategory, RoomClosedError, RoomKit, TextContent
+from roomkit import (
+    AIChannel,
+    ChannelCategory,
+    EventType,
+    InboundMessage,
+    RoomClosedError,
+    RoomKit,
+    TextContent,
+)
 from roomkit.channels import SMSChannel
-from roomkit.channels.ai import AIChannel
-from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import EventType
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import MockAIProvider
 
 
 async def show(kit: RoomKit, room_id: str, title: str) -> None:

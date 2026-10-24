@@ -53,13 +53,10 @@ from shared import run_until_stopped, setup_console, setup_logging
 
 logger = setup_logging("voice_sip_auth")
 
-from roomkit import RoomKit, VoiceChannel
-from roomkit.models.context import RoomContext
-from roomkit.models.enums import HookTrigger
-from roomkit.models.event import RoomEvent, SystemContent
-from roomkit.models.hook import HookResult
+from roomkit import HookResult, HookTrigger, RoomContext, RoomEvent, RoomKit, VoiceChannel
+from roomkit.models import SystemContent
 from roomkit.voice import parse_voice_session
-from roomkit.voice.backends.sip import SIPVoiceBackend
+from roomkit.voice.backends import SIPVoiceBackend
 
 # ---------------------------------------------------------------------------
 # Configuration

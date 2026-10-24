@@ -32,8 +32,8 @@ from roomkit import (
     RealtimeVoiceChannel,
     RoomKit,
 )
-from roomkit.providers.ai.base import AITool
-from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from roomkit.providers.ai import AITool
+from roomkit.voice.realtime import MockRealtimeProvider, MockRealtimeTransport
 
 logger = setup_logging("realtime_human_input")
 

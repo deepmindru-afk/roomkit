@@ -10,12 +10,17 @@ import asyncio
 import logging
 from typing import Any
 
-from roomkit import AIChannel, AIChannelTurnConfig, InboundMessage, RoomKit, TextContent
+from roomkit import (
+    AIChannel,
+    AIChannelTurnConfig,
+    ChannelBinding,
+    InboundMessage,
+    RoomContext,
+    RoomKit,
+    TextContent,
+)
 from roomkit.channels import WebSocketChannel
-from roomkit.models.channel import ChannelBinding
-from roomkit.models.context import RoomContext
-from roomkit.providers.ai.base import AIResponse, AITool, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import AIResponse, AITool, AIToolCall, MockAIProvider
 
 logger = logging.getLogger(__name__)
 LOOKUP = AITool(name="lookup", description="Read the current room's records", parameters={})

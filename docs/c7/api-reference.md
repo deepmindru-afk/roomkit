@@ -413,58 +413,61 @@ kit = RoomKit(
 ### AI Providers
 
 ```python
-from roomkit.providers.anthropic.ai import AnthropicAIProvider
-from roomkit.providers.anthropic.config import AnthropicConfig
-from roomkit.providers.openai.ai import OpenAIAIProvider
-from roomkit.providers.openai.config import OpenAIConfig
-from roomkit.providers.gemini.ai import GeminiAIProvider
-from roomkit.providers.gemini.config import GeminiConfig
-from roomkit.providers.mistral.ai import MistralAIProvider
-from roomkit.providers.mistral.config import MistralConfig
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.ai.base import AIProvider, AIContext, AIResponse, AITool, AIToolCall
+from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
+from roomkit.providers.openai import OpenAIAIProvider, OpenAIConfig
+from roomkit.providers.gemini import GeminiAIProvider, GeminiConfig
+from roomkit.providers.mistral import MistralAIProvider, MistralConfig
+from roomkit.providers.ai import (
+    AIContext,
+    AIProvider,
+    AIResponse,
+    AITool,
+    AIToolCall,
+    MockAIProvider,
+)
 ```
 
 ### SMS Providers
 
 ```python
-from roomkit.providers.twilio.sms import TwilioSMSProvider
-from roomkit.providers.twilio.config import TwilioConfig
-from roomkit.providers.telnyx.sms import TelnyxSMSProvider
-from roomkit.providers.telnyx.config import TelnyxConfig
-from roomkit.providers.sinch.sms import SinchSMSProvider
-from roomkit.providers.sinch.config import SinchConfig
-from roomkit.providers.sms.mock import MockSMSProvider
+from roomkit.providers.twilio import TwilioConfig, TwilioSMSProvider
+from roomkit.providers.telnyx import TelnyxConfig, TelnyxSMSProvider
+from roomkit.providers.sinch import SinchConfig, SinchSMSProvider
+from roomkit.providers.sms import MockSMSProvider
 ```
 
-### Voice (Lazy Loaders)
+### Voice Providers and Backends
 
 ```python
-from roomkit.voice import (
-    get_deepgram_provider, get_deepgram_config,
-    get_elevenlabs_provider, get_elevenlabs_config,
-    get_gemini_tts_provider, get_gemini_tts_config,
-    get_sherpa_onnx_stt_provider, get_sherpa_onnx_tts_provider,
-    get_local_audio_backend,
-    get_fastrtc_backend,
-    get_rtp_backend,
-    get_sip_backend,
-    get_gemini_live_provider,
-    get_openai_realtime_provider,
-    get_xai_realtime_provider,
-    get_websocket_realtime_transport,
-    get_speex_aec_provider,
-    get_rnnoise_denoiser_provider,
+# Each module loads, with the vendor SDK it needs, on first use of its name.
+from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider, SherpaOnnxSTTProvider
+from roomkit.voice.tts import (
+    ElevenLabsConfig,
+    ElevenLabsTTSProvider,
+    GeminiTTSConfig,
+    GeminiTTSProvider,
+    SherpaOnnxTTSProvider,
 )
+from roomkit.voice.backends import (
+    FastRTCVoiceBackend,
+    LocalAudioBackend,
+    RTPVoiceBackend,
+    SIPVoiceBackend,
+)
+from roomkit.providers.gemini import GeminiLiveProvider
+from roomkit.providers.openai import OpenAIRealtimeProvider
+from roomkit.providers.xai import XAIRealtimeProvider
+from roomkit.voice.realtime import WebSocketRealtimeTransport
+from roomkit.voice import RNNoiseDenoiserProvider, SpeexAECProvider
 ```
 
 ### Voice Mocks
 
 ```python
-from roomkit.voice.backends.mock import MockVoiceBackend
-from roomkit.voice.stt.mock import MockSTTProvider
-from roomkit.voice.tts.mock import MockTTSProvider
-from roomkit.voice.realtime.mock import MockRealtimeProvider, MockRealtimeTransport
+from roomkit.voice.backends import MockVoiceBackend
+from roomkit.voice.stt import MockSTTProvider
+from roomkit.voice.tts import MockTTSProvider
+from roomkit.voice.realtime import MockRealtimeProvider, MockRealtimeTransport
 from roomkit.voice.testing import ScenarioVoiceBackend, VoiceTrace, PCMAudio, read_wav, write_wav
 ```
 
@@ -478,34 +481,49 @@ from roomkit.voice.pipeline import (
     MockAGCProvider, MockAECProvider, MockDTMFDetector,
     MockAudioRecorder, MockTurnDetector, MockBackchannelDetector,
 )
-from roomkit.voice.interruption import InterruptionConfig, InterruptionStrategy
-from roomkit.voice.stt.language import STTLanguageLock  # also exported from roomkit
-from roomkit.voice.audio_frame import AudioFrame
+from roomkit.voice import (
+    AudioFrame,
+    InterruptionConfig,
+    InterruptionStrategy,
+    STTLanguageLock,
+)
 ```
 
 ### Orchestration
 
 ```python
-from roomkit.orchestration.state import get_conversation_state, ConversationState
-from roomkit.orchestration.router import ConversationRouter, RoutingRule
-from roomkit.orchestration.pipeline import ConversationPipeline, PipelineStage
-from roomkit.orchestration.handoff import HandoffHandler, HandoffMemoryProvider
+from roomkit.orchestration import (
+    ConversationPipeline,
+    ConversationRouter,
+    ConversationState,
+    HandoffHandler,
+    HandoffMemoryProvider,
+    PipelineStage,
+    RoutingRule,
+    get_conversation_state,
+)
 ```
 
 ### Storage
 
 ```python
-from roomkit.store.base import ConversationStore
-from roomkit.store.memory import InMemoryStore
-from roomkit.store.postgres import PostgresStore
+from roomkit.store import ConversationStore, InMemoryStore, PostgresStore
 ```
 
 ### Content Types
 
 ```python
-from roomkit.models.event import (
-    TextContent, RichContent, MediaContent, AudioContent, VideoContent,
-    LocationContent, CompositeContent, TemplateContent, SystemContent,
-    EditContent, DeleteContent,
+from roomkit.models import (
+    AudioContent,
+    CompositeContent,
+    DeleteContent,
+    EditContent,
+    LocationContent,
+    MediaContent,
+    RichContent,
+    SystemContent,
+    TemplateContent,
+    TextContent,
+    VideoContent,
 )
 ```

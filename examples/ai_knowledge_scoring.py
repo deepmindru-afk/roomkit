@@ -20,6 +20,7 @@ import re
 from typing import Any
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     InboundMessage,
     RoomEvent,
@@ -27,10 +28,9 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
 from roomkit.knowledge import KnowledgeResult, KnowledgeSource
 from roomkit.memory import RetrievalMemory, SlidingWindowMemory
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import MockAIProvider
 from roomkit.scoring import ConversationScorer, Score, ScoringHook
 
 _STOP_WORDS = {"a", "an", "the", "i", "you", "my", "your", "do", "how", "what", "to", "of"}

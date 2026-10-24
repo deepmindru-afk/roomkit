@@ -21,6 +21,7 @@ import json
 from typing import Any
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     InboundMessage,
     RoomEvent,
@@ -28,9 +29,7 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.base import AIResponse, AIToolCall
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import AIResponse, AIToolCall, MockAIProvider
 
 
 async def run_tool(name: str, arguments: dict[str, Any]) -> str:

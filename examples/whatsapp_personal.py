@@ -51,8 +51,8 @@ from roomkit import (
     TextContent,
     WhatsAppPersonalChannel,
 )
-from roomkit.models.event import AudioContent, LocationContent, MediaContent
-from roomkit.providers.whatsapp.personal import WhatsAppPersonalProvider
+from roomkit.models import AudioContent, LocationContent, MediaContent
+from roomkit.providers.whatsapp import WhatsAppPersonalProvider
 from roomkit.sources import WhatsAppPersonalSourceProvider
 
 

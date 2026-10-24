@@ -56,9 +56,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from shared import require_local_models, setup_logging
 
-from roomkit.voice.audio_frame import AudioFrame
-from roomkit.voice.pipeline import AudioPipeline, AudioPipelineConfig
-from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
+from roomkit.voice import AudioFrame
+from roomkit.voice.pipeline import (
+    AudioPipeline,
+    AudioPipelineConfig,
     SherpaOnnxDenoiserConfig,
     SherpaOnnxDenoiserProvider,
 )

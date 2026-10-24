@@ -56,14 +56,21 @@ from shared import (
     voice_language,
 )
 
-from roomkit import ChannelCategory, HookExecution, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.channels.ai import AIChannel
+from roomkit import (
+    AIChannel,
+    ChannelCategory,
+    HookExecution,
+    HookResult,
+    HookTrigger,
+    RoomKit,
+    VoiceChannel,
+)
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.voice.backends import LocalAudioBackend
 from roomkit.voice.pipeline import AudioPipelineConfig, WebRTCNoiseSuppressorProvider
-from roomkit.voice.pipeline.aec.webrtc import WebRTCAECProvider
-from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
-from roomkit.voice.tts.grok import GrokTTSConfig, GrokTTSProvider
+from roomkit.voice.pipeline.aec import WebRTCAECProvider
+from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider
+from roomkit.voice.tts import GrokTTSConfig, GrokTTSProvider
 
 logger = setup_logging("voice_deepgram_grok")
 
@@ -162,15 +169,15 @@ async def main() -> None:
             f"{recording_dir} is on encrypted storage (RFC 17.6 refuses plaintext recordings)"
         )
     if recording_dir:
-        from roomkit.recorder.base import MediaRecordingConfig, RoomRecorderBinding
+        from roomkit.recorder import MediaRecordingConfig, RoomRecorderBinding
 
         try:
-            from roomkit.recorder.pyav import PyAVMediaRecorder
+            from roomkit.recorder import PyAVMediaRecorder
 
             recorder = PyAVMediaRecorder()
             logger.info("Recording: PyAV → MP4 in %s/", recording_dir)
         except ImportError:
-            from roomkit.recorder.mock import MockMediaRecorder
+            from roomkit.recorder import MockMediaRecorder
 
             recorder = MockMediaRecorder()
             logger.info("Recording: Mock (pip install roomkit[video] for MP4)")

@@ -48,9 +48,9 @@ from shared import (
 )
 
 from roomkit import RealtimeVoiceChannel, RoomKit
-from roomkit.providers.gemini.realtime import GeminiLiveProvider
+from roomkit.providers.gemini import GeminiLiveProvider
 from roomkit.skills import SkillRegistry
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.voice.backends import LocalAudioBackend
 
 logger = setup_logging("realtime_voice_local_gemini")
 

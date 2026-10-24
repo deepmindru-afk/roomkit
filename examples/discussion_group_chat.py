@@ -46,15 +46,14 @@ from roomkit import (
     HookExecution,
     HookTrigger,
     InboundMessage,
+    RoomContext,
+    RoomEvent,
     RoomKit,
     SpeakQueueEvent,
     TextContent,
     WebSocketChannel,
 )
-from roomkit.models.context import RoomContext
-from roomkit.models.event import RoomEvent
-from roomkit.providers.ai.base import AIResponse
-from roomkit.providers.ai.mock import MockAIProvider
+from roomkit.providers.ai import AIResponse, MockAIProvider
 
 logger = setup_logging("example.discussion_group_chat")
 

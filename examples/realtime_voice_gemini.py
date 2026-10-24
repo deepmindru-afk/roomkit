@@ -54,8 +54,8 @@ from websockets.http11 import Request, Response
 from websockets.typing import Origin
 
 from roomkit import RealtimeVoiceChannel, RoomKit
-from roomkit.providers.gemini.realtime import GeminiLiveProvider
-from roomkit.voice.realtime.ws_transport import WebSocketRealtimeTransport
+from roomkit.providers.gemini import GeminiLiveProvider
+from roomkit.voice.realtime import WebSocketRealtimeTransport
 
 logger = setup_logging("realtime_voice_gemini")
 # websockets logs each page load ("connection rejected (200 OK)") and each socket

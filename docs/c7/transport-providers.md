@@ -8,8 +8,7 @@ Transport providers handle sending and receiving messages over external protocol
 
 ```python
 from roomkit import RoomKit, SMSChannel
-from roomkit.providers.twilio.sms import TwilioSMSProvider
-from roomkit.providers.twilio.config import TwilioConfig
+from roomkit.providers.twilio import TwilioConfig, TwilioSMSProvider
 
 sms = SMSChannel("sms-twilio", provider=TwilioSMSProvider(TwilioConfig(
     account_sid="AC...",
@@ -24,8 +23,7 @@ kit.register_channel(sms)
 ### Telnyx
 
 ```python
-from roomkit.providers.telnyx.sms import TelnyxSMSProvider
-from roomkit.providers.telnyx.config import TelnyxConfig
+from roomkit.providers.telnyx import TelnyxConfig, TelnyxSMSProvider
 
 sms = SMSChannel("sms-telnyx", provider=TelnyxSMSProvider(TelnyxConfig(
     api_key="KEY...",
@@ -36,8 +34,7 @@ sms = SMSChannel("sms-telnyx", provider=TelnyxSMSProvider(TelnyxConfig(
 ### Sinch
 
 ```python
-from roomkit.providers.sinch.sms import SinchSMSProvider
-from roomkit.providers.sinch.config import SinchConfig
+from roomkit.providers.sinch import SinchConfig, SinchSMSProvider
 
 sms = SMSChannel("sms-sinch", provider=SinchSMSProvider(SinchConfig(
     service_plan_id="...",
@@ -49,8 +46,7 @@ sms = SMSChannel("sms-sinch", provider=SinchSMSProvider(SinchConfig(
 ### VoiceMeUp
 
 ```python
-from roomkit.providers.voicemeup.sms import VoiceMeUpSMSProvider
-from roomkit.providers.voicemeup.config import VoiceMeUpConfig
+from roomkit.providers.voicemeup import VoiceMeUpConfig, VoiceMeUpSMSProvider
 
 sms = SMSChannel("sms-vmu", provider=VoiceMeUpSMSProvider(VoiceMeUpConfig(
     username="...",
@@ -64,10 +60,10 @@ sms = SMSChannel("sms-vmu", provider=VoiceMeUpSMSProvider(VoiceMeUpConfig(
 Each SMS provider has a webhook parser:
 
 ```python
-from roomkit.providers.twilio.sms import parse_twilio_webhook
-from roomkit.providers.telnyx.sms import parse_telnyx_webhook
-from roomkit.providers.sinch.sms import parse_sinch_webhook
-from roomkit.providers.voicemeup.sms import VoiceMeUpSMSProvider  # use provider.parse_inbound()
+from roomkit.providers.twilio import parse_twilio_webhook
+from roomkit.providers.telnyx import parse_telnyx_webhook
+from roomkit.providers.sinch import parse_sinch_webhook
+from roomkit.providers.voicemeup import VoiceMeUpSMSProvider  # use provider.parse_inbound()
 
 # Or use the universal webhook parser
 message = await kit.process_webhook(meta=request_data, channel_id="sms-twilio")
@@ -77,7 +73,7 @@ message = await kit.process_webhook(meta=request_data, channel_id="sms-twilio")
 
 ```python
 from roomkit import RCSChannel
-from roomkit.providers.twilio.rcs import TwilioRCSProvider, TwilioRCSConfig
+from roomkit.providers.twilio import TwilioRCSConfig, TwilioRCSProvider
 
 rcs = RCSChannel("rcs-main", provider=TwilioRCSProvider(TwilioRCSConfig(
     account_sid="AC...",
@@ -94,8 +90,7 @@ Also available via Telnyx: `TelnyxRCSProvider`, `TelnyxRCSConfig`.
 
 ```python
 from roomkit import EmailChannel
-from roomkit.providers.elasticemail.email import ElasticEmailProvider
-from roomkit.providers.elasticemail.config import ElasticEmailConfig
+from roomkit.providers.elasticemail import ElasticEmailConfig, ElasticEmailProvider
 
 email = EmailChannel("email-main", provider=ElasticEmailProvider(ElasticEmailConfig(
     api_key="...",
@@ -107,10 +102,9 @@ email = EmailChannel("email-main", provider=ElasticEmailProvider(ElasticEmailCon
 ### SendGrid
 
 ```python
-from roomkit.providers.sendgrid.email import SendGridEmailProvider
-from roomkit.providers.sendgrid.config import SendGridConfig
+from roomkit.providers.sendgrid import SendGridConfig, SendGridProvider
 
-email = EmailChannel("email-sg", provider=SendGridEmailProvider(SendGridConfig(
+email = EmailChannel("email-sg", provider=SendGridProvider(SendGridConfig(
     api_key="SG...",
     from_email="support@example.com",
 )))
@@ -122,7 +116,7 @@ email = EmailChannel("email-sg", provider=SendGridEmailProvider(SendGridConfig(
 
 ```python
 from roomkit import WhatsAppChannel
-from roomkit.providers.whatsapp.base import WhatsAppProvider
+from roomkit.providers.whatsapp import WhatsAppProvider
 
 whatsapp = WhatsAppChannel("wa-business", provider=WhatsAppProvider(
     access_token="...",
@@ -134,7 +128,7 @@ whatsapp = WhatsAppChannel("wa-business", provider=WhatsAppProvider(
 
 ```python
 from roomkit import WhatsAppPersonalChannel
-from roomkit.providers.whatsapp.personal import WhatsAppPersonalProvider
+from roomkit.providers.whatsapp import WhatsAppPersonalProvider
 
 whatsapp = WhatsAppPersonalChannel("wa-personal", provider=WhatsAppPersonalProvider())
 ```
@@ -145,8 +139,7 @@ Requires `pip install roomkit[whatsapp-personal]`. Uses the neonize library for 
 
 ```python
 from roomkit import MessengerChannel
-from roomkit.providers.messenger.facebook import FacebookMessengerProvider
-from roomkit.providers.messenger.config import MessengerConfig
+from roomkit.providers.messenger import FacebookMessengerProvider, MessengerConfig
 
 messenger = MessengerChannel("messenger", provider=FacebookMessengerProvider(MessengerConfig(
     page_access_token="...",
@@ -161,8 +154,7 @@ Webhook parser: `parse_messenger_webhook(request_data, channel_id="messenger")` 
 
 ```python
 from roomkit import TelegramChannel
-from roomkit.providers.telegram.bot import TelegramBotProvider
-from roomkit.providers.telegram.config import TelegramConfig
+from roomkit.providers.telegram import TelegramBotProvider, TelegramConfig
 
 telegram = TelegramChannel("telegram", provider=TelegramBotProvider(TelegramConfig(
     bot_token="123456:ABC-DEF...",
@@ -205,7 +197,7 @@ Discord has no webhook parser — it is a source + provider pair sharing one per
 ```python
 from roomkit import DiscordChannel, RoomKit
 from roomkit.providers.discord import DiscordBotProvider, DiscordConfig
-from roomkit.sources.discord import DiscordGatewaySource
+from roomkit.sources import DiscordGatewaySource
 
 config = DiscordConfig(
     bot_token="...",               # SecretStr
@@ -238,7 +230,7 @@ Buzz (Block's Nostr-based team workspace) follows the same source + provider pai
 ```python
 from roomkit import BuzzChannel, RoomKit
 from roomkit.providers.buzz import BuzzConfig, BuzzProvider
-from roomkit.sources.buzz import BuzzRelaySource
+from roomkit.sources import BuzzRelaySource
 
 config = BuzzConfig(
     relay_url="wss://your-community.communities.buzz.xyz",
@@ -291,8 +283,7 @@ Buzz huddles (live voice calls in ephemeral channels) are handled by the voice s
 
 ```python
 from roomkit import TeamsChannel
-from roomkit.providers.teams.bot_framework import BotFrameworkTeamsProvider
-from roomkit.providers.teams.config import TeamsConfig
+from roomkit.providers.teams import BotFrameworkTeamsProvider, TeamsConfig
 
 teams = TeamsChannel("teams", provider=BotFrameworkTeamsProvider(TeamsConfig(
     app_id="...",
@@ -303,7 +294,7 @@ teams = TeamsChannel("teams", provider=BotFrameworkTeamsProvider(TeamsConfig(
 Features: proactive messaging, bot mention detection, reaction handling, conversation reference storage.
 
 ```python
-from roomkit.providers.teams.webhook import parse_teams_webhook, is_bot_added
+from roomkit.providers.teams import is_bot_added, parse_teams_webhook
 
 # Parse incoming Teams activity
 activity = parse_teams_webhook(request_data)
@@ -318,8 +309,7 @@ if is_bot_added(activity):
 
 ```python
 from roomkit import HTTPChannel
-from roomkit.providers.http.provider import WebhookHTTPProvider
-from roomkit.providers.http.config import HTTPProviderConfig
+from roomkit.providers.http import HTTPProviderConfig, WebhookHTTPProvider
 
 http = HTTPChannel("webhook", provider=WebhookHTTPProvider(HTTPProviderConfig(
     webhook_url="https://api.example.com/messages",
@@ -378,7 +368,7 @@ kit.unsubscribe_websocket("ws-client", "conn-1", "room-2")
 ## Phone Number Utilities
 
 ```python
-from roomkit.providers.sms.phone import is_valid_phone, normalize_phone
+from roomkit.providers.sms import is_valid_phone, normalize_phone
 
 is_valid_phone("+15551234567")   # True
 normalize_phone("555-123-4567")  # "+15551234567"

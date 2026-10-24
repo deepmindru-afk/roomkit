@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import os
 
-from roomkit.video.vision.gemini import GeminiVisionConfig, GeminiVisionProvider
-from roomkit.video.vision.openai import OpenAIVisionConfig, OpenAIVisionProvider
+from roomkit.video.vision import (
+    GeminiVisionConfig,
+    GeminiVisionProvider,
+    OpenAIVisionConfig,
+    OpenAIVisionProvider,
+)
 
 
 def build_vision_provider(
@@ -14,7 +18,7 @@ def build_vision_provider(
 ) -> GeminiVisionProvider | OpenAIVisionProvider:
     """Build a single vision provider used for both periodic and on-demand analysis."""
     if tool_choice == "openai":
-        from roomkit.video.vision.base import VisionProvider
+        from roomkit.video.vision import VisionProvider
 
         vision: VisionProvider = OpenAIVisionProvider(
             OpenAIVisionConfig(
@@ -48,14 +52,14 @@ def build_vision_provider(
 def build_voice_provider(voice_choice: str) -> object:
     """Build the realtime voice provider."""
     if voice_choice == "openai":
-        from roomkit.providers.openai.realtime import OpenAIRealtimeProvider
+        from roomkit.providers.openai import OpenAIRealtimeProvider
 
         model = os.environ.get("OPENAI_MODEL")
         return OpenAIRealtimeProvider(
             api_key=os.environ["OPENAI_API_KEY"],
             **({"model": model} if model else {}),
         )
-    from roomkit.providers.gemini.realtime import GeminiLiveProvider
+    from roomkit.providers.gemini import GeminiLiveProvider
 
     return GeminiLiveProvider(
         api_key=os.environ["GEMINI_API_KEY"],

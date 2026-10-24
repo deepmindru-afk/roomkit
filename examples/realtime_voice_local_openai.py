@@ -50,9 +50,9 @@ from shared import (
 )
 
 from roomkit import RealtimeVoiceChannel, RoomKit
-from roomkit.providers.openai.realtime import OpenAIRealtimeProvider
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.interruption import InterruptionConfig
+from roomkit.providers.openai import OpenAIRealtimeProvider
+from roomkit.voice import InterruptionConfig
+from roomkit.voice.backends import LocalAudioBackend
 
 logger = setup_logging("realtime_voice_local_openai")
 

@@ -1,11 +1,10 @@
-"""Rate limiting with TokenBucketRateLimiter.
+"""Rate limiting on channel bindings and on inbound messages.
 
-Demonstrates how to configure and use rate limiting on channel bindings
-to throttle outbound message delivery, and framework-level inbound rate
-limiting to protect against message floods. Shows:
+Demonstrates how to configure rate limiting on channel bindings to throttle
+outbound message delivery, and framework-level inbound rate limiting to
+protect against message floods. Shows:
+- How a binding's RateLimit paces delivery to its channel (queued, not dropped)
 - RateLimit configuration (per-second, per-minute, per-hour)
-- TokenBucketRateLimiter acquire() and wait() methods
-- How rate limits apply to channel bindings
 - Inbound rate limiting on RoomKit (drops excess messages before processing)
 
 Run with:
@@ -18,57 +17,14 @@ import asyncio
 import time
 
 from roomkit import InboundMessage, RoomEvent, RoomKit, TextContent, WebSocketChannel
-from roomkit.core.rate_limiter import TokenBucketRateLimiter
-from roomkit.models.channel import RateLimit
+from roomkit.models import RateLimit
 
 
 async def main() -> None:
     # =====================================================
-    # Part 1: TokenBucketRateLimiter directly
+    # Part 1: Rate limits on channel bindings
     # =====================================================
-    print("=== TokenBucketRateLimiter Demo ===\n")
-
-    limiter = TokenBucketRateLimiter()
-
-    # Configure: 5 messages per second
-    rate_limit = RateLimit(max_per_second=5.0)
-
-    print("Sending 10 messages with 5/sec limit (acquire):")
-    allowed = 0
-    rejected = 0
-    for i in range(10):
-        if limiter.acquire("sms-channel", rate_limit):
-            allowed += 1
-            print(f"  Message {i + 1}: ALLOWED")
-        else:
-            rejected += 1
-            print(f"  Message {i + 1}: RATE LIMITED")
-
-    print(f"\n  Result: {allowed} allowed, {rejected} rate-limited")
-
-    # =====================================================
-    # Part 2: Using wait() to queue instead of drop
-    # =====================================================
-    print("\n\n=== Wait Mode (queue instead of drop) ===\n")
-
-    limiter2 = TokenBucketRateLimiter()
-    rate_limit_slow = RateLimit(max_per_second=3.0)
-
-    print("Sending 6 messages with 3/sec limit (wait mode):")
-    start = time.monotonic()
-
-    for i in range(6):
-        await limiter2.wait("slow-channel", rate_limit_slow)
-        elapsed = time.monotonic() - start
-        print(f"  Message {i + 1}: sent at {elapsed:.2f}s")
-
-    total = time.monotonic() - start
-    print(f"\n  Total time: {total:.2f}s (messages were queued, not dropped)")
-
-    # =====================================================
-    # Part 3: Rate limits on channel bindings
-    # =====================================================
-    print("\n\n=== Rate Limits on Channel Bindings ===\n")
+    print("=== Rate Limits on Channel Bindings ===\n")
 
     kit = RoomKit()
 
@@ -124,7 +80,7 @@ async def main() -> None:
         print(f"  {body}: delivered at {at:.2f}s")
 
     # =====================================================
-    # Part 4: Different rate configurations
+    # Part 2: Different rate configurations
     # =====================================================
     print("\n\n=== Rate Limit Configurations ===\n")
 
@@ -155,7 +111,7 @@ async def main() -> None:
     await kit.close()
 
     # =====================================================
-    # Part 5: Inbound rate limiting (framework-level)
+    # Part 3: Inbound rate limiting (framework-level)
     # =====================================================
     print("\n\n=== Inbound Rate Limiting ===\n")
 

@@ -94,24 +94,31 @@ from shared import (
 
 logger = setup_logging("sip_local_agent")
 
-from roomkit import ChannelCategory, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.channels.ai import AIChannel
-from roomkit.models.context import RoomContext
-from roomkit.models.event import RoomEvent
-from roomkit.models.trace import ProtocolTrace
+from roomkit import (
+    AIChannel,
+    ChannelCategory,
+    HookResult,
+    HookTrigger,
+    RoomContext,
+    RoomEvent,
+    RoomKit,
+    VoiceChannel,
+)
+from roomkit.models import ProtocolTrace
 from roomkit.providers.vllm import VLLMConfig, create_vllm_provider
-from roomkit.voice.backends.sip import SIPVoiceBackend
+from roomkit.voice.backends import SIPVoiceBackend
 from roomkit.voice.pipeline import (
     AudioFormat,
     AudioPipelineConfig,
     AudioPipelineContract,
     RecordingChannelMode,
     RecordingConfig,
+    SherpaOnnxVADConfig,
+    SherpaOnnxVADProvider,
     WavFileRecorder,
 )
-from roomkit.voice.pipeline.vad.sherpa_onnx import SherpaOnnxVADConfig, SherpaOnnxVADProvider
-from roomkit.voice.stt.sherpa_onnx import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
-from roomkit.voice.tts.sherpa_onnx import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
+from roomkit.voice.stt import SherpaOnnxSTTConfig, SherpaOnnxSTTProvider
+from roomkit.voice.tts import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -164,10 +171,7 @@ async def main() -> None:
     # --- Denoiser (optional, sherpa-onnx GTCRN) --------------------------
     denoiser = None
     if denoise:
-        from roomkit.voice.pipeline.denoiser.sherpa_onnx import (
-            SherpaOnnxDenoiserConfig,
-            SherpaOnnxDenoiserProvider,
-        )
+        from roomkit.voice.pipeline import SherpaOnnxDenoiserConfig, SherpaOnnxDenoiserProvider
 
         denoiser = SherpaOnnxDenoiserProvider(
             SherpaOnnxDenoiserConfig.from_local_model("gtcrn-simple", provider="cpu")

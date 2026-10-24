@@ -54,33 +54,27 @@ from shared import (
 from roomkit import (
     Agent,
     ChannelCategory,
+    ConversationPipeline,
+    ConversationState,
     HookExecution,
     HookResult,
     HookTrigger,
+    PipelineStage,
+    RoomContext,
     RoomKit,
     VoiceChannel,
     WaitForIdle,
-)
-from roomkit.memory.sliding_window import SlidingWindowMemory
-from roomkit.models.context import RoomContext
-from roomkit.orchestration.handoff import HandoffMemoryProvider
-from roomkit.orchestration.pipeline import ConversationPipeline, PipelineStage
-from roomkit.orchestration.state import (
-    ConversationState,
     get_conversation_state,
     save_conversation_state,
 )
+from roomkit.memory import SlidingWindowMemory
+from roomkit.orchestration import HandoffMemoryProvider
 from roomkit.providers.gemini import GeminiAIProvider, GeminiConfig
-from roomkit.tasks.delegate import DelegateHandler, build_delegate_tool, setup_delegation
-from roomkit.voice.backends.sip import SIPVoiceBackend
-from roomkit.voice.pipeline import AudioPipelineConfig
-from roomkit.voice.pipeline.vad.sherpa_onnx import (
-    SherpaOnnxVADConfig,
-    SherpaOnnxVADProvider,
-)
-from roomkit.voice.stt.deepgram import DeepgramConfig, DeepgramSTTProvider
-from roomkit.voice.tts.elevenlabs import ElevenLabsConfig, ElevenLabsTTSProvider
-from roomkit.voice.tts.filters import StripInternalTags
+from roomkit.tasks import DelegateHandler, build_delegate_tool, setup_delegation
+from roomkit.voice.backends import SIPVoiceBackend
+from roomkit.voice.pipeline import AudioPipelineConfig, SherpaOnnxVADConfig, SherpaOnnxVADProvider
+from roomkit.voice.stt import DeepgramConfig, DeepgramSTTProvider
+from roomkit.voice.tts import ElevenLabsConfig, ElevenLabsTTSProvider, StripInternalTags
 
 logger = setup_logging("voice_triage")
 logging.getLogger("roomkit.event_router").setLevel(logging.ERROR)

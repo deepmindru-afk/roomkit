@@ -57,8 +57,8 @@ import os
 from shared import require_local_models, setup_logging
 
 from roomkit import CLIChannel, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.voice.backends.local import LocalAudioBackend
-from roomkit.voice.tts.sherpa_onnx import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
+from roomkit.voice.backends import LocalAudioBackend
+from roomkit.voice.tts import SherpaOnnxTTSConfig, SherpaOnnxTTSProvider
 
 logger = setup_logging("kokoro_tts_room")
 

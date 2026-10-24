@@ -40,13 +40,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from shared import require_env, setup_logging  # noqa: E402
 
-from roomkit.providers.ai import round_parts, thinking_parts_of  # noqa: E402
-from roomkit.providers.ai.base import (  # noqa: E402
+from roomkit.providers.ai import (  # noqa: E402
     AIContext,
     AIMessage,
     AIResponse,
     AITool,
     AIToolResultPart,
+    round_parts,
+    thinking_parts_of,
 )
 from roomkit.providers.openai import OpenAIAIProvider, OpenAIConfig  # noqa: E402
 

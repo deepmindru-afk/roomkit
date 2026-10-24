@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import require_env, setup_logging
 
 from roomkit import (
+    AIChannel,
     AIResponseEvent,
     ChannelCategory,
     HookExecution,
@@ -37,8 +38,7 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
-from roomkit.providers.ai.base import AITool
+from roomkit.providers.ai import AITool
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 
 logger = setup_logging("ai_turn_budget")

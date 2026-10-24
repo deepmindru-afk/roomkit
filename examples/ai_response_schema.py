@@ -48,6 +48,7 @@ import json
 from shared import require_env
 
 from roomkit import (
+    AIChannel,
     ChannelCategory,
     InboundMessage,
     ResponseSchemaError,
@@ -56,7 +57,6 @@ from roomkit import (
     TextContent,
     WebSocketChannel,
 )
-from roomkit.channels.ai import AIChannel
 from roomkit.providers.ai import AIContext, AIMessage, AIProvider, MockAIProvider
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 from roomkit.providers.gemini import GeminiAIProvider, GeminiConfig

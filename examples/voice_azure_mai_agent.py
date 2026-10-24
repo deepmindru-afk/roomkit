@@ -72,21 +72,12 @@ from shared import (
     voice_language,
 )
 
-from roomkit import ChannelCategory, HookResult, HookTrigger, RoomKit, VoiceChannel
-from roomkit.channels.ai import AIChannel
+from roomkit import AIChannel, ChannelCategory, HookResult, HookTrigger, RoomKit, VoiceChannel
 from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
-from roomkit.voice.backends.local import LocalAudioBackend
+from roomkit.voice.backends import LocalAudioBackend
 from roomkit.voice.pipeline import VADConfig
-from roomkit.voice.stt.azure_mai import (
-    DEFAULT_DEPLOYMENT,
-    AzureMAISTTConfig,
-    AzureMAISTTProvider,
-)
-from roomkit.voice.tts.azure_speech import (
-    DEFAULT_VOICE,
-    AzureSpeechTTSConfig,
-    AzureSpeechTTSProvider,
-)
+from roomkit.voice.stt import AzureMAISTTConfig, AzureMAISTTProvider
+from roomkit.voice.tts import AzureSpeechTTSConfig, AzureSpeechTTSProvider
 
 logger = setup_logging("voice_azure_mai_agent")
 
@@ -120,26 +111,33 @@ async def main() -> None:
 
     # --- MAI-Transcribe: one stream per utterance, committed when it ends ------
     language = voice_language(None)
+    # Each config's own default applies when its variable is unset.
+    stt_deployment = (
+        {"deployment": os.environ["AZURE_MAI_DEPLOYMENT"]}
+        if "AZURE_MAI_DEPLOYMENT" in os.environ
+        else {}
+    )
     stt = AzureMAISTTProvider(
         AzureMAISTTConfig(
             endpoint=env["AZURE_MAI_ENDPOINT"],
             api_key=env["AZURE_SPEECH_KEY"],
-            deployment=os.environ.get("AZURE_MAI_DEPLOYMENT", DEFAULT_DEPLOYMENT),
             language=language,
+            **stt_deployment,
         )
     )
 
     # --- MAI-Voice: rendered through Azure Speech, streamed as PCM -------------
+    tts_voice = {"voice": os.environ["VOICE"]} if "VOICE" in os.environ else {}
     tts = AzureSpeechTTSProvider(
         AzureSpeechTTSConfig(
             api_key=env["AZURE_SPEECH_KEY"],
             region=env["AZURE_SPEECH_REGION"],
-            voice=os.environ.get("VOICE", DEFAULT_VOICE),
             style=os.environ.get("STYLE") or None,
             # MAI-Voice-2.1-Flash speaks slowly for a conversation; Flash
             # follows the rate closely (+20% took 4.7 s down to 3.8 s).
             rate=os.environ.get("RATE", "+15%") or None,
             sample_rate=OUTPUT_RATE,
+            **tts_voice,
         )
     )
     logger.info("Hearing in %s, speaking with %s", language or "any language", tts.default_voice)
