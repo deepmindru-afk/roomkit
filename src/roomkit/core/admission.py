@@ -144,10 +144,11 @@ class RoomAdmission:
             # what a hook's body or a ``hook_error`` handler sends into the
             # room is adopted beside the event, rather than wait for the
             # ticket this call holds.
-            with admission_order(room_id, budget):
+            with admission_order(room_id, budget, hook_bodies=True):
                 outcome = await self._hook_engine.run_sync_hooks(
                     room_id, HookTrigger.BEFORE_BROADCAST, event, context, needs_lock=False
                 )
+            with admission_order(room_id, budget):
                 await self._report(room_id, event, outcome)
             await ticket.wait_turn()
             yield outcome

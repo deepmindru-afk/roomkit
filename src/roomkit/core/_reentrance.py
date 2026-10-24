@@ -115,9 +115,9 @@ class _Frame:
     budget: ReentryBudget
     queued: QueuedInjections | None = None
     active: bool = True
-    task: asyncio.Task[object] | None = None
-    """The task an event's admission work runs in, while it runs
-    (:func:`in_admission_work`); ``None`` for any other work."""
+    body: asyncio.Task[object] | None = None
+    """The task an event's off-lock hooks run their bodies in, while they
+    run (:func:`in_off_lock_body`); ``None`` for any other work."""
 
 
 _frames: contextvars.ContextVar[tuple[_Frame, ...]] = contextvars.ContextVar(
@@ -160,13 +160,15 @@ def section(
     return _framed(_Frame(_Kind.SECTION, room_id, budget, queued))
 
 
-def admission_order(room_id: str, budget: ReentryBudget) -> AbstractContextManager[None]:
+def admission_order(
+    room_id: str, budget: ReentryBudget, *, hook_bodies: bool = False
+) -> AbstractContextManager[None]:
     """Work standing in *room_id*'s admission order for an event drawing on
-    *budget*: an off-lock hook's body, a handler its check's report awaits, a
-    message's parse (RFC §9.5.1), run in the current task
-    (:func:`in_admission_work`)."""
-    task = asyncio.current_task()
-    return _framed(_Frame(_Kind.ADMITTED, room_id, budget, task=task))
+    *budget*: an off-lock hook's body, a handler of its check's report, a
+    message's parse (RFC §9.5.1). *hook_bodies* marks the off-lock hooks'
+    bodies, run in the current task (:func:`in_off_lock_body`)."""
+    body = asyncio.current_task() if hook_bodies else None
+    return _framed(_Frame(_Kind.ADMITTED, room_id, budget, body=body))
 
 
 def delivering(room_id: str, budget: ReentryBudget) -> AbstractContextManager[None]:
@@ -190,17 +192,15 @@ def within_turn(response_depth: int) -> Generator[None, None, None]:
         _turns.reset(token)
 
 
-def in_admission_work(room_id: str) -> bool:
-    """Whether the current code is the admission work of an event of
-    *room_id* (an off-lock hook's body, a handler its check's report awaits,
-    the message's parse), while it runs, in the task that runs it (RFC
-    §9.5.1 Reentrance). A call it made into the room was adopted beside that
-    event, and its delivery waits behind that work: the work cannot wait for
-    it. A task the work starts is not that work, and waits as any caller
-    does."""
+def in_off_lock_body(room_id: str) -> bool:
+    """Whether the current code is the body of an off-lock hook of an event
+    of *room_id*, while it runs, in the task that runs it (RFC §9.5.1
+    Reentrance). A call it made into the room was adopted beside that event,
+    and its delivery waits behind the body: the body cannot wait for it. A
+    task the body starts is not the body, and waits as any caller does."""
     current = asyncio.current_task()
     return current is not None and any(
-        frame.active and frame.room_id == room_id and frame.task is current
+        frame.active and frame.room_id == room_id and frame.body is current
         for frame in _frames.get()
     )
 

@@ -294,77 +294,34 @@ async def test_handle_wait_short_circuits_under_room_lock() -> None:
     await kit.close()
 
 
-async def _wait_on_a_call_it_adopted(kit: RoomKit, outcome: dict[str, Any]) -> None:
-    """Send into the room, the call adopted beside the event whose admission
-    work this is, and wait on its delivery; then start a task that waits on
-    it too, while the work still runs."""
-    side = await kit.process_inbound(_message("side"), room_id="r1", defer_delivery=True)
-    assert side.delivery is not None
-    try:
-        # Generation still gated: a real wait would last until the timeout.
-        await asyncio.wait_for(side.delivery.wait(), timeout=1.0)
-        outcome["work"] = "returned"
-    except TimeoutError:
-        outcome["work"] = "waited"
-    outcome["task"] = asyncio.create_task(side.delivery.wait())
-    await asyncio.sleep(0)  # the task's wait starts while the work runs
-
-
-class _WaitingParse(SimpleChannel):
-    """A transport whose parse of ``hello`` sends into its room and waits."""
-
-    def __init__(self, channel_id: str, outcome: dict[str, Any]) -> None:
-        super().__init__(channel_id)
-        self.kit: RoomKit | None = None
-        self.outcome = outcome
-
-    async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> Any:
-        if message.content == TextContent(body="hello") and self.kit is not None:
-            await _wait_on_a_call_it_adopted(self.kit, self.outcome)
-        return await super().handle_inbound(message, context)
-
-
-def _check_that_waits(kit: RoomKit, outcome: dict[str, Any]) -> None:
-    @kit.hook(HookTrigger.BEFORE_BROADCAST, needs_lock=False, name="check")
-    async def check(event: Any, ctx: RoomContext) -> HookResult:
-        if event.content == TextContent(body="hello"):
-            await _wait_on_a_call_it_adopted(kit, outcome)
-        return HookResult.allow()
-
-
-def _report_that_waits(kit: RoomKit, outcome: dict[str, Any]) -> None:
-    @kit.hook(HookTrigger.BEFORE_BROADCAST, needs_lock=False, name="check")
-    async def check(event: Any, ctx: RoomContext) -> HookResult:
-        if event.content == TextContent(body="hello"):
-            raise RuntimeError("scan failed")
-        return HookResult.allow()
-
-    @kit.on("hook_error")
-    async def report(event: Any) -> None:
-        await _wait_on_a_call_it_adopted(kit, outcome)
-
-
-@pytest.mark.parametrize("work", ["off-lock-hook-body", "hook-error-handler", "parse"])
-async def test_handle_wait_from_admission_work_returns_at_once(work: str) -> None:
-    """The admission work of an event (an off-lock hook's body, a handler its
-    check's report awaits, the message's parse) sends into its room, the call
-    adopted beside the event, and waits on that call's delivery: the wait
-    returns at once with what the result has, unwaited, as under the lock
-    (RFC §9.5.1 Reentrance, §10.1 step 18). A task the work starts, waiting
-    while the work still runs, waits for the delivery as any caller does."""
+async def test_handle_wait_from_an_off_lock_hook_body_returns_at_once() -> None:
+    """An off-lock hook's body sends into its room, the call adopted beside
+    the hook's event, and waits on that call's delivery: the wait returns at
+    once with what the result has, unwaited, as under the lock (RFC §9.5.1
+    Reentrance, §10.1 step 18). A task the body starts, waiting while the
+    body still runs, waits for the delivery as any caller does."""
     provider = _GatedAIProvider()
+    kit = await _make_kit(AIChannel("ai1", provider=provider))
     outcome: dict[str, Any] = {}
-    parse = _WaitingParse("sms1", outcome)
-    kit = await _make_kit(AIChannel("ai1", provider=provider), parse)
-    if work == "parse":
-        parse.kit = kit
-    else:
-        {"off-lock-hook-body": _check_that_waits, "hook-error-handler": _report_that_waits}[work](
-            kit, outcome
-        )
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, needs_lock=False, name="check")
+    async def check(event: Any, ctx: RoomContext) -> HookResult:
+        if event.content.body != "hello":
+            return HookResult.allow()
+        side = await kit.process_inbound(_message("side"), room_id="r1", defer_delivery=True)
+        assert side.delivery is not None
+        try:
+            # Generation still gated: a real wait would last until the timeout.
+            await asyncio.wait_for(side.delivery.wait(), timeout=1.0)
+            outcome["body"] = "returned"
+        except TimeoutError:
+            outcome["body"] = "waited"
+        outcome["task"] = asyncio.create_task(side.delivery.wait())
+        await asyncio.sleep(0)  # the task's wait starts while the body runs
+        return HookResult.allow()
 
     await kit.process_inbound(_message(), room_id="r1", defer_delivery=True)
-    assert outcome["work"] == "returned"
+    assert outcome["body"] == "returned"
     assert not outcome["task"].done()
 
     provider.gate.set()

@@ -36,7 +36,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from roomkit.core._reentrance import ReentryBudget, delivering, in_admission_work
+from roomkit.core._reentrance import ReentryBudget, delivering, in_off_lock_body
 from roomkit.core.locks import _has_room_lock, _held_rooms
 from roomkit.core.task_utils import start_named
 from roomkit.models.response_metadata import ResponseMetadata
@@ -354,8 +354,8 @@ class DeliveryCascade:
             raise ValueError("timeout must be finite and non-negative")
         if self.waiter_would_deadlock():
             raise RuntimeError(
-                "Cannot drain delivery from its lane or room lock, nor from the "
-                "admission work of one of its events"
+                "Cannot drain delivery from its lane or room lock, nor from an off-lock "
+                "hook's body"
             )
         self.cancel(reason)
         deadline = asyncio.get_running_loop().time() + timeout
@@ -453,8 +453,8 @@ class DeliveryCascade:
         """Wait for the cascade to complete.
 
         Short-circuits (returning ``False``) when the current task is the
-        room's own lane executor, holds the room lock, or runs the admission
-        work of one of its events (:meth:`waiter_would_deadlock`): waiting
+        room's own lane executor, holds the room lock, or runs an off-lock
+        hook's body of the room (:meth:`waiter_would_deadlock`): waiting
         would deadlock (the lane cannot progress past the caller),
         so the call returns with the event committed and its delivery
         following in lane order — the detached completion RFC §10.1 step 18
@@ -480,20 +480,19 @@ class DeliveryCascade:
         """Whether the current task must not wait on this room's delivery.
 
         The same condition ``wait()`` short-circuits on — the caller is the
-        room's own lane executor, holds the room lock, or is the admission
-        work of one of the room's events while it runs (an off-lock hook's
-        body, a handler its check's report awaits, the message's parse), so
-        the lane cannot progress past it (RFC §9.5.1 Reentrance) — exposed
-        for waiters outside this module: a
+        room's own lane executor, holds the room lock, or is the body of an
+        off-lock hook of one of the room's events while it runs, so the lane
+        cannot progress past it (RFC §9.5.1 Reentrance) — exposed for
+        waiters outside this module: a
         :class:`~roomkit.models.delivery.DeliveryHandle` awaited from a tool
         handler or a sync hook would otherwise hang on its own turn, and one
-        awaited from admission work on the call it made into the room, on a
-        delivery waiting behind that work.
+        an off-lock hook's body awaits on the call it made into the room, on
+        a delivery waiting behind that body.
         """
         return (
             _active_lane_room.get() == self.room_id
             or _has_room_lock(self.room_id)
-            or in_admission_work(self.room_id)
+            or in_off_lock_body(self.room_id)
         )
 
 

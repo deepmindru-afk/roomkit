@@ -166,6 +166,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RuntimeError`, as under the lock: its drain could only wait for its
   caller. A task the work starts waits as any caller does.
 
+
 - **BREAKING — a reply's parent is rooted on every path that commits an
   event** (RFC §10.1 step 8, §10.3, §10.5, RMK-943). Only an inbound message
   and `send_event()` replaced a `parent_event_id` naming a reply by that
