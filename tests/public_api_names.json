@@ -366,7 +366,47 @@
     "set_conversation_state",
     "setup_handoff",
     "split_turn_notes",
+    "visibility_allows",
     "visible_events"
+  ],
+  "roomkit.channels": [
+    "ACPChannel",
+    "AIChannel",
+    "Addressing",
+    "BuzzChannel",
+    "CLIChannel",
+    "ChannelAddressing",
+    "DeclaredChannel",
+    "DiscordChannel",
+    "EmailChannel",
+    "HTTPChannel",
+    "HostChannel",
+    "MessengerChannel",
+    "RCSChannel",
+    "RealtimeVoiceChannel",
+    "RunSkillScriptTool",
+    "SMSChannel",
+    "SendFn",
+    "StreamChunk",
+    "StreamEnd",
+    "StreamError",
+    "StreamMessage",
+    "StreamSendFn",
+    "StreamStart",
+    "TOOL_FIND_TOOLS",
+    "TOOL_LIST_TOOLS",
+    "TOOL_SEARCH_INFRA_TOOL_NAMES",
+    "TURN_NOTES_HEADER",
+    "TeamsChannel",
+    "TelegramChannel",
+    "TransportChannel",
+    "VoiceChannel",
+    "WebSocketChannel",
+    "WhatsAppChannel",
+    "WhatsAppPersonalChannel",
+    "add_turn_note",
+    "addressing_of",
+    "split_turn_notes"
   ],
   "roomkit.classifiers": [
     "Answer",
@@ -384,7 +424,8 @@
     "ScoreQuestion",
     "State",
     "YesNoAnswer",
-    "YesNoQuestion"
+    "YesNoQuestion",
+    "check_answers"
   ],
   "roomkit.conference": [
     "ActiveSpeakerCallback",
@@ -469,10 +510,15 @@
     "run_worker_loop",
     "serialize_strategy"
   ],
+  "roomkit.identity": [
+    "IdentityResolver",
+    "MockIdentityResolver"
+  ],
   "roomkit.knowledge": [
     "KnowledgeResult",
     "KnowledgeSource",
-    "MockKnowledgeSource"
+    "MockKnowledgeSource",
+    "PostgresKnowledgeSource"
   ],
   "roomkit.local_models": [
     "FromLocalModel",
@@ -511,6 +557,7 @@
     "current_turn_footprint",
     "estimate_context_tokens",
     "estimate_event_tokens",
+    "estimate_message_tokens",
     "estimate_notes_tokens",
     "estimate_tokens",
     "extract_event_text",
@@ -520,6 +567,7 @@
     "Access",
     "AgentIdentity",
     "AudioContent",
+    "Cancel",
     "ChannelBinding",
     "ChannelCapabilities",
     "ChannelCategory",
@@ -553,8 +601,10 @@
     "IdentityResult",
     "InboundMessage",
     "InboundResult",
+    "InjectMessage",
     "InjectedEvent",
     "LocationContent",
+    "LoopEndMarker",
     "MediaContent",
     "Observation",
     "Participant",
@@ -574,8 +624,11 @@
     "RoomFilter",
     "RoomStatus",
     "RoomTimers",
+    "STANDALONE",
     "SessionStartedEvent",
+    "SteeringDirective",
     "SystemContent",
+    "TURNS_KEY",
     "Task",
     "TaskStatus",
     "TemplateContent",
@@ -587,12 +640,15 @@
     "ToolCallOutcome",
     "ToolCallVerdict",
     "ToolRoundEvent",
+    "TurnEntries",
+    "UpdateSystemPrompt",
     "VideoContent",
     "Visibility",
     "VoiceDeliveryRecord"
   ],
   "roomkit.orchestration": [
     "ClassifierDispatchPolicy",
+    "ConsoleToolAuditor",
     "ConversationPhase",
     "ConversationPipeline",
     "ConversationRouter",
@@ -608,7 +664,9 @@
     "HandoffMemoryProvider",
     "HandoffRequest",
     "HandoffResult",
+    "InMemoryStatusBackend",
     "JSONLSessionAuditor",
+    "JSONLToolAuditor",
     "Loop",
     "MissingResult",
     "MockDispatchPolicy",
@@ -626,9 +684,16 @@
     "SpeakQueue",
     "SpeakQueueChange",
     "SpeakQueueEvent",
+    "StatusBackend",
+    "StatusBus",
+    "StatusCallback",
+    "StatusEntry",
     "StatusLevel",
     "Supervisor",
     "Swarm",
+    "ToolAuditEntry",
+    "ToolAuditor",
+    "audit_tool_handler",
     "get_conversation_state",
     "save_conversation_state",
     "set_conversation_state",
@@ -676,6 +741,9 @@
   "roomkit.orchestration.strategies.supervisor": [
     "Supervisor",
     "WorkerStrategy"
+  ],
+  "roomkit.providers": [
+    "validate_public_url"
   ],
   "roomkit.providers.ai": [
     "AIContext",
@@ -785,7 +853,8 @@
     "ElasticEmailProvider"
   ],
   "roomkit.providers.elevenlabs": [
-    "ElevenLabsRealtimeConfig"
+    "ElevenLabsRealtimeConfig",
+    "ElevenLabsRealtimeProvider"
   ],
   "roomkit.providers.email": [
     "EmailProvider",
@@ -796,6 +865,7 @@
     "GeminiConfig",
     "GeminiImageConfig",
     "GeminiImageProvider",
+    "GeminiLiveProvider",
     "GeminiVertexConfig",
     "GeminiVertexProvider"
   ],
@@ -854,10 +924,14 @@
     "ThinkEffort"
   ],
   "roomkit.providers.openai": [
+    "HostedReasoning",
+    "IntegratorReasoning",
     "OpenAIAIProvider",
     "OpenAIConfig",
     "OpenAIImageConfig",
-    "OpenAIImageProvider"
+    "OpenAIImageProvider",
+    "OpenAILiveProvider",
+    "OpenAIRealtimeProvider"
   ],
   "roomkit.providers.openrouter": [
     "OpenRouterAIProvider",
@@ -956,6 +1030,7 @@
   ],
   "roomkit.providers.whatsapp": [
     "MockWhatsAppProvider",
+    "WhatsAppPersonalProvider",
     "WhatsAppProvider"
   ],
   "roomkit.providers.xai": [
@@ -963,7 +1038,8 @@
     "XAIConfig",
     "XAIImageConfig",
     "XAIImageProvider",
-    "XAIRealtimeConfig"
+    "XAIRealtimeConfig",
+    "XAIRealtimeProvider"
   ],
   "roomkit.realtime": [
     "EphemeralCallback",
@@ -980,6 +1056,7 @@
     "MediaRecordingHandle",
     "MediaRecordingResult",
     "MockMediaRecorder",
+    "PyAVMediaRecorder",
     "RecordingTrack",
     "RoomRecorderBinding",
     "RoomRecordingFeed",
@@ -1021,6 +1098,8 @@
     "SkillValidationError",
     "SkillVerificationError",
     "missing_required_tools",
+    "parse_frontmatter",
+    "parse_tool_names",
     "safe_join_filename",
     "serves_exactly"
   ],
@@ -1072,6 +1151,8 @@
   "roomkit.store": [
     "ConversationStore",
     "InMemoryStore",
+    "POSTGRES_SCHEMA",
+    "POSTGRES_SCHEMA_VERSION",
     "PostgresAdvisoryLockManager",
     "PostgresStore",
     "SQLiteSchemaError",
@@ -1102,14 +1183,17 @@
     "ConsoleTelemetryProvider",
     "MockTelemetryProvider",
     "NoopTelemetryProvider",
+    "OpenTelemetryProvider",
     "PyroscopeProfiler",
     "Span",
     "SpanKind",
     "TelemetryConfig",
-    "TelemetryProvider"
+    "TelemetryProvider",
+    "get_current_span"
   ],
   "roomkit.tools": [
     "ExternalToolHandler",
+    "FENCED_TAGS",
     "HumanInputHandler",
     "HumanInputToolHandler",
     "MCPToolProvider",
@@ -1130,7 +1214,10 @@
     "current_tool_room_id",
     "current_turn_footprint",
     "extract_tools",
-    "tool_turn_context"
+    "fence",
+    "named_blocks",
+    "tool_turn_context",
+    "turn_report_claim"
   ],
   "roomkit.turns": [
     "ChannelCall",
@@ -1222,7 +1309,18 @@
   "roomkit.video.avatar": [
     "AvatarProvider",
     "MockAvatarProvider",
+    "MuseTalkAvatarProvider",
     "WebSocketAvatarProvider"
+  ],
+  "roomkit.video.backends": [
+    "FastRTCVideoBackend",
+    "LocalVideoBackend",
+    "RTPVideoBackend",
+    "SIPVideoBackend",
+    "ScreenCaptureBackend",
+    "WebSocketVideoBackend",
+    "mount_fastrtc_av",
+    "mount_websocket_video"
   ],
   "roomkit.video.pipeline": [
     "CensorVideoFilter",
@@ -1249,6 +1347,7 @@
   ],
   "roomkit.video.pipeline.decoder": [
     "MockVideoDecoderProvider",
+    "PyAVVideoDecoder",
     "VideoDecoderProvider"
   ],
   "roomkit.video.pipeline.encoder": [
@@ -1283,6 +1382,7 @@
   ],
   "roomkit.video.pipeline.resizer": [
     "MockVideoResizerProvider",
+    "PyAVVideoResizer",
     "VideoResizerProvider"
   ],
   "roomkit.video.pipeline.transform": [
@@ -1292,6 +1392,8 @@
   ],
   "roomkit.video.recorder": [
     "MockVideoRecorder",
+    "OpenCVVideoRecorder",
+    "PyAVVideoRecorder",
     "VideoRecorder",
     "VideoRecordingConfig",
     "VideoRecordingHandle",
@@ -1436,8 +1538,24 @@
     "VoiceTrace",
     "WavFileRecorder",
     "WebRTCNoiseSuppressorProvider",
+    "auth_context",
     "filter_voices",
-    "parse_voice_session"
+    "parse_voice_session",
+    "speaker_label"
+  ],
+  "roomkit.voice.backends": [
+    "BuzzHuddleBackend",
+    "BuzzHuddleWatcher",
+    "FastRTCVoiceBackend",
+    "LocalAudioBackend",
+    "MockVoiceBackend",
+    "PT_G722",
+    "PT_PCMA",
+    "PT_PCMU",
+    "RTPVoiceBackend",
+    "SIPVoiceBackend",
+    "WebTransportBackend",
+    "mount_fastrtc_voice"
   ],
   "roomkit.voice.capture": [
     "AudioCaptureSource",
@@ -1607,6 +1725,7 @@
   "roomkit.voice.realtime": [
     "AIProviderReasoningBackend",
     "AgentReasoningBackend",
+    "FastRTCRealtimeTransport",
     "MockCall",
     "MockRealtimeAudioVideoProvider",
     "MockRealtimeProvider",
@@ -1624,10 +1743,40 @@
     "ReasoningCutShortError",
     "ReasoningOutput",
     "ReasoningRequest",
+    "SIPRealtimeTransport",
     "ToolCallResult",
     "TranscriptLine",
     "VoiceInfo",
-    "VoiceInjectionResult"
+    "VoiceInjectionResult",
+    "WebSocketRealtimeTransport",
+    "mount_fastrtc_realtime",
+    "render_transcript_request"
+  ],
+  "roomkit.voice.stt": [
+    "AzureMAISTTConfig",
+    "AzureMAISTTProvider",
+    "DeepgramConfig",
+    "DeepgramSTTProvider",
+    "GeminiSTTConfig",
+    "GeminiSTTProvider",
+    "GeminiTranscribeConfig",
+    "GeminiTranscribeProvider",
+    "GeminiTranscript",
+    "GeminiTranscriptSegment",
+    "GeminiTranscriptWord",
+    "GradiumSTTConfig",
+    "GradiumSTTProvider",
+    "MetaSTTConfig",
+    "MetaSTTProvider",
+    "MockSTTProvider",
+    "Qwen3ASRConfig",
+    "Qwen3ASRProvider",
+    "STTProvider",
+    "SherpaOnnxSTTConfig",
+    "SherpaOnnxSTTProvider",
+    "VoxtralSTTConfig",
+    "VoxtralSTTProvider",
+    "VoxtralTurnDetection"
   ],
   "roomkit.voice.testing": [
     "DEFAULT_SAMPLE_RATE",
@@ -1643,7 +1792,37 @@
     "write_wav"
   ],
   "roomkit.voice.tts": [
+    "AzureSpeechTTSConfig",
+    "AzureSpeechTTSProvider",
+    "CONSENT_STATEMENTS",
     "ConversationTurn",
+    "ElevenLabsConfig",
+    "ElevenLabsTTSProvider",
+    "FishAudioTTSConfig",
+    "FishAudioTTSProvider",
+    "FluxionsTTSConfig",
+    "FluxionsTTSProvider",
+    "GeminiTTSConfig",
+    "GeminiTTSProvider",
+    "GeminiVoiceLibrary",
+    "GeminiVoiceLibraryConfig",
+    "GradiumTTSConfig",
+    "GradiumTTSProvider",
+    "GrokTTSConfig",
+    "GrokTTSProvider",
+    "MockTTSProvider",
+    "NeuTTSConfig",
+    "NeuTTSProvider",
+    "NeuTTSVoiceConfig",
+    "PhononTTSConfig",
+    "PhononTTSProvider",
+    "PocketTTSConfig",
+    "PocketTTSProvider",
+    "Qwen3TTSConfig",
+    "Qwen3TTSProvider",
+    "Qwen3VoiceCloneConfig",
+    "SherpaOnnxTTSConfig",
+    "SherpaOnnxTTSProvider",
     "StripBrackets",
     "StripEmoji",
     "StripInternalTags",
@@ -1652,7 +1831,15 @@
     "TTSContextConfig",
     "TTSContextLevel",
     "TTSFilterChain",
+    "TTSProvider",
     "TTSStreamFilter",
-    "filtered_stream"
+    "VUI_TAGS",
+    "VoxtralTTSConfig",
+    "VoxtralTTSProvider",
+    "VuiTTSConfig",
+    "VuiTTSProvider",
+    "VuiVoice",
+    "filtered_stream",
+    "split_sentences"
   ]
 }

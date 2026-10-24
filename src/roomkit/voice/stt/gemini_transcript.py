@@ -3,7 +3,8 @@
 What :meth:`~roomkit.voice.stt.gemini.GeminiSTTProvider.transcribe_recording`
 hands back: a whole recording as speaker turns, with the timestamps as the
 model read them. Kept beside the provider so ``gemini.py`` holds the
-transcription alone; the public import path stays ``roomkit.voice.stt.gemini``.
+transcription alone; ``roomkit.voice.stt`` exports them as ``GeminiTranscript``,
+``GeminiTranscriptWord`` and ``GeminiTranscriptSegment``.
 """
 
 from __future__ import annotations

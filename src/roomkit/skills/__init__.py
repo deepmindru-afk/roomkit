@@ -23,8 +23,10 @@ from roomkit.skills.models import (
     Skill,
     SkillMetadata,
     missing_required_tools,
+    parse_tool_names,
     serves_exactly,
 )
+from roomkit.skills.parser import parse_frontmatter
 from roomkit.skills.paths import safe_join_filename
 from roomkit.skills.registry import SkillRegistry
 
@@ -48,6 +50,8 @@ __all__ = [
     "SkillValidationError",
     "SkillVerificationError",
     "missing_required_tools",
+    "parse_frontmatter",
+    "parse_tool_names",
     "safe_join_filename",
     "serves_exactly",
 ]

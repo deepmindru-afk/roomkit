@@ -4,8 +4,8 @@ What the service sends and how it fails, kept apart from
 :mod:`roomkit.voice.stt.voxtral`, which drives the connection: the language
 codes, the file endpoint's answer, and the error shapes of the REST and
 WebSocket endpoints. The realtime text is cut into results by
-:mod:`roomkit.voice.stt.voxtral_transcript`. The public import path stays
-``roomkit.voice.stt.voxtral``.
+:mod:`roomkit.voice.stt.voxtral_transcript`. The public import path is
+``roomkit.voice.stt``.
 """
 
 from __future__ import annotations

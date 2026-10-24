@@ -24,9 +24,58 @@ from roomkit.channels.realtime_voice import RealtimeVoiceChannel as RealtimeVoic
 from roomkit.channels.skill_script_tool import RunSkillScriptTool as RunSkillScriptTool
 from roomkit.channels.transport import TransportChannel
 from roomkit.channels.voice import VoiceChannel as VoiceChannel
-from roomkit.channels.websocket import WebSocketChannel as WebSocketChannel
+from roomkit.channels.websocket import (
+    SendFn,
+    StreamChunk,
+    StreamEnd,
+    StreamError,
+    StreamMessage,
+    StreamSendFn,
+    StreamStart,
+    WebSocketChannel,
+)
 from roomkit.models.channel import ChannelCapabilities
 from roomkit.models.enums import ChannelMediaType, ChannelType
+
+__all__ = [
+    "ACPChannel",
+    "AIChannel",
+    "Addressing",
+    "BuzzChannel",
+    "CLIChannel",
+    "ChannelAddressing",
+    "DeclaredChannel",
+    "DiscordChannel",
+    "EmailChannel",
+    "HTTPChannel",
+    "HostChannel",
+    "MessengerChannel",
+    "RCSChannel",
+    "RealtimeVoiceChannel",
+    "RunSkillScriptTool",
+    "SMSChannel",
+    "SendFn",
+    "StreamChunk",
+    "StreamEnd",
+    "StreamError",
+    "StreamMessage",
+    "StreamSendFn",
+    "StreamStart",
+    "TOOL_FIND_TOOLS",
+    "TOOL_LIST_TOOLS",
+    "TOOL_SEARCH_INFRA_TOOL_NAMES",
+    "TURN_NOTES_HEADER",
+    "TeamsChannel",
+    "TelegramChannel",
+    "TransportChannel",
+    "VoiceChannel",
+    "WebSocketChannel",
+    "WhatsAppChannel",
+    "WhatsAppPersonalChannel",
+    "add_turn_note",
+    "addressing_of",
+    "split_turn_notes",
+]
 
 # ---------------------------------------------------------------------------
 # Capability constants

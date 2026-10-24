@@ -1,6 +1,47 @@
-"""Video transport backends."""
+"""Video transport backends.
+
+Each backend is imported from here. A backend's module loads on first use,
+with the transport library it needs; ``import roomkit`` loads none.
+"""
 
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from roomkit._lazy import lazy_exports
+
+if TYPE_CHECKING:
+    from roomkit.video.backends.fastrtc import FastRTCVideoBackend, mount_fastrtc_av
+    from roomkit.video.backends.local import LocalVideoBackend
+    from roomkit.video.backends.rtp import RTPVideoBackend
+    from roomkit.video.backends.screen import ScreenCaptureBackend
+    from roomkit.video.backends.sip import SIPVideoBackend
+    from roomkit.video.backends.websocket import WebSocketVideoBackend, mount_websocket_video
+
+__all__ = [
+    "FastRTCVideoBackend",
+    "LocalVideoBackend",
+    "RTPVideoBackend",
+    "SIPVideoBackend",
+    "ScreenCaptureBackend",
+    "WebSocketVideoBackend",
+    "mount_fastrtc_av",
+    "mount_websocket_video",
+]
+
+__getattr__ = lazy_exports(
+    __name__,
+    {
+        "FastRTCVideoBackend": "roomkit.video.backends.fastrtc",
+        "LocalVideoBackend": "roomkit.video.backends.local",
+        "RTPVideoBackend": "roomkit.video.backends.rtp",
+        "SIPVideoBackend": "roomkit.video.backends.sip",
+        "ScreenCaptureBackend": "roomkit.video.backends.screen",
+        "WebSocketVideoBackend": "roomkit.video.backends.websocket",
+        "mount_fastrtc_av": "roomkit.video.backends.fastrtc",
+        "mount_websocket_video": "roomkit.video.backends.websocket",
+    },
+)
 
 
 def get_screen_capture_backend() -> type:

@@ -153,7 +153,7 @@ from roomkit.core.framework import (
 )
 from roomkit.core.hooks import TURN_TRIGGERS
 from roomkit.core.locks import InMemoryLockManager, RoomLockManager
-from roomkit.core.visibility import visible_events
+from roomkit.core.visibility import visibility_allows, visible_events
 from roomkit.delivery import (
     DeliveryBackend,
     DeliveryItem,
@@ -597,6 +597,7 @@ __all__ = [
     "ConversationState",
     "get_conversation_state",
     "received_events",
+    "visibility_allows",
     "visible_events",
     "save_conversation_state",
     "set_conversation_state",

@@ -2,6 +2,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from roomkit._lazy import lazy_exports
 from roomkit.providers.elevenlabs.config import ElevenLabsRealtimeConfig
 
-__all__ = ["ElevenLabsRealtimeConfig"]
+if TYPE_CHECKING:
+    from roomkit.providers.elevenlabs.realtime import ElevenLabsRealtimeProvider
+
+__all__ = ["ElevenLabsRealtimeConfig", "ElevenLabsRealtimeProvider"]
+
+__getattr__ = lazy_exports(
+    __name__, {"ElevenLabsRealtimeProvider": "roomkit.providers.elevenlabs.realtime"}
+)

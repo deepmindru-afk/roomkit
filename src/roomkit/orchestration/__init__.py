@@ -37,7 +37,14 @@ from roomkit.orchestration.state import (
     save_conversation_state,
     set_conversation_state,
 )
-from roomkit.orchestration.status_bus import StatusLevel
+from roomkit.orchestration.status_bus import (
+    InMemoryStatusBackend,
+    StatusBackend,
+    StatusBus,
+    StatusCallback,
+    StatusEntry,
+    StatusLevel,
+)
 from roomkit.orchestration.strategies import (
     ClassifierDispatchPolicy,
     Discussion,
@@ -54,6 +61,13 @@ from roomkit.orchestration.strategies import (
     SpeakQueueEvent,
     Supervisor,
     Swarm,
+)
+from roomkit.orchestration.tool_audit import (
+    ConsoleToolAuditor,
+    JSONLToolAuditor,
+    ToolAuditEntry,
+    ToolAuditor,
+    audit_tool_handler,
 )
 
 __all__ = [
@@ -98,12 +112,23 @@ __all__ = [
     # Pipeline
     "ConversationPipeline",
     "PipelineStage",
-    # Status Bus (re-exported from status_bus module)
+    # Status Bus
+    "InMemoryStatusBackend",
+    "StatusBackend",
+    "StatusBus",
+    "StatusCallback",
+    "StatusEntry",
     "StatusLevel",
     # Session Audit
     "JSONLSessionAuditor",
     "SessionAuditEntry",
     "SessionAuditor",
+    # Tool Audit
+    "ConsoleToolAuditor",
+    "JSONLToolAuditor",
+    "ToolAuditEntry",
+    "ToolAuditor",
+    "audit_tool_handler",
     # Structured results of a delegation
     "MissingResult",
     "ResultTool",

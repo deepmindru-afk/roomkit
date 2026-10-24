@@ -11,6 +11,7 @@ from roomkit.models.channel import (
 )
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import (
+    STANDALONE,
     DeliveryError,
     DeliveryOutcome,
     DeliveryResult,
@@ -62,10 +63,12 @@ from roomkit.models.hook import HookResult, InjectedEvent
 from roomkit.models.identity import Identity, IdentityHookResult, IdentityResult
 from roomkit.models.participant import Participant
 from roomkit.models.plan_event import PlanUpdatedEvent
-from roomkit.models.response_metadata import ResponseMetadata
+from roomkit.models.response_metadata import TURNS_KEY, ResponseMetadata, TurnEntries
 from roomkit.models.room import Room, RoomTimers
 from roomkit.models.session_event import SessionStartedEvent
+from roomkit.models.steering import Cancel, InjectMessage, SteeringDirective, UpdateSystemPrompt
 from roomkit.models.store_filter import EventFilter, PersistencePolicy, RoomFilter
+from roomkit.models.streaming import LoopEndMarker
 from roomkit.models.task import Observation, Task
 from roomkit.models.thinking_event import ThinkingEvent
 from roomkit.models.tool_call import (
@@ -151,4 +154,12 @@ __all__ = [
     "ToolCallVerdict",
     "ToolRoundEvent",
     "VideoContent",
+    "Cancel",
+    "InjectMessage",
+    "LoopEndMarker",
+    "STANDALONE",
+    "SteeringDirective",
+    "TURNS_KEY",
+    "TurnEntries",
+    "UpdateSystemPrompt",
 ]

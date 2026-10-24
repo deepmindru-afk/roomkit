@@ -1,15 +1,21 @@
 """xAI (Grok) provider — OpenAI-compatible chat, plus realtime speech-to-speech.
 
-``XAIRealtimeProvider`` is deliberately not re-exported here: it needs the
-``websockets`` package, so it stays behind an explicit
-``from roomkit.providers.xai.realtime import XAIRealtimeProvider`` (or
-``roomkit.voice.get_xai_realtime_provider()``). The chat provider only needs the
-lazily-imported ``openai`` SDK, so it is safe to export.
+``XAIRealtimeProvider`` needs the ``websockets`` package, so its module loads
+on first use of the name, not with this package. The chat provider only needs
+the lazily-imported ``openai`` SDK.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from roomkit._lazy import lazy_exports
 from roomkit.providers.xai.ai import XAIAIProvider
 from roomkit.providers.xai.config import XAIConfig, XAIImageConfig, XAIRealtimeConfig
 from roomkit.providers.xai.image import XAIImageProvider
+
+if TYPE_CHECKING:
+    from roomkit.providers.xai.realtime import XAIRealtimeProvider
 
 __all__ = [
     "XAIAIProvider",
@@ -17,4 +23,7 @@ __all__ = [
     "XAIImageConfig",
     "XAIImageProvider",
     "XAIRealtimeConfig",
+    "XAIRealtimeProvider",
 ]
+
+__getattr__ = lazy_exports(__name__, {"XAIRealtimeProvider": "roomkit.providers.xai.realtime"})

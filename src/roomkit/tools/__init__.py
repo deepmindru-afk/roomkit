@@ -16,12 +16,15 @@ from roomkit.tools.context import (
     current_tool_room_id,
     current_turn_footprint,
     tool_turn_context,
+    turn_report_claim,
 )
 from roomkit.tools.external import ExternalToolHandler, PolicyExternalToolHandler, ToolDecision
+from roomkit.tools.fence import FENCED_TAGS, fence, named_blocks
 from roomkit.tools.human_input import HumanInputHandler, HumanInputToolHandler
 from roomkit.tools.policy import RoleOverride, ToolPolicy
 
 __all__ = [
+    "FENCED_TAGS",
     "ExternalToolHandler",
     "HumanInputHandler",
     "HumanInputToolHandler",
@@ -43,7 +46,10 @@ __all__ = [
     "current_tool_room_id",
     "current_turn_footprint",
     "extract_tools",
+    "fence",
+    "named_blocks",
     "tool_turn_context",
+    "turn_report_claim",
 ]
 
 

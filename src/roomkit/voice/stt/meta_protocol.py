@@ -3,7 +3,7 @@
 What the service sends and how it fails, kept apart from
 :mod:`roomkit.voice.stt.meta`, which drives the connection: the event mapping,
 the error shapes of the REST and WebSocket endpoints, and the WAV container the
-REST endpoint takes. The public import path stays ``roomkit.voice.stt.meta``.
+REST endpoint takes. The public import path is ``roomkit.voice.stt``.
 """
 
 from __future__ import annotations

@@ -13,6 +13,7 @@ from roomkit.classifiers.base import (
     State,
     YesNoAnswer,
     YesNoQuestion,
+    check_answers,
 )
 from roomkit.classifiers.jev import JevClassifier
 from roomkit.classifiers.llm import LLMClassifier
@@ -36,4 +37,5 @@ __all__ = [
     "State",
     "YesNoAnswer",
     "YesNoQuestion",
+    "check_answers",
 ]

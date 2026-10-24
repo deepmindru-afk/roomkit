@@ -3,7 +3,7 @@
 What the service sends and how it fails, kept apart from
 :mod:`roomkit.voice.stt.azure_mai`, which drives the connection: the endpoint
 URL, the language codes the service takes, the event mapping and the error
-shapes. The public import path stays ``roomkit.voice.stt.azure_mai``.
+shapes. The public import path is ``roomkit.voice.stt``.
 """
 
 from __future__ import annotations

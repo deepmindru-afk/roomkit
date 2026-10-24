@@ -2636,6 +2636,21 @@
   "roomkit.addressing_of": {
     "__call__": ["def", "channel_type"]
   },
+  "roomkit.channels.StreamChunk": {
+    "__init__": ["def", "*", "type='stream_chunk'", "room_id", "stream_id", "delta", "text"]
+  },
+  "roomkit.channels.StreamEnd": {
+    "__init__": ["def", "*", "type='stream_end'", "room_id", "stream_id", "event"]
+  },
+  "roomkit.channels.StreamError": {
+    "__init__": ["def", "*", "type='stream_error'", "room_id", "stream_id", "error"]
+  },
+  "roomkit.channels.StreamStart": {
+    "__init__": ["def", "*", "type='stream_start'", "room_id", "stream_id", "source"]
+  },
+  "roomkit.classifiers.check_answers": {
+    "__call__": ["def", "questions", "answers"]
+  },
   "roomkit.conference.MockConferenceCall": {
     "__init__": ["def", "method", "args=<factory>"]
   },
@@ -2874,6 +2889,13 @@
   "roomkit.hosts_realtime_model": {
     "__call__": ["def", "channel"]
   },
+  "roomkit.identity.IdentityResolver": {
+    "resolve": ["async def", "message", "context"]
+  },
+  "roomkit.identity.MockIdentityResolver": {
+    "__init__": ["def", "mapping=None", "ambiguous=None", "unknown_status=<IdentificationStatus.UNKNOWN: 'unknown'>"],
+    "resolve": ["async def", "message", "context"]
+  },
   "roomkit.knowledge.KnowledgeResult": {
     "__init__": ["def", "content", "score=0.0", "source=''", "metadata=<factory>"]
   },
@@ -2887,6 +2909,14 @@
     "__init__": ["def", "results=None"],
     "close": ["async def"],
     "index": ["async def", "content", "metadata=None"],
+    "name": ["property"],
+    "search": ["async def", "query", "*", "room_id=None", "limit=5"]
+  },
+  "roomkit.knowledge.PostgresKnowledgeSource": {
+    "__init__": ["def", "dsn=None", "pool=None", "*", "source_name='postgres'", "language='english'"],
+    "close": ["async def"],
+    "index": ["async def", "content", "metadata=None"],
+    "init": ["async def", "min_size=2", "max_size=10"],
     "name": ["property"],
     "search": ["async def", "query", "*", "room_id=None", "limit=5"]
   },
@@ -2977,6 +3007,9 @@
   "roomkit.memory.estimate_event_tokens": {
     "__call__": ["def", "event", "*", "text_only=False"]
   },
+  "roomkit.memory.estimate_message_tokens": {
+    "__call__": ["def", "message"]
+  },
   "roomkit.memory.estimate_notes_tokens": {
     "__call__": ["def", "notes"]
   },
@@ -2991,6 +3024,9 @@
   },
   "roomkit.models.AudioContent": {
     "__init__": ["def", "*", "type='audio'", "url", "mime_type='audio/ogg'", "duration_seconds=None", "transcript=None"]
+  },
+  "roomkit.models.Cancel": {
+    "__init__": ["def", "*", "type='cancel'", "reason='cancelled'"]
   },
   "roomkit.models.ChannelData": {
     "__init__": ["def", "*", "provider=None", "external_id=None", "thread_id=None", "extra=<factory>"]
@@ -3044,8 +3080,14 @@
   "roomkit.models.IdentityResult": {
     "__init__": ["def", "*", "status", "identity=None", "candidates=<factory>", "address=None", "channel_type=None", "challenge_type=None", "message=None"]
   },
+  "roomkit.models.InjectMessage": {
+    "__init__": ["def", "*", "type='inject_message'", "content", "role='user'"]
+  },
   "roomkit.models.LocationContent": {
     "__init__": ["def", "*", "type='location'", "latitude", "longitude", "label=None", "address=None"]
+  },
+  "roomkit.models.LoopEndMarker": {
+    "__init__": ["def", "reason", "rounds=0", "usage=<factory>", "max_rounds=None", "timeout_seconds=None", "budget_tokens=None", "budget_usd=None"]
   },
   "roomkit.models.MediaContent": {
     "__init__": ["def", "*", "type='media'", "url", "mime_type", "filename=None", "size_bytes=None", "caption=None"]
@@ -3094,8 +3136,18 @@
   "roomkit.models.TemplateContent": {
     "__init__": ["def", "*", "type='template'", "template_id", "language='en'", "parameters=<factory>", "body=None"]
   },
+  "roomkit.models.UpdateSystemPrompt": {
+    "__init__": ["def", "*", "type='update_system_prompt'", "append"]
+  },
   "roomkit.models.VideoContent": {
     "__init__": ["def", "*", "type='video'", "url", "mime_type='video/mp4'", "duration_seconds=None", "thumbnail_url=None"]
+  },
+  "roomkit.orchestration.ConsoleToolAuditor": {
+    "__init__": ["def", "*", "level=20"],
+    "entries": ["property"],
+    "print_summary": ["def"],
+    "record": ["def", "entry"],
+    "summary": ["def"]
   },
   "roomkit.orchestration.HandoffMemoryProvider": {
     "__init__": ["def", "inner"],
@@ -3106,6 +3158,14 @@
     "recent_events_window": ["property"],
     "retrieve": ["async def", "room_id", "current_event", "context", "*", "channel_id=None"]
   },
+  "roomkit.orchestration.InMemoryStatusBackend": {
+    "__init__": ["def", "*", "max_entries=500", "persist_path=None"],
+    "close": ["async def"],
+    "publish": ["async def", "entry"],
+    "recent": ["async def", "n", "*", "agent_id=None", "status=None"],
+    "subscribe": ["async def", "callback"],
+    "unsubscribe": ["async def", "callback"]
+  },
   "roomkit.orchestration.JSONLSessionAuditor": {
     "__init__": ["def", "path"],
     "attach": ["def", "kit"],
@@ -3115,6 +3175,13 @@
     "record_tool": ["def", "entry"],
     "summary": ["def"],
     "tool_auditor": ["property"]
+  },
+  "roomkit.orchestration.JSONLToolAuditor": {
+    "__init__": ["def", "path"],
+    "entries": ["property"],
+    "print_summary": ["def"],
+    "record": ["def", "entry"],
+    "summary": ["def"]
   },
   "roomkit.orchestration.MissingResult": {
     "__init__": ["def", "*args", "**kwargs"]
@@ -3142,12 +3209,46 @@
     "summary": ["def"],
     "tool_auditor": ["property"]
   },
+  "roomkit.orchestration.StatusBackend": {
+    "close": ["async def"],
+    "publish": ["async def", "entry"],
+    "recent": ["async def", "n", "*", "agent_id=None", "status=None"],
+    "subscribe": ["async def", "callback"],
+    "unsubscribe": ["async def", "callback"]
+  },
+  "roomkit.orchestration.StatusBus": {
+    "__init__": ["def", "*", "backend=None", "persist_path=None"],
+    "close": ["async def"],
+    "has_completed": ["async def", "agent_id=None"],
+    "post": ["def", "agent_id", "action", "status", "*", "detail=''", "metadata=None"],
+    "post_async": ["async def", "agent_id", "action", "status", "*", "detail=''", "metadata=None"],
+    "print_summary": ["async def"],
+    "recent": ["async def", "n=10", "*", "agent_id=None", "status=None"],
+    "recent_text": ["async def", "n=10"],
+    "subscribe": ["async def", "callback"],
+    "unsubscribe": ["async def", "callback"]
+  },
+  "roomkit.orchestration.StatusEntry": {
+    "__init__": ["def", "*", "ts", "agent_id", "action", "status", "detail=''", "metadata=<factory>"]
+  },
   "roomkit.orchestration.StatusLevel": {
     "COMPLETED": ["member", "'completed'"],
     "FAILED": ["member", "'failed'"],
     "INFO": ["member", "'info'"],
     "OK": ["member", "'ok'"],
     "PENDING": ["member", "'pending'"]
+  },
+  "roomkit.orchestration.ToolAuditEntry": {
+    "__init__": ["def", "*", "ts", "agent_id", "tool_name", "arguments", "result", "status", "duration_ms", "metadata=<factory>"]
+  },
+  "roomkit.orchestration.ToolAuditor": {
+    "entries": ["property"],
+    "print_summary": ["def"],
+    "record": ["def", "entry"],
+    "summary": ["def"]
+  },
+  "roomkit.orchestration.audit_tool_handler": {
+    "__call__": ["def", "handler", "auditor", "agent_id"]
   },
   "roomkit.orchestration.strategies.supervisor.WorkerStrategy": {
     "PARALLEL": ["member", "'parallel'"],
@@ -3613,6 +3714,46 @@
   "roomkit.providers.elevenlabs.ElevenLabsRealtimeConfig": {
     "__init__": ["def", "*", "api_key", "agent_id", "requires_auth=False", "base_url='wss://api.elevenlabs.io'", "tool_timeout_s=None", "response_idle_ms=800"]
   },
+  "roomkit.providers.elevenlabs.ElevenLabsRealtimeProvider": {
+    "__init__": ["def", "config"],
+    "available_models": ["classmethod"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "connect": ["async def", "session", "*", "system_prompt=None", "voice=None", "tools=None", "temperature=None", "input_sample_rate=16000", "output_sample_rate=16000", "server_vad=True", "provider_config=None"],
+    "disconnect": ["async def", "session"],
+    "full_duplex": ["property"],
+    "inject_image": ["async def", "session", "image_data", "mime_type='image/png'", "*", "prompt=''", "silent=False"],
+    "inject_text": ["async def", "session", "text", "*", "role='user'", "silent=False"],
+    "interrupt": ["async def", "session"],
+    "is_responding": ["def", "session_id"],
+    "list_voices": ["async def"],
+    "model_name": ["property"],
+    "name": ["property"],
+    "on_audio": ["def", "callback"],
+    "on_delegation": ["def", "callback"],
+    "on_error": ["def", "callback"],
+    "on_response_end": ["def", "callback"],
+    "on_response_start": ["def", "callback"],
+    "on_speech_end": ["def", "callback"],
+    "on_speech_start": ["def", "callback"],
+    "on_tool_call": ["def", "callback"],
+    "on_tool_call_cancelled": ["def", "callback"],
+    "on_transcription": ["def", "callback"],
+    "on_usage": ["def", "callback"],
+    "reconfigure": ["async def", "session", "*", "system_prompt=None", "voice=None", "tools=None", "temperature=None", "provider_config=None"],
+    "send_activity_end": ["async def", "session"],
+    "send_activity_start": ["async def", "session"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_event": ["async def", "session", "event"],
+    "start_audio_stream": ["async def", "session"],
+    "submit_delegation_output": ["async def", "session", "delegation_id", "text", "*", "spoken"],
+    "submit_tool_error": ["async def", "session", "call_id", "result"],
+    "submit_tool_result": ["async def", "session", "call_id", "result"],
+    "supports_context_preservation": ["property"],
+    "supports_mid_session_reconfigure": ["property"],
+    "supports_tools": ["property"],
+    "truncate_audio": ["async def", "session", "audio_end_ms"]
+  },
   "roomkit.providers.email.EmailProvider": {
     "close": ["async def"],
     "name": ["property"],
@@ -3662,6 +3803,46 @@
     "name": ["property"],
     "resolve_size": ["staticmethod", "size"],
     "supports_editing": ["property"]
+  },
+  "roomkit.providers.gemini.GeminiLiveProvider": {
+    "__init__": ["def", "*", "api_key", "model='gemini-3.8-live'"],
+    "available_models": ["classmethod"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "connect": ["async def", "session", "*", "system_prompt=None", "voice=None", "tools=None", "temperature=None", "input_sample_rate=16000", "output_sample_rate=24000", "server_vad=True", "provider_config=None"],
+    "disconnect": ["async def", "session"],
+    "full_duplex": ["property"],
+    "inject_image": ["async def", "session", "image_data", "mime_type='image/png'", "*", "prompt=''", "silent=False"],
+    "inject_text": ["async def", "session", "text", "*", "role='user'", "silent=False"],
+    "interrupt": ["async def", "session"],
+    "is_responding": ["def", "session_id"],
+    "list_voices": ["async def"],
+    "model_name": ["property"],
+    "name": ["property"],
+    "on_audio": ["def", "callback"],
+    "on_delegation": ["def", "callback"],
+    "on_error": ["def", "callback"],
+    "on_response_end": ["def", "callback"],
+    "on_response_start": ["def", "callback"],
+    "on_speech_end": ["def", "callback"],
+    "on_speech_start": ["def", "callback"],
+    "on_tool_call": ["def", "callback"],
+    "on_tool_call_cancelled": ["def", "callback"],
+    "on_transcription": ["def", "callback"],
+    "on_usage": ["def", "callback"],
+    "reconfigure": ["async def", "session", "*", "system_prompt=None", "voice=None", "tools=None", "temperature=None", "provider_config=None"],
+    "send_activity_end": ["async def", "session"],
+    "send_activity_start": ["async def", "session"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_event": ["async def", "session", "event"],
+    "start_audio_stream": ["async def", "session"],
+    "submit_delegation_output": ["async def", "session", "delegation_id", "text", "*", "spoken"],
+    "submit_tool_error": ["async def", "session", "call_id", "result"],
+    "submit_tool_result": ["async def", "session", "call_id", "result"],
+    "supports_context_preservation": ["property"],
+    "supports_mid_session_reconfigure": ["property"],
+    "supports_tools": ["property"],
+    "truncate_audio": ["async def", "session", "audio_end_ms"]
   },
   "roomkit.providers.gemini.GeminiVertexConfig": {
     "__init__": ["def", "*", "api_key=None", "model='gemini-3.8-flash'", "max_tokens=1024", "thinking_level=None", "timeout=60.0", "connect_timeout=5.0", "project", "location", "service_account_json=None", "impersonate_service_account=None", "labels=None"]
@@ -3882,6 +4063,14 @@
   "roomkit.providers.ollama.OllamaConfig": {
     "__init__": ["def", "*", "host='http://localhost:11434'", "model='llama3.2'", "max_tokens=None", "timeout=120.0", "connect_timeout=5.0", "max_retries=0", "think=None", "keep_alive=None", "num_ctx=None", "top_p=None", "top_k=None", "min_p=None", "api_key=None", "headers=None"]
   },
+  "roomkit.providers.openai.HostedReasoning": {
+    "__init__": ["def", "model", "instructions=None", "reasoning_effort=None", "max_output_tokens=None", "service_tier=None", "parallel_tool_calls=None", "extra=<factory>"],
+    "to_config": ["def", "tools"]
+  },
+  "roomkit.providers.openai.IntegratorReasoning": {
+    "__init__": ["def"],
+    "to_config": ["def", "tools"]
+  },
   "roomkit.providers.openai.OpenAIAIProvider": {
     "__init__": ["def", "config", "*", "transport=None"],
     "available_models": ["classmethod"],
@@ -3918,6 +4107,87 @@
     "model_name": ["property"],
     "name": ["property"],
     "supports_editing": ["property"]
+  },
+  "roomkit.providers.openai.OpenAILiveProvider": {
+    "__init__": ["def", "*", "api_key", "model='gpt-live-1'", "base_url=None", "delegation=None", "turn_gap_ms=800", "close_timeout_s=5.0"],
+    "available_models": ["classmethod"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "connect": ["async def", "session", "*", "system_prompt=None", "voice=None", "tools=None", "temperature=None", "input_sample_rate=16000", "output_sample_rate=24000", "server_vad=True", "provider_config=None"],
+    "delegation": ["property"],
+    "disconnect": ["async def", "session"],
+    "full_duplex": ["property"],
+    "inject_image": ["async def", "session", "image_data", "mime_type='image/png'", "*", "prompt=''", "silent=False"],
+    "inject_text": ["async def", "session", "text", "*", "role='user'", "silent=False"],
+    "interrupt": ["async def", "session"],
+    "is_responding": ["def", "session_id"],
+    "list_voices": ["async def"],
+    "model_name": ["property"],
+    "name": ["property"],
+    "on_audio": ["def", "callback"],
+    "on_delegation": ["def", "callback"],
+    "on_error": ["def", "callback"],
+    "on_response_end": ["def", "callback"],
+    "on_response_start": ["def", "callback"],
+    "on_speech_end": ["def", "callback"],
+    "on_speech_start": ["def", "callback"],
+    "on_tool_call": ["def", "callback"],
+    "on_tool_call_cancelled": ["def", "callback"],
+    "on_transcription": ["def", "callback"],
+    "on_usage": ["def", "callback"],
+    "reconfigure": ["async def", "session", "*", "system_prompt=None", "voice=None", "tools=None", "temperature=None", "provider_config=None"],
+    "send_activity_end": ["async def", "session"],
+    "send_activity_start": ["async def", "session"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_event": ["async def", "session", "event"],
+    "start_audio_stream": ["async def", "session"],
+    "submit_delegation_output": ["async def", "session", "delegation_id", "text", "*", "spoken"],
+    "submit_tool_error": ["async def", "session", "call_id", "result"],
+    "submit_tool_result": ["async def", "session", "call_id", "result"],
+    "supports_context_preservation": ["property"],
+    "supports_mid_session_reconfigure": ["property"],
+    "supports_tools": ["property"],
+    "truncate_audio": ["async def", "session", "audio_end_ms"]
+  },
+  "roomkit.providers.openai.OpenAIRealtimeProvider": {
+    "__init__": ["def", "*", "api_key", "model='gpt-realtime-2.1'", "base_url=None"],
+    "available_models": ["classmethod"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "connect": ["async def", "session", "*", "system_prompt=None", "voice=None", "tools=None", "temperature=None", "input_sample_rate=16000", "output_sample_rate=24000", "server_vad=True", "provider_config=None"],
+    "disconnect": ["async def", "session"],
+    "full_duplex": ["property"],
+    "inject_image": ["async def", "session", "image_data", "mime_type='image/png'", "*", "prompt=''", "silent=False"],
+    "inject_text": ["async def", "session", "text", "*", "role='user'", "silent=False"],
+    "interrupt": ["async def", "session"],
+    "is_responding": ["def", "session_id"],
+    "list_voices": ["async def"],
+    "model_name": ["property"],
+    "name": ["property"],
+    "on_audio": ["def", "callback"],
+    "on_delegation": ["def", "callback"],
+    "on_error": ["def", "callback"],
+    "on_response_end": ["def", "callback"],
+    "on_response_start": ["def", "callback"],
+    "on_speech_end": ["def", "callback"],
+    "on_speech_start": ["def", "callback"],
+    "on_tool_call": ["def", "callback"],
+    "on_tool_call_cancelled": ["def", "callback"],
+    "on_transcription": ["def", "callback"],
+    "on_usage": ["def", "callback"],
+    "reconfigure": ["async def", "session", "*", "system_prompt=None", "voice=None", "tools=None", "temperature=None", "provider_config=None"],
+    "send_activity_end": ["async def", "session"],
+    "send_activity_start": ["async def", "session"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_event": ["async def", "session", "event"],
+    "start_audio_stream": ["async def", "session"],
+    "submit_delegation_output": ["async def", "session", "delegation_id", "text", "*", "spoken"],
+    "submit_tool_error": ["async def", "session", "call_id", "result"],
+    "submit_tool_result": ["async def", "session", "call_id", "result"],
+    "supports_context_preservation": ["property"],
+    "supports_mid_session_reconfigure": ["property"],
+    "supports_tools": ["property"],
+    "truncate_audio": ["async def", "session", "audio_end_ms"]
   },
   "roomkit.providers.openrouter.OpenRouterAIProvider": {
     "__init__": ["def", "config", "*", "transport=None"],
@@ -4362,6 +4632,9 @@
   "roomkit.providers.twilio.parse_twilio_whatsapp_webhook": {
     "__call__": ["def", "payload", "channel_id"]
   },
+  "roomkit.providers.validate_public_url": {
+    "__call__": ["def", "url", "*", "allowed_schemes=('http', 'https')", "resolve_dns=True"]
+  },
   "roomkit.providers.vllm.VLLMConfig": {
     "__init__": ["def", "*", "model", "base_url='http://localhost:8000/v1'", "api_key=SecretStr('**********')", "max_tokens=1024", "timeout=30.0", "connect_timeout=5.0", "max_retries=0", "include_stream_usage=True", "headers=None", "top_p=None", "top_k=None", "min_p=None", "presence_penalty=None", "repetition_penalty=None", "extra_body=None", "enable_thinking=None", "reasoning_effort=None", "supports_response_schema=None", "supports_response_schema_with_tools=None"],
     "chat_template_kwargs": ["def"],
@@ -4393,6 +4666,17 @@
     "send": ["async def", "event", "to"],
     "send_reaction": ["async def", "chat", "sender", "message_id", "emoji"],
     "send_template": ["async def", "to", "template_name", "params=None"]
+  },
+  "roomkit.providers.whatsapp.WhatsAppPersonalProvider": {
+    "__init__": ["def", "source"],
+    "close": ["async def"],
+    "mark_read": ["async def", "message_ids", "chat", "sender"],
+    "name": ["property"],
+    "parse_webhook": ["async def", "payload"],
+    "send": ["async def", "event", "to"],
+    "send_reaction": ["async def", "chat", "sender", "message_id", "emoji"],
+    "send_template": ["async def", "to", "template_name", "params=None"],
+    "send_typing": ["async def", "to", "*", "is_typing=True", "media='text'"]
   },
   "roomkit.providers.whatsapp.WhatsAppProvider": {
     "close": ["async def"],
@@ -4441,6 +4725,46 @@
   },
   "roomkit.providers.xai.XAIRealtimeConfig": {
     "__init__": ["def", "*", "api_key", "model='grok-2-audio'", "base_url='wss://api.x.ai/v1/realtime'", "voice='eve'", "transcription_model='grok-2-audio'"]
+  },
+  "roomkit.providers.xai.XAIRealtimeProvider": {
+    "__init__": ["def", "config=None", "*", "api_key=None", "model=None", "base_url=None"],
+    "available_models": ["classmethod"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "connect": ["async def", "session", "*", "system_prompt=None", "voice=None", "tools=None", "temperature=None", "input_sample_rate=16000", "output_sample_rate=24000", "server_vad=True", "provider_config=None"],
+    "disconnect": ["async def", "session"],
+    "full_duplex": ["property"],
+    "inject_image": ["async def", "session", "image_data", "mime_type='image/png'", "*", "prompt=''", "silent=False"],
+    "inject_text": ["async def", "session", "text", "*", "role='user'", "silent=False"],
+    "interrupt": ["async def", "session"],
+    "is_responding": ["def", "session_id"],
+    "list_voices": ["async def"],
+    "model_name": ["property"],
+    "name": ["property"],
+    "on_audio": ["def", "callback"],
+    "on_delegation": ["def", "callback"],
+    "on_error": ["def", "callback"],
+    "on_response_end": ["def", "callback"],
+    "on_response_start": ["def", "callback"],
+    "on_speech_end": ["def", "callback"],
+    "on_speech_start": ["def", "callback"],
+    "on_tool_call": ["def", "callback"],
+    "on_tool_call_cancelled": ["def", "callback"],
+    "on_transcription": ["def", "callback"],
+    "on_usage": ["def", "callback"],
+    "reconfigure": ["async def", "session", "*", "system_prompt=None", "voice=None", "tools=None", "temperature=None", "provider_config=None"],
+    "send_activity_end": ["async def", "session"],
+    "send_activity_start": ["async def", "session"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_event": ["async def", "session", "event"],
+    "start_audio_stream": ["async def", "session"],
+    "submit_delegation_output": ["async def", "session", "delegation_id", "text", "*", "spoken"],
+    "submit_tool_error": ["async def", "session", "call_id", "result"],
+    "submit_tool_result": ["async def", "session", "call_id", "result"],
+    "supports_context_preservation": ["property"],
+    "supports_mid_session_reconfigure": ["property"],
+    "supports_tools": ["property"],
+    "truncate_audio": ["async def", "session", "audio_end_ms"]
   },
   "roomkit.realtime.EphemeralEvent": {
     "__init__": ["def", "room_id", "type", "user_id", "id=<factory>", "channel_id=None", "data=<factory>", "timestamp=<factory>"],
@@ -4517,6 +4841,16 @@
     "__init__": ["def", "id", "url=''", "duration_seconds=0.0", "tracks=<factory>", "format='mp4'", "size_bytes=0"]
   },
   "roomkit.recorder.MockMediaRecorder": {
+    "__init__": ["def"],
+    "close": ["def"],
+    "name": ["property"],
+    "on_data": ["def", "handle", "track", "data", "timestamp_ms"],
+    "on_recording_start": ["def", "config"],
+    "on_recording_stop": ["def", "handle"],
+    "on_track_added": ["def", "handle", "track"],
+    "on_track_removed": ["def", "handle", "track"]
+  },
+  "roomkit.recorder.PyAVMediaRecorder": {
     "__init__": ["def"],
     "close": ["def"],
     "name": ["property"],
@@ -4614,6 +4948,12 @@
   },
   "roomkit.skills.missing_required_tools": {
     "__call__": ["def", "metadata", "admitted", "closed=()", "*", "match=<function serves_exactly>"]
+  },
+  "roomkit.skills.parse_frontmatter": {
+    "__call__": ["def", "content"]
+  },
+  "roomkit.skills.parse_tool_names": {
+    "__call__": ["def", "value"]
   },
   "roomkit.skills.safe_join_filename": {
     "__call__": ["def", "directory", "filename", "*", "kind='file'"]
@@ -4886,6 +5226,21 @@
     "span": ["def", "kind", "name", "**kwargs"],
     "start_span": ["def", "kind", "name", "*", "parent_id=None", "attributes=None", "room_id=None", "session_id=None", "channel_id=None"]
   },
+  "roomkit.telemetry.OpenTelemetryProvider": {
+    "__init__": ["def", "*", "tracer_provider=None", "meter_provider=None", "service_name='roomkit'", "metadata=None", "shutdown_flush_timeout=4.0"],
+    "close": ["def"],
+    "end_span": ["def", "span_id", "*", "status='ok'", "error_message=None", "attributes=None"],
+    "extract_context": ["def", "carrier"],
+    "flush": ["def"],
+    "get_span_context": ["def", "span_id"],
+    "inject_context": ["def", "span_id"],
+    "name": ["property"],
+    "record_metric": ["def", "name", "value", "*", "unit=''", "attributes=None"],
+    "reset": ["def"],
+    "set_attribute": ["def", "span_id", "key", "value"],
+    "span": ["def", "kind", "name", "**kwargs"],
+    "start_span": ["def", "kind", "name", "*", "parent_id=None", "attributes=None", "room_id=None", "session_id=None", "channel_id=None"]
+  },
   "roomkit.telemetry.PyroscopeProfiler": {
     "__init__": ["def", "*", "application_name='roomkit'", "server_address='http://localhost:4040'", "sample_rate=100", "detect_subprocesses=False", "oncpu=True", "gil_only=True", "tags=None", "basic_auth_username=None", "basic_auth_password=None", "tenant_id=None"],
     "start": ["def"],
@@ -4938,6 +5293,9 @@
     "set_attribute": ["def", "span_id", "key", "value"],
     "span": ["def", "kind", "name", "**kwargs"],
     "start_span": ["def", "kind", "name", "*", "parent_id=None", "attributes=None", "room_id=None", "session_id=None", "channel_id=None"]
+  },
+  "roomkit.telemetry.get_current_span": {
+    "__call__": ["def"]
   },
   "roomkit.tools.ExternalToolHandler": {
     "channel_id": ["property"],
@@ -5009,8 +5367,17 @@
   "roomkit.tools.extract_tools": {
     "__call__": ["def", "tools"]
   },
+  "roomkit.tools.fence": {
+    "__call__": ["def", "tag", "text"]
+  },
+  "roomkit.tools.named_blocks": {
+    "__call__": ["def", "text", "tags=('tool_result', 'worker_output', 'knowledge', 'conversation_summary', 'context', 'task', 'vision')"]
+  },
   "roomkit.tools.tool_turn_context": {
     "__call__": ["def", "*", "room_id=None", "room=None", "actor_id=None", "tools=None", "chain_depth=0", "call=None", "requester=None"]
+  },
+  "roomkit.tools.turn_report_claim": {
+    "__call__": ["def", "call_id", "channel_id"]
   },
   "roomkit.video.AudioVideoBackend": {
     "accept": ["async def", "session", "connection"],
@@ -5355,6 +5722,239 @@
   "roomkit.video.WebcamInfo": {
     "__init__": ["def", "device", "name", "width", "height"]
   },
+  "roomkit.video.avatar.MuseTalkAvatarProvider": {
+    "__init__": ["def", "musetalk_dir", "*", "fps=30", "batch_size=8", "device='cuda'", "bbox_shift=0", "whisper_dir='models/whisper'"],
+    "close": ["async def"],
+    "end_turn": ["def"],
+    "feed_audio": ["def", "pcm_data", "sample_rate=16000"],
+    "flush": ["def"],
+    "fps": ["property"],
+    "get_idle_frame": ["def"],
+    "is_async": ["property"],
+    "is_started": ["property"],
+    "name": ["property"],
+    "on_video": ["def", "callback"],
+    "start": ["async def", "reference_image", "*", "width=512", "height=512"],
+    "stop": ["async def"]
+  },
+  "roomkit.video.backends.FastRTCVideoBackend": {
+    "__init__": ["def", "*", "video_width=640", "video_height=480", "video_queue_maxsize=100", "**kwargs"],
+    "accept": ["async def", "session", "connection"],
+    "add_video_tap": ["def", "callback"],
+    "audio_received_callback": ["property"],
+    "auto_connect": ["property"],
+    "cancel_audio": ["async def", "session"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "disconnect": ["async def", "session"],
+    "end_of_response": ["def", "session"],
+    "feeds_aec_reference": ["property"],
+    "get_session": ["def", "session_id"],
+    "get_video_session": ["def", "session_id"],
+    "interrupt": ["def", "session"],
+    "is_playing": ["def", "session"],
+    "list_sessions": ["def", "room_id"],
+    "list_video_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "on_aec_tap": ["def", "callback"],
+    "on_audio_played": ["def", "callback"],
+    "on_audio_received": ["def", "callback"],
+    "on_barge_in": ["def", "callback"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_speaker_change": ["def", "callback"],
+    "on_video_received": ["def", "callback"],
+    "request_keyframe": ["def", "session"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_audio_sync": ["def", "session", "chunk"],
+    "send_dtmf": ["def", "session", "digit", "duration_ms=160"],
+    "send_transcription": ["async def", "session", "text", "role='user'"],
+    "send_video": ["async def", "session", "video"],
+    "send_video_sync": ["def", "session", "frame"],
+    "set_input_gated": ["def", "session", "gated"],
+    "set_input_muted": ["def", "session", "muted"],
+    "set_trace_emitter": ["def", "emitter"],
+    "set_video_passthrough": ["def", "session_id", "enabled=True"],
+    "supports_playback_callback": ["property"],
+    "video": ["property"],
+    "video_capabilities": ["property"],
+    "wait_playback": ["async def", "session"]
+  },
+  "roomkit.video.backends.LocalVideoBackend": {
+    "__init__": ["def", "*", "device=0", "fps=30", "width=640", "height=480"],
+    "accept": ["async def", "session", "connection"],
+    "add_video_tap": ["def", "callback"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "disconnect": ["async def", "session"],
+    "get_session": ["def", "session_id"],
+    "get_video_session": ["def", "session_id"],
+    "list_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_video_received": ["def", "callback"],
+    "request_keyframe": ["def", "session"],
+    "send_video": ["async def", "session", "video"],
+    "send_video_sync": ["def", "session", "frame"],
+    "set_trace_emitter": ["def", "emitter"],
+    "set_video_passthrough": ["def", "session_id", "enabled=True"],
+    "start_capture": ["async def", "session"],
+    "stop_capture": ["async def", "session"]
+  },
+  "roomkit.video.backends.RTPVideoBackend": {
+    "__init__": ["def", "*", "video_local_addr=('0.0.0.0', 0)", "video_remote_addr=None", "video_payload_type=96", "video_clock_rate=90000", "video_port_allocator=None", "**kwargs"],
+    "accept": ["async def", "session", "connection"],
+    "add_video_tap": ["def", "callback"],
+    "audio_received_callback": ["property"],
+    "auto_connect": ["property"],
+    "cancel_audio": ["async def", "session"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "disconnect": ["async def", "session"],
+    "end_of_response": ["def", "session"],
+    "feeds_aec_reference": ["property"],
+    "get_session": ["def", "session_id"],
+    "get_video_session": ["def", "session_id"],
+    "interrupt": ["def", "session"],
+    "is_playing": ["def", "session"],
+    "list_sessions": ["def", "room_id"],
+    "list_video_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "on_aec_tap": ["def", "callback"],
+    "on_audio_played": ["def", "callback"],
+    "on_audio_received": ["def", "callback"],
+    "on_barge_in": ["def", "callback"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_dtmf_received": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_speaker_change": ["def", "callback"],
+    "on_video_received": ["def", "callback"],
+    "request_keyframe": ["def", "session"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_audio_sync": ["def", "session", "chunk"],
+    "send_dtmf": ["def", "session", "digit", "duration_ms=160"],
+    "send_transcription": ["async def", "session", "text", "role='user'"],
+    "send_video": ["async def", "session", "video"],
+    "send_video_sync": ["def", "session", "frame"],
+    "set_input_gated": ["def", "session", "gated"],
+    "set_input_muted": ["def", "session", "muted"],
+    "set_trace_emitter": ["def", "emitter"],
+    "set_video_passthrough": ["def", "session_id", "enabled=True"],
+    "supports_playback_callback": ["property"],
+    "video": ["property"],
+    "video_capabilities": ["property"],
+    "wait_playback": ["async def", "session"]
+  },
+  "roomkit.video.backends.SIPVideoBackend": {
+    "__init__": ["def", "*", "supported_video_codecs=None", "**kwargs"],
+    "accept": ["async def", "session", "connection"],
+    "add_video_tap": ["def", "callback"],
+    "audio_received_callback": ["property"],
+    "auto_connect": ["property"],
+    "cancel_audio": ["async def", "session"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "dial": ["async def", "to_uri", "from_uri", "proxy_addr", "*", "room_id=None", "channel_id='voice'", "codec=0", "auth=None", "extra_headers=None", "timeout=30.0"],
+    "disconnect": ["async def", "session", "*", "cause=None", "text=None"],
+    "end_of_response": ["def", "session"],
+    "feeds_aec_reference": ["property"],
+    "get_codec_rate": ["def", "session_id"],
+    "get_session": ["def", "session_id"],
+    "get_video_session": ["def", "session_id"],
+    "has_auth": ["def"],
+    "interrupt": ["def", "session"],
+    "is_playing": ["def", "session"],
+    "list_sessions": ["def", "room_id"],
+    "list_video_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "on_aec_tap": ["def", "callback"],
+    "on_audio_played": ["def", "callback"],
+    "on_audio_received": ["def", "callback"],
+    "on_barge_in": ["def", "callback"],
+    "on_call": ["def", "callback"],
+    "on_call_disconnected": ["def", "callback"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_dtmf_received": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_speaker_change": ["def", "callback"],
+    "on_video_received": ["def", "callback"],
+    "register": ["async def", "registrar_addr", "*", "username", "password", "domain=None", "expires=300"],
+    "request_keyframe": ["def", "session"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_audio_sync": ["def", "session", "chunk"],
+    "send_dtmf": ["def", "session", "digit", "duration_ms=160"],
+    "send_transcription": ["async def", "session", "text", "role='user'"],
+    "send_video": ["async def", "session", "video"],
+    "send_video_sync": ["def", "session", "frame"],
+    "set_auth_resolver": ["def", "resolver"],
+    "set_input_gated": ["def", "session", "gated"],
+    "set_input_muted": ["def", "session", "muted"],
+    "set_invite_filter": ["def", "invite_filter"],
+    "set_trace_emitter": ["def", "emitter"],
+    "set_video_passthrough": ["def", "session_id", "enabled=True"],
+    "start": ["async def"],
+    "subscribe_audio_received": ["def", "callback"],
+    "supports_playback_callback": ["property"],
+    "video": ["property"],
+    "video_capabilities": ["property"],
+    "wait_playback": ["async def", "session"]
+  },
+  "roomkit.video.backends.ScreenCaptureBackend": {
+    "__init__": ["def", "*", "monitor=1", "region=None", "fps=5", "scale=1.0", "diff_threshold=0.0"],
+    "accept": ["async def", "session", "connection"],
+    "add_video_tap": ["def", "callback"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "disconnect": ["async def", "session"],
+    "get_session": ["def", "session_id"],
+    "get_video_session": ["def", "session_id"],
+    "list_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_video_received": ["def", "callback"],
+    "request_keyframe": ["def", "session"],
+    "send_video": ["async def", "session", "video"],
+    "send_video_sync": ["def", "session", "frame"],
+    "set_trace_emitter": ["def", "emitter"],
+    "set_video_passthrough": ["def", "session_id", "enabled=True"],
+    "start_capture": ["async def", "session"],
+    "stop_capture": ["async def", "session"]
+  },
+  "roomkit.video.backends.WebSocketVideoBackend": {
+    "__init__": ["def", "*", "default_width=640", "default_height=480", "default_codec='h264'"],
+    "accept": ["async def", "session", "connection"],
+    "add_video_tap": ["def", "callback"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "disconnect": ["async def", "session"],
+    "get_session": ["def", "session_id"],
+    "get_video_session": ["def", "session_id"],
+    "list_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_video_received": ["def", "callback"],
+    "request_keyframe": ["def", "session"],
+    "send_video": ["async def", "session", "video"],
+    "send_video_sync": ["def", "session", "frame"],
+    "set_session_factory": ["def", "factory"],
+    "set_trace_emitter": ["def", "emitter"],
+    "set_video_passthrough": ["def", "session_id", "enabled=True"]
+  },
+  "roomkit.video.backends.mount_fastrtc_av": {
+    "__call__": ["def", "app", "backend", "*", "path='/av'", "session_factory=None", "auth=None", "allow_anonymous=False", "concurrency_limit=1"]
+  },
+  "roomkit.video.backends.mount_websocket_video": {
+    "__call__": ["def", "app", "backend", "*", "path='/video/ws'"]
+  },
   "roomkit.video.capture_screen_frame": {
     "__call__": ["def", "monitor=1"]
   },
@@ -5450,6 +6050,15 @@
     "reset": ["def"],
     "reset_session": ["def", "session_id"]
   },
+  "roomkit.video.pipeline.decoder.PyAVVideoDecoder": {
+    "__init__": ["def", "output_format='rgb24'"],
+    "close": ["def"],
+    "decode": ["def", "frame"],
+    "decode_for_session": ["def", "session_id", "frame"],
+    "name": ["property"],
+    "reset": ["def"],
+    "reset_session": ["def", "session_id"]
+  },
   "roomkit.video.pipeline.encoder.PyAVVideoEncoder": {
     "__init__": ["def", "width=512", "height=512", "fps=30", "codec='libx264'", "bitrate=2500000", "preset='veryfast'"],
     "close": ["def"],
@@ -5536,6 +6145,30 @@
   "roomkit.video.pipeline.overlay.subtitle_overlay": {
     "__call__": ["def", "kit", "*", "overlay_filter=None", "translate_fn=None", "position=<OverlayPosition.BOTTOM_CENTER: 'bottom-center'>", "max_lines=2", "**style"]
   },
+  "roomkit.video.pipeline.resizer.PyAVVideoResizer": {
+    "__init__": ["def", "width=640", "height=480", "*", "keep_aspect=True"],
+    "close": ["def"],
+    "name": ["property"],
+    "resize": ["def", "frame"]
+  },
+  "roomkit.video.recorder.OpenCVVideoRecorder": {
+    "__init__": ["def"],
+    "close": ["def"],
+    "name": ["property"],
+    "reset": ["def"],
+    "start": ["def", "session", "config"],
+    "stop": ["def", "handle"],
+    "tap_frame": ["def", "handle", "frame"]
+  },
+  "roomkit.video.recorder.PyAVVideoRecorder": {
+    "__init__": ["def"],
+    "close": ["def"],
+    "name": ["property"],
+    "reset": ["def"],
+    "start": ["def", "session", "config"],
+    "stop": ["def", "handle"],
+    "tap_frame": ["def", "handle", "frame"]
+  },
   "roomkit.video.recorder.get_opencv_recorder": {
     "__call__": ["def"]
   },
@@ -5550,6 +6183,9 @@
   },
   "roomkit.video.setup_video_vision": {
     "__call__": ["def", "kit", "room_id", "ai_channel_id", "*", "context_prefix='You can see a live camera feed. Current view:'"]
+  },
+  "roomkit.visibility_allows": {
+    "__call__": ["def", "visibility", "target_binding"]
   },
   "roomkit.visible_events": {
     "__call__": ["def", "context", "channel_id"]
@@ -6158,6 +6794,275 @@
     "tap_inbound": ["def", "handle", "frame"],
     "tap_outbound": ["def", "handle", "frame"]
   },
+  "roomkit.voice.backends.BuzzHuddleBackend": {
+    "__init__": ["def", "*", "silence_fill=True", "provider_input_rate=16000", "provider_output_rate=24000", "end_when_alone=True", "empty_huddle_grace=90.0"],
+    "accept": ["async def", "session", "connection"],
+    "audio_received_callback": ["property"],
+    "auto_connect": ["property"],
+    "cancel_audio": ["async def", "session"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "disconnect": ["async def", "session"],
+    "end_of_response": ["def", "session"],
+    "feeds_aec_reference": ["property"],
+    "get_session": ["def", "session_id"],
+    "interrupt": ["def", "session"],
+    "is_playing": ["def", "session"],
+    "list_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "on_aec_tap": ["def", "callback"],
+    "on_audio_played": ["def", "callback"],
+    "on_audio_received": ["def", "callback"],
+    "on_barge_in": ["def", "callback"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_speaker_change": ["def", "callback"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_audio_sync": ["def", "session", "chunk"],
+    "send_dtmf": ["def", "session", "digit", "duration_ms=160"],
+    "send_transcription": ["async def", "session", "text", "role='user'"],
+    "set_input_gated": ["def", "session", "gated"],
+    "set_input_muted": ["def", "session", "muted"],
+    "set_trace_emitter": ["def", "emitter"],
+    "supports_playback_callback": ["property"],
+    "wait_playback": ["async def", "session"]
+  },
+  "roomkit.voice.backends.BuzzHuddleWatcher": {
+    "__init__": ["def", "kit", "*", "voice_channel", "config", "parent_channel_id", "room_id", "participant_id='buzz-agent'", "events_channel_id='buzz-huddle-events'", "join_attempts=3", "client_factory=None"],
+    "bridge": ["async def", "huddle_id"],
+    "start": ["async def"]
+  },
+  "roomkit.voice.backends.FastRTCVoiceBackend": {
+    "__init__": ["def", "*", "input_sample_rate=48000", "output_sample_rate=24000", "audio_format='mulaw'", "audio_queue_maxsize=1000"],
+    "accept": ["async def", "session", "connection"],
+    "audio_received_callback": ["property"],
+    "auto_connect": ["property"],
+    "cancel_audio": ["async def", "session"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "disconnect": ["async def", "session"],
+    "end_of_response": ["def", "session"],
+    "feeds_aec_reference": ["property"],
+    "get_session": ["def", "session_id"],
+    "interrupt": ["def", "session"],
+    "is_playing": ["def", "session"],
+    "list_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "on_aec_tap": ["def", "callback"],
+    "on_audio_played": ["def", "callback"],
+    "on_audio_received": ["def", "callback"],
+    "on_barge_in": ["def", "callback"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_speaker_change": ["def", "callback"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_audio_sync": ["def", "session", "chunk"],
+    "send_dtmf": ["def", "session", "digit", "duration_ms=160"],
+    "send_transcription": ["async def", "session", "text", "role='user'"],
+    "set_input_gated": ["def", "session", "gated"],
+    "set_input_muted": ["def", "session", "muted"],
+    "set_trace_emitter": ["def", "emitter"],
+    "supports_playback_callback": ["property"],
+    "wait_playback": ["async def", "session"]
+  },
+  "roomkit.voice.backends.LocalAudioBackend": {
+    "__init__": ["def", "*", "input_sample_rate=None", "output_sample_rate=24000", "channels=None", "block_duration_ms=None", "input_device=None", "output_device=None", "aec=None", "mute_mic_during_playback=None", "rt_prebuffer_ms=120", "source=None"],
+    "accept": ["async def", "session", "connection"],
+    "audio_received_callback": ["property"],
+    "auto_connect": ["property"],
+    "cancel_audio": ["async def", "session"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "disconnect": ["async def", "session"],
+    "end_of_response": ["def", "session"],
+    "feeds_aec_reference": ["property"],
+    "get_session": ["def", "session_id"],
+    "interrupt": ["def", "session"],
+    "is_playing": ["def", "session"],
+    "list_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "on_aec_tap": ["def", "callback"],
+    "on_audio_played": ["def", "callback"],
+    "on_audio_received": ["def", "callback"],
+    "on_barge_in": ["def", "callback"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_speaker_change": ["def", "callback"],
+    "rt_underruns": ["property"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_audio_sync": ["def", "session", "chunk"],
+    "send_dtmf": ["def", "session", "digit", "duration_ms=160"],
+    "send_transcription": ["async def", "session", "text", "role='user'"],
+    "set_input_gated": ["def", "session", "gated"],
+    "set_input_muted": ["def", "session", "muted"],
+    "set_trace_emitter": ["def", "emitter"],
+    "start_listening": ["async def", "session"],
+    "stop_listening": ["async def", "session"],
+    "supports_playback_callback": ["property"],
+    "wait_playback": ["async def", "session"]
+  },
+  "roomkit.voice.backends.MockVoiceBackend": {
+    "__init__": ["def", "*", "capabilities=<VoiceCapability.NONE: 0>"],
+    "accept": ["async def", "session", "connection"],
+    "audio_received_callback": ["property"],
+    "auto_connect": ["property"],
+    "cancel_audio": ["async def", "session"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "disconnect": ["async def", "session"],
+    "end_of_response": ["def", "session"],
+    "feeds_aec_reference": ["property"],
+    "get_session": ["def", "session_id"],
+    "interrupt": ["def", "session"],
+    "is_playing": ["def", "session"],
+    "list_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "on_aec_tap": ["def", "callback"],
+    "on_audio_played": ["def", "callback"],
+    "on_audio_received": ["def", "callback"],
+    "on_barge_in": ["def", "callback"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_speaker_change": ["def", "callback"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_audio_sync": ["def", "session", "chunk"],
+    "send_dtmf": ["def", "session", "digit", "duration_ms=160"],
+    "send_transcription": ["async def", "session", "text", "role='user'"],
+    "set_input_gated": ["def", "session", "gated"],
+    "set_input_muted": ["def", "session", "muted"],
+    "set_trace_emitter": ["def", "emitter"],
+    "simulate_audio_received": ["async def", "session", "frame"],
+    "simulate_barge_in": ["async def", "session"],
+    "simulate_client_disconnected": ["async def", "session"],
+    "simulate_session_ready": ["async def", "session"],
+    "start_playing": ["def", "session"],
+    "stop_playing": ["def", "session"],
+    "supports_playback_callback": ["property"],
+    "wait_playback": ["async def", "session"]
+  },
+  "roomkit.voice.backends.RTPVoiceBackend": {
+    "__init__": ["def", "*", "local_addr=('0.0.0.0', 0)", "remote_addr=None", "payload_type=0", "clock_rate=8000", "dtmf_payload_type=101", "rtcp_interval=5.0", "port_allocator=None"],
+    "accept": ["async def", "session", "connection"],
+    "audio_received_callback": ["property"],
+    "auto_connect": ["property"],
+    "cancel_audio": ["async def", "session"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "disconnect": ["async def", "session"],
+    "end_of_response": ["def", "session"],
+    "feeds_aec_reference": ["property"],
+    "get_session": ["def", "session_id"],
+    "interrupt": ["def", "session"],
+    "is_playing": ["def", "session"],
+    "list_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "on_aec_tap": ["def", "callback"],
+    "on_audio_played": ["def", "callback"],
+    "on_audio_received": ["def", "callback"],
+    "on_barge_in": ["def", "callback"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_dtmf_received": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_speaker_change": ["def", "callback"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_audio_sync": ["def", "session", "chunk"],
+    "send_dtmf": ["def", "session", "digit", "duration_ms=160"],
+    "send_transcription": ["async def", "session", "text", "role='user'"],
+    "set_input_gated": ["def", "session", "gated"],
+    "set_input_muted": ["def", "session", "muted"],
+    "set_trace_emitter": ["def", "emitter"],
+    "supports_playback_callback": ["property"],
+    "wait_playback": ["async def", "session"]
+  },
+  "roomkit.voice.backends.SIPVoiceBackend": {
+    "__init__": ["def", "*", "local_sip_addr=('0.0.0.0', 5060)", "local_rtp_ip='0.0.0.0'", "advertised_ip=None", "rtp_port_start=10000", "rtp_port_end=20000", "supported_codecs=None", "dtmf_payload_type=101", "user_agent=None", "server_name='-'", "jitter_capacity=32", "jitter_prefetch=0", "skip_audio_gaps=True", "plc=True", "cn=False", "cn_payload_type=13", "playout=False", "playout_max_delay_ms=200", "duplicate_tx=False", "symmetric_rtp=False", "rtp_inactivity_timeout=30.0", "rtp_establishment_timeout=60.0", "max_sessions=0", "auth_users=None", "auth_realm='roomkit'", "send_silence_on_answer=0.0", "outbound_silence_fill=False", "pacer_prebuffer_ms=80", "pacer_jitter_headroom_ms=60"],
+    "accept": ["async def", "session", "connection"],
+    "audio_received_callback": ["property"],
+    "auto_connect": ["property"],
+    "cancel_audio": ["async def", "session"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "dial": ["async def", "to_uri", "from_uri", "proxy_addr", "*", "room_id=None", "channel_id='voice'", "codec=0", "auth=None", "extra_headers=None", "timeout=30.0"],
+    "disconnect": ["async def", "session", "*", "cause=None", "text=None"],
+    "end_of_response": ["def", "session"],
+    "feeds_aec_reference": ["property"],
+    "get_codec_rate": ["def", "session_id"],
+    "get_session": ["def", "session_id"],
+    "has_auth": ["def"],
+    "interrupt": ["def", "session"],
+    "is_playing": ["def", "session"],
+    "list_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "on_aec_tap": ["def", "callback"],
+    "on_audio_played": ["def", "callback"],
+    "on_audio_received": ["def", "callback"],
+    "on_barge_in": ["def", "callback"],
+    "on_call": ["def", "callback"],
+    "on_call_disconnected": ["def", "callback"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_dtmf_received": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_speaker_change": ["def", "callback"],
+    "register": ["async def", "registrar_addr", "*", "username", "password", "domain=None", "expires=300"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_audio_sync": ["def", "session", "chunk"],
+    "send_dtmf": ["def", "session", "digit", "duration_ms=160"],
+    "send_transcription": ["async def", "session", "text", "role='user'"],
+    "set_auth_resolver": ["def", "resolver"],
+    "set_input_gated": ["def", "session", "gated"],
+    "set_input_muted": ["def", "session", "muted"],
+    "set_invite_filter": ["def", "invite_filter"],
+    "set_trace_emitter": ["def", "emitter"],
+    "start": ["async def"],
+    "subscribe_audio_received": ["def", "callback"],
+    "supports_playback_callback": ["property"],
+    "wait_playback": ["async def", "session"]
+  },
+  "roomkit.voice.backends.WebTransportBackend": {
+    "__init__": ["def", "*", "host='0.0.0.0'", "port=4433", "certificate='cert.pem'", "private_key='key.pem'", "input_sample_rate=16000", "output_sample_rate=16000", "path='/audio'", "max_datagram_size=65536", "authenticate=None", "allow_anonymous=False"],
+    "accept": ["async def", "session", "connection"],
+    "audio_received_callback": ["property"],
+    "auto_connect": ["property"],
+    "cancel_audio": ["async def", "session"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "disconnect": ["async def", "session"],
+    "end_of_response": ["def", "session"],
+    "feeds_aec_reference": ["property"],
+    "get_session": ["def", "session_id"],
+    "interrupt": ["def", "session"],
+    "is_playing": ["def", "session"],
+    "list_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "on_aec_tap": ["def", "callback"],
+    "on_audio_played": ["def", "callback"],
+    "on_audio_received": ["def", "callback"],
+    "on_barge_in": ["def", "callback"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_speaker_change": ["def", "callback"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_audio_sync": ["def", "session", "chunk"],
+    "send_dtmf": ["def", "session", "digit", "duration_ms=160"],
+    "send_transcription": ["async def", "session", "text", "role='user'"],
+    "set_input_gated": ["def", "session", "gated"],
+    "set_input_muted": ["def", "session", "muted"],
+    "set_session_factory": ["def", "factory"],
+    "set_trace_emitter": ["def", "emitter"],
+    "start": ["async def"],
+    "supports_playback_callback": ["property"],
+    "wait_playback": ["async def", "session"]
+  },
+  "roomkit.voice.backends.mount_fastrtc_voice": {
+    "__call__": ["def", "app", "backend", "*", "path='/fastrtc'", "session_factory=None", "auth=None", "allow_anonymous=False", "concurrency_limit=1"]
+  },
   "roomkit.voice.filter_voices": {
     "__call__": ["def", "voices", "*", "language=None", "gender=None", "query=None"]
   },
@@ -6486,6 +7391,250 @@
     "supports_tools": ["property"],
     "truncate_audio": ["async def", "session", "audio_end_ms"]
   },
+  "roomkit.voice.realtime.SIPRealtimeTransport": {
+    "__init__": ["def", "backend"],
+    "accept": ["async def", "session", "connection"],
+    "audio_received_callback": ["property"],
+    "auto_connect": ["property"],
+    "cancel_audio": ["async def", "session"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "disconnect": ["async def", "session"],
+    "end_of_response": ["def", "session"],
+    "feeds_aec_reference": ["property"],
+    "get_session": ["def", "session_id"],
+    "interrupt": ["def", "session"],
+    "is_playing": ["def", "session"],
+    "list_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "on_aec_tap": ["def", "callback"],
+    "on_audio_played": ["def", "callback"],
+    "on_audio_received": ["def", "callback"],
+    "on_barge_in": ["def", "callback"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_speaker_change": ["def", "callback"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_audio_sync": ["def", "session", "chunk"],
+    "send_dtmf": ["def", "session", "digit", "duration_ms=160"],
+    "send_message": ["async def", "session", "message"],
+    "send_transcription": ["async def", "session", "text", "role='user'"],
+    "set_input_gated": ["def", "session", "gated"],
+    "set_input_muted": ["def", "session", "muted"],
+    "set_trace_emitter": ["def", "emitter"],
+    "supports_playback_callback": ["property"],
+    "wait_playback": ["async def", "session"]
+  },
+  "roomkit.voice.realtime.WebSocketRealtimeTransport": {
+    "__init__": ["def", "*", "authenticate=None", "audio_format='binary'"],
+    "accept": ["async def", "session", "connection"],
+    "audio_received_callback": ["property"],
+    "auto_connect": ["property"],
+    "cancel_audio": ["async def", "session"],
+    "capabilities": ["property"],
+    "close": ["async def"],
+    "connect": ["async def", "room_id", "participant_id", "channel_id", "*", "metadata=None"],
+    "disconnect": ["async def", "session"],
+    "end_of_response": ["def", "session"],
+    "feeds_aec_reference": ["property"],
+    "get_session": ["def", "session_id"],
+    "interrupt": ["def", "session"],
+    "is_playing": ["def", "session"],
+    "list_sessions": ["def", "room_id"],
+    "name": ["property"],
+    "on_aec_tap": ["def", "callback"],
+    "on_audio_played": ["def", "callback"],
+    "on_audio_received": ["def", "callback"],
+    "on_barge_in": ["def", "callback"],
+    "on_client_disconnected": ["def", "callback"],
+    "on_session_ready": ["def", "callback"],
+    "on_speaker_change": ["def", "callback"],
+    "send_audio": ["async def", "session", "audio"],
+    "send_audio_sync": ["def", "session", "chunk"],
+    "send_dtmf": ["def", "session", "digit", "duration_ms=160"],
+    "send_message": ["async def", "session", "message"],
+    "send_transcription": ["async def", "session", "text", "role='user'"],
+    "set_input_gated": ["def", "session", "gated"],
+    "set_input_muted": ["def", "session", "muted"],
+    "set_trace_emitter": ["def", "emitter"],
+    "supports_playback_callback": ["property"],
+    "wait_playback": ["async def", "session"]
+  },
+  "roomkit.voice.realtime.render_transcript_request": {
+    "__call__": ["def", "transcript", "*", "first", "instruction=\"Act on the user's most recent request in the conversation above.\""]
+  },
+  "roomkit.voice.speaker_label": {
+    "__call__": ["def", "value"]
+  },
+  "roomkit.voice.stt.AzureMAISTTConfig": {
+    "__init__": ["def", "endpoint", "api_key", "deployment='MAI-Transcribe-2-Streaming'", "language=None", "handshake_timeout_s=10.0", "final_timeout_s=10.0"]
+  },
+  "roomkit.voice.stt.AzureMAISTTProvider": {
+    "__init__": ["def", "config"],
+    "close": ["async def"],
+    "keeps_stream_across_turns": ["property"],
+    "name": ["property"],
+    "supports_diarization": ["property"],
+    "supports_language_override": ["property"],
+    "supports_streaming": ["property"],
+    "transcribe": ["async def", "audio", "*", "language=None"],
+    "transcribe_stream": ["async gen def", "audio_stream", "*", "language=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.stt.DeepgramConfig": {
+    "__init__": ["def", "api_key", "model='nova-2'", "language='en'", "version=None", "punctuate=True", "smart_format=True", "numerals=False", "dictation=False", "profanity_filter=False", "redact=None", "replace=None", "detect_entities=False", "diarize=False", "diarize_model=None", "filler_words=False", "multichannel=False", "keywords=<factory>", "keyterm=<factory>", "search=<factory>", "interim_results=True", "endpointing=300", "utterance_end_ms=None", "vad_events=True", "tag=None", "extra=<factory>", "mip_opt_out=False"]
+  },
+  "roomkit.voice.stt.DeepgramSTTProvider": {
+    "__init__": ["def", "config"],
+    "close": ["async def"],
+    "keeps_stream_across_turns": ["property"],
+    "name": ["property"],
+    "supports_diarization": ["property"],
+    "supports_language_override": ["property"],
+    "supports_streaming": ["property"],
+    "transcribe": ["async def", "audio", "*", "language=None"],
+    "transcribe_stream": ["async gen def", "audio_stream", "*", "language=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.stt.GeminiSTTConfig": {
+    "__init__": ["def", "api_key", "model='gemini-3.8-flash'", "language=None", "diarize=True", "prompt=None", "timeout=600.0", "max_inline_bytes=15728640", "connect_timeout=5.0", "mode='verbatim'", "custom_vocabulary=<factory>", "word_timestamps=True", "speaker_segments=False"]
+  },
+  "roomkit.voice.stt.GeminiSTTProvider": {
+    "__init__": ["def", "config"],
+    "close": ["async def"],
+    "keeps_stream_across_turns": ["property"],
+    "name": ["property"],
+    "supports_diarization": ["property"],
+    "supports_language_override": ["property"],
+    "supports_streaming": ["property"],
+    "transcribe": ["async def", "audio", "*", "language=None"],
+    "transcribe_recording": ["async def", "source"],
+    "transcribe_stream": ["async gen def", "audio_stream", "*", "language=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.stt.GeminiTranscribeConfig": {
+    "__init__": ["def", "api_key", "model='gemini-3.5-transcribe-live'", "language_codes=<factory>", "custom_vocabulary=<factory>", "mode='VERBATIM'", "timeout=60.0", "connect_timeout=5.0"]
+  },
+  "roomkit.voice.stt.GeminiTranscribeProvider": {
+    "__init__": ["def", "config"],
+    "close": ["async def"],
+    "keeps_stream_across_turns": ["property"],
+    "name": ["property"],
+    "supports_diarization": ["property"],
+    "supports_language_override": ["property"],
+    "supports_streaming": ["property"],
+    "transcribe": ["async def", "audio", "*", "language=None"],
+    "transcribe_stream": ["async gen def", "audio_stream", "*", "language=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.stt.GeminiTranscript": {
+    "__init__": ["def", "language", "segments", "words=<factory>"],
+    "plain_text": ["property"],
+    "speaker_segments": ["def"],
+    "text": ["property"]
+  },
+  "roomkit.voice.stt.GeminiTranscriptSegment": {
+    "__init__": ["def", "speaker", "start", "end", "text"]
+  },
+  "roomkit.voice.stt.GeminiTranscriptWord": {
+    "__init__": ["def", "text", "start", "end", "speaker=None"]
+  },
+  "roomkit.voice.stt.GradiumSTTConfig": {
+    "__init__": ["def", "api_key", "region='us'", "model_name='default'", "input_format='pcm'", "language=None", "json_config=None", "connect_buffer_ms=300", "delay_in_frames=7", "vad_threshold=0.9", "vad_steps=10", "timeout_s=3.0"]
+  },
+  "roomkit.voice.stt.GradiumSTTProvider": {
+    "__init__": ["def", "config"],
+    "close": ["async def"],
+    "keeps_stream_across_turns": ["property"],
+    "name": ["property"],
+    "supports_diarization": ["property"],
+    "supports_language_override": ["property"],
+    "supports_streaming": ["property"],
+    "transcribe": ["async def", "audio", "*", "language=None"],
+    "transcribe_stream": ["async gen def", "audio_stream", "*", "language=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.stt.MetaSTTConfig": {
+    "__init__": ["def", "api_key", "model='muse-voice-transcribe-1.0'", "mode='ENDPOINTING'", "keywords=<factory>", "language_bias=<factory>", "base_url='https://api.meta.ai/v1'", "realtime_url='wss://api.meta.ai/v1/asr/realtime'", "timeout_s=60.0", "handshake_timeout_s=10.0"]
+  },
+  "roomkit.voice.stt.MetaSTTProvider": {
+    "__init__": ["def", "config"],
+    "close": ["async def"],
+    "keeps_stream_across_turns": ["property"],
+    "name": ["property"],
+    "supports_diarization": ["property"],
+    "supports_language_override": ["property"],
+    "supports_streaming": ["property"],
+    "transcribe": ["async def", "audio", "*", "language=None"],
+    "transcribe_stream": ["async gen def", "audio_stream", "*", "language=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.stt.MockSTTProvider": {
+    "__init__": ["def", "transcripts=None", "*", "streaming=False", "languages=None"],
+    "close": ["async def"],
+    "keeps_stream_across_turns": ["property"],
+    "name": ["property"],
+    "supports_diarization": ["property"],
+    "supports_language_override": ["property"],
+    "supports_streaming": ["property"],
+    "transcribe": ["async def", "audio", "*", "language=None"],
+    "transcribe_stream": ["async gen def", "audio_stream", "*", "language=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.stt.Qwen3ASRConfig": {
+    "__init__": ["def", "model_id='Qwen/Qwen3-ASR-0.6B'", "backend='transformers'", "device_map='auto'", "dtype='bfloat16'", "language=None", "chunk_size_sec=2.0", "unfixed_chunk_num=2", "unfixed_token_num=5", "gpu_memory_utilization=0.3", "max_new_tokens=2048"]
+  },
+  "roomkit.voice.stt.Qwen3ASRProvider": {
+    "__init__": ["def", "config"],
+    "close": ["async def"],
+    "keeps_stream_across_turns": ["property"],
+    "name": ["property"],
+    "supports_diarization": ["property"],
+    "supports_language_override": ["property"],
+    "supports_streaming": ["property"],
+    "transcribe": ["async def", "audio", "*", "language=None"],
+    "transcribe_stream": ["async gen def", "audio_stream", "*", "language=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.stt.SherpaOnnxSTTConfig": {
+    "__init__": ["def", "mode='transducer'", "tokens=''", "encoder=''", "decoder=''", "joiner=''", "model_type=''", "language='en'", "stream_language=''", "task='transcribe'", "sample_rate=16000", "num_threads=2", "provider='cpu'", "enable_endpoint_detection=True", "rule1_min_trailing_silence=2.4", "rule2_min_trailing_silence=1.2", "rule3_min_utterance_length=20.0", "tail_padding_s=0.66"],
+    "from_local_model": ["classmethod", "name", "*", "models_dir=None", "**overrides"]
+  },
+  "roomkit.voice.stt.SherpaOnnxSTTProvider": {
+    "__init__": ["def", "config"],
+    "close": ["async def"],
+    "keeps_stream_across_turns": ["property"],
+    "name": ["property"],
+    "supports_diarization": ["property"],
+    "supports_language_override": ["property"],
+    "supports_streaming": ["property"],
+    "transcribe": ["async def", "audio", "*", "language=None"],
+    "transcribe_stream": ["async gen def", "audio_stream", "*", "language=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.stt.VoxtralSTTConfig": {
+    "__init__": ["def", "api_key", "model='voxtral-mini-transcribe-3'", "realtime_model='voxtral-mini-transcribe-realtime-3'", "language=None", "context_bias=<factory>", "streaming_delay_ms=480", "turn_detection=<factory>", "final_wait_ms=None", "diarize=False", "speaker_references=<factory>", "diarized_pause_ms=1500", "base_url='https://api.mistral.ai'", "realtime_url=None", "timeout=60.0", "connect_timeout=5.0", "handshake_timeout_s=10.0", "final_timeout_s=10.0"],
+    "final_wait_s": ["property"],
+    "next_turn_wait_s": ["property"],
+    "stream_url": ["property"]
+  },
+  "roomkit.voice.stt.VoxtralSTTProvider": {
+    "__init__": ["def", "config"],
+    "close": ["async def"],
+    "keeps_stream_across_turns": ["property"],
+    "name": ["property"],
+    "supports_diarization": ["property"],
+    "supports_language_override": ["property"],
+    "supports_streaming": ["property"],
+    "transcribe": ["async def", "audio", "*", "language=None"],
+    "transcribe_stream": ["async gen def", "audio_stream", "*", "language=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.stt.VoxtralTurnDetection": {
+    "__init__": ["def", "start_threshold=0.5", "eager_end_threshold=0.5", "end_threshold=0.33", "min_silence_ms=500", "end_timeout_ms=3000"],
+    "aggressive": ["classmethod"]
+  },
   "roomkit.voice.testing.pcm_frames": {
     "__call__": ["def", "audio", "*", "frame_ms=20"]
   },
@@ -6501,7 +7650,332 @@
   "roomkit.voice.testing.write_wav": {
     "__call__": ["def", "path", "audio"]
   },
+  "roomkit.voice.tts.AzureSpeechTTSConfig": {
+    "__init__": ["def", "api_key", "region=None", "endpoint=None", "voice='en-US-Harper:MAI-Voice-2.1-Flash'", "language=None", "style=None", "rate=None", "sample_rate=24000", "timeout=30.0", "connect_timeout=5.0"]
+  },
+  "roomkit.voice.tts.AzureSpeechTTSProvider": {
+    "__init__": ["def", "config"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "context_level": ["property"],
+    "default_voice": ["property"],
+    "list_voices": ["async def", "*", "language=None", "gender=None", "query=None"],
+    "max_dialogue_speakers": ["property"],
+    "name": ["property"],
+    "release_context": ["def", "context_id"],
+    "supports_streaming_input": ["property"],
+    "synthesize": ["async def", "text", "*", "voice=None"],
+    "synthesize_dialogue": ["async def", "turns", "voices"],
+    "synthesize_stream": ["async gen def", "text", "*", "voice=None", "context=None"],
+    "synthesize_stream_input": ["async gen def", "text_stream", "*", "voice=None", "context=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.tts.ElevenLabsConfig": {
+    "__init__": ["def", "api_key", "voice_id='21m00Tcm4TlvDq8ikWAM'", "model_id='eleven_multilingual_v2'", "stability=0.5", "similarity_boost=0.75", "style=0.0", "use_speaker_boost=True", "output_format='mp3_44100_128'", "optimize_streaming_latency=None", "expressive=False", "use_context=True", "stream_input=False"]
+  },
+  "roomkit.voice.tts.ElevenLabsTTSProvider": {
+    "__init__": ["def", "config"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "context_level": ["property"],
+    "default_voice": ["property"],
+    "list_voices": ["async def", "*", "language=None", "gender=None", "query=None"],
+    "max_dialogue_speakers": ["property"],
+    "name": ["property"],
+    "release_context": ["def", "context_id"],
+    "supports_streaming_input": ["property"],
+    "synthesize": ["async def", "text", "*", "voice=None"],
+    "synthesize_dialogue": ["async def", "turns", "voices"],
+    "synthesize_stream": ["async gen def", "text", "*", "voice=None", "context=None"],
+    "synthesize_stream_input": ["async gen def", "text_stream", "*", "voice=None", "context=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.tts.FishAudioTTSConfig": {
+    "__init__": ["def", "api_key", "model='drama-3'", "voice=None", "expressive=False", "sample_rate=24000", "latency='balanced'", "speed=None", "base_url='https://api.fish.audio'", "ws_url='wss://api.fish.audio/v1/tts/live'", "timeout=60.0", "connect_timeout=5.0"]
+  },
+  "roomkit.voice.tts.FishAudioTTSProvider": {
+    "__init__": ["def", "config"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "context_level": ["property"],
+    "default_voice": ["property"],
+    "list_voices": ["async def", "*", "language=None", "gender=None", "query=None"],
+    "max_dialogue_speakers": ["property"],
+    "name": ["property"],
+    "release_context": ["def", "context_id"],
+    "supports_streaming_input": ["property"],
+    "synthesize": ["async def", "text", "*", "voice=None"],
+    "synthesize_dialogue": ["async def", "turns", "voices"],
+    "synthesize_stream": ["async gen def", "text", "*", "voice=None", "context=None"],
+    "synthesize_stream_input": ["async gen def", "text_stream", "*", "voice=None", "context=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.tts.FluxionsTTSConfig": {
+    "__init__": ["def", "api_key", "voice='maeve'", "temperature=None", "max_secs=None", "verify_chunks=False", "base_url='https://api.fluxions.ai'", "timeout=60.0", "connect_timeout=5.0"]
+  },
+  "roomkit.voice.tts.FluxionsTTSProvider": {
+    "__init__": ["def", "config"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "context_level": ["property"],
+    "default_voice": ["property"],
+    "list_voices": ["async def", "*", "language=None", "gender=None", "query=None"],
+    "max_dialogue_speakers": ["property"],
+    "name": ["property"],
+    "release_context": ["def", "context_id"],
+    "supports_streaming_input": ["property"],
+    "synthesize": ["async def", "text", "*", "voice=None"],
+    "synthesize_dialogue": ["async def", "turns", "voices"],
+    "synthesize_stream": ["async gen def", "text", "*", "voice=None", "context=None"],
+    "synthesize_stream_input": ["async gen def", "text_stream", "*", "voice=None", "context=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.tts.GeminiTTSConfig": {
+    "__init__": ["def", "api_key", "model='gemini-3.8-flash-tts'", "voice='Kore'", "language=None", "style_prompt=None", "timeout=120.0", "connect_timeout=5.0"]
+  },
+  "roomkit.voice.tts.GeminiTTSProvider": {
+    "__init__": ["def", "config"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "context_level": ["property"],
+    "default_voice": ["property"],
+    "list_voices": ["async def", "*", "language=None", "gender=None", "query=None"],
+    "max_dialogue_speakers": ["property"],
+    "name": ["property"],
+    "release_context": ["def", "context_id"],
+    "supports_streaming_input": ["property"],
+    "synthesize": ["async def", "text", "*", "voice=None"],
+    "synthesize_dialogue": ["async def", "turns", "voices"],
+    "synthesize_stream": ["async gen def", "text", "*", "voice=None", "context=None"],
+    "synthesize_stream_input": ["async gen def", "text_stream", "*", "voice=None", "context=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.tts.GeminiVoiceLibrary": {
+    "__init__": ["def", "config"],
+    "close": ["async def"],
+    "delete_voice": ["async def", "voice_id"],
+    "design_voice": ["async def", "description", "*", "store=True", "name=None"],
+    "get_voice": ["async def", "voice_id"],
+    "name": ["property"],
+    "replicate_voice": ["async def", "sample", "consent", "*", "store=True", "name=None"],
+    "supports_design": ["property"],
+    "supports_replication": ["property"]
+  },
+  "roomkit.voice.tts.GeminiVoiceLibraryConfig": {
+    "__init__": ["def", "api_key", "timeout=120.0", "connect_timeout=5.0"]
+  },
+  "roomkit.voice.tts.GradiumTTSConfig": {
+    "__init__": ["def", "api_key", "voice_id='default'", "region='us'", "model_name='default'", "output_format='pcm_16000'", "padding_bonus=None", "temperature=None", "cfg_coef=None", "rewrite_rules=None", "json_config=None"]
+  },
+  "roomkit.voice.tts.GradiumTTSProvider": {
+    "__init__": ["def", "config"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "context_level": ["property"],
+    "default_voice": ["property"],
+    "list_voices": ["async def", "*", "language=None", "gender=None", "query=None"],
+    "max_dialogue_speakers": ["property"],
+    "name": ["property"],
+    "release_context": ["def", "context_id"],
+    "supports_streaming_input": ["property"],
+    "synthesize": ["async def", "text", "*", "voice=None"],
+    "synthesize_dialogue": ["async def", "turns", "voices"],
+    "synthesize_stream": ["async gen def", "text", "*", "voice=None", "context=None"],
+    "synthesize_stream_input": ["async gen def", "text_stream", "*", "voice=None", "context=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.tts.GrokTTSConfig": {
+    "__init__": ["def", "api_key", "voice_id='eve'", "language='en'", "codec='pcm'", "sample_rate=24000", "bit_rate=128000", "base_url='https://api.x.ai/v1'", "ws_url='wss://api.x.ai/v1/tts'", "timeout=60.0", "connect_timeout=5.0"]
+  },
+  "roomkit.voice.tts.GrokTTSProvider": {
+    "__init__": ["def", "config"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "context_level": ["property"],
+    "default_voice": ["property"],
+    "list_voices": ["async def", "*", "language=None", "gender=None", "query=None"],
+    "max_dialogue_speakers": ["property"],
+    "name": ["property"],
+    "release_context": ["def", "context_id"],
+    "supports_streaming_input": ["property"],
+    "synthesize": ["async def", "text", "*", "voice=None"],
+    "synthesize_dialogue": ["async def", "turns", "voices"],
+    "synthesize_stream": ["async gen def", "text", "*", "voice=None", "context=None"],
+    "synthesize_stream_input": ["async gen def", "text_stream", "*", "voice=None", "context=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.tts.MockTTSProvider": {
+    "__init__": ["def", "voice='mock-voice'", "*", "context_level=<TTSContextLevel.NONE: 'none'>"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "context_level": ["property"],
+    "default_voice": ["property"],
+    "list_voices": ["async def", "*", "language=None", "gender=None", "query=None"],
+    "max_dialogue_speakers": ["property"],
+    "name": ["property"],
+    "release_context": ["def", "context_id"],
+    "supports_streaming_input": ["property"],
+    "synthesize": ["async def", "text", "*", "voice=None"],
+    "synthesize_dialogue": ["async def", "turns", "voices"],
+    "synthesize_stream": ["async gen def", "text", "*", "voice=None", "context=None"],
+    "synthesize_stream_input": ["async gen def", "text_stream", "*", "voice=None", "context=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.tts.NeuTTSConfig": {
+    "__init__": ["def", "backbone_repo='neuphonic/neutts-nano-french-q8-gguf'", "codec_repo='neuphonic/neucodec'", "device='cpu'", "voices=<factory>", "streaming_pre_buffer=2"]
+  },
+  "roomkit.voice.tts.NeuTTSProvider": {
+    "__init__": ["def", "config"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "context_level": ["property"],
+    "default_voice": ["property"],
+    "list_voices": ["async def", "*", "language=None", "gender=None", "query=None"],
+    "max_dialogue_speakers": ["property"],
+    "name": ["property"],
+    "release_context": ["def", "context_id"],
+    "supports_streaming_input": ["property"],
+    "synthesize": ["async def", "text", "*", "voice=None"],
+    "synthesize_dialogue": ["async def", "turns", "voices"],
+    "synthesize_stream": ["async gen def", "text", "*", "voice=None", "context=None"],
+    "synthesize_stream_input": ["async gen def", "text_stream", "*", "voice=None", "context=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.tts.NeuTTSVoiceConfig": {
+    "__init__": ["def", "ref_audio", "ref_text"]
+  },
+  "roomkit.voice.tts.PhononTTSConfig": {
+    "__init__": ["def", "model=None", "language='en'", "voice=None", "voices=<factory>", "quant='q8'", "temperature=None", "duration_delta=None"]
+  },
+  "roomkit.voice.tts.PhononTTSProvider": {
+    "__init__": ["def", "config=None"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "context_level": ["property"],
+    "default_voice": ["property"],
+    "list_voices": ["async def", "*", "language=None", "gender=None", "query=None"],
+    "max_dialogue_speakers": ["property"],
+    "name": ["property"],
+    "release_context": ["def", "context_id"],
+    "supports_streaming_input": ["property"],
+    "synthesize": ["async def", "text", "*", "voice=None"],
+    "synthesize_dialogue": ["async def", "turns", "voices"],
+    "synthesize_stream": ["async gen def", "text", "*", "voice=None", "context=None"],
+    "synthesize_stream_input": ["async gen def", "text_stream", "*", "voice=None", "context=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.tts.PocketTTSConfig": {
+    "__init__": ["def", "language='english'", "voices=<factory>", "device='cpu'", "quantize=False", "temperature=None"]
+  },
+  "roomkit.voice.tts.PocketTTSProvider": {
+    "__init__": ["def", "config=None"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "context_level": ["property"],
+    "default_voice": ["property"],
+    "list_voices": ["async def", "*", "language=None", "gender=None", "query=None"],
+    "max_dialogue_speakers": ["property"],
+    "name": ["property"],
+    "release_context": ["def", "context_id"],
+    "supports_streaming_input": ["property"],
+    "synthesize": ["async def", "text", "*", "voice=None"],
+    "synthesize_dialogue": ["async def", "turns", "voices"],
+    "synthesize_stream": ["async gen def", "text", "*", "voice=None", "context=None"],
+    "synthesize_stream_input": ["async gen def", "text_stream", "*", "voice=None", "context=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.tts.Qwen3TTSConfig": {
+    "__init__": ["def", "model_id='Qwen/Qwen3-TTS-12Hz-1.7B-Base'", "device_map='auto'", "dtype='bfloat16'", "attn_implementation=None", "language='English'", "voices=<factory>", "x_vector_only_mode=False", "max_new_tokens=4096", "top_p=0.8", "top_k=20", "temperature=0.6", "repetition_penalty=1.05"]
+  },
+  "roomkit.voice.tts.Qwen3TTSProvider": {
+    "__init__": ["def", "config"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "context_level": ["property"],
+    "default_voice": ["property"],
+    "list_voices": ["async def", "*", "language=None", "gender=None", "query=None"],
+    "max_dialogue_speakers": ["property"],
+    "name": ["property"],
+    "release_context": ["def", "context_id"],
+    "supports_streaming_input": ["property"],
+    "synthesize": ["async def", "text", "*", "voice=None"],
+    "synthesize_dialogue": ["async def", "turns", "voices"],
+    "synthesize_stream": ["async gen def", "text", "*", "voice=None", "context=None"],
+    "synthesize_stream_input": ["async gen def", "text_stream", "*", "voice=None", "context=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.tts.Qwen3VoiceCloneConfig": {
+    "__init__": ["def", "ref_audio", "ref_text"]
+  },
+  "roomkit.voice.tts.SherpaOnnxTTSConfig": {
+    "__init__": ["def", "model=''", "tokens=''", "data_dir=''", "lexicon=''", "speaker_id=0", "speed=1.0", "sample_rate=22050", "num_threads=2", "provider='cpu'", "model_type='vits'", "voices=''", "lang=''", "voice_names=()"],
+    "from_local_model": ["classmethod", "name", "*", "voice=None", "models_dir=None", "**overrides"],
+    "speaker_id_for": ["def", "voice"]
+  },
+  "roomkit.voice.tts.SherpaOnnxTTSProvider": {
+    "__init__": ["def", "config"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "context_level": ["property"],
+    "default_voice": ["property"],
+    "list_voices": ["async def", "*", "language=None", "gender=None", "query=None"],
+    "max_dialogue_speakers": ["property"],
+    "name": ["property"],
+    "release_context": ["def", "context_id"],
+    "supports_streaming_input": ["property"],
+    "synthesize": ["async def", "text", "*", "voice=None"],
+    "synthesize_dialogue": ["async def", "turns", "voices"],
+    "synthesize_stream": ["async gen def", "text", "*", "voice=None", "context=None"],
+    "synthesize_stream_input": ["async gen def", "text_stream", "*", "voice=None", "context=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.tts.VoxtralTTSConfig": {
+    "__init__": ["def", "api_key", "model='voxtral-mini-tts-3'", "voice='voice_478'", "expressiveness=None", "base_url='https://api.mistral.ai'", "timeout=60.0", "connect_timeout=5.0"]
+  },
+  "roomkit.voice.tts.VoxtralTTSProvider": {
+    "__init__": ["def", "config"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "context_level": ["property"],
+    "default_voice": ["property"],
+    "list_voices": ["async def", "*", "language=None", "gender=None", "query=None"],
+    "max_dialogue_speakers": ["property"],
+    "name": ["property"],
+    "release_context": ["def", "context_id"],
+    "supports_streaming_input": ["property"],
+    "synthesize": ["async def", "text", "*", "voice=None"],
+    "synthesize_dialogue": ["async def", "turns", "voices"],
+    "synthesize_stream": ["async gen def", "text", "*", "voice=None", "context=None"],
+    "synthesize_stream_input": ["async gen def", "text_stream", "*", "voice=None", "context=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.tts.VuiTTSConfig": {
+    "__init__": ["def", "voices=<factory>", "checkpoint='vui-nano-1.1'", "temperature=0.7", "max_secs=60.0"]
+  },
+  "roomkit.voice.tts.VuiTTSProvider": {
+    "__init__": ["def", "config=None"],
+    "available_voices": ["classmethod"],
+    "close": ["async def"],
+    "context_level": ["property"],
+    "default_voice": ["property"],
+    "list_voices": ["async def", "*", "language=None", "gender=None", "query=None"],
+    "max_dialogue_speakers": ["property"],
+    "name": ["property"],
+    "release_context": ["def", "context_id"],
+    "supports_streaming_input": ["property"],
+    "synthesize": ["async def", "text", "*", "voice=None"],
+    "synthesize_dialogue": ["async def", "turns", "voices"],
+    "synthesize_stream": ["async gen def", "text", "*", "voice=None", "context=None"],
+    "synthesize_stream_input": ["async gen def", "text_stream", "*", "voice=None", "context=None"],
+    "warmup": ["async def"]
+  },
+  "roomkit.voice.tts.VuiVoice": {
+    "__init__": ["def", "preset=None", "ref_audio=None", "ref_text=None"]
+  },
   "roomkit.voice.tts.filtered_stream": {
     "__call__": ["async gen def", "source", "tts_filter"]
+  },
+  "roomkit.voice.tts.split_sentences": {
+    "__call__": ["async gen def", "token_stream", "min_chunk_chars=20"]
   }
 }

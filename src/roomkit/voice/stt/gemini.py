@@ -33,8 +33,8 @@ Two input paths, both verified against the live API on 2026-08-07:
 
 Both paths live in :mod:`~roomkit.voice.stt.gemini_audio`; the transcript
 models in :mod:`~roomkit.voice.stt.gemini_transcript`. This module keeps the
-config, the client, the prompt and the transcription call, and remains the
-public import path for all of them.
+config, the client, the prompt and the transcription call; all of them are
+imported from ``roomkit.voice.stt``.
 """
 
 from __future__ import annotations

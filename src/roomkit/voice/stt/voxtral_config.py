@@ -3,8 +3,8 @@
 The settings :class:`roomkit.voice.stt.voxtral.VoxtralSTTProvider` takes and
 the checks that refuse, before any connection, what the service would refuse:
 the streaming delay, the turn thresholds, diarization alongside turn
-detection, speaker references. The public import path stays
-``roomkit.voice.stt.voxtral``.
+detection, speaker references. The public import path is
+``roomkit.voice.stt``.
 """
 
 from __future__ import annotations

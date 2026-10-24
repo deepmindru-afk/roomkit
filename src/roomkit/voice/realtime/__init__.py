@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from roomkit._lazy import lazy_exports
 from roomkit.voice.realtime.bridge import RealtimeAVBridge
 from roomkit.voice.realtime.events import (
     RealtimeDelegationEvent,
@@ -32,7 +35,16 @@ from roomkit.voice.realtime.reasoning import (
     ReasoningRequest,
     ToolCallResult,
     TranscriptLine,
+    render_transcript_request,
 )
+
+if TYPE_CHECKING:
+    from roomkit.voice.realtime.fastrtc_transport import (
+        FastRTCRealtimeTransport,
+        mount_fastrtc_realtime,
+    )
+    from roomkit.voice.realtime.sip_transport import SIPRealtimeTransport
+    from roomkit.voice.realtime.ws_transport import WebSocketRealtimeTransport
 
 __all__ = [
     "VoiceInjectionResult",
@@ -51,6 +63,12 @@ __all__ = [
     "ReasoningRequest",
     "ToolCallResult",
     "TranscriptLine",
+    "render_transcript_request",
+    # Transports
+    "FastRTCRealtimeTransport",
+    "SIPRealtimeTransport",
+    "WebSocketRealtimeTransport",
+    "mount_fastrtc_realtime",
     # Events
     "RealtimeDelegationEvent",
     "RealtimeErrorEvent",
@@ -63,3 +81,13 @@ __all__ = [
     "MockRealtimeProvider",
     "MockRealtimeTransport",
 ]
+
+__getattr__ = lazy_exports(
+    __name__,
+    {
+        "FastRTCRealtimeTransport": "roomkit.voice.realtime.fastrtc_transport",
+        "SIPRealtimeTransport": "roomkit.voice.realtime.sip_transport",
+        "WebSocketRealtimeTransport": "roomkit.voice.realtime.ws_transport",
+        "mount_fastrtc_realtime": "roomkit.voice.realtime.fastrtc_transport",
+    },
+)

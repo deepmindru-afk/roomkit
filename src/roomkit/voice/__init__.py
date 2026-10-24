@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from roomkit._lazy import lazy_exports
 from roomkit.voice.audio_frame import AudioFrame
 from roomkit.voice.backends.base import (
     AudioReceivedCallback,
@@ -19,6 +20,7 @@ from roomkit.voice.base import (
     VoiceCapability,
     VoiceSession,
     VoiceSessionState,
+    speaker_label,
 )
 from roomkit.voice.bridge import (
     AudioBridge,
@@ -136,6 +138,10 @@ from roomkit.voice.tts.filters import (
 from roomkit.voice.tts.library import CustomVoice, VoiceConsentError, VoiceLibrary
 from roomkit.voice.voices import DialogueTurn, VoiceInfo, filter_voices
 
+if TYPE_CHECKING:
+    from roomkit.voice.auth import auth_context
+    from roomkit.voice.pipeline.mixer.numpy import NumpyMixerProvider
+
 __all__ = [
     # Bridge
     "AudioBridge",
@@ -159,6 +165,9 @@ __all__ = [
     "VoiceCapability",
     "VoiceSession",
     "VoiceSessionState",
+    "speaker_label",
+    # Transport authentication
+    "auth_context",
     # Callback types
     "AudioReceivedCallback",
     "BargeInCallback",
@@ -275,15 +284,13 @@ __all__ = [
     "TTSStreamFilter",
 ]
 
-# Lazy imports for optional dependencies
-
-
-def __getattr__(name: str) -> object:
-    if name == "NumpyMixerProvider":
-        from roomkit.voice.pipeline.mixer.numpy import NumpyMixerProvider
-
-        return NumpyMixerProvider
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+__getattr__ = lazy_exports(
+    __name__,
+    {
+        "NumpyMixerProvider": "roomkit.voice.pipeline.mixer.numpy",
+        "auth_context": "roomkit.voice.auth",
+    },
+)
 
 
 # Optional providers (lazy imports to avoid requiring dependencies)
