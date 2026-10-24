@@ -659,16 +659,20 @@ class LaneExecutionMixin(HelpersMixin):
         *,
         caller_logs: bool = False,
         streamed_too: bool = False,
+        detached: bool = False,
     ) -> tuple[Exception | None, ResponseMetadata]:
         """Wait for a caller's delivery set, then read every stream it started.
 
         A caller that cannot wait, from inside the room's lane or under its
         lock (a reentrant call from a hook or a tool handler), hands the
         reading to a background task instead: a streaming reply is only
-        generated when its stream is read. The rows the streams write join
-        ``cascade.response_events``, beside the answers that re-enter while
-        they are read. The reading runs as the cascade's owned work, so a
-        cancelled caller does not leave it half-done.
+        generated when its stream is read. So does a *detached* one, a call
+        the room's work adopted, which answers at its commit (RFC §9.5.1):
+        its delivery waits in the lane behind the work that made it. The
+        rows the streams write join ``cascade.response_events``, beside the
+        answers that re-enter while they are read. The reading runs as the
+        cascade's owned work, so a cancelled caller does not leave it
+        half-done.
 
         ``caller_logs`` says the caller receives a stream's failure (on
         ``InboundResult.error``, or raised) and logs it: the framework's own
@@ -678,6 +682,9 @@ class LaneExecutionMixin(HelpersMixin):
         its line (RMK-403) unless ``streamed_too``: a caller that logs every
         failure of its turn itself, a delegation whose task logs it.
         """
+        if detached:
+            self._consume_streams_when_cascade_completes(cascade, room_id)
+            return None, ResponseMetadata()
         completed = await cascade.wait()
         if cascade.cancelled is not None:
             await cascade.wait_drained()

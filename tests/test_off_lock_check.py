@@ -10,7 +10,7 @@ from roomkit import RoomKit
 from roomkit.core.hooks import HookEngine, HookRegistration
 from roomkit.core.locks import _has_room_lock
 from roomkit.models.context import RoomContext
-from roomkit.models.delivery import InboundMessage
+from roomkit.models.delivery import InboundMessage, InboundResult
 from roomkit.models.enums import (
     ChannelType,
     EventStatus,
@@ -343,6 +343,49 @@ class TestReentrance:
                 "PII check failed",
                 "A",
             ]
+        finally:
+            await kit.close()
+
+    @pytest.mark.parametrize("door", ["send_event", "process_inbound"])
+    async def test_a_call_adopted_by_the_check_answers_at_its_commit(self, door: str) -> None:
+        """The check's call into the room answers at its commit, its
+        delivery detached and no delivery results (RFC §9.5.1): a delivery of
+        it that calls into the room waits for the event's ticket, which the
+        check holds, and must get it rather than both wait for their
+        ``process_timeout`` and be refused."""
+        kit = RoomKit(process_timeout=0.3)
+        echoes: list[InboundResult] = []
+        adopted: list[InboundResult] = []
+
+        class Echo(SimpleChannel):
+            async def deliver(self, event, binding, context):  # noqa: ANN001, ANN202
+                if _body(event) == "notice":
+                    echo = InboundMessage(
+                        channel_id="ws1", sender_id="peer", content=TextContent(body="echo")
+                    )
+                    echoes.append(await kit.process_inbound(echo, room_id="r1"))
+                return await super().deliver(event, binding, context)
+
+        kit.register_channel(SimpleChannel("sms1"))
+        kit.register_channel(Echo("ws1"))
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "sms1")
+        await kit.attach_channel("r1", "ws1")
+
+        async def scan_and_notify(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            if _body(event) != "A":
+                return HookResult.allow()
+            if door == "send_event":
+                await kit.send_event("r1", "sms1", TextContent(body="notice"))
+            else:
+                adopted.append(await kit.process_inbound(_msg("notice"), room_id="r1"))
+            return HookResult.allow()
+
+        kit.hook(HookTrigger.BEFORE_BROADCAST, name="pii", needs_lock=False)(scan_and_notify)
+        try:
+            result = await asyncio.wait_for(kit.process_inbound(_msg("A"), room_id="r1"), 2)
+            assert (result.blocked, [echo.blocked for echo in echoes]) == (False, [False])
+            assert [r.delivery_results for r in adopted] == ([{}] if adopted else [])
         finally:
             await kit.close()
 

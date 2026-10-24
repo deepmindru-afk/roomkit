@@ -1322,11 +1322,13 @@ class RoomKit(
             # The caller observes its event's delivery-set completion (RFC
             # §10.1 step 18) — the wait short-circuits when this call was made
             # from inside the room's own lane or under its lock, where waiting
-            # would deadlock; delivery then follows in lane order. Streaming AI
-            # responses to a directly-injected event are consumed outside the
-            # lane, exactly like the inbound path, or a streaming provider's
-            # reply would be generated and then silently dropped.
-            await self._finish_cascade(cascade, room_id)
+            # would deadlock; delivery then follows in lane order. A call the
+            # room's work adopted answers at its commit, its delivery behind
+            # that work's (§9.5.1). Streaming AI responses to a
+            # directly-injected event are consumed outside the lane, exactly
+            # like the inbound path, or a streaming provider's reply would be
+            # generated and then silently dropped.
+            await self._finish_cascade(cascade, room_id, detached=entry.adopted)
 
             telemetry.end_span(span_id)
         except BaseException as exc:

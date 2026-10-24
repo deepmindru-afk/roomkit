@@ -747,14 +747,31 @@ class InboundMixin(HelpersMixin):
             # there is no delivery to follow.
             return await self._defer_inbound_delivery(result, cascade, message, channel, room_id)
 
-        # The caller observes its event's delivery-set completion (RFC §10.1
-        # step 18): the cascade — the trigger's delivery set plus every
-        # reentry pass it transitively spawned — then the streams it started,
-        # read outside the lane (TTS delivery can take seconds). AFTER_BROADCAST,
-        # mutation and ON_ERROR hooks fire from the lane executor, off this
-        # room's lock. A stream failure is surfaced on the result so a
-        # headless caller can react (interactive callers ignore it — the
-        # ON_ERROR hooks already fired an error card).
+        await self._await_inbound_delivery(result, cascade, room_id, adopted=entry.adopted)
+        await self._connect_session_if_ready(message, channel, room_id, result)
+        return result
+
+    async def _await_inbound_delivery(
+        self, result: InboundResult, cascade: DeliveryCascade, room_id: str, *, adopted: bool
+    ) -> None:
+        """RFC §10.1 step 18 on the waiting path: the caller observes its
+        event's delivery-set completion, reported on *result*.
+
+        The cascade — the trigger's delivery set plus every reentry pass it
+        transitively spawned — then the streams it started, read outside the
+        lane (TTS delivery can take seconds). AFTER_BROADCAST, mutation and
+        ON_ERROR hooks fire from the lane executor, off this room's lock. A
+        stream failure is surfaced on the result so a headless caller can
+        react (interactive callers ignore it — the ON_ERROR hooks already
+        fired an error card).
+
+        A call the room's work *adopted* answers at its commit instead, with
+        no delivery results: its delivery waits in the lane behind the work
+        that made it (RFC §9.5.1).
+        """
+        if adopted:
+            await self._finish_cascade(cascade, room_id, detached=True)
+            return
         stream_error, record = await self._finish_cascade(cascade, room_id, caller_logs=True)
         # Step 18 reports the delivery set the caller waited for, read after
         # the streams: what the other agents answered to a streamed segment
@@ -763,9 +780,6 @@ class InboundMixin(HelpersMixin):
         if stream_error is not None and result.error is None:
             result.error = stream_error
         merge_caller_record(result.response_metadata, record)
-
-        await self._connect_session_if_ready(message, channel, room_id, result)
-        return result
 
     async def _defer_inbound_delivery(
         self,
