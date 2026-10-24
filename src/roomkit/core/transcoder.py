@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from roomkit._media import audio_label, location_label, media_label, video_label
+from roomkit._media import audio_label, location_label, media_label, text_form, video_label
 from roomkit.core.router import ContentTranscoder
 from roomkit.models.channel import ChannelBinding, ChannelCapabilities
 from roomkit.models.enums import ChannelMediaType
@@ -126,13 +126,10 @@ class DefaultContentTranscoder(ContentTranscoder):
                 if new is None:
                     return None
                 return content.model_copy(update={"new_content": new})
-            # Fallback: transcode the new_content and prefix with "Correction:"
-            new = await self.transcode(content.new_content, source_binding, target_binding)
-            if new is None:
-                return TextContent(body="[Correction]")
-            if isinstance(new, TextContent):
-                return TextContent(body=f"Correction: {new.body}")
-            return new
+            # One text, the edit's text form (RFC §6.6), whatever the target
+            # takes of its new content: a file or a rich text delivered as is
+            # would read as a new message, not as a correction.
+            return TextContent(body=text_form(content))
 
         if isinstance(content, DeleteContent):
             if target_binding.capabilities.supports_delete:

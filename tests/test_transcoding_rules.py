@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from roomkit import RoomKit
-from roomkit._media import media_label
+from roomkit._media import media_label, text_form
 from roomkit.channels import SMSChannel, TelegramChannel, WhatsAppPersonalChannel
 from roomkit.channels.base import Channel
 from roomkit.core.event_router import EventRouter, _cut_content
@@ -22,6 +22,7 @@ from roomkit.models.event import (
     EventSource,
     LocationContent,
     MediaContent,
+    RichContent,
     RoomEvent,
     TextContent,
     VideoContent,
@@ -246,3 +247,62 @@ async def test_a_native_edit_carries_its_file_as_the_target_takes_it(
     [sent] = target.delivered
     expected = edit if delivered is None else edit.model_copy(update={"new_content": delivered})
     assert sent.content == expected
+
+
+class _NoMedia(DefaultContentTranscoder):
+    """An integrator's transcoder that cannot carry a file at all."""
+
+    async def transcode(
+        self,
+        content: EventContent,
+        source_binding: ChannelBinding,
+        target_binding: ChannelBinding,
+    ) -> EventContent | None:
+        if isinstance(content, MediaContent):
+            return None
+        return await super().transcode(content, source_binding, target_binding)
+
+
+_PHOTO = MediaContent(url=_JPEG, mime_type="image/jpeg")
+
+
+@pytest.mark.parametrize(
+    ("transcoder", "new_content", "text"),
+    [
+        (DefaultContentTranscoder(), TextContent(body="Fixed"), "Correction: Fixed"),
+        (DefaultContentTranscoder(), _PHOTO, f"Correction: [Media: {_JPEG}]"),
+        (
+            DefaultContentTranscoder(),
+            CompositeContent(parts=[TextContent(body="Fixed"), _PHOTO]),
+            f"Correction: Fixed\n[Media: {_JPEG}]",
+        ),
+        (
+            DefaultContentTranscoder(),
+            RichContent(body="<b>Fixed</b>", plain_text="Fixed"),
+            "Correction: Fixed",
+        ),
+        (_NoMedia(), _PHOTO, f"Correction: [Media: {_JPEG}]"),
+    ],
+    ids=["text", "file-the-target-takes", "composite-with-a-file", "rich", "uncarried-file"],
+)
+async def test_an_edit_to_a_channel_that_does_not_edit_is_its_text_form(
+    transcoder: DefaultContentTranscoder, new_content: EventContent, text: str
+) -> None:
+    """RFC §6.6: a channel without edit support receives one text, the
+    edit's text form, whatever its new content and whatever the channel
+    takes of it: never the new content alone, which would read as a new
+    message rather than a correction."""
+    target = ChannelBinding(
+        channel_id="out",
+        room_id="r1",
+        channel_type=ChannelType.SMS,
+        capabilities=ChannelCapabilities(
+            media_types=[ChannelMediaType.TEXT, ChannelMediaType.MEDIA, ChannelMediaType.RICH]
+        ),
+    )
+    edit = EditContent(target_event_id="e1", new_content=new_content)
+
+    transcoded = await transcoder.transcode(edit, _text_only("in"), target)
+
+    assert transcoded == TextContent(body=text)
+    assert text_form(edit) == text
