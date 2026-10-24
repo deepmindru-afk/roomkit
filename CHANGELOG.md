@@ -38,6 +38,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Migrate: a direct caller that caught the driver's error for a taken key
   catches `IdempotencyKeyTakenError`; a custom store raises it alike.
 
+- **BREAKING — only `record_delivery_results()` writes an event's
+  `delivery_results`** (RFC §10.3, §14.3, RMK-942). A rewrite of a stored
+  row took the results of the copy it was given in the in-memory and SQLite
+  stores, while Postgres kept the stored ones: a delete committed with a
+  target read before its delivery was recorded erased the outcome in two
+  stores out of three. `update_event()`, the target `commit_event(target=)`
+  writes and `write_change_target()` now keep the stored results in every
+  shipped store, whatever the copy carries.
+  Migrate: code that set `delivery_results` through `update_event()` calls
+  `record_delivery_results(room_id, event_id, results)`; a custom store keeps
+  the stored results on a rewrite, and then overrides
+  `record_delivery_results()`, whose default writes through `update_event()`.
+
 ## [0.108.0] — 2026-10-24
 
 ### Added

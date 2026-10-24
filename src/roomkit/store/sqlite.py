@@ -769,6 +769,8 @@ class SQLiteStore(ConversationStore):
                            responds_to)
         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
+    # A rewrite of a stored row keeps its delivery results: only
+    # record_delivery_results writes them (RFC §10.3, §14.3).
     _EVENT_UPSERT = """
         INSERT INTO events(id, room_id, idx, type, visibility, source_channel_id,
                            source_channel_type, participant_id, correlation_id,
@@ -784,7 +786,11 @@ class SQLiteStore(ConversationStore):
             correlation_id=excluded.correlation_id,
             parent_event_id=excluded.parent_event_id,
             idempotency_key=excluded.idempotency_key,
-            created_ts=excluded.created_ts, data=excluded.data,
+            created_ts=excluded.created_ts,
+            data=json_set(
+                excluded.data, '$.delivery_results',
+                json(COALESCE(json_extract(events.data, '$.delivery_results'), '{}'))
+            ),
             responds_to=excluded.responds_to
     """
 

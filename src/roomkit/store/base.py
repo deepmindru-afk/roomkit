@@ -623,7 +623,14 @@ class ConversationStore(ABC):
 
     @abstractmethod
     async def update_event(self, event: RoomEvent) -> RoomEvent:
-        """Update an existing event (e.g., mark as edited or deleted)."""
+        """Update an existing event (e.g., mark as edited or deleted).
+
+        The event's ``delivery_results`` stay as stored, whatever *event*
+        carries: only :meth:`record_delivery_results` writes them (RFC §10.3,
+        §14.3), so a copy read before a delivery set was recorded never
+        erases its outcome. A change's target that :meth:`commit_event` or
+        :meth:`write_change_target` writes keeps them alike.
+        """
         ...
 
     async def record_delivery_results(
@@ -636,9 +643,14 @@ class ConversationStore(ABC):
         the event as it stood at its commit would undo an edit or a delete
         committed since. An event *room_id* does not hold is left alone.
 
+        It is the one write of ``delivery_results``: a rewrite of the row
+        keeps them (:meth:`update_event`).
+
         The default reads the stored event and writes it back with the
-        results, which is safe only under the room lock, where the framework
-        calls it. A store that can update the field alone SHOULD override it.
+        results through :meth:`update_event`, which is safe only under the
+        room lock, where the framework calls it; a store whose
+        ``update_event`` keeps the stored results, as the contract says and
+        the shipped stores do, MUST override it.
         """
         stored = await self.get_event(event_id)
         if stored is not None and stored.room_id == room_id:

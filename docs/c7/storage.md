@@ -219,6 +219,10 @@ What every store keeps alike (RFC §10.3, §14.1, §14.3):
   (the lowest index first), as a proactive delivery's key is.
 - `record_delivery_results(room_id, event_id, results)` writes a delivery set's
   outcome on the event as stored, that field alone, so an edit or a delete
-  committed while the delivery ran stands. Its default reads the event and
-  writes it back (the framework calls it under the room lock); a store that can
-  update the field in place overrides it.
+  committed while the delivery ran stands. It is the one write of
+  `delivery_results`: `update_event()` and a change's target
+  (`commit_event(target=)`, `write_change_target()`) keep the stored results,
+  whatever the copy they write carries. Its default reads the event and
+  writes it back through `update_event()` (the framework calls it under the
+  room lock), so a store whose `update_event()` keeps the results, as the
+  shipped stores do, overrides it.

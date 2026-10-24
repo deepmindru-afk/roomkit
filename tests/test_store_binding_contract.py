@@ -762,12 +762,14 @@ async def test_a_hard_delete_takes_every_removed_event_s_changes(
         await contract_store.delete_room(room.id)
 
 
-async def test_a_delivery_record_writes_the_results_alone(
+async def test_only_a_delivery_record_writes_the_results(
     contract_store: ConversationStore,
 ) -> None:
     """RFC §10.3, §14.3: the record of a delivery set writes its results on
     the event as stored, never the event as it stood at its commit: an edit
-    or a delete committed since stands."""
+    or a delete committed since stands. It alone writes them: a rewrite of
+    the row (``update_event``, a change's target, a target written alone)
+    keeps the results stored, whatever its copy carries."""
     room = await contract_store.create_room(Room(id=uuid4().hex))
     try:
         target = await contract_store.commit_event(room.id, make_event(room_id=room.id))
@@ -785,6 +787,26 @@ async def test_a_delivery_record_writes_the_results_alone(
             {"edited": True},
         )
         assert stored.delivery_results == results
+
+        stale = {"delivery_results": {"web": {"status": "delivered"}}}
+        await contract_store.update_event(
+            stored.model_copy(update={**stale, "metadata": {"edited": True, "pinned": True}})
+        )
+        again, again_edited = _edit_of(stored, "corrected twice")
+        await contract_store.commit_event(
+            room.id, again, target=again_edited.model_copy(update=stale)
+        )
+        await contract_store.write_change_target(
+            room.id, again_edited.model_copy(update={**stale, "metadata": {"deleted": True}})
+        )
+
+        rewritten = await contract_store.get_event(target.id)
+        assert rewritten is not None
+        assert (rewritten.content, rewritten.metadata) == (
+            TextContent(body="corrected twice"),
+            {"deleted": True},
+        )
+        assert rewritten.delivery_results == results
     finally:
         await contract_store.delete_room(room.id)
 

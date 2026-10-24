@@ -453,16 +453,26 @@ class InMemoryStore(ConversationStore):
         return self._events.get(event_id)
 
     async def update_event(self, event: RoomEvent) -> RoomEvent:
-        event = event.model_copy(deep=True)
+        event = self._rewritten(event)
         self._events[event.id] = event
         return event
+
+    def _rewritten(self, event: RoomEvent) -> RoomEvent:
+        """*event* as a rewrite of its stored row writes it: the delivery
+        results stored stay, which only :meth:`record_delivery_results`
+        writes (RFC §10.3, §14.3)."""
+        stored = self._events.get(event.id)
+        event = event.model_copy(deep=True)
+        if stored is None:
+            return event
+        return event.model_copy(update={"delivery_results": stored.delivery_results})
 
     async def write_change_target(self, room_id: str, target: RoomEvent) -> None:
         async with self._lock_for(room_id):
             stored = self._events.get(target.id)
             if stored is None or stored.room_id != room_id:
                 raise target_gone(target)
-            self._events[target.id] = target.model_copy(deep=True)
+            self._events[target.id] = self._rewritten(target)
             if is_marked_deleted(target):
                 self._mark_edits_deleted_now(room_id, target.id)
 
@@ -700,7 +710,7 @@ class InMemoryStore(ConversationStore):
                 stored = self._events.get(target.id)
                 if stored is None or stored.room_id != room_id:
                     raise target_gone(target)
-                self._events[target.id] = target.model_copy(deep=True)
+                self._events[target.id] = self._rewritten(target)
             if target is not None and deletes_edits(event, target):
                 self._mark_edits_deleted_now(room_id, target.id)
             events = self._room_events.setdefault(room_id, [])
