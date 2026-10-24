@@ -101,14 +101,15 @@ class IdempotencyKeyTakenError(RoomKitError):
     """An event was stored under a key its source channel holds in the room
     for another event (RFC §13.4, §14.3).
 
-    A key is unique per room and per source channel. The framework checks it
-    under the room lock before it commits, so a direct caller of a store's
-    ``commit_event`` (``add_event``, ``add_event_auto_index``) is the one who
-    meets it: every shipped store refuses the event, nothing written, a
-    change's target included, and the key stays its first event's. A second
-    write of an event under an id the store holds is not this error: the
-    database refuses the id with its own (``asyncpg.UniqueViolationError``,
-    ``sqlite3.IntegrityError``).
+    A key is unique per room and per source channel. The pipeline looks it
+    up under the room lock before it commits, so a direct commit is the one
+    that meets it: a record ``kit.commit_event()`` commits, which is never a
+    replay (RFC §10.5), and a caller of a store's ``commit_event``
+    (``add_event``, ``add_event_auto_index``). Every shipped store refuses
+    the event, nothing written, a change's target included, and the key
+    stays its first event's. A second write of an event under an id the store
+    holds is not this error: the database refuses the id with its own
+    (``asyncpg.UniqueViolationError``, ``sqlite3.IntegrityError``).
     """
 
 
