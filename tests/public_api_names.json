@@ -1154,6 +1154,7 @@
     "POSTGRES_SCHEMA",
     "POSTGRES_SCHEMA_VERSION",
     "PostgresAdvisoryLockManager",
+    "PostgresSchemaError",
     "PostgresStore",
     "SQLiteSchemaError",
     "SQLiteStore"

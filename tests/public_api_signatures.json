@@ -5047,6 +5047,7 @@
     "init": ["async def"],
     "locked": ["def", "room_id"]
   },
+  "roomkit.store.PostgresSchemaError": {},
   "roomkit.store.PostgresStore": {
     "__init__": ["def", "dsn=None", "pool=None"],
     "add_binding": ["async def", "binding"],
