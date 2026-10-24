@@ -23,10 +23,12 @@ from roomkit.models.event import (
     CompositeContent,
     EventContent,
     EventSource,
+    LocationContent,
     MediaContent,
     RichContent,
     RoomEvent,
     SystemContent,
+    TemplateContent,
     TextContent,
     ToolCallContent,
 )
@@ -195,6 +197,15 @@ async def test_every_row_of_a_streamed_answer_records_the_instruction():
             ),
             "Call transferred.\n[Tool call: lookup]",
         ),
+        (
+            CompositeContent(
+                parts=[
+                    LocationContent(latitude=45.5, longitude=-73.6, label="Office"),
+                    TemplateContent(template_id="welcome"),
+                ]
+            ),
+            "[Location: Office (45.5, -73.6)]\n[Template: welcome]",
+        ),
     ],
     ids=[
         "rich",
@@ -204,12 +215,13 @@ async def test_every_row_of_a_streamed_answer_records_the_instruction():
         "system",
         "composite-with-an-empty-part",
         "composite-of-a-notice-and-a-tool-call",
+        "composite-of-a-location-and-a-template",
     ],
 )
 async def test_the_fingerprint_is_of_the_text_the_instruction_reads_as(content, text):
     """RFC §6.6: a rich text by its plain text, a media by its label, a tool
-    call by its name, a system notice by its body, a composite by its parts'
-    texts, an empty one skipped; the model reads that same text."""
+    call by its name, a system notice by its body, a composite by each
+    part's own text, an empty one skipped; the model reads that same text."""
     text = text or "Introduce yourself."
     provider = MockAIProvider(["Hello."])
     kit = await _room(AIChannel("agent", provider=provider))
