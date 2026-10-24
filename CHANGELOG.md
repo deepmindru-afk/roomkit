@@ -9,35 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A record stored BLOCKED sees no more than its event would have (RFC §7.3,
-  §8.3, RMK-930). Only a delivered event was committed with its own
-  visibility intersected with its source binding's: a message a hook
-  blocked, a message from a read-only or muted source, the record of an
-  agent not asked at the chain-depth limit and an answer stored past the
-  reentry budget kept their own, so a host's view of the room showed a
-  channel bound with `visibility="ws"` what it never let reach anyone else.
-  Each is now stored with the visibility step 12 would have given it, from
-  `process_inbound()`, `send_event()`, a response's pass and a discussion's
-  turn alike; a source with no binding keeps its own, and so does an event
-  a hook injects, which is no channel's. Records stored before keep the
-  visibility they were stored with.
-
-- A sixth composite level is refused where it is built, at every boundary
-  (RFC §5.3, RMK-930). The `CompositeContent` validator counted the levels,
-  but `model_copy(update=...)` skips validators, so a hook's modify, a
-  hook's injected event, a channel's parse or a channel's response could
-  assemble a sixth level and have it committed. Now `process_inbound()`
-  raises `ValueError` for a message holding one before anything is read
-  (no room is routed or created) and for the event its channel parses,
-  nothing stored; a hook result carrying one, as its replacement or as an
-  injected event, is an unusable result (`hook_error`, the hook's
-  `fail_closed` applies), nothing of it applied; a channel's response
-  holding one fails its reaction, reported as that target's failed
-  delivery; `send_event()`, `commit_event()` and `update_event()` raise
-  `ValueError` before anything is read. An edit's new content counts its
-  levels in the edit's place. The new `roomkit.models.event.holds_too_deep()`
-  and `refuse_too_deep()` are the one count, the validator's included.
-
 - The lookups this release adds read through indexes (RFC §10.4, §22.1,
   RMK-930). A proactive delivery's key, looked up within its room whatever
   channel committed it, read every keyed event of the room: Postgres and
@@ -1624,10 +1595,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     record (a room that refuses events raises `RoomClosedError`), and
     `process_inbound()` returns `InboundResult(blocked=True,
     reason="reentry_loop_cap")` with no event, before its parse;
-  - a call made within a turn is at least as deep as the turn's response:
-    `send_event()` and `process_inbound()` raise the event's `chain_depth`
-    to it, so an agent that injects at each turn stops at
-    `max_chain_depth` as its answers do;
+  - a call made within a turn, or by work the turn began (a task it
+    spawned, after the turn too), is at least as deep as the turn's
+    response: `send_event()` and `process_inbound()` raise the event's
+    `chain_depth` to it, so an agent that injects at each turn stops at
+    `max_chain_depth` as its answers do. The floor holds where the owner
+    runs the turn's code: a turn on the in-memory turn backend that calls
+    the kit it holds, and a tool handler or a `TurnHost` verb on any
+    backend. With a Redis turn backend the turn's own code runs on its
+    executor, outside the owner's context, and reaches the room through
+    its `TurnHost`, whose verbs carry the depth;
   - a message routed (no `room_id`) back into the room whose lock the
     caller holds, or in whose admission order it stands (an off-lock hook's
     body, a parse), raises the new `ReentrantCallError` before anything is
@@ -1644,6 +1621,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_chain_depth`; a hook that routes a message into its own room names
   the room (`process_inbound(..., room_id=...)`); code that read an
   agent's injected event at depth 0 reads it at the turn's response depth.
+
+- **BREAKING — a record stored BLOCKED sees no more than its event would
+  have** (RFC §7.3, §8.3, RMK-930). Only a delivered event was committed
+  with its own visibility intersected with its source binding's: a message
+  a hook blocked, a message from a read-only or muted source, the record of
+  an agent not asked at the chain-depth limit and an answer stored past the
+  reentry budget kept their own, so a host's view of the room showed a
+  channel bound with `visibility="ws"` what it never let reach anyone else.
+  Each is now stored with the visibility step 12 would have given it, from
+  `process_inbound()`, `send_event()`, a response's pass and a discussion's
+  turn alike; a source with no binding keeps its own, and so does an event
+  a hook injects, which is no channel's. Records stored before keep the
+  visibility they were stored with. Migrate: a host view or an audit that
+  filtered refused records by their `visibility` reads the narrower stored
+  value; one that must show a refused record to a channel its binding
+  excluded reads it as the host, with `EventFilter(include_blocked=True)`
+  and no visibility filter.
+
+- **BREAKING — a sixth composite level is refused where it is built, at
+  every boundary** (RFC §5.3, RMK-930). The `CompositeContent` validator
+  counted the levels, but `model_copy(update=...)` skips validators, so a
+  hook's modify, a hook's injected event, a channel's parse, a channel's
+  response or a host's own call could assemble a sixth level and have it
+  committed. Now `process_inbound()` raises `ValueError` for a message
+  holding one before anything is read (no room is routed or created) and for
+  the event its channel parses, nothing stored; a hook result carrying one,
+  as its replacement or as an injected event, is an unusable result
+  (`hook_error`, the hook's `fail_closed` applies), nothing of it applied; a
+  channel's response holding one fails its reaction, reported as that
+  target's failed delivery; `send_event()`, `commit_event()` and
+  `update_event()` raise `ValueError` before anything is read. An edit's new
+  content counts its levels in the edit's place. The new
+  `roomkit.models.event.holds_too_deep()` and `refuse_too_deep()` are the
+  one count, the validator's included. Migrate: content assembled with
+  `model_copy()` is checked with `refuse_too_deep()` before it is sent, or
+  flattened to five levels; a webhook handler that answered a malformed
+  message with a blocked result catches `ValueError` from
+  `process_inbound()`.
 
 ### Removed
 
