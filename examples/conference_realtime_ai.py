@@ -26,7 +26,7 @@ response end — which is exactly the callback sequence a real one emits. A
 real deployment swaps two lines and changes nothing else::
 
     from roomkit import LiveKitConferenceBackend, LiveKitConfig
-    from roomkit.providers.gemini.realtime import GeminiLiveProvider  # roomkit[realtime-gemini]
+    from roomkit.providers.gemini import GeminiLiveProvider  # roomkit[realtime-gemini]
 
     backend = LiveKitConferenceBackend(LiveKitConfig(url=..., api_key=..., api_secret=...))
     realtime = ConferenceRealtimeConfig(

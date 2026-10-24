@@ -1,4 +1,4 @@
-.PHONY: audit install lint format typecheck security test test-changed api-snapshot coverage stress llms-full check-models update-llamacpp all clean docs docs-serve llms-sync llms-check deploy deploy-status release
+.PHONY: audit install lint format typecheck security test test-changed api-snapshot coverage stress llms-full check-models update-llamacpp all clean docs docs-imports docs-serve llms-sync llms-check deploy deploy-status release
 
 install:
 	uv sync --extra dev
@@ -91,8 +91,13 @@ clean:
 
 DOCS_DIR ?= ../roomkit-docs
 
-docs: llms-check
+docs: llms-check docs-imports
 	uv run --extra docs mkdocs build --strict -f $(DOCS_DIR)/mkdocs.yml
+
+# The docs site's pages import roomkit names from public paths only, as
+# tests/test_public_imports.py checks roomkit's own examples and documents.
+docs-imports:
+	uv run python -m tests.public_imports $(DOCS_DIR)/docs
 
 docs-serve:
 	uv run --extra docs mkdocs serve -f $(DOCS_DIR)/mkdocs.yml
