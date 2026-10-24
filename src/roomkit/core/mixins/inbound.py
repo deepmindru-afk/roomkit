@@ -1050,7 +1050,9 @@ class InboundMixin(HelpersMixin):
         attach.
         """
         return await run_to_its_end(
-            self._open_room(message, room_id, organization_id), held=self._decided_writes
+            self._open_room(message, room_id, organization_id),
+            held=self._decided_writes,
+            name=f"roomkit-decided-write-{room_id or 'new-room'}",
         )
 
     async def _open_room(

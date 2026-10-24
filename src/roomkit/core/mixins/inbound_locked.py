@@ -475,7 +475,9 @@ class InboundLockedMixin(HelpersMixin):
         # Nor by the caller (RFC §13.6): a cancellation waits, under the lock,
         # for the writes to end, then is raised.
         return await run_to_its_end(
-            self._write_decision(decision, room_id, cascade, queued), held=self._decided_writes
+            self._write_decision(decision, room_id, cascade, queued),
+            held=self._decided_writes,
+            name=f"roomkit-decided-write-{room_id}",
         )
 
     async def _write_decision(

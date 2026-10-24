@@ -91,7 +91,12 @@ def start_named[T](
     return task
 
 
-async def run_to_its_end[T](work: Coroutine[Any, Any, T], *, held: set[asyncio.Task[Any]]) -> T:
+async def run_to_its_end[T](
+    work: Coroutine[Any, Any, T],
+    *,
+    held: set[asyncio.Task[Any]],
+    name: str,
+) -> T:
     """Run *work* to its end whatever becomes of its caller, and return what
     it returns: the writes past a call's decision (RFC §13.6, A caller that
     stops waiting).
@@ -100,13 +105,14 @@ async def run_to_its_end[T](work: Coroutine[Any, Any, T], *, held: set[asyncio.T
     the work's end and is raised then, so that a room lock the caller holds
     is released only once the writes are all done; a second one waits too.
     The work runs in a copy of the caller's context, its lock's lease and its
-    frames included, as a task started at once and named in
+    frames included, as a task *name* started at once and named in
     :func:`held_runs` (a ``close()`` called from under it spares it). Until
-    it ends it is in *held*, which the kit's close waits for and never
-    cancels. Its exception is raised, as awaiting it would; to a cancelled
-    caller its cancellation is, and the exception is logged.
+    it ends it is in *held*, which the kit's close waits for on its budget
+    (:func:`wait_for_held`) and never cancels. Its exception is raised, as
+    awaiting it would; to a cancelled caller its cancellation is, and the
+    exception is logged.
     """
-    task = start_named(work, eager=True)
+    task = start_named(work, name=name, eager=True)
     if task.done():
         return task.result()
     held.add(task)
@@ -125,13 +131,28 @@ async def run_to_its_end[T](work: Coroutine[Any, Any, T], *, held: set[asyncio.T
     raise cancelled
 
 
-async def wait_for_held(held: set[asyncio.Task[Any]]) -> None:
+async def wait_for_held(held: set[asyncio.Task[Any]], *, until: float) -> None:
     """Wait, never cutting them, for the tasks in *held* (:func:`run_to_its_end`)
     still running, those started meanwhile included, but the ones the caller
-    runs under: waiting for them would wait for itself."""
+    runs under: waiting for them would wait for itself.
+
+    Waited for until *until* (the loop's clock) at most: they may run
+    integrator code (a framework event's handler, a lifecycle hook), which
+    is only ever waited for on a budget. The ones still running then are
+    named in the log and left to end on their own.
+    """
+    loop = asyncio.get_running_loop()
     spared = {*held_runs(), asyncio.current_task()}
     while pending := {task for task in held if not task.done()} - spared:
-        await asyncio.wait(pending)
+        remaining = until - loop.time()
+        if remaining <= 0:
+            logger.warning(
+                "Closing with %d decided write(s) still running, left to end on their own: %s",
+                len(pending),
+                ", ".join(sorted(task.get_name() for task in pending)),
+            )
+            return
+        await asyncio.wait(pending, timeout=remaining)
 
 
 def close_unstarted(*works: object) -> None:

@@ -10,11 +10,13 @@ caller.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import pytest
 
-from roomkit import RoomKit
+from roomkit import FrameworkEvent, RoomKit
+from roomkit.core import framework
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import HookTrigger
@@ -159,3 +161,36 @@ class TestTheKitsClose:
         assert [_body(e) for e in ws.delivered] == ["first"]
         with pytest.raises(asyncio.CancelledError):
             await caller
+
+    async def test_waits_for_them_on_its_budget_while_a_handler_hangs(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A decided write runs integrator code (an ``event_blocked`` handler
+        that never answers): the close waits for it on its budget only, names
+        it and goes on, never cutting it; the write ends once the handler
+        does."""
+        monkeypatch.setattr(framework, "CLOSE_WAIT_S", 0.02)
+        kit = RoomKit()
+        kit.register_channel(SimpleChannel("sms1"))
+        await kit.create_room(room_id="r1")
+        await kit.attach_channel("r1", "sms1")
+        entered, answer = asyncio.Event(), asyncio.Event()
+
+        @kit.hook(HookTrigger.BEFORE_BROADCAST, name="block")
+        async def block(event: RoomEvent, ctx: RoomContext) -> HookResult:
+            return HookResult.block("spam")
+
+        @kit.on("event_blocked")
+        async def webhook(event: FrameworkEvent) -> None:
+            entered.set()
+            await answer.wait()
+
+        caller = asyncio.create_task(kit.process_inbound(_msg("spam"), room_id="r1"))
+        await asyncio.wait_for(entered.wait(), 1)
+        with caplog.at_level(logging.WARNING):
+            await asyncio.wait_for(kit.close(), 1)
+        assert any("roomkit-decided-write-r1" in r.getMessage() for r in caplog.records)
+
+        answer.set()
+        result = await asyncio.wait_for(caller, 1)
+        assert (result.blocked, result.reason) == (True, "spam")

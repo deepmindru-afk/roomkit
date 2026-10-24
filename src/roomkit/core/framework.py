@@ -94,7 +94,7 @@ from roomkit.core.mixins import (
     VoiceOpsMixin,
 )
 from roomkit.core.mixins.helpers import _refuses_writes
-from roomkit.core.task_utils import cancel_and_wait, held_runs, wait_for_held
+from roomkit.core.task_utils import CLOSE_WAIT_S, cancel_and_wait, held_runs, wait_for_held
 from roomkit.core.transcoder import DefaultContentTranscoder
 from roomkit.identity.base import IdentityResolver
 from roomkit.models._visibility import parse_given_visibility, parse_visibility
@@ -867,8 +867,10 @@ class RoomKit(
         await self._cancel_background_runs()
         await self._task_runner.close()
         # The writes past a decision whose caller left end before anything
-        # they enqueue or start is drained or cut (RFC §13.6).
-        await wait_for_held(self._decided_writes)
+        # they enqueue or start is drained or cut (RFC §13.6), waited for on
+        # one budget across the close: they may run integrator code.
+        writes_deadline = asyncio.get_running_loop().time() + CLOSE_WAIT_S
+        await wait_for_held(self._decided_writes, until=writes_deadline)
         await self._cancel_pending_tasks()
         # Stop all event sources
         for channel_id in list(self._sources.keys()):
@@ -888,7 +890,7 @@ class RoomKit(
         # What the drains started meanwhile (a timer's hooks, an injected
         # pass, a stream's reader) ends before the channels close, as what
         # was there at the first pass did.
-        await wait_for_held(self._decided_writes)
+        await wait_for_held(self._decided_writes, until=writes_deadline)
         await self._cancel_pending_tasks()
         # Then close the channels. In sequence, but shielded from one another:
         # they close one at a time, so a close that raises would leave every

@@ -156,7 +156,9 @@ class TimerTransitions:
         """
         if not due_transitions(room, datetime.now(UTC)):
             return room
-        return await run_to_its_end(self._apply(room, hooks), held=self._writes)
+        return await run_to_its_end(
+            self._apply(room, hooks), held=self._writes, name=f"roomkit-decided-write-{room.id}"
+        )
 
     async def _apply(self, room: Room, hooks: list[asyncio.Task[None]] | None) -> Room:
         """:meth:`apply_due`'s writes and reports, for a room whose
