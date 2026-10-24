@@ -83,8 +83,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Postgres keeps a number as the exact value it equals, so a float written
   in exponent form with no fraction (`1e16`) is stored, and read back, as
   the integer it equals.
-  Migrate: a binding that holds a chat id or a number as a float holds it as
-  an `int` (`int(value)`) or a string.
+  Migrate: a binding persisted with a float under its channel's recipient
+  key is refused `no_recipient` from this release until it holds an `int`
+  (a chat id) or a string (a phone number in E.164, an email address).
+  Find them by paging `store.list_rooms(offset, limit)` and reading each
+  room's `store.list_bindings(room.id)` for a binding whose
+  `metadata.get(key)` is a `float` (`key` is the channel's `recipient_key`,
+  `telegram_chat_id` say), or on Postgres with `SELECT room_id, channel_id
+  FROM bindings WHERE jsonb_typeof(metadata -> 'telegram_chat_id') =
+  'number' AND metadata ->> 'telegram_chat_id' !~ '^-?[0-9]+$'`. Rewrite
+  each with `store.update_binding(b.model_copy(update={"metadata":
+  {**b.metadata, key: int(value)}}))`, or with the string the channel writes
+  (`"+15550000001"` for a phone number).
 
 ### Fixed
 
