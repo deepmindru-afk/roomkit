@@ -237,6 +237,26 @@ async def test_a_hook_blocked_instruction_is_not_stored():
     await kit.close()
 
 
+async def test_its_result_takes_the_rooms_next_index_once_its_hooks_ran():
+    """RFC §10.1 step 9a: an entry committed ahead of it during its hooks
+    took the index step 8 showed them; the instruction, never stored,
+    reports the room's next."""
+    kit, _speaker, _provider = await _kit()
+    nested: list[RoomEvent] = []
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST)
+    async def aside(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if event.type == EventType.INSTRUCTION:
+            nested.append(await kit.send_event(ROOM, "voice", TextContent(body="nested")))
+        return HookResult.allow()
+
+    result = await kit.process_inbound(_instruction(), room_id=ROOM)
+
+    assert result.event is not None and not result.blocked
+    assert result.event.index == nested[0].index + 1
+    await kit.close()
+
+
 async def test_no_transport_receives_it_whatever_visibility_the_caller_asked():
     kit, speaker, _provider = await _kit()
 

@@ -133,6 +133,16 @@ class _Ready:
     edit_delete_target: RoomEvent | None
 
 
+def at_index(event: RoomEvent, index: int | None) -> RoomEvent:
+    """*event* at *index*, the room's next once its hooks ran (RFC §10.1
+    step 9a); *event* itself without one, or already at it. A stored event
+    takes its index again at its commit; an instruction, never stored,
+    reports this one (§10.1.1)."""
+    if index is None or event.index == index:
+        return event
+    return event.model_copy(update={"index": index})
+
+
 def within_answer_scope[D: (_Ready, _Blocked)](decision: D, scope: str | None) -> D:
     """*decision*, a response's or a stream row's, its event narrowed back
     within *scope* once its hooks ran (RFC §5.12, §9.4): a hook may change
@@ -614,10 +624,12 @@ class InboundLockedMixin(HelpersMixin):
         # §9.5.1) its outcome comes first and only the locked hooks run here.
         sync_result = await self._run_before_broadcast(room_id, event, context, precheck)
         await self._announce_hook_errors(room_id, event, sync_result)
+        index: int | None = None
         if hooked and under_lock:
-            room = await self._room_after_hooks(room_id, event, operation)
-            if room is None:
+            index = await self._index_after_hooks(room_id, event, operation)
+            if index is None:
                 return _Refused("room_closed")
+            event = at_index(event, index)
 
         if not sync_result.allowed:
             if source_check:
@@ -636,7 +648,9 @@ class InboundLockedMixin(HelpersMixin):
         # Use potentially modified event. HookResult.event carries whatever
         # payload its trigger passed, so only a RoomEvent may replace one.
         if isinstance(sync_result.event, RoomEvent):
-            event = await self._rooted(room_id, event, sync_result.event)
+            # A modify keeps the index its hooks were shown (RFC §9.4), which
+            # gives way to the room's next once they ran (step 9a).
+            event = at_index(await self._rooted(room_id, event, sync_result.event), index)
         target = change.target
         if hooked and target is not None:
             # An injected change (no source check) is the hook's (§9.4).
@@ -644,35 +658,51 @@ class InboundLockedMixin(HelpersMixin):
             if change.refusal is not None:
                 return _Refused(change.refusal)
             target = change.target
+        return await self._source_gate(
+            room_id,
+            _Ready(event, None, sync_result, context, target),
+            hooked=hooked,
+            source_check=source_check,
+        )
 
-        # RFC §7.5 — a source that cannot write (READ_ONLY/NONE or muted) must
-        # not inject a DELIVERED event into the timeline. Persist it BLOCKED for
-        # audit, still collecting hook side effects (RFC §7.5 rule 3 — side
-        # effects are ALWAYS collected), and stop before broadcast. The source
-        # binding read here is the one the broadcast plans with.
+    async def _source_gate(
+        self, room_id: str, ready: _Ready, *, hooked: bool, source_check: bool
+    ) -> _Blocked | _Ready:
+        """RFC §10.1 step 11 for *ready*, an event its hooks allowed: its
+        source's binding as the hooks left it, which the broadcast plans
+        with, and its right to write unless *source_check* is off.
+
+        RFC §7.5 — a source that cannot write (READ_ONLY/NONE or muted) must
+        not inject a DELIVERED event into the timeline. It is stored BLOCKED
+        for audit, its hook side effects still collected (§7.5 rule 3), and
+        stops before broadcast.
+        """
+        event, context = ready.event, ready.context
         source_binding = await self._source_binding(room_id, event, context, hooked=hooked)
         if not source_check:
-            return _Ready(event, source_binding, sync_result, context, target)
+            return replace(ready, source_binding=source_binding)
         # Delivered or stored BLOCKED in its place, the event takes the
         # visibility step 12 gives it (RFC §7.3).
         event = with_committed_visibility(event, source_binding, context.bindings)
         reason = _source_block_reason(source_binding)
         if reason is not None:
             return _Blocked.after_hooks(
-                event, context, sync_result, reason=reason, blocked_by=reason
+                event, context, ready.sync_result, reason=reason, blocked_by=reason
             )
-        return _Ready(event, source_binding, sync_result, context, target)
+        return replace(ready, event=event, source_binding=source_binding)
 
-    async def _room_after_hooks(
+    async def _index_after_hooks(
         self, room_id: str, event: RoomEvent, operation: _RefusedOperation
-    ) -> Room | None:
-        """The room as *event*'s hooks left it (RFC §10.1 step 9a), or
-        ``None`` when it no longer accepts events, a hook having closed it:
-        refused as step 6 refuses it, the refusal announced for *operation*
-        (§5.1, §8.2), and nothing of the event stored."""
+    ) -> int | None:
+        """The room's next index once *event*'s hooks ran (RFC §10.1 step
+        9a), read again: an entry committed ahead of it during its hooks took
+        the one step 8 showed them. ``None`` when the room no longer accepts
+        events, a hook having closed it: refused as step 6 refuses it, the
+        refusal announced for *operation* (§5.1, §8.2), and nothing of the
+        event stored."""
         room = await self._store.get_room(room_id)
         if room is not None and room.status not in _REFUSING_STATUSES:
-            return room
+            return room.event_count
         status = None if room is None else room.status
         await self._refuse_closed_room(room_id, status=status, operation=operation, event=event)
         return None
