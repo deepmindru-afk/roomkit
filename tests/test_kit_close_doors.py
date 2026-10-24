@@ -20,9 +20,11 @@ import pytest
 from roomkit import HookExecution, HookTrigger, RoomKit
 from roomkit.channels.agent import Agent
 from roomkit.core.task_utils import hold_task
+from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
 from roomkit.models.enums import ChannelCategory
-from roomkit.models.event import TextContent
+from roomkit.models.event import EventSource, RoomEvent, TextContent
+from roomkit.models.room import RoomTimers
 from roomkit.providers.ai.base import (
     AIContext,
     AIResponse,
@@ -308,3 +310,51 @@ async def test_a_task_announced_as_the_kit_closes_ends_cancelled(
 
     assert task.result is not None and task.result.status == "cancelled"
     assert provider.calls == []
+
+
+# -- what the kit holds as it closes --------------------------------------------
+
+
+async def test_a_task_started_while_the_kit_drains_ends_with_its_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An observer still running as the kit closes commits into a room whose
+    timer fell due: the timer's hooks start while close() drains the
+    observers, and close() returns with them ended, never left running
+    against a closed kit."""
+    kit = RoomKit()
+    kit.register_channel(SimpleChannel("sms"))
+    await kit.create_room(room_id="r1")
+    await kit.attach_channel("r1", "sms")
+    await kit.create_room(room_id="r2", timers=RoomTimers(inactive_after_seconds=0))
+    draining = asyncio.Event()
+    drain = kit.hook_engine.drain_observers
+
+    async def draining_observers() -> None:
+        draining.set()
+        await drain()
+
+    monkeypatch.setattr(kit.hook_engine, "drain_observers", draining_observers)
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, execution=HookExecution.ASYNC, name="audit")
+    async def audit(event: RoomEvent, ctx: RoomContext) -> None:
+        await draining.wait()
+        record = RoomEvent(
+            room_id="r2",
+            source=EventSource(channel_id="sms", channel_type="sms"),
+            content=TextContent(body="audit record"),
+        )
+        await kit.commit_event("r2", record)
+
+    @kit.hook(HookTrigger.ON_ROOM_PAUSED, name="paused")
+    async def paused(event: RoomEvent, ctx: RoomContext) -> None:
+        await asyncio.Event().wait()
+
+    await kit.process_inbound(
+        InboundMessage(channel_id="sms", sender_id="u1", content=TextContent(body="hi")),
+        room_id="r1",
+    )
+    await kit.close()
+
+    running = [t.get_name() for t in asyncio.all_tasks() if not t.done()]
+    assert [name for name in running if name.startswith("roomkit-")] == []

@@ -807,14 +807,16 @@ class RoomKit(
     async def _cancel_pending_tasks(self) -> None:
         """Cancel the pending hook tasks and the stream readers the kit holds
         and wait for their ends, but the ones this close runs under: waiting
-        for them would wait for itself."""
+        for them would wait for itself. A task one of them starts as it ends
+        is cancelled in turn."""
         spared = set(held_runs())
-        pending = [task for task in self._pending_hook_tasks if task not in spared]
-        for task in pending:
-            task.cancel()
-        if pending:
+        while pending := [
+            task for task in self._pending_hook_tasks if not task.done() and task not in spared
+        ]:
+            for task in pending:
+                task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
-        self._pending_hook_tasks.difference_update(pending)
+            self._pending_hook_tasks.difference_update(pending)
 
     async def close(self) -> None:
         """Close every channel, then release what they share.
@@ -883,6 +885,11 @@ class RoomKit(
         # The ASYNC observers still running finish while the channels they may
         # use are open; each is bounded by its hook's timeout.
         await self._hook_engine.drain_observers()
+        # What the drains started meanwhile (a timer's hooks, an injected
+        # pass, a stream's reader) ends before the channels close, as what
+        # was there at the first pass did.
+        await wait_for_held(self._decided_writes)
+        await self._cancel_pending_tasks()
         # Then close the channels. In sequence, but shielded from one another:
         # they close one at a time, so a close that raises would leave every
         # channel behind it holding its media — for a conference channel, a
