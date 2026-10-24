@@ -8,10 +8,10 @@ through this channel; ``send_event`` from it does the same, one step lower.
 from __future__ import annotations
 
 from roomkit.channels.base import Channel
-from roomkit.models.channel import ChannelBinding, ChannelOutput
+from roomkit.models.channel import ChannelBinding, ChannelCapabilities, ChannelOutput
 from roomkit.models.context import RoomContext
 from roomkit.models.delivery import InboundMessage
-from roomkit.models.enums import ChannelCategory, ChannelDirection, ChannelType
+from roomkit.models.enums import ChannelCategory, ChannelDirection, ChannelMediaType, ChannelType
 from roomkit.models.event import RoomEvent
 
 HOST_CHANNEL_ID = "host"
@@ -43,12 +43,20 @@ class HostChannel(Channel):
     def __init__(self, channel_id: str = HOST_CHANNEL_ID) -> None:
         super().__init__(channel_id)
 
+    def capabilities(self) -> ChannelCapabilities:
+        """Every media type: the host may post any content, which reaches each
+        transport transcoded for what it carries (RFC A.14.1). Never delivered
+        to, the channel narrows nothing an answer may carry."""
+        return ChannelCapabilities(media_types=list(ChannelMediaType))
+
     async def handle_inbound(self, message: InboundMessage, context: RoomContext) -> RoomEvent:
+        # Never called by the kit: process_inbound() refuses a message on a
+        # host channel before anything is read (RFC §10.5).
         msg = (
-            f"Channel {self.channel_id!r} receives no external payload: the host speaks "
-            "through RoomKit.post() or send_event()"
+            f"Channel {self.channel_id!r} is a host channel and receives no external "
+            "payload: the host speaks through RoomKit.post() or send_event()"
         )
-        raise TypeError(msg)
+        raise ValueError(msg)
 
     async def deliver(
         self, event: RoomEvent, binding: ChannelBinding, context: RoomContext

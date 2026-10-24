@@ -10,8 +10,10 @@ reads the backend's message signed "Acme Support". Later the backend asks the
 agent, in front of the customer, to confirm the address: it names the agent.
 
 What post() saves you: the host channel (a transport of type HOST) is
-registered and attached on first use, and the post solicits no agent unless it
-names one (RFC §10.5).
+registered and attached on first use, the post solicits no agent unless it
+names one, and a post replayed with its idempotency key texts nothing again
+(RFC §10.5). "Acme Support" is connected via the host channel: a speaker's
+name is shown only on the channels they are reached through.
 
 No credentials: the SMS provider is RoomKit's mock, which prints what would
 have been sent, and the agent is a mock AI.
@@ -30,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shared import setup_logging
 
 from roomkit import (
+    Agent,
     ChannelCategory,
     InboundMessage,
     Participant,
@@ -38,9 +41,8 @@ from roomkit import (
     SMSChannel,
     TextContent,
 )
-from roomkit.channels.agent import Agent
-from roomkit.providers.ai.mock import MockAIProvider
-from roomkit.providers.sms.mock import MockSMSProvider
+from roomkit.providers.ai import MockAIProvider
+from roomkit.providers.sms import MockSMSProvider
 
 CUSTOMER = "+15550100001"
 
@@ -80,13 +82,17 @@ async def main() -> None:
         )
 
     try:
-        # 1. The backend's notice: texted to Marie, no agent answers it.
-        await kit.post(
-            "order-1042",
-            "Your order #1042 shipped today.",
-            participant_id="desk",
-            metadata={"job": "shipping-notice"},
-        )
+        # 1. The backend's notice: texted to Marie, no agent answers it. The
+        # shipping webhook that triggers it is delivered twice: the key makes
+        # the second post a replay, which returns the first and texts nothing.
+        for _delivery in range(2):
+            await kit.post(
+                "order-1042",
+                "Your order #1042 shipped today.",
+                participant_id="desk",
+                metadata={"job": "shipping-notice"},
+                idempotency_key="shipped-1042",
+            )
         logger.info("agent turns after the notice: %d", len(ai.calls))
 
         # 2. Marie replies: the agent answers her as usual.

@@ -1268,6 +1268,7 @@ class RoomKit(
         metadata: dict[str, Any] | None = None,
         channel_id: str | None = None,
         organization_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> RoomEvent:
         """Write to a room's people in the host's own name (RFC §10.5).
 
@@ -1281,8 +1282,11 @@ class RoomKit(
         Args:
             room_id: The room to write to.
             content: The text, or any event content.
-            participant_id: Who speaks, a participant of the room: readers,
-                agents included, are shown their name.
+            participant_id: Who speaks, a participant of the room. Readers,
+                agents included, are shown their name when the participant is
+                connected via the host channel the post comes from (its
+                ``channel_id`` or ``connected_via`` names it): an id names its
+                participant only on the channels they are reached through.
             addressed_to: The agents asked to answer. None by default: the
                 host's message solicits no agent unless it names one.
             metadata: Where the message comes from (a workflow, its step, a
@@ -1292,19 +1296,31 @@ class RoomKit(
                 use.
             organization_id: The organization the caller acts for (RFC
                 §17.2).
+            idempotency_key: A key the host channel holds in the room is a
+                replay: the post returns the event it committed, sends
+                nothing again and, from the room's own work, draws no pass
+                (RFC §13.4, §9.5.1). A blank key is no key.
 
-        The room is given the host channel on its first post, an ordinary
-        attachment; a room that binds it already keeps its binding as set.
+        A room that never bound the host channel is given it on its first
+        post, an ordinary attachment, decided in one section under the room
+        lock: a binding the integrator made, before or concurrently, keeps its
+        settings. A room the host channel was detached from is refused, not
+        attached again, and so is a room that refuses events; nothing is
+        written either way.
 
         Returns:
             The committed event, as :meth:`send_event` returns it.
 
         Raises:
             ChannelNotRegisteredError: *channel_id* names no registered channel.
-            ValueError: *channel_id* names a channel that is not of type
-                ``HOST``, or ``"host"`` is taken by another channel.
+            ChannelNotFoundError: the host channel was detached from the room.
+            RoomClosedError: the room's status refuses new events (RFC §5.1).
             RoomNotFoundError: the room does not exist, or is another
                 organization's.
+            ValueError: *channel_id* names a channel that is not of type
+                ``HOST``, ``"host"`` is taken by another channel, or an
+                argument :meth:`send_event` refuses (a key in the framework's
+                namespace, content past five composite levels).
         """
         return await _host_post.post(
             self,
@@ -1315,6 +1331,7 @@ class RoomKit(
             metadata=metadata,
             channel_id=channel_id,
             organization_id=organization_id,
+            idempotency_key=idempotency_key,
         )
 
     async def _send_event(

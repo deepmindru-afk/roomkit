@@ -125,6 +125,7 @@ def _edit_of_six_levels() -> EditContent:
 
 _DIRECT_CALLS: dict[str, Callable[[RoomKit], Awaitable[object]]] = {
     "send_event": lambda kit: kit.send_event("gone", "sms1", _six_levels()),
+    "post": lambda kit: kit.post("gone", _six_levels()),
     "an edit's new content": lambda kit: kit.send_event(
         "gone", "sms1", _edit_of_six_levels(), event_type=EventType.EDIT
     ),

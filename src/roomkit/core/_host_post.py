@@ -2,7 +2,7 @@
 
 The host speaks through a transport of type ``HOST``: its words reach the
 room's people as a party's message, and solicit no agent unless they name
-one. The room is given the host channel on its first post.
+one. A room that never bound the host channel is given it on its first post.
 """
 
 from __future__ import annotations
@@ -11,9 +11,15 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from roomkit.channels.host import HOST_CHANNEL_ID, HostChannel
-from roomkit.core.exceptions import ChannelNotRegisteredError
+from roomkit.core._publication_keys import refuse_reserved
+from roomkit.core.exceptions import (
+    ChannelNotFoundError,
+    ChannelNotRegisteredError,
+    RoomClosedError,
+)
+from roomkit.core.mixins.helpers import _REFUSING_STATUSES
 from roomkit.models.enums import ChannelType
-from roomkit.models.event import EventContent, TextContent
+from roomkit.models.event import EventContent, TextContent, refuse_too_deep
 
 if TYPE_CHECKING:
     from roomkit.core.framework import RoomKit
@@ -30,14 +36,21 @@ async def post(
     metadata: dict[str, Any] | None,
     channel_id: str | None,
     organization_id: str | None,
+    idempotency_key: str | None,
 ) -> RoomEvent:
-    """Inject *content* from the host channel, attaching it first if unbound."""
-    host_id = _host_channel_id(kit, channel_id)
-    # An ordinary attach over a live binding is allowed and would rewrite it:
-    # a binding the integrator set up keeps its settings.
-    if await kit.store.get_binding(room_id, host_id) is None:
-        await kit.attach_channel(room_id, host_id, organization_id=organization_id)
+    """Inject *content* from the host channel, attaching it first to a room
+    that never bound it."""
     body = TextContent(body=content) if isinstance(content, str) else content
+    # What send_event() refuses of its arguments, refused before the attach
+    # can write anything.
+    refuse_too_deep(body)
+    refuse_reserved(idempotency_key)
+    host_id = _host_channel_id(kit, channel_id)
+    # A room that binds the channel is never written to here: this read
+    # decides nothing the locked section would decide otherwise, and spares
+    # each later post the lock.
+    if await kit.store.get_binding(room_id, host_id) is None:
+        await _attach_on_first_post(kit, room_id, host_id, organization_id)
     return await kit.send_event(
         room_id,
         host_id,
@@ -45,8 +58,37 @@ async def post(
         participant_id=participant_id,
         addressed_to=list(addressed_to),
         metadata=metadata,
+        idempotency_key=idempotency_key,
         organization_id=organization_id,
     )
+
+
+async def _attach_on_first_post(
+    kit: RoomKit, room_id: str, host_id: str, organization_id: str | None
+) -> None:
+    """Attach *host_id* to a room that never bound it, in one section under
+    the room lock, where every binding change and status change runs (RFC
+    §10.5): the room read with its scope and its due timers applied, then
+    its binding. A binding made by then, the integrator's above all, is kept
+    as it is. Nothing is written for a room that refuses events, nor for one
+    the host channel was detached from (§7.5 rule 7), which only an explicit
+    attach grants it again.
+
+    Raises:
+        RoomNotFoundError: the room is missing, or another organization's.
+        RoomClosedError: the room's status refuses new events (RFC §5.1).
+        ChannelNotFoundError: the host channel was detached from the room.
+    """
+    async with kit._lock_manager.locked(room_id):
+        room = await kit.get_room(room_id, organization_id=organization_id)
+        room = await kit._room_timers.apply_due(room)
+        if room.status in _REFUSING_STATUSES:
+            raise RoomClosedError(f"Room {room_id} does not accept new events")
+        if await kit._attach_unbound(room, host_id) is None:
+            raise ChannelNotFoundError(
+                f"Channel {host_id} not in room {room_id}: it was detached, and post() "
+                "does not attach it again"
+            )
 
 
 def _host_channel_id(kit: RoomKit, channel_id: str | None) -> str:

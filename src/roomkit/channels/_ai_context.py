@@ -284,11 +284,15 @@ class AIContextMixin(_AIChannelContract):
         self, context: RoomContext
     ) -> tuple[list[ChannelMediaType], ChannelCapabilities | None]:
         """What every transport the answer reaches can carry: the media types
-        they share, and their capabilities intersected (``None`` for none)."""
+        they share, and their capabilities intersected (``None`` for none).
+        A transport that does not send, the host channel among them, is never
+        delivered to (RFC §4.2), so it narrows nothing."""
         transports = [
             b.capabilities
             for b in context.bindings
-            if b.category == ChannelCategory.TRANSPORT and b.channel_id != self.channel_id
+            if b.category == ChannelCategory.TRANSPORT
+            and b.sends
+            and b.channel_id != self.channel_id
         ]
         if not transports:
             return [], None

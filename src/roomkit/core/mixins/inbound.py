@@ -234,6 +234,8 @@ class InboundMixin(HelpersMixin):
                 stands (an off-lock hook's body, a parse); nothing is written.
             ValueError: its content, or the event its channel parses, holds
                 more than five composite levels (RFC §5.3); nothing is stored.
+                Its channel is a host channel, which receives no external
+                payload (RFC §10.5); nothing is read or written.
         """
         from roomkit.telemetry.base import SpanKind
         from roomkit.telemetry.context import get_current_span, reset_span, set_current_span
@@ -279,6 +281,14 @@ class InboundMixin(HelpersMixin):
         channel = self._channels.get(message.channel_id)
         if channel is None:
             raise ChannelNotRegisteredError(f"Channel {message.channel_id} not registered")
+        if channel.channel_type is ChannelType.HOST:
+            # RFC §10.5: the host speaks through post() or send_event(); its
+            # channel receives no external payload, so nothing is routed,
+            # opened or attached for one.
+            raise ValueError(
+                f"Channel {message.channel_id!r} is a host channel and receives no external "
+                "payload: the host speaks through RoomKit.post() or send_event()"
+            )
         # One form for the sender before anything reads it (RFC §10.4): the
         # router, the bindings and the participants compare and store it.
         # The provider's own spelling survives in raw_payload.

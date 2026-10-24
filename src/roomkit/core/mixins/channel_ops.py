@@ -98,6 +98,17 @@ def _refuse_declared_binding(channel: Channel, category: ChannelCategory | None)
         )
 
 
+def _refuse_host_as_intelligence(channel: Channel, category: ChannelCategory | None) -> None:
+    """A host channel takes part as a transport only: the host's words are a
+    party's message, never an agent's output (RFC §10.5)."""
+    bound_as = category if category is not None else channel.category
+    if channel.channel_type is ChannelType.HOST and bound_as is ChannelCategory.INTELLIGENCE:
+        raise ValueError(
+            f"Channel {channel.channel_id!r} is a host channel: it can be attached as a "
+            "transport only, never as an intelligence channel"
+        )
+
+
 @runtime_checkable
 class ChannelOpsHost(Protocol):
     """Contract: capabilities a host class must provide for ChannelOpsMixin.
@@ -312,6 +323,7 @@ class ChannelOpsMixin(HelpersMixin):
             if channel is None:
                 raise ChannelNotRegisteredError(f"Channel {channel_id} not registered")
             _refuse_declared_binding(channel, category)
+            _refuse_host_as_intelligence(channel, category)
             self._refuse_discussion_binding(room_id, channel, category)
             # A conference maps 1:1 to a room (RFC 12.10.1 principle 2, made
             # normative in 12.10.4): a second conference channel is a second
