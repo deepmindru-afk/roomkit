@@ -202,12 +202,15 @@ budget, and a message it routes back into that room raises
 `ReentrantCallError`. A call from a delivery set's work (a transport's
 `deliver()`, an agent's turn, a tool handler) is a new arrival with its own
 ticket and `process_timeout`, but it draws on the budget of the cascade that
-delivers, and a call made within a turn, or by a task the turn spawned, is
-at least as deep as the turn's response, so a transport or an agent that
-sends into its room every time it is reached stops at the cap or at
-`max_chain_depth`. That depth holds where the owner runs the turn's code (an
-in-memory turn calling the kit it holds, a tool handler, a `TurnHost` verb);
-with a Redis turn backend a turn reaches the room through its `TurnHost`.
+delivers, and a call into the room made within one of its turns, by the turn
+or a task it spawned while the turn runs, is at least as deep as the turn's
+response, so a transport or an agent that sends into its room every time it
+is reached stops at the cap or at `max_chain_depth`. That depth holds where
+the owner runs the turn's code (an in-memory turn calling the kit it holds, a
+tool handler, a `TurnHost` verb); with a Redis turn backend a turn reaches the
+room through its `TurnHost`. A call into another room has a budget of its own
+and the depth it names, and work a turn or a delivery began starts fresh once
+that work is over: depth 0 and a budget of its own.
 
 ```python
 @kit.hook(HookTrigger.BEFORE_BROADCAST)
@@ -222,7 +225,9 @@ async def acknowledge(event, ctx):
 The visibility `internal` marks a record the framework wrote, and only the
 framework writes it: a `BEFORE_BROADCAST` modify that writes it, or that changes
 it on a record that holds it (a voice channel's interruption record), has the
-event's visibility put back.
+event's visibility put back. A modify may narrow an event's
+`response_visibility`, never widen or clear it: what it writes is intersected
+with the original, `None` keeps the original and `internal` reads as `none`.
 
 ### What happens when a hook fails
 

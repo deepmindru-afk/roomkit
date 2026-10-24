@@ -144,6 +144,25 @@ been delivered with: its own intersected with its channel's binding (RFC
 §7.3). A host reading the room's refused records sees no more of one than
 its channels would have seen of the message.
 
+## Where Answers Go
+
+`InboundMessage(response_visibility=...)` and `send_event(...,
+response_visibility=...)` say where the answers to an event may go, in the
+visibility vocabulary (RFC §5.12): `None` restricts nothing, any other value is
+a scope (`""` names nobody), and `internal` raises `ValueError`. Every answer
+the message's cascade derives from it, an agent's answer to another agent's
+answer, a stream's rows and the record stored in place of an answer included,
+is what its channel gave it intersected with the scope; a response's own
+`response_visibility` holds within it. A `BEFORE_BROADCAST` hook may narrow an
+event's `response_visibility`, never widen or clear it (`internal` reads as
+`none`), and a response its hooks widen is narrowed back within the scope.
+
+The scope binds the cascade only. Work that leaves it starts a new cascade the
+scope does not follow: a background delegation's result handed back with
+`deliver()` or `send_event()`, a tool's own `send_event()`, a child room's
+answer to the channels it shares. Give such a call its own
+`response_visibility`.
+
 ## Muting Channels
 
 Muting suppresses a channel's output (AI responses) without detaching it. Side effects (tasks, observations) still fire.
