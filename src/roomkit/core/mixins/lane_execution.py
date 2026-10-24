@@ -424,7 +424,7 @@ class LaneExecutionMixin(HelpersMixin):
                 resolved = _delivery_source(context, source)
                 committed = await self._commit_to_lane(
                     room_id,
-                    _stamped(event, resolved),
+                    _stamped(await self._with_thread_root(room_id, event), resolved),
                     cascade,
                     self._plan_factory(resolved, exclude_delivery, hook_result),
                     policy_aware=policy_aware,
@@ -435,9 +435,10 @@ class LaneExecutionMixin(HelpersMixin):
                 _log_refused(room_id, event)
                 return None
             resolved = source
-            committed = await self._commit_to_lane(
+            committed = await self._commit_resolved(
                 room_id,
-                _stamped(event, resolved),
+                event,
+                resolved,
                 cascade,
                 self._plan_factory(resolved, exclude_delivery, hook_result),
                 policy_aware=policy_aware,
@@ -466,6 +467,39 @@ class LaneExecutionMixin(HelpersMixin):
         if own_cascade:
             await self._finish_cascade(cascade, room_id)
         return committed
+
+    async def _commit_resolved(
+        self,
+        room_id: str,
+        event: RoomEvent,
+        resolved: DeliverySource,
+        cascade: DeliveryCascade,
+        plan_factory: Callable[[RoomEvent], DeliveryPlan | None] | None,
+        *,
+        policy_aware: bool,
+    ) -> RoomEvent | None:
+        """Commit *event*, its source resolved by its caller once for a run
+        (a stream's rows), with no lock taken and nothing read; but for an
+        event in a thread, whose parent is rooted at its commit under the
+        room lock a hard delete takes, so that a reply names a root the room
+        holds as it commits (RFC §10.1 step 8)."""
+        if event.parent_event_id is None:
+            return await self._commit_to_lane(
+                room_id,
+                _stamped(event, resolved),
+                cascade,
+                plan_factory,
+                policy_aware=policy_aware,
+            )
+        async with self._lock_manager.locked(room_id):
+            rooted = await self._with_thread_root(room_id, event)
+            return await self._commit_to_lane(
+                room_id,
+                _stamped(rooted, resolved),
+                cascade,
+                plan_factory,
+                policy_aware=policy_aware,
+            )
 
     async def _existing_room_context(self, room_id: str) -> RoomContext | None:
         """The room's context, or ``None`` when the room is gone. Call under

@@ -13,6 +13,8 @@ Covers the framework pieces added for threaded conversations:
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -364,6 +366,23 @@ _PATHS: dict[str, tuple[Any, Any]] = {
 }
 
 
+class _HeldStream(MockAIProvider):
+    """A streamed answer that waits for *go* once its turn has started."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            streaming=True, ai_responses=[AIResponse(content="streamed", finish_reason="stop")]
+        )
+        self.entered = asyncio.Event()
+        self.go = asyncio.Event()
+
+    async def _scripted_events(self, context: Any) -> AsyncIterator[Any]:
+        self.entered.set()
+        await self.go.wait()
+        async for event in super()._scripted_events(context):
+            yield event
+
+
 class TestEveryPathRootsItsThread:
     @pytest.mark.parametrize("path", list(_PATHS))
     @pytest.mark.parametrize(
@@ -402,6 +421,31 @@ class TestEveryPathRootsItsThread:
         rows = [e for e in await _stored(kit) if e.source.channel_id == "ai1"]
         assert rows
         assert all(e.parent_event_id is None for e in rows)
+        await kit.close()
+
+    async def test_a_streamed_answer_whose_root_is_deleted_mid_stream_is_top_level(self) -> None:
+        """A thread's root is hard-deleted while an agent streams its answer
+        to a reply: each row is rooted at its commit, and one committed after
+        the delete names no root the room no longer holds (RFC §10.1 step 8)."""
+        kit, root, reply = await _threaded_kit()
+        provider = _HeldStream()
+        kit.register_channel(AIChannel("ai1", provider=provider))
+        await kit.attach_channel("r1", "ai1", category=ChannelCategory.INTELLIGENCE)
+        ask = InboundMessage(
+            channel_id="sms1",
+            sender_id="u1",
+            content=TextContent(body="ask"),
+            parent_event_id=reply.id,
+        )
+        turn = asyncio.create_task(kit.process_inbound(ask, room_id="r1"))
+        await asyncio.wait_for(provider.entered.wait(), 5)
+        await kit.delete_event("r1", root.id)
+        provider.go.set()
+        await asyncio.wait_for(turn, 5)
+
+        rows = [e for e in await _stored(kit) if e.source.channel_id == "ai1"]
+        assert rows
+        assert [e.parent_event_id for e in rows] == [None] * len(rows)
         await kit.close()
 
     async def test_a_depth_limit_record_of_an_answer_whose_root_is_gone_is_top_level(
