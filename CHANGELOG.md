@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `update_event()` and `delete_event()` take the organization the caller
+  acts for (RFC §17.2, §10.3, RMK-930). A tenant's host could rewrite or
+  delete an event of another tenant's room, and the call applied that
+  room's due timers. `update_event(room_id, event_id, ...,
+  organization_id=None)` and `delete_event(room_id, event_id, *,
+  cascade_replies=True, organization_id=None)` act on another
+  organization's room as on a missing one (`None`, an empty list): nothing
+  written, its due timers included, no hook. Unset, the call is unscoped,
+  as the kit's other calls.
+
+- A room an `ON_ROOM_CREATED` hook closed is not given the message's
+  channel (RFC §10.1 step 2, RMK-930). The room created for a message got
+  its binding before step 6 refused the message `room_closed`; it is now
+  read under its lock, its due timers applied, and attached only when its
+  status takes events, as a room in hand is. The message is refused
+  `room_closed` there, not routed again.
+
 - The lookups this release adds read through indexes (RFC §10.4, §22.1,
   RMK-930). A proactive delivery's key, looked up within its room whatever
   channel committed it, read every keyed event of the room: Postgres and
@@ -998,7 +1015,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `InboundResult.response_metadata`, no longer carry it. The fingerprint is
   of the text the instruction's content reads as (RFC §6.6): a rich text by
   its plain text, a media by its label, a system notice by its body, a tool
-  call as `[Tool call: <name>]`, a composite by its parts' texts, one per
+  call as `[Tool call: <name>]`, a composite by each part's own text form
+  (a location, a template, a notice and a tool call included), one per
   line, an empty one skipped. It was of a `TextContent` body only (any
   other content hashed the empty string) and, on ACP, of the text once its
   copies of runtime marks were replaced.
@@ -1380,6 +1398,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capabilities=SMS_CAPABILITIES.model_copy(update={"supported_media_types":
   [...]}))`, or an empty list for every type; a Telegram integration that
   read the `[Voice message: ...]` or `[Video: ...]` text receives the file.
+
+- **BREAKING — a message's response scope narrows every answer its
+  cascade derives from it, and never widens one** (RFC §5.12, §7.3,
+  RMK-930). `response_visibility` replaced the visibility the responding
+  channel gave its answer, so an answer a channel kept to `"sms"` under a
+  message scoped `"sms,ws"` reached `ws` too; and a response's own
+  `response_visibility` was replaced by the cascade's scope, or dropped
+  when the message named none. Each answer, at any depth of the cascade
+  (an answer to an answer, a stream's rows, the record stored in place of
+  an answer), is now what its channel gave it intersected with the scope,
+  a listed channel's category read from the room's bindings; and what
+  answers a response stays within both the cascade's scope and the
+  response's own, `None` restricting nothing.
+  Migrate: a channel that relied on the message's scope to widen its
+  answer gives the answer the visibility it means (`"all"` keeps the
+  scope).
 
 - **BREAKING — a composite delivered as one text skips its empty parts**
   (RFC §6.6, RMK-930). A composite whose every part becomes a text for its
