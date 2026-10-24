@@ -452,12 +452,33 @@ class _SaysInternal(AILikeChannel):
         return output.model_copy(update={"response_events": marked})
 
 
+def _scope_answers_internal(kit: RoomKit) -> None:
+    """A hook that scopes the answers to the message ``internal``, which no
+    door takes (RFC §7.3)."""
+
+    @kit.hook(HookTrigger.BEFORE_BROADCAST, name="scope-answers")
+    async def scope(event: RoomEvent, ctx: RoomContext) -> HookResult:
+        if event.source.channel_id != "sms":
+            return HookResult.allow()
+        return HookResult.modify(event.model_copy(update={"response_visibility": "internal"}))
+
+
 class TestOnlyTheFrameworkWritesInternal:
     """RFC §7.3: ``internal`` marks a record the framework wrote; a door
     refuses it before anything is read or written, a hook's modify cannot
     write it, and a channel's answer carrying it is stored ``none``."""
 
-    @pytest.mark.parametrize("door", ["attach", "binding update", "inbound", "injection"])
+    @pytest.mark.parametrize(
+        "door",
+        [
+            "attach",
+            "binding update",
+            "inbound",
+            "injection",
+            "inbound answers",
+            "injection answers",
+        ],
+    )
     async def test_a_door_refuses_it_with_nothing_written(self, door: str) -> None:
         kit = await _room(_Told("sms"))
         kit.register_channel(_Told("ws"))
@@ -467,6 +488,13 @@ class TestOnlyTheFrameworkWritesInternal:
             "inbound": lambda: kit.process_inbound(_message("x", visibility="internal")),
             "injection": lambda: kit.send_event(
                 "r1", "sms", TextContent(body="x"), visibility="internal"
+            ),
+            # Where the answers may go is never the framework's mark either.
+            "inbound answers": lambda: kit.process_inbound(
+                _message("x", response_visibility="internal")
+            ),
+            "injection answers": lambda: kit.send_event(
+                "r1", "sms", TextContent(body="x"), response_visibility="internal"
             ),
         }
         before = await kit.store.list_events("r1", event_filter=EventFilter(include_blocked=True))
@@ -543,10 +571,11 @@ class TestOnlyTheFrameworkWritesInternal:
             kit.register_channel(channel)
         await kit.attach_channel("r1", "sms")
         await kit.attach_channel("r1", "ai", category=ChannelCategory.INTELLIGENCE)
+        _scope_answers_internal(kit)
         try:
             # The depth limit keeps the agent from being asked: its record
             # takes the answer's scope.
-            await kit.process_inbound(_message("hello", response_visibility="internal"))
+            await kit.process_inbound(_message("hello"))
             records = await kit.store.list_events(
                 "r1", event_filter=EventFilter(include_blocked=True)
             )
@@ -556,8 +585,9 @@ class TestOnlyTheFrameworkWritesInternal:
 
     async def test_a_stream_row_carrying_it_is_stored_for_no_channel(self) -> None:
         kit, _ = await _streaming_room({})
+        _scope_answers_internal(kit)
         try:
-            await kit.process_inbound(_message("hello", response_visibility="internal"))
+            await kit.process_inbound(_message("hello"))
             answers = [e for e in await kit.store.list_events("r1") if _body(e) == "answer"]
             assert [e.visibility for e in answers] == ["none"]
         finally:

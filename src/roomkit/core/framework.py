@@ -1126,6 +1126,7 @@ class RoomKit(
             provider: Optional provider/backend name for event attribution
             response_visibility: Controls where the AI's response is delivered.
                 Uses the same vocabulary as visibility. None means no restriction.
+                ``internal`` raises ``ValueError``, as for *visibility*.
             addressed_to: The intelligence channels this event asks to act
                 (RFC §19.3). An address is set by a sender, and direct injection
                 has a sender like any other entry point: a caller storing a
@@ -1179,10 +1180,14 @@ class RoomKit(
             participant_id=participant_id,
             metadata=metadata,
             # Only the framework writes ``internal`` (RFC §7.3), refused here
-            # before anything is read.
+            # before anything is read, where the answers may go included.
             visibility=parse_given_visibility(visibility),
             provider=provider,
-            response_visibility=response_visibility,
+            response_visibility=(
+                response_visibility
+                if response_visibility is None
+                else parse_given_visibility(response_visibility)
+            ),
             created_at=created_at,
             parent_event_id=parent_event_id,
             idempotency_key=idempotency_key,

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from roomkit.models._time import UtcDatetime
-from roomkit.models._visibility import parse_given_visibility, parse_visibility
+from roomkit.models._visibility import parse_given_visibility
 from roomkit.models.enums import EventType, Visibility
 from roomkit.models.event import EventContent, RoomEvent
 from roomkit.models.response_metadata import ResponseMetadata, merge_caller_record
@@ -109,7 +109,9 @@ class InboundMessage(BaseModel):
     # ``visibility``. ``None`` leaves it unrestricted. Set it when the reply
     # must stay as narrow as the question: a scope on the question alone
     # would hide what you asked and publish what you were told. Covers the
-    # whole turn — text segments and tool activity alike.
+    # whole turn — text segments and tool activity alike. Never
+    # ``"internal"``, as for ``visibility``: answers stored for no channel
+    # take ``"none"``.
     response_visibility: str | None = None
     # The chain depth the message continues (RFC §8.3). 0, the default, opens
     # a chain: a person, a webhook. A result delivered back to a room for a
@@ -150,8 +152,9 @@ class InboundMessage(BaseModel):
     @field_validator("response_visibility")
     @classmethod
     def _response_visibility_grammar(cls, value: str | None) -> str | None:
-        """A visibility in its normal form, an invalid one refused (RFC §7.3)."""
-        return None if value is None else parse_visibility(value)
+        """A visibility in its normal form, an invalid one refused, and
+        ``internal``, the framework's mark, as for ``visibility`` (RFC §7.3)."""
+        return None if value is None else parse_given_visibility(value)
 
 
 STANDALONE = "standalone"
