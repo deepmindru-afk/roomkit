@@ -191,15 +191,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `start_room_recording()` and a regeneration. A message to a room that
     fell due is refused as if the timer had run on time: `room_paused`,
     `room_closed`, then its `room_refused_event`.
-  - A transition takes the instant it fell due, however late it is
-    applied: a check long after both fell due pauses the room at the first
-    instant and closes it at the second, in one write (`paused_at`,
-    `closed_at`). Each emits `room_paused` or `room_closed` (`reason =
-    timer`) once stored; its `ON_ROOM_PAUSED` or `ON_ROOM_CLOSED` hook
-    fires once the room lock is released (`check_room_timers()` waits for
-    it before returning), in the room's context as the transition left it.
-    The hook's and the lifecycle record's `SystemContent.data` are now
-    `{"threshold", "at"}` (`elapsed_seconds` is gone).
+  - A transition takes the instant it fell due, however late it is applied: a
+    check long after both fell due pauses the room at the first instant and
+    closes it at the second, in one write (`paused_at`, `closed_at`). Each
+    emits `room_paused` or `room_closed` (`reason = timer`) once stored; its
+    `ON_ROOM_PAUSED` or `ON_ROOM_CLOSED` hook fires once the room lock is
+    released (`check_room_timers()` waits for it before returning), in the
+    room's context as the transition left it. The hook's and the lifecycle
+    record's `SystemContent.data` are now `{"threshold", "at"}`
+    (`elapsed_seconds` is gone). Once due, a transition is written, recorded
+    and announced, and its hook started, even when its caller is cancelled or
+    times out, the section's lock released only then: no later section would
+    find it due again. The kit's close cuts the hook's task, one its drains
+    started included, and a `check_room_timers()` or `close_room()` waiting
+    for it returns rather than raise `CancelledError`.
   - Stored format: `PostgresStore.init()` adds the `rooms.paused_at`
     column when missing, and a room stored PAUSED takes its `updated_at`
     as the instant it paused; an SQLite file moves to schema version 9,
@@ -305,14 +310,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the cause), as it may between a trigger and its response. Once the cause is
   decided its injected events no longer depend on its caller: a task the kit
   holds runs them, so a caller cancelled while another holds the lock, or
-  failing after the decision, loses none (the kit's close cancels that task
-  with its other background work). They still commit before
-  `process_inbound()` and `send_event()` return, the caller waiting for them,
-  in the order their hooks ran, the events an injected pass's own hooks inject
-  right after it. A direct `send_event()` from code holding the lock still
-  commits ahead of the cause, and what its own hooks inject runs once its
-  nested section ends, inside the section it nests in. An identity challenge
-  takes the same pass. See "Injected events" in `docs/c7/hooks.md`.
+  failing after the decision, loses none. The kit's close cancels that task
+  with its other background work, the tasks its drains start meanwhile
+  included, and a caller waiting for it then returns rather than raise
+  `CancelledError`. They still commit before `process_inbound()` and
+  `send_event()` return, the caller waiting for them, in the order their hooks
+  ran, the events an injected pass's own hooks inject right after it. A direct
+  `send_event()` from code holding the lock still commits ahead of the cause,
+  and what its own hooks inject runs once its nested section ends, inside the
+  section it nests in. An identity challenge takes the same pass. See
+  "Injected events" in `docs/c7/hooks.md`.
   Migrate: a hook that blocks or injects on every event now reads its own
   injections too: it lets them through (by their source or content), or each
   one injects again until the budget; code that read an injected event at the
@@ -834,9 +841,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wait for them, up to each hook's timeout. Measured: an ASYNC BEFORE_TTS hook
   that waited up to 5 s delayed every answer's synthesis by 5.3 s.
   `RoomKit.close()` waits for the observers still running before the channels
-  close, and `HookEngine.drain_observers()` does so on demand. A realtime
-  delegation that one of its own calls ended (a hang-up) still cuts the call
-  its backend makes next before it runs.
+  close, but the one it is called from, and `HookEngine.drain_observers()`
+  does so on demand. An observer runs outside the room lock: a call into the
+  room it makes is a new arrival, which waits for the section running, so what
+  an observer of a locked section's chain sends commits after the event it
+  observes. A realtime delegation that one of its own calls ended (a hang-up)
+  still cuts the call its backend makes next before it runs.
   Migrate: a hook whose work the operation needs before it goes on (state a
   later step of the turn reads) is registered SYNC and returns
   `HookResult.allow()`.
@@ -1152,7 +1162,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     body, from a `hook_error` handler of that check, or from a channel's
     `handle_inbound()` is adopted beside the event being processed, takes no
     admission ticket, runs every hook under the lock and draws on that event's
-    budget;
+    budget. An adopted call, nested or beside, answers at its commit (a
+    `process_inbound()` result carries no `delivery_results`), and its
+    delivery follows in the room's lane, behind the work that made it;
   - a call made from a delivery set's deliveries or turns (a transport's
     `deliver()`, an agent's `on_event()`, a tool handler, a `TurnHost` verb, a
     streamed reply's reading) is a new arrival, with its ticket and its
@@ -1451,12 +1463,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A failed release of the room lock changes nothing the locked section did
   (RFC §13.5, RMK-902): the event it committed stays committed and delivered,
   a refusal stays a refusal, and the next section asks the lock manager for
-  the lock again. The release error was raised from the operation, so a
-  sender whose message had been committed read a failure and retried.
-  It is logged as a warning (`roomkit.locks`), and `process_inbound` and
-  `regenerate_response` return it as the result's `error` when no earlier
-  error was met; an error raised inside the section stays the one raised.
-  `kit.lock_manager` is still the manager given.
+  the lock again. The release error was raised from the operation, so a sender
+  whose message had been committed read a failure and retried. It is logged as
+  a warning (`roomkit.locks`), and `process_inbound` and `regenerate_response`
+  return it as the result's `error` when no earlier error was met; an error
+  raised inside the section stays the one raised. A cancellation met during
+  the release (a distributed lock's round trip) is the caller's: it is raised
+  to it, never logged as a failed release. `kit.lock_manager` is still the
+  manager given.
+
+- A caller that stops waiting once its call is decided leaves the call's
+  writes whole (RFC §13.6, §9.4, §10.1 steps 2 and 12, RMK-930). A caller
+  cancelled while its event's commit was in flight (a web handler whose client
+  left, a `wait_for` of its own, a store's round trip) cut the call between
+  the store's write and the room's lane: the event stayed in the timeline
+  undelivered, the room's next message waited out `delivery_gap_timeout`,
+  which declared the index lost, and what its hooks injected was never
+  committed; a BLOCKED record alike. A caller cancelled while the room step 2
+  opened for its message ran its `ON_ROOM_CREATED` hooks left the room without
+  the message's channel, so the sender's next message opened a second room.
+  The writes past the decision now run to their end whatever becomes of the
+  caller: the event is delivered, or its BLOCKED record stored, what its hooks
+  injected is committed, and the lane goes on with no gap; a room step 2 opens
+  is created, its hooks run and the message's channel attached. The caller's
+  cancellation waits for them (under the room lock, for an event's) and is
+  raised once they are done, and `kit.close()` waits for these writes, never
+  cutting them, before it drains the lanes.
 
 - A redelivered message the room blocked is answered blocked (RFC §13.4,
   RMK-902): `blocked=True`, the record stored `BLOCKED` as its event, the
