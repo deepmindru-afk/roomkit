@@ -6727,9 +6727,12 @@ What every store keeps alike (RFC §10.3, §14.1, §14.3):
   each sender's id and name, and trying every phone number or name finds the
   senders. `get` returns the caller's own copy, `None` for none;
   `set` writes nothing for a room the store lacks and removes the copy the
-  metadata may still hold, in one write. The base class keeps the register in
-  the room's metadata, as before, and warns once: implement both to keep it
-  private.
+  metadata may still hold, in one write. A register the metadata holds (a
+  room stored before, or a process from an older RoomKit writing there) is
+  merged into the store's by the room's next turn with a named author: a
+  register only adds, so no rank is given twice. The base class keeps the
+  register in the room's metadata, as before, and warns once: implement both
+  to keep it private.
 - `commit_event(room_id, event, *, target=None, activity=True)` stores the
   event and bumps the room's counters in one transaction. An activity commit
   (an event the pipeline stores DELIVERED) also moves `last_activity_at` and

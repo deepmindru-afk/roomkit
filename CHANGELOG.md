@@ -599,10 +599,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in its request as it received the metadata. A hook no longer sees it in
   `room.metadata`. The digests do not change, so every rank holds:
   `SQLiteStore` (schema 12) and `PostgresStore` (`schema_version` 4) move each
-  room's register out of its metadata when they open, once, and a room whose
-  metadata still holds one has it moved by its next commit, under the room
-  lock. Upgrade every process sharing a store together: one from before keeps
-  writing the register to the metadata. A custom store keeps working
+  room's register out of its metadata when they open, once. A register the
+  metadata holds afterwards (one a process from before wrote there, during
+  the move or since) is merged into the store's by the room's next turn with
+  a named author, under the room lock, and that write removes the metadata's
+  copy; a register only adds, so the merge gives no rank twice. A process
+  from before writes the register where clients read it: SQLite refuses to
+  open a schema 12 file from an older RoomKit, PostgreSQL lets one start, so
+  upgrade every process sharing a Postgres store together. A rollback ranks
+  as a room from before the register did, from the timeline: a rank only the
+  store holds (a participant's seat, a deleted turn's) may be given again
+  until the upgrade comes back and merges both. A custom store keeps working
   unchanged, the base class keeping the register in the room's metadata as
   before and warning once that it is readable there: implement the two
   methods to keep it private.
