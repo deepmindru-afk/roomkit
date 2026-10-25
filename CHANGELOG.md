@@ -566,17 +566,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file the cipher cannot encrypt is deleted. A file whose flush or close
   raises is encrypted all the same before the error propagates, and
   `close()` logs a recording that fails and goes on with the next. With
-  `storage_encrypted_at_rest=True` the file stays as written and
-  `metadata["encryption"]` is `"storage"`. With neither, the recording is
-  written unencrypted, as before: unlike the audio and room recorders, the
-  video recorders do not refuse to start. `VideoChannel` follows suit: a
-  recording that fails to stop no longer stops `kit.close()` from stopping
-  the next ones and closing the recorder, which left them in the clear; the
-  first failure is raised once the channel is closed. `kit.leave()` logs
-  such a failure and still unbinds the session. A recording the recorder
-  refuses to start, such as one whose `storage` contains `..`, fails
-  `kit.join()` before the session is bound; it used to stay bound,
-  receiving frames, with no recording.
+  `storage_encrypted_at_rest=True` and no `encryption`, the file stays as
+  written and `metadata["encryption"]` is `"storage"`. With neither, the
+  recording is written unencrypted, as before: unlike the audio and room
+  recorders, the video recorders do not refuse to start. `VideoChannel`
+  follows suit: a recording that fails to stop no longer stops
+  `kit.close()` from stopping the next ones and closing the recorder, which
+  left them in the clear; the first failure is raised once the channel is
+  closed. `kit.leave()` logs such a failure and still unbinds the session.
+  A recording the recorder refuses to start, such as one whose `storage`
+  contains `..`, fails `kit.join()` before the session is bound; it used to
+  stay bound, receiving frames, with no recording.
 
 - A WAV recording whose finalisation raises leaves no plaintext behind when
   `encryption` is configured (RFC §17.6, RMK-569). The files it had written

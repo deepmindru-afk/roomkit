@@ -446,24 +446,32 @@ class TestVideoChannelRecordingFailures:
         return kit, backend, channel
 
     async def test_kit_close_encrypts_every_recording_when_one_fails_to_stop(
-        self, file_recorder: _FileRecorder, tmp_path: Path
+        self, file_recorder: _FileRecorder, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``kit.close()`` stops each open recording and closes the recorder even
         when one ``stop()`` raises: the next ones would otherwise stay in the
         clear. The failure is raised once the channel is closed."""
+        recorder = file_recorder.recorder
         config = VideoRecordingConfig(
             storage=str(tmp_path), codec=file_recorder.codec, encryption=_XorEncryption()
         )
-        kit, backend, _ = await self._kit_recording(file_recorder.recorder, config)
+        kit, backend, _ = await self._kit_recording(recorder, config)
         for participant in ("u1", "u2"):
             session = await kit.join("r1", "video-1", participant_id=participant)
             await backend.simulate_video_received(session, _raw_frame(7))
+        # Either guard alone would still leave only ciphertext, since the
+        # recorder's close() stores an open recording too: count the calls.
+        calls: list[str] = []
+        stop, close = recorder.stop, recorder.close
+        monkeypatch.setattr(recorder, "stop", lambda h: calls.append("stop") or stop(h))
+        monkeypatch.setattr(recorder, "close", lambda: calls.append("close") or close())
         file_recorder.fail_closing(1)
 
         with pytest.raises(ExceptionGroup) as raised:
             await kit.close()
 
         assert raised.group_contains(OSError, match="disk full")
+        assert calls == ["stop", "stop", "close"]
         assert [p.suffix for p in tmp_path.iterdir()] == [".enc", ".enc"]
 
     async def test_a_recording_that_fails_to_stop_does_not_keep_its_session_bound(

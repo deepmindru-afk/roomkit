@@ -207,7 +207,7 @@ class VideoChannel(VideoHooksMixin, FrameworkAwareChannel, Channel):
         """Bind a video session to a room for event routing.
 
         The recording starts first: a recorder that refuses it (a ``storage``
-        with '..', a directory it cannot write) refuses the session before
+        with '..', a directory it cannot create) refuses the session before
         anything is bound to the room.
         """
         self._start_recording(session)

@@ -44,9 +44,9 @@ def store_finished_recording(
     ``encryption`` the file goes through the cipher: the path is the
     encrypted artifact's, and ``metadata["encryption"]`` the cipher's name. A
     file the cipher could not encrypt is deleted, and no path is returned.
-    With ``storage_encrypted_at_rest`` the file stays as written and the
-    metadata says ``"storage"``. With neither, it stays as written, in the
-    clear, and the metadata claims nothing. A file never created is reported
+    With ``storage_encrypted_at_rest`` and no ``encryption``, the file stays
+    as written and the metadata says ``"storage"``. With neither, it stays as
+    written, in the clear, and the metadata claims nothing. A file never created is reported
     at its path, with size 0.
     """
     if not os.path.exists(path):
@@ -82,10 +82,10 @@ class VideoRecordingConfig:
             encrypted artifact; a file the cipher cannot encrypt is deleted.
         storage_encrypted_at_rest: Whether the configured storage encrypts
             every byte at rest: an explicit deployment assertion, not
-            encryption performed by RoomKit. The file is stored as written
-            and the result says ``"encryption": "storage"``. With neither
-            this nor ``encryption``, the file is stored as written,
-            unencrypted.
+            encryption performed by RoomKit. Without ``encryption``, the
+            file is stored as written and the result says ``"encryption":
+            "storage"``; ``encryption``, when also set, still applies. With
+            neither, the file is stored as written, unencrypted.
     """
 
     storage: str = ""
