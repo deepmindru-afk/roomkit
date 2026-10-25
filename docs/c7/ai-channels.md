@@ -334,6 +334,39 @@ HTML) and `await mcp.call_tool_result(name, arguments)` (the server's
 shapes what discovery offers the model, not what the host may call, so the
 host authorizes a frame's call itself.
 
+#### Several servers: `label=`
+
+A model may call an MCP tool under the alias prompts written for Claude Code
+use, `mcp__<server>__<tool>`; the handler runs `<tool>`. `label=` (on the
+constructor, `from_url` and `from_command`) is the host's name for the server,
+the `<server>` of that alias: letters, digits and `_ . -`, 64 at most, no `__`
+(a `ValueError` otherwise). A labelled provider's handler serves only the
+aliases naming its server; one naming another server is not served
+(`UnservedToolCallError`), so the next handler of a `compose_tool_handlers`
+chain takes it. Give `label=` wherever a host composes several servers: a
+provider without one serves an alias whatever server it names, so the first
+of the chain that has the tool runs it, and a policy that names a server
+cannot hold a call to it.
+
+A policy judges an alias under both its names, the alias and the tool's
+(RFC §21.1): a call passes only when both do. To keep one server out, deny its
+aliases; to admit one server only, allow its aliases and its tools' names:
+
+```python
+async with (
+    MCPToolProvider.from_url(CRM_URL, label="crm") as crm,
+    MCPToolProvider.from_url(ARCHIVE_URL, label="archive") as archive,
+):
+    handler = compose_tool_handlers(archive.as_tool_handler(), crm.as_tool_handler())
+    keep_archive_out = ToolPolicy(deny=["mcp__archive__*"])
+    crm_only = ToolPolicy(allow=["mcp__crm__*", "delete_records", "search_records"])
+```
+
+`allow=["mcp__crm__*"]` alone admits nothing: the tool's own name fails it.
+A call under the tool's bare name (`delete_records`) names no server: the
+first handler of the chain that serves it runs it, whatever the policy says
+of servers. Runnable: `examples/mcp_server_labels.py`.
+
 #### Server instructions
 
 A server may publish, when it connects, how to use its tools
