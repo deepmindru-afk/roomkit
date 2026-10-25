@@ -38,7 +38,7 @@ class RoleOverride(BaseModel):
 def alias_server(name: str) -> str | None:
     """The server an MCP alias ``mcp__<server>__<tool>`` names, ``None`` for a
     name that is not an alias: the label a labelled ``MCPToolProvider``
-    serves aliases under (RFC §21.1)."""
+    serves aliases under (RFC §21.2)."""
     if name.startswith("mcp__") and "__" in name[5:]:
         return name.split("__", 2)[1]
     return None

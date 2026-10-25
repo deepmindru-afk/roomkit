@@ -147,6 +147,21 @@ def _publish_structured_content(result: Any) -> None:
     ctx.structured_content = structured
 
 
+def _check_label(label: str | None) -> None:
+    """Refuse a *label* that cannot name its server in an alias
+    ``mcp__<label>__<tool>``: one that is not an identifier (the rule of the
+    host's other labels, ``is_label``), or holds ``__`` or ends with ``_``,
+    which would make the alias read another server (``crm_`` gives
+    ``mcp__crm___delete``, server ``crm``)."""
+    if label is None:
+        return
+    if not is_label(label) or "__" in label or label.endswith("_"):
+        raise ValueError(
+            f"MCP server label {label!r} cannot name its server in an alias: use "
+            "letters, digits and '_ . -', 64 at most, no '__' and no final '_'"
+        )
+
+
 class MCPToolProvider:
     """Discover and invoke tools from an MCP server.
 
@@ -168,9 +183,9 @@ class MCPToolProvider:
     the server's resources.
 
     ``label`` is the host's name for the server, the ``<server>`` of an MCP
-    alias ``mcp__<server>__<tool>`` (RFC §21.1): the handler of a labelled
-    provider serves only the aliases that name it, so a tool policy that names
-    a server holds. Without a label the handler serves an alias whatever
+    alias ``mcp__<server>__<tool>`` (RFC §21.2): the handler of a labelled
+    provider serves only the aliases that name it, so an alias runs on the
+    server it names. Without a label the handler serves an alias whatever
     server it names; give one wherever a host composes several servers.
 
     Enter and exit it in the same task (``async with``): the MCP SDK's
@@ -191,11 +206,7 @@ class MCPToolProvider:
         discover: bool = True,
         label: str | None = None,
     ) -> None:
-        if label is not None and (not is_label(label) or "__" in label):
-            raise ValueError(
-                f"MCP server label {label!r} is not an identifier "
-                "(letters, digits, '_ . -', 64 at most, no '__')"
-            )
+        _check_label(label)
         if transport not in ("streamable_http", "sse", "stdio"):
             raise ValueError(f"Unsupported transport: {transport!r}")
         if transport == "stdio":
@@ -255,7 +266,8 @@ class MCPToolProvider:
                 empty, and no call is checked against an output schema.
             label: The host's name for the server, the ``<server>`` of an
                 MCP alias ``mcp__<server>__<tool>``: letters, digits and
-                ``_ . -``, 64 at most, no ``__``. The tool handler then serves
+                ``_ . -``, 64 at most, no ``__`` and no final ``_`` (either
+                would make an alias read another server). The tool handler then serves
                 only the aliases naming this server. ``None`` (the default)
                 serves an alias whatever server it names.
 
@@ -263,7 +275,7 @@ class MCPToolProvider:
             An MCPToolProvider instance (not yet connected).
 
         Raises:
-            ValueError: *label* is not an identifier, or holds ``__``.
+            ValueError: *label* cannot name the server in an alias.
         """
         return cls(
             url,
@@ -307,7 +319,7 @@ class MCPToolProvider:
             An MCPToolProvider instance (not yet connected).
 
         Raises:
-            ValueError: *label* is not an identifier, or holds ``__``.
+            ValueError: *label* cannot name the server in an alias.
         """
         return cls(
             transport="stdio",

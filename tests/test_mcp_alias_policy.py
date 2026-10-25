@@ -70,12 +70,19 @@ def test_an_alias_is_judged_under_both_names() -> None:
     assert judged_names("search_records") == ("search_records",)
 
 
-async def _on_session(policy: ToolPolicy | None, handler: ToolHandler, name: str) -> str:
+async def _on_session(
+    policy: ToolPolicy | None,
+    handler: ToolHandler,
+    name: str,
+    *,
+    tools: list[dict[str, Any]] | None = None,
+) -> str:
     provider = MockRealtimeProvider()
     channel = RealtimeVoiceChannel(
         "rt",
         provider=provider,
         transport=MockRealtimeTransport(),
+        tools=tools,
         tool_handler=handler,
         tool_policy=policy,
     )
@@ -185,6 +192,23 @@ async def test_a_policy_that_names_no_server_applies_to_both() -> None:
     assert (a.ran, b.ran) == (["delete_records"], ["delete_records"])
 
 
+@pytest.mark.parametrize("policy", SCOPED_TO_A, ids=["deny-b", "allow-a"])
+async def test_a_catalogue_of_aliases_refuses_a_bare_name(policy: ToolPolicy) -> None:
+    """A policy that names a server holds for a session that declares the
+    tools under their aliases alone: a bare name names no server, and is
+    refused as undeclared rather than run on the chain's first server."""
+    a, b, handler = _two_servers(labelled=True)
+    aliases = [
+        {"name": f"mcp__{server}__delete_records", "description": "delete", "parameters": {}}
+        for server in ("a", "b")
+    ]
+
+    answer = await _on_session(policy, handler, "delete_records", tools=aliases)
+
+    assert "Tool 'delete_records' is not declared." in answer
+    assert (a.ran, b.ran) == ([], [])
+
+
 async def test_an_unlabelled_provider_serves_an_alias_naming_any_server() -> None:
     a, b, handler = _two_servers(labelled=False)
 
@@ -205,7 +229,7 @@ async def test_a_labelled_provider_serves_no_alias_of_another_server(gate_discov
     assert server.ran == []
 
 
-@pytest.mark.parametrize("label", ["", "a__b", "crm server", "crm\n", "x" * 65])
+@pytest.mark.parametrize("label", ["", "a__b", "crm_", "crm server", "crm\n", "x" * 65])
 @pytest.mark.parametrize(
     "make",
     [
