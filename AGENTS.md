@@ -711,7 +711,7 @@ For a `ConferenceBackend`, `VoiceBackend`, `STTProvider`, `TTSProvider`,
 
 1. Add enum value to `ChannelType` in `models/enums.py`
 2. Create channel class extending `TransportChannel` or `Channel`
-3. Export from `channels/__init__.py`
+3. Export from `channels/__init__.py`: list it in `roomkit.channels.__all__`
 4. Add to main `roomkit/__init__.py` exports
 
 ### Adding a New Pipeline Provider
