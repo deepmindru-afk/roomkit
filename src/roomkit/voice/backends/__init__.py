@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from roomkit.voice.backends.twilio_ws import TwilioWebSocketBackend
     from roomkit.voice.backends.webtransport import WebTransportBackend
 else:
-    __getattr__, __dir__ = lazy_exports(
+    __getattr__ = lazy_exports(
         __name__,
         {
             "BuzzHuddleBackend": "roomkit.voice.backends.buzz_huddle",

@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from roomkit.video.backends.sip import SIPVideoBackend
     from roomkit.video.backends.websocket import WebSocketVideoBackend, mount_websocket_video
 else:
-    __getattr__, __dir__ = lazy_exports(
+    __getattr__ = lazy_exports(
         __name__,
         {
             "FastRTCVideoBackend": "roomkit.video.backends.fastrtc",

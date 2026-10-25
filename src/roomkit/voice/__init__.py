@@ -142,7 +142,7 @@ if TYPE_CHECKING:
     from roomkit.voice.auth import AuthCallback, auth_context
     from roomkit.voice.pipeline.mixer.numpy import NumpyMixerProvider
 else:
-    __getattr__, __dir__ = lazy_exports(
+    __getattr__ = lazy_exports(
         __name__,
         {
             "AuthCallback": "roomkit.voice.auth",

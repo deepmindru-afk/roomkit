@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     )
     from roomkit.voice.stt.voxtral_protocol import VoxtralSTTError
 else:
-    __getattr__, __dir__ = lazy_exports(
+    __getattr__ = lazy_exports(
         __name__,
         {
             "AzureMAISTTConfig": "roomkit.voice.stt.azure_mai",

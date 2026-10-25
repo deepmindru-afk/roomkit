@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from roomkit.providers.openai.live_config import HostedReasoning, IntegratorReasoning
     from roomkit.providers.openai.realtime import OpenAIRealtimeProvider
 else:
-    __getattr__, __dir__ = lazy_exports(
+    __getattr__ = lazy_exports(
         __name__,
         {
             "HostedReasoning": "roomkit.providers.openai.live_config",

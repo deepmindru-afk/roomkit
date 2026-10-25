@@ -89,24 +89,6 @@ class TestPublicAPI:
         """
         assert breaks_since_snapshot() == []
 
-    def test_dir_lists_every_name_a_package_exports_that_imports(self) -> None:
-        """A name a package exports lazily is not in its namespace until first
-        use; ``dir()`` lists it all the same, unless its extra is missing."""
-        unlisted: dict[str, list[str]] = {}
-        for init in sorted(_PACKAGE_ROOT.rglob("__init__.py"), key=str):
-            package = ".".join(("roomkit", *init.parent.relative_to(_PACKAGE_ROOT).parts))
-            try:
-                module = importlib.import_module(package)
-            except ModuleNotFoundError as missing:
-                _raise_unless_optional(missing)
-                continue
-            names = sorted(set(getattr(module, "__all__", ())) - set(dir(module)))
-            importable = [name for name in names if not _needs_a_missing_extra(module, name)]
-            if importable:
-                unlisted[package] = importable
-
-        assert unlisted == {}
-
     def test_channels_importable_from_channels_package(self) -> None:
         """Every channel resolves from ``roomkit.channels``, factories included.
 
@@ -132,15 +114,6 @@ class TestPublicAPI:
             obj = getattr(channels, name, None)
             assert obj is not None, f"roomkit.channels.{name} is missing"
             assert obj is getattr(roomkit, name), f"{name} differs from the top-level export"
-
-
-def _needs_a_missing_extra(module: ModuleType, name: str) -> bool:
-    try:
-        getattr(module, name)
-    except ImportError as missing:
-        _raise_unless_optional(missing)
-        return True
-    return False
 
 
 def _resolves(module: ModuleType, name: str) -> bool:
@@ -255,16 +228,15 @@ def test_a_lazy_name_whose_optional_dependency_fails_to_import_counts_as_optiona
     assert _resolves(voice_tts, "FishAudioTTSProvider")
 
 
-def test_help_on_a_lazy_package_skips_a_name_whose_extra_is_missing(
+def test_help_on_a_lazy_package_does_not_import_a_name_whose_extra_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """help() and inspect.getmembers() read every name dir() lists: one whose
-    extra is missing (fastapi, for the FastRTC transport) is not listed, so
-    neither raises its ModuleNotFoundError."""
+    """help() and inspect.getmembers() read every name dir() lists; a lazy name
+    is not listed, so neither imports the FastRTC transport, whose extra
+    (fastapi) is set aside, nor raises."""
     _set_aside_fastapi(monkeypatch)
 
     assert "FastRTCRealtimeTransport" not in dir(voice_realtime)
-    assert "SIPRealtimeTransport" in dir(voice_realtime)
     pydoc.render_doc(voice_realtime)
     inspect.getmembers(voice_realtime)
 

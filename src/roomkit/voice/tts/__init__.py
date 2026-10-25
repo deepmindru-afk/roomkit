@@ -58,7 +58,7 @@ if TYPE_CHECKING:
     from roomkit.voice.tts.voxtral import VoxtralTTSConfig, VoxtralTTSError, VoxtralTTSProvider
     from roomkit.voice.tts.vui import VUI_TAGS, VuiTTSConfig, VuiTTSProvider, VuiVoice
 else:
-    __getattr__, __dir__ = lazy_exports(
+    __getattr__ = lazy_exports(
         __name__,
         {
             "AzureSpeechTTSConfig": "roomkit.voice.tts.azure_speech",

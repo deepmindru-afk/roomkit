@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from roomkit.video.recorder.opencv import OpenCVVideoRecorder
     from roomkit.video.recorder.pyav import PyAVVideoRecorder
 else:
-    __getattr__, __dir__ = lazy_exports(
+    __getattr__ = lazy_exports(
         __name__,
         {
             "OpenCVVideoRecorder": "roomkit.video.recorder.opencv",

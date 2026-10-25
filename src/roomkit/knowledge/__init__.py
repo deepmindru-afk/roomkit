@@ -11,9 +11,7 @@ from roomkit.knowledge.mock import MockKnowledgeSource
 if TYPE_CHECKING:
     from roomkit.knowledge.postgres import PostgresKnowledgeSource
 else:
-    __getattr__, __dir__ = lazy_exports(
-        __name__, {"PostgresKnowledgeSource": "roomkit.knowledge.postgres"}
-    )
+    __getattr__ = lazy_exports(__name__, {"PostgresKnowledgeSource": "roomkit.knowledge.postgres"})
 
 __all__ = [
     "KnowledgeResult",

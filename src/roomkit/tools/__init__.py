@@ -29,7 +29,7 @@ from roomkit.tools.policy import RoleOverride, ToolPolicy
 if TYPE_CHECKING:
     from roomkit.tools.mcp import MCPToolProvider
 else:
-    __getattr__, __dir__ = lazy_exports(__name__, {"MCPToolProvider": "roomkit.tools.mcp"})
+    __getattr__ = lazy_exports(__name__, {"MCPToolProvider": "roomkit.tools.mcp"})
 
 __all__ = [
     "FENCED_TAGS",

@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from roomkit.sources.sse import SSESource
     from roomkit.sources.websocket import WebSocketSource
 else:
-    __getattr__, __dir__ = lazy_exports(
+    __getattr__ = lazy_exports(
         __name__,
         {
             "BuzzRelaySource": "roomkit.sources.buzz",

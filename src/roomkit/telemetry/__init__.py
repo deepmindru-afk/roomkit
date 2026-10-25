@@ -19,7 +19,7 @@ with contextlib.suppress(ImportError):
 if TYPE_CHECKING:
     from roomkit.telemetry.opentelemetry import OpenTelemetryProvider
 else:
-    __getattr__, __dir__ = lazy_exports(
+    __getattr__ = lazy_exports(
         __name__, {"OpenTelemetryProvider": "roomkit.telemetry.opentelemetry"}
     )
 

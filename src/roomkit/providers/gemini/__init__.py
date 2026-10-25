@@ -13,7 +13,7 @@ from roomkit.providers.gemini.vertex import GeminiVertexConfig, GeminiVertexProv
 if TYPE_CHECKING:
     from roomkit.providers.gemini.realtime import GeminiLiveProvider
 else:
-    __getattr__, __dir__ = lazy_exports(
+    __getattr__ = lazy_exports(
         __name__, {"GeminiLiveProvider": "roomkit.providers.gemini.realtime"}
     )
 
