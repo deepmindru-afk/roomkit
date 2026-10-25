@@ -59,22 +59,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `build_handoff_tool`, `RCSDeliveryResult`, the Buzz and Discord parsers
   from `roomkit.sources`, the Meta, Azure MAI, Voxtral, Azure Speech and
   Fish Audio errors from `roomkit.voice.stt` / `roomkit.voice.tts`,
-  `MockVoiceCall`, `TwilioWebSocketBackend` and `AuthCallback`; and
-  `HookEngine` (what `kit.hook_engine` is) and `HookRegistration` (what
-  `add_room_hook()` returns) from `roomkit`, `room_tasks` from
-  `roomkit.tasks`, and `compose`, `addressed` and `judgments_of`, the
-  building blocks of a custom speak policy, from `roomkit.speaking`.
-  `roomkit.channels` gets an `__all__` listing the channels and factories it
-  already held. A name whose module `import roomkit` did not load is
-  exported lazily, and imported for type checkers: `import roomkit` loads no
-  new module, and a missing extra raises on first use. Every module path
-  that imported keeps importing; the `roomkit.voice.get_*()` lookups keep
-  working and are internal. A star import resolves every name `__all__`
-  lists:
-  `from roomkit.voice.tts import *`, `roomkit.voice.realtime` and
-  `roomkit.video.avatar` now need the extras of the providers they list
-  (httpx, fastapi, numpy), as `from roomkit.voice import *` already did.
-  `tests/test_public_imports.py` fails on an example, a document or a
+  `MockVoiceCall`, `TwilioWebSocketBackend` and `AuthCallback`. Six more
+  are exported on the maintainer's decision: `HookEngine` (what
+  `kit.hook_engine` is) and `HookRegistration` (what `add_room_hook()`
+  returns) from `roomkit`, `room_tasks` from `roomkit.tasks`, and
+  `compose`, `addressed` and `judgments_of`, the building blocks of a custom
+  speak policy, from `roomkit.speaking`. `roomkit.channels` gets an
+  `__all__` listing the channels and factories it already held. A name whose
+  module `import roomkit` did not load is exported lazily: `import roomkit`
+  loads no new module, a missing extra raises its own error on first use
+  (`ModuleNotFoundError: No module named 'httpx'`), `dir()` and `help()`
+  list the name, and a type checker reads the real class and reports a name
+  the package does not export. Every module path that imported keeps
+  importing; the `roomkit.voice.get_*()` lookups keep working and are
+  internal. `tests/test_public_imports.py` fails on an example, a document or a
   docstring under `src/` that imports a roomkit name from anywhere else, and
   `make docs` runs the same check on the docs site.
 
@@ -112,6 +110,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must run this version before any of them posts.
 
 ### Changed
+
+- **A package's `__all__` decides what a star import binds** (RMK-948).
+  `from roomkit.channels import *` no longer binds `ChannelType`,
+  `ChannelCapabilities`, `ChannelMediaType` or the `*_CAPABILITIES`
+  constants, and `from roomkit.video.backends import *` no longer binds its
+  `get_*()` lookups; each still imports by name. `roomkit.sources` no
+  longer holds `typing.Any`. A star import resolves every name `__all__`
+  lists, the lazy ones included: on a core install,
+  `from roomkit.voice.tts import *`, `roomkit.voice.realtime` and
+  `roomkit.video.avatar` need the extras of the providers they list
+  (httpx, fastapi, numpy), as `from roomkit.voice import *` already did, and
+  `from roomkit.voice.realtime import *` needs fastapi even with the `dev`
+  extra. The attribute `roomkit.tools.fence` is now the function `fence`,
+  not the submodule: `from roomkit.tools.fence import named_blocks` still
+  works. None of these is a public import path, so none is BREAKING.
 
 - **BREAKING — a key its channel holds refuses another event in every store,
   with `IdempotencyKeyTakenError`** (RFC §13.4, §14.3, RMK-942). An
